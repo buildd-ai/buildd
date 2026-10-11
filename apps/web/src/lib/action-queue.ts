@@ -40,12 +40,12 @@ import { isMissionPrTask } from '@buildd/core/mission-integration';
  */
 
 export type ActionChip =
-  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
+  | 'INCIDENT' | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'ACCESS' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
   | 'RESOLVING' | 'FIXING_CI' | 'FIXING_REVIEW' | 'CI_RUNNING' | 'REVIEW_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
 
 /** docs/design/spec-conformance.md §8 — which way a discrepancy's gap runs. */
-export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
+export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted' | 'conflict';
 
 /**
  * Chips an agent is already handling. They stay visible (a stuck fix must not
@@ -254,7 +254,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'incident' | 'access';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -270,8 +270,19 @@ export interface WaitingOnYouRawItem {
   /** kind === 'reconnect' — the connector whose credential needs re-authorising. */
   connectorId?: string;
   connectorName?: string;
-  /** kind === 'failed' — why it failed and the fix, in plain words (buildFailedTaskItems). */
+  /** kind === 'failed' — why it failed and the fix, in plain words (buildFailedTaskItems). kind === 'incident' — the gate's reason. */
   failureMessage?: string;
+  /** kind === 'incident' — a Sentinel incident the escalation gate gave to the owner (lib/failure-incident-escalation.ts). */
+  incidentId?: string;
+  incidentTitle?: string;
+  /** kind === 'access' — a pending capability request the escalation gate gave to a person (lib/capability-grants-needs-you.ts). */
+  accessRequestId?: string;
+  /** kind === 'access' — what the agent asked to do, in plain words ("Query Axiom · production"). */
+  accessAsk?: string;
+  /** kind === 'access' — the lease the agent asked for; approval can only narrow it. */
+  accessTtlSeconds?: number;
+  /** kind === 'access' — the approve button's words, lease included ("Approve for 1 hour"). */
+  accessApproveLabel?: string;
   fixHref?: string;
   fixLabel?: string;
   /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
@@ -572,8 +583,16 @@ export interface ActionQueueItem {
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
-  /** Set when chip === 'FAILED' — the plain cause and the setting that fixes it. */
+  /** Set when chip === 'FAILED' — the plain cause and the setting that fixes it. INCIDENT: the gate's reason. */
   failureMessage?: string;
+  /** Set when chip === 'INCIDENT' — the incident and its title. */
+  incidentId?: string;
+  incidentTitle?: string;
+  /** Set when chip === 'ACCESS' — the capability request, the ask and the lease asked for. */
+  accessRequestId?: string;
+  accessAsk?: string;
+  accessTtlSeconds?: number;
+  accessApproveLabel?: string;
   fixHref?: string;
   fixLabel?: string;
   /** Set when chip === 'DECIDE' — the escalation note this card links back to. */
@@ -675,8 +694,12 @@ export interface ActionQueueItem {
 // dies must not take the finding with it — but never counts as actionable.
 // FAILED sits with RECONNECT: both are a credential the owner has to supply
 // before anything else can run.
+// INCIDENT leads: the escalation gate hands a Sentinel incident to the owner
+// only when it is critical, or nothing is fixing it.
+// ACCESS sits with QUESTION: a live agent run is waiting on a person's
+// approve or deny, and the request closes itself when the run ends.
 const CHIP_ORDER: ActionChip[] = [
-  'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
+  'INCIDENT', 'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'ACCESS', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
   'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'REVIEW_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ];
@@ -1149,6 +1172,8 @@ const DISCREPANCY_DIRECTION_RANK: Record<DiscrepancyDirection, number> = {
   contradicted: 0,
   spec_ahead: 1,
   code_ahead: 2,
+  // Advisory: two Living Spec criteria disagree. Shown last; only Accept applies.
+  conflict: 3,
 };
 
 /** §12: cap the queue to the top 10 DISCREPANCY cards (specs) per workspace. */
@@ -1541,6 +1566,40 @@ export function buildActionQueue(
           chip: 'RECONNECT',
           connectorId: item.connectorId,
           connectorName: item.connectorName,
+        });
+      }
+    } else if (item.kind === 'incident') {
+      const key = `incident:${item.incidentId}`;
+      if (item.incidentId && !map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'INCIDENT',
+          incidentId: item.incidentId,
+          incidentTitle: item.incidentTitle,
+          workspaceName: item.workspaceName ?? undefined,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
+        });
+      }
+    } else if (item.kind === 'access') {
+      // One card per request: the store already keeps one open row per (worker, target, exact ask).
+      const key = `access:${item.accessRequestId}`;
+      if (item.accessRequestId && !map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'ACCESS',
+          accessRequestId: item.accessRequestId,
+          accessAsk: item.accessAsk,
+          accessTtlSeconds: item.accessTtlSeconds,
+          accessApproveLabel: item.accessApproveLabel,
+          taskId: item.taskId,
+          taskTitle: item.taskTitle,
+          workspaceId: item.workspaceId,
+          workspaceName: item.workspaceName ?? undefined,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
         });
       }
     } else if (item.kind === 'failed') {

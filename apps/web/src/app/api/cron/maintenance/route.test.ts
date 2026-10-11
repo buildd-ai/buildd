@@ -41,6 +41,11 @@ mock.module('./stale-workers', () => ({ runStaleWorkerCleanup: mockStaleWorkers 
 mock.module('./path-claims', () => ({ sweepAbandonedPathClaims: mockPathClaims }));
 const mockDetach = mock(async (_opts: unknown) => { calls.push('interactive-detach'); return 0; });
 mock.module('@/lib/interactive-detach', () => ({ detachInteractiveWorkersOfEndedTasks: mockDetach }));
+const mockUploads = mock(async () => ({ finalized: 2, removed: 1, waiting: 0 }));
+mock.module('@/lib/artifact-upload', () => ({ sweepStaleUploads: mockUploads }));
+mock.module('@/lib/storage', () => ({ isStorageConfigured: () => true }));
+const mockChatAttachments = mock(async (_opts: unknown) => ({ removed: 4, objectsRemoved: 2 }));
+mock.module('@/lib/artifact-attachment-cleanup', () => ({ removeOrphanChatAttachments: mockChatAttachments }));
 
 const { GET } = await import('./route');
 
@@ -87,9 +92,18 @@ describe('maintenance cron — the core sweeps', () => {
     mockPathClaims.mockResolvedValueOnce(3);
     mockDetach.mockResolvedValueOnce(1);
     const res = await GET(makeRequest());
-    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1 });
+    const uploads = { finalized: 2, removed: 1, waiting: 0 };
+    const chatAttachments = { removed: 4, objectsRemoved: 2 };
+    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments });
     const row = cronRunRows.find(r => r.job === 'maintenance');
-    expect(row).toMatchObject({ ok: true, changed: 6, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1 } });
+    expect(row).toMatchObject({ ok: true, changed: 13, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments } });
+  });
+
+  it('a failing chat attachment sweep is logged and reads as nothing removed', async () => {
+    mockChatAttachments.mockRejectedValueOnce(new Error('boom'));
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    expect((await res.json()).chatAttachments).toEqual({ removed: 0, objectsRemoved: 0 });
   });
 });
 

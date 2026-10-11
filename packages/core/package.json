@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.314.0",
+  "version": "0.318.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -11,6 +11,8 @@
   "exports": {
     "./db": "./db/index.ts",
     "./run-evidence": "./run-evidence.ts",
+    "./artifact-redaction": "./artifact-redaction.ts",
+    "./artifact-read": "./artifact-read.ts",
     "./db/*": "./db/*.ts",
     "./config": "./config.ts",
     "./token-scopes": "./token-scopes.ts",
@@ -183,6 +185,7 @@
     "./mission-completion-codes": "./mission-completion-codes.ts",
     "./mission-integration": "./mission-integration.ts",
     "./mission-branch-trace": "./mission-branch-trace.ts",
+    "./repair-target": "./repair-target.ts",
     "./task-title": "./task-title.ts",
     "./pr-lede": "./pr-lede.ts",
     "./copy-rules": "./copy-rules.ts",

@@ -39,8 +39,25 @@ export interface SpecDocFixContext {
  * (docs/design/spec-to-build-pattern.md §3).
  */
 export interface SpecSourceContext {
-  specPath: string;
-  planningTaskId: string;
+  specPath?: string;
+  planningTaskId?: string;
+  /** A Living Spec pin (lib/specs/pin.ts), written by the server, never the caller. */
+  specId?: string;
+  specRevisionId?: string;
+  revision?: number;
+  contentHash?: string;
+  commitSha?: string;
+}
+
+/** The Living Spec pin fields of a specSource, or null when it carries no complete pin. */
+export function livingSpecPin(raw: unknown): Pick<SpecSourceContext, 'specId' | 'specRevisionId' | 'revision' | 'contentHash' | 'commitSha'> | null {
+  const s = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!s || typeof s.specId !== 'string' || typeof s.specRevisionId !== 'string' || typeof s.contentHash !== 'string') return null;
+  return {
+    specId: s.specId, specRevisionId: s.specRevisionId, contentHash: s.contentHash,
+    ...(typeof s.revision === 'number' ? { revision: s.revision } : {}),
+    ...(typeof s.commitSha === 'string' ? { commitSha: s.commitSha } : {}),
+  };
 }
 
 /**
@@ -299,6 +316,9 @@ export async function approvePlan(
   // task never sets `pathManifest` at its own insert site, so this reads as
   // undefined for it and no `specSource` is written.
   const emitsPlanSpecPath = task.mode === 'planning' ? (task.pathManifest as string[] | null)?.[0] : undefined;
+  // A planning task pinned to a Living Spec revision passes the pin to every
+  // child, so the work it breaks out keeps the revision the plan was made on.
+  const parentSpecPin = livingSpecPin(((task.context as Record<string, unknown> | null) ?? {}).specSource);
 
   // Phases are assigned across the SURVIVING plan, in plan-array order, before
   // the first insert — a step dropped by dedup above never occupied a phase, so
@@ -407,8 +427,8 @@ export async function approvePlan(
           ...(docFix?.specPath ? { specDocFix: docFix, finalizesProposal: true } : {}),
           // The link back to the spec doc that authorized this child, for a
           // plan filed via emitsPlan.
-          ...(emitsPlanSpecPath
-            ? { specSource: { specPath: emitsPlanSpecPath, planningTaskId } satisfies SpecSourceContext }
+          ...(emitsPlanSpecPath || parentSpecPin
+            ? { specSource: { ...parentSpecPin, ...(emitsPlanSpecPath ? { specPath: emitsPlanSpecPath } : {}), planningTaskId } satisfies SpecSourceContext }
             : {}),
           ...(integrationBase ? { baseBranch: integrationBase } : {}),
           ...(stepPrReach ? { prReach: stepPrReach } : {}),

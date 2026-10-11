@@ -15,6 +15,8 @@ import { resolvePolicy } from '@/lib/merge-policy';
  */
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
+import { loadIncidentNeedsYou, loadIncidentVerdicts } from '@/lib/failure-incident-escalation';
+import { loadAccessNeedsYou } from '@/lib/capability-grants-needs-you';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
 import { loopPolicy } from '@/lib/loop-dispatcher-policy';
@@ -48,6 +50,8 @@ import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers
 import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 import { surfaceAuditSubscribers } from '@/lib/surface-audit-subscribers';
 import { failurePatternSubscribers } from '@/lib/failure-pattern-subscribers';
+import { answerInChatHref } from '@/lib/chat/answer-link';
+import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -149,3 +153,31 @@ export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepa
 export const ESCALATION_GATE_DEPS = escalationGateDeps;
 /** What a page passes: stored verdicts and rules, the rest looked at after the response. */
 export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
+
+/**
+ * The Failure Pattern Sentinel's slots for core pages (lib/failure-incident-escalation.ts):
+ * Home's Needs You rows for incidents the escalation gate gave to the owner, and the
+ * stored verdict the incident page shows. Both read the ledger; neither calls a model.
+ */
+export const INCIDENT_NEEDS_YOU = loadIncidentNeedsYou;
+export const INCIDENT_VERDICTS = loadIncidentVerdicts;
+
+/**
+ * The connectors module's slot for Home (lib/capability-grants-needs-you.ts):
+ * pending capability requests the escalation gate gives to a person, for the
+ * teams where the viewer can decide them. A fixed rule; no model call.
+ */
+export const ACCESS_NEEDS_YOU = loadAccessNeedsYou;
+
+/**
+ * The chat module's slot for the task page (lib/chat/answer-link.ts): where an
+ * answer link (`?respond=1`) goes when the question folds into the reader's own
+ * conversation. Null keeps them on the task page's reply box.
+ */
+export const ANSWER_IN_CHAT = answerInChatHref;
+
+/**
+ * The reviews module's slot for Home (lib/pr-landing-sheet.ts): what the PR
+ * action sheet (`?pr=<n>&t=<token>`, a landing alert's link) shows, as data.
+ */
+export const PR_ACTION_SHEET = loadPrActionSheet;

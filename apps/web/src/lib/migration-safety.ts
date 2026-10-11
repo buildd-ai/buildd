@@ -13,6 +13,13 @@ export interface MigrationCollision {
    * forked). Absent: another open PR holds it.
    */
   against?: 'base';
+  /**
+   * Migration lane: the open PR that must land first. Set when this PR would
+   * renumber into a slot an earlier open PR is about to take too. Renumbering
+   * now only dirties both again when the earlier one lands, so the renumber
+   * waits and runs once, against the base, after its predecessor merges.
+   */
+  queuedBehind?: number;
 }
 
 /**

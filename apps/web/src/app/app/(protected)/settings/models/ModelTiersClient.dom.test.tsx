@@ -19,6 +19,7 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ModelTiersClient } = await import('./ModelTiersClient');
 const { CELLS_BODY, MODELS, POOLS_BODY } = await import('./model-tiers-fixtures');
+const { formControls } = await import('../_lib/form-controls');
 
 const requests: Array<{ url: string; method: string; body: any }> = [];
 beforeEach(() => {
@@ -140,6 +141,15 @@ describe('ModelTiersClient: the table', () => {
     await click(cell);
     expect(q('[data-testid="cell-editor"]')).toBeNull();
   });
+
+  it('a member can only open views: History and what ran, nothing that edits', async () => {
+    await mount(false);
+    const ids = formControls(host).map((el) => el.getAttribute('data-testid') ?? '');
+    expect(ids.length).toBeGreaterThan(0);
+    expect(ids.every((id) => id === 'tiers-history' || id.startsWith('tier-name-'))).toBe(true);
+    expect(host.querySelector('[aria-haspopup="dialog"]')).toBeNull();
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this/);
+  });
 });
 
 describe('ModelTiersClient: the cell editor', () => {
@@ -166,6 +176,15 @@ describe('ModelTiersClient: the cell editor', () => {
     expect(ed.querySelector('[data-testid="cell-learning"]')!.textContent).toContain('12 of 40 graded runs');
     expect(ed.querySelector('input[type="number"]')).toBeNull();
     expect(ed.querySelector('input')).toBeNull();
+  });
+
+  it('passes the cell surface to the picker so a Codex runner is not disabled in a coding cell', async () => {
+    await mount();
+    await click(q('[data-testid="cell-agent-premium"]'));
+    await click(q('[data-testid="cell-primary-picker"]'));
+    const rows = [...document.querySelectorAll('[role="option"]')];
+    const codex = rows.filter((r) => r.getAttribute('data-key')?.startsWith('runner:codex::'));
+    for (const r of codex) expect(r.getAttribute('aria-disabled')).toBeNull();
   });
 
   it('Save sets the dial against the pool\'s latest version; Cancel writes nothing', async () => {

@@ -30,18 +30,54 @@ export const SETTINGS_ROUTE_MOVES = [
   { source: '/app/team/:slug', destination: '/app/settings/roles/:slug' },
   { source: '/app/workspaces/:id/skills', destination: '/app/settings/roles' },
   // People: one Team page; another team opens there by id.
-  { source: '/app/teams/new', destination: '/app/settings/team/new' },
+  { source: '/app/teams/new', destination: '/app/settings/team?new=1' },
   { source: '/app/teams/:id', destination: '/app/settings/team?team=:id' },
   // Runners: configured in Settings, watched in Health.
-  { source: '/app/accounts/new', destination: '/app/settings/runners/tokens/new' },
+  { source: '/app/accounts/new', destination: '/app/settings/runners?new=1' },
   { source: '/app/workspaces/:id/runners', destination: '/app/health/runners?workspace=:id' },
   // Models: keys, routing, tiers and AI features on one page.
   { source: '/app/settings/providers', destination: '/app/settings/models' },
   { source: '/app/settings/ai', destination: '/app/settings/models' },
+  // Your own keys: the Models page's old Mine tab is Settings › You › Keys.
+  { source: '/app/settings/models', has: [{ type: 'query', key: 'scope', value: 'mine' }], destination: '/app/settings/keys' },
   // Workspaces: one list and one settings page per workspace.
   { source: '/app/workspaces', destination: '/app/settings/workspaces' },
   { source: '/app/workspaces/new', destination: '/app/settings/workspaces/new' },
   { source: '/app/workspaces/:id/config', destination: '/app/settings/workspace/:id' },
+];
+
+/**
+ * Pages merged into another by the screen inventory (a sheet or section on the
+ * page that does the same job), and pages that only ever redirected. Order
+ * matters: the first match wins, so the scoped new-task rule comes first.
+ * Guarded by src/lib/page-merges.test.ts.
+ */
+export const PAGE_MERGES = [
+  // Settings: one Integrations page, Billing and budgets, Connected apps.
+  { source: '/app/settings/github', destination: '/app/settings/integrations' },
+  { source: '/app/settings/storage', destination: '/app/settings/integrations' },
+  { source: '/app/settings/budgets', destination: '/app/settings/billing' },
+  { source: '/app/settings/connectors', destination: '/app/settings/connections' },
+  // A task starts as a chat; an old link keeps the workspace it named.
+  { source: '/app/tasks/new', has: [{ type: 'query', key: 'workspaceId', value: '(?<ws>[^&]+)' }], destination: '/app/chat?new=task&ws=:ws' },
+  { source: '/app/tasks/new', destination: '/app/chat?new=task' },
+  // Workers are viewed on their task; artifacts on their mission or task.
+  { source: '/app/workers', destination: '/app/tasks' },
+  { source: '/app/artifacts', destination: '/app/missions' },
+  { source: '/app/insights', destination: '/app/health/insights' },
+  // Initiatives fold into Missions as a group filter (a mission's group is its initiative link).
+  { source: '/app/initiatives/new', destination: '/app/missions' },
+  { source: '/app/initiatives/:id', destination: '/app/missions?group=:id' },
+  { source: '/app/initiatives', destination: '/app/missions' },
+  // A job that ends in one action is a sheet on the page it starts from.
+  // The query passes through: a prefill or an alert's signed `?t=` survives.
+  { source: '/app/missions/new', destination: '/app/missions?new=1' },
+  { source: '/app/settings/team/new', destination: '/app/settings/team?new=1' },
+  { source: '/app/settings/runners/tokens/new', destination: '/app/settings/runners?new=1' },
+  // Notification and Pushover links: the reply opens on the task, the PR's
+  // actions in a sheet over Home.
+  { source: '/app/tasks/:id/respond', destination: '/app/tasks/:id?respond=1' },
+  { source: '/app/prs/:prNumber/act', destination: '/app/home?pr=:prNumber' },
 ];
 
 /** @type {import('next').NextConfig} */
@@ -101,10 +137,11 @@ const nextConfig = {
       },
       {
         source: '/app/connections',
-        destination: '/app/settings/connectors',
+        destination: '/app/settings/connections',
         permanent: false,
       },
       ...SETTINGS_ROUTE_MOVES.map((move) => ({ ...move, permanent: false })),
+      ...PAGE_MERGES.map((merge) => ({ ...merge, permanent: false })),
       // /memory is handled in src/proxy.ts: on the apex it goes to the
       // marketing site's /memory page; elsewhere it keeps the old 307 to the
       // docs page. It can't live here — config redirects run before the proxy.

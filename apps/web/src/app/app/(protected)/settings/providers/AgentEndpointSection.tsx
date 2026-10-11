@@ -206,7 +206,6 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
             )}
           </div>
         )}
-        {!canManage && <p className="text-text-muted">Only a team owner or admin can change the agent endpoint.</p>}
       </div>
     </section>
   );

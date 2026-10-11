@@ -12,8 +12,11 @@
  *    systemic_bug | page_now`, a confidence and a stable reason code. A
  *    confident answer can raise severity. Unavailable, malformed or timed-out
  *    answers fall back to the floor, deterministically.
- * 2. **Alert on transitions, never occurrences.** critical → Pushover priority
- *    1, high → one normal Pushover, medium → digest, low → ledger only. A
+ * 2. **Alert on transitions, never occurrences.** critical and high are page
+ *    candidates, medium → digest, low → ledger only. A candidate goes through
+ *    the escalation gate (`incident-escalation.ts`): a critical incident is
+ *    the owner's, one whose fix task is running is Buildd's, and the verdict
+ *    is stored. A
  *    re-page needs a severity increase, the affected scope crossing the next
  *    `IMPACT_SCOPE_THRESHOLDS` tier, or a resolved incident recurring. The page
  *    is CLAIMED on the incident row (CAS on `version`, writing
@@ -306,33 +309,23 @@ export interface IncidentAlert {
   message: string;
   /** Unique per claim: the transport's own dedupe must not swallow a legitimate re-page. */
   dedupeKey: string;
+  /** The incident as claimed, for the gate to read its owner and fix task. */
+  incident?: StoredIncident;
 }
 
 /** Delivers a claimed page. Resolves true when delivered. */
 export type IncidentAlertSender = (alert: IncidentAlert) => Promise<boolean>;
 
-/** The default sender: the shared ops Pushover route (`reportOps`, "alerts" app). */
-export const reportOpsIncidentSender: IncidentAlertSender = async alert => {
-  const { reportOps } = await import('@buildd/core/report-ops');
-  return reportOps({
-    source: 'failure-incident',
-    severity: alert.priority === 1 ? 'critical' : 'error',
-    message: alert.title,
-    detail: alert.message,
-    dedupeKey: alert.dedupeKey,
-  });
-};
-
 /**
- * Paging is off until a deployment opts in with `FAILURE_INCIDENT_PAGING=1`.
- * The Sentinel's pages are meant to reach a person through the escalation gate
- * (one owner, rules first, Jev only on concern), and that adapter is a
- * follow-up; until then a claimed page is recorded on the incident and not sent.
+ * The default sender: the escalation gate (lib/failure-incident-escalation.ts). The
+ * owner is paged only when the gate's rules say the incident is theirs; the
+ * verdict is stored either way.
  */
-const ledgerOnlyIncidentSender: IncidentAlertSender = async () => false;
-
-export function defaultIncidentSender(env: Record<string, string | undefined> = process.env): IncidentAlertSender {
-  return env.FAILURE_INCIDENT_PAGING === '1' ? reportOpsIncidentSender : ledgerOnlyIncidentSender;
+export function defaultIncidentSender(): IncidentAlertSender {
+  return async alert => {
+    const { createGatedIncidentSender, createDbIncidentGateDeps } = await import('./failure-incident-escalation');
+    return createGatedIncidentSender(createDbIncidentGateDeps())(alert);
+  };
 }
 
 /**
@@ -500,7 +493,7 @@ export interface IncidentActionDeps {
   port?: IncidentStorePort;
   /** Default: the shared decision policy. `null`: never ask a model (floor only). */
   decide?: IncidentDecider | null;
-  /** Default: `defaultIncidentSender()` (recorded only, unless FAILURE_INCIDENT_PAGING=1). */
+  /** Default: `defaultIncidentSender()` (the escalation gate). */
   send?: IncidentAlertSender;
   /** Default: the database. `null`: never file fix tasks. */
   fixTasks?: FixTaskPort | null;
@@ -549,6 +542,15 @@ export async function actOnIncidentResults(
     const triage = await triageIncident(incident, { decide, timeoutMs: deps.timeoutMs });
     const result: IncidentActionResult = { incidentId: incident.id, triage, alert: null, fixTask: null };
 
+    // The fix task first: a page for an incident Buildd is already fixing is not sent, and the gate reads that task.
+    if (fixTasks) {
+      try {
+        result.fixTask = await ensureFixTask(port, fixTasks, incident, triage, now());
+      } catch (err) {
+        onError(err, incident.id, 'fix_task');
+      }
+    }
+
     try {
       const at = now();
       const claim = await claimIncidentAlert(port, incident.id, triage.severity, at);
@@ -565,6 +567,7 @@ export async function actOnIncidentResults(
             title,
             message,
             dedupeKey: `failure-incident:${incident.id}:${claim.plan.reason}:${at}`,
+            incident,
           });
         } catch (err) {
           onError(err, incident.id, 'send');
@@ -572,14 +575,6 @@ export async function actOnIncidentResults(
       }
     } catch (err) {
       onError(err, incident.id, 'alert');
-    }
-
-    if (fixTasks) {
-      try {
-        result.fixTask = await ensureFixTask(port, fixTasks, incident, triage, now());
-      } catch (err) {
-        onError(err, incident.id, 'fix_task');
-      }
     }
     out.push(result);
   }

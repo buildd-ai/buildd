@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: AgentEndpointSection, parseAliasLines, aliasLines, teamOpenRouterKeyLast4 } = await import('./AgentEndpointSection');
+const { describeControls } = await import('../_lib/form-controls');
 
 const KEY = 'sk-agent-example-1234';
 let endpoints: unknown[] = [];
@@ -421,6 +422,22 @@ describe('AgentEndpointSection', () => {
     expect(button('Set up an endpoint')).toBeUndefined();
     expect(button('Verify')).toBeUndefined();
     expect(button('Remove')).toBeUndefined();
+  });
+
+  it('a member reads the endpoint as text: no control beyond the mapping disclosure, no admin line', async () => {
+    endpoints = [teamEndpoint, { ...teamEndpoint, id: 'c-2', scope: 'workspace', workspaceId: 'ws-1', workspaceName: 'Widgets', matchesTeam: true }];
+    await mount(false);
+    expect(host.querySelector('[data-testid="agent-endpoint-heading"]')).not.toBeNull();
+    expect(host.textContent).toContain('Applies to:');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this|can change the agent endpoint/);
+  });
+
+  it('a member with nothing set reads the default', async () => {
+    await mount(false);
+    expect(host.querySelector('[data-testid="agent-endpoint-status"]')!.textContent).toBe('Anthropic (default)');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toContain('Only a team owner');
   });
 });
 

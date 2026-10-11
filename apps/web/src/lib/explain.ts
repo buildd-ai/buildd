@@ -37,6 +37,8 @@ import { loadDependencyRows } from '@/lib/dependency-rows';
 import { resolvePrDisplayState } from '@/lib/pr-presentation';
 import { deliverySettled } from '@/lib/workflow/delivery-display';
 import type { DeliveryView } from '@/lib/workflow/projections';
+import { GATE_SLUGS } from '@buildd/core/gate-slugs';
+import { deriveLandingBlocker, type LandingBlocker } from '@/lib/landing-blocker';
 import { canCompleteMission } from '@/lib/mission-completion';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
@@ -447,6 +449,7 @@ async function viewForMission(missionId: string): Promise<{
       title: t.title,
       subjectPrNumber: t.subjectPrNumber,
       createdAt: t.createdAt,
+      roleSlug: t.roleSlug,
     })),
   );
 
@@ -599,6 +602,7 @@ async function viewForMission(missionId: string): Promise<{
         title: t.title,
         status: t.status,
         live: hasLiveWorker(t),
+        runnerClaimable: !!(t.context as Record<string, unknown> | null)?.reviewerFor,
         missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
         waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
       })),
@@ -614,6 +618,7 @@ async function viewForMission(missionId: string): Promise<{
         title: task.title,
         prNumber: superseded.prNumber,
         supersedingTaskId: superseded.supersedingTaskId,
+        ...(superseded.replacedByAudit ? { replacedByAudit: true as const } : {}),
       })),
     },
   };
@@ -738,6 +743,57 @@ export function kernelUnmergedPr(
   }];
 }
 
+/**
+ * The landing blocker for a task's one unmerged PR (lib/landing-blocker.ts):
+ * the newest `pr_landing` row, the conflict/migration repairs anywhere in its
+ * lineage (a kernel fix is parented to the delivery owner), and the kernel or
+ * legacy conflict fact. Stored facts only — explain never calls GitHub.
+ */
+function headShaOf(detail: unknown): string | null {
+  const h = (detail as { headSha?: unknown } | null)?.headSha;
+  return typeof h === 'string' ? h : null;
+}
+
+async function loadLandingBlocker(
+  task: { id: string },
+  pr: { taskId: string; prNumber: number | null; prUrl: string | null },
+  delivery: DeliveryView | null,
+  prLifecycleStatus: string | null,
+  lineage: LoadedTask[],
+): Promise<LandingBlocker[]> {
+  const rows = await db.query.gateEvents.findMany({
+    where: and(eq(gateEvents.taskId, task.id), eq(gateEvents.gate, GATE_SLUGS.PR_LANDING)),
+    orderBy: [desc(gateEvents.occurredAt)],
+    limit: 1,
+    columns: { occurredAt: true, gate: true, outcome: true, reason: true, detail: true },
+  }).catch(() => []);
+  const row = rows.find(r => r.gate === GATE_SLUGS.PR_LANDING) ?? null;
+  const repairs = lineage
+    .filter(t => t.id !== task.id && t.creationSource === 'conflict')
+    .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())
+    .map(t => ({
+      status: t.status,
+      claimed: t.status !== 'pending' || (t.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status)),
+      // Terminal rows stop updating, so updatedAt is when the repair ended.
+      completedAt: t.status === 'completed' && t.updatedAt ? new Date(t.updatedAt).toISOString() : null,
+    }));
+  const blocker = deriveLandingBlocker({
+    ...pr,
+    delivery,
+    prLifecycleStatus,
+    repairs,
+    landing: row
+      ? {
+          occurredAt: new Date(row.occurredAt).toISOString(),
+          outcome: row.outcome,
+          reason: row.reason,
+          headSha: headShaOf(row.detail),
+        }
+      : null,
+  });
+  return blocker ? [blocker] : [];
+}
+
 async function viewForTask(taskId: string): Promise<{
   view: MissionStateView;
   /** Every DeliveryView the chain's tasks belong to, keyed by task id. */
@@ -776,7 +832,11 @@ async function viewForTask(taskId: string): Promise<{
         columns: { executor: true, isHeld: true },
       })
     : null;
-  const executor = parentMission && !parentMission.isHeld ? parentMission.executor ?? null : null;
+  // A reviewer task is runner-claimable whatever the mission's executor (the
+  // claim gate's missionNotLocal() exempts context.reviewerFor), so it is never
+  // read as waiting on a local session.
+  const isReviewerTask = !!(task.context as Record<string, unknown> | null)?.reviewerFor;
+  const executor = parentMission && !parentMission.isHeld && !isReviewerTask ? parentMission.executor ?? null : null;
 
   const family = [task as LoadedTask, ...attempts];
   // History reads the whole chain: from an attempt (a CI fix that opened a PR
@@ -848,6 +908,10 @@ async function viewForTask(taskId: string): Promise<{
   const replaced = replacedFailedTaskIds(deliveries, family.filter(t => t.status === 'failed').map(t => t.id));
   const failedTasks = family.filter(t => t.status === 'failed' && !replaced.has(t.id));
 
+  // Why the unmerged PR cannot land, from stored landing facts (§13.11 rule 3).
+  const openPr = unmergedPr.find(p => !p.closedUnsuperseded) ?? null;
+  const landingBlocked = openPr ? await loadLandingBlocker(task, openPr, ownDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [];
+
   const input: MissionStateInput = {
     // A cancelled task is closed, not idle. `completed` is only terminal for
     // this view once its PR has landed — the merge rule below decides that.
@@ -869,6 +933,7 @@ async function viewForTask(taskId: string): Promise<{
       infra: (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
     })),
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
+    landingBlocked,
     ciRed: deriveCiRedChains(
       unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (ownDelivery ? { ...p, ciRed: ownDelivery.prState === 'ci_failed' } : p)),
       family,

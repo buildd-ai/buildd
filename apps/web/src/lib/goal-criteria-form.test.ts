@@ -187,7 +187,7 @@ describe('validateCriteriaDrafts — same rules as POST /api/missions, before th
 
 describe('NewMissionForm wiring', () => {
   const source = readFileSync(
-    join(import.meta.dir, '../app/app/(protected)/missions/new/NewMissionForm.tsx'),
+    join(import.meta.dir, '../app/app/(protected)/missions/NewMissionForm.tsx'),
     'utf8',
   );
 

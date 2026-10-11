@@ -12,6 +12,7 @@ import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch, isCloudE
 import { DepsJob, createDepsGateHook, depsPrelude, DEPS_GATE_HOOK_TIMEOUT_S, type DepsGateStats } from './deps-gate';
 import { captureDependencyManifest, DEPENDENCY_MANIFEST_FILENAME } from './dependency-manifest';
 import { emitPhase } from './phase-lines';
+import { ClaimHandoffTracker } from './claim-handoff';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -35,7 +36,7 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
-import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, type DerivedMergeResult } from './merge-drivers';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, planPreMerge, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, readMergirafLedger, reportAgentMerges, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -89,6 +90,7 @@ import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } f
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
+import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
 import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, hostModelCredentialValues, hostSeatMode, localCodexAuthPath } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
@@ -167,7 +169,7 @@ import {
   type SessionEndLabel,
 } from './session-end-classification.js';
 import { withoutRunnerKeyValues } from './runner-key-guard.js';
-import { buildCodexMcpServers, describeSkippedMcpServer, resolveMcpJsonHttpServers, urlOrigin, type BuilddCredentialExpansion } from './mcp-json.js';
+import { buildCodexMcpServers, describeSkippedMcpServer, gatewayConnectorsOnly, gatewayConnectorUrl, resolveMcpJsonHttpServers, urlOrigin, type BuilddCredentialExpansion } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -522,6 +524,10 @@ export interface ResolvedMcpConnector {
   mintApiUrl?: string;
   audience?: string;
   tokenEndpoint?: string;
+  // Gateway mode: no url/headers; mounted at <buildd origin><gatewayPath>?worker=<id>
+  // with the agent's own buildd token (mcp-json.ts gatewayConnectorUrl).
+  gateway?: true;
+  gatewayPath?: string;
 }
 
 /**
@@ -548,11 +554,20 @@ type SdkMcpServerEntry =
  */
 export function buildMcpServerEntries(
   connectors: ResolvedMcpConnector[] | undefined,
+  /**
+   * How gateway connectors are mounted: the runner's buildd origin, the
+   * agent's own buildd token and the worker id. Without it they are skipped.
+   */
+  gateway?: { origin: string; token: string; workerId: string },
 ): Record<string, SdkMcpServerEntry> {
   const out: Record<string, SdkMcpServerEntry> = {};
   if (!connectors) return out;
+  for (const g of gatewayConnectorsOnly(connectors)) {
+    const url = gateway?.token ? gatewayConnectorUrl(gateway.origin, g.gatewayPath, gateway.workerId) : null;
+    if (url) out[g.name] = { type: 'http', url, headers: { Authorization: `Bearer ${gateway!.token}` } };
+  }
   for (const c of connectors) {
-    if (!c?.name) continue;
+    if (!c?.name || c.gateway) continue;
     // Assertion-mode connectors require async mint+exchange — skip here; handled separately.
     if (c.assertionMode) continue;
     // Default to http for back-compat with older claim payloads that omit transport.
@@ -753,6 +768,8 @@ export class WorkerManager {
   private budgetResumeAtMs?: number;
   /** Consecutive claim replies whose budgetResetsAt was already past (N2 backoff). */
   private pastResetStreak = 0;
+  /** Claims in flight and workers received but not yet started, reported on every heartbeat (claim-handoff.ts). */
+  private claimHandoff = new ClaimHandoffTracker();
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
@@ -1132,6 +1149,11 @@ export class WorkerManager {
     return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
+  /** `??=`: some harnesses build the manager with Object.create (no field initializers). */
+  private handoff(): ClaimHandoffTracker {
+    return (this.claimHandoff ??= new ClaimHandoffTracker());
+  }
+
   /** Push a heartbeat right away (e.g. so a canary trip reaches the server before a restart). */
   async sendHeartbeatNow(): Promise<void> {
     await this.sendHeartbeat();
@@ -1154,7 +1176,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot());
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot());
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1592,10 +1614,16 @@ export class WorkerManager {
         }>;
       };
       try {
-        claimPollResult = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.environment);
+        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.environment));
       } catch (err: any) {
         const { status, reason } = parseClaimError(err);
         claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
+        if (status === 0) {
+          // No HTTP response: the server may still have minted workers for this
+          // request. They are not ours to start; the next heartbeat reports we
+          // hold none of them and the server releases them (lib/lost-claim.ts).
+          console.warn(`[WorkerManager] Claim response lost (${reason}) — any workers it minted will be released on the next heartbeat`);
+        }
         this.claimPolls.recordPoll('rejected');
         this.emit({ type: 'claim_rejected', status, reason });
         this.onClaimServerErrorStreak(status);
@@ -1689,6 +1717,8 @@ export class WorkerManager {
             status: 'failed',
             error: `Runner failed to start session: ${message}`,
           }).catch(() => {});
+        } finally {
+          this.handoff().settle(claimedWorker.id);
         }
       }
       return started;
@@ -2001,7 +2031,7 @@ export class WorkerManager {
     // from the full task instead — matching the polling path (claimPendingTasks).
     let claimResult: { workers: any[]; diagnostics?: any };
     try {
-      claimResult = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.environment);
+      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.environment));
     } catch (err: any) {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
@@ -2040,7 +2070,14 @@ export class WorkerManager {
     claimLog({ event: 'claim_success', slotsRequested: 1, workersClaimed: 1, taskId: task.id });
 
     const claimedWorker = claimed[0];
+    try {
+      return await this.startTargetedClaim(claimedWorker, task);
+    } finally {
+      this.handoff().settle(claimedWorker.id);
+    }
+  }
 
+  private async startTargetedClaim(claimedWorker: any, task: BuilddTask): Promise<LocalWorker | null> {
     // Prefer claim response task data (full) over Pusher event task data
     // (minimal payload); resolve the workspace from the FULL task (see note
     // above). Same preparation as the poll path — one shared routine.
@@ -2420,18 +2457,25 @@ export class WorkerManager {
         if (derivedRules.length > 0 || gitConfig?.mergiraf === true) {
           try {
             registerMergeDrivers(setupResult.path, derivedRules, { mergiraf: gitConfig?.mergiraf === true });
-            if (derivedRules.length > 0 && worker.prBaseRef && isConflictRetryContext(fullTask.context)) {
-              const merged = mergeBaseWithDerivedFiles(setupResult.path, worker.prBaseRef, derivedRules);
-              console.log(`[Worker ${worker.id}] Pre-merged ${worker.prBaseRef}: ${merged.status}` +
+            const plan = derivedRules.length > 0
+              ? planPreMerge(fullTask.context, worker.prBaseRef, gitConfig?.targetBranch || defaultBranch)
+              : null;
+            if (plan) {
+              const merged = mergeBaseWithDerivedFiles(setupResult.path, plan.ref, derivedRules);
+              console.log(`[Worker ${worker.id}] Pre-merged ${plan.ref} (${plan.kind}): ${merged.status}` +
                 (merged.conflicted.length ? ` (${merged.conflicted.length} real conflict(s))` : '') +
                 (merged.structurallyResolved.length ? ` (mergiraf resolved ${merged.structurallyResolved.length}: ${merged.structurallyResolved.join(', ')})` : '') +
                 (merged.error ? ` — ${merged.error}` : ''));
-              worker.derivedMergeNote = formatDerivedMergeNote(merged, worker.prBaseRef) ?? undefined;
-              if (canFinishWithoutAgent(merged)) derivedMerge = { result: merged, baseRef: worker.prBaseRef };
+              worker.derivedMergeNote = formatDerivedMergeNote(merged, plan.ref) ?? undefined;
+              if (plan.mayFinishWithoutAgent && canFinishWithoutAgent(merged)) derivedMerge = { result: merged, baseRef: plan.ref };
               // Synced to the server, so the outcome (and what mergiraf did) is
-              // readable from get_task without access to the runner's log.
+              // readable from the task record without access to the runner's log.
               this.addMilestone(worker, { type: 'status', label: formatPreMergeMilestone(merged), ts: Date.now() });
             }
+            // Agent merges are reported from here on: entries already in the
+            // ledger (the pre-merge's, or a retained worktree's earlier session)
+            // are not the agent's.
+            worker.mergirafLedgerOffset = readMergirafLedger(setupResult.path, 0).offset;
           } catch (err) {
             console.warn(`[Worker ${worker.id}] Derived-file merge drivers skipped: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -3705,8 +3749,37 @@ export class WorkerManager {
       if (!runnerLocalAllowed) {
         console.log(`[Worker ${worker.id}] This machine's own model credentials are not used: the claim carries the requester's own key and the team policy is personal keys only`);
       }
+      // BUILDD_MODEL_AUTH_SOURCE=runner: a stored/inherited API key or server
+      // seat is not consent to spend. Only a selected paid route is metered.
+      const resolved = resolveModelAuthSource(process.env, {
+        isCodexTask,
+        runnerLocalAllowed,
+        modelEndpoint: worker.modelEndpoint,
+        llmProvider: this.config.llmProvider,
+        cloud: !!cloudCostBasis(process.env),
+        credentials: {
+          serverApiKey: worker.serverApiKey,
+          serverOauthToken: worker.serverOauthToken,
+          tenantOauthToken,
+          claudeAccessToken: worker.claudeAccessToken,
+          claudeCredentialId: worker.claudeCredentialId,
+        },
+      });
+      const authSource = resolved.decision;
+      // Everything below reads claim credentials through this view only.
+      const claimCreds = resolved.credentials;
+      if (authSource.dropServerCredentials) {
+        // shouldUseClaudeCredential, the broker fetch and the session token
+        // path all read these off the worker: none may see a server seat.
+        worker.claudeAccessToken = undefined;
+        worker.claudeCredentialId = undefined;
+      }
+      if (authSource.active) {
+        sessionLog(worker.id, 'info', 'model_auth_source', `source=${authSource.label}`, task.id);
+      }
+      if (authSource.dropInheritedApiKeys) stripInheritedApiKeys(cleanEnv);
       const seatDecision = applyHostSeatPolicy(cleanEnv, {
-        serverSeatDelivered: !!(worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId),
+        serverSeatDelivered: resolved.serverSeatDelivered,
         isCodexTask,
         runnerLocalAllowed,
       });
@@ -3714,9 +3787,9 @@ export class WorkerManager {
       const modelEnv = applyModelEnv(cleanEnv, {
         hostSeat,
         llmProvider: this.config.llmProvider,
-        serverApiKey: worker.serverApiKey,
-        serverOauthToken: worker.serverOauthToken,
-        tenantOauthToken,
+        serverApiKey: claimCreds.serverApiKey,
+        serverOauthToken: claimCreds.serverOauthToken,
+        tenantOauthToken: claimCreds.tenantOauthToken,
         isCodexTask,
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
         modelEndpoint: worker.modelEndpoint,
@@ -3755,7 +3828,7 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
       }
       if (modelEnv.hostSeatUsed && hostSeat) {
-        const skipped = worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId
+        const skipped = resolved.serverSeatDelivered
           ? '; the server-delivered seat is not used'
           : '';
         console.log(`[Worker ${worker.id}] Claude seat: ${describeHostSeat(hostSeat)}${skipped}`);
@@ -3920,6 +3993,7 @@ export class WorkerManager {
           connectors: (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined,
           env: headerExpansionEnv,
           builddCredential: builddMcpCredential,
+          workerId: worker.id,
         });
         Object.assign(cleanEnv, codexMcp.bearerEnv);
         for (const w of codexMcp.warnings) console.warn(`[Worker ${worker.id}] Codex: ${w}`);
@@ -4525,7 +4599,11 @@ export class WorkerManager {
       const claimConnectors = (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined;
       if (claimConnectors && claimConnectors.length > 0) {
         // Non-assertion connectors: build entries synchronously (credentials already decrypted).
-        const entries = buildMcpServerEntries(claimConnectors);
+        const entries = buildMcpServerEntries(claimConnectors, {
+          origin: urlOrigin(this.config.builddServer) ?? '',
+          token: agentBuilddToken ?? '',
+          workerId: worker.id,
+        });
         for (const [name, cfg] of Object.entries(entries)) {
           if (name === 'buildd') continue; // never override the buildd coordination server
           // Resolve per-worker placeholder tokens in stdio server env values.
@@ -4742,6 +4820,7 @@ export class WorkerManager {
         ],
         PostToolUse: [
           { hooks: [this.hookFactory.createToolActivityHook(worker)] },
+          { hooks: [this.hookFactory.createMergeLedgerHook(worker)] },
         ],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
@@ -5061,6 +5140,14 @@ export class WorkerManager {
       if (currentSession?.reapedAt !== undefined) {
         sessionLog(worker.id, 'info', 'post_completion_reap_settled', `status=${worker.status} (post-loop)`, worker.taskId);
         return;
+      }
+
+      // Whatever mergiraf did in merges the hook did not see (a command it
+      // did not recognise, a Codex session with no hooks) is recorded now.
+      try {
+        reportAgentMerges(worker, (label) => this.addMilestone(worker, { type: 'status', label, ts: Date.now() }));
+      } catch (err) {
+        console.warn(`[Worker ${worker.id}] mergiraf ledger sweep failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       // inputAsRetry: AskUserQuestion triggered an abort. The worker is
@@ -6692,7 +6779,10 @@ export class WorkerManager {
             source?.startsWith('mcp__')
           ) {
             const connector = findConnectorFor(source, worker.mcpConnectors as any[]);
-            if (connector) {
+            // A gateway connector's provider auth is refreshed server-side and a
+            // dead credential comes back as a structured `reconnect_required`
+            // tool result, so the session is never aborted for it here.
+            if (connector && !(connector as { gateway?: unknown }).gateway) {
               if (is403PermissionError(text)) {
                 console.log(`[Worker ${worker.id}] 403 permission gap from connector "${connector.name}" (${connector.id}) — signaling API`);
                 worker.error = `connector_permission_insufficient:${connector.id}`;

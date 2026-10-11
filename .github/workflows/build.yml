@@ -179,6 +179,18 @@ jobs:
       - name: Lint migration journal ordering
         run: bun run migrations:lint
 
+      # drizzle-kit takes the next index from the local journal, so parallel
+      # branches mint the same NNNN_ and git cannot see it (the .sql names
+      # differ). Fail the PR the moment its base takes the slot, naming the
+      # colliding file and the next free index, instead of finding out at the
+      # landing gate or a failed deploy. Fix: `bun run migrations:renumber`.
+      # See packages/core/db/migration-index.ts.
+      - name: Check migration indices are free on the base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bun run migrations:index-check "--base=origin/$BASE_REF"
+
       - name: Lint hardcoded model IDs
         # The self-test runs first: it plants a known violation outside the
         # allowlist and requires the scan to catch it, so a pattern or allowlist

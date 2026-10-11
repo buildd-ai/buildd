@@ -43,19 +43,27 @@ interface Workspace { id: string; name: string }
 
 const SURFACES: CeilingSurface[] = ['agent', 'chat'];
 
-function Limit({ id, label, caps, onPick, bound, boundBy, disabled, surface }: {
-  id: string; label: string; caps: SurfaceCeilings | undefined; onPick: (key: 'all' | CeilingSurface, v: LimitValue) => void;
+/** A label and its select: side by side from `sm`, stacked below it so a long label never squeezes the select. */
+const ROW = 'flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3';
+const ROW_SELECT = 'w-full sm:w-44 sm:shrink-0';
+
+/**
+ * `titleId` names a card title that already says what the main select is: the
+ * select is labelled by it and the row carries no second copy of the same words.
+ */
+function Limit({ id, label, titleId, caps, onPick, bound, boundBy, disabled, surface }: {
+  id: string; label?: string; titleId?: string; caps: SurfaceCeilings | undefined; onPick: (key: 'all' | CeilingSurface, v: LimitValue) => void;
   bound?: { all: CeilingTier | null; agent: CeilingTier | null; chat: CeilingTier | null }; boundBy?: string; disabled: boolean; surface?: boolean;
 }) {
   const [open, setOpen] = useState(hasSurfaceCaps(caps));
   useEffect(() => { if (hasSurfaceCaps(caps)) setOpen(true); }, [caps]);
-  const pick = (key: 'all' | CeilingSurface, name: string) => (
-    <div className="flex items-center justify-between gap-3" key={key}>
-      <span id={`${id}-${key}-label`} className="text-body text-text-primary">{name}</span>
+  const pick = (key: 'all' | CeilingSurface, name: string | undefined) => (
+    <div className={ROW} key={key} data-limit-row>
+      {name !== undefined && <span id={`${id}-${key}-label`} className="text-body text-text-primary">{name}</span>}
       <Select
-        aria-labelledby={`${id}-${key}-label`}
+        aria-labelledby={name !== undefined ? `${id}-${key}-label` : titleId}
         testId={`${id}-${key}`}
-        className="w-44 shrink-0"
+        className={ROW_SELECT}
         options={limitOptions(bound?.[key] ?? null, boundBy)}
         value={toValue(caps?.[key])}
         disabled={disabled}
@@ -65,7 +73,7 @@ function Limit({ id, label, caps, onPick, bound, boundBy, disabled, surface }: {
   );
   return (
     <div className="flex flex-col gap-2" data-testid={id}>
-      {pick('all', label)}
+      {pick('all', titleId ? undefined : label)}
       {surface !== false && (
         <>
           <button type="button" className="self-start text-meta text-text-muted underline-offset-2 hover:underline" aria-expanded={open}
@@ -177,9 +185,9 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
 
       {me && (
         <div className="card mt-3 px-3 py-3" data-testid="my-limit">
-          <span className="text-meta font-medium text-text-secondary">My maximum</span>
+          <span id="self-title" className="text-meta font-medium text-text-secondary">My maximum</span>
           <p className="mb-2 text-meta text-text-muted">Optional. You can only go lower than the team{me.admin && Object.keys(me.admin).length ? ' and your admin' : ''}; it never raises anything.</p>
-          <Limit id="self" label="My maximum" caps={me.self} bound={selfBound} boundBy="the team or workspace"
+          <Limit id="self" titleId="self-title" caps={me.self} bound={selfBound} boundBy="the team or workspace"
             disabled={busy} onPick={(k, v) => void write('/me', { ceilings: withCap(me.self, k, v) })} />
         </div>
       )}
@@ -187,12 +195,12 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
 
       {canManage ? (
         <div className="card mt-3 flex flex-col gap-3 px-3 py-3" data-testid="team-limit">
-          <span className="text-meta font-medium text-text-secondary">Team maximum</span>
-          <Limit id="team" label="Team maximum" caps={policy.team} disabled={busy}
+          <span id="team-title" className="text-meta font-medium text-text-secondary">Team maximum</span>
+          <Limit id="team" titleId="team-title" caps={policy.team} disabled={busy}
             onPick={(k, v) => void write('', { team: withCap(policy.team, k, v) })} />
-          <div className="flex items-center justify-between gap-3">
+          <div className={ROW} data-limit-row>
             <span id="over-cap-label" className="text-body text-text-primary">Router picks higher: downgrade or hold?</span>
-            <Select aria-labelledby="over-cap-label" testId="over-cap-auto" className="w-44 shrink-0" disabled={busy}
+            <Select aria-labelledby="over-cap-label" testId="over-cap-auto" className={ROW_SELECT} disabled={busy}
               options={[{ value: 'downgrade', label: 'Downgrade' }, { value: 'deny', label: 'Hold task' }]}
               value={policy.overCapAuto} onChange={(v: string) => void write('', { overCapAuto: v })} />
           </div>
@@ -200,7 +208,7 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
         </div>
       ) : (
         <p className="mt-3 text-meta text-text-muted" data-testid="team-limit-readonly">
-          {policy.team.all || policy.team.agent || policy.team.chat ? 'The team maximum is set by a team admin.' : 'Your team has not set a maximum.'}
+          {teamMaxText(policy.team)}
         </p>
       )}
 
@@ -249,6 +257,15 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
       )}
     </section>
   );
+}
+
+/** The team maximum as a sentence, for someone who reads it and does not set it. */
+function teamMaxText(team: SurfaceCeilings): string {
+  const parts = [
+    team.all && `Team maximum: ${TIER_LABEL[team.all]}.`,
+    ...SURFACES.map((s) => team[s] && `${SURFACE_TITLE[s]} only: ${TIER_LABEL[team[s]!]}.`),
+  ].filter(Boolean);
+  return parts.length ? parts.join(' ') : 'Your team has not set a maximum.';
 }
 
 const LIMITS_LOAD_ERROR = "Couldn't load the tier maximums.";

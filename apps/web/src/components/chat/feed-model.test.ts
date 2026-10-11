@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { BuilddObjectRef, ChatMessage, ChatToolPart } from './chat-contract';
 import { objectsOf } from './chat-contract';
 import {
-  canvasPin, conversationRefs, eventRefsShownLater, feedSegments, keyArgs, paneFocus, provisionalTitle, toolGroupSummary,
+  canvasPin, conversationRefs, eventRefsShownLater, feedSegments, keyArgs, paneFocus, provisionalTitle, shownRefs, toolGroupSummary, turnLayout,
   intentTag, routedScope, toolResultLine, toolRowState, toolRowView,
 } from './feed-model';
 
@@ -75,100 +75,100 @@ describe('feedSegments', () => {
     expect(objs.kind === 'objects' && objs.refs.map(r => `${r.kind}:${r.id}`)).toEqual(['mission:m1']);
   });
 
-  it('groups consecutive calls across step-start parts and renders their objects after the group', () => {
-    const segs = feedSegments([
-      { type: 'step-start' },
-      tool('list_tasks'),
-      { type: 'step-start' },
-      tool('get_task', { output: { data: {}, objects: [ref('task', 't1')] } }),
-      { type: 'text', text: 'Three are in.' },
-    ]);
-    // Answer first: a read's objects follow the reply, not the tool rows.
-    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'objects']);
-    const tools = segs[0];
-    expect(tools.kind === 'tools' && tools.calls).toHaveLength(2);
-  });
-
-  it('an approval part breaks a group and renders as its own card', () => {
-    const segs = feedSegments([
-      tool('manage_missions', { input: { action: 'list' } }),
-      { type: 'text', text: 'Here is a draft.' },
-      tool('manage_missions', { state: 'approval-requested', input: { action: 'create', title: 'M' }, approval: { id: 'ap-1' } }),
-    ]);
-    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'approval']);
-  });
-
-  it('a confirmed approval that filed something is followed by the live object', () => {
-    const segs = feedSegments([
-      tool('manage_missions', {
-        state: 'output-available', input: { action: 'create' }, approval: { id: 'ap-1', approved: true },
-        output: { data: {}, objects: [ref('mission', 'm1')] },
-      }),
-    ]);
-    expect(segs.map(s => s.kind)).toEqual(['approval', 'objects']);
-  });
-
-  it('shows each object once per message even when two calls return it', () => {
-    const segs = feedSegments([
-      tool('get_task', { output: { objects: [ref('task', 't1')] } }),
-      tool('get_task', { output: { objects: [ref('task', 't1')] } }),
-    ]);
-    const objs = segs.filter(s => s.kind === 'objects');
-    expect(objs).toHaveLength(1);
-  });
-
-  it('a list read shows cards only for what the answer names; the rest stay in the tool row', () => {
-    const T1 = '514a1539-0000-4000-8000-000000000001';
-    const titled = (kind: BuilddObjectRef['kind'], id: string, title: string): BuilddObjectRef => ({ ...ref(kind, id), title });
-    const segs = feedSegments([
-      tool('list_tasks', { output: { objects: [titled('task', T1, 'Delta review includes inherited dev changes'), ref('task', 'q1'), ref('task', 'q2')] } }),
-      tool('manage_missions', { input: { action: 'list' }, output: { objects: [
-        titled('mission', 'm-kit', 'Shared AI kit'), titled('mission', 'm-done', 'Deep UI pass for the web app'),
-      ] } }),
-      { type: 'text', text: 'Running: task 514a1539. The Shared AI kit mission is held.' },
-    ]);
-    const shown = segs.filter(s => s.kind === 'objects').flatMap(s => (s.kind === 'objects' ? s.refs.map(r => r.id) : []));
-    expect(shown).toEqual([T1, 'm-kit']);
-    const more = segs.find(s => s.kind === 'more');
-    expect(more?.kind === 'more' && more.refs.map(r => r.id)).toEqual(['q1', 'q2', 'm-done']);
-    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'objects', 'more']);
-  });
-
-  it('PRs a list returned stay shown: they stack as one compact list', () => {
-    const segs = feedSegments([
-      tool('list_tasks', { output: { objects: [ref('pr', 'p1'), ref('pr', 'p2'), ref('task', 'q1')] } }),
-      { type: 'text', text: 'Two PRs merged today.' },
-    ]);
-    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'objects', 'more']);
-    expect(segs[2].kind === 'objects' && segs[2].refs.map(r => r.id)).toEqual(['p1', 'p2']);
-  });
-
-  it('an object fetched on its own is shown even when the answer does not name it', () => {
-    const segs = feedSegments([
-      tool('list_tasks', { output: { objects: [ref('task', 'q1'), ref('task', 'q2')] } }),
-      tool('get_task', { output: { objects: [ref('task', 't9')] } }),
-      { type: 'text', text: 'One is running.' },
-    ]);
-    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'objects', 'more']);
-    expect(segs[2].kind === 'objects' && segs[2].refs.map(r => r.id)).toEqual(['t9']);
-  });
-
-  it('a list with nothing named renders no cards, only the collapsed row', () => {
-    const segs = feedSegments([
-      tool('list_tasks', { output: { objects: [ref('task', 'q1'), ref('task', 'q2')] } }),
-      { type: 'text', text: 'Nothing is running.' },
-    ]);
-    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'more']);
-  });
-
-  it('skips empty text and flags streaming text', () => {
-    const segs = feedSegments([{ type: 'text', text: '  ' }, { type: 'text', text: 'Hel', state: 'streaming' }]);
-    expect(segs).toEqual([{ kind: 'text', key: 'text-1', text: 'Hel', streaming: true }]);
+  it('an assistant turn is not its business any more: only event parts make segments', () => {
+    expect(feedSegments([tool('get_task', { output: { objects: [ref('task', 't1')] } }), { type: 'text', text: 'Hi.' }])).toEqual([]);
   });
 
   it('summarises a group', () => {
     expect(toolGroupSummary([tool('list_tasks'), tool('get_task', { state: 'input-available' })]))
       .toEqual({ count: 2, readOnly: true, running: 1, failed: 0 });
+  });
+});
+
+describe('turnLayout', () => {
+  const titled = (kind: BuilddObjectRef['kind'], id: string, title: string): BuilddObjectRef => ({ ...ref(kind, id), title });
+  const ids = (refs: readonly BuilddObjectRef[]) => refs.map(r => r.id);
+  const only = (parts: ChatMessage['parts']) => turnLayout(parts).results.get('answer') ?? [];
+
+  it('read 1: a get is cited under the answer as one Referenced group', () => {
+    const groups = only([tool('get_task', { output: { objects: [ref('task', 't1')] } }), { type: 'text', text: 'It is in CI.' }]);
+    expect(groups).toEqual([{ kind: 'referenced', key: 'ref-answer', refs: [ref('task', 't1')], more: [] }]);
+  });
+
+  it('read 10: what the answer names is featured in the order it names them; the rest fold into one row', () => {
+    const list = Array.from({ length: 8 }, (_, i) => ref('task', `q${i}`));
+    const groups = only([
+      tool('list_tasks', { output: { objects: [titled('task', 'tA', 'Rates service rollout'), ...list, titled('task', 'tB', 'Checkout rounding fix')] } }),
+      { type: 'text', text: 'Two matter: the checkout rounding fix is blocked, and the rates service rollout is in CI.' },
+    ]);
+    expect(groups).toHaveLength(1);
+    const g = groups[0];
+    expect(g.kind === 'referenced' && ids(g.refs)).toEqual(['tB', 'tA']);
+    expect(g.kind === 'referenced' && ids(g.more)).toEqual(list.map(r => r.id));
+  });
+
+  it('a list with nothing named is one collapsed row, no cards', () => {
+    const groups = only([tool('list_tasks', { output: { objects: [ref('task', 'q1'), ref('task', 'q2')] } }), { type: 'text', text: 'Nothing is running.' }]);
+    expect(groups).toEqual([{ kind: 'referenced', key: 'ref-answer', refs: [], more: [ref('task', 'q1'), ref('task', 'q2')] }]);
+  });
+
+  it('PRs a list returned stay shown: they stack as one list', () => {
+    const g = only([tool('list_tasks', { output: { objects: [ref('pr', 'p1'), ref('pr', 'p2'), ref('task', 'q1')] } }), { type: 'text', text: 'Two PRs merged today.' }])[0];
+    expect(g.kind === 'referenced' && [ids(g.refs), ids(g.more)]).toEqual([['p1', 'p2'], ['q1']]);
+  });
+
+  it('write 1 / write many: each write is its own Created group with every object it returned, before the references', () => {
+    const w1 = tool('create_task', { output: { objects: [ref('task', 'n1')] } });
+    const w2 = tool('create_task', { output: { objects: [ref('task', 'n2'), ref('task', 'n3')] } });
+    const groups = only([tool('get_task', { output: { objects: [ref('task', 't1')] } }), w1, w2, { type: 'text', text: 'Filed three.' }]);
+    expect(groups.map(g => g.kind)).toEqual(['created', 'created', 'referenced']);
+    expect(groups[0]).toMatchObject({ kind: 'created', key: `made-${w1.toolCallId}`, label: 'Created' });
+    expect(groups[1].kind === 'created' && ids(groups[1].refs)).toEqual(['n2', 'n3']);
+  });
+
+  it('an object is drawn once per turn: what a write made is not cited again', () => {
+    const groups = only([
+      tool('create_task', { output: { objects: [ref('task', 'n1')] } }),
+      tool('get_task', { output: { objects: [ref('task', 'n1')] } }),
+      tool('get_task', { output: { objects: [ref('task', 'n1')] } }),
+      { type: 'text', text: 'Filed n1.' },
+    ]);
+    expect(groups.map(g => g.kind)).toEqual(['created']);
+  });
+
+  it('an approval card keeps the objects it filed; its phase\'s references are fixed before the decision', () => {
+    const asked = [
+      tool('get_mission', { output: { objects: [ref('mission', 'm1')] } }),
+      { type: 'text', text: 'Here is the change. Approve it below.' },
+      tool('manage_missions', { state: 'approval-requested', input: { action: 'update' }, approval: { id: 'ap-1' } }),
+    ] as ChatMessage['parts'];
+    const before = turnLayout(asked);
+    const id = (asked[2] as ChatToolPart).toolCallId;
+    const after = turnLayout([
+      asked[0], asked[1],
+      { ...(asked[2] as ChatToolPart), state: 'output-available', approval: { id: 'ap-1', approved: true }, output: { objects: [ref('mission', 'm1'), ref('task', 'n1')] } },
+      { type: 'text', text: 'Updated; one task filed for it.' },
+    ]);
+    expect(after.results.get('answer')).toEqual(before.results.get('answer'));
+    // m1 already sits in the references: the receipt shows only what is new.
+    expect(ids(after.receipts.get(id) ?? [])).toEqual(['n1']);
+    expect(after.results.get('answer@2')).toEqual([]);
+  });
+
+  it('the same parts give the same layout: reload and reconnect draw nothing twice', () => {
+    const parts: ChatMessage['parts'] = [tool('get_task', { output: { objects: [ref('task', 't1')] } }), { type: 'text', text: 'In CI.' }];
+    expect(turnLayout([...parts])).toEqual(turnLayout(parts));
+  });
+
+  it('shownRefs: the cards a message draws, and what it only folded', () => {
+    const m = msg([
+      tool('manage_missions', { input: { action: 'list' }, output: { objects: [ref('mission', 'm-kit'), ref('mission', 'm-done')] } }),
+      tool('create_task', { output: { objects: [ref('task', 'n1')] } }),
+      { type: 'text', text: 'Filed one; mission m-kit is held.' },
+    ]);
+    const shown = shownRefs(m);
+    expect(ids(shown.cards)).toEqual(['n1', 'm-kit']);
+    expect(ids(shown.more)).toEqual(['m-done']);
   });
 });
 

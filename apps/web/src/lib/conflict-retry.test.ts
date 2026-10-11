@@ -117,6 +117,12 @@ const mockObserveConflict = mock(async (_p: any) => ({ handled: false }) as any)
 const realSeam = await import('@/lib/workflow/seam');
 mock.module('@/lib/workflow/seam', () => ({ ...realSeam, observeConflict: mockObserveConflict }));
 
+// GitHub reads: by default every call fails (as with no credentials), so the
+// dispatch path degrades exactly as before; one test answers the PR read.
+const mockGithubApi = mock(async (..._a: unknown[]) => { throw new Error('no github in tests'); }) as any;
+const realGithub = await import('@/lib/github');
+mock.module('@/lib/github', () => ({ ...realGithub, githubApi: (...a: unknown[]) => mockGithubApi(...a) }));
+
 import {
   classifyMergeFailure,
   kernelConflictOutcome,
@@ -221,6 +227,59 @@ function makeInput(overrides?: Partial<ConflictRetryInput>): ConflictRetryInput 
 }
 
 describe('buildConflictRetryTask', () => {
+  // Spec workflow-state-kernel §13.11 rule 1: the attempt resumes on the PR's
+  // exact GitHub head, so the runner can tell it apart from a runaway prior
+  // attempt and never starts fresh from trunk.
+  describe('repair target (exact remote head)', () => {
+    it('resumes on the GitHub-reported head and stamps repairTarget', () => {
+      const result = buildConflictRetryTask(makeInput({
+        worker: { id: 'worker-xyz', branch: 'buildd/abc-old', prNumber: 42 },
+        targetRefs: { headRef: 'mission/x-1234abcd', baseRef: 'dev' },
+      }));
+      expect(result!.context.resumeBranch).toBe('mission/x-1234abcd');
+      expect(result!.context.baseBranch).toBe('mission/x-1234abcd');
+      expect(result!.context.repairTarget).toEqual({ prNumber: 42, headRef: 'mission/x-1234abcd', headSha: 'abc123def456', baseRef: 'dev' });
+    });
+
+    it('without a GitHub head keeps the worker branch and claims no target', () => {
+      const result = buildConflictRetryTask(makeInput());
+      expect(result!.context.resumeBranch).toBe('feat/dark-mode');
+      expect(result!.context).not.toHaveProperty('repairTarget');
+    });
+  });
+
+  describe('context.prBase (the PR\'s real base, read by the runner\'s pre-merge)', () => {
+    it('is stamped when the PR base is known', () => {
+      const result = buildConflictRetryTask(makeInput({ prBase: 'dev' }));
+      expect(result!.context.prBase).toBe('dev');
+    });
+
+    it('is the trunk for a mission ship PR whose head is the integration branch', () => {
+      const result = buildConflictRetryTask(makeInput({
+        worker: { id: 'worker-xyz', branch: 'mission/x-1234abcd', prNumber: 42 },
+        prBase: 'dev',
+      }));
+      expect(result!.context.resumeBranch).toBe('mission/x-1234abcd');
+      expect(result!.context.prBase).toBe('dev');
+    });
+
+    it('falls back to the PR refs the migration path already reads', () => {
+      const result = buildConflictRetryTask(makeInput({ prRefs: { headRef: 'feat/dark-mode', baseRef: 'main' } }));
+      expect(result!.context.prBase).toBe('main');
+    });
+
+    it('is absent when unknown: never guessed', () => {
+      expect(buildConflictRetryTask(makeInput())!.context).not.toHaveProperty('prBase');
+      expect(buildConflictRetryTask(makeInput({ prBase: null }))!.context).not.toHaveProperty('prBase');
+    });
+
+    it('is absent when the name is not a plain branch name', () => {
+      for (const bad of ['--upload-pack=x', 'origin/../x', 'a b', '', ' dev']) {
+        expect(buildConflictRetryTask(makeInput({ prBase: bad }))!.context).not.toHaveProperty('prBase');
+      }
+    });
+  });
+
   it('returns a retry task on the first iteration', () => {
     const result = buildConflictRetryTask(makeInput());
     expect(result).not.toBeNull();
@@ -414,7 +473,7 @@ describe('buildConflictRetryTask', () => {
       }));
       expect(result!.title).toBe('[builder · migration collision #1] feat: add dark mode');
       expect(result!.description).toContain('its base already has `0093_landed.sql`');
-      expect(result!.description).toContain("past the base's newest migration");
+      expect(result!.description).toContain('bun run migrations:renumber --base=origin/dev');
       expect(result!.description).not.toContain('PR #null');
       expect(result!.description).not.toContain('/pull/null');
       expect((result!.context.failureContext as any).summary).toContain('already on its base');
@@ -450,6 +509,31 @@ describe('buildConflictRetryTask', () => {
       const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
       expect(result!.description).not.toContain('Bound PR lineage');
       expect(result!.description).toContain('Push to the existing branch');
+    });
+
+    it('runs the renumber command past the open PR slot instead of a hand recipe', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: collision,
+        prRefs: { headRef: 'feat/dark-mode', baseRef: 'dev' },
+      }));
+      expect(result!.description).toContain('bun run migrations:renumber --base=origin/dev --min-index=94');
+      expect(result!.description).toContain('bun run migrations:index-check --base=origin/dev');
+    });
+
+    it('renumbers a base collision against the PR base with no index floor', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: { file: '0093_safe.sql', otherFile: '0093_landed.sql', otherPrNumber: null, against: 'base' },
+        prRefs: { headRef: 'feat/dark-mode', baseRef: 'main' },
+      }));
+      expect(result!.description).toContain('git merge origin/main');
+      expect(result!.description).toContain('bun run migrations:renumber --base=origin/main\n');
+      expect(result!.description).not.toContain('--min-index');
+    });
+
+    it('tells a plain conflict retry to regenerate drizzle metadata conflicts, not merge them', () => {
+      const result = buildConflictRetryTask(makeInput({}));
+      expect(result!.description).toContain('migrations:renumber');
+      expect(result!.description).toContain('migration-index collision, not text to merge');
     });
 
     it('sets errorType to migration_collision in failureContext', () => {
@@ -532,6 +616,34 @@ describe('dispatchConflictRetry', () => {
     mockUpdateReturning.mockResolvedValue([]);
     capturedUpdateSet = null;
     capturedUpdateWhere = null;
+  });
+
+  describe('context.prBase from the PR read', () => {
+    it('stamps the base GitHub reports for the PR', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+      mockGithubApi.mockImplementation(async (_inst: unknown, path: unknown) => {
+        if (String(path).endsWith('/pulls/99')) {
+          return { head: { ref: 'mission/x-1234abcd', repo: { full_name: 'acme/app' } }, base: { ref: 'dev' } };
+        }
+        throw new Error('unexpected github call');
+      });
+      // The re-check against the base tip confirms a real conflict, so a retry is filed.
+      mockUpdateBehindPrBranch.mockResolvedValueOnce({ kind: 'conflict', reason: '422 merge conflict' });
+      try {
+        await dispatchConflictRetry(BASE_PARAMS);
+        expect(capturedInsertValues?.context?.prBase).toBe('dev');
+      } finally {
+        mockGithubApi.mockImplementation(async () => { throw new Error('no github in tests'); });
+      }
+    });
+
+    it('leaves it absent when the PR read fails', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+      mockUpdateBehindPrBranch.mockResolvedValueOnce({ kind: 'conflict', reason: '422 merge conflict' });
+      await dispatchConflictRetry(BASE_PARAMS);
+      expect(capturedInsertValues?.context).toBeDefined();
+      expect(capturedInsertValues.context).not.toHaveProperty('prBase');
+    });
   });
 
   // A retry that ended without pushing leaves the PR head unchanged, so it
@@ -987,6 +1099,21 @@ describe('dispatchConflictRetry', () => {
     });
     expect(result.dispatched).toBe(true);
     expect(capturedInsertValues.dependsOn).toEqual(['unrelated-sibling']);
+  });
+
+  it('a migration-only overlap with a not-yet-started task on another branch is not a dependsOn edge', async () => {
+    const pathManifest = ['packages/core/drizzle'];
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
+    mockTaskFindMany.mockResolvedValue([
+      { status: 'pending', id: 'schema-feature', pathManifest: ['packages/core/db/schema.ts'], subjectPrNumber: null },
+      { status: 'in_progress', id: 'colliding-pr-task', pathManifest, subjectPrNumber: 80 },
+    ]);
+    const result = await dispatchConflictRetry({
+      ...BASE_PARAMS,
+      migrationCollision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 80 },
+    });
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toEqual(['colliding-pr-task']);
   });
 
   it('a prefix-only overlap with a sibling is soft evidence, never a dependsOn edge', async () => {

@@ -7,10 +7,14 @@
  *   needs attention  red accent, each row reads what failed → what it affects → action
  *   unclear          shown, neutral
  *   recovered        muted, collapsed
- *   diagnostic       muted, collapsed, never counted
+ *   diagnostic       muted, collapsed, never counted: exploration noise, and
+ *                    routine setup such as a fresh start that lost nothing
  *
  * Rows clamp for scanning; tapping one opens the complete evidence: a
- * full-screen sheet below md, a large centered modal from md.
+ * full-screen sheet below md, a large centered modal from md. The sheet leads
+ * with the task's state and what the event means for it, in one sentence; the
+ * raw excerpt and the before/after milestones sit behind a disclosure, open by
+ * default only for something that needs attention.
  */
 import { useCallback, useRef, useState, type RefObject } from 'react';
 import Chip, { type ChipTone } from '@/components/ui/Chip';
@@ -31,6 +35,8 @@ export interface TaskErrorEvidenceProps {
   taskTitle: string;
   /** The task's work landed: nothing here may read as a current problem. */
   terminalSucceeded: boolean;
+  /** The task's verdict headline ("Done", "Failed"), shown first in the sheet. */
+  taskState?: string | null;
 }
 
 type Tone = 'attention' | 'neutral' | 'muted';
@@ -43,14 +49,20 @@ const PRESENTATION_CHIP: Record<ErrorEvidenceItem['presentation'], { label: stri
 };
 
 
-/** A needs-attention item on a task that succeeded reads as recovered. */
+/**
+ * A model-judged needs-attention item on a task that succeeded reads as
+ * recovered: the stored judgement may predate the success. A rule's verdict
+ * already accounts for the outcome, and one that still says needs attention
+ * (work from an earlier attempt that never reached the remote) means it.
+ */
 function settle(item: ErrorEvidenceItem, terminalSucceeded: boolean): ErrorEvidenceItem {
-  if (!terminalSucceeded || item.presentation !== 'needs_attention') return item;
-  return { ...item, presentation: 'recovered', reason: 'The task finished and its work landed; this did not stop it.' };
+  if (!terminalSucceeded || item.presentation !== 'needs_attention' || item.decidedBy !== 'model') return item;
+  return { ...item, presentation: 'recovered', reason: 'The task finished; this did not stop it.' };
 }
 
-/** The "what failed" line: the command, or the first line of a non-command excerpt. */
+/** The "what failed" line: the rule's name for it, the command, or the excerpt's first line. */
 function headline(item: ErrorEvidenceItem): string {
+  if (item.headline) return item.headline;
   if (item.command) return item.command;
   const first = item.output.split('\n').find(l => l.trim() !== '');
   return first?.trim() || item.pattern;
@@ -73,13 +85,15 @@ function Row({ item, tone, onOpen }: { item: ErrorEvidenceItem; tone: Tone; onOp
         className="w-full min-h-11 text-left px-3 py-2 hover:bg-surface-2 transition-colors"
       >
         <span
-          className={`block font-mono text-body line-clamp-2 [overflow-wrap:anywhere] ${
+          className={`block ${item.headline ? '' : 'font-mono '}text-body line-clamp-2 [overflow-wrap:anywhere] ${
             accent ? 'text-text-primary font-semibold' : muted ? 'text-text-muted' : 'text-text-secondary'
           }`}
         >
           {headline(item)}
         </span>
-        <span className={`block mt-0.5 text-body ${muted ? 'text-text-muted' : 'text-text-secondary'}`}>{affectsLine(item)}</span>
+        {!(item.headline && item.presentation === 'noise') && (
+          <span className={`block mt-0.5 text-body ${muted ? 'text-text-muted' : 'text-text-secondary'}`}>{affectsLine(item)}</span>
+        )}
         <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-text-muted">
           <span>{item.attempt.label}</span>
           <span aria-hidden="true">·</span>
@@ -90,7 +104,7 @@ function Row({ item, tone, onOpen }: { item: ErrorEvidenceItem; tone: Tone; onOp
               <span>exit {item.exitCode}</span>
             </>
           )}
-          <span className={`ml-auto ${muted ? 'text-text-secondary' : 'text-accent-text'}`}>Open full evidence</span>
+          <span className={`ml-auto ${muted ? 'text-text-secondary' : 'text-accent-text'}`}>{item.headline && item.presentation === 'noise' ? 'Details' : 'Open full evidence'}</span>
         </span>
       </button>
       {item.logUrl && (
@@ -159,71 +173,85 @@ function ContextList({ title, lines }: { title: string; lines: ErrorEvidenceCont
 function EvidenceSheet({
   item,
   taskTitle,
+  taskState,
   onClose,
   triggerRef,
 }: {
   item: ErrorEvidenceItem;
   taskTitle: string;
+  taskState: string | null;
   onClose: () => void;
   triggerRef: RefObject<HTMLElement | null>;
 }) {
   const chip = PRESENTATION_CHIP[item.presentation];
   const pre = 'p-3 bg-surface-2 border border-border-default font-mono text-body text-text-primary whitespace-pre-wrap [overflow-wrap:anywhere]';
+  const current = item.presentation === 'needs_attention';
 
   return (
     <Sheet open onClose={onClose} title={taskTitle} height="full" trapFocus
       returnFocusRef={triggerRef} testId="error-evidence-sheet">
       <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-text-muted">
+        {taskState && (
+          <>
+            <span data-testid="error-evidence-task-state" className="text-text-secondary">Task: {taskState}</span>
+            <span aria-hidden="true">·</span>
+          </>
+        )}
         <span>{item.attempt.label}</span>
         <span aria-hidden="true">·</span>
         <Time value={item.ts} format="datetime" />
         <Chip tone={chip.tone} variant="soft">{chip.label}</Chip>
       </p>
-      <p className="mt-1 text-body text-text-secondary">
-        {item.reason}
+      {item.headline && <p className="mt-3 text-body font-semibold text-text-primary">{item.headline}</p>}
+      <p data-testid="error-evidence-consequence" className={`${item.headline ? 'mt-1' : 'mt-3'} text-body text-text-primary`}>
+        {affectsLine(item)}
         {item.decidedBy === 'model' && <span className="text-text-muted"> (judged by model)</span>}
       </p>
-      <div className="mt-4 space-y-5">
-        <p className="text-body text-text-primary">{affectsLine(item)}</p>
+      <div className="mt-4">
+        <Disclosure summary="Evidence" defaultOpen={current}>
+          <div className="pt-2 space-y-5">
+            {item.command != null && (
+              <section>
+                <div className="flex items-center justify-between gap-2">
+                  <Eyebrow as="h3" tone="muted">Command</Eyebrow>
+                  <CopyButton text={item.command} label="Copy command" />
+                </div>
+                <pre data-testid="error-evidence-command" className={`mt-1 ${pre}`}>{item.command}</pre>
+                <p className="mt-1 text-meta text-text-muted">Exit code {item.exitCode ?? 'unknown'}</p>
+              </section>
+            )}
 
-        {item.command != null && (
-          <section>
-            <div className="flex items-center justify-between gap-2">
-              <Eyebrow as="h3" tone="muted">Command</Eyebrow>
-              <CopyButton text={item.command} label="Copy command" />
-            </div>
-            <pre data-testid="error-evidence-command" className={`mt-1 ${pre}`}>{item.command}</pre>
-            <p className="mt-1 text-meta text-text-muted">Exit code {item.exitCode ?? 'unknown'}</p>
-          </section>
-        )}
+            <section>
+              <div className="flex items-center justify-between gap-2">
+                <Eyebrow as="h3" tone="muted">{item.command != null ? 'Output' : 'Excerpt'}</Eyebrow>
+                <CopyButton text={item.output} label="Copy output" />
+              </div>
+              {item.output ? (
+                <pre data-testid="error-evidence-output" className={`mt-1 max-h-[60vh] overflow-auto ${pre}`}>{item.output}</pre>
+              ) : (
+                <p className="mt-1 text-meta text-text-muted">No output was recorded.</p>
+              )}
+            </section>
 
-        <section>
-          <div className="flex items-center justify-between gap-2">
-            <Eyebrow as="h3" tone="muted">{item.command != null ? 'Output' : 'Excerpt'}</Eyebrow>
-            <CopyButton text={item.output} label="Copy output" />
+            {(item.before.length > 0 || item.after.length > 0) && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <ContextList title="Before" lines={item.before} />
+                <ContextList title="After" lines={item.after} />
+              </div>
+            )}
+
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-meta">
+              <dt className="text-text-muted">Pattern</dt>
+              <dd className="font-mono text-text-secondary [overflow-wrap:anywhere]">{item.pattern}</dd>
+              {item.source && (
+                <>
+                  <dt className="text-text-muted">Source</dt>
+                  <dd className="font-mono text-text-secondary [overflow-wrap:anywhere]">{item.source}</dd>
+                </>
+              )}
+            </dl>
           </div>
-          {item.output ? (
-            <pre data-testid="error-evidence-output" className={`mt-1 max-h-[60vh] overflow-auto ${pre}`}>{item.output}</pre>
-          ) : (
-            <p className="mt-1 text-meta text-text-muted">No output was recorded.</p>
-          )}
-        </section>
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <ContextList title="Before" lines={item.before} />
-          <ContextList title="After" lines={item.after} />
-        </div>
-
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-meta">
-          <dt className="text-text-muted">Pattern</dt>
-          <dd className="font-mono text-text-secondary [overflow-wrap:anywhere]">{item.pattern}</dd>
-          {item.source && (
-            <>
-              <dt className="text-text-muted">Source</dt>
-              <dd className="font-mono text-text-secondary [overflow-wrap:anywhere]">{item.source}</dd>
-            </>
-          )}
-        </dl>
+        </Disclosure>
 
         {item.logUrl && (
           <a
@@ -240,7 +268,7 @@ function EvidenceSheet({
   );
 }
 
-export default function TaskErrorEvidence({ items, taskTitle, terminalSucceeded }: TaskErrorEvidenceProps) {
+export default function TaskErrorEvidence({ items, taskTitle, terminalSucceeded, taskState = null }: TaskErrorEvidenceProps) {
   const [openItem, setOpenItem] = useState<ErrorEvidenceItem | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
   const open = useCallback((item: ErrorEvidenceItem, trigger: HTMLButtonElement) => {
@@ -291,7 +319,7 @@ export default function TaskErrorEvidence({ items, taskTitle, terminalSucceeded 
 
         {groups.noise.length > 0 && (
           <div data-testid="error-evidence-noise">
-            <Disclosure summary="Diagnostic (expected while exploring)" count={groups.noise.length}>
+            <Disclosure summary="Diagnostic" count={groups.noise.length}>
               <div className="pt-2">
                 <Rows items={groups.noise} tone="muted" onOpen={open} />
               </div>
@@ -300,7 +328,7 @@ export default function TaskErrorEvidence({ items, taskTitle, terminalSucceeded 
         )}
       </div>
 
-      {openItem && <EvidenceSheet item={openItem} taskTitle={taskTitle} onClose={close} triggerRef={triggerRef} />}
+      {openItem && <EvidenceSheet item={openItem} taskTitle={taskTitle} taskState={taskState} onClose={close} triggerRef={triggerRef} />}
     </section>
   );
 }

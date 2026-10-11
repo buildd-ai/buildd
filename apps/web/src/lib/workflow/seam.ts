@@ -21,6 +21,7 @@ import type { Command, CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
 import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
+import { settleLanes } from './landing-lane';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { claimLegacyHandoffSql, kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery, unclaimLegacyHandoffSql } from './authority';
@@ -86,6 +87,14 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
         : s;
       if (s.claimed === 0) break;
     }
+    // The landing lane: a delivery that just left the refresh window frees its lane, and the
+    // oldest refresh parked behind it is made due and drained here, by this same drain.
+    // Isolated: the lane row expires on its own, so a failed release costs the lease, not the drain.
+    const woken = await settleLanes(deps.exec ?? seamExec, deliveryId).catch((err) => {
+      console.error(`[workflow] landing lane release for delivery ${deliveryId} failed:`, err);
+      return [] as string[];
+    });
+    for (const waiter of woken) if (waiter !== deliveryId) await drainDelivery(waiter, deps);
     return total;
   } catch (err) {
     // The effect rows are durable; the cron drain picks up whatever this missed.
@@ -552,7 +561,7 @@ export async function handOffToLegacy(deliveryId: string, deps: SeamDeps = {}): 
 // ── §9 completion gate ──────────────────────────────────────────────────────
 
 export interface GateRefusal {
-  code: 'delivery_not_advanced';
+  code: 'delivery_not_advanced' | 'repair_still_conflicted' | 'repair_still_colliding';
   error: string;
   hint: string;
   boundHeadSha: string | null;
@@ -577,7 +586,22 @@ export async function fixCompletionGate(p: { task: AttemptTask; localHeadSha: st
   if (!repo) return null;
   const live = await readerFor(deps, repo.installationId).readPr(d.repoFullName, d.prNumber);
   if (!live || live.state !== 'open' || live.merged) return null;
-  if (live.headSha !== attempt.boundHeadSha) return null;
+  if (p.task.deliveryRole === 'conflict_fix') {
+    // One evidence rule with legacy conflict retries (§13.11 rule 2): a moved
+    // head that is still dirty is refused, an unmoved head GitHub shows clean
+    // is allowed. The collision itself is not re-inspected here (null).
+    const { repairCompletionVerdict } = await import('@/lib/repair-completion');
+    const v = repairCompletionVerdict({
+      kind: attempt.family === 'migration' ? 'migration' : 'conflict',
+      prNumber: d.prNumber, boundHeadSha: attempt.boundHeadSha ?? null, live, collisionPresent: null, localHeadSha: p.localHeadSha,
+    });
+    if (v.ok) return null;
+    if (v.code !== 'repair_not_advanced') {
+      return { code: v.code, error: v.error, hint: v.hint, boundHeadSha: attempt.boundHeadSha, liveHeadSha: live.headSha, localHeadSha: p.localHeadSha };
+    }
+  } else if (live.headSha !== attempt.boundHeadSha) {
+    return null;
+  }
   return {
     code: 'delivery_not_advanced',
     error: `Your fix is not on GitHub: PR #${d.prNumber}'s head is still ${live.headSha.slice(0, 7)}, the commit ${p.task.deliveryRole === 'ci_fix' ? 'whose CI failed' : p.task.deliveryRole === 'conflict_fix' ? 'that conflicts with its base' : 'the review asked you to change'}.`

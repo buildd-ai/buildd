@@ -274,9 +274,6 @@
     "apps/web/src/app/app/(protected)/tasks/[id]/execution-plan.ts": {
       "packages/core/mission-helpers.ts": "missions"
     },
-    "apps/web/src/app/app/(protected)/tasks/[id]/respond/respond-links.ts": {
-      "apps/web/src/lib/mission-task-href.ts": "missions"
-    },
     "apps/web/src/auth.ts": {
       "apps/web/src/lib/personal-workspace-links-plan.ts": "notifications"
     },
@@ -608,10 +605,10 @@
     "apps/web/src/app/app/(protected)/settings/account/PersonalProviderKeys.tsx": {
       "apps/web/src/app/app/(protected)/settings/account/chat-key-line.ts": "chat"
     },
-    "apps/web/src/app/app/(protected)/settings/ai/ModelFeatures.tsx": {
+    "apps/web/src/app/app/(protected)/settings/ai/DecisionFeatures.tsx": {
       "packages/core/inference-policy.ts": "jev-decisions"
     },
-    "apps/web/src/app/app/(protected)/settings/budgets/page.tsx": {
+    "apps/web/src/app/app/(protected)/settings/billing/page.tsx": {
       "apps/web/src/lib/chat/limits.ts": "chat",
       "apps/web/src/lib/spend-summary.ts": "health-quality"
     },
@@ -676,12 +673,6 @@
       "apps/web/src/lib/task-failure-kind-load.ts": "health-quality",
       "apps/web/src/lib/visual-review-load.ts": "visual-qa",
       "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
-    },
-    "apps/web/src/app/app/(protected)/tasks/[id]/respond/page.tsx": {
-      "apps/web/src/lib/chat-availability.ts": "chat",
-      "apps/web/src/lib/chat-objects/load-question-object.ts": "chat",
-      "apps/web/src/lib/chat/conversations.ts": "chat",
-      "apps/web/src/lib/mission-task-href.ts": "missions"
     },
     "apps/web/src/app/app/(protected)/tasks/page.tsx": {
       "packages/core/mission-helpers.ts": "missions"

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ScopeSelector } from '@/components/ScopeSelector';
-import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
+import ConnectionRow, { EmbeddedConnectionContext, StatusChip } from './_components/ConnectionRow';
 import { useConfirm } from '@/components/useConfirm';
 import StoredSeatNotice, { storedSeatKinds, type StoredSeatKind } from './StoredSeatNotice';
 import { ROTATING_CREDENTIAL_ALL_TEAMS_ERROR } from '@/lib/rotating-credential-scope';
@@ -133,6 +133,20 @@ function StrandedWorkNotice({ stat }: { stat?: BackendStrandStat | null }) {
   );
 }
 
+/**
+ * A read-only row's body: its status and one line of meta as text. A folded
+ * standalone row never shows its body; a row embedded in a provider row shows
+ * this in place of the sign-in controls.
+ */
+function SignInStatus({ testId, chip, meta }: { testId: string; chip: ReactNode; meta: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs" data-testid={testId}>
+      {chip}
+      <span className="text-text-muted">{meta}</span>
+    </div>
+  );
+}
+
 /** The row-level half of StrandedWorkNotice: visible while the row is folded. */
 function StrandedChip({ stat }: { stat?: BackendStrandStat | null }) {
   if (!stat || stat.strandedPending <= 0) return null;
@@ -160,6 +174,23 @@ interface Props {
   canManage?: boolean;
   /** May change provider routing, a team setting (`manage_team_settings`). Defaults to `canManage`. */
   canManageRouting?: boolean;
+  /**
+   * Fold the sign-ins into the provider rows on Settings → Models. Called with
+   * each sign-in as a node, no row of its own: Claude's, OpenAI's (the Codex
+   * login) and the routing toggle. The scope is the Keys tab's, so the
+   * sign-in's own scope picker and the API-key cards (the Keys row has those)
+   * are dropped. Without it the component draws the standalone rows.
+   */
+  children?: (slots: SignInSlots) => ReactNode;
+  scope?: 'team' | 'workspace';
+  workspaceId?: string | null;
+}
+
+export interface SignInSlots {
+  notice: ReactNode;
+  claude: ReactNode;
+  openai: ReactNode;
+  routing: ReactNode;
 }
 
 type Scope = 'team' | 'workspace' | 'all_teams';
@@ -194,7 +225,7 @@ export interface TeamTarget {
  * or — for an operator who runs one runner across several of their teams — fanned
  * out to every team they manage ("all my teams"). See docs/credentials-architecture.md.
  */
-export default function AgentBackendsSection({ workspaces, currentTeamId, manageableTeamIds, canManage = true, canManageRouting = canManage }: Props) {
+export default function AgentBackendsSection({ workspaces, currentTeamId, manageableTeamIds, canManage = true, canManageRouting = canManage, children: renderEmbedded, scope: scopeProp, workspaceId: workspaceIdProp }: Props) {
   const readOnly = !canManage;
   // Only workspaces in the active team can share a team-wide credential.
   const teamWorkspaces = useMemo(
@@ -216,10 +247,14 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, manage
   }, [workspaces, manageableTeamIds]);
   const multiTeam = teamTargets.length > 1;
 
-  const [scope, setScope] = useState<Scope>('team');
+  const [scopeState, setScope] = useState<Scope>('team');
+  const scope: Scope = scopeProp ?? scopeState;
   // One row open at a time: on a phone two open credential forms are a scroll.
   const [open, setOpen] = useState<RowKey | null>(null);
-  const [workspaceId, setWorkspaceId] = useState<string>(teamWorkspaces[0]?.id ?? '');
+  // The routing toggle is the one row that keeps its own fold when embedded.
+  const [routingOpen, setRoutingOpen] = useState(false);
+  const [workspaceState, setWorkspaceId] = useState<string>(teamWorkspaces[0]?.id ?? '');
+  const workspaceId = workspaceIdProp ?? workspaceState;
   // The model key (Anthropic API key; OpenRouter / LiteLLM via an agent
   // endpoint) is the primary Claude path. A subscription sign-in only works on a
   // runner the person hosts and signs in on, so it is folded and says so.
@@ -307,13 +342,64 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, manage
     </div>
   );
 
+  if (renderEmbedded) {
+    return (
+      <EmbeddedConnectionContext.Provider value>
+        {renderEmbedded({
+          notice: <StoredSeatNotice kinds={storedSeats} />,
+          claude: (
+            <ClaudeConnectedAccountCard
+              accessWorkspaceId={accessWorkspaceId}
+              scope={scope}
+              teamTargets={teamTargets}
+              fallbackConnected={claudeFallbackConnected}
+              strand={strandFor('claude')}
+              open
+              onToggle={() => {}}
+              onOpen={() => {}}
+              readOnly={readOnly}
+              onAddKey={() => {}}
+              seatOpen={showSeat}
+              onSeatToggle={() => setShowSeat((v) => !v)}
+              scopeControl={null}
+              keyForm={null}
+            >
+              <ClaudeCard mode="setup_token" teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} teamTargets={teamTargets} />
+            </ClaudeConnectedAccountCard>
+          ),
+          openai: (
+            <CodexCard
+              accessWorkspaceId={accessWorkspaceId}
+              scope={scope}
+              teamTargets={teamTargets}
+              strand={strandFor('codex')}
+              onCredentialChange={refreshStrand}
+              open
+              onToggle={() => {}}
+              onOpen={() => {}}
+              scopeControl={null}
+              readOnly={readOnly}
+            />
+          ),
+          routing: (
+            <EmbeddedConnectionContext.Provider value={false}>
+            <ProviderRoutingToggle
+              teamId={teamId}
+              workspaceId={teamWorkspaces[0]?.id ?? ''}
+              onRoutingChange={refreshStrand}
+              open={routingOpen}
+              onToggle={() => setRoutingOpen((v) => !v)}
+              readOnly={!canManageRouting}
+            />
+            </EmbeddedConnectionContext.Provider>
+          ),
+        })}
+      </EmbeddedConnectionContext.Provider>
+    );
+  }
+
   return (
     <>
-      {readOnly && (
-        <p data-testid="credentials-read-only" className="px-4 py-3 text-xs text-text-secondary">
-          Admins can change these.
-        </p>
-      )}
       <StoredSeatNotice kinds={storedSeats} />
       {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
           key is a collapsed fallback inside the same row. */}
@@ -1210,6 +1296,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         </button>
       ) : undefined}
     >
+      {readOnly ? <SignInStatus testId="claude-signin-status" chip={<>{chip}<StrandedChip stat={strand} /></>} meta={meta} /> : (<>
       {scopeControl}
 
       <StrandedWorkNotice stat={strand} />
@@ -1325,6 +1412,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         </div>
         )}
       </div>
+      </>)}
       {confirmDialog}
     </ConnectionRow>
   );
@@ -1610,6 +1698,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
         </button>
       ) : undefined}
     >
+      {readOnly ? <SignInStatus testId="codex-signin-status" chip={<>{chip}<StrandedChip stat={strand} /></>} meta={meta} /> : (<>
       {scopeControl}
 
       <StrandedWorkNotice stat={strand} />
@@ -1687,6 +1776,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       {msg && (
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
+      </>)}
       {confirmDialog}
     </ConnectionRow>
   );

@@ -31,8 +31,8 @@ describe('overviewHeadline', () => {
 describe('overviewStatusRows', () => {
   const byKey = (s: OverviewState) => Object.fromEntries(overviewStatusRows(s).map(r => [r.key, r]));
 
-  it('budget links to Usage while capacity links to Runners', () => {
-    expect(byKey(STATE).budget.href).toBe('/app/health/usage');
+  it('budget links to Billing and budgets while capacity links to Runners', () => {
+    expect(byKey(STATE).budget.href).toBe('/app/settings/billing');
     expect(byKey(STATE).runners.href).toBe('/app/health/runners');
   });
 

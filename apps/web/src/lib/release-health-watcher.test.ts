@@ -68,7 +68,7 @@ mock.module('@/lib/effective-roles', () => ({
 }));
 
 // Import AFTER mocks
-import { degradeRelease, autoFileDegradationTask, probeAndDegrade, healSupersededRelease, healHttpErrorRelease } from './release-health-watcher';
+import { degradeRelease, autoFileDegradationTask, probeAndDegrade, healSupersededRelease, healHttpErrorRelease, CONTROL_PLANE_GRACE_MINUTES } from './release-health-watcher';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -317,6 +317,46 @@ describe('probeAndDegrade', () => {
     const result = await probeAndDegrade(release, 'https://example.com/health', db);
     expect(result).toBe('unverified');
     expect(db._updateCalls).toHaveLength(0);
+  });
+
+  it('degrades, and files the task, when web runs the release but the control plane Worker does not, past its grace', async () => {
+    const db = makeMockDb({ existingTasks: [] , workspace: { id: 'ws-1111', repo: null, name: 'ws' }, insertedTask: { id: 't-1' } });
+    mockFetchSequence([
+      { ok: true, status: 200 },
+      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-new', controlPlane: { commit: 'sha-old', mode: 'own', lockstep: false } }) },
+    ]);
+    const release = makeRelease({ headSha: 'sha-new', healthyAt: new Date(Date.now() - (CONTROL_PLANE_GRACE_MINUTES + 1) * 60_000) });
+
+    const result = await probeAndDegrade(release, 'https://example.com/health', db);
+    expect(result).toBe('degraded');
+    expect(db._updateCalls[0].setValues.failureReason).toContain('control plane Worker runs sha-old');
+    expect(db._updateCalls[0].setValues.failureReason).toContain('deploy-control-plane.yml');
+    expect(db._insertCalls).toHaveLength(1);
+  });
+
+  it('gives the control plane Worker its grace after the web deploy before calling a mismatch', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    mockFetchSequence([
+      { ok: true, status: 200 },
+      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-new', controlPlane: { commit: 'sha-old', mode: 'own', lockstep: false } }) },
+    ]);
+    const release = makeRelease({ headSha: 'sha-new', healthyAt: new Date(Date.now() - 5 * 60_000) });
+
+    expect(await probeAndDegrade(release, 'https://example.com/health', db)).toBe('unverified');
+    expect(db._updateCalls).toHaveLength(0);
+  });
+
+  it('is ok when the Worker matches, or does not answer (no signal)', async () => {
+    for (const controlPlane of [{ commit: 'sha-new', mode: 'own', lockstep: true }, null, { commit: null, mode: 'own', lockstep: null }]) {
+      const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+      mockFetchSequence([
+        { ok: true, status: 200 },
+        { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-new', controlPlane }) },
+      ]);
+      const release = makeRelease({ headSha: 'sha-new', healthyAt: new Date(Date.now() - 60 * 60_000) });
+      expect(await probeAndDegrade(release, 'https://example.com/health', db)).toBe('ok');
+      expect(db._updateCalls).toHaveLength(0);
+    }
   });
 
   it('returns unverified without failing when the release has no recorded head sha (older row)', async () => {

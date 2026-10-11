@@ -52,7 +52,12 @@ on:
         required: false
         default: ""
       theme:
-        description: "'light' or 'dark'. Empty = app default (dark)."
+        description: "'light' or 'dark': emulates prefers-color-scheme (and seeds buildd's own theme key); recorded per capture as theme. Empty = app default."
+        type: string
+        required: false
+        default: ""
+      viewer:
+        description: "'operator' signs the CI QA user in as a platform operator, for the owner-only pages (Health > Operator, Failures, Usage, Insights). Empty = an ordinary team owner, who gets a 404 there."
         type: string
         required: false
         default: ""
@@ -333,6 +338,8 @@ jobs:
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
           NEXTAUTH_URL: http://localhost:3000
           DEV_USER_EMAIL: ${{ steps.scrub.outputs.ci_user_email }}
+          # Only on request (viewer=operator): the owner-only pages 404 for anyone else.
+          BUILDD_OPERATOR_USER_EMAILS: ${{ inputs.viewer == 'operator' && steps.scrub.outputs.ci_user_email || '' }}
           # Placeholder OAuth credentials — only dev-auto-login is used in CI
           GOOGLE_CLIENT_ID: ci-placeholder
           GOOGLE_CLIENT_SECRET: ci-placeholder

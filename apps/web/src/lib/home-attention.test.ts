@@ -118,7 +118,7 @@ describe('Needs You card contract', () => {
       [{ chip: 'QUESTION', question: 'Which direction?' }, 'Answer', 'answer'],
       [{ chip: 'DECIDE', missionId: 'm1', escalationReason: 'Pick a rollout order' }, 'Choose…', 'decide'],
       [{ chip: 'APPROVE' }, 'Approve…', 'approve'],
-      [{ chip: 'RECONNECT', connectorName: 'Source host', fixHref: '/app/settings/connectors' }, 'Reconnect', 'reconnect'],
+      [{ chip: 'RECONNECT', connectorName: 'Source host', fixHref: '/app/settings/connections' }, 'Reconnect', 'reconnect'],
       [{ chip: 'DISCREPANCY', direction: 'spec_ahead', specPath: 'docs/specs/a.md' }, 'Resolve…', 'resolve'],
       [{ chip: 'BLOCKED', escalationReason: 'Needs a rollout choice' }, 'Resolve…', 'resolve'],
       [{ chip: 'STALE', prUrl: 'https://example.test/pull/1' }, 'Check PR', 'check'],
@@ -186,5 +186,14 @@ describe('auto-recovery and systemic failures', () => {
     expect(deriveHomeAttention({ queue: [failed('t1', 'Alpha')], missions: [], questions: [], held: [] })[0].systemic).toBeUndefined();
     const red = (n: number): ActionQueueItem => ({ subjectKey: `r${n}`, chip: 'BLOCKED', workspaceId: 'w', prNumber: n, taskTitle: `PR ${n}`, prUrl: `https://example.test/o/r/pull/${n}`, ciGate: { kind: 'blocked', reason: 'x', recommendation: null } });
     expect(deriveHomeAttention({ queue: [red(1), red(2)], missions: [], questions: [], held: [] })).toHaveLength(2);
+  });
+});
+
+describe('a Sentinel incident the gate gave to the owner', () => {
+  it('is one Needs You item that opens the incident', () => {
+    const items = one({ subjectKey: 'incident:i1', chip: 'INCIDENT', taskTitle: undefined, taskId: undefined, incidentId: 'i1', incidentTitle: 'Retry forks across 3 tasks', failureMessage: 'A critical platform incident: the owner is told once, whatever else is running.', fixHref: '/app/incidents/i1', fixLabel: 'Open incident' });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ label: 'incident', tone: 'error', title: 'Retry forks across 3 tasks', actionType: 'incident', primary: { label: 'Open incident', href: '/app/incidents/i1' } });
+    expect(homeAttentionCopy(items).subline).toBe('1 incident');
   });
 });

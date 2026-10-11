@@ -622,6 +622,13 @@ describe('refresh rules', () => {
     expect(decideWarmRefresh({ result: warm(WARM_MAX_AGE_MS + 1, 0), end: 'wait_timeout' })).toEqual({ decision: 'none' });
   });
 
+  test('decideWarmRefresh: the 25% growth rule is the binding threshold on a mid-size cache, with no disk I/O', () => {
+    const base = 8 * 1024 * 1024;
+    const warm = { source: 'warm' as const, ageMs: 0, fetchBytes: 0, restoredCacheBytes: base };
+    expect(decideWarmRefresh({ result: warm, end: 'completed', currentCacheBytes: Math.ceil(base * 1.26) })).toEqual({ decision: 'refresh', reason: 'cache_growth' });
+    expect(decideWarmRefresh({ result: warm, end: 'completed', currentCacheBytes: Math.floor(base * 1.24) })).toEqual({ decision: 'none' });
+  });
+
   test('a fresh warm restore uploads nothing; an old one uploads a new generation after success', async () => {
     const seed = session(); cloneThrough(seed, 'ws-seed'); await seed.refresh('completed');
     const fresh = session();

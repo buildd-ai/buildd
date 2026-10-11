@@ -56,6 +56,11 @@ describe('dispatchVerdictAction', () => {
     expect(h.calls).toEqual(['conflict']);
   });
 
+  it('a renumber that waits for an earlier open PR is skipped as queued, not failed', async () => {
+    const h = deps({ renumber: async () => ({ handled: true, queuedBehind: 4082 }) });
+    expect(await dispatchVerdictAction(target(), h.d)).toEqual({ kind: 'skipped', cause: 'migration_lane_queued' });
+  });
+
   it('a slot taken on the base renumbers against the base, with no other PR to look up', async () => {
     const seen: any[] = [];
     const h = deps({

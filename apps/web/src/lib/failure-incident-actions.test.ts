@@ -471,16 +471,10 @@ describe('actOnIncidentResults', () => {
   });
 });
 
-describe('default incident sender (paging off until opted in)', () => {
-  it('records but does not page when FAILURE_INCIDENT_PAGING is unset', async () => {
-    const { defaultIncidentSender, reportOpsIncidentSender } = await import('./failure-incident-actions');
-    const send = defaultIncidentSender({});
-    expect(send).not.toBe(reportOpsIncidentSender);
-    expect(await send({ incidentId: 'i', severity: 'critical', priority: 1, reason: 'opened', title: 't', message: 'm', dedupeKey: 'k' })).toBe(false);
-  });
-  it('pages through reportOps only when FAILURE_INCIDENT_PAGING=1', async () => {
-    const { defaultIncidentSender, reportOpsIncidentSender } = await import('./failure-incident-actions');
-    expect(defaultIncidentSender({ FAILURE_INCIDENT_PAGING: '1' })).toBe(reportOpsIncidentSender);
-    expect(defaultIncidentSender({ FAILURE_INCIDENT_PAGING: 'true' })).not.toBe(reportOpsIncidentSender);
+describe('default incident sender', () => {
+  it('is the escalation gate, with no env switch', async () => {
+    const { defaultIncidentSender } = await import('./failure-incident-actions');
+    expect(defaultIncidentSender.length).toBe(0);
+    expect(typeof defaultIncidentSender()).toBe('function');
   });
 });

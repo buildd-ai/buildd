@@ -8,7 +8,7 @@ import ChatContextPanel, { contextPanelModel, type ChatContextPanelProps } from 
 
 const base: ChatContextPanelProps = { audience: 'member', needsYou: [], missions: [], fleet: null };
 const mission = { id: 'm1', title: 'Annual prep for three people and one very long mission title that keeps going', state: 'active', tone: 'live' as const };
-const question = { id: 'q1', title: 'Round per line?', href: '/app/tasks/t1/respond' };
+const question = { id: 'q1', title: 'Round per line?', href: '/app/tasks/t1?respond=1' };
 
 describe('contextPanelModel', () => {
   it('nothing to show: the panel is empty (the aside is dropped)', () => {

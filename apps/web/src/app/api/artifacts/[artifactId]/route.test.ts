@@ -12,6 +12,9 @@ const mockTasksFindFirst = mock(async () => null as any);
 let updatedRow: Record<string, unknown> = { id: 'artifact-1', shareToken: 'test-token' };
 // What the PATCH handed to UPDATE ... SET.
 let lastSet: Record<string, unknown> | null = null;
+// A compare-and-swap that matched no row, and what the follow-up SELECT sees.
+let updateReturnsNothing = false;
+let selectRows: Record<string, unknown>[] = [];
 const mockTriggerEvent = mock(async (..._args: unknown[]) => {});
 
 mock.module('@/lib/pusher', () => ({
@@ -40,6 +43,10 @@ mock.module('@/lib/member-repo-access', () => ({
   memberRepoAccessSubject: (a: { sessionUserId?: string } | null, u: { id: string } | null) => (a ? a.sessionUserId ?? null : u?.id ?? null),
 }));
 
+// What the read ledger was handed (lib/artifact-reads.ts writes it after the response).
+const ledger: any[] = [];
+mock.module('@/lib/artifact-reads', () => ({ recordArtifactRead: (row: any) => { ledger.push(row); } }));
+
 let storageConfigured = true;
 mock.module('@/lib/storage', () => ({
   isStorageConfigured: () => storageConfigured,
@@ -55,10 +62,12 @@ mock.module('@buildd/core/db', () => ({
     update: () => ({
       set: mock((fields: Record<string, unknown>) => (lastSet = fields, {
         where: mock(() => ({
-          returning: mock(() => [updatedRow]),
+          returning: mock(() => (updateReturnsNothing ? [] : [updatedRow])),
         })),
       })),
     }),
+    // lib/artifact-revisions.ts reads: a revision row, or the current revision.
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => selectRows }) }) }),
   },
 }));
 
@@ -717,5 +726,117 @@ describe('GET /api/artifacts/[artifactId] — file artifact download URL', () =>
     mockArtifactsFindFirst.mockResolvedValue({ ...fileRow, storageKey: null });
     const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
     expect((await res.json()).artifact.downloadUrl).toBeNull();
+  });
+});
+
+describe('artifact revisions on /api/artifacts/[artifactId]', () => {
+  const ownArtifact = { id: ARTIFACT_ID, workspaceId: 'ws-1', worker: { accountId: 'account-1' }, currentRevision: 3, content: 'v3', storageKey: null };
+  beforeEach(() => {
+    updateReturnsNothing = false;
+    selectRows = [];
+    lastSet = null;
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue(ownArtifact);
+  });
+
+  it('a content write under a stale expectedRevision is a 409 naming the current revision, and nothing else is written', async () => {
+    updateReturnsNothing = true;
+    selectRows = [{ currentRevision: 4 }];
+    const res = await PATCH(createMockPatchRequest({ content: 'mine', title: 't', expectedRevision: 3 }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'revision_conflict', currentRevision: 4 });
+  });
+
+  it('a content write records the writing account as the revision author', async () => {
+    updatedRow = { id: ARTIFACT_ID, currentRevision: 4 };
+    const res = await PATCH(createMockPatchRequest({ content: 'next', expectedRevision: 3 }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(lastSet).toMatchObject({ content: 'next', contentAuthor: 'account:account-1' });
+  });
+
+  it('expectedRevision without content, or not an integer, is refused', async () => {
+    expect((await PATCH(createMockPatchRequest({ title: 'x', expectedRevision: 3 }, 'bld_test'), { params: mockParams })).status).toBe(400);
+    expect((await PATCH(createMockPatchRequest({ content: 'x', expectedRevision: '3' }, 'bld_test'), { params: mockParams })).status).toBe(400);
+  });
+
+  it('GET ?revision=N returns that revision\'s body and hash, not the current one', async () => {
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    selectRows = [{ revision: 2, content: 'v2', storageKey: null, contentHash: 'h2', sizeBytes: 2, author: null, createdAt: new Date(0) }];
+    const req = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=2`, { headers: { authorization: 'Bearer bld_test' } });
+    const res = await GET(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const { artifact } = await res.json();
+    expect(artifact.content).toBe('v2');
+    expect(artifact.currentRevision).toBe(3);
+    expect(artifact.revision).toMatchObject({ revision: 2, contentHash: 'h2' });
+  });
+
+  it('GET ?revision=1 of a body from before revisions existed returns that body', async () => {
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockArtifactsFindFirst.mockResolvedValue({ ...ownArtifact, currentRevision: 0, content: 'legacy body' });
+    selectRows = [];
+    const req = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=1`, { headers: { authorization: 'Bearer bld_test' } });
+    const res = await GET(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    expect((await res.json()).artifact.content).toBe('legacy body');
+  });
+
+  it('GET of a revision that does not exist is a 404, and a malformed one a 400', async () => {
+    selectRows = [];
+    const missing = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=9`, { headers: { authorization: 'Bearer bld_test' } });
+    expect((await GET(missing, { params: mockParams })).status).toBe(404);
+    const bad = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=0`, { headers: { authorization: 'Bearer bld_test' } });
+    expect((await GET(bad, { params: mockParams })).status).toBe(400);
+  });
+});
+
+describe('bounded reads on GET /api/artifacts/[artifactId]', () => {
+  const doc = '# Guide\nintro\n## Setup\nsetup text\n## Rotate keys\nrevoke the old key last\n';
+  const own = { id: ARTIFACT_ID, workspaceId: 'ws-1', worker: { accountId: 'account-1' }, currentRevision: 0, content: doc, storageKey: null };
+  const get = (qs: string) => GET(
+    new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}${qs}`, { headers: { authorization: 'Bearer bld_test' } }),
+    { params: mockParams },
+  );
+  beforeEach(() => {
+    ledger.length = 0;
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', taskScope: { taskId: 'task-9', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } });
+    mockArtifactsFindFirst.mockResolvedValue(own);
+  });
+
+  it('view=outline returns the sections and not the body, and records an outline read of 0 body characters', async () => {
+    const res = await get('?view=outline');
+    expect(res.status).toBe(200);
+    const { artifact } = await res.json();
+    expect(artifact.content).toBeNull();
+    expect(artifact.sizeChars).toBe(doc.length);
+    expect(artifact.read.sections.map((x: any) => x.title)).toEqual(['Guide', 'Setup', 'Rotate keys']);
+    expect(ledger).toEqual([expect.objectContaining({ artifactId: ARTIFACT_ID, view: 'outline', returnedChars: 0, totalChars: doc.length, taskId: 'task-9', accountId: 'account-1' })]);
+  });
+
+  it('view=section returns that section and records exactly which one', async () => {
+    const { artifact } = await (await get('?view=section&section=s3')).json();
+    expect(artifact.read.text).toBe('## Rotate keys\nrevoke the old key last\n');
+    expect(ledger[0]).toMatchObject({ view: 'section', selector: { section: 's3' }, returnedChars: artifact.read.text.length });
+  });
+
+  it('a plain GET still returns the whole body and records a full read', async () => {
+    const { artifact } = await (await get('')).json();
+    expect(artifact.content).toBe(doc);
+    expect(artifact.read).toBeUndefined();
+    expect(ledger[0]).toMatchObject({ view: 'full', returnedChars: doc.length });
+  });
+
+  it('a bad view or unknown section is a 400 and records nothing', async () => {
+    expect((await get('?view=everything')).status).toBe(400);
+    expect((await get('?view=section&section=s99')).status).toBe(400);
+    expect(ledger).toHaveLength(0);
+  });
+
+  it('a body-less file artifact gets no read view, and keeps its download URL', async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...own, content: null, storageKey: 'artifacts/ws-1/u/f.pdf' });
+    const { artifact } = await (await get('?view=auto')).json();
+    expect(artifact.read).toBeUndefined();
+    expect(artifact.downloadUrl).toBe('https://signed.example/artifacts/ws-1/u/f.pdf');
+    expect(ledger).toHaveLength(0);
   });
 });

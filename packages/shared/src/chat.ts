@@ -287,6 +287,7 @@ export const CHAT_READ_TOOLS = [
   'list_skills', 'get_skill',
   'list_watches',
   'get_visual_review',
+  'read_attachment',
 ] as const;
 export type ChatReadTool = (typeof CHAT_READ_TOOLS)[number];
 
@@ -432,6 +433,50 @@ export type ChatToolPartState =
   | 'output-denied';
 
 // ── Conversations and messages ────────────────────────────────────────────────
+
+/**
+ * Longest chat message the server accepts, in characters, and what the
+ * composer counts against: one setting for both. Kept well under the
+ * platform's request body limit (4.5 MB on Vercel functions; 200,000 four-byte
+ * characters is 800 KB).
+ */
+export const CHAT_MAX_MESSAGE_CHARS = 200_000;
+/**
+ * A paste longer than this is shown as an attachment in the composer.
+ * Presentation only: the server never refuses a message for crossing it.
+ */
+export const CHAT_PASTE_ATTACHMENT_CHARS = 8_000;
+
+/**
+ * A long paste rides a message as a `data-attachment` part (Living Specs C2).
+ * The client sends `{ id, title, text }`, the id fixed when the paste happened;
+ * the saved message keeps only `{ artifactId, revision, sha256, chars, title }`,
+ * the body stored once as an artifact. Mirrors the kit's AttachmentDraft /
+ * AttachmentRef (kit-parity.test.ts).
+ */
+export const CHAT_ATTACHMENT_PART_TYPE = 'data-attachment';
+export interface ChatAttachmentDraft { id: string; title: string; text: string }
+export interface ChatAttachmentRef { artifactId: string; revision: number; sha256: string; chars: number; title: string }
+
+/**
+ * An image or file rides a message as a `data-file` part (Living Specs C3).
+ * The bytes are uploaded and verified first (POST /api/chat/uploads, then
+ * finalize); the client sends `{ kind: 'file', id, name, mediaType, sizeBytes }`
+ * naming that ready upload, and the saved message keeps `{ artifactId,
+ * revision, sha256, name, mediaType, sizeBytes }`. Mirrors the kit's FileDraft /
+ * FileRef (kit-parity.test.ts).
+ */
+export const CHAT_FILE_PART_TYPE = 'data-file';
+export const CHAT_FILE_MEDIA_TYPES = [
+  'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+  'application/pdf',
+  'text/plain', 'text/markdown', 'text/csv', 'application/json',
+] as const;
+export const CHAT_MAX_FILE_BYTES = 20 * 1024 * 1024;
+export interface ChatFileDraft { kind: 'file'; id: string; name: string; mediaType: string; sizeBytes: number; previewUrl?: string }
+export interface ChatFileRef { artifactId: string; revision: number; sha256: string; name: string; mediaType: string; sizeBytes: number }
+/** What a draft carries besides its text: long pastes and uploaded files. */
+export type ChatDraftAttachment = ChatAttachmentDraft | ChatFileDraft;
 
 export type ConversationTitleSource = 'auto' | 'user';
 

@@ -70,9 +70,9 @@ describe('buildVerdictInput', () => {
 describe('traceOutcomeOf', () => {
   it('blocked by a check is a red gate; shipped and done succeeded', () => {
     const blocked = deriveTaskVerdict(buildVerdictInput(facts()));
-    expect(traceOutcomeOf(blocked, 'completed')).toEqual({ succeeded: false, failed: false, gatingCheckRed: true });
+    expect(traceOutcomeOf(blocked, 'completed')).toEqual({ succeeded: false, failed: false, gatingCheckRed: true, settledAs: null });
     const shipped = deriveTaskVerdict(buildVerdictInput(facts({ workers: [{ ...PR, mergedAt: new Date() }] })));
-    expect(traceOutcomeOf(shipped, 'completed').succeeded).toBe(true);
+    expect(traceOutcomeOf(shipped, 'completed')).toMatchObject({ succeeded: true, settledAs: 'shipped' });
     expect(traceOutcomeOf(null, 'failed').failed).toBe(true);
   });
 });

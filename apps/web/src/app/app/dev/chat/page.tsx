@@ -12,12 +12,16 @@
  * question's sheet or pane, e.g. with `answered`), `&feedback=1` (the thumbs,
  * one turn already voted down), `?steer=1` (steering a running agent),
  * `&settled=1` (a streaming state's turn as it lands: folded, ready).
+ * `?state=composed` plays a turn that files something: interim prose, a read
+ * and a write under the live line, the final answer in the same slot, then
+ * its Created and Referenced groups, with cards loading late (`&frame=0..5`).
+ * After Confirm/Discard the reply streams below the card (`&resume=0`: off).
  * `?state=revised` plays a turn whose early hypothesis the tools disprove: the
  * early prose, the tools under it, the final answer in its place, settled
  * (`&frame=0..3` holds one frame, for screenshots; `&settled=1` is frame 3).
  * Confirm, Discard and the question options work against the fixture.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatWorkspace from '@/components/chat/ChatWorkspace';
 import type { ChatActions } from '@/components/chat/ChatActions';
 import { createFixtureVisualReviewTransport } from '@/components/visual-review/fixture-transport';
@@ -31,7 +35,7 @@ import type { ChatMessage, ChatToolPart } from '@/components/chat/chat-contract'
 import { isToolPart } from '@/components/chat/chat-contract';
 import {
   CHAT_FIXTURE_STATES, ORGANIZER, TEAM_NAME, VIEWER, WORKSPACES, WS, chatFixture, fixtureViews, isChatFixtureState,
-  missionRef, questionRef, revisedFrames, type ChatFixtureState, VISUAL_FIXTURE_OPTS, VISUAL_FIXTURE_PHASE,
+  missionRef, questionRef, revisedFrames, composedFrames, RESUME_REPLY, type ChatFixtureState, VISUAL_FIXTURE_OPTS, VISUAL_FIXTURE_PHASE,
   FIXTURE_TIERS, FIXTURE_TOOL_ROWS, STEER_MESSAGES, STEER_TASK_ID, STEER_WORKER_ID, steerTaskView,
 } from './chat-fixtures';
 import SteerConversation from '@/components/chat/SteerConversation';
@@ -91,28 +95,34 @@ function useParams() {
   return p;
 }
 
-/** `revised`: which frame is on screen. Held at `held`, else played through once, a few seconds apart. */
+/** `revised` / `composed`: which frame is on screen. Held at `held`, else played through once, a few seconds apart. */
 function useRevisedPlayback(frames: readonly unknown[] | null, held: number | null): number {
   const [at, setAt] = useState(held ?? 0);
   useEffect(() => {
     if (!frames || held != null) { setAt(held ?? 0); return; }
     setAt(0);
-    const timers = [1_500, 5_000, 8_000].map((ms, i) => setTimeout(() => setAt(i + 1), ms));
+    const timers = frames.slice(1).map((_, i) => setTimeout(() => setAt(i + 1), i === 0 ? 1_500 : 1_500 + i * 3_000));
     return () => timers.forEach(clearTimeout);
   }, [frames, held]);
   return at;
 }
 
-function approve(messages: ChatMessage[], approvalId: string, approved: boolean): ChatMessage[] {
+/**
+ * The answer to a card, as the stream brings it: the card's part decided, then
+ * (`reply`) the reply after it, a word count at a time, in the same message.
+ */
+function approve(messages: ChatMessage[], approvalId: string, approved: boolean, reply?: { text: string; done: boolean }): ChatMessage[] {
   return messages.map(m => ({
     ...m,
-    parts: m.parts.map(p => {
+    parts: [...m.parts.map(p => {
       if (!isToolPart(p) || p.approval?.id !== approvalId) return p;
       const part: ChatToolPart = approved
         ? { ...p, state: 'output-available', approval: { id: approvalId, approved: true }, output: { summary: 'mission filed, plan-first', data: {}, objects: [missionRef] } }
         : { ...p, state: 'output-denied', approval: { id: approvalId, approved: false } };
       return part;
-    }),
+    }), ...(reply && m.parts.some(p => isToolPart(p) && p.approval?.id === approvalId)
+      ? [{ type: 'step-start' } as const, { type: 'text', text: reply.text, state: reply.done ? 'done' : 'streaming' } as const]
+      : [])],
   }));
 }
 
@@ -132,8 +142,9 @@ export default function DevChatPage() {
     : moodParam === 'calm' ? { needsYou: [], live: 0 } : null;
 
   const settled = params?.get('settled') === '1';
-  const frames = useMemo(() => (state === 'revised' ? revisedFrames() : null), [state]);
-  const heldFrame = settled ? 3 : params?.get('frame') != null ? Math.min(3, Math.max(0, Number(params.get('frame')) || 0)) : null;
+  const frames = useMemo(() => (state === 'revised' ? revisedFrames() : state === 'composed' ? composedFrames() : null), [state]);
+  const lastFrame = (frames?.length ?? 4) - 1;
+  const heldFrame = settled ? lastFrame : params?.get('frame') != null ? Math.min(lastFrame, Math.max(0, Number(params.get('frame')) || 0)) : null;
   const frameAt = useRevisedPlayback(frames, heldFrame);
   const fixture = useMemo(() => {
     if (frames) return { ...frames[frameAt], title: null };
@@ -141,7 +152,11 @@ export default function DevChatPage() {
     return settled ? { ...f, status: 'ready' as const } : f;
   }, [state, settled, frames, frameAt]);
   const [messages, setMessages] = useState<ChatMessage[]>(fixture.messages);
-  useEffect(() => setMessages(fixture.messages), [fixture]);
+  // A reply streaming after Confirm/Discard overrides the fixture's status until it lands.
+  const [resumeStatus, setResumeStatus] = useState<'streaming' | null>(null);
+  // Confirm/Discard playback: the messages before the first decision, every decision so far, its timers.
+  const decided = useRef<{ base: ChatMessage[]; ids: Map<string, boolean>; timers: ReturnType<typeof setTimeout>[] } | null>(null);
+  useEffect(() => { setMessages(fixture.messages); setResumeStatus(null); decided.current = null; }, [fixture]);
   const views = useMemo(() => fixtureViews(state), [state]);
   // Visual review decisions against an in-memory "server" (the S3 fixture
   // transport), so the deck in the sheet or pane is fully clickable and a
@@ -150,18 +165,39 @@ export default function DevChatPage() {
   const reviewShots = useCallback<ChatActions['reviewShots']>(({ missionId: _m, ...req }) => reviewTransport.decide(req), [reviewTransport]);
   const undoReview = useCallback<ChatActions['undoReview']>(({ reviewId }) => reviewTransport.undo(reviewId), [reviewTransport]);
 
+  // `composed`: the cards load late (a slow network), so their shells show filling in place.
+  const lateMs = state === 'composed' ? 1_800 : 0;
   const source: ObjectSource = useMemo(() => ({
     load: async (ref) => {
+      if (lateMs) await new Promise(r => setTimeout(r, lateMs));
       const v = views[`${ref.kind}:${ref.id}`];
       if (!v) throw new Error('Not found');
       if (v.kind === 'mission' && v.visual) return { ...v, visual: { ...reviewTransport.model(), missionId: v.id } };
       return v;
     },
-  }), [views, reviewTransport]);
+  }), [views, reviewTransport, lateMs]);
 
+  // Decided after 500ms, then the reply streams below the card and lands
+  // (`&resume=0`: decided only). A card of rows answers every row at once, so
+  // each call restarts the playback with every decision so far.
+  const resume = params?.get('resume') !== '0';
   const onApproval = useCallback((id: string, ok: boolean) => {
-    setTimeout(() => setMessages(ms => approve(ms, id, ok)), 500);
-  }, []);
+    const d = decided.current ?? (decided.current = { base: messages, ids: new Map(), timers: [] });
+    d.ids.set(id, ok);
+    d.timers.forEach(clearTimeout);
+    const all = (reply?: { text: string; done: boolean }) => [...d.ids].reduce(
+      (ms, [k, v], i) => approve(ms, k, v, i === d.ids.size - 1 ? reply : undefined), d.base,
+    );
+    const words = RESUME_REPLY.split(' ');
+    const upTo = (n: number) => ({ text: words.slice(0, n).join(' '), done: n >= words.length });
+    d.timers = [
+      setTimeout(() => { if (resume) setResumeStatus('streaming'); setMessages(all()); }, 500),
+      ...(resume ? [6, 16, words.length].map((n, i) => setTimeout(() => {
+        setMessages(all(upTo(n)));
+        if (n >= words.length) setResumeStatus(null);
+      }, 1_300 + i * 1_000)) : []),
+    ];
+  }, [resume, messages]);
   const onSend = useCallback((text: string) => {
     setMessages(ms => [...ms, { id: `u-${ms.length}`, role: 'user', metadata: { createdAt: new Date().toISOString(), authorName: VIEWER }, parts: [{ type: 'text', text }] }]);
   }, []);
@@ -210,7 +246,7 @@ export default function DevChatPage() {
           <ObjectStoreProvider key={state} source={source}>
             <ChatWorkspace
               messages={messages}
-              status={fixture.status}
+              status={resumeStatus ?? fixture.status}
               onSend={onSend}
               onApproval={onApproval}
               onStop={() => {}}

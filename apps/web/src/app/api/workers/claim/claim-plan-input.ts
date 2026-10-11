@@ -15,6 +15,7 @@
  * concept, and two repos' `src/index.ts` are not the same file. The repo-wide
  * sentinel stays bare — the planner reads it as "undeclared", never as a path.
  */
+import { ownLineage } from '@/lib/attempt-lineage';
 import {
   CLAIM_PLANNER_CALIBRATION,
   overlapPairKey,
@@ -66,8 +67,9 @@ export interface OpenPrEntry {
 /**
  * Split a workspace's open PRs into the ones that can block `task` and the ones
  * it is exempt from: a PR its own earlier worker opened, the PR a fix attempt
- * (conflict / review / CI) exists to fix, the PR its subject anchor names, and
- * any PR stacked on one of those. Shared by the claim loop's layer-1 backstop
+ * (conflict / review / CI) exists to fix, the PR its subject anchor names, any
+ * PR of a fix attempt's own lineage (`ownLineage`), and any PR stacked on one
+ * of those. Shared by the claim loop's layer-1 backstop
  * and the planner input so the two can never disagree about an exemption.
  */
 export function splitOwnOpenPrs<T extends OpenPrEntry>(task: any, openPrTasks: T[]): { others: T[]; own: T[] } {
@@ -77,10 +79,15 @@ export function splitOwnOpenPrs<T extends OpenPrEntry>(task: any, openPrTasks: T
   const ownSubjectPrNumber = task.subjectKind === 'pull_request'
     ? (task.subjectPrNumber as number | null | undefined)
     : null;
+  // A fix attempt's own chain (ancestor tasks, every PR the chain opened) —
+  // an unclosed predecessor PR must not defer its own retry (§13.11 rule 4).
+  const lineage = ownLineage(task);
   const isOwnPr = (pr: T) =>
     pr.taskId === task.id
     || (!!ownRetryPrNumber && pr.prNumber === ownRetryPrNumber)
-    || (!!ownSubjectPrNumber && pr.prNumber === ownSubjectPrNumber);
+    || (!!ownSubjectPrNumber && pr.prNumber === ownSubjectPrNumber)
+    || (!!pr.taskId && lineage.taskIds.has(pr.taskId))
+    || (pr.prNumber != null && lineage.prNumbers.has(pr.prNumber));
   const ownPrs = openPrTasks.filter(isOwnPr);
   const stackedOnOwn = findStackedPrs(ownPrs.map(pr => pr.branch).filter((b): b is string => !!b), openPrTasks);
   const own: T[] = [];

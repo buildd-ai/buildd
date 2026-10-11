@@ -13,6 +13,7 @@ import { summarizeMissionForCard, type MissionCardRow } from '@/lib/mission-card
 import { projectMissionDelivery } from '@/lib/delivery-projection';
 import { taskRowsStripProjection } from '@/lib/mission-strip-order';
 import { MissionGrid, type PortfolioRow } from './MissionGrid';
+import NewMissionSheet from './NewMissionSheet';
 import { loadMissionVerdicts } from '@buildd/core/mission-verdicts';
 import {
   COMPLETED_MISSIONS_PAGE_SIZE,
@@ -27,9 +28,9 @@ export const dynamic = 'force-dynamic';
 export default async function MissionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ workspace?: string; completedCursor?: string }>;
+  searchParams: Promise<{ workspace?: string; completedCursor?: string; group?: string; new?: string }>;
 }) {
-  const { workspace: wsFilter, completedCursor: completedCursorParam } = await searchParams;
+  const { workspace: wsFilter, completedCursor: completedCursorParam, group: groupParam, new: newParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -39,7 +40,7 @@ export default async function MissionsPage({
       <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8">
         <h1 className="sr-only md:not-sr-only md:mb-4 text-heading font-semibold text-text-primary">Missions</h1>
         <p className="text-body text-text-secondary">
-          No team found. <Link href="/app/teams/new" className="text-text-primary underline underline-offset-4">Create a team</Link> to plan missions.
+          No team found. <Link href="/app/settings/team?new=1" className="text-text-primary underline underline-offset-4">Create a team</Link> to plan missions.
         </p>
       </div>
     );
@@ -152,6 +153,8 @@ export default async function MissionsPage({
       status: obj.status,
       workspaceId: obj.workspaceId ?? null,
       workspaceName: (obj.workspace as { name?: string } | null)?.name ?? null,
+      groupId: obj.initiativeId ?? null,
+      groupName: (obj.initiative as { title?: string } | null)?.title ?? null,
       priority: obj.priority ?? 0,
       liveAgents: tasks.reduce((n, t) => n + (t.workers ?? []).filter(w => live.has(w.status)).length, 0),
       lastAdvancedAt: lastAdvancedAt > 0 ? lastAdvancedAt : null,
@@ -163,18 +166,17 @@ export default async function MissionsPage({
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-[1180px]">
+      {/* ?new=1: the New mission sheet (the form when chat is off, see NewWorkLink). */}
+      {newParam === '1' && <NewMissionSheet userId={user.id} teamId={activeTeamId} />}
       <div className="mb-4 flex items-center justify-between gap-3">
         {/* The mobile header already reads "Missions · Team"; show the h1 from md up only. */}
         <h1 data-testid="missions-headline" className="sr-only md:not-sr-only text-heading font-semibold text-text-primary">
           Missions
         </h1>
         <div className="ml-auto flex flex-wrap items-center gap-3">
-          {/* Releases and Initiatives left the primary nav; this is their door. */}
+          {/* Releases left the primary nav; this is its door. */}
           <Link href="/app/releases" data-testid="missions-releases-link" className="btn btn-quiet h-11 md:h-8">
             Releases
-          </Link>
-          <Link href="/app/initiatives" data-testid="missions-initiatives-link" className="btn btn-quiet h-11 md:h-8">
-            Initiatives
           </Link>
           <NewWorkLink
             kind="mission"
@@ -190,7 +192,7 @@ export default async function MissionsPage({
       {rows.length === 0 ? (
         <p className="text-body text-text-secondary">No missions. A mission groups the tasks behind one goal.</p>
       ) : (
-        <MissionGrid rows={rows} slots={{ live: activeSeats, max: maxSeats }} now={now} />
+        <MissionGrid rows={rows} initialGroup={groupParam ?? null} slots={{ live: activeSeats, max: maxSeats }} now={now} />
       )}
 
       {/* Rule P-4: the completed portion is one bounded page; this is the

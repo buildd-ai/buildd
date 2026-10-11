@@ -28,8 +28,11 @@ export interface MatrixRow {
   isDefault: boolean;
 }
 
-/** Never shown as a row: a behaviour, or an owner's locked choice about their own account. */
-const HIDDEN: ReadonlySet<Permission> = new Set<Permission>(['seed_team_timezone', 'activate_chat_retro_dogfood']);
+/**
+ * Never shown as a row: a behaviour, an owner's locked choice about their own
+ * account, or a grant for a control that moved to the admin app (chat retros).
+ */
+const HIDDEN: ReadonlySet<Permission> = new Set<Permission>(['seed_team_timezone', 'activate_chat_retro_dogfood', 'manage_chat_retro']);
 
 function withDefault(row: Omit<MatrixRow, 'isDefault'>): MatrixRow {
   return { ...row, isDefault: row.admin === row.defaultAdmin && row.member === row.defaultMember };

@@ -13,33 +13,46 @@ import PrimaryAction from '@/components/ui/PrimaryAction';
 import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
 import { pickShownTeam } from './shown-team';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { settingsReadOnly } from '@/lib/settings-nav';
+import { NO_PERMISSIONS, settingsPermissions } from '../_lib/settings-permissions';
+import UrlSheet from '@/components/UrlSheet';
+import NewTeamForm from './NewTeamForm';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Team: a team's people, its timezone, and who can do what (team
+ * Settings › Team › Members: a team's people, its timezone, and who can do what (team
  * permission overrides). Shows the active team, or `?team=<id>` when the
  * person is a member of it, so a link to another team (the old
  * /app/teams/[id]) lands on that team's members.
+ * `?new=1` opens the New team sheet (the old /app/settings/team/new redirects here).
  * `?state=multi-member` (dev server only) adds a synthetic member row — see ./qa-state.ts.
  */
 export default async function TeamSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ state?: string | string[]; team?: string | string[] }>;
+  searchParams: Promise<{ state?: string | string[]; team?: string | string[]; new?: string | string[] }>;
 }) {
   const params = await searchParams;
+  const newTeamSheet = params.new === '1' && (
+    <UrlSheet title="New team" keys={['new']} testId="new-team-sheet">
+      <NewTeamForm />
+    </UrlSheet>
+  );
+  // Keeps ?team= so the sheet opens over the team being looked at.
+  const newTeamHref = `/app/settings/team?${new URLSearchParams({ ...(typeof params.team === 'string' ? { team: params.team } : {}), new: '1' })}`;
   const qaState = resolveTeamQaState(params.state);
   const { user, teams: userTeams, currentTeam } = await loadSettingsContext();
   const shown = pickShownTeam(userTeams, params.team, currentTeam);
 
   if (!shown) {
     return (
-      <SettingsPage title="Team">
+      <SettingsPage title="Members">
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-sm text-text-muted">Not on a team.</p>
-          <PrimaryAction href="/app/settings/team/new">Create a team</PrimaryAction>
+          <PrimaryAction href={newTeamHref}>Create a team</PrimaryAction>
         </div>
+        {newTeamSheet}
       </SettingsPage>
     );
   }
@@ -58,15 +71,16 @@ export default async function TeamSettingsPage({
   const role = shown.role as 'owner' | 'admin' | 'member';
   const permissionOverrides = team ? await getTeamPermissionOverrides(team.id) : null;
   const otherTeams = userTeams.filter((t) => t.id !== shown.id);
+  // The shown team's flags (it can differ from the active team via ?team=).
+  // A failed overrides read holds nothing, as loadSettingsContext does.
+  const perms = permissionOverrides ? settingsPermissions({ role, slug: team?.slug ?? shown.slug }, user.id, permissionOverrides) : NO_PERMISSIONS;
 
   const sections = (
     <>
       <WarmHandoverSection teamId={shown.id} canEdit={roleHas(role, 'manage_team_settings', permissionOverrides)} />
 
-      <TimezoneSection
-        teams={userTeams.map((t) => ({ id: t.id, name: t.name }))}
-        currentTeamId={shown.id}
-      />
+      {/* This team only: another team's timezone is on its own Members page. */}
+      <TimezoneSection teams={[{ id: shown.id, name: shown.name }]} currentTeamId={shown.id} />
 
       {/* A personal team has one member, its owner: there is nothing to grant. */}
       {team && !team.slug.startsWith('personal-') && <TeamPermissionsSection teamId={team.id} />}
@@ -74,29 +88,33 @@ export default async function TeamSettingsPage({
   );
 
   return (
-    <SettingsPage title="Team">
-      {otherTeams.length > 0 && (
-        <details data-testid="team-switcher" className="group text-sm">
-          <summary className="flex min-h-11 md:min-h-0 cursor-pointer list-none items-center gap-1.5 text-text-secondary">
-            <span className="text-text-muted">Team:</span>
-            <span className="font-medium text-text-primary">{shown.name}</span>
-            <span aria-hidden="true">·</span>
-            <span className="underline underline-offset-2 hover:text-text-primary">Switch</span>
-          </summary>
-          <div className="mt-2 divide-y divide-border-default border-y border-border-default">
-            {otherTeams.map((t) => (
-              <Link
-                key={t.id}
-                href={`/app/settings/team?team=${encodeURIComponent(t.id)}`}
-                className="flex min-h-11 items-center justify-between gap-3 py-2 hover:bg-surface-3 transition-colors"
-              >
-                <span className="truncate font-medium text-text-primary">{t.name}</span>
-                <span className="shrink-0 text-text-muted">{t.role}</span>
-              </Link>
-            ))}
-          </div>
-        </details>
-      )}
+    <SettingsPage title="Members" readOnly={settingsReadOnly('team', perms)}>
+      {newTeamSheet}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        {otherTeams.length > 0 ? (
+          <details data-testid="team-switcher" className="group min-w-0 flex-1 text-sm">
+            <summary className="flex min-h-11 md:min-h-0 cursor-pointer list-none items-center gap-1.5 text-text-secondary">
+              <span className="text-text-muted">Team:</span>
+              <span className="font-medium text-text-primary">{shown.name}</span>
+              <span aria-hidden="true">·</span>
+              <span className="underline underline-offset-2 hover:text-text-primary">Switch</span>
+            </summary>
+            <div className="mt-2 divide-y divide-border-default border-y border-border-default">
+              {otherTeams.map((t) => (
+                <Link
+                  key={t.id}
+                  href={`/app/settings/team?team=${encodeURIComponent(t.id)}`}
+                  className="flex min-h-11 items-center justify-between gap-3 py-2 hover:bg-surface-3 transition-colors"
+                >
+                  <span className="truncate font-medium text-text-primary">{t.name}</span>
+                  <span className="shrink-0 text-text-muted">{t.role}</span>
+                </Link>
+              ))}
+            </div>
+          </details>
+        ) : <span />}
+        <Link href={newTeamHref} scroll={false} data-testid="new-team-link" className="btn btn-sm h-11 md:h-8 shrink-0">New team</Link>
+      </div>
 
       {team ? (
         <TeamDetailClient

@@ -61,6 +61,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_decision_stats: 'workers',
   list_connectors: 'workers',
   resolve_capability: 'workers',
+  request_capability: 'workers',
   list_runners: 'workers',
   read_evidence: 'workers',
   // PRs, reviews, releases
@@ -91,6 +92,9 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   list_artifact_templates: 'artifacts',
   create_artifact: 'artifacts',
   update_artifact: 'artifacts',
+  link_artifact: 'artifacts',
+  list_artifact_links: 'artifacts',
+  manage_specs: 'artifacts',
   // admin
   trigger_release: 'admin',
   manage_workspaces: 'admin',
@@ -208,6 +212,9 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   list_artifacts: 'listed',
   post_note: 'listed',
   update_artifact: 'listed',
+  link_artifact: 'more',
+  list_artifact_links: 'more',
+  manage_specs: 'more',
   claim_task: 'listed',
   get_error_traces: 'listed',
   merge_pr: 'listed',
@@ -256,6 +263,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   suggest_schedule_update: 'more',
   list_connectors: 'more',
   resolve_capability: 'more',
+  request_capability: 'more',
   trace_schedule: 'more',
   create_schedule: 'more',
   update_schedule: 'more',
@@ -348,13 +356,15 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   runners: {
     parts: [
-      { text: 'connectors', actions: ['list_connectors', 'resolve_capability'] },
+      { text: 'connectors', actions: ['list_connectors', 'resolve_capability', 'request_capability'] },
       { text: 'message a running agent', actions: ['send_agent_message'] },
     ],
   },
   artifacts: {
     parts: [
       { text: 'reports, analyses and other artifacts', actions: ['list_artifacts', 'get_artifact', 'list_artifact_templates', 'update_artifact'] },
+      { text: 'link one to a task, mission or chat', actions: ['link_artifact', 'list_artifact_links'] },
+      { text: 'Living Specs', actions: ['manage_specs'] },
     ],
   },
   schedules: {
@@ -420,6 +430,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_decision_stats: 'decision-shadow counts',
   list_connectors: 'connector health',
   resolve_capability: 'who serves a need',
+  request_capability: 'ask for access',
   list_runners: 'slots, branch, build, heartbeat',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews',
@@ -442,6 +453,9 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_artifact: "one artifact's content",
   list_artifact_templates: 'artifact templates and their schemas',
   update_artifact: 'edit an artifact',
+  link_artifact: 'link an artifact to a task, mission or chat',
+  list_artifact_links: 'what is linked, without bodies',
+  manage_specs: 'Living Specs: draft, read, revise, relate',
   trigger_release: 'start a release',
   manage_workspaces: 'workspace config and new projects',
   manage_watched_projects: 'deploy-watched projects',
@@ -480,12 +494,17 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  // Token, cost and diff counters are runner telemetry; help lists them.
+  update_progress: '{workerId?, progress?, message?, plan?, kind?, …}',
   resolve_capability: '{capability?, …}',
+  request_capability: '{capability, …}',
   register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, …}',
   update_skill: '{slug, personal?, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
+  get_artifact: '{artifactId, view?, section?, grep?, full?, …}',
+  manage_specs: '{action: create_draft|get|revise|list|relate, specId?, title?, body?, expectedVersion?, parentSpecId?, …}',
   list_incidents: '{}',
   record_pr_supersession: '{prNumber?, supersedingPrNumber, supersedingRepo?, reason, …}',
   merge_pr: '{prNumber, workspaceId?, overrides?, reason?, …}',
@@ -668,6 +687,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
+    param('capability', str, [{ text: 'Need as domain:verb, e.g. observability:query', actions: ['resolve_capability', 'request_capability'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
     param('message', str, [{ text: 'Steering message for the running agent', actions: ['send_agent_message'] }]),
   ],
@@ -676,8 +696,16 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('releaseId', str, [{ text: 'Release UUID', actions: ['get_release'] }]),
   ],
   artifacts: [
-    param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact'] }]),
+    param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact', 'link_artifact', 'list_artifact_links'] }]),
+    param('subjectKind', str, [{ text: 'task|mission|plan|conversation|message', actions: ['link_artifact', 'list_artifact_links'] }]),
+    param('subjectId', str, [{ text: 'Subject UUID', actions: ['link_artifact', 'list_artifact_links'] }]),
+    param('relation', str, [{ text: 'context|requirement|normative_reference|…', actions: ['link_artifact', 'list_artifact_links'] }]),
+    param('revision', num, [{ text: 'Read this revision', actions: ['get_artifact'] }]),
+    param('expectedRevision', num, [{ text: 'Refuse if the body moved on', actions: ['update_artifact'] }]),
     param('missionId', str, [{ text: 'list_artifacts: mission UUID (not a title)', actions: ['list_artifacts'] }]),
+    param('action', str, [{ text: 'manage_specs: create_draft|get|revise|list|relate', actions: ['manage_specs'] }]),
+    param('specId', str, [{ text: 'Spec UUID', actions: ['manage_specs'] }]),
+    param('expectedVersion', num, [{ text: 'revise: the version you read; a stale one is refused with currentVersion', actions: ['manage_specs'] }]),
   ],
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),
@@ -708,6 +736,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('filename', str, [{ text: 'File name', actions: ['upload_artifact'] }]),
     param('mimeType', str, [{ text: 'MIME type', actions: ['upload_artifact'] }]),
     param('sizeBytes', num, [{ text: 'Exact bytes', actions: ['upload_artifact'] }]),
+    param('artifactId', str, [{ text: 'Finalize after the PUT', actions: ['upload_artifact'] }]),
     param('provider', str, [{ text: 'e.g. cloudflare', actions: ['deploy'] }]),
     param('project', str, [{ text: 'Project', actions: ['deploy'] }]),
     param('environment', str, [{ text: 'Environment', actions: ['deploy'] }]),

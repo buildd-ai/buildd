@@ -50,3 +50,23 @@ describe('upload_artifact — request body', () => {
     expect('missionId' in bodyOf(api)).toBe(false);
   });
 });
+
+describe('upload_artifact { artifactId } — finalize after the PUT', () => {
+  it('posts to finalize with the sha256 and reports the verified state', async () => {
+    const sha = 'a'.repeat(64);
+    const api = mock(() => Promise.resolve({ artifactId: 'a1', state: 'ready', sha256: sha, sizeBytes: 10 }));
+    const r = await handleBuilddAction(api as unknown as ApiFn, 'upload_artifact', { artifactId: 'a1', sha256: sha }, ctx());
+    const [path, init] = api.mock.calls[0] as [string, { method: string; body: string }];
+    expect(path).toBe('/api/artifacts/a1/finalize');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ sha256: sha });
+    expect(r.content[0].text).toContain('Upload ready');
+  });
+
+  it('sends an empty body without a sha256 and needs no filename', async () => {
+    const api = mock(() => Promise.resolve({ artifactId: 'a1', state: 'ready', sha256: null }));
+    await handleBuilddAction(api as unknown as ApiFn, 'upload_artifact', { artifactId: 'a1' }, ctx());
+    const [, init] = api.mock.calls[0] as [string, { body: string }];
+    expect(JSON.parse(init.body)).toEqual({});
+  });
+});

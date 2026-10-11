@@ -123,6 +123,7 @@ async function run(t: DispatchTarget, deps: DispatchDeps): Promise<DispatchResul
       const other = collision.otherPrNumber == null ? 'open' : await deps.prState(target, collision.otherPrNumber);
       if (other === 'open') {
         const res = await deps.renumber({ ...base, collision, installationId: target.installationId });
+        if (res.queuedBehind != null) return skipped('migration_lane_queued');
         if (!res.handled) return skipped('renumber_not_filed');
         return res.taskId ? { kind: 'dispatched', taskId: res.taskId } : skipped('renumber_not_filed');
       }

@@ -16,7 +16,7 @@ import { loadOpenAttempt } from '@/lib/explain';
 import { deriveTaskVerdict, parseStoredVerdictDecision, type StoredVerdictDecision, type TaskVerdict } from './task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from './task-verdict-facts';
 import { decideTaskVerdict, unclearTraceFacts, verdictFingerprint, VERDICT_LOG_PREFIX, type DecideVerdictDeps, type VerdictRecord } from './task-verdict-decision';
-import { classifyTracesByRule, type ConsequenceTrace } from './trace-consequence';
+import { classifyTracesByRule, priorAttemptFactsOf, type ConsequenceTrace } from './trace-consequence';
 
 const TRACE_LIMIT = 200;
 const NOTES = 5;
@@ -43,7 +43,7 @@ export async function loadVerdictRecord(taskId: string): Promise<{ record: Verdi
   const taskWorkers = await db.query.workers.findMany({
     where: eq(workers.taskId, taskId),
     orderBy: desc(workers.createdAt),
-    columns: { id: true, status: true, waitingFor: true, prUrl: true, prNumber: true, prLifecycleStatus: true, mergedAt: true, error: true, createdAt: true, milestones: true, lastCommitSha: true, linesAdded: true, linesRemoved: true, filesChanged: true },
+    columns: { id: true, status: true, waitingFor: true, prUrl: true, prNumber: true, prLifecycleStatus: true, mergedAt: true, error: true, createdAt: true, milestones: true, lastCommitSha: true, linesAdded: true, linesRemoved: true, filesChanged: true, branch: true, startedAt: true, exitCause: true, commitCount: true },
   });
   const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
   const prOpen = !!prWorker && !prWorker.mergedAt && prWorker.prLifecycleStatus !== 'closed';
@@ -80,7 +80,7 @@ export async function loadVerdictRecord(taskId: string): Promise<{ record: Verdi
   if (!verdict) return { record: null, verdict: null, stored };
 
   const traces: ConsequenceTrace[] = traceRows;
-  const consequences = classifyTracesByRule(traces, traceOutcomeOf(verdict, task.status));
+  const consequences = classifyTracesByRule(traces, traceOutcomeOf(verdict, task.status, priorAttemptFactsOf(taskWorkers)));
   const ws = task.workspace as { teamId: string; dataClass?: string | null; gitConfig?: unknown };
   const sensitive = ws.dataClass === 'sensitive' || (ws.gitConfig as { dataClass?: string } | null)?.dataClass === 'sensitive';
   const newest = taskWorkers[0];

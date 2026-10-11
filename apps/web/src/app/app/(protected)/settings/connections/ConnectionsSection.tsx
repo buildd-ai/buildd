@@ -86,7 +86,7 @@ export default function ConnectionsSection({
     <div className="space-y-8">
       {initial.legacy.length > 0 && <LegacyNotice legacy={initial.legacy} now={now} />}
 
-      <Section title="Apps" count={connections.length}>
+      <Section title="Your apps" count={connections.length}>
         {connections.length === 0 ? (
           <p className="text-body text-text-muted" data-testid="connections-empty">
             {revoked ? `${revoked} is disconnected. ` : ''}No apps are connected. Connect one with <code className="font-mono">buildd install --oauth</code>, or add buildd as an MCP server in the app.

@@ -380,10 +380,11 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/teams/[id]/notifications/route.ts:30` | PUT team notification settings (GET open to members, booleans only) | owner, admin | — | `manage_team_notifications` |
 | `apps/web/src/app/app/(protected)/home/home-view.ts:118` | UI: operator Home | owner, admin | — | `view_team_usage` |
 | `apps/web/src/app/api/insights/flow/route.ts:42` | team flow insights | owner, admin | — | `view_team_usage` |
-| `apps/web/src/app/app/(protected)/health/insights/page.tsx:45` | UI: insights | owner, admin | — | `view_team_usage` |
-| `apps/web/src/app/app/(protected)/settings/budgets/page.tsx:61` | UI: per-person spend | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/app/(protected)/health/insights/page.tsx:44` | UI: insights (platform owner only; a 404 for everyone else) | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:77` | UI: the team's hosted runner month | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:102` | UI: per-person spend | owner, admin | — | `view_team_usage` |
 | `apps/web/src/lib/billing/team-billing-access.ts:64` | open Checkout / the billing portal / change seats | owner, admin | — | `manage_billing` |
-| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:55` | UI: billing actions | owner, admin, personal team | — | `manage_billing` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:81` | UI: billing actions | owner, admin, personal team | — | `manage_billing` |
 
 ### API keys and runners
 
@@ -404,7 +405,7 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/teams/[id]/ownership/route.ts` | clamp the former owner's keys to admin | follows the new role | — | `manage_team_keys` |
 | `apps/web/src/lib/oauth/session-level.ts:10` | OAuth session acts at admin (fixed, not overridable) | owner, admin | — | — |
 | `apps/web/src/lib/key-level-policy.ts:47` | `canAdministerTeamKeys` | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/app/(protected)/settings/runners/tokens/new/page.tsx:40` | UI: admin scope selectable | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/app/(protected)/settings/runners/NewRunnerTokenSheet.tsx:42` | UI: admin scope selectable | owner, admin | — | `manage_team_keys` |
 | `apps/web/src/app/app/(protected)/settings/runners/page.tsx:45` | UI: host-runner toggle | owner, admin, personal team | — | `manage_team_keys` |
 
 ### Model access and spend
@@ -471,6 +472,7 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/workers/[id]/release-slot/route.ts:60` | release an interactive worker's slot | owner, admin | — | `force_reassign_task` |
 | `apps/web/src/app/api/releases/trigger/route.ts:58` | trigger a release | owner, admin, personal team | admin (`:53`) | `manage_releases` |
 | `apps/web/src/app/api/releases/status/route.ts:35` | release preflight | owner, admin, personal team | admin (`:31`) | `manage_releases` |
+| `apps/web/src/lib/specs/approval.ts:26` | `specApprover`: submit and approve a Living Spec revision | owner, admin, or a delegated approver (`gitConfig.livingSpecs.approverUserIds`) | — (a person only; an OAuth session counts as its person) | `approve_specs` |
 
 ### Team infrastructure
 

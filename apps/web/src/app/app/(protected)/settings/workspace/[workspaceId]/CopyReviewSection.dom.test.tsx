@@ -65,8 +65,10 @@ describe('CopyReviewSection', () => {
     expect(body()).toEqual({ copyReview: null });
   });
 
-  it('cannot be changed by someone who cannot edit the workspace', () => {
+  it('reads as text, with no controls, for someone who cannot edit the workspace', () => {
     act(() => root.render(<CopyReviewSection workspaceId="ws-1" initial={null} canEdit={false} />));
     expect(submit()).toBeNull();
+    expect(host.querySelector('[role="radio"]')).toBeNull();
+    expect(host.querySelector('[data-testid="copy-review-value"]')!.textContent).toBe('Off');
   });
 });

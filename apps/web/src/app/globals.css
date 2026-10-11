@@ -1265,9 +1265,10 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-thread .kit-msg[data-role="user"] > .kit-msg-head,
   .buildd-thread .kit-msg[data-role="user"] > .kit-msg-foot { justify-content: flex-end; }
   /* The agent (and an event it posted): the avatar beside the header, the
-     turn indented under it. */
-  .buildd-thread .kit-msg:is([data-role="assistant"], [data-role="event"]):not([data-streaming]) { gap: 14px; padding-left: 40px; }
-  .buildd-thread .kit-msg:is([data-role="assistant"], [data-role="event"]):not([data-streaming]) > .kit-msg-head { margin-left: -40px; gap: 12px; }
+     turn indented under it. The same frame while the turn streams and once it
+     lands, so landing reflows nothing (docs/specs/chat-stream-composition.md). */
+  .buildd-thread .kit-msg:is([data-role="assistant"], [data-role="event"]) { gap: 14px; padding-left: 40px; }
+  .buildd-thread .kit-msg:is([data-role="assistant"], [data-role="event"]) > .kit-msg-head { margin-left: -40px; gap: 12px; }
   .buildd-thread .kit-msg:not([data-role="user"]) > .kit-msg-foot { flex-direction: column; align-items: stretch; gap: 14px; }
   .buildd-thread .kit-msg-foot > .buildd-feedback { align-self: flex-start; }
   /* Nothing to say (no objects, no thumbs yet): no gap either. */
@@ -1279,8 +1280,16 @@ textarea.kit-composer-input:focus-visible { outline: none; }
      unfolds the turn's steps on a blue rule; the one key step (a write, a
      failure, a change waiting on you) stays pinned under the line. No glow
      here; the surface's one glow is the composer sweep. */
-  .buildd-thread .kit-msg[data-role="assistant"][data-streaming] { gap: 12px; }
   .buildd-thread .kit-thinking { border: 0; background: transparent; padding: 0; }
+  /* The live line is the folded line's height (its border too, unseen), so the
+     line a turn lands on fills the slot the live one held. */
+  .buildd-thread .kit-thinking[data-streaming] { border: 1px solid transparent; }
+  .buildd-thread .kit-thinking[data-settled] > summary { min-height: 44px; }
+  @media (min-width: 1024px) {
+    .buildd-thread .kit-live-line, .buildd-thread .kit-thinking[data-settled] > summary { min-height: 32px; }
+  }
+  /* A turn's results: groups sit under the answer at the turn's own rhythm. */
+  .buildd-thread .kit-phase-results { gap: 14px; }
   .buildd-thread .kit-live-chevron { color: var(--chat-muted); }
   .buildd-thread .kit-live-count { color: var(--chat-muted); }
   .buildd-thread .kit-live-timer { color: var(--status-warning); opacity: .85; }

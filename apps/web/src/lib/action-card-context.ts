@@ -42,7 +42,7 @@ export function resolveActionCardContext(item: ActionQueueItem): ActionCardConte
     return {
       kind: 'initiative',
       label: initiativeTitle,
-      href: item.initiativeId ? `/app/initiatives/${item.initiativeId}` : null,
+      href: item.initiativeId ? `/app/missions?group=${item.initiativeId}` : null,
     };
   }
 

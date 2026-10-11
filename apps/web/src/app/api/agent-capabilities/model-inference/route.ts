@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
     return fail(400, parsed.error, 'invalid_request');
   }
 
-  const result = await invokeModelInference(principal, parsed.request, defaultModelInferenceDeps(row => {
+  const deps = defaultModelInferenceDeps(row => {
     void recordCapabilityDecision({
       ...base,
       decision: row.decision,
@@ -96,7 +96,8 @@ export async function POST(req: NextRequest) {
       expiresAt: row.expiresAt,
       sideEffect: row.sideEffect,
     });
-  }));
+  });
+  const result = await invokeModelInference(principal, parsed.request, deps);
 
   if (result.ok) return NextResponse.json({ answers: result.answers, receipt: result.receipt }, { headers: NO_STORE });
   if ('receipt' in result) return fail(result.status, result.error, result.code, { receipt: result.receipt });

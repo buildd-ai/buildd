@@ -39,8 +39,16 @@ interface Account {
   lastSeenAt?: string | null;
   /** Trusted as a long-lived host runner (team credential access). */
   hostRunner?: boolean;
-  /** The viewer is an owner/admin of this token's team, so may change hostRunner. */
+  /**
+   * The viewer holds manage_team_keys in this token's team, so may change
+   * hostRunner and the worker limit, and regenerate or delete the token.
+   */
   canManageHostRunner?: boolean;
+  /**
+   * The viewer may delete this token: they hold manage_team_keys, or they made
+   * it (DELETE /api/accounts/[id]). Omitted = canManageHostRunner.
+   */
+  canDelete?: boolean;
 }
 
 /** "seen 4m ago", "seen now", or nothing when no runner has reported lately. */
@@ -56,8 +64,8 @@ interface Workspace {
   repo: string | null;
 }
 
-/** Where a new runner token is made. */
-export const NEW_TOKEN_HREF = '/app/settings/runners/tokens/new';
+/** Where a new runner token is made: a sheet over Runners. */
+export const NEW_TOKEN_HREF = '/app/settings/runners?new=1';
 
 export default function RunnerTokensSection({ accounts, workspaces = [] }: { accounts: Account[]; workspaces?: Workspace[] }) {
   const router = useRouter();
@@ -111,7 +119,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       id="runner-tokens"
       // One primary: with tokens the header link is a plain button; empty, the
       // inline "Create a runner token" below is the primary and this is hidden.
-      action={accounts.length > 0 ? <Link href={NEW_TOKEN_HREF} className="btn" data-testid="new-token">+ New token</Link> : undefined}
+      action={accounts.length > 0 ? <Link href={NEW_TOKEN_HREF} scroll={false} className="btn" data-testid="new-token">+ New token</Link> : undefined}
     >
       <p className="text-xs text-text-secondary mb-3">
         For runners, CI and analytics clients. Model sign-ins are on Models.
@@ -151,12 +159,15 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                     {group.tokens.map((account) => {
                       const isExpanded = expandedId === account.id;
                       const hasWarning = account.accountWorkspaces && account.accountWorkspaces.length === 0;
+                      const canAdmin = account.canManageHostRunner === true;
+                      const canDelete = (account.canDelete ?? canAdmin) === true;
 
                       return (
                         <div key={account.id}>
                           {/* Compact row */}
                           <button
                             onClick={() => setExpandedId(isExpanded ? null : account.id)}
+                            aria-expanded={isExpanded}
                             className="w-full flex min-h-12 items-center gap-3 py-2.5 pl-6 pr-4 hover:bg-surface-3 transition-colors text-left"
                           >
                             <div className="flex-1 min-w-0">
@@ -196,7 +207,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                     accountId={account.id}
                                     value={maxConcurrentWorkers[account.id] ?? account.maxConcurrentWorkers}
                                     onUpdate={(newValue) => setMaxConcurrentWorkers((cur) => ({ ...cur, [account.id]: newValue }))}
-                                    canEdit={account.canManageHostRunner === true}
+                                    canEdit={canAdmin}
                                   />
                                   {account.authType === 'api' && (
                                     <><span>·</span><span>Cost: ${account.totalCost}</span></>
@@ -223,18 +234,24 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                 <HostRunnerToggle
                                   accountId={account.id}
                                   hostRunner={account.hostRunner === true}
-                                  canManage={account.canManageHostRunner === true}
+                                  canManage={canAdmin}
                                 />
 
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <button
-                                    onClick={() => { setRegenerateError(null); setRegenerateTarget(account); }}
-                                    className="btn"
-                                  >
-                                    Regenerate key
-                                  </button>
-                                  <DeleteAccountButton accountId={account.id} accountName={account.name} />
-                                </div>
+                                {(canAdmin || canDelete) && (
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    {canAdmin && (
+                                      <button
+                                        onClick={() => { setRegenerateError(null); setRegenerateTarget(account); }}
+                                        className="btn"
+                                      >
+                                        Regenerate key
+                                      </button>
+                                    )}
+                                    {canDelete && (
+                                      <DeleteAccountButton accountId={account.id} accountName={account.name} />
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             </div>
                           )}

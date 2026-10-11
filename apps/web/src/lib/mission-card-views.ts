@@ -28,6 +28,8 @@ export const MISSION_CARD_TASK_COLUMNS = {
   creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true,
   startAt: true, loopIteration: true, taskClass: true, roleSlug: true,
   missionPhaseIndex: true, missionPhaseLabel: true,
+  // classifyMissionWait reads these to tell a self-resolving retry from a stall.
+  context: true, loopConfig: true, loopState: true,
 } as const;
 
 /** Worker columns a card reads (liveness, PR state, and the strip's spans). */

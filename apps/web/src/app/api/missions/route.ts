@@ -9,6 +9,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { resolveWorkspaceAccess } from '@/lib/workspace-access';
+import { checkContextArtifactIds } from '@/lib/context-artifact-ids';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
 import {
@@ -360,6 +361,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const contextArtifacts = await checkContextArtifactIds(
+      contextArtifactIds,
+      apiAccount ? { account: apiAccount } : { userId: user!.id },
+      teamId,
+    );
+    if (!contextArtifacts.ok) {
+      return NextResponse.json({ error: contextArtifacts.error }, { status: 400 });
+    }
+
     const [mission] = await db
       .insert(missions)
       .values({
@@ -371,7 +381,7 @@ export async function POST(req: NextRequest) {
         priority: priority || 0,
         parentMissionId: parentMissionId || null,
         initiativeId: initiativeId || null,
-        contextArtifactIds: contextArtifactIds || [],
+        contextArtifactIds: contextArtifacts.ids,
         maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
         orchestrationMode: effectiveOrchestrationMode,
@@ -464,6 +474,23 @@ export async function POST(req: NextRequest) {
         .catch(e => console.error('[missions/post] Failed to roll back mission:', e));
       throw err;
     }
+    }
+
+    // contextArtifactIds dual-write: the column keeps them for older readers, and
+    // each id also becomes a `context` link (artifact_links, owned by Living
+    // Specs), which mission context reads. Best-effort: a link that fails is
+    // logged and the column still carries the id.
+    if (contextArtifacts.ids.length) {
+      try {
+        const { linkContextArtifacts } = await import('@/lib/artifact-links');
+        const { failed } = await linkContextArtifacts(
+          apiAccount ? { kind: 'account', account: apiAccount } : { kind: 'user', userId: user!.id },
+          'mission', mission.id, contextArtifacts.ids,
+        );
+        if (failed.length) console.warn('[missions/post] context links not written:', failed);
+      } catch (err) {
+        console.warn('[missions/post] context links not written:', err);
+      }
     }
 
     // A mission-branch mission must never exist in the enabled-but-inert state: generate the

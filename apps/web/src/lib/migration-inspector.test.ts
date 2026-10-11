@@ -243,6 +243,18 @@ describe('inspectPullRequestMigrations', () => {
     });
   });
 
+  // Spec workflow-state-kernel §13.11 rule 5: "superseded predecessor migration reservation".
+  it('a predecessor this PR replaces does not hold its migration slot', async () => {
+    github({
+      files: [{ filename: `${DIR}/0094_safe.sql`, status: 'added' }],
+      head: { [`${DIR}/0094_safe.sql`]: SAFE },
+      peers: [{ number: 40, files: [{ filename: `${DIR}/0094_older_attempt.sql`, status: 'added' }] }],
+    });
+    await expect(inspectPullRequestMigrations({
+      installationId: 1, repoFullName: 'acme/app', prNumber: 42, headSha: 'abc123', files: [], ignorePrNumbers: [40],
+    })).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
   it('does not report a collision when this PR is not the deterministic owner (lower PR number)', async () => {
     github({
       files: [{ filename: `${DIR}/0094_safe.sql`, status: 'added' }],
@@ -315,6 +327,30 @@ describe('inspectPullRequestMigrations', () => {
         reason: 'migration number collision: 0275_new_feature.sql is at or below 0275_landed_first.sql, already on the base',
         collision: { file: '0275_new_feature.sql', otherFile: '0275_landed_first.sql', otherPrNumber: null, against: 'base' },
       });
+    });
+
+    it('queues behind an earlier open PR minting the same slot (migration lane)', async () => {
+      const peer = `${DIR}/0275_peer_feature.sql`;
+      github({
+        files: [{ filename: own, status: 'added' }],
+        head: { [own]: SAFE, [peer]: SAFE },
+        baseDir: ['0274_older.sql', '0275_landed_first.sql'],
+        peers: [{ number: 40, files: [{ filename: peer, status: 'added' }] }],
+      });
+      const result = await inspect('dev');
+      expect(!result.safe && result.collision?.queuedBehind).toBe(40);
+    });
+
+    it('does not queue behind a later-numbered open PR', async () => {
+      const peer = `${DIR}/0275_peer_feature.sql`;
+      github({
+        files: [{ filename: own, status: 'added' }],
+        head: { [own]: SAFE, [peer]: SAFE },
+        baseDir: ['0274_older.sql', '0275_landed_first.sql'],
+        peers: [{ number: 9999, files: [{ filename: peer, status: 'added' }] }],
+      });
+      const result = await inspect('dev');
+      expect(!result.safe && result.collision?.queuedBehind).toBeUndefined();
     });
 
     it('names the base’s newest migration when the base has moved past this number', async () => {

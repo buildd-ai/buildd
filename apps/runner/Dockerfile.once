@@ -88,6 +88,7 @@ COPY apps/responder/package.json apps/responder/package.json
 COPY apps/cloud-runner/package.json apps/cloud-runner/package.json
 COPY apps/dispatch/package.json apps/dispatch/package.json
 COPY apps/model-policy/package.json apps/model-policy/package.json
+COPY apps/control-plane/package.json apps/control-plane/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ai-kit/package.json packages/ai-kit/package.json

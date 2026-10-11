@@ -625,6 +625,40 @@ describe('thread scroll', () => {
     expect(scroller().scrollTop).toBe(900);
   });
 
+  it('scrolled away, the block the reader is on holds its place when something above it grows', async () => {
+    const streaming = fixtures.chatFixture('streaming').messages;
+    await mount({ messages: streaming, status: 'streaming' });
+    const grow = (n: number) => streaming.map((m: Msg) => (m.id === 'm2' ? { ...m, parts: [...m.parts, ...Array.from({ length: n }, () => ({ type: 'step-start' as const }))] } : m));
+    // The person's message is what the reader is looking at, 800px into the thread.
+    let at = 800;
+    place = el => (el.matches('.kit-msg[data-role="user"]') ? { top: at, height: 300 } : null);
+    await readerScrolls(900);
+    // A card above it loads and the thread grows 200px above the reader.
+    at = 1000;
+    await render({ messages: grow(1), status: 'streaming' });
+    expect(scroller().scrollTop).toBe(1100);
+    // The turn lands while the reader is away: still no jump, and no pull to the bottom.
+    at = 1003;
+    const done = grow(2).map((m: Msg) => (m.id === 'm2' ? { ...m, parts: m.parts.map(p => (p.type === 'text' ? { ...p, state: 'done' as const } : p)) } : m));
+    await render({ messages: done, status: 'ready' });
+    expect(scroller().scrollTop).toBe(1103);
+  });
+
+  it('scrolled away, growth below the reader moves nothing', async () => {
+    const streaming = fixtures.chatFixture('streaming').messages;
+    await mount({ messages: streaming, status: 'streaming' });
+    place = el => (el.matches('.kit-msg[data-role="user"]') ? { top: 800, height: 300 } : null);
+    await readerScrolls(900);
+    const grow = streaming.map((m: Msg) => (m.id === 'm2' ? { ...m, parts: [...m.parts, { type: 'step-start' as const }] } : m));
+    await render({ messages: grow, status: 'streaming' });
+    expect(scroller().scrollTop).toBe(900);
+  });
+
+  it('the thread owns its scroll anchoring, so the browser does not correct it a second time', async () => {
+    await render({ messages: fixtures.chatFixture('confirmed').messages });
+    expect(scroller().className).toContain('[overflow-anchor:none]');
+  });
+
   it('a finished reply taller than the view shows its head, not its tail', async () => {
     const streaming = fixtures.chatFixture('streaming').messages;
     await mount({ messages: streaming, status: 'streaming' });
@@ -927,5 +961,48 @@ describe('tablet (800px): the phone v3 layout, not the old split', () => {
     const chatCss = GLOBALS.slice(GLOBALS.indexOf('/* ── The empty canvas (ChatWorkspace)'), GLOBALS.indexOf('/* ── Steer on the kit'));
     expect(chatCss).not.toContain('@media (min-width: 768px)');
     expect(chatCss).not.toContain('@media (max-width: 767px)');
+  });
+});
+
+describe('a long paste (Living Specs C2)', () => {
+  const box = () => q('#chat-composer-input') as HTMLTextAreaElement;
+  const paste = async (text: string) => {
+    await act(async () => {
+      const ev = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, 'clipboardData', { value: { getData: () => text } });
+      box().dispatchEvent(ev);
+    });
+  };
+  const enter = async () => {
+    await act(async () => { box().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+  };
+
+  it('over 8,000 characters becomes a card in the composer, not text in the box', async () => {
+    await render();
+    await paste('x'.repeat(8_001));
+    expect(qa('[data-testid="kit-composer-attachments"] [data-testid="kit-attachment"]')).toHaveLength(1);
+    expect(box().value).toBe('');
+  });
+
+  it('a send refused before any reply puts the whole draft back, same attachment id', async () => {
+    let payload: { text: string; attachments: Array<{ id: string; text: string }> } | null = null;
+    const onSend = (text: string, attachments?: Array<{ id: string; text: string }>) => { payload = { text, attachments: attachments ?? [] }; };
+    await render({ onSend });
+    await paste('y'.repeat(9_000));
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box()), 'value')!.set!;
+      setter.call(box(), 'summarise this');
+      box().dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await enter();
+    expect(payload!.text).toBe('summarise this');
+    expect(payload!.attachments).toHaveLength(1);
+    expect(q('[data-testid="kit-attachment"]')).toBeNull();
+    // The server refused the turn: the person's message is last and the status is error.
+    await render({ onSend, status: 'error', error: 'refused', messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: 'summarise this' }] }] as never });
+    expect(box().value).toBe('summarise this');
+    expect(qa('[data-testid="kit-composer-attachments"] [data-testid="kit-attachment"]')).toHaveLength(1);
+    await enter();
+    expect(payload!.attachments[0].id).toBeTruthy();
   });
 });

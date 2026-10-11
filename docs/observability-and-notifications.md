@@ -176,14 +176,24 @@ collect bounded facts (worker failures, gate events, retry lineage, …)
   → detectFailurePatterns()       pure rule engine, 8 rules, deterministic minimum severity
   → recordIncidentCandidates()    idempotent upsert into failure_incidents (CAS, no transactions)
   → actOnIncidentResults()        triage (rule floor, optionally raised by a model) →
-                                   alert on transition only (never per occurrence) →
-                                   at most one deduped fix task per incident
+                                   at most one deduped fix task per incident →
+                                   page candidates on transition only (never per occurrence),
+                                   through the escalation gate
 ```
 
-- **Severity → alert channel** reuses the same ladder as `reportOps` above:
-  critical → Pushover priority 1, high → one normal Pushover, medium → digest
-  (ledger only), low → ledger only. A critical floor is decided by rule and
-  can never be downgraded by the model triage step — it is not even consulted.
+- **Who is paged: the escalation gate** (`apps/web/src/lib/failure-incident-escalation.ts`),
+  the same one that decides PR escalations. Critical and high incidents are page
+  candidates; medium and low stay on the ledger. Rules first:
+  a critical incident is the owner's even while a fix task runs; any other
+  incident whose fix task is still open is Buildd's and pages nobody; a high
+  incident nothing is fixing goes to the owner. The verdict is stored in the
+  decision ledger (subject `incident:<id>`), and only an owner verdict sends a
+  push (the team's `needsAttention` notification, priority 1 for critical),
+  linking to the incident page `/app/incidents/<id>`. Home's Needs You lists
+  every unresolved incident whose stored verdict is the owner's; the page path
+  reads the ledger and never calls a model. A push that fails is not recorded,
+  so the next replay of that state pages again. A critical floor is decided by
+  rule and can never be downgraded by the model triage step: it is not even consulted.
 - **Re-alerting** is transition-based: a severity increase, the affected scope
   crossing an impact tier, or a resolved incident recurring. Anything else —
   including the same pattern simply accumulating more occurrences — updates

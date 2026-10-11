@@ -1,5 +1,5 @@
 import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
-import { RUN_PROGRESS_READERS } from '@/modules';
+import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
@@ -16,7 +16,9 @@ import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { parseCredentialBlock, CREDENTIAL_BLOCK_CONTEXT_KEY } from '@/lib/credential-block-copy';
 import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { isValidTaskId } from '@/lib/task-id';
@@ -110,9 +112,11 @@ import TaskVerdictBlock from './TaskVerdictBlock';
 import TaskErrorEvidence from './TaskErrorEvidence';
 import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
+import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
+import BookkeepingAttemptRow from './BookkeepingAttemptRow';
 import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
-import { resolveTraceConsequences } from '@/lib/trace-consequence';
+import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
 
@@ -130,10 +134,12 @@ export default async function TaskDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ artifact?: string }>;
+  searchParams: Promise<{ artifact?: string; respond?: string }>;
 }) {
   const { id } = await params;
-  const { artifact: initialOpenArtifactId } = await searchParams;
+  const { artifact: initialOpenArtifactId, respond } = await searchParams;
+  // `?respond=1`: an answer link. The reply box below gets focus.
+  const focusAnswer = respond === '1';
   if (!isValidTaskId(id)) notFound();
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
@@ -195,7 +201,7 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers, missionContextRow] = await Promise.all([
+  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, answerInChat] = await Promise.all([
     // Open question notes scoped to this task (drives the "Waiting on you"
     // badge, and lets the live worker view show the note and the worker's
     // waitingFor as ONE question). A mission task's questions carry its
@@ -261,7 +267,11 @@ export default async function TaskDetailPage({
           },
         })
       : Promise.resolve(null),
+    // An answer link for a mission filed from the reader's own conversation
+    // opens that conversation instead, when chat is on for them.
+    focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
   ]);
+  if (answerInChat) redirect(answerInChat);
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
   const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
   // S35: the mission's failed deliverables read through the kernel, as its card does.
@@ -457,15 +467,21 @@ export default async function TaskDetailPage({
   });
 
   // Spec traceability (docs/design/spec-to-build-pattern.md §3) — which spec
-  // doc authorized this task, written by approvePlan onto every child of an
-  // emitsPlan-originated plan. Absent on ordinary tasks.
+  // authorized this task: the repo doc approvePlan writes onto every child of
+  // an emitsPlan-originated plan, and/or the Living Spec revision the server
+  // pinned it to when it was filed (lib/specs/pin.ts). Absent on ordinary tasks.
   const specSourceRaw = (task.context as Record<string, unknown> | null)?.specSource as
     | Partial<SpecSourceContext>
     | undefined;
-  const specSource: SpecSourceContext | null =
-    specSourceRaw && typeof specSourceRaw.specPath === 'string' && typeof specSourceRaw.planningTaskId === 'string'
-      ? { specPath: specSourceRaw.specPath, planningTaskId: specSourceRaw.planningTaskId }
-      : null;
+  const specSource: SpecSourceContext | null = specSourceRaw && typeof specSourceRaw === 'object'
+    ? {
+        ...(typeof specSourceRaw.specPath === 'string' ? { specPath: specSourceRaw.specPath } : {}),
+        ...(typeof specSourceRaw.planningTaskId === 'string' ? { planningTaskId: specSourceRaw.planningTaskId } : {}),
+        ...(typeof specSourceRaw.specId === 'string' ? { specId: specSourceRaw.specId } : {}),
+        ...(typeof specSourceRaw.revision === 'number' ? { revision: specSourceRaw.revision } : {}),
+        ...(typeof specSourceRaw.contentHash === 'string' ? { contentHash: specSourceRaw.contentHash } : {}),
+      }
+    : null;
 
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'
@@ -869,12 +885,12 @@ export default async function TaskDetailPage({
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
   // What each agent error means for the outcome. Every trace stays inspectable;
   // only the ones the record says still matter are counted or shown in red.
+  const traceWorkers = [...taskWorkers, ...ciAttemptTasks.flatMap(t => t.workers)];
   const traceConsequences = resolveTraceConsequences(
     errorTraces,
-    traceOutcomeOf(rulesVerdict, task.status),
+    traceOutcomeOf(rulesVerdict, task.status, priorAttemptFactsOf(traceWorkers)),
     storedVerdictDecision?.traceClasses,
   );
-  const traceWorkers = [...taskWorkers, ...ciAttemptTasks.flatMap(t => t.workers)];
   const attemptLabelByWorker = new Map<string, string>(
     lineageWorkerHistory(taskWorkers, ciAttemptTasks).map(({ worker, attemptLabel }, i, all) => [worker.id, attemptLabel ?? (all.length > 1 ? `Attempt ${all.length - i}` : 'This run')]),
   );
@@ -1087,6 +1103,18 @@ export default async function TaskDetailPage({
             <div className="border border-border-default overflow-hidden">
               {workerHistory.map(({ worker, attemptLabel }) => {
                 const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
+                const bookkeepingRetry = bookkeepingAttemptRetry(worker, task);
+                if (bookkeepingRetry) {
+                  const shownError = plainWorkerError(worker.error, taskBackend);
+                  return (
+                    <BookkeepingAttemptRow key={worker.id} workerId={worker.id} retry={bookkeepingRetry} attemptLabel={attemptLabel}>
+                      <p>Runner: {runnerLabel(worker) ?? worker.name}{worker.account && ` \u00B7 ${worker.account.name}`}</p>
+                      <p className="font-mono">Branch: <span title={worker.branch}>{displayBranchName(worker.branch)}</span></p>
+                      {shownError && <p className="font-mono" title={shownError.raw}>{shownError.text}</p>}
+                      <p className="font-mono">Worker {worker.id} · {worker.turns} turns</p>
+                    </BookkeepingAttemptRow>
+                  );
+                }
                 return (
                   // Below md the badge + PR link wrap onto their own line under the
                   // text (the text column takes the rest of the first line, and
@@ -1398,7 +1426,7 @@ export default async function TaskDetailPage({
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
         {verdict && (
-          <TaskVerdictBlock verdict={verdict} decision={storedVerdictDecision} displayStatus={displayStatus} />
+          <TaskVerdictBlock verdict={verdict} decision={storedVerdictDecision} displayStatus={displayStatus} showDecisionRows={isPlatformOperator(user)} />
         )}
 
         {runnerReach && (
@@ -1420,6 +1448,7 @@ export default async function TaskDetailPage({
               roleSlug={task.roleSlug}
               missionExecutor={missionExecutorOf(missionContextRow)}
               entitlementBlock={task.status === 'pending' ? parseEntitlementBlock((task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]) : null}
+              credentialBlock={task.status === 'pending' ? parseCredentialBlock((task.context as Record<string, unknown> | null)?.[CREDENTIAL_BLOCK_CONTEXT_KEY]) : null}
               runnerPicker
             />
           </div>
@@ -1594,7 +1623,7 @@ export default async function TaskDetailPage({
         {/* Agent errors: every captured trace, sorted by what it means for the
             outcome (needs attention / unclear / recovered / exploration noise).
             Any row opens the complete redacted evidence. */}
-        <TaskErrorEvidence items={errorEvidenceItems} taskTitle={displayTaskTitle(task.title)} terminalSucceeded={terminalSucceeded} />
+        <TaskErrorEvidence items={errorEvidenceItems} taskTitle={displayTaskTitle(task.title)} terminalSucceeded={terminalSucceeded} taskState={verdict?.headline ?? null} />
 
         {/* Execution Plan Chain (replaces Related Tasks when chain data available) */}
         {planChain.length > 0 ? (
@@ -1729,6 +1758,7 @@ export default async function TaskDetailPage({
               }}
               modelTier={modelSummary.tierLabel}
               questionNote={questionNote}
+              focusAnswer={focusAnswer}
               roleName={roleName}
             />
           </div>

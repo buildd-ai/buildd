@@ -577,8 +577,12 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // v6: capture the mission's capture ref (get_page_source captureRef: the
     // integration branch on a mission-branch mission), record qa.ref/refSource,
     // and never file a shot the agent knows is from the wrong ref as unsure.
-    version: 6,
+    // v7: both themes per required route (QA_THEME, qa.theme), the first screen
+    // at 390, nothing shown twice, before/after from trunk on a mission branch,
+    // and the workspace's optional design rules and reference.
+    version: 7,
     supersededContentHashes: [
+      '9a2c3014983cfdf33c514cc6b40f29f5955cf34a83792d65b6429644c2334f00',
       '7287fafb7ea8cc8624c5ab0df92e4ca9c249029ff18712079f7a5242abbf0fca',
       '858c4bb3437c364efa8a74a6fd7aa778ca05c9481af2796cd6dfab577f72359d',
       'fc757beb2e05a18169abe8435b23a4fcbd2fa269e9178bdbf13f87004a8aa137',
@@ -642,13 +646,29 @@ sandbox, pick the recipe by one question: is \`DATABASE_URL\` set?
 
 - **No \`DATABASE_URL\`** (the normal worker case): dispatch \`visual-qa.yml\` with
   \`--ref <captureRef.ref>\` and your routes (or \`-f plan='<plan JSON>'\` instead of \`routes\`), once with
-  \`viewport=mobile\` and once for desktop, then download the \`qa-screenshots\` artifact exactly
-  as the skill describes (and delete it after).
+  \`viewport=mobile\` and once for desktop, each with \`-f theme=light\` or \`-f theme=dark\` (see
+  "Both themes"), then download the \`qa-screenshots\` artifact exactly as the skill describes
+  (and delete it after).
 - **\`DATABASE_URL\` set** (a dev database, never prod): run \`scripts/qa/shoot.sh\` twice,
   with \`QA_VIEWPORT=mobile\` and without it (desktop). It passes \`QA_PLAN\` through.
 
 Capture every required route at BOTH viewports: \`mobile\` (390x844) and \`desktop\`
 (1280x900). At most 40 shots per run. Navigate read-only: GETs only, no form submits.
+
+### Both themes
+
+Every required route also needs a shot in BOTH themes, light and dark, at either viewport.
+\`QA_THEME=light|dark\` (\`-f theme=\` on the dispatch) emulates \`prefers-color-scheme\`, so any
+app that follows the OS theme switches, and \`captures.json\` records \`theme\` on each entry.
+The cheapest cover is mobile in one theme and desktop in the other; shoot both themes at
+mobile when the mission changed colours or tokens. Copy \`theme\` onto every shot as \`qa.theme\`.
+A shot with no \`qa.theme\` counts toward neither theme.
+
+### Before and after
+
+When \`captureRef.source\` is \`mission_integration\`, also capture the same routes from the trunk
+the mission merges into, so each finding can say what changed. Keep those before shots on
+disk: upload only shots from \`captureRef.ref\`.
 
 ### Modals, menus and gated states: a capture plan
 
@@ -696,7 +716,14 @@ then desktop) before judging anything.
 Read each PNG. For each one, decide:
 - \`ok\`: renders correctly for what the mission changed.
 - \`issue\`: a concrete defect (overflow, clipped or overlapping content, dead or missing CTA,
-  broken empty/error state, duplicated title).
+  broken empty/error state, duplicated title, the same fact, count or action shown twice on
+  one page, a first screen at 390 that does not show what the page is for, a theme that
+  renders unreadably).
+
+When your task description names design rules (\`gitConfig.visualQa.designRules\`), read that
+file first and check each shot against it. When it names a design reference, compare each
+shot with it and say in the finding where the page departs from it. Neither is set for
+most workspaces; never apply another workspace's rules.
 - \`unsure\`: you can't tell whether it is intended.
 
 Upload each shot with one \`upload_artifact\` call, then PUT the bytes with the curl it returns:
@@ -706,7 +733,8 @@ buildd action=upload_artifact params={
   filename: "<route-id>-<viewport>.png", mimeType: "image/png", sizeBytes: <exact bytes>,
   type: "screenshot", missionId: "<this task's missionId>",
   metadata: { qa: { runKey: "<one id for this whole run>", route: "/app/tasks/:id",
-    viewport: "mobile" | "desktop", finding: "<what you saw, one or two sentences>",
+    viewport: "mobile" | "desktop", theme: "light" | "dark",
+    finding: "<what you saw, one or two sentences>",
     verdict: "ok" | "issue" | "unsure", source: "sandbox" | "vercel-preview",
     ref: "<the branch you captured from>", refSource: "<captureRef.source>",
     state: "<the QA_PLAN state key; omit on a base shot>" } }
@@ -776,8 +804,8 @@ yourself, and do not skip filing a fix because no round follows.
 
 ## 5. Complete
 
-Call \`complete_task\` once every required route has an uploaded mobile and desktop shot. The
-server checks this: a missing route/viewport, an empty finding, a shot whose upload never
+Call \`complete_task\` once every required route has an uploaded mobile and desktop shot, and a
+light and a dark one. The server checks this: a missing route/viewport or theme, an empty finding, a shot whose upload never
 landed, or an issue with no fix task is rejected with a message naming what is missing. Fix
 exactly that and complete again.
 

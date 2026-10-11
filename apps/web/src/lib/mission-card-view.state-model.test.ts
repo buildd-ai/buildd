@@ -205,3 +205,20 @@ describe('the situation copy agrees with the grouping while work is in flight', 
     expect(s.state.situation.headline).toContain('"no open tasks"');
   });
 });
+
+describe('card chip while an infrastructure retry is scheduled', () => {
+  it('reads WAITING TO RETRY, not AWAITING VERIFICATION', () => {
+    const now = Date.parse('2026-10-10T13:00:00Z');
+    const view = buildMissionCardView({
+      id: 'm', title: 'M', status: 'active', workspaceId: 'w',
+      goalCriteria: [{ type: 'command', command: 'x' }] as any,
+      goalCriteriaState: { overall: 'UNVERIFIED', criteria: [{ verdict: 'unverified', label: 'x' }] } as any,
+      tasks: [
+        { id: 't1', title: 'T', status: 'pending', taskClass: 'work', createdAt: new Date(now - 3600_000),
+          startAt: new Date(now + 600_000), context: { infraRetryCount: 1 },
+          workers: [{ id: 'w1', status: 'failed', exitCause: 'never_started' }] },
+      ],
+    } as any, { from: 'missions', now } as any);
+    expect(view.chip.label).toBe('WAITING TO RETRY');
+  });
+});

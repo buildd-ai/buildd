@@ -45,12 +45,23 @@ export interface MigrationCollisionRetryResult {
   handled: boolean;
   /** The renumber task now carrying it (the one just filed, or the one already in flight). */
   taskId?: string;
+  /**
+   * Set when nothing was filed because an earlier open PR owns the next
+   * migration slot (the migration lane). The caller must treat the PR as
+   * handled-and-waiting, not escalate it to a person.
+   */
+  queuedBehind?: number;
 }
 
 export async function tryDispatchMigrationCollisionRetry(
   params: MigrationCollisionRetryParams,
 ): Promise<MigrationCollisionRetryResult> {
   const { collision, workerId, taskId, prNumber, headSha, repoFullName, workspaceId, installationId } = params;
+
+  // Migration lane: renumbering past a PR that has not landed only dirties both
+  // again when it does. Wait for the predecessor, then renumber once against the base.
+  const queuedBehind = collision.queuedBehind ?? (collision.against !== 'base' ? collision.otherPrNumber ?? undefined : undefined);
+  if (queuedBehind != null) return { handled: true, queuedBehind };
 
   const result = await dispatchConflictRetry({
     workerId,

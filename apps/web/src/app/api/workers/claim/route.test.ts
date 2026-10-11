@@ -148,6 +148,9 @@ mock.module('@buildd/core/db', () => ({
       // No team blocks a catalog entry here; blocked_by_policy is covered in
       // connector-prefilter / connector-gate / mcp-connector-injection tests.
       connectorCatalogTeamPolicies: { findMany: async () => [] },
+      // Claim injection reads the team catalog to know which connectors are
+      // brokered by the connector gateway (built-in Axiom/Vercel entries).
+      connectorCatalogEntries: { findMany: async () => [] },
       missions: { findMany: mockMissionsFindMany, findFirst: mockMissionsFindFirst },
       oauthBudgetEpisodes: { findMany: mockOauthEpisodesFindMany },
     },
@@ -242,6 +245,7 @@ mock.module('@buildd/core/db/schema', () => ({
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId', grantedByAccountId: 'grantedByAccountId' },
   connectorCatalogTeamPolicies: { teamId: 'teamId', slug: 'slug', policy: 'policy' },
+  connectorCatalogEntries: { teamId: 'teamId', slug: 'slug' },
 }));
 
 // Agent model endpoint ranking (docs/design/agent-model-endpoint.md §2).
@@ -6758,6 +6762,32 @@ describe('path-overlap claim guard', () => {
     });
   });
 
+  // Spec workflow-state-kernel §13.11 rule 4: "pending retry blocked by own lineage".
+  it('layer 2: a fix attempt is not deferred behind a claim its own parent still holds', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(
+      new Map([['task-parent', ['apps/web/src/lib/mcp-oauth.ts']]]),
+    );
+    mockTasksFindMany.mockResolvedValueOnce([{
+      ...taskWithManifest(['apps/web/src/lib/mcp-oauth.ts']),
+      taskClass: 'attempt',
+      parentTaskId: 'task-parent',
+      context: { rootTaskId: 'task-parent', lineagePrNumbers: [2700] },
+    }]);
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    }));
+    const data = await res.json();
+    expect(data.diagnostics?.taskExclusion?.code).not.toBe('path_overlap');
+    expect(data.diagnostics?.deferrals?.path_overlap ?? 0).toBe(0);
+  });
+
   // ── Claim-time waiter registration ─────────────────────────────────────────
   // A pending task deferred for path_overlap must be woken when its blocker
   // releases. Release only wakes rows in path_claim_waiters, so the deferral
@@ -9111,6 +9141,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
   });
 
   it('a fix attempt with another open attempt in its retry family is cancelled at claim, not started beside it', async () => {
+    // Counts calls below: earlier attempt-shaped claims in this file also reach the guard.
+    mockGuardClaimedRetry.mockClear();
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', reviewerRetryPrNumber: 3431, parentTaskId: 'orig' })]);
     mockGuardClaimedRetry.mockResolvedValueOnce(true);
@@ -9536,6 +9568,71 @@ describe('explicit taskId claims (organizer workflow)', () => {
     const data = await (await claim({ runner: 'runner-7' })).json();
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics.reason).toBe('budget_exhausted');
+  });
+
+  // `runner: 'mcp'` with an explicit taskId runs on the caller's own seat even
+  // with no signed marker (an MCP client that never got one), so a wall hit by a
+  // runner's seat is not its wall. A runner with its own id stays walled.
+  describe('runsOnCallersSeat: explicit mcp claim without the marker', () => {
+    const exhausted = () => ({
+      ...account(),
+      authType: 'oauth',
+      budgetExhaustedAt: new Date().toISOString(),
+      budgetResetsAt: new Date(Date.now() + 3600000).toISOString(),
+    });
+    const pauseClaude = () => mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 3600000), reason: 'budget' },
+    ]);
+
+    afterEach(() => mockBackendPausesFindMany.mockResolvedValue([]));
+
+    it('claims with the account budget exhausted', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhausted());
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp' })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.diagnostics?.reason).not.toBe('budget_exhausted_partial');
+    });
+
+    it('claims with the account budget exhausted and forceOverride', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhausted(), ...account('admin'), authType: 'oauth', budgetExhaustedAt: new Date().toISOString(), budgetResetsAt: new Date(Date.now() + 3600000).toISOString() });
+      mockTasksFindMany.mockResolvedValueOnce(forceTarget()).mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('claims while the team pause log walls Claude', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth' });
+      pauseClaude();
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp' })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.diagnostics).toBeUndefined();
+    });
+
+    it('is still walled without a taskId', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhausted());
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp', taskId: undefined })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+    });
+
+    it('a runner with its own id is still walled even with taskId and force', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhausted(), ...account('admin'), authType: 'oauth', budgetExhaustedAt: new Date().toISOString(), budgetResetsAt: new Date(Date.now() + 3600000).toISOString() });
+      mockTasksFindMany.mockResolvedValueOnce(forceTarget()).mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'runner-7', forceOverride: true })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+    });
+
+    it('a cloud executor declaring mcp is still walled', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhausted());
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp', executor: 'cloud' })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+    });
   });
 
   it('local executor: repeated explicit claims of one task are not rate-limited', async () => {

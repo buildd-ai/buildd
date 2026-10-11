@@ -162,8 +162,8 @@ describe('groupErrorEvidence', () => {
 });
 
 describe('affectsLine', () => {
-  const item = (presentation: ErrorEvidenceItem['presentation'], command: string | null, pattern = 'bash_nonzero_exit') =>
-    ({ presentation, command, pattern }) as ErrorEvidenceItem;
+  const item = (presentation: ErrorEvidenceItem['presentation'], command: string | null, pattern = 'bash_nonzero_exit', decidedBy: 'rule' | 'model' = 'model') =>
+    ({ presentation, command, pattern, decidedBy, reason: 'The rule said this plainly.' }) as ErrorEvidenceItem;
 
   it('says what an unrecovered verify failure costs', () => {
     expect(affectsLine(item('needs_attention', 'bun run test foo'))).toBe('Tests did not pass, so the change is not verified.');
@@ -178,5 +178,12 @@ describe('affectsLine', () => {
       expect(line).not.toContain('—');
     }
     expect(affectsLine(item('needs_attention', null, 'auth_error')).length).toBeGreaterThan(10);
+  });
+
+  it('is the rule\'s own reason outside a failed check, so a sheet never says it twice', () => {
+    for (const p of ['needs_attention', 'unclear', 'recovered', 'noise'] as const) {
+      expect(affectsLine(item(p, null, 'resume_branch_fallback', 'rule'))).toBe('The rule said this plainly.');
+    }
+    expect(affectsLine(item('needs_attention', 'bun run test', 'bash_nonzero_exit', 'rule'))).toBe('Tests did not pass, so the change is not verified.');
   });
 });

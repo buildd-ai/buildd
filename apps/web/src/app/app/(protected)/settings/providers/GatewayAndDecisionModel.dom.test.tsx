@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: GatewayAndDecisionModel } = await import('./GatewayAndDecisionModel');
+const { describeControls } = await import('../_lib/form-controls');
 
 let gateway: unknown = null;
 let decisionModel: unknown = null;
@@ -104,5 +105,15 @@ describe('GatewayAndDecisionModel', () => {
     expect(text('decision-model-current')).toBe('qwen3-8b via OpenRouter');
     expect(button('Connect')).toBeUndefined();
     expect(host.querySelector('input[name="decision-model"]')).toBeNull();
+  });
+
+  it('a member reads a connected gateway and the decision model with no control at all', async () => {
+    gateway = { baseURL: 'https://litellm.example.com/v1', last4: 'abcd', health: 'healthy', lastVerificationError: null };
+    decisionModel = { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' };
+    await mount(false);
+    expect(text('litellm-gateway-status')).toContain('https://litellm.example.com/v1');
+    expect(text('decision-model-current')).toBe('qwen3-8b via LiteLLM');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this/);
   });
 });
