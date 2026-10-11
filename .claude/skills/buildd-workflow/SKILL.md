@@ -304,12 +304,16 @@ Know when to stop and involve a human:
   owner is notified and answering resumes the work from where you left off.
 - **The same hard block, from an interactive session** (you claimed the task
   with `claim_task` from a person's own Claude Code; no runner manages you):
-  `buildd action=ask_human params={ question, options?, context? }`, then loop
-  on `buildd action=await_answer` — each call waits up to 45 s; on
-  `timedOut: true` call it again at once, until `answered: true`. Don't call
-  `update_progress` while parked (it marks you running): the `await_answer`
-  loop is the heartbeat, and a session silent for ~5 minutes has its answer
-  sent to a follow-up task. Once answered, resume the `update_progress`
+  `buildd action=ask_human params={ question, options?, context? }`, then run
+  the reply's `waitCommand` as a Bash command with `run_in_background: true`
+  (plain `sh` + `curl`; costs no turns while waiting). It exits 0 once
+  answered, non-zero with a one-line reason otherwise; on 0 call
+  `buildd action=await_answer params={ waitSeconds: 0 }` to read the answer.
+  Fallback without background commands: loop on `await_answer` (each call
+  waits up to 45 s; on `timedOut: true` call again at once). Don't call
+  `update_progress` while parked (it marks you running): the wait command's
+  polls (or the loop) are the heartbeat, and a session silent for ~5 minutes
+  has its answer sent to a follow-up task. Once answered, resume the `update_progress`
   cadence. Unanswered, it expires (24 h, 4 h in a mission) and the task fails
   with no runner retry.
 - **Everything else** — uncertainty, permission-seeking, a design choice you're
