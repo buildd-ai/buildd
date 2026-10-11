@@ -19,6 +19,22 @@ mock.module('@/lib/admin/audit', () => ({
   recordPlatformAdminAudit: async (event: any) => { audits.push(event); },
 }));
 
+// The owner's decision-feature switch: real planning and views, stubbed storage.
+const realModes = await import('@buildd/core/decision-feature-modes');
+let storedModes = new Map<string, any>();
+const modeWrites: any[] = [];
+mock.module('@buildd/core/decision-feature-modes', () => ({
+  ...realModes,
+  loadDecisionFeatureModes: async () => storedModes,
+  loadDecisionFeatureMode: async (feature: string) => storedModes.get(feature) ?? null,
+  writeDecisionFeatureMode: async (row: any) => {
+    const written = { ...row, setAt: new Date('2026-01-02T00:00:00Z') };
+    modeWrites.push(written);
+    storedModes.set(row.feature, written);
+    return written;
+  },
+}));
+
 const TEAM = '11111111-1111-4111-8111-111111111111';
 const WS = '22222222-2222-4222-8222-222222222222';
 const EXP = '33333333-3333-4333-8333-333333333333';
@@ -73,6 +89,7 @@ const insightCalls: any[] = [];
 const routes = {
   decisionFeatures: await import('./decisions/features/route'),
   decisionStats: await import('./decisions/stats/route'),
+  featureMode: await import('./decisions/features/[id]/mode/route'),
   experiments: await import('./experiments/route'),
   experiment: await import('./experiments/[id]/route'),
   flags: await import('./teams/[id]/experiment-flags/route'),
@@ -101,6 +118,7 @@ type Call = { name: string; call: () => Promise<Response> };
 const calls: Call[] = [
   { name: 'GET decisions/features', call: () => routes.decisionFeatures.GET(req('decisions/features')) },
   { name: 'GET decisions/stats', call: () => routes.decisionStats.GET(req('decisions/stats')) },
+  { name: 'POST decisions/features/[id]/mode', call: () => routes.featureMode.POST(req('decisions/features/orchestration_manifest/mode', 'POST', { mode: 'acting' }), idCtx('orchestration_manifest')) },
   { name: 'GET experiments', call: () => routes.experiments.GET(req('experiments')) },
   { name: 'PATCH experiments/[id]', call: () => routes.experiment.PATCH(req(`experiments/${EXP}`, 'PATCH', { status: 'paused' }), idCtx(EXP)) },
   { name: 'GET teams/[id]/experiment-flags', call: () => routes.flags.GET(req(`teams/${TEAM}/experiment-flags`), idCtx(TEAM)) },
@@ -125,6 +143,8 @@ beforeEach(() => {
   writes.length = 0;
   scopes.length = 0;
   insightCalls.length = 0;
+  storedModes = new Map();
+  modeWrites.length = 0;
   flags = { enabledDecisionShadows: ['task_role_shadow'], chatRetro: { lessons: false, proposals: false }, chatRetroDogfood: false };
 });
 
@@ -135,6 +155,7 @@ describe('non-owner gets 404 on every route', () => {
       const res = await call();
       expect(res.status).toBe(404);
       expect(writes).toHaveLength(0);
+      expect(modeWrites).toHaveLength(0);
       expect(audits).toHaveLength(0);
     });
   }
@@ -185,6 +206,60 @@ describe('GET decisions/features', () => {
     expect(body.totals).toMatchObject({ count: 6, costUsd: 0.0012 });
     // Data only: no labels or descriptions.
     expect(JSON.stringify(body)).not.toContain('description');
+  });
+});
+
+describe('decision feature modes', () => {
+  const features = async () => {
+    const body = await (await routes.decisionFeatures.GET(req('decisions/features'))).json();
+    return new Map<string, any>(body.groups.flatMap((g: any) => g.features).map((f: any) => [f.id, f]));
+  };
+  const post = (feature: string, body: unknown) =>
+    routes.featureMode.POST(req(`decisions/features/${feature}/mode`, 'POST', body), idCtx(feature));
+
+  it('GET says what each feature does: file prediction records and can be switched; role routing acts with no switch', async () => {
+    const f = await features();
+    expect(f.get('orchestration_manifest')).toMatchObject({ mode: 'recording', switchable: true, canAct: true });
+    expect(f.get('task_role_shadow')).toMatchObject({ mode: 'acting', switchable: false });
+    expect(f.get('task_role_shadow').cannotActReason).toBeTruthy();
+    expect(f.get('task_role_apply')).toMatchObject({ mode: 'acting', aliasOf: 'task_role_shadow' });
+  });
+
+  it('switching to acting is stored, audited and shows on GET', async () => {
+    const res = await post('orchestration_manifest', { mode: 'acting', threshold: 0.8, reason: 'measured' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ feature: 'orchestration_manifest', mode: 'acting', threshold: 0.8 });
+    expect(modeWrites).toHaveLength(1);
+    expect(modeWrites[0]).toMatchObject({ feature: 'orchestration_manifest', mode: 'acting', threshold: 0.8, setByAccountId: 'acct-owner' });
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      actorAccountId: 'acct-owner', action: 'decision_feature.mode.update', targetType: 'decision_feature',
+      targetId: 'orchestration_manifest', teamId: null, before: { mode: 'recording' }, after: { mode: 'acting', threshold: 0.8, reason: 'measured' },
+    });
+    expect((await features()).get('orchestration_manifest')).toMatchObject({ mode: 'acting', actingSince: '2026-01-02T00:00:00.000Z' });
+  });
+
+  it('back to recording always succeeds', async () => {
+    await post('orchestration_manifest', { mode: 'acting' });
+    const res = await post('orchestration_manifest', { mode: 'recording' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).mode).toBe('recording');
+    expect(audits[1]).toMatchObject({ before: { mode: 'acting' }, after: { mode: 'recording' } });
+  });
+
+  it('a feature with no switch is refused with its reason, and nothing is written', async () => {
+    const res = await post('task_role_shadow', { mode: 'acting' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBeTruthy();
+    expect(modeWrites).toHaveLength(0);
+    expect(audits).toHaveLength(0);
+  });
+
+  it('an unknown feature is 404 and a bad body 400', async () => {
+    expect((await post('nope', { mode: 'acting' })).status).toBe(404);
+    expect((await post('orchestration_manifest', { mode: 'live' })).status).toBe(400);
+    expect((await post('orchestration_manifest', { mode: 'acting', threshold: 3 })).status).toBe(400);
+    expect(modeWrites).toHaveLength(0);
   });
 });
 
