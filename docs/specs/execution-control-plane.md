@@ -2,7 +2,7 @@
 title: Execution Control Plane
 status: draft
 owner: max
-last_verified: 2026-10-10
+last_verified: 2026-10-11
 summary: Authorized execution (claims, heartbeats, results, webhooks, Dispatch callbacks) MUST keep moving while the web app is down, served by a separate Worker running the same handlers.
 domain: tasks
 surfaces: [apps/control-plane/src/index.ts, apps/control-plane/src/next-server-shim.ts, apps/control-plane/wrangler.jsonc]
@@ -66,6 +66,13 @@ runs, so the execution handlers never differ between the two hosts.
   Redis from the Worker; it needs `Authorization: Bearer <CRON_SECRET>`, is a
   404 without it, and reports each probe as a status or ok/fail word, never
   upstream error text (`index.test.ts`).
+- The anonymous GitHub probe (`anonymousGithubProbe`) reads `rate_limited`
+  and stays healthy when GitHub answers 429, or 403 with
+  `x-ratelimit-remaining: 0`. Unauthenticated calls share a per-IP budget, and
+  a Worker's egress IP is shared, so another tenant can spend it. Any other
+  non-200 fails the deep health, including a 403 with budget left, which is
+  what a missing User-Agent looks like. The App probe covers the authenticated
+  path.
 - `.github/workflows/deploy-control-plane.yml` deploys the Worker on every
   successful Production deployment of the web app, at that deployment's SHA and
   so after its migrations, and fails unless `/__control-plane/health?deep=1`
@@ -93,6 +100,10 @@ runs, so the execution handlers never differ between the two hosts.
 - AC-3: GIVEN the Vercel project paused WHEN a runner claims through
   buildd.dev THEN the claim is answered by the Worker against production
   Postgres. Passed on 2026-10-10 (artifact `control-plane-cutover-evidence`).
+- AC-5: GIVEN GitHub answers the Worker's anonymous call 403 with
+  `x-ratelimit-remaining: 0` WHEN `?deep=1` runs THEN `github` is `rate_limited`
+  and does not fail the probe; GIVEN a 403 with budget left THEN it fails
+  (`index.test.ts`).
 
 ## 3. One owner per state machine
 

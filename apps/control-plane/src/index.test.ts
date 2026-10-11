@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import worker, { executionMode, matchRoute, ROUTES, SERVED_BY } from './index';
+import worker, { anonymousGithubProbe, executionMode, matchRoute, ROUTES, SERVED_BY } from './index';
 import { NextRequest, NextResponse, after } from './next-server-shim';
 import { runInRequest } from './request-context';
 
@@ -140,6 +140,40 @@ describe('deep health', () => {
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+
+  /** Every probe healthy except what `zen` answers. */
+  async function deepWith(zen: Response) {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => {
+      const u = String(r instanceof Request ? r.url : r);
+      return u.endsWith('/zen') ? zen.clone() : new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    try {
+      const res = await worker.fetch(deep('Bearer s3cret'), { EXECUTION_MODE: 'own', CRON_SECRET: 's3cret' }, ctx);
+      return { status: res.status, body: await res.json() as Record<string, unknown> };
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  it("an anonymous GitHub budget spent on the Worker's shared IP reads rate_limited and fails nothing", async () => {
+    const limited = await deepWith(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }));
+    expect(limited.body.github).toBe('rate_limited');
+    const secondary = await deepWith(new Response('', { status: 429 }));
+    expect(secondary.body.github).toBe('rate_limited');
+    expect(anonymousGithubProbe(403, '0')).toEqual({ report: 'rate_limited', healthy: true });
+    expect(anonymousGithubProbe(429, null)).toEqual({ report: 'rate_limited', healthy: true });
+    expect(anonymousGithubProbe(200, '59')).toEqual({ report: 200, healthy: true });
+  });
+
+  it('regression: a 403 with budget left (the missing User-Agent of the cutover) still fails the probe', async () => {
+    const r = await deepWith(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '42' } }));
+    expect(r.body).toMatchObject({ ok: false, github: 403 });
+    expect(r.status).toBe(503);
+    expect(anonymousGithubProbe(403, '42')).toEqual({ report: 403, healthy: false });
+    expect(anonymousGithubProbe(403, null)).toEqual({ report: 403, healthy: false });
+    expect(anonymousGithubProbe(0, null)).toEqual({ report: 0, healthy: false });
   });
 
   it('shallow health stays public', async () => {
