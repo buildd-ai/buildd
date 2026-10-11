@@ -429,6 +429,36 @@ describe('landPr — kernel-owned PR (T15/T16)', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
+    // edc02148: an approved PR sat in REPAIRING(behind) while its refresh backed off, and every
+    // door answered "REPAIRING" without running it; only the hourly floor drained the outbox.
+    describe('a REPAIRING delivery: the door re-drives its due repair', () => {
+      it('drains the delivery once and waits while it is still repairing', async () => {
+        const drained: string[] = [];
+        const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+        const out = await land({ policy: agentReview }, { ...d, kernelLandingView: view('REPAIRING'), drainDelivery: async (id) => { drained.push(id); } });
+        expect(drained).toEqual(['d1']);
+        expect(out).toMatchObject({ kind: 'waiting_ci' });
+        expect(calls).toHaveLength(0);
+      });
+      it('lands when the re-driven repair brought the delivery back to APPROVED', async () => {
+        let state = 'REPAIRING';
+        const { calls, d } = kernelDeps({ merged: true, outcome: 'merged', mergeCommitSha: 'M2' });
+        const out = await land({ policy: agentReview }, {
+          ...d,
+          kernelLandingView: async () => ({ deliveryId: 'd1', current: { state, version: 4, head: 'head1', round: 1 } }),
+          drainDelivery: async () => { state = 'APPROVED'; },
+        });
+        expect(out).toEqual({ kind: 'merged', sha: 'M2' });
+        expect(calls).toHaveLength(1);
+      });
+      it('no drain for any other waiting state', async () => {
+        const drained: string[] = [];
+        const { d } = kernelDeps({ merged: true, outcome: 'merged' });
+        await land({ policy: agentReview }, { ...d, kernelLandingView: view('AWAITING_REVIEW'), drainDelivery: async (id) => { drained.push(id); } });
+        expect(drained).toEqual([]);
+      });
+    });
+
     // Nothing moves an ESCALATED delivery on its own, so the wait says a person must act;
     // every other review state clears on a later event.
     it.each([['ESCALATED', true], ['AWAITING_REVIEW', undefined], ['CHANGES_REQUESTED', undefined]])('a %s delivery flags needsPerson=%s', async (state, needsPerson) => {

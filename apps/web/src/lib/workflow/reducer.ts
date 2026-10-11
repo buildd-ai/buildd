@@ -79,7 +79,13 @@ export const DEAD_EFFECT_OWED_IN: Partial<Record<EffectSpec['kind'], DeliverySta
   dispatch_fix: ['CHANGES_REQUESTED'],
   dispatch_review: ['AWAITING_REVIEW'],
   post_review: 'any',
+  // A mechanical repair is REPAIRING's only exit while its row is queued (edc02148).
+  refresh_branch: ['REPAIRING'],
+  renumber_migration: ['REPAIRING'],
 };
+
+/** The mechanical repair effects: dead, they end their bound attempt (edc02148). */
+const MECHANICAL_REPAIR_EFFECTS: ReadonlySet<EffectSpec['kind']> = new Set(['refresh_branch', 'renumber_migration']);
 
 /** An escalation a further review round answers (T5 from ESCALATED without a person). */
 export function isReviewEscalation(reason: string | null | undefined): boolean {
@@ -1141,11 +1147,23 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const owedIn = DEAD_EFFECT_OWED_IN[cmd.effectKind];
       if (!owedIn) return c.rejected('not_critical');
       if (owedIn !== 'any' && !owedIn.includes(dd.state)) return c.stale('state_moved');
+      // A mechanical repair hands over only for the repair the delivery is waiting on: its key is
+      // `<kind>:<delivery>:<head>:mechanical:<n>` (a trunk-recovery refresh carries no ledger row).
+      const mechanical = MECHANICAL_REPAIR_EFFECTS.has(cmd.effectKind);
+      const [, , deadHead, deadMode] = cmd.dedupeKey.split(':');
+      if (mechanical && deadMode !== 'mechanical') return c.stale('not_bound_repair');
+      if (mechanical && deadHead !== dd.currentHeadSha) return c.stale('head_moved');
+      const bound = mechanical ? c.attempt(dd.boundAttemptId) : undefined;
+      const endBound: AttemptOp[] = bound?.mode === 'mechanical'
+        ? [{ op: 'update', attemptId: bound.id, whenStatus: ['queued', 'running'], set: { status: 'ended', outcome: 'failed', ended: true } }]
+        : [];
       // A dead dispatch_review is the round not being served, T27's outcome: `review_unavailable`,
-      // which anyone may ask again (T5). Every other dead effect waits for a person.
+      // which anyone may ask again (T5). A dead behind refresh is a landing hand-off: the person
+      // may land past freshness (T15's override) or retry. Every other dead effect waits for a person.
       const reason = cmd.effectKind === 'push_recovery' ? 'push_undeliverable'
         : cmd.effectKind === 'merge_call' || cmd.effectKind === 'verify_merge' ? 'landing_needs_human'
-          : cmd.effectKind === 'dispatch_review' ? 'review_unavailable' : 'effect_dead';
+          : cmd.effectKind === 'refresh_branch' && dd.stateReason === 'behind' ? 'landing_needs_human'
+            : cmd.effectKind === 'dispatch_review' ? 'review_unavailable' : 'effect_dead';
       const local = dd.pushPendingLocalHead ?? null;
       const notice: EffectSpec = reason === 'push_undeliverable'
         ? { kind: 'notify', dedupeKey: `notify:${dd.id}:effectdead:${cmd.effectId}`, payload: { event: 'push_undeliverable', localHeadSha: local, baseRef: dd.baseRef } }
@@ -1158,6 +1176,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       return c.apply(`effectdead:${cmd.effectId}`, 'ESCALATED', {
         patch: { stateReason: reason, boundAttemptId: null },
         rounds,
+        attempts: endBound,
         effects: [notice],
         evidence: { effectId: cmd.effectId, effectKind: cmd.effectKind, dedupeKey: cmd.dedupeKey, lastError: cmd.lastError ?? null, fromState: dd.state, reason },
       });
@@ -1448,7 +1467,10 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         if (headCoverage(d, d.currentHeadSha) !== 'none') {
           // §6.3 T13: a head moved only by the platform's own refresh_branch (the base merged in
           // server-side, expected_head pinned) keeps the approval. A renumber changes content: reviewed.
-          const ownRefresh = a.mode === 'mechanical' && a.family === 'conflict';
+          // edc02148: a queued refresh is credited with any push that descends from its pinned head
+          // (a person's, a live owner's), so attribution alone proves nothing about the diff. A
+          // compare that read the diff as changed is reviewed; an unread one keeps the own refresh.
+          const ownRefresh = a.mode === 'mechanical' && a.family === 'conflict' && !cmd.diffChanged;
           const cf = carry(ownRefresh ? 'own_refresh' : undefined);
           if (cf && cf.result === 'apply') return { ...cf, patch: { ...cf.patch, boundAttemptId: null }, attempts };
         }
