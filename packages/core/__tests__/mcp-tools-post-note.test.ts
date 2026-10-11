@@ -116,4 +116,29 @@ describe('post_note', () => {
     });
     expect(result.content[0].text).toContain('Note posted');
   });
+
+  it('posts a mission note from a session with no worker when missionId is given', async () => {
+    const api = mock(async () => ({ id: 'note-1' }));
+
+    const result = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'post_note',
+      { type: 'decision', title: 'Cancelled', missionId: 'mission-1' },
+      { ...context(), workerId: undefined },
+    );
+
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(api.mock.calls[0]?.[0]).toBe('/api/missions/mission-1/notes');
+    expect(result.content[0].text).toContain('Note posted');
+  });
+
+  it('still requires a worker when no missionId is given', async () => {
+    const api = mock(async () => ({ id: 'note-1' }));
+    await expect(handleBuilddAction(
+      api as unknown as ApiFn,
+      'post_note',
+      { type: 'decision', title: 'x' },
+      { ...context(), workerId: undefined },
+    )).rejects.toThrow('workerId is required');
+  });
 });
