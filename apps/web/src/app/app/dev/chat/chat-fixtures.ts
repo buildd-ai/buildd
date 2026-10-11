@@ -238,8 +238,15 @@ function explore(): ChatMessage[] {
   ];
 }
 
-export type ChatFixtureState = 'empty' | 'starting' | 'streaming' | 'streaming-long' | 'revised' | 'composed' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual';
-export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'starting', 'streaming', 'streaming-long', 'revised', 'composed', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual'];
+export type ChatFixtureState = 'empty' | 'starting' | 'streaming' | 'streaming-long' | 'revised' | 'composed' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual' | 'attachment';
+export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'starting', 'streaming', 'streaming-long', 'revised', 'composed', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual', 'attachment'];
+
+/** `attachment`: a long build log, pasted. */
+const PASTED_LOG = (() => {
+  let out = 'deploy-2026-10-10.log\n';
+  for (let i = 1; out.length < 60_000; i++) out += `[${String(i).padStart(5, '0')}] step ${1 + (i % 5)}: ${i % 97 === 0 ? 'ERROR lock timeout on migrations table' : 'ok'}\n`;
+  return out.slice(0, 60_000);
+})();
 
 /** `revised`: the hypothesis the turn writes before its tools run, which they disprove. */
 export const REVISED_EARLY = 'A fix for the rounding bug is already queued. Let me check why nobody has claimed it.';
@@ -396,6 +403,24 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
     case 'composed':
       // The write done, the final answer not started (frame 3).
       return { title: null, ...composedFrames()[3] };
+    case 'attachment':
+      // A 60,000-character paste rode the message as an attachment card
+      // (Living Specs C2); the reply streams under it without moving it.
+      return {
+        title: null, status: 'streaming',
+        messages: [
+          {
+            ...user('m1', 'Which step failed, and why?', 1),
+            parts: [
+              { type: 'text', text: 'Which step failed, and why?' },
+              { type: 'data-attachment', data: { id: 'fixture-paste-deploy-log', title: 'deploy-2026-10-10.log', text: PASTED_LOG } },
+            ],
+          },
+          withScope(agent('m2', 1, withSteps([
+            { type: 'text', text: 'Step 3, the migration, failed: the lock timed out after 30 seconds while', state: 'streaming' },
+          ]))),
+        ],
+      };
     case 'streaming':
       return {
         title: null, status: 'streaming',

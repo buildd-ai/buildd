@@ -287,6 +287,7 @@ export const CHAT_READ_TOOLS = [
   'list_skills', 'get_skill',
   'list_watches',
   'get_visual_review',
+  'read_attachment',
 ] as const;
 export type ChatReadTool = (typeof CHAT_READ_TOOLS)[number];
 
@@ -445,6 +446,17 @@ export const CHAT_MAX_MESSAGE_CHARS = 200_000;
  * Presentation only: the server never refuses a message for crossing it.
  */
 export const CHAT_PASTE_ATTACHMENT_CHARS = 8_000;
+
+/**
+ * A long paste rides a message as a `data-attachment` part (Living Specs C2).
+ * The client sends `{ id, title, text }`, the id fixed when the paste happened;
+ * the saved message keeps only `{ artifactId, revision, sha256, chars, title }`,
+ * the body stored once as an artifact. Mirrors the kit's AttachmentDraft /
+ * AttachmentRef (kit-parity.test.ts).
+ */
+export const CHAT_ATTACHMENT_PART_TYPE = 'data-attachment';
+export interface ChatAttachmentDraft { id: string; title: string; text: string }
+export interface ChatAttachmentRef { artifactId: string; revision: number; sha256: string; chars: number; title: string }
 
 export type ConversationTitleSource = 'auto' | 'user';
 

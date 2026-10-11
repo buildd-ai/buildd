@@ -90,7 +90,7 @@ describe('InitiativeRow', () => {
   it('has no Open button: the title is the link', () => {
     const html = render([mission('a')]);
     expect(html).not.toContain('data-kind="open"');
-    expect(html).toContain('href="/app/initiatives/i1"');
+    expect(html).toContain('href="/app/missions?group=i1"');
   });
 });
 

@@ -2,13 +2,13 @@
 title: Artifacts and Sharing
 status: active
 owner: max
-last_verified: 2026-10-10
+last_verified: 2026-10-11
 summary: Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 domain: tasks
 surfaces: [apps/web/src/app/api/artifacts/[artifactId]/share/route.ts, apps/web/src/app/api/share/[token]/route.ts, apps/web/src/app/api/artifacts/upload-url/route.ts, apps/web/src/lib/storage-keys.ts]
 related: [mcp-action-contracts, team-namespace-scoping, mission-task-lifecycle, credential-isolation]
 keywords: [sharetoken, visibility public, presigned put, r2, artifacts_share_token_idx, http 413, dataclass sensitive, upsert by key]
-verified_by: [packages/core/__tests__/artifact-read.test.ts, packages/core/__tests__/mcp-tools-artifact-links.test.ts, apps/web/src/app/api/workers/claim/artifact-manifest.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts, apps/web/tests/db/artifact-links.test.ts]
+verified_by: [packages/core/__tests__/artifact-read.test.ts, packages/core/__tests__/mcp-tools-artifact-links.test.ts, apps/web/src/app/api/workers/claim/artifact-manifest.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts, apps/web/tests/db/artifact-links.test.ts, apps/web/tests/db/artifact-upload.test.ts, apps/web/tests/db/chat-paste-attachment.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -486,6 +486,35 @@ so "available to the agent" is never mistaken for "read by the agent".
 - Views: `packages/core/artifact-read.ts` — `parseReadSelector`, `readArtifactBody`, `outlineOf`
 - Ledger: `apps/web/src/lib/artifact-reads.ts` — `recordArtifactRead`
 
+## 8. Upload readiness
+
+**Capability statement**: An uploaded file MUST NOT be served, linked or
+reported as attached until its stored bytes match what its upload URL was
+signed for, and an upload that never arrives MUST NOT linger.
+
+**Invariants**:
+- `POST /api/artifacts/upload-url` creates the row with `upload_state =
+  'pending'`. `upload_state` is set by the server only; metadata is
+  caller-writable and cannot mark an upload ready.
+- Finalize (`POST /api/artifacts/[id]/finalize` or MCP `upload_artifact
+  { artifactId, sha256? }`, the uploading worker only, or lazily on the first
+  read) HEADs the object, refuses a size other than the signed one, refuses a
+  content type other than the signed `mimeType` (compared case-insensitively
+  without parameters: the URL signs only content-length, so the PUT does not
+  pin the type), streams a sha256 (refusing a mismatch with one the uploader
+  sent), fills it onto the revision, and sets `ready`; a mismatch sets
+  `failed` with `metadata.uploadError`.
+- A `pending` or `failed` upload gets no download URL: GET reports
+  `uploadState`, and the download route answers 409. Linking one is refused
+  with 409 naming its state (a pending one is finalized first).
+- The maintenance cron finalizes uploads whose bytes arrived and, after 24
+  hours, deletes the row and object of one that never arrived or failed. It
+  never deletes a row a typed link or a spec body refers to: that row and its
+  object are skipped, checked again in the DELETE itself.
+
+**Code surface**:
+- `apps/web/src/lib/artifact-upload.ts` — `finalizeArtifactUpload`, `sweepStaleUploads`
+
 ## 9. Typed links
 
 **Capability statement**: An artifact MUST be attachable to every subject it
@@ -527,6 +556,59 @@ the linker cannot reach.
 - `apps/web/src/lib/artifact-links.ts`: `linkArtifact`, `unlinkArtifact`, `linksOfArtifact`, `artifactsLinkedTo`, `linkContextArtifacts`
 - `apps/web/src/app/api/artifacts/[artifactId]/links/route.ts`, `apps/web/src/app/api/artifacts/linked/route.ts`
 - Claim manifest: `apps/web/src/app/api/workers/claim/context-injection.ts` — `attachArtifactReferences`, `renderArtifactManifest`
+
+## 10. Chat paste attachments
+
+**Capability statement**: A paste longer than 8,000 characters (one shared
+setting, `CHAT_PASTE_ATTACHMENT_CHARS`) MUST become an attachment of the
+message that carried it: stored once with a stable identity, an immutable
+revision and its sha256, readable back byte-identical, and private to the
+conversation it was sent in (D-2, D-3).
+
+**Invariants**:
+- The threshold is presentation only. The cap is the message's: text and
+  attachments together at most `CHAT_MAX_MESSAGE_CHARS` (200,000), refused
+  before any spend.
+- The composer gives each paste a UUID when it happens and sends it as a
+  `data-attachment` part `{ id, title, text }`. The turn stores the text as an
+  artifact with that id (its first revision carries the sha256), links it to
+  the saved message (`message` / `context`, pinned to that revision), and the
+  saved message keeps only `{ artifactId, revision, sha256, chars, title }`.
+- Identity is fixed at send: the same id with the same text is the same
+  attachment (a retry stores nothing new); the same id with other text, or an
+  id naming any other artifact, is a 409 and nothing changes.
+- The artifact has no workspace and no worker, so no artifact route, listing
+  or typed link reaches it (§5's scope needs one of those anchors). It is read
+  only through its own conversation, by the conversation's owner:
+  `GET /api/chat/[id]/attachments` (metadata) and
+  `GET /api/chat/[id]/attachments/[artifactId]` (the §7 bounded views; no view
+  = the first 20,000-character range). A link from another conversation's
+  message does not make it readable there. Every read is in the read ledger.
+- The model reads an attachment as quoted user material, delimited and marked
+  as material, not instructions. One too large for the model in one turn is a
+  400 `message_too_long_for_model` before any spend and the draft stays in the
+  composer; it is never truncated. In later turns it comes back from storage
+  and the history budget may replace it with a short note like any long user
+  text; the chat tool `read_attachment` reads any of the conversation's
+  attachments in bounded form.
+- A send refused before a reply puts the whole draft back, attachments and
+  ids included.
+- In a message, an attachment is a fixed-height card (no layout shift while
+  the reply streams) that opens a reader paging the stored text.
+- Only `apps/web/src/lib/artifact-chat-attachments.ts` writes these artifacts
+  and their links.
+
+**Acceptance criteria**:
+- AC-10.1: GIVEN a 60,000-character paste WHEN it is sent and reopened THEN the
+  text reads back byte-identical and its sha256 matches the stored revision.
+- AC-10.2: GIVEN another team's conversation THEN it can neither read the
+  attachment nor claim its id.
+
+**Code surface**:
+- `apps/web/src/lib/artifact-chat-attachments.ts`: `attachmentDraftsOf`, `storeChatAttachments`, `linkChatAttachments`, `conversationAttachments`, `readChatAttachment`, `quoteAttachment`
+- `apps/web/src/lib/chat/turn.ts` — `runChatTurn`, `toUiHistory`; `apps/web/src/lib/chat/tools.ts` — `read_attachment`
+- `apps/web/src/app/api/chat/[id]/attachments/route.ts`, `apps/web/src/app/api/chat/[id]/attachments/[artifactId]/route.ts`
+- `packages/ai-kit/src/chat/react/Composer.tsx`, `packages/ai-kit/src/chat/react/AttachmentCard.tsx`, `apps/web/src/components/chat/AttachmentReader.tsx`
 
 ## Verification gaps
 
