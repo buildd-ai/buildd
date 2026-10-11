@@ -84,6 +84,26 @@ export interface ProbeWorker {
   deliveryRole?: string | null;
   /** The state of the kernel delivery this worker's task owns, null when there is none; `UNKNOWN` when it could not be read. */
   kernelState?: string | null;
+  /** The task holds no path claim, or is an observation / visual-auditor task: it edits nothing, so there is nothing for a sibling to conflict with. */
+  readOnly?: boolean;
+}
+
+/** Roles that only look at the product. */
+const READ_ONLY_ROLES: ReadonlySet<string> = new Set(['visual-auditor']);
+
+/**
+ * Can this task conflict with, or be blocked by, a sibling? Only a task that
+ * claimed paths, and is not an observation or visual-auditor task. Its observed
+ * touches are reads, so a notice to it is a wasted turn.
+ */
+export function holdsPathClaim(task: {
+  kind?: string | null;
+  roleSlug?: string | null;
+  pathManifest?: readonly string[] | null;
+}): boolean {
+  if (task.kind === 'observation') return false;
+  if (task.roleSlug && READ_ONLY_ROLES.has(task.roleSlug)) return false;
+  return Array.isArray(task.pathManifest) && task.pathManifest.length > 0;
 }
 
 /**
@@ -162,7 +182,7 @@ export function pickRebaser(a: ProbeWorker, b: ProbeWorker): ProbeWorker {
 export function findSiblingPairs(workers: readonly ProbeWorker[]): SiblingPair[] {
   const byWorkspace = new Map<string, Array<{ w: ProbeWorker; files: Set<string> }>>();
   for (const w of workers) {
-    if (!w.branch || isKernelOwned(w)) continue;
+    if (!w.branch || isKernelOwned(w) || w.readOnly) continue;
     const files = concreteFiles(w.observedTouches, w.generatedGlobs);
     if (files.size === 0) continue;
     const list = byWorkspace.get(w.workspaceId) ?? [];
