@@ -185,7 +185,10 @@ Notable fields:
   `refresh_branch`), and by a daily backstop while the mission is in use. A conflicting
   refresh dispatches one conflict task per mission. That task runs `bun run
   conflicts:generated` to regenerate generated files before resolving the rest, and its
-  PR is reviewed only on what the merge decided (§5.9 composition). Contract:
+  PR is reviewed only on what the merge decided (§5.9 composition). A paused or held
+  mission gets no backstop refresh, and a mission state change mid-refresh stops it at
+  the commit boundary. The same contract maps every writer to the integration branch and
+  the mission PR, and how each unfinished refresh is reconciled. Contract:
   `docs/specs/mission-branch-refresh.md`.
   `primaryPrNumber`/`primaryPrUrl` are reserved for a **trunk-based** PR under the
   mission, i.e. the mission integration PR where one exists; a PR based on the mission
