@@ -64,6 +64,7 @@
     "cron:check": "bun run scripts/sync-crons.ts --check",
     "migrations:index-check": "bun packages/core/db/migration-index.ts check",
     "migrations:renumber": "bun packages/core/db/migration-index.ts renumber",
+    "conflicts:generated": "bun run scripts/resolve-generated-conflicts.ts",
     "migrations:lint": "bun test packages/core/__tests__/migration-journal-ordering.test.ts && bun test packages/core/__tests__/prod-build-runs-migrations.test.ts",
     "env:verify": "bun apps/runner/src/index.ts env verify",
     "prepare": "git config core.hooksPath .githooks || true"

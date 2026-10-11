@@ -5,7 +5,7 @@
  * reviewed on its own; anything the check cannot see fails closed.
  */
 import { describe, expect, test } from 'bun:test';
-import { buildCompositionAttestation, classifyRefreshMerge, collectComposition, isCompositionPr, isReleaseArtifactCommit, patchIdOf, type CompositionInput, type ConstituentDelivery, type FileDiff, type RefreshMergeTrees } from './review-composition';
+import { buildCompositionAttestation, classifyRefreshMerge, renumberedMigrations, collectComposition, isCompositionPr, isReleaseArtifactCommit, patchIdOf, type CompositionInput, type ConstituentDelivery, type FileDiff, type RefreshMergeTrees } from './review-composition';
 import { headCoverage, reduce } from './reducer';
 import type { DeliverySnapshot, KernelView, RoundSnapshot } from './types';
 
@@ -309,6 +309,34 @@ describe('classifyRefreshMerge', () => {
   });
 });
 
+describe('renumberedMigrations: a migration the merge only moved to a free index', () => {
+  const D = 'packages/core/drizzle/';
+  const t = (merged: Record<string, string>, ours: Record<string, string> = { [`${D}0002_mine.sql`]: 'X' }): RefreshMergeTrees => ({
+    base: {},
+    ours,
+    theirs: { [`${D}0002_theirs.sql`]: 'T' },
+    merged: { [`${D}0002_theirs.sql`]: 'T', ...merged },
+  });
+  test('the same file content at a new index, and the index it left, are not novel', () => {
+    expect([...renumberedMigrations(t({ [`${D}0003_regen.sql`]: 'X' }))].sort()).toEqual([`${D}0002_mine.sql`, `${D}0003_regen.sql`]);
+  });
+  test('a moved migration whose content changed is novel', () => {
+    expect([...renumberedMigrations(t({ [`${D}0003_regen.sql`]: 'Y' }))]).toEqual([]);
+  });
+  test('a migration written in the merge, matching nothing the mission had, is novel', () => {
+    expect([...renumberedMigrations(t({ [`${D}0003_regen.sql`]: 'X', [`${D}0004_extra.sql`]: 'Z' }))].sort()).toEqual([`${D}0002_mine.sql`, `${D}0003_regen.sql`]);
+  });
+  test('one mission file pairs with one new file at most', () => {
+    expect([...renumberedMigrations(t({ [`${D}0003_a.sql`]: 'X', [`${D}0004_b.sql`]: 'X' }))].length).toBe(2);
+  });
+  test('a copy of a trunk migration is not a renumber', () => {
+    expect([...renumberedMigrations(t({ [`${D}0003_copy.sql`]: 'T' }, {}))]).toEqual([]);
+  });
+  test('only migrations: a moved source file is still novel', () => {
+    expect([...renumberedMigrations({ base: {}, ours: { 'a.ts': 'X' }, theirs: {}, merged: { 'b.ts': 'X' } })]).toEqual([]);
+  });
+});
+
 describe('buildCompositionAttestation: a refresh PR', () => {
   /** Trunk's reviewed squash S1 (PR #11), then the agent's merge M of trunk into the mission branch. */
   const refresh = (t: RefreshMergeTrees | null, o: Partial<CompositionInput> = {}): CompositionInput => base({
@@ -348,6 +376,15 @@ describe('buildCompositionAttestation: a refresh PR', () => {
     if (dec.result !== 'apply') throw new Error(dec.result);
     expect(dec.toState).toBe('APPROVED');
     expect(dec.patch.approvalBasis).toBe('composition');
+  });
+
+  test("a migration renumbered past trunk's, unchanged, needs no reviewer; one edited in the merge does", () => {
+    const t = resolved();
+    const mine = 'packages/core/drizzle/0002_mine.sql', regen = 'packages/core/drizzle/0003_regen.sql', trunks = 'packages/core/drizzle/0002_trunk.sql';
+    const only = { ...t, ours: { ...t.ours, 'both.ts': 'b', [mine]: 'X' }, theirs: { ...t.theirs, [trunks]: 'T' }, merged: { ...t.merged, 'both.ts': 'd', [trunks]: 'T', [regen]: 'X' } };
+    expect(buildCompositionAttestation(refresh(only)).attestation.novelDelta).toEqual({ result: 'none' });
+    const edited = { ...only, merged: { ...only.merged, [regen]: 'X2' } };
+    expect(buildCompositionAttestation(refresh(edited)).attestation.novelDelta).toEqual({ result: 'present', paths: [mine, regen] });
   });
 
   test('a design-check baseline resolved is still reviewed: CI only ratchets it', () => {
