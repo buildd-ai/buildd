@@ -25,6 +25,7 @@ import { notifyTeamOf } from '@/lib/notify';
 import { retryCiFailureForPr } from '@/lib/ci-failure-retry';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
+import { prNeedsCopyReview } from '@/lib/copy-review';
 import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
@@ -179,12 +180,19 @@ async function maybeDispatchReviewer(
 
     // Apply semantic risk-class policy override (detected policyConfig paths)
     const policyConfig = workspace.gitConfig?.policyConfig ?? null;
-    const policy = applyPolicyConfigToMergePolicy(
+    let policy = applyPolicyConfigToMergePolicy(
       basePolicy,
       policyConfig,
       prFiles.map((f) => f.filename),
       migrationSafety,
     );
+
+    // Copy review lives in the reviewer's prompt, so an auto-threshold PR that
+    // changes copy in a workspace that opted in needs a reviewer too — otherwise
+    // it merges on CI alone and the copy check never runs.
+    if (policy.tier === 'auto-threshold' && (await prNeedsCopyReview(workspace.gitConfig, prFiles))) {
+      policy = { ...policy, tier: 'agent-review' };
+    }
 
     if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
 
