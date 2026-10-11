@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { deliveryViewsSql, getDeliveryViewsForTasks, remediationFrom, rowToDeliveryView } from './delivery-view';
+import { deliveryViewsSql, getDeliveryViewsForTasks, laneWaitFrom, remediationFrom, rowToDeliveryView } from './delivery-view';
 
 const dialect = new PgDialect();
 const NOW = Date.parse('2026-10-06T12:00:00Z');
@@ -18,7 +18,20 @@ describe('deliveryViewsSql', () => {
     expect(q.sql).toContain('t.delivery_id IS NOT NULL');
     expect(q.sql).toContain('t.conflict_retry_pr_number = d.pr_number');
     expect(q.sql).toContain("t.status IN ('pending', 'assigned', 'in_progress')");
-    expect(q.params).toEqual([JSON.stringify(['t1', 't2'])]);
+    expect(q.params).toEqual([JSON.stringify(['t1', 't2']), 'parked:lane_busy%']);
+  });
+  test('reads the delivery\'s parked behind refresh, if any (the landing lane)', () => {
+    const q = dialect.sqlToQuery(deliveryViewsSql(['t1']));
+    expect(q.sql).toContain("e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE $2::text");
+    expect(q.sql).toContain('AS lane_wait');
+  });
+});
+
+describe('laneWaitFrom', () => {
+  test('a parked outcome names the PR holding the lane; anything else is not parked', () => {
+    expect(laneWaitFrom('parked:lane_busy:#41')).toEqual({ behindPr: 41 });
+    expect(laneWaitFrom('parked:lane_busy:unknown')).toEqual({ behindPr: null });
+    for (const v of [null, undefined, 'ok:updated', 'ok:updated(lane:would_wait:#3)', 7]) expect(laneWaitFrom(v)).toBeNull();
   });
 });
 
@@ -43,6 +56,15 @@ describe('rowToDeliveryView', () => {
     attempt_tasks: [{ id: 't1', role: 'owner', status: 'completed', created_at: minutesAgo(30) }, { id: 'f1', role: 'fix', status: 'completed', created_at: minutesAgo(10) }],
     remediation: null,
   };
+  test('a parked behind refresh reads as waiting behind the lane holder', () => {
+    const parked = {
+      ...row,
+      delivery: { ...row.delivery, state: 'REPAIRING', state_reason: 'behind', base_ref: 'dev' },
+      lane_wait: 'parked:lane_busy:#41',
+    };
+    expect(rowToDeliveryView(parked, NOW)).toMatchObject({ headline: 'Waiting its turn to update the branch', detail: 'PR #41 is landing on dev first' });
+    expect(rowToDeliveryView({ ...parked, lane_wait: null }, NOW)?.headline).toBe('Updating the branch');
+  });
   test('maps a row to a platform-owned view with its attempts', () => {
     const v = rowToDeliveryView(row, NOW)!;
     expect(v).toMatchObject({ state: 'AWAITING_PUSH', owner: 'platform', needsYou: false });

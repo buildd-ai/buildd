@@ -80,6 +80,11 @@ export interface DeliveryViewInput {
    * open at the current head. Computed once in the loader (`landingNeedsPerson`).
    */
   approvedNeedsPerson?: boolean;
+  /**
+   * A behind refresh parked in the landing lane (lib/workflow/landing-lane.ts):
+   * the PR holding the lane on this base, when known. Absent or null = not parked.
+   */
+  laneWait?: { behindPr: number | null } | null;
 }
 
 export type DeliveryCta =
@@ -303,7 +308,20 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     }
     case 'CHANGES_REQUESTED': headline = 'Changes requested · fix queued'; break;
     case 'FIXING': headline = 'Fixing review feedback'; break;
-    case 'REPAIRING': headline = repairKind === 'ci' ? 'Fixing CI' : 'Repairing'; break;
+    case 'REPAIRING':
+      if (repairKind === 'behind') {
+        const base = d.baseRef ?? 'its base';
+        if (input.laneWait) {
+          headline = 'Waiting its turn to update the branch';
+          detail = input.laneWait.behindPr != null ? `PR #${input.laneWait.behindPr} is landing on ${base} first` : `another PR is landing on ${base} first`;
+        } else {
+          headline = 'Updating the branch';
+          detail = `bringing ${pr} up to date with ${base}`;
+        }
+      } else {
+        headline = repairKind === 'ci' ? 'Fixing CI' : 'Repairing';
+      }
+      break;
     case 'BLOCKED_ON_TRUNK': headline = 'Blocked on a red base branch'; break;
     case 'APPROVED':
       if (compositionVerified) {

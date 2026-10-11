@@ -279,6 +279,24 @@ describe('policy evidence (T28) in the view', () => {
   });
 });
 
+describe('a behind refresh says what it is doing, and whom it waits for in the landing lane', () => {
+  const behind = (o: Partial<DeliveryViewInput> = {}) =>
+    view({ view: V(D({ state: 'REPAIRING', stateReason: 'behind', baseRef: 'dev', prNumber: 12, boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'queued' })]), ...o });
+
+  test('refreshing: "Updating the branch", not a bare "Repairing"', () => {
+    expect(behind()).toMatchObject({ headline: 'Updating the branch', detail: 'bringing PR #12 up to date with dev', needsYou: false });
+  });
+
+  test('parked in the lane: names the PR landing first', () => {
+    expect(behind({ laneWait: { behindPr: 7 } })).toMatchObject({ headline: 'Waiting its turn to update the branch', detail: 'PR #7 is landing on dev first', needsYou: false });
+    expect(behind({ laneWait: { behindPr: null } }).detail).toBe('another PR is landing on dev first');
+  });
+
+  test('other repairs keep their copy', () => {
+    expect(view({ view: V(D({ state: 'REPAIRING', stateReason: 'ci' })) }).headline).toBe('Fixing CI');
+  });
+});
+
 describe('landing_needs_human says which refusal it was (88318f31)', () => {
   const t = (command: string, evidence: Record<string, unknown>) => ({ command, fromState: 'APPROVED', toState: 'ESCALATED', evidence, createdAt: '2026-10-09T00:00:00Z' });
 
