@@ -54,8 +54,6 @@ export function parseWorkerInfraSignature(signature: string): { component: Worke
   };
 }
 
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
-const RUNNING = new Set(['assigned', 'in_progress', 'review']);
 const DISMISS_ONLY: FailureRecoveryDecision = {
   question: 'Buildd could not recover this infrastructure failure on its own. Dismiss it?',
   options: [{ capability: 'dismiss', label: 'Dismiss', effect: 'It leaves Needs You; Buildd keeps checking it.' }],
@@ -65,7 +63,8 @@ const DISMISS_ONLY: FailureRecoveryDecision = {
 /** auth: this subject no longer waits on the credential. */
 function authSubjectPassed(s: WorkerInfraSubjectFacts): boolean | null {
   if (s.status === null) return null;
-  if (TERMINAL.has(s.status) || RUNNING.has(s.status)) return true;
+  // Anything past pending (dispatched, running or finished) has left the hold.
+  if (s.status !== 'pending') return true;
   if (!s.hold) return true;
   if (!s.hold.releasedAt) return false;
   // Released: passes once a worker started after the hold.
