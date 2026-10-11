@@ -7,9 +7,9 @@ import {
   type ChatFileDraft, type ChatFileRef, type ChatMessagePart,
 } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
-import { buildChatUploadKey } from '@/lib/storage-keys';
+import { buildChatUploadKey, uploadStagingKey } from '@/lib/storage-keys';
 import { uploadBuffer } from '@/lib/storage';
-import { defaultUploadStorage, finalizeArtifactUpload, type FinalizeResult, type UploadStorage } from '@/lib/artifact-upload';
+import { defaultUploadStorage, finalizeArtifactUpload, removeUploadObjects, type FinalizeResult, type UploadStorage } from '@/lib/artifact-upload';
 import { MAX_ATTACHMENTS_PER_MESSAGE, type AttachmentError } from '@/lib/artifact-chat-attachments';
 
 /**
@@ -146,7 +146,7 @@ export async function storeChatUploadBytes(
   if (bytes.byteLength !== Number(meta?.sizeBytes)) return { ok: false, status: 400, error: 'The body is not the size the upload was started with' };
   const type = chatMediaType(meta?.mimeType);
   if (!type || chatMediaType(contentType) !== type) return { ok: false, status: 400, error: 'The body is not the type the upload was started with' };
-  await put(own.row.storageKey!, bytes, type);
+  await put(uploadStagingKey(own.row.storageKey!), bytes, type);
   return { ok: true };
 }
 
@@ -166,7 +166,7 @@ export async function cancelChatUpload(
     ))
     .returning({ id: artifacts.id });
   if (gone.length === 0) return { ok: false, status: 409, error: 'This file was already sent' };
-  await storage.remove(own.row.storageKey!).catch(() => {});
+  await removeUploadObjects(storage, own.row.storageKey!).catch(() => {});
   return { ok: true, removed: true };
 }
 
@@ -197,8 +197,25 @@ export function fileDraftsOf(parts: readonly ChatMessagePart[]): { ok: true; dra
  * sent in another conversation. A retry of the same message in the same
  * conversation is the same file (identity fixed at send).
  */
-export async function bindChatFiles(
+export function bindChatFiles(
   conv: { id: string; teamId: string }, userId: string, drafts: readonly ChatFileDraft[],
+): Promise<{ ok: true; refs: ChatFileRef[] } | AttachmentError> {
+  return resolveChatFiles(conv, userId, drafts, true);
+}
+
+/**
+ * The same checks and the same references as bindChatFiles, without tying
+ * anything to the conversation: what a turn reads before it spends anything,
+ * so a refused message leaves every file free to attach again.
+ */
+export function checkChatFiles(
+  conv: { id: string; teamId: string }, userId: string, drafts: readonly ChatFileDraft[],
+): Promise<{ ok: true; refs: ChatFileRef[] } | AttachmentError> {
+  return resolveChatFiles(conv, userId, drafts, false);
+}
+
+async function resolveChatFiles(
+  conv: { id: string; teamId: string }, userId: string, drafts: readonly ChatFileDraft[], bind: boolean,
 ): Promise<{ ok: true; refs: ChatFileRef[] } | AttachmentError> {
   const refs: ChatFileRef[] = [];
   for (const d of drafts) {
@@ -210,7 +227,7 @@ export async function bindChatFiles(
     if (own.meta.conversationId && own.meta.conversationId !== conv.id) {
       return fail(409, 'file_taken', 'this file was sent in another conversation; attach it again');
     }
-    if (!own.meta.conversationId) {
+    if (bind && !own.meta.conversationId) {
       // Fixed once: only while still unbound, so two conversations can never both claim it.
       const bound = await db.update(artifacts)
         .set({ metadata: sql`jsonb_set(${artifacts.metadata}, '{chatAttachment,conversationId}', to_jsonb(${conv.id}::text))` })

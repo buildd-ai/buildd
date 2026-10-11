@@ -48,6 +48,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   reject_plan: 'tasks',
   // workers: steering and fleet health
   send_agent_message: 'workers',
+  answer_question: 'workers',
   query_events: 'workers',
   explain: 'workers',
   get_error_traces: 'workers',
@@ -116,6 +117,8 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   claim_task: 'work',
   update_progress: 'work',
   receive_messages: 'work',
+  ask_human: 'work',
+  await_answer: 'work',
   complete_task: 'work',
   create_pr: 'work',
   emit_event: 'work',
@@ -242,6 +245,8 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   close_pr: 'listed', // runner PR-mutation prompt
   manage_secrets: 'listed', // visual-review skill (preview bypass secret)
   get_visual_review: 'listed', // the mission visual-QA phase is read only here
+  ask_human: 'listed', // buildd-mcp-consumer / buildd-workflow skills: an interactive session's hard block
+  await_answer: 'listed', // same skills: the wait loop after ask_human
   // rare: named on the More: line
   get_task_messages: 'more',
   receive_messages: 'more',
@@ -265,6 +270,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   approve_plan: 'more',
   reject_plan: 'more',
   send_agent_message: 'more',
+  answer_question: 'more',
   query_events: 'more',
   emit_event: 'more',
   suggest_schedule_update: 'more',
@@ -333,7 +339,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
     parts: [
       { text: 'claim', actions: ['claim_task'] },
       { text: 'report progress', actions: ['update_progress'] },
-      { text: 'messages', actions: ['receive_messages'] },
+      { text: 'messages, ask a person', actions: ['receive_messages', 'ask_human', 'await_answer'] },
       { text: 'post notes', actions: ['post_note'] },
       { text: 'record events', actions: ['emit_event', 'query_events'] },
       { text: 'write artifacts', actions: ['create_artifact', 'upload_artifact'] },
@@ -364,7 +370,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   runners: {
     parts: [
       { text: 'connectors', actions: ['list_connectors', 'resolve_capability', 'request_capability'] },
-      { text: 'message a running agent', actions: ['send_agent_message'] },
+      { text: 'message or answer an agent', actions: ['send_agent_message', 'answer_question'] },
     ],
   },
   artifacts: {
@@ -426,6 +432,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   approve_plan: 'approve a planning task',
   reject_plan: 'reject a plan with feedback',
   send_agent_message: 'steer the agent running a task',
+  answer_question: 'answer a waiting agent\'s question',
   explain: 'what blocks a task, mission, PR; evidence',
   get_error_traces: 'errors from tool output',
   get_failure_analytics: 'failure patterns; error= finds one',
@@ -485,6 +492,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   claim_task: 'claim your assignment, the next, or a named task',
   update_progress: 'report progress',
   receive_messages: 'your inbox',
+  ask_human: 'park on a question for a person',
+  await_answer: 'wait for that answer',
   complete_task: 'finish your task (error marks it failed)',
   create_pr: 'open the PR for your branch',
   emit_event: 'record a milestone event',
@@ -702,8 +711,8 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
     param('capability', str, [{ text: 'Need as domain:verb, e.g. observability:query', actions: ['resolve_capability', 'request_capability'] }]),
-    param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
-    param('message', str, [{ text: 'Steering message for the running agent', actions: ['send_agent_message'] }]),
+    param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message', 'answer_question'] }]),
+    param('message', str, [{ text: 'Steering message for the running agent, or the answer to its question', actions: ['send_agent_message', 'answer_question'] }]),
   ],
   prs: [
     param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review'] }]),
@@ -733,6 +742,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('taskId', str, [{ text: 'Task to pick up', actions: ['claim_task'] }]),
     param('progress', num, [{ text: 'Percent, 0-100', actions: ['update_progress'] }]),
     param('message', str, [{ text: 'What you are doing', actions: ['update_progress'] }]),
+    param('question', str, [{ text: 'For a person', actions: ['ask_human'] }]),
     param('summary', str, [{ text: 'What you delivered', actions: ['complete_task'] }]),
     param('error', str, [{ text: 'Set to fail', actions: ['complete_task'] }]),
     param('structuredOutput', { type: 'object' }, [{ text: 'e.g. handoff.delivered', actions: ['complete_task'] }]),

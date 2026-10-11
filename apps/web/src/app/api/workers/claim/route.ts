@@ -108,6 +108,7 @@ import {
   attachExternalContextProviders,
   attachTaskAreaScope,
 } from './context-injection';
+import { VISUAL_AUDIT_ROUTES } from '@/modules';
 import { runDependentContextInjections } from './prompt-context-pipeline';
 import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
@@ -2952,8 +2953,8 @@ export async function POST(req: NextRequest) {
     const [, insertResult] = await db.batch([
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),
       db.execute(sql`
-        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status, claimed_by_user_id)
-        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle', ${claimedByUserId}::uuid
+        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status, claimed_by_user_id, claimed_by_cloud)
+        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle', ${claimedByUserId}::uuid, ${cloudExecutor}
         WHERE EXISTS (
           SELECT 1 FROM ${tasks} t_claim
           WHERE t_claim.id = ${task.id}
@@ -3368,7 +3369,7 @@ export async function POST(req: NextRequest) {
   // Prompt-context injection. ORDER IS THE CONTRACT: these seven append to the
   // same resolvedContextProviders rail and the runner concatenates it in
   // order — external providers, mission handoff, knowledge, subject-prior-work,
-  // discrepancy, linked-artifact manifest, task-area scope. See ./context-injection and
+  // discrepancy, linked-artifact manifest, visual-audit routes, task-area scope. See ./context-injection and
   // ./prompt-context-pipeline for why the middle four run concurrently without
   // disturbing that order.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
@@ -3385,6 +3386,7 @@ export async function POST(req: NextRequest) {
       : null,
   );
   await attachArtifactReferences(claimedWorkers, filteredTasks);
+  await VISUAL_AUDIT_ROUTES(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)

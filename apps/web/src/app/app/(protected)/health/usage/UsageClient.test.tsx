@@ -420,7 +420,7 @@ it('owns role costs and calendar-month spend even when no terminal task has usag
   const html = renderToStaticMarkup(<UsageClient view={view({ rows: [] })} wsFilter={null}
     roleUsage={{ rows: [{ role: 'Builder', tier: 'standard', tokens: 100, costUsd: 2, hours: 1, basis: 'real', executor: 'runner' }], truncated: true }}
     monthly={{ kind: 'monthly', spentUsd: 12.5, budgetUsd: 100, pctUsed: 13, resetsAt: '2026-10-01T00:00:00.000Z', burnRateUsdPerDay: 3, daysToDepletion: 4.25, confidence: 'high' }} />);
-  expect(html).toContain('Usage by role');
+  expect(html).toContain('Usage by agent');
   expect(html).toContain('Builder');
   expect(html).toContain('Real ($)');
   expect(html).toContain('Plan ($)');
@@ -429,4 +429,57 @@ it('owns role costs and calendar-month spend even when no terminal task has usag
   expect(html).toContain('$12.50 est.');
   expect(html).toContain('since Sep 1');
   expect(html).toContain('depletes in 4.3d · from 24h burn');
+});
+
+describe('UsageClient — plan-only teams and figures', () => {
+  const planRows = [
+    worker({ workerId: 'a', taskId: 'a', costUsd: '0.485', costBasis: 'virtual', runner: 'mcp' }),
+    worker({ workerId: 'b', taskId: 'b', costUsd: '2', costBasis: 'virtual' }),
+  ];
+  const planRoles = { rows: [{ role: 'builder', tier: 'standard', tokens: 3_940_675_271, costUsd: 2, hours: 1, basis: 'virtual' as const, executor: 'runner' as const }], truncated: false };
+
+  it('hides the real-cost line and column when nothing was paid for, and says so once', () => {
+    const html = renderToStaticMarkup(<UsageClient view={view({ rows: planRows })} wsFilter={null} roleUsage={planRoles} />);
+    expect(html).not.toContain('Real cost');
+    expect(html).not.toContain('Real ($)');
+    expect(html).toContain('Plan ($)');
+    expect(html.split('All of this ran on your plan; list price shown').length - 1).toBe(1);
+  });
+
+  it('keeps real cost when any was paid', () => {
+    const html = renderToStaticMarkup(<UsageClient view={view({ rows: [...planRows, worker({ workerId: 'c', taskId: 'c', costUsd: '1', costBasis: 'real' })] })} wsFilter={null} roleUsage={planRoles} />);
+    expect(html).toContain('Real cost');
+    expect(html).toContain('Real ($)');
+    expect(html).not.toContain('All of this ran on your plan');
+  });
+
+  it('shows billions of tokens compactly', () => {
+    const html = renderToStaticMarkup(<UsageClient view={view({ rows: planRows })} wsFilter={null} roleUsage={planRoles} />);
+    expect(html).toContain('3.9B');
+    expect(html).not.toContain('3,940,675,271');
+  });
+
+  it('a tile is one number and one short caption', () => {
+    const html = render({ rows: rows(8).map(r => ({ ...r, costUsd: '0.42' })) });
+    expect(html).toContain('median per task');
+    expect(html).not.toMatch(/combined total ·/);
+    expect(html).not.toMatch(/p90 [^<]* · /);
+  });
+
+  it('sets figures in the mono figure font, with no tabular spacing that splits "$0.485"', () => {
+    const html = render({ rows: rows(8).map(r => ({ ...r, costUsd: '0.485' })) });
+    const value = html.match(/<div class="([^"]*)">\$0\.485<\/div>/);
+    expect(value).not.toBeNull();
+    expect(value![1]).toContain('font-mono');
+    expect(value![1]).not.toContain('tabular-nums');
+  });
+
+  it('the monthly budget figure uses the same figure font', () => {
+    const html = renderToStaticMarkup(<UsageClient view={view({ rows: [] })} wsFilter={null}
+      monthly={{ kind: 'monthly', spentUsd: 0, budgetUsd: 100, pctUsed: 0, resetsAt: '2026-11-01T00:00:00.000Z', burnRateUsdPerDay: 0, daysToDepletion: null, confidence: 'low' }} />);
+    const line = html.match(/<p class="([^"]*)"[^>]*>\$0\.00 est\./);
+    expect(line).not.toBeNull();
+    expect(line![1]).toContain('font-mono');
+    expect(line![1]).not.toContain('tabular-nums');
+  });
 });

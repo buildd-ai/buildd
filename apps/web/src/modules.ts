@@ -57,6 +57,8 @@ import { failurePatternSubscribers } from '@/lib/failure-pattern-subscribers';
 import { overrideStartSubscribers } from '@/lib/override-start-decision';
 import { answerInChatHref } from '@/lib/chat/answer-link';
 import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
+import type { ClaimContextInjection } from '@/app/api/workers/claim/context-injection';
+import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-routes';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -199,6 +201,13 @@ export const ANSWER_IN_CHAT = answerInChatHref;
  * action sheet (`?pr=<n>&t=<token>`, a landing alert's link) shows, as data.
  */
 export const PR_ACTION_SHEET = loadPrActionSheet;
+
+/**
+ * The visual-qa module's claim slot (app/api/workers/claim/visual-audit-routes.ts):
+ * a surface audit's prompt states the required routes completion will check,
+ * computed at claim from its current dependencies.
+ */
+export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = attachVisualAuditRoutes;
 
 /**
  * The decisions module's boot slot (instrumentation.ts): installs the evidence

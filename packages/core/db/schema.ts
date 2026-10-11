@@ -43,10 +43,6 @@ export const teams = pgTable('teams', {
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
 
-  // Unused: which roles hold a permission is fixed in permission-registry.ts
-  // (docs/specs/team-permissions.md, "No per-team grants"). Nothing reads or
-  // writes it; a follow-up migration drops the column.
-  permissionOverrides: jsonb('permission_overrides').$type<Record<string, string[]>>().default({}).notNull(),
   // Hosted plan assignment for Buildd-managed runners: { plan, ...overrides }.
   // NULL = the deployment default (BUILDD_DEFAULT_MANAGED_PLAN), unlimited when
   // that is unset, so a self-hosted install has no commercial limit. Written by
@@ -130,6 +126,10 @@ export const teams = pgTable('teams', {
   // credentialPolicyOf (apps/web/src/lib/inference-key-policy.ts), which maps
   // team/team_or_own/own one-to-one. inferenceKeyPolicy is dropped later.
   credentialPolicy: text('credential_policy').$type<'team' | 'personal_first' | 'personal_only'>(),
+  // Which connected provider serves each surface (packages/core/providers/assignments.ts).
+  // NULL or a missing surface = the resolver's own ranking. A set surface puts
+  // that provider first within a scope; it never widens what the resolver may pick.
+  providerAssignments: jsonb('provider_assignments').$type<import('../providers/assignments').ProviderAssignments | null>(),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
@@ -1925,6 +1925,13 @@ export type WorkerWaitingFor = {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
+  /**
+   * Interactive (runner = 'mcp') worker parked by ask_human only: the last
+   * time its session polled for the answer (await_answer / receive_messages),
+   * ISO. Written by its own UPDATE that leaves updated_at (the park clock)
+   * alone. See INTERACTIVE_SESSION_POLL_STALE_MS in apps/web/src/lib/answer-resume.ts.
+   */
+  sessionSeenAt?: string;
 };
 
 /**
@@ -1977,6 +1984,10 @@ export const workers = pgTable('workers', {
   // No FK on purpose: a deleted user must not turn the claim back into an
   // account-owned (NULL) one.
   claimedByUserId: uuid('claimed_by_user_id'),
+  // Set at claim when a cloud container claimed this worker (executor 'cloud' or a
+  // task-token claim). There the task token is the runner's own credential, so its
+  // verification evidence counts as the runner's (lib/verification-provenance.ts).
+  claimedByCloud: boolean('claimed_by_cloud').default(false).notNull(),
   name: text('name').notNull(),
   runner: text('runner').notNull(),
   branch: text('branch').notNull(),

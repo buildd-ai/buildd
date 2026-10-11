@@ -11,6 +11,7 @@ import {
   buildSurfaceAuditDescription,
   isSurfaceAuditTask,
   isSurfaceFixTask,
+  isTrunkRefreshTask,
   isUiSurfacePath,
   isRenderedSurfaceChange,
   surfaceAuditMissingReason,
@@ -94,6 +95,25 @@ describe('dependencyHoldsTask — an audit waits on current mission members only
   it('an ordinary task is held by every dependency it names', () => {
     expect(dependencyHoldsTask({ title: 'Build the card', missionId: 'm-1' }, { missionId: 'm-2' })).toBe(true);
     expect(dependencyHoldsTask({ title: '[surface audit] x', missionId: null }, { missionId: 'm-2' })).toBe(true);
+  });
+});
+
+describe('isTrunkRefreshTask', () => {
+  it('matches the automated mission-branch refresh by its context', () => {
+    expect(isTrunkRefreshTask({ title: 'x', context: { requireMergeCommit: true } })).toBe(true);
+    expect(isTrunkRefreshTask({ title: 'x', context: { refreshTrunk: 'dev' } })).toBe(true);
+  });
+
+  it('matches a hand-filed refresh with no context by its title', () => {
+    expect(isTrunkRefreshTask({ title: 'chore(mission): merge dev into the Restore trust integration branch', context: null })).toBe(true);
+    expect(isTrunkRefreshTask({ title: 'Merge origin/dev into mission/foo' })).toBe(true);
+    expect(isTrunkRefreshTask({ title: 'refresh: merge `main` into the mission branch' })).toBe(true);
+  });
+
+  it('does not match builder work', () => {
+    expect(isTrunkRefreshTask({ title: 'feat: merge duplicate task cards into one', context: { requireMergeCommit: false } })).toBe(false);
+    expect(isTrunkRefreshTask({ title: 'fix(missions): show history', context: { refreshTrunk: '' } })).toBe(false);
+    expect(isTrunkRefreshTask({})).toBe(false);
   });
 });
 

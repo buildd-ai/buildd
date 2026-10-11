@@ -168,7 +168,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
                   );
                 })}
               </div>
-              <p className="text-xs text-text-muted mt-1">Auto uses the mission/role/workspace default.</p>
+              <p className="text-xs text-text-muted mt-1">Auto uses the mission, agent or workspace default.</p>
             </div>
 
             {/* Mode toggle — only when task is still pending */}

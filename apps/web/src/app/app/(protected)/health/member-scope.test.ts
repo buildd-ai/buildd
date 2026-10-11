@@ -6,7 +6,8 @@ import { resolve } from 'path';
  * A member's Health shows their own work and the runners they can use. What
  * only admins act on or see (team-wide spend, pausing new starts) is loaded
  * only for people holding the permission, so it never reaches a member's
- * browser. Operator tools stay behind isPlatformOperator (operator/page.tsx).
+ * browser. Failures, Usage and Insights are the team's pages (team admins see
+ * the team, members their own work); Operator stays the platform owner's.
  */
 const read = (rel: string) => readFileSync(resolve(import.meta.dir, rel), 'utf8');
 
@@ -36,5 +37,18 @@ describe("a member's Health", () => {
   it('keeps the Operator page (dispatch, gates, experiments) behind the platform-operator check', () => {
     const op = read('operator/page.tsx');
     expect(op).toMatch(/const user = await requirePlatformOperator\(\);/);
+  });
+
+  it('gates Failures, Usage and Insights on the team, not on the platform owner', () => {
+    for (const page of ['failures/page.tsx', 'usage/page.tsx', 'insights/page.tsx', 'insights/tasks/page.tsx']) {
+      expect(read(page)).not.toContain('requirePlatformOperator');
+    }
+    // Insights shows every member's work: view_team_usage in the active team.
+    expect(read('insights/page.tsx')).toContain("'view_team_usage', teamId");
+    expect(read('insights/tasks/page.tsx')).toContain("'view_team_usage', teamId");
+  });
+
+  it('lists Insights in the sub-nav only for people holding view_team_usage', () => {
+    expect(read('layout.tsx')).toMatch(/can\(\{ kind: 'user', userId: user\.id \}, 'view_team_usage', teamId\)/);
   });
 });

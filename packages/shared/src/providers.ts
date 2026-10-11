@@ -105,6 +105,11 @@ export interface ListProvidersResponse {
   providers: ProviderListing[];
 }
 
+/** `GET|PATCH /api/providers/assignments`: the team's pick per surface; a missing surface = the resolver's own ranking. */
+export interface ProviderAssignmentsResponse {
+  assignments: Partial<Record<'chat' | 'agent-claude' | 'agent-codex' | 'cloud-egress', string>>;
+}
+
 /** `PUT /api/providers` */
 export interface SetProviderCredentialRequest {
   teamId?: string;

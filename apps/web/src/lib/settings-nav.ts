@@ -105,7 +105,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
       },
       {
         id: 'roles',
-        label: 'Roles',
+        label: 'Agents',
         href: '/app/settings/roles',
         description: 'The agents on the team: what each one does, its model and its tools.',
         manage: ['manage_agent_roles'],

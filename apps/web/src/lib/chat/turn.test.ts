@@ -1712,6 +1712,54 @@ describe('a long paste rides as an attachment', () => {
   });
 });
 
+// ── files count toward the turn size before spend (close-out ce209846) ─────
+describe('a message\'s files count toward what one turn may send', () => {
+  const textRef = (i: number, chars: number) => ({ artifactId: `3c1e2a40-5b3d-4f6e-9a8b-0c1d2e3f4a${String(i).padStart(2, '0')}`, revision: 1, sha256: 'c'.repeat(64), name: `notes-${i}.txt`, mediaType: 'text/plain', sizeBytes: chars });
+  const textFiles = (sizes: number[]) => {
+    const refs = sizes.map((n, i) => textRef(i, n));
+    const bound: string[] = [];
+    const byId = new Map(refs.map(r => [r.artifactId, r]));
+    const resolve = (drafts: Array<{ id: string }>) => ({ ok: true as const, refs: drafts.map(d => byId.get(d.id)!) });
+    return {
+      refs, bound,
+      deps: {
+        check: async (_c: { id: string }, _u: string, drafts: Array<{ id: string }>) => resolve(drafts),
+        bind: async (_c: { id: string }, _u: string, drafts: Array<{ id: string }>) => { bound.push(...drafts.map(d => d.id)); return resolve(drafts); },
+        read: async (r: { sizeBytes: number }) => Buffer.from('x'.repeat(r.sizeBytes)),
+      },
+    };
+  };
+  const noLinks = { store: async () => ({ ok: true as const, refs: [] }), link: async () => {}, bodies: async () => new Map<string, string>() };
+  const msgWith = (refs: Array<{ artifactId: string; name: string; mediaType: string; sizeBytes: number }>) => ({
+    id: 'client-t', role: 'user',
+    parts: [{ type: 'text', text: 'summarise these' }, ...refs.map(r => ({ type: 'data-file', data: { kind: 'file', id: r.artifactId, name: r.name, mediaType: r.mediaType, sizeBytes: 1 } }))],
+  });
+
+  it('ten text files of 100,000 characters are refused before routing, any model call or any write', async () => {
+    const f = textFiles(Array(10).fill(100_000));
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const h = harness({ model, extraDeps: { files: f.deps, attachments: noLinks } });
+    const { res, text } = await h.turn(msgWith(f.refs));
+    expect(res.status).toBe(400);
+    expect(JSON.parse(text).code).toBe('message_too_long_for_model');
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(h.resolveCalls).toHaveLength(0);
+    expect(f.bound).toHaveLength(0);
+    expect(messages.filter(m => m.role === 'user')).toHaveLength(0);
+  });
+
+  it('two small text files pass, each quoted whole', async () => {
+    const f = textFiles([40, 60]);
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const h = harness({ model, extraDeps: { files: f.deps, attachments: noLinks } });
+    expect((await h.turn(msgWith(f.refs))).res.status).toBe(200);
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('x'.repeat(40));
+    expect(prompt).toContain('x'.repeat(60));
+    expect(f.bound).toEqual(f.refs.map(r => r.artifactId));
+  });
+});
+
 // ── images and files (Living Specs C3) ──────────────────────────────────────
 describe('an image or file rides as a ready upload', () => {
   const FILE_ID = '7c1e2a40-5b3d-4f6e-9a8b-0c1d2e3f4a5b';
@@ -1726,6 +1774,9 @@ describe('an image or file rides as a ready upload', () => {
           bound.push(...drafts.map(d => d.id));
           return { ok: true as const, refs: drafts.map(d => ({ artifactId: d.id, revision: 1, sha256: 'b'.repeat(64), name: 'chart.png', mediaType: 'image/png', sizeBytes: PNG.byteLength })) };
         },
+        check: async (_conv: { id: string }, _userId: string, drafts: Array<{ id: string }>) => (ready
+          ? { ok: true as const, refs: drafts.map(d => ({ artifactId: d.id, revision: 1, sha256: 'b'.repeat(64), name: 'chart.png', mediaType: 'image/png', sizeBytes: PNG.byteLength })) }
+          : { ok: false as const, status: 409 as const, code: 'file_not_ready', error: 'this file has not finished uploading' }),
         read: async () => PNG,
       },
     };
