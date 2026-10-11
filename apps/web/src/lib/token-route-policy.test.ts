@@ -32,6 +32,10 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute(token, request('/api/health/dispatch'))).toBe(false);
     expect(canAccessTokenRoute(token, request('/api/health/dispatch?workspaceId=ws-b'))).toBe(false);
     expect(canAccessTokenRoute(token, request('/api/health/dispatch?workspaceId=ws-a'))).toBe(true);
+    // incidents: same shape as dispatch — own workspace only.
+    expect(canAccessTokenRoute(token, request('/api/health/incidents'))).toBe(false);
+    expect(canAccessTokenRoute(token, request('/api/health/incidents?workspaceId=ws-b'))).toBe(false);
+    expect(canAccessTokenRoute(token, request('/api/health/incidents?workspaceId=ws-a'))).toBe(true);
     expect(canAccessTokenRoute(token, request('/api/stats/actions?workspaceId=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['tasks:read'], workspaceIds: ['ws-a'] }, request('/api/tasks?workspace=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/artifacts?workspaceId=ws-a'))).toBe(false);

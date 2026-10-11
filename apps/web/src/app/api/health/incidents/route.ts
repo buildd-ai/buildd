@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { db } from '@buildd/core/db';
@@ -118,7 +118,9 @@ export async function GET(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') ?? null;
-    const account = await authenticateApiKey(apiKey, req);
+    // A per-task token reads incidents only of its own task's workspace (or one
+    // a schedule delegation grants analytics:read on): team-wide is narrowed.
+    const account = await authenticateTaskScopedCaller(apiKey, req);
     const sessionUser = account ? null : await getCurrentUser();
     if (!account && !sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -153,10 +155,12 @@ export async function GET(req: NextRequest) {
         where: eq(workspaces.id, workspaceId),
         columns: { id: true, teamId: true },
       });
-      if (!ws || !teamIds.includes(ws.teamId)) {
+      if (!ws || !teamIds.includes(ws.teamId) || (account && !taskScopeAllowsDelegated(account, ws.id, 'analytics:read'))) {
         return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
       }
       scopedWsIds = [workspaceId];
+    } else if (account?.taskScope) {
+      scopedWsIds = [account.taskScope.workspaceId];
     } else if (account) {
       const wsRows = await db.query.workspaces.findMany({
         where: eq(workspaces.teamId, account.teamId),
