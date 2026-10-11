@@ -434,7 +434,7 @@ const postReview: EffectHandler = async (e) => {
     }
     return { outcome: `failed_post:${res.reason ?? 'unknown'}` };
   }
-  return { outcome: 'ok' };
+  return { outcome: 'commentedOwnPr' in res && res.commentedOwnPr ? 'ok:commented_own_pr' : 'ok' };
 };
 
 // ── Escalations ─────────────────────────────────────────────────────────────
