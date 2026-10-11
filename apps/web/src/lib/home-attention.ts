@@ -175,7 +175,7 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
     case 'RECONNECT':
       return make({ label: 'reconnect', tone: 'warning', title: text(i.connectorName), sentence: text(i.failureMessage) ?? (i.connectorName ? `${i.connectorName} lost its connection. Agents using it are paused.` : null), actionType: 'reconnect', primary: { label: text(i.fixLabel) ?? 'Reconnect', href: text(i.fixHref) ?? '' } });
     case 'DISCREPANCY': {
-      const dir = i.direction === 'spec_ahead' ? 'The spec describes work the code does not do yet.' : i.direction === 'code_ahead' ? 'The code does something the spec does not describe.' : i.direction === 'contradicted' ? 'The code contradicts the spec.' : null;
+      const dir = i.direction === 'spec_ahead' ? 'The spec describes work the code does not do yet.' : i.direction === 'code_ahead' ? 'The code does something the spec does not describe.' : i.direction === 'contradicted' ? 'The code contradicts the spec.' : i.direction === 'conflict' ? 'Two requirements of an approved spec disagree.' : null;
       return make({ label: 'spec mismatch', tone: 'warning', title: text(i.specPath) ?? subject, sentence: dir, actionType: 'resolve', primary: { label: 'Resolve…', href: text(i.fixHref) ?? subjectHref ?? '' } });
     }
     case 'BLOCKED': {

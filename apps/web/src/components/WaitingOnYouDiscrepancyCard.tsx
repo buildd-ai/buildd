@@ -15,6 +15,7 @@ const DIRECTION_LABEL: Record<DiscrepancyDirection, string> = {
   contradicted: 'Contradicted · decision needed',
   spec_ahead: 'Spec ahead · unbuilt work',
   code_ahead: 'Code ahead · doc fix',
+  conflict: 'Conflict · advisory',
 };
 
 function ageLabel(hours: number | null | undefined): string | null {
