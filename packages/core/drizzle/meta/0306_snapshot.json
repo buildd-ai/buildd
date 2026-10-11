@@ -1,6 +1,6 @@
 {
-  "id": "5e12431c-e15f-45db-9364-038e7125a7f9",
-  "prevId": "27d5ec44-54d3-40d4-b158-4ab826804286",
+  "id": "af06a517-ea48-47a6-8b90-83eb6360a422",
+  "prevId": "fb90e859-1114-4005-8d60-daf8e6e5920b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1990,6 +1990,185 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.capability_grant_reservations": {
+      "name": "capability_grant_reservations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "usd_micros": {
+          "name": "usd_micros",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tokens": {
+          "name": "tokens",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reserved_at": {
+          "name": "reserved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "debit_usd_micros": {
+          "name": "debit_usd_micros",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "debit_tokens": {
+          "name": "debit_tokens",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cost_source": {
+          "name": "cost_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "capability_grant_reservations_open_idx": {
+          "name": "capability_grant_reservations_open_idx",
+          "columns": [
+            {
+              "expression": "grant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "reserved_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"capability_grant_reservations\".\"settled_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "capability_grant_reservations_grant_id_capability_grants_id_fk": {
+          "name": "capability_grant_reservations_grant_id_capability_grants_id_fk",
+          "tableFrom": "capability_grant_reservations",
+          "tableTo": "capability_grants",
+          "columnsFrom": [
+            "grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.capability_grant_usage": {
+      "name": "capability_grant_usage",
+      "schema": "",
+      "columns": {
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "calls": {
+          "name": "calls",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "tokens": {
+          "name": "tokens",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "usd_micros": {
+          "name": "usd_micros",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "in_flight": {
+          "name": "in_flight",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "capability_grant_usage_grant_id_capability_grants_id_fk": {
+          "name": "capability_grant_usage_grant_id_capability_grants_id_fk",
+          "tableFrom": "capability_grant_usage",
+          "tableTo": "capability_grants",
+          "columnsFrom": [
+            "grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -17472,6 +17651,12 @@
         "change_summary": {
           "name": "change_summary",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "repo_refs": {
+          "name": "repo_refs",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
