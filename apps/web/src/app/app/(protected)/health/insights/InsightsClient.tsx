@@ -48,7 +48,7 @@ export function InsightsClient({ series, window }: Props) {
 
       {/* Cost by billing basis lives on Usage, once. */}
       <p className="mt-5 text-meta text-text-muted">
-        <Link href="/app/health/usage" data-testid="insights-cost-link" className="text-text-secondary hover:underline">Costs and usage by role are on Usage ›</Link>
+        <Link href="/app/health/usage" data-testid="insights-cost-link" className="text-text-secondary hover:underline">Costs and usage by agent are on Usage ›</Link>
       </p>
 
 

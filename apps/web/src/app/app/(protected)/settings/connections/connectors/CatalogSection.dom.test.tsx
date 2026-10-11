@@ -123,7 +123,7 @@ describe('CatalogSection', () => {
     expect(q(el, 'catalog-policy-vercel-preinstalled')!.getAttribute('aria-checked')).toBe('true');
     expect(q(el, 'catalog-policy-vercel-available')!.getAttribute('aria-checked')).toBe('false');
     // Preinstalled never reads as an agent grant.
-    expect(q(el, 'catalog-entry-vercel')!.textContent).toContain('Agents get it only through a role that uses it');
+    expect(q(el, 'catalog-entry-vercel')!.textContent).toContain('An agent gets it only if it is set up to use it');
     // Only team entries carry a source tag; built-in rows carry none.
     expect(q(el, 'catalog-entry-internal')!.textContent).toContain('Team');
     expect(q(el, 'catalog-entry-vercel')!.textContent).not.toContain('Built-in');

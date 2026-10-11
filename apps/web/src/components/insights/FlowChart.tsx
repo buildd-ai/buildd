@@ -227,7 +227,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
           </div>
           {summary && <>
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="flow-breakdown">
-              {([['Role', summary.roles], ['Workspace', summary.workspaces], ['Outcome', summary.outcomes]] as const).map(([label, rows]) => (
+              {([['Agent', summary.roles], ['Workspace', summary.workspaces], ['Outcome', summary.outcomes]] as const).map(([label, rows]) => (
                 <div key={label}><h3 className="text-meta font-semibold">{label}</h3>
                   <ul className="mt-1 text-meta text-text-secondary">{rows.map(r => <li key={r.label} className="flex justify-between gap-3"><span className="min-w-0 break-words">{r.label}</span><span>{r.count}</span></li>)}</ul>
                 </div>

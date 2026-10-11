@@ -268,7 +268,7 @@ export default async function RoleProfilePage({
     >
       {canEdit && (
         <div>
-          <PrimaryAction href={editHref}>Edit role</PrimaryAction>
+          <PrimaryAction href={editHref}>Edit agent</PrimaryAction>
         </div>
       )}
 
@@ -300,7 +300,7 @@ export default async function RoleProfilePage({
 
       <Section title="Assigned missions" count={assignedMissions.length || undefined}>
         {assignedMissions.length === 0 ? (
-          <p className="text-sm text-text-muted">No missions assigned to this role.</p>
+          <p className="text-sm text-text-muted">No missions assigned to this agent.</p>
         ) : (
           <div className={ROWS}>
             {assignedMissions.map(mission => {

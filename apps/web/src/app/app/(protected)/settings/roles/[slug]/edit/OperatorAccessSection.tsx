@@ -229,7 +229,7 @@ function TeamCeilingCard({ roleId, metadata, canEdit = true }: { roleId: string;
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-text-primary">Team ceiling</h3>
         <label className="flex min-h-11 md:min-h-0 items-center gap-2 cursor-pointer">
-          <span className="text-meta text-text-secondary">Allow workspaces to enable this role</span>
+          <span className="text-meta text-text-secondary">Allow workspaces to enable this agent</span>
           <input
             type="checkbox"
             checked={!killSwitchOff}
