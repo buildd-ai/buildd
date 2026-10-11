@@ -68,7 +68,7 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
   };
 }
 
-export function ChatUnavailable({ reason, canManage, policy, teamId = null, formHref = '/app/missions/new' }: { reason: 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; teamId?: string | null; formHref?: string }) {
+export function ChatUnavailable({ reason, canManage, policy, teamId = null, formHref = '/app/missions?new=1' }: { reason: 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; teamId?: string | null; formHref?: string }) {
   return (
     <div data-testid="chat-unavailable" className="mx-auto grid max-w-xl gap-4 px-4 py-8 md:py-14">
       {/* Everyone brings their own key and this person has none: the connect

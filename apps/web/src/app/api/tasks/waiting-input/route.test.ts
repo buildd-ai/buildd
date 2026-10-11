@@ -107,7 +107,7 @@ describe('GET /api/tasks/waiting-input', () => {
       missionId: 'mission-1',
       waitingFor: { type: 'question', prompt: 'Which database?', disposition: 'ask' },
       answerSent: false,
-      actionUrl: 'https://buildd.dev/app/tasks/task-1/respond',
+      actionUrl: 'https://buildd.dev/app/tasks/task-1?respond=1',
     });
   });
 
@@ -200,7 +200,7 @@ describe('GET /api/tasks/waiting-input', () => {
     expect((await (await GET()).json()).tasks).toEqual([]);
   });
 
-  it('includes actionUrl pointing to respond page', async () => {
+  it('includes actionUrl that opens the reply on the task page', async () => {
     mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkersFindMany.mockReturnValue([
@@ -223,7 +223,7 @@ describe('GET /api/tasks/waiting-input', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.tasks).toHaveLength(1);
-    expect(data.tasks[0].actionUrl).toMatch(/\/app\/tasks\/task-1\/respond$/);
+    expect(data.tasks[0].actionUrl).toMatch(/\/app\/tasks\/task-1\?respond=1$/);
   });
 
   it('filters workers to user workspaces only', async () => {

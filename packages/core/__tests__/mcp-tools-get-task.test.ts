@@ -311,7 +311,7 @@ describe('get_task', () => {
     );
 
     const text = result.content[0].text;
-    expect(text).toContain(`https://buildd.dev/app/tasks/${TASK_ID}/respond`);
+    expect(text).toContain(`https://buildd.dev/app/tasks/${TASK_ID}?respond=1`);
     expect(text).toContain('Which approach?');
   });
 
