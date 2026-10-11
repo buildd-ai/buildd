@@ -10,6 +10,34 @@ related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-mission
 keywords: [task detail, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
 verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/task-verdict.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "task-checks"
+    type: "symbol"
+    name: "deriveTaskChecks"
+    path: "apps/web/src/lib/task-checks.ts"
+  - id: "task-subject"
+    type: "symbol"
+    name: "taskSubjectOf"
+    path: "apps/web/src/lib/task-checks.ts"
+  - id: "readable-result"
+    type: "symbol"
+    name: "readableTaskResult"
+    path: "apps/web/src/lib/task-result.ts"
+  - id: "header-lifecycle"
+    type: "symbol"
+    name: "headerLifecycle"
+    path: "apps/web/src/app/app/(protected)/tasks/[id]/task-header.ts"
+  - id: "checks-on-page"
+    type: "symbol_reachable"
+    symbol: "deriveTaskChecks"
+    entry: "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx"
+  - id: "task-checks-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/task-checks.test.ts"
+  - id: "task-result-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/task-result.test.ts"
 ---
 
 # Task Page
