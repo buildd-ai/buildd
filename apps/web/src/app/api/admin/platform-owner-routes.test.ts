@@ -33,6 +33,10 @@ let flags: any;
 const writes: any[] = [];
 const scopes: any[] = [];
 
+mock.module('@/lib/admin/growth', () => ({
+  loadGrowth: async () => ({ asOf: '2031-03-15', totalUsers: 2, mau: 1, days: [] }),
+}));
+
 mock.module('@/lib/admin/data', () => ({
   resolveScopeWorkspaces: async (scope: any) => {
     scopes.push(scope);
@@ -82,6 +86,7 @@ const routes = {
   agentAccess: await import('./agent-access/route'),
   teams: await import('./teams/route'),
   readout: await import('./experiments/[id]/readout/route'),
+  growth: await import('./growth/route'),
 };
 
 const req = (path: string, method = 'GET', body?: unknown) => new NextRequest(`http://localhost:3000/api/admin/${path}`, {
@@ -110,6 +115,7 @@ const calls: Call[] = [
   { name: 'GET agent-access', call: () => routes.agentAccess.GET(req('agent-access')) },
   { name: 'GET teams', call: () => routes.teams.GET(req('teams')) },
   { name: 'GET experiments/[id]/readout', call: () => routes.readout.GET(req(`experiments/${EXP}/readout`), idCtx(EXP)) },
+  { name: 'GET growth', call: () => routes.growth.GET(req('growth')) },
 ];
 
 beforeEach(() => {

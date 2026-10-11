@@ -27,6 +27,7 @@ import { resolveLinkedDocsWorkspaces } from "@/lib/linked-knowledge";
 import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateTaskScopedCaller, isOrchestrationTaskToken } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
+import { scheduleActiveDay } from "@/lib/active-days";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
 import { ensureTeamSessionAccount } from "@/lib/oauth/ensure-session-account";
 import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from "@/lib/self-origin";
@@ -1042,6 +1043,9 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     sessionKey,
     level: account.level,
   });
+  // A person's OAuth session (an API key or task token has no session user)
+  // counts toward DAU; see lib/active-days.ts.
+  scheduleActiveDay((account as { sessionUserId?: string }).sessionUserId ?? null, 'mcp');
 
   // Create per-request API wrapper, server, and transport
   const selfOrigin = resolveSelfOrigin(req);
@@ -1223,6 +1227,7 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
     // its claims are its connecting user's (lib/worker-owner.ts).
     const claimUserId = claimingUserId(account);
     scheduleInteractiveTouch({ accountId: account.id, userId: claimUserId, sessionKey, level: account.level });
+    scheduleActiveDay(claimUserId, 'mcp');
     const api = createApi(selfOrigin, jwt, signInteractiveSession({ accountId: account.id, userId: claimUserId, sessionKey }), target.workspaceId);
     const isSensitive = (await resolveWorkspaceDataClass(target.workspaceId)) === 'sensitive';
     server = createMcpServer(api, account.level as 'worker' | 'admin', target.workspaceId, undefined, account.teamId, workerParam || undefined, 'oauth', appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, false, sessionUserId, principal, { listWorkspaces, instructions });
