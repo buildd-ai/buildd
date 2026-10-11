@@ -12,6 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { isWarmHandover } from '@buildd/shared';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, sanitizeOverrides, type Permission, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
 const MAX_CHAT_BUDGET_USD = 100_000;
@@ -349,6 +350,9 @@ export async function DELETE(
     }
 
     await db.delete(teams).where(eq(teams.id, id));
+    // Its conversations went with it (cascade); their chat attachments do not
+    // cascade, so remove them now. Whatever is left, the maintenance sweep takes.
+    await removeTeamChatAttachments(id);
 
     return NextResponse.json({ success: true });
   } catch (error) {
