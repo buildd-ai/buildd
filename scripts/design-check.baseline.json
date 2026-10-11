@@ -137,6 +137,7 @@
     "apps/web/src/components/WorkerRespondInput.tsx": 6,
     "apps/web/src/components/WorkspaceSwitcher.tsx": 7,
     "apps/web/src/components/chat/ApprovalCard.tsx": 7,
+    "apps/web/src/components/chat/AttachmentReader.tsx": 4,
     "apps/web/src/components/chat/ChatCanvas.tsx": 3,
     "apps/web/src/components/chat/ChatComposer.tsx": 2,
     "apps/web/src/components/chat/ChatContextPanel.tsx": 9,
