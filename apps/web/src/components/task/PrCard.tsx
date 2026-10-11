@@ -109,6 +109,13 @@ export interface PrCardProps {
    * would refuse.
    */
   openAttempt?: OpenAttemptInfo | null;
+  /**
+   * Task page: the status row already reads "PR #N merged" with its link and
+   * the claim-to-merge time. On a merged PR the outcome card then drops its own
+   * header line and that figure, and draws no card at all when nothing else
+   * was recorded (docs/specs/task-page.md: a merged PR is stated once).
+   */
+  statedAbove?: boolean;
 }
 
 const isFailingRun = (r: CiCheckRun) =>
@@ -542,7 +549,7 @@ function DiffBar({ attempts }: { attempts: PrOutcome['attempts'] }) {
   );
 }
 
-function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, mergeable, mergeableState, reviews, outcome, hideAction = false, openAttempt }: PrCardProps & { outcome: PrOutcome }) {
+function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, mergeable, mergeableState, reviews, outcome, hideAction = false, openAttempt, statedAbove = false }: PrCardProps & { outcome: PrOutcome }) {
   const state = cardPrState({ prState, prLifecycleStatus });
   const lifecycle = PR_PILL[state];
   const merged = state === 'merged';
@@ -557,10 +564,16 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
         reviews.pending > 0 ? `${reviews.pending} pending` : null,
       ].filter(Boolean).join(' · ')
     : null;
+  // A merged PR the status row already states: only what it does not say.
+  const headerShown = !(merged && statedAbove);
+  const claimToMerge = headerShown ? totals.claimToMerge : null;
+  const figuresShown = totals.measured !== false || totals.attempts > 1 || !!claimToMerge;
+  const cardShown = headerShown || figuresShown || total > 0;
 
   return (
     <div data-testid="pr-outcome" className="space-y-8">
-      <section className="card p-4 md:p-5">
+      {cardShown && <section className="card p-4 md:p-5">
+        {headerShown && <>
         {/* Stacked below md: beside the action the summary wrapped at ~20 characters. */}
         <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
           <div className="min-w-0 flex-1">
@@ -586,9 +599,10 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
             </a>
           )}
         </div>
+        </>}
 
-        {(totals.measured !== false || totals.attempts > 1 || totals.claimToMerge) && (
-          <div className="mt-6 flex flex-wrap items-end gap-x-8 md:gap-x-12 gap-y-5">
+        {figuresShown && (
+          <div data-testid="pr-outcome-figures" className={`${headerShown ? 'mt-6 ' : ''}flex flex-wrap items-end gap-x-8 md:gap-x-12 gap-y-5`}>
             {totals.measured !== false && (
               <>
                 <BigNumber value={`+${totals.add}`} label="Added" tone="add" />
@@ -598,16 +612,16 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
               </>
             )}
             {totals.attempts > 1 && <BigNumber value={totals.attempts} label="Attempts" />}
-            {totals.claimToMerge && (
+            {claimToMerge && (
               <div className="ml-auto text-right">
-                <BigNumber value={totals.claimToMerge} label="Claim → merge" />
+                <BigNumber value={claimToMerge} label="Claim → merge" />
               </div>
             )}
           </div>
         )}
 
         {total > 0 && <DiffBar attempts={attempts} />}
-      </section>
+      </section>}
 
       {/* One timeline: the attempt → CI → retry chain, then each attempt's
           checks behind a disclosure that opens on its failing check. The

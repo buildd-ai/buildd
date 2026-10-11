@@ -40,8 +40,7 @@ export const forbidden = () => NextResponse.json({ error: 'Forbidden' }, { statu
 
 /**
  * May this signed-in user change connectors (and their credentials) for
- * `teamId`? They must hold `manage_connectors` there, with the team's
- * overrides applied. Fails closed: a user with no membership row in the team
+ * `teamId`? They must hold `manage_connectors` there. Fails closed: a user with no membership row in the team
  * holds nothing, unless it is their own personal team (which the registry
  * treats as owned).
  */

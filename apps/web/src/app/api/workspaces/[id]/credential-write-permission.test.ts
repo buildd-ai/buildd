@@ -11,7 +11,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(async () => ({ id: 'user-1' }) as any);
 const mockVerifyWorkspaceAccess = mock(async () => ({ teamId: 'team-1' }) as any);
 
-// Teams in which user-1 holds manage_team_credentials (role grant + overrides).
+// Teams in which user-1 holds manage_team_credentials (role grant).
 let grantedTeams: string[] = [];
 const mockCan = mock(async (caller: any, permission: string, teamId: string) =>
   caller.kind === 'user' && caller.userId === 'user-1' && permission === 'manage_team_credentials' && grantedTeams.includes(teamId));

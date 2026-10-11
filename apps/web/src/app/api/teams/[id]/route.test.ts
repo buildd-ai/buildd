@@ -13,6 +13,7 @@ let teamRow: any = { id: '11111111-1111-4111-8111-111111111111', name: 'Team', s
 const capturedUpdates: any[] = [];
 const teamQueries: any[] = [];
 let deletedTeams = 0;
+const batches: any[][] = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -23,7 +24,8 @@ mock.module('@buildd/core/db', () => ({
     update: (_t: any) => ({
       set: (vals: any) => ({ where: (_c: any) => { capturedUpdates.push(vals); return Promise.resolve(); } }),
     }),
-    delete: (_t: any) => ({ where: (_c: any) => { deletedTeams++; return Promise.resolve(); } }),
+    delete: (_t: any) => ({ where: (_c: any) => { deletedTeams++; return 'delete-team'; } }),
+    batch: (stmts: any[]) => { batches.push(stmts); return Promise.resolve(stmts.map(() => [])); },
   },
 }));
 
@@ -41,6 +43,12 @@ mock.module('@buildd/core/db/schema', () => ({
 const chatCleanups: string[] = [];
 mock.module('@/lib/artifact-attachment-cleanup', () => ({
   removeTeamChatAttachments: async (teamId: string) => { chatCleanups.push(teamId); return { removed: 0, objectsRemoved: 0 }; },
+}));
+
+const fileCleanups: string[] = [];
+mock.module('@/lib/artifact-team-files', () => ({
+  detachTeamStoredFiles: (teamId: string) => `detach:${teamId}`,
+  removeTeamStoredFiles: async (teamId: string) => { fileCleanups.push(teamId); return { removed: 0, objectsRemoved: 0 }; },
 }));
 
 // Saving a decision model probes it first (packages/core/decision-probe.ts).
@@ -434,13 +442,14 @@ describe('DELETE /api/teams/[id]', () => {
   const del = () =>
     DELETE(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111', { method: 'DELETE' }), ctx);
 
-  beforeEach(() => { deletedTeams = 0; chatCleanups.length = 0; });
+  beforeEach(() => { deletedTeams = 0; chatCleanups.length = 0; fileCleanups.length = 0; batches.length = 0; });
 
   it('a member cannot delete the team', async () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     expect((await del()).status).toBe(403);
     expect(deletedTeams).toBe(0);
     expect(chatCleanups).toEqual([]);
+    expect(fileCleanups).toEqual([]);
   });
 
   it('an admin cannot delete the team', async () => {
@@ -461,6 +470,14 @@ describe('DELETE /api/teams/[id]', () => {
     expect(deletedTeams).toBe(1);
     // Its conversations cascade; their chat attachments are removed in the same request.
     expect(chatCleanups).toEqual(['11111111-1111-4111-8111-111111111111']);
+  });
+
+  it('the team delete runs in one batch with the detach of its stored files, then removes them', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
+    expect((await del()).status).toBe(200);
+    // Detach first, in the same transaction as the delete: a failed delete detaches nothing.
+    expect(batches).toEqual([['detach:11111111-1111-4111-8111-111111111111', 'delete-team']]);
+    expect(fileCleanups).toEqual(['11111111-1111-4111-8111-111111111111']);
   });
 
   it('an owner still cannot delete a personal team', async () => {

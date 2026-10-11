@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { isRunnerReported } from '@/lib/verification-provenance';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
@@ -193,6 +194,8 @@ function classifyCommandRun(result: Record<string, unknown> | null): CommandRunO
   const history = (result?.loopHistory as Array<Record<string, unknown>> | undefined) ?? [];
   const last = history[history.length - 1];
   if (!last || typeof last.satisfied !== 'boolean') return null;
+  // Evidence the agent reported on its task token is its word, not a run.
+  if (last.evidence !== undefined && !isRunnerReported(last.evidence)) return null;
 
   const outcome = (last.evidence as Record<string, unknown> | undefined)?.outcome;
   if (typeof outcome === 'string') {
@@ -401,7 +404,14 @@ export async function handleCriteriaVerificationOutcome(
   const ran = classifyCommandRun(task.result as Record<string, unknown> | null);
   let verdict: 'pass' | 'fail' | 'UNVERIFIED';
   let unverifiedCause: string | null = null;
-  if (ev && typeof ev.outcome === 'string') {
+  // Evidence the agent in the verification task reported on its own task
+  // token (lib/verification-provenance.ts) is not the runner's run: the
+  // criterion stays unverified until the runner's own report lands.
+  const agentReported = !!ev && !isRunnerReported(ev);
+  if (agentReported) {
+    verdict = 'UNVERIFIED';
+    unverifiedCause = 'agent_reported_evidence';
+  } else if (ev && typeof ev.outcome === 'string') {
     verdict = ev.outcome === 'ok' ? 'pass' : ev.outcome === 'timeout' || ev.outcome === 'exec_error' ? 'UNVERIFIED' : 'fail';
     if (verdict === 'UNVERIFIED') unverifiedCause = ev.outcome;
   } else if (ran !== null) {
@@ -449,7 +459,9 @@ export async function handleCriteriaVerificationOutcome(
 
   criterion.verdict = verdict;
   criterion.workerTaskId = task.id;
-  criterion.evidence = ev
+  criterion.evidence = agentReported
+    ? `\`${shortCommand(marker.command)}\` was reported by the agent in verification task ${task.id.slice(0, 8)}, not by the runner`
+    : ev
     ? (verdict === 'pass'
         ? `\`${shortCommand(marker.command)}\` exited 0 (verification task ${task.id.slice(0, 8)})`
         : verdict === 'UNVERIFIED'

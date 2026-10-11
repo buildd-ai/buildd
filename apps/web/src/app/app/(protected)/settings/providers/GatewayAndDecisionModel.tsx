@@ -73,16 +73,17 @@ function useGateway(teamId: string, rev = 0) {
  * The gateway as one more provider card under Team keys: it is where agents,
  * chat and decisions reach models when a provider has no key of its own.
  */
-export function GatewayCard({ teamId, canManage, onChanged }: { teamId: string; canManage: boolean; onChanged?: () => void }) {
+/** `embedded`: drawn inside the provider list's LiteLLM row, which already names it. */
+export function GatewayCard({ teamId, canManage, onChanged, embedded = false }: { teamId: string; canManage: boolean; onChanged?: () => void; embedded?: boolean }) {
   const { gateway, error, load } = useGateway(teamId);
   return (
-    <GatewaySection teamId={teamId} canManage={canManage} gateway={gateway} error={error}
+    <GatewaySection teamId={teamId} canManage={canManage} gateway={gateway} error={error} embedded={embedded}
       onChanged={async () => { await load(); onChanged?.(); }} />
   );
 }
 
 /** Which model answers decision calls. `rev` reloads it after the gateway changes. */
-export function DecisionModelPicker({ teamId, canManage, rev = 0 }: { teamId: string; canManage: boolean; rev?: number }) {
+export function DecisionModelPicker({ teamId, canManage, rev = 0, embedded = false }: { teamId: string; canManage: boolean; rev?: number; embedded?: boolean }) {
   const { gateway } = useGateway(teamId, rev);
   const [decision, setDecision] = useState<DecisionModel | undefined>(undefined);
   const load = useCallback(async () => {
@@ -92,10 +93,11 @@ export function DecisionModelPicker({ teamId, canManage, rev = 0 }: { teamId: st
     setDecision(team.team?.decisionModel ?? team.decisionModel ?? null);
   }, [teamId]);
   useEffect(() => { void load(); }, [load]);
-  return <DecisionModelSection teamId={teamId} canManage={canManage} value={decision} hasGateway={!!gateway} onChanged={load} />;
+  return <DecisionModelSection teamId={teamId} canManage={canManage} value={decision} hasGateway={!!gateway} onChanged={load} embedded={embedded} />;
 }
 
-function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
+function GatewaySection({ teamId, canManage, gateway, error, onChanged, embedded = false }: {
+  embedded?: boolean;
   teamId: string;
   canManage: boolean;
   gateway: MaskedGateway | null | undefined;
@@ -147,14 +149,14 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
   const tone = gateway === undefined ? 'muted' : keyHealthTone(gateway ? { health: GATEWAY_HEALTH[gateway.health] } : null);
 
   return (
-    <div className="card" data-testid="litellm-gateway">
+    <div className={embedded ? '' : 'card'} data-testid="litellm-gateway">
       {/* The same header as a provider key card (ProviderKeyCard). */}
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 min-w-0 px-3 py-2.5 border-b border-border-default">
+      {!embedded && <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 min-w-0 px-3 py-2.5 border-b border-border-default">
         <span aria-hidden className={`w-2.5 h-2.5 shrink-0 ${STATUS_TONE_SQUARE[tone]}`} />
         <b className="min-w-0 break-words text-body font-semibold text-text-primary">LiteLLM gateway</b>
         <span className="shrink-0 ml-auto inline-flex" data-testid="litellm-gateway-health"><StatusChip tone={pill.tone}>{pill.label}</StatusChip></span>
-      </div>
-      <div className="px-3 pt-2 pb-3 space-y-1.5 text-xs">
+      </div>}
+      <div className={embedded ? 'space-y-1.5 text-xs' : 'px-3 pt-2 pb-3 space-y-1.5 text-xs'}>
         <div className="flex items-baseline justify-between gap-3">
           <span className="text-text-muted shrink-0">Team key</span>
           {gateway
@@ -164,9 +166,11 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
         {gateway?.health === 'revoked' && gateway.lastVerificationError && (
           <p className="text-status-error break-words">Last check failed: {gateway.lastVerificationError}</p>
         )}
-        <p className="text-text-muted">
-          Used for any model with no key above.
-        </p>
+        {!embedded && (
+          <p className="text-text-muted">
+            Used for any model with no key above.
+          </p>
+        )}
         {error && <p role="alert" className="text-status-error">{error}</p>}
         {canManage && editing && (
           <div className="pt-2 space-y-2">
@@ -195,7 +199,9 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
   );
 }
 
-function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged }: {
+function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged, embedded = false }: {
+  /** A row in Used for: titled "Decisions", no card. */
+  embedded?: boolean;
   teamId: string;
   canManage: boolean;
   value: DecisionModel | undefined;
@@ -243,8 +249,10 @@ function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged 
 
   return (
     <section aria-labelledby="decision-model-h" data-testid="decision-model">
-      <h2 id="decision-model-h" className="section-label mb-3">Decision model</h2>
-      <div className="card p-4 space-y-2 text-xs">
+      {embedded
+        ? <h3 id="decision-model-h" className="text-body text-text-primary mb-1">Decisions</h3>
+        : <h2 id="decision-model-h" className="section-label mb-3">Decision model</h2>}
+      <div className={embedded ? 'space-y-2 text-xs' : 'card p-4 space-y-2 text-xs'}>
         <p className="text-sm text-text-primary" data-testid="decision-model-current">{value === undefined ? 'Loading…' : current}</p>
         <p className="text-text-muted">
           Labels tasks by category. Needs a model that returns token logprobs. Other models only record their picks until evaluated.

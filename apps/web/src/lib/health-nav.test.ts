@@ -18,20 +18,26 @@ describe('healthItemFor', () => {
 });
 
 describe('healthNavFor', () => {
-  it('hides Operator from everyone who is not an operator', () => {
-    expect(healthNavFor(false).map(i => i.id)).not.toContain('operator');
-    expect(healthNavFor(true).map(i => i.id)).toContain('operator');
+  const member = { operator: false, teamAdmin: false };
+  const admin = { operator: false, teamAdmin: true };
+  const owner = { operator: true, teamAdmin: true };
+
+  it('hides Operator from everyone who is not the platform owner, team admins included', () => {
+    expect(healthNavFor(member).map(i => i.id)).not.toContain('operator');
+    expect(healthNavFor(admin).map(i => i.id)).not.toContain('operator');
+    expect(healthNavFor(owner).map(i => i.id)).toContain('operator');
   });
 
-  it('shows a team member Overview, Runners and Estimates: Failures, Usage and Insights moved to the admin app', () => {
-    expect(healthNavFor(false).map(i => i.id)).toEqual(['overview', 'runners', 'estimates']);
-    for (const id of ['failures', 'usage', 'insights'] as const) {
-      expect(healthNavFor(true).map(i => i.id)).toContain(id);
-    }
+  it('shows a team admin Failures, Usage and Insights for their own team', () => {
+    expect(healthNavFor(admin).map(i => i.id)).toEqual(['overview', 'failures', 'runners', 'estimates', 'usage', 'insights']);
+  });
+
+  it("shows a member Failures and their own Usage, but not the team's Insights", () => {
+    expect(healthNavFor(member).map(i => i.id)).toEqual(['overview', 'failures', 'runners', 'estimates', 'usage']);
   });
 
   it('keeps registry order, Overview first', () => {
-    expect(healthNavFor(true).map(i => i.id)).toEqual(HEALTH_NAV.map(i => i.id));
+    expect(healthNavFor(owner).map(i => i.id)).toEqual(HEALTH_NAV.map(i => i.id));
     expect(HEALTH_NAV[0].href).toBe(HEALTH_INDEX_HREF);
   });
 });

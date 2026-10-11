@@ -150,11 +150,14 @@ describe('POST /api/artifacts/upload-url', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.storageKey).toBe(`artifacts/ws-1/${UUID}/report.pdf`);
+    // Signed for the staging sibling, never the key readers use: finalize copies
+    // the verified bytes there, so a later PUT through this URL changes nothing.
     expect(mockGenerateSizedUploadUrl).toHaveBeenCalledWith(
-      `artifacts/ws-1/${UUID}/report.pdf`,
+      `artifacts/ws-1/${UUID}/report.pdf.upload`,
       'application/pdf',
       1024,
     );
+    expect(mockGenerateSizedUploadUrl.mock.calls[0][0]).not.toBe(data.storageKey);
   });
 
   it('does not let the supplied name change the shape of the key', async () => {
@@ -166,8 +169,8 @@ describe('POST /api/artifacts/upload-url', () => {
       expect(data.storageKey.split('/')).toHaveLength(4);
       expect(data.storageKey.startsWith(`artifacts/ws-1/${UUID}/`)).toBe(true);
       expect(data.storageKey).not.toContain('..');
-      // The signer must receive the same key that was recorded.
-      expect(mockGenerateSizedUploadUrl.mock.calls[0][0]).toBe(data.storageKey);
+      // The signer receives the staging sibling of the key that was recorded.
+      expect(mockGenerateSizedUploadUrl.mock.calls[0][0]).toBe(`${data.storageKey}.upload`);
     }
   });
 
@@ -181,7 +184,7 @@ describe('POST /api/artifacts/upload-url', () => {
     expect(data.storageKey).not.toContain('..');
     expect(data.storageKey).not.toContain('role-configs');
     expect(data.storageKey.startsWith(`artifacts/ws-1/${UUID}/`)).toBe(true);
-    expect(mockGenerateSizedUploadUrl.mock.calls[0][0]).toBe(data.storageKey);
+    expect(mockGenerateSizedUploadUrl.mock.calls[0][0]).toBe(`${data.storageKey}.upload`);
   });
 
   it('never yields an empty final segment for a traversal-only filename', async () => {
@@ -363,7 +366,7 @@ describe('POST /api/artifacts/upload-url', () => {
         expect(vals.storageKey).toBe(`qa/ws-1/${UUID}/tasks-mobile.png`);
         expect(vals.id).toBe(UUID);
         expect((await res.json()).storageKey).toBe(vals.storageKey);
-        expect(mockGenerateSizedUploadUrl.mock.calls[0][0]).toBe(vals.storageKey);
+        expect(mockGenerateSizedUploadUrl.mock.calls[0][0]).toBe(`${vals.storageKey}.upload`);
       });
 
       it('reads the role from the task lookup', async () => {

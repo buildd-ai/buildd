@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/task-verdict.test.ts]
+verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -197,6 +197,24 @@ never described as released.
   name (case-insensitive) is dropped.
 - The release badge (Skip / Force release) renders only for a deliverable,
   never for a review or fix attempt.
+- A looped task's chip and its Loop history count the same evaluations: a
+  stopped loop (satisfied or exhausted) shows `loopIteration` itself, and only
+  a running loop shows the attempt in progress (`loopIteration + 1`), both
+  capped at `maxLoops`. History rows name the outcome in words ("CI passed",
+  "Check failed"), the heading names the goal ("until CI passes"), and no row
+  renders a worker id or a raw exit-condition type.
+- The PR card never states a commit or diff count nobody recorded. When no
+  attempt recorded its counters (`diffStatsRecorded`), the Added, Removed,
+  Files and Commits figures are left out, and the attempt that opened the PR
+  names no commit count. A recorded head SHA is not a recording, and a PR is
+  never opened from zero commits, so all-zero counters read as unrecorded.
+- A merged PR is stated once, on the status row: "Shipped · PR #N merged",
+  its "View PR #N ↗" link, and the claim-to-merge time as the row's cause
+  line. When the status row links the PR, the side panel has no PR row, and
+  the PR card drops its "#N · repo · merged" header line and Claim → merge
+  figure. The card draws only recorded figures (diff counters, more than one
+  attempt, the diff bar), and no card at all when there are none; PR history
+  stays. The status row's link is the way to the PR at every width.
 
 ## Interaction
 
@@ -225,6 +243,8 @@ never described as released.
 - AC-8: GIVEN a verdict whose headline equals its label ("Done") WHEN the outcome row renders THEN the label appears once and no `h2` heading repeats it.
 - AC-9: GIVEN a reviewer task titled "[reviewer] PR #N: …" with role name "Reviewer" WHEN `taskHeading` runs THEN the eyebrow contains "Reviewer" exactly once.
 - AC-10: GIVEN no kernel-owned delivery, or a delivery with no PR, WHEN the page renders THEN no checks list is drawn (no invented rows).
+- AC-11: GIVEN a `pr_checks_green` loop satisfied on its 2nd evaluation (`loopIteration` 2, `maxLoops` 3, two history rows) WHEN the chip and Loop history render THEN the chip reads "LOOP SATISFIED · 2/3", the list shows two iterations, and no full UUID or `pr_checks_green` appears.
+- AC-12: GIVEN a completed task whose PR merged with no recorded diff counters and one attempt WHEN the page renders THEN the status row reads "Shipped · PR #N merged" with the claim-to-merge time and a "View PR #N" link, the side panel has no PR row, no element repeats "#N · repo · merged", no Claim → merge figure is drawn, and PR history is still shown.
 
 ## Code surface
 
@@ -238,6 +258,8 @@ never described as released.
 - `apps/web/src/app/app/(protected)/tasks/[id]/TaskShippedHeader.tsx` — result heading, Technical summary, Run details and Raw output.
 - `apps/web/src/lib/task-verdict.ts` — the review-attempt outcome rule.
 - `apps/web/src/lib/workflow/projections.ts` — `deriveDeliveryView` headlines, `rounds` and `ledger` on the view.
+- `apps/web/src/components/LoopStatus.tsx` — loop chip (`loopAttemptShown`) and Loop history.
+- `apps/web/src/components/task/PrCard.tsx` — the PR card; `statedAbove` drops what the status row already says.
 
 ## Regression cases (visual)
 

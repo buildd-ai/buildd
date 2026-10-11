@@ -5,7 +5,9 @@
  * so the routes' own reach checks apply. submit and approve (POST
  * /api/specs/[id]/submit|approve) are a person's act (G2, decision D-4): the
  * route refuses an agent run or API key with a 403, which this passes through
- * as is. No other sub-action takes a status.
+ * as is. From an OAuth session an approve does not approve: the route returns
+ * a link the person opens on buildd.dev to confirm it, which this shows. No
+ * other sub-action takes a status.
  *
  * outcome, verdict and conflict are Living Specs verification (V1, D-5) over
  * /api/specs/outcomes/[taskId] and /api/specs/[id]/conflicts: a task's governed
@@ -137,6 +139,8 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         if (e?.status === 409 && typeof e.body?.currentVersion === 'number') {
           return errorResult(`Version conflict: the spec is now at version ${e.body.currentVersion}, not ${params.expectedVersion}; nothing was written. Re-read it (manage_specs action=get), merge your change into that text, then revise with expectedVersion ${e.body.currentVersion}.\ncurrentVersion: ${e.body.currentVersion}`);
         }
+        // A body changed outside a revise: no version to retry at, so the reason as the server gave it.
+        if (e?.status === 409) return errorResult(String(e.body?.error ?? 'Refused (409).'));
         throw err;
       }
     }
@@ -149,6 +153,9 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       const payload = op === 'approve' ? { revision: params.revision, expectedVersion: params.expectedVersion } : { expectedVersion: params.expectedVersion };
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}/${op}`, { method: 'POST', body: JSON.stringify(payload) });
+        if (op === 'approve' && r.pending) {
+          return text(`Not approved yet: approving a spec is the person's own decision, so it waits for them to confirm it on buildd.dev.\nConfirm revision ${r.pending.revision} of "${r.spec.title}": ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.`);
+        }
         return text(op === 'approve'
           ? `Approved: revision ${r.revision.revision} of "${r.spec.title}" is now in force (sha256 ${r.revision.contentHash}). Version ${r.spec.version}.`
           : `Submitted: "${r.spec.title}" revision ${r.spec.headRevision} is in review. Version ${r.spec.version}.`);

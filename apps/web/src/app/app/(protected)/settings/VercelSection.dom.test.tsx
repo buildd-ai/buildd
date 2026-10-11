@@ -50,7 +50,7 @@ describe('VercelSection', () => {
   });
 });
 
-/** A Vercel token is a team credential: manage_team_credentials, overrides applied. */
+/** A Vercel token is a team credential: manage_team_credentials. */
 describe('VercelSection: read-only without manage_team_credentials', () => {
   const withToken = () => {
     globalThis.fetch = mock(async () => new Response(JSON.stringify({

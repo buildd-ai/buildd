@@ -493,7 +493,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         // Model policy: every check suite passed on the run's PR (once per transition to green).
         if (greened.length > 0) {
           await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
-          await emit({ type: 'pr.ci_passed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id });
+          await emit({
+            type: 'pr.ci_passed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id,
+            workspaceId: workspace.id, workerId: worker.id, taskId: worker.taskId,
+          });
         }
 
         // Resolve merge policy via the single precedence chain:

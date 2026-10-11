@@ -4,14 +4,13 @@ import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import SettingsPage from '../_components/SettingsPage';
 import TimezoneSection from '../TimezoneSection';
-import TeamPermissionsSection from './TeamPermissionsSection';
 import TeamDetailClient from './TeamDetailClient';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { roleHas } from '@/lib/permission-registry';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
 import { pickShownTeam } from './shown-team';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+
 import { settingsReadOnly } from '@/lib/settings-nav';
 import { NO_PERMISSIONS, settingsPermissions } from '../_lib/settings-permissions';
 import UrlSheet from '@/components/UrlSheet';
@@ -20,8 +19,7 @@ import NewTeamForm from './NewTeamForm';
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings › Team › Members: a team's people, its timezone, and who can do what (team
- * permission overrides). Shows the active team, or `?team=<id>` when the
+ * Settings › Team › Members: a team's people and its timezone. Shows the active team, or `?team=<id>` when the
  * person is a member of it, so a link to another team (the old
  * /app/teams/[id]) lands on that team's members.
  * `?new=1` opens the New team sheet (the old /app/settings/team/new redirects here).
@@ -68,19 +66,15 @@ export default async function TeamSettingsPage({
   ]);
 
   const role = shown.role as 'owner' | 'admin' | 'member';
-  const permissionOverrides = team ? await getTeamPermissionOverrides(team.id) : null;
   const otherTeams = userTeams.filter((t) => t.id !== shown.id);
   // The shown team's flags (it can differ from the active team via ?team=).
-  // A failed overrides read holds nothing, as loadSettingsContext does.
-  const perms = permissionOverrides ? settingsPermissions({ role, slug: team?.slug ?? shown.slug }, user.id, permissionOverrides) : NO_PERMISSIONS;
+  // A failed team read leaves the page read-only, as it says it could not load.
+  const perms = team ? settingsPermissions({ role, slug: team.slug }, user.id) : NO_PERMISSIONS;
 
   const sections = (
     <>
       {/* This team only: another team's timezone is on its own Members page. */}
       <TimezoneSection teams={[{ id: shown.id, name: shown.name }]} currentTeamId={shown.id} />
-
-      {/* A personal team has one member, its owner: there is nothing to grant. */}
-      {team && !team.slug.startsWith('personal-') && <TeamPermissionsSection teamId={team.id} />}
     </>
   );
 
@@ -129,8 +123,7 @@ export default async function TeamSettingsPage({
           currentUserRole={role}
           currentUserId={user.id}
           isPersonal={team.slug.startsWith('personal-')}
-          canManage={roleHas(role, 'manage_team_members', permissionOverrides)}
-          permissionOverrides={permissionOverrides}
+          canManage={roleHas(role, 'manage_team_members')}
         >
           {sections}
         </TeamDetailClient>
