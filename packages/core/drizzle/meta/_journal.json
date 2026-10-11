@@ -296,6 +296,13 @@
       "when": 1791675255337,
       "tag": "0294_gifted_proteus",
       "breakpoints": true
+    },
+    {
+      "idx": 295,
+      "version": "7",
+      "when": 1791676794629,
+      "tag": "0295_thankful_reaper",
+      "breakpoints": true
     }
   ]
 }
