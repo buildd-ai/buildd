@@ -25,10 +25,13 @@
  * verdict is stored only after the page went out, so a failed page is tried
  * again on the next replay instead of being remembered as sent.
  *
- * Home, the Needs You badge and the push read the same stored row: the push is
- * sent at the moment the verdict is made, and Home lists every unresolved
- * incident whose newest stored verdict is the owner's (`incidentNeedsYouItems`),
- * with no model call on the page path.
+ * Home, the Needs You badge and the push read the same stored row and draw
+ * their words from one projection (`projectIncident` in lib/incident-view.ts):
+ * the push is sent at the moment the verdict is made, and Home lists every
+ * unresolved incident the projection says needs the owner
+ * (`incidentNeedsYouItems`), with no model call on the page path. The verdict
+ * row carries the assessment generation it was made on (`@g<n>` on its
+ * `reason`), so a verdict from an older generation is read as absent.
  *
  * Jev: the `judge` slot is where a concern no rule answers would go (a high
  * incident nothing is fixing). It is not wired yet: the Sentinel files a fix
@@ -54,7 +57,9 @@ import type {
 } from '@buildd/shared';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import type { WaitingOnYouRawItem } from './action-queue';
+import { BUILDD_RECOVERED_RULES, projectIncident, type IncidentForView, type IncidentVerdictView } from './incident-view';
 import {
+  formatIncidentAlert,
   impactScope,
   incidentDeepLink,
   scopeTier,
@@ -111,7 +116,7 @@ export const incidentSubjectKey = (incidentId: string) => `${INCIDENT_SUBJECT_TY
  * Rules whose incidents below critical are Buildd's whatever is linked: the
  * platform owns the recovery and the human decision, if any, has its own card.
  */
-const BUILDD_RECOVERS: ReadonlySet<FailureIncidentRule> = new Set(['path_overlap_stall']);
+const BUILDD_RECOVERS: ReadonlySet<FailureIncidentRule> = BUILDD_RECOVERED_RULES;
 
 const PATH_OVERLAP_WAIT =
   'A task is waiting for an overlapping change to land. Buildd wakes it when the paths free up and resolves this once it moves; a decision on the blocking PR shows on that PR.';
@@ -128,7 +133,7 @@ export function incidentEscalationRule(s: IncidentSubject): EscalationVerdict {
     return { owner: 'buildd', by: 'rule', action: 'wait_machine', reason: `Buildd is fixing it (task ${s.fixTask.id.slice(0, 8)}).` };
   }
   if (s.severity === 'high') {
-    return { owner: 'person', by: 'rule', rail: 'no_next_step', reason: 'Nothing is fixing this incident and Buildd has no next step of its own, so it comes to you.' };
+    return { owner: 'person', by: 'rule', rail: 'no_next_step', reason: 'Automatic recovery unavailable: Buildd has no recovery policy or running fix for this incident, so it comes to you.' };
   }
   return { owner: 'buildd', by: 'rule', action: 'hold', reason: 'Below the paging line; it stays on the incident page.' };
 }
@@ -211,11 +216,13 @@ export function createGatedIncidentSender(deps: IncidentGateDeps): IncidentAlert
       verdict = (await deps.judge(s).catch(() => null)) ?? verdict;
     }
     const code = verdictCode(verdict);
+    const generation = s.recovery?.generation ?? null;
+    const stamp = generation != null ? `@g${generation}` : '';
     const record = () => deps.record({
       teamId, workspaceId: inc.workspaceId, capability: ESCALATION_GATE_CAPABILITY, fingerprint,
       promptVersion: ESCALATION_GATE_PROMPT_VERSION, subjectType: INCIDENT_SUBJECT_TYPE, subjectId: s.key,
       ruleAnswer: code, appliedAnswer: code, applied: true, status: 'applied',
-      reason: verdict.owner === 'person' ? `rule:${verdict.rail ?? 'person'}` : `rule:${verdict.action}`,
+      reason: `${verdict.owner === 'person' ? `rule:${verdict.rail ?? 'person'}` : `rule:${verdict.action}`}${stamp}`,
     }).catch(() => {});
 
     if (verdict.owner !== 'person') {
@@ -223,9 +230,12 @@ export function createGatedIncidentSender(deps: IncidentGateDeps): IncidentAlert
       return false;
     }
     // Page first. A page that throws is not recorded, so the next replay of
-    // this state pages again rather than finding a "sent" row.
+    // this state pages again rather than finding a "sent" row. Its words are
+    // the projection's under the verdict just made, so push, Home and the
+    // page say the same thing (I-6).
+    const { message } = formatIncidentAlert(inc, { severity: alert.severity, reason: alert.reason }, { verdict: { ...verdict, generation } });
     await deps.notify(teamId, {
-      title: alert.title, message: alert.message, url: incidentDeepLink(inc.id), urlTitle: 'Open incident',
+      title: alert.title, message, url: incidentDeepLink(inc.id), urlTitle: 'Open incident',
       priority: alert.priority,
     });
     await record();
@@ -233,53 +243,41 @@ export function createGatedIncidentSender(deps: IncidentGateDeps): IncidentAlert
   };
 }
 
-/** An incident as Home reads it. */
-export interface IncidentNeedsYouRow {
-  id: string;
+/** An incident as Home reads it: what the projection needs. */
+export interface IncidentNeedsYouRow extends IncidentForView {
   workspaceId: string | null;
   title: string;
-  severity: FailureIncidentSeverity;
-  status: FailureIncidentStatus;
-  rule?: FailureIncidentRule;
-  lastSeenAt: Date;
-  /** The stored assessment; only its owner, generation and question are read here. */
-  recovery?: { generation: number; state: FailureRecoveryState; owner: FailureRecoveryOwner; decision?: { question: string } } | null;
 }
 
 /**
- * Pure. The Needs You items for unresolved incidents whose newest stored
- * verdict is the owner's. No stored verdict, a Buildd verdict, or a resolved
- * incident: not listed. Nor is a non-critical incident of a rule Buildd
- * recovers on its own: a verdict stored before that rule changed is stale,
- * and the rule, not the stored row, is the current answer. `baseUrl` '' gives
- * in-app links.
+ * Pure. The Needs You items for unresolved incidents the projection says need
+ * the owner (`projectIncident(...).needsYou`): a person verdict that is not
+ * from an older generation, on an assessment that asks a person (or a
+ * critical incident), nobody dismissed. Its sentence is the projection's, so
+ * Home, the badge (which counts these rows), the page and the push agree.
+ * `baseUrl` '' gives in-app links.
  */
 export function incidentNeedsYouItems(
   rows: readonly IncidentNeedsYouRow[],
-  verdicts: ReadonlyMap<string, EscalationVerdict>,
+  verdicts: ReadonlyMap<string, IncidentVerdictView>,
   baseUrl = '',
   workspaceNameById: ReadonlyMap<string, string> = new Map(),
+  opts: { now?: string | Date; timeZone?: string } = {},
 ): WaitingOnYouRawItem[] {
   const items: WaitingOnYouRawItem[] = [];
   for (const r of rows) {
-    if (r.status === 'resolved') continue;
-    // An assessed incident below critical is the person's only while its
-    // CURRENT assessment says so: a person verdict stored for an older
-    // generation is stale (G4), and the next sweep re-gates it.
-    const assessedForPerson = r.recovery?.owner === 'person' && r.recovery.state === 'needs_decision';
-    if (r.severity !== 'critical' && r.recovery && !assessedForPerson) continue;
-    if (!r.recovery && r.rule && BUILDD_RECOVERS.has(r.rule) && r.severity !== 'critical') continue;
-    const v = verdicts.get(r.id);
-    if (!v || v.owner !== 'person') continue;
+    const p = projectIncident(r, verdicts.get(r.id) ?? null, opts);
+    if (!p.needsYou) continue;
     items.push({
       kind: 'incident',
       incidentId: r.id,
       incidentTitle: r.title,
+      incidentDecision: p.phase === 'decision',
       workspaceId: r.workspaceId ?? undefined,
       workspaceName: r.workspaceId ? workspaceNameById.get(r.workspaceId) ?? null : null,
-      failureMessage: assessedForPerson && r.recovery?.decision?.question ? r.recovery.decision.question : v.reason,
+      failureMessage: p.sentence,
       fixHref: incidentDeepLink(r.id, baseUrl),
-      fixLabel: 'Open incident',
+      fixLabel: p.phase === 'decision' ? 'Choose…' : 'Open incident',
     });
   }
   return items;
@@ -290,7 +288,7 @@ export function incidentNeedsYouItems(
  * joined to their stored verdicts. One query for the incidents, one per team
  * for the verdicts. Never throws (Home keeps every other card).
  */
-export async function loadIncidentNeedsYou(workspaceIds: readonly string[]): Promise<WaitingOnYouRawItem[]> {
+export async function loadIncidentNeedsYou(workspaceIds: readonly string[], opts: { timeZone?: string } = {}): Promise<WaitingOnYouRawItem[]> {
   if (workspaceIds.length === 0) return [];
   try {
     const [{ db }, { failureIncidents, workspaces: workspacesTable }, { and, inArray, ne }] = await Promise.all([
@@ -305,7 +303,8 @@ export async function loadIncidentNeedsYou(workspaceIds: readonly string[]): Pro
       .select({
         id: failureIncidents.id, workspaceId: failureIncidents.workspaceId, title: failureIncidents.title,
         severity: failureIncidents.severity, status: failureIncidents.status, rule: failureIncidents.rule,
-        lastSeenAt: failureIncidents.lastSeenAt, recovery: failureIncidents.recovery,
+        firstSeenAt: failureIncidents.firstSeenAt, lastSeenAt: failureIncidents.lastSeenAt, resolvedAt: failureIncidents.resolvedAt,
+        linkedFixTaskId: failureIncidents.linkedFixTaskId, recovery: failureIncidents.recovery,
       })
       .from(failureIncidents)
       .where(and(
@@ -321,20 +320,26 @@ export async function loadIncidentNeedsYou(workspaceIds: readonly string[]): Pro
       const team = r.workspaceId ? teamByWs.get(r.workspaceId) : null;
       if (team) byTeam.set(team, [...(byTeam.get(team) ?? []), r.id]);
     }
-    const verdicts = new Map<string, EscalationVerdict>();
+    const verdicts = new Map<string, IncidentVerdictView>();
     for (const [teamId, ids] of byTeam) {
       for (const [id, v] of await loadIncidentVerdicts(teamId, ids)) verdicts.set(id, v);
     }
-    return incidentNeedsYouItems(rows, verdicts, '', new Map(workspaces.map(w => [w.id, w.name])));
+    return incidentNeedsYouItems(rows, verdicts, '', new Map(workspaces.map(w => [w.id, w.name])), { timeZone: opts.timeZone });
   } catch (err) {
     console.warn('[failure-incident-escalation] Home incident read failed (non-fatal):', (err as Error)?.message ?? err);
     return [];
   }
 }
 
-/** Stored incident verdicts for one team, as Home, the badge and pushes read them. Never throws. */
-export async function loadIncidentVerdicts(teamId: string, incidentIds: string[]): Promise<Map<string, EscalationVerdict>> {
-  const out = new Map<string, EscalationVerdict>();
+/** The assessment generation a stored verdict was made on (`…@g<n>` on its reason); null when unstamped. */
+export function verdictGeneration(reason: string | null | undefined): number | null {
+  const m = reason ? /@g(\d+)$/.exec(reason) : null;
+  return m ? Number(m[1]) : null;
+}
+
+/** Stored incident verdicts for one team, with the generation each was made on. Never throws. */
+export async function loadIncidentVerdicts(teamId: string, incidentIds: string[]): Promise<Map<string, IncidentVerdictView>> {
+  const out = new Map<string, IncidentVerdictView>();
   if (incidentIds.length === 0) return out;
   try {
     const [{ db }, { decisionRecords }, { and, desc, eq, inArray }] = await Promise.all([
@@ -342,7 +347,7 @@ export async function loadIncidentVerdicts(teamId: string, incidentIds: string[]
     ]);
     const keys = incidentIds.map(incidentSubjectKey);
     const rows = await db
-      .select({ subjectId: decisionRecords.subjectId, appliedAnswer: decisionRecords.appliedAnswer })
+      .select({ subjectId: decisionRecords.subjectId, appliedAnswer: decisionRecords.appliedAnswer, reason: decisionRecords.reason })
       .from(decisionRecords)
       .where(and(
         eq(decisionRecords.teamId, teamId), eq(decisionRecords.capability, ESCALATION_GATE_CAPABILITY),
@@ -352,7 +357,8 @@ export async function loadIncidentVerdicts(teamId: string, incidentIds: string[]
       .limit(keys.length * 4);
     for (const r of rows) {
       const v = verdictFromCode(r.appliedAnswer);
-      if (r.subjectId && v && !out.has(r.subjectId)) out.set(r.subjectId.slice(INCIDENT_SUBJECT_TYPE.length + 1), v);
+      const id = r.subjectId?.slice(INCIDENT_SUBJECT_TYPE.length + 1);
+      if (id && v && !out.has(id)) out.set(id, { ...v, generation: verdictGeneration(r.reason) });
     }
   } catch (err) {
     console.warn('[failure-incident-escalation] stored verdict read failed (non-fatal):', (err as Error)?.message ?? err);
