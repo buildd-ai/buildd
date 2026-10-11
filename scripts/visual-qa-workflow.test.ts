@@ -229,3 +229,48 @@ describe('visual-qa.yml scrub + guard', () => {
     expect(run).toMatch(/-z "\$NEON_PROD_PARENT_BRANCH_ID"[\s\S]*?::error::[\s\S]*?exit 1/);
   });
 });
+
+// docs/specs/failure-incident-recovery.md §16.5: a failed run carries a typed
+// { component, step, errorSignature } in the qa-screenshots artifact, so the
+// auditor reports it instead of asking a person what to do.
+describe('visual-qa.yml typed capture failure', () => {
+  const idx = (name: RegExp) => steps.findIndex(s => name.test(s.name ?? ''));
+  const classify = () => step(/^Classify capture failure/);
+
+  test('every step the classifier reads has an id, and the classifier reads each one by name', async () => {
+    const { WORKFLOW_STEPS } = await import('./qa/capture-failure');
+    const env = classify().env;
+    for (const s of WORKFLOW_STEPS) {
+      const wfStep = steps.find(x => x.name === s.step);
+      expect(wfStep, s.step).toBeDefined();
+      expect(wfStep.id, s.step).toBe(s.id);
+      expect(env[s.env]).toBe(`\${{ steps.${s.id}.outcome }}`);
+    }
+    // Outcomes only: never the steps context, whose outputs hold the clone's URL.
+    expect(JSON.stringify(env)).not.toMatch(/toJSON\(steps\)|outputs/);
+  });
+
+  test('the classifier always runs, after capture and before either upload', () => {
+    expect(classify().if).toBe('always()');
+    expect(classify().run).toContain('scripts/qa/capture-failure.ts');
+    expect(idx(/^Classify capture failure/)).toBeGreaterThan(idx(/^Capture/));
+    expect(idx(/^Classify capture failure/)).toBeLessThan(idx(/^Upload screenshots/));
+  });
+
+  test('a harness-stage failure still uploads the failure record, and nothing else', () => {
+    const up = step(/^Upload capture failure/);
+    expect(up.if).toBe("always() && steps.guard.outcome != 'success'");
+    expect(up.with.name).toBe('qa-screenshots');
+    // The clone was never verified: the typed record only, no shots, a11y or manifests.
+    expect(String(up.with.path).trim()).toBe('/tmp/qa/capture-failure.json');
+    expect(up.with['retention-days']).toBe(1);
+    expect(up.with['if-no-files-found']).toBe('ignore');
+  });
+
+  test('the harness steps keep their error text for the classifier, outside the uploaded dir', () => {
+    for (const [name, file] of [[/^Create Neon/, 'clone'], [/^Run migrations/, 'migrate'], [/^Scrub prod clone/, 'scrub'], [/^Guard scrubbed/, 'guard'], [/^Start app/, 'boot']] as const) {
+      expect(step(name).run, String(name)).toContain(`/tmp/qa-errors/${file}.txt`);
+    }
+    expect(classify().env.QA_ERRORS_DIR).toBe('/tmp/qa-errors');
+  });
+});

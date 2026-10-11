@@ -5,6 +5,15 @@ import {
   selectPageSource,
   classifyPageLoad,
   detectPreviewReadiness,
+  CAPTURE_FAILURE_COMPONENTS,
+  CAPTURE_STEP_COMPONENTS,
+  CONFIG_ERROR_SETUP_ACTIONS,
+  classifyCaptureFailure,
+  classifyConfigError,
+  captureErrorLine,
+  parseCaptureFailure,
+  formatCaptureFailureError,
+  parseCaptureFailureError,
   type GitHubDeployment,
   type GitHubDeploymentStatus,
   type PreviewReads,
@@ -280,5 +289,112 @@ describe('detectPreviewReadiness', () => {
     expect(r.previewProtected).toBe(false);
     expect(r.appAuthStrategy).toBe('not-needed');
     expect(r.recommendedPageSource).toBe('auto');
+  });
+});
+
+// docs/specs/failure-incident-recovery.md §16.2, §16.3, §16.5: every capture
+// failure is typed into a closed component set before anyone is asked.
+describe('classifyCaptureFailure', () => {
+  it('has exactly the closed v1 component set', () => {
+    expect([...CAPTURE_FAILURE_COMPONENTS].sort()).toEqual([
+      'visual_qa.boot', 'visual_qa.browser', 'visual_qa.clone', 'visual_qa.guard', 'visual_qa.migrate', 'visual_qa.scrub',
+    ]);
+    for (const c of Object.values(CAPTURE_STEP_COMPONENTS)) expect(CAPTURE_FAILURE_COMPONENTS).toContain(c);
+  });
+
+  it.each([
+    ['Create Neon prod-clone branch', 'visual_qa.clone'],
+    ['Run migrations', 'visual_qa.migrate'],
+    ['Scrub prod clone to placeholders', 'visual_qa.scrub'],
+    ['Guard scrubbed clone', 'visual_qa.guard'],
+    ['Start app', 'visual_qa.boot'],
+    ['Install Playwright + Chromium', 'visual_qa.browser'],
+  ])('a failed "%s" step is %s, owned by infrastructure', (step, component) => {
+    const f = classifyCaptureFailure({ step, error: 'boom' });
+    expect(f).toMatchObject({ ownership: 'infrastructure', component, step });
+    expect(f.errorSignature).toMatch(/^visual-qa:/);
+  });
+
+  it('an unknown step is explicit inconclusive, never defaulted to a person', () => {
+    const f = classifyCaptureFailure({ step: 'Install dependencies', error: 'bun install failed' });
+    expect(f).toMatchObject({ ownership: 'inconclusive', component: null, step: 'Install dependencies' });
+  });
+
+  it('an explicit component wins over the step map (capture.ts knows boot from browser)', () => {
+    const f = classifyCaptureFailure({ step: 'Capture screenshots and a11y snapshots', component: 'visual_qa.boot', error: 'document response was HTTP 500' });
+    expect(f).toMatchObject({ ownership: 'infrastructure', component: 'visual_qa.boot' });
+  });
+
+  it('the same scrub statement failing on two runs gives one signature (one incident, I-10)', () => {
+    const a = classifyCaptureFailure({ step: 'Scrub prod clone to placeholders', error: 'psql:scripts/qa/scrub-pii.sql:412: ERROR:  artifact_revisions rows are immutable\nCONTEXT: PL/pgSQL function x() line 3' });
+    const b = classifyCaptureFailure({ step: 'Scrub prod clone to placeholders', error: 'psql:/home/runner/work/buildd/.qa-harness/scripts/qa/scrub-pii.sql:530: ERROR:  artifact_revisions rows are immutable' });
+    expect(a.errorSignature).toBe(b.errorSignature);
+    expect(a.error).toBe('artifact_revisions rows are immutable');
+    const other = classifyCaptureFailure({ step: 'Scrub prod clone to placeholders', error: 'ERROR: column "x" does not exist' });
+    expect(other.errorSignature).not.toBe(a.errorSignature);
+  });
+
+  it('no error text still yields a stable signature', () => {
+    const f = classifyCaptureFailure({ step: 'Start app', error: null });
+    expect(f.errorSignature).toMatch(/^visual-qa:/);
+    expect(f.errorSignature).toBe(classifyCaptureFailure({ step: 'Start app', error: '' }).errorSignature);
+  });
+});
+
+describe('captureErrorLine', () => {
+  it('picks the error line, drops the psql location and annotation prefixes', () => {
+    expect(captureErrorLine('NOTICE: x\npsql:scripts/qa/scrub-pii.sql:9: ERROR:  boom here\nDETAIL: Key (id)=(1)')).toBe('boom here');
+    expect(captureErrorLine('::error::Failed to create Neon branch: {"code":"x"}')).toBe('Failed to create Neon branch: {"code":"x"}');
+    expect(captureErrorLine('applying 0001\nMigration failed: relation "t" already exists')).toBe('Migration failed: relation "t" already exists');
+    expect(captureErrorLine('just text')).toBe('just text');
+    expect(captureErrorLine(null)).toBe('');
+  });
+});
+
+describe('classifyConfigError (the preview auth walls stay a person\'s setup, AC-17)', () => {
+  it.each(['protection_bypass_missing', 'app_auth_not_configured'] as const)('%s is owned by a person, with typed setup actions, never retry or cancel', (error) => {
+    const f = classifyConfigError(error, 'Capture screenshots and a11y snapshots');
+    expect(f).toMatchObject({ ownership: 'person', component: null, configError: error });
+    expect(f.errorSignature).toMatch(/^visual-qa:/);
+    const actions = CONFIG_ERROR_SETUP_ACTIONS[error];
+    expect(actions.length).toBeGreaterThan(0);
+    for (const a of actions) expect(a.label).not.toMatch(/retry|cancel|sync dev|capture dev/i);
+  });
+});
+
+describe('parseCaptureFailure', () => {
+  it('round-trips a classified failure with run facts', () => {
+    const f = { ...classifyCaptureFailure({ step: 'Guard scrubbed clone', error: 'x' }), runId: '123', ref: 'mission/a', headSha: 'b'.repeat(40) };
+    expect(parseCaptureFailure(JSON.parse(JSON.stringify(f)))).toEqual(f);
+  });
+
+  it('rejects anything outside the closed set', () => {
+    expect(parseCaptureFailure(null)).toBeNull();
+    expect(parseCaptureFailure({ ownership: 'infrastructure', component: 'visual_qa.db', step: 's', errorSignature: 'visual-qa:x' })).toBeNull();
+    expect(parseCaptureFailure({ ownership: 'person', component: null, step: 's', errorSignature: 'visual-qa:x', configError: 'nope' })).toBeNull();
+    expect(parseCaptureFailure({ ownership: 'infrastructure', component: 'visual_qa.scrub', step: 's' })).toBeNull();
+  });
+});
+
+// A failed complete_task persists `error`, not `structuredOutput`, so the
+// typed failure rides in the error text and is read back with the parser.
+describe('formatCaptureFailureError / parseCaptureFailureError', () => {
+  it('round-trips through the one-line error the auditor reports', () => {
+    const f = { ...classifyCaptureFailure({ step: 'Scrub prod clone to placeholders', error: 'ERROR: x is immutable' }), runId: '9', ref: 'mission/a', headSha: 'd'.repeat(40) };
+    const line = formatCaptureFailureError(f);
+    expect(line).toStartWith('capture_failure: visual_qa.scrub at Scrub prod clone to placeholders {');
+    expect(line).not.toContain('\n');
+    expect(parseCaptureFailureError(line)).toEqual(f);
+  });
+
+  it('reads what an agent writes by hand from jq -c', () => {
+    const f = classifyCaptureFailure({ step: 'Start app', error: 'App failed to start after 120s' });
+    expect(parseCaptureFailureError(`capture_failure: visual_qa.boot at Start app ${JSON.stringify(f)}`)).toEqual(f);
+  });
+
+  it('anything else is null, never a guess', () => {
+    expect(parseCaptureFailureError('App did not boot')).toBeNull();
+    expect(parseCaptureFailureError('capture_failure: visual_qa.scrub at x {not json')).toBeNull();
+    expect(parseCaptureFailureError(null)).toBeNull();
   });
 });

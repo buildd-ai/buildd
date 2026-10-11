@@ -580,8 +580,14 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // v7: both themes per required route (QA_THEME, qa.theme), the first screen
     // at 390, nothing shown twice, before/after from trunk on a mission branch,
     // and the workspace's optional design rules and reference.
-    version: 7,
+    // v8: a capture failure in Buildd's own machinery (clone, migrate, scrub,
+    // guard, boot, browser) is reported as a typed captureFailure on
+    // complete_task, never asked (failure-incident-recovery.md §16.5; task
+    // 7d3ff681 asked the owner and invented the options). Only the preview
+    // auth walls still ask, with typed owner-setup options.
+    version: 8,
     supersededContentHashes: [
+      '1651f88ca8098bdda34368bb6db4b4d5df9423abcc693f8448f481a70deb9f7d',
       '9a2c3014983cfdf33c514cc6b40f29f5955cf34a83792d65b6429644c2334f00',
       '7287fafb7ea8cc8624c5ab0df92e4ca9c249029ff18712079f7a5242abbf0fca',
       '858c4bb3437c364efa8a74a6fd7aa778ca05c9481af2796cd6dfab577f72359d',
@@ -637,7 +643,7 @@ that branch deploys to Production and has no preview) only to pin another commit
   \`/tmp/qa-kit/plan.json\` and pass that path. Shots land in \`/tmp/qa/screenshots/\`, and
   \`/tmp/qa/captures.json\` says which source each came from.
 - \`decision.error: "pending"\`: the preview is still building. Call again, in this turn.
-- \`decision.error: "preview_unavailable"\`: you have no pages. Park it as in "Boot failure".
+- \`decision.error: "preview_unavailable"\`: you have no pages. Park it as in "Preview auth walls".
 
 ### Sandbox
 
@@ -809,19 +815,52 @@ light and a dark one. The server checks this: a missing route/viewport or theme,
 landed, or an issue with no fix task is rejected with a message naming what is missing. Fix
 exactly that and complete again.
 
-## Boot failure
+## Capture failure
 
-If the app did not boot, or the workflow could not produce screenshots, you have seen nothing,
-and that must never pass. The same holds for a preview: \`preview_unavailable\` from
-get_page_source, or capture.ts exiting 3 with \`protection_bypass_missing\` (Vercel's login
-wall) or \`app_auth_not_configured\` (the app's sign-in page). A wall is a config problem,
-never a visual finding: do not upload it as a shot. Put the error name and the fix capture.ts
-printed in the question. Do not mark the task failed and do not complete it: a failed task
-releases the mission. Instead call the \`AskUserQuestion\` tool with the question "App did not
-boot: <one-line reason>" and the error output, and stop there. That parks this task in
-waiting_input, and the open task holds the mission until a human answers. Do NOT use
-\`post_note\` for this: a note does not park you, the session ends, and the runner's fallback
-completion is refused for missing screenshots and recorded as a failure.
+If the workflow could not produce screenshots, you have seen nothing, and that must never pass.
+First read what failed. The \`qa-screenshots\` artifact carries \`capture-failure.json\` whenever
+the run failed, even when the clone never passed the guard and nothing else was uploaded:
+\`{ ownership, component, step, errorSignature, runId, ref, headSha }\`. A local
+\`scripts/qa/capture.ts\` run writes the same file to \`/tmp/qa/\`. If a failed run has no artifact
+at all, the failed step is \`gh run view <run> --json jobs -q '.jobs[].steps[] | select(.conclusion=="failure") | .name'\`.
+
+**\`ownership: "infrastructure"\`**: \`component\` is one of \`visual_qa.clone\`, \`visual_qa.migrate\`,
+\`visual_qa.scrub\`, \`visual_qa.guard\`, \`visual_qa.boot\` or \`visual_qa.browser\`. Buildd's own
+capture machinery failed, and no person's decision fixes it: Buildd repairs it and re-queues
+this audit itself. \`ownership: "inconclusive"\` (a step outside that set) is handled the same way.
+For either:
+
+- Do not call \`AskUserQuestion\` and do not \`post_note\` a question. Never offer options to a
+  person: not "sync dev", not "capture dev", not "cancel", nor any other you make up.
+- Do not dispatch again for another viewport or theme: every one fails the same way.
+- Never capture a different revision (trunk, dev, another branch or commit) as evidence for
+  this audit, and never upload shots from one. Only \`captureRef.ref\` counts.
+- Report it, once, through \`complete_task\`. Set \`error\` to one line,
+  \`capture_failure: <component> at <step> <the file as one-line JSON>\` (\`jq -c . capture-failure.json\`),
+  and send the same object as \`structuredOutput: { captureFailure: <capture-failure.json, unchanged> }\`.
+  Buildd reads the error line, so keep it exact. With no file, use
+  \`{"ownership":"inconclusive","component":null,"step":"<the failed step>","errorSignature":"unknown","runId":"<run id>","ref":"<captureRef.ref>"}\`
+  and \`unclassified\` for the component. Add the run URL to \`summary\`. Then stop.
+
+### Preview auth walls
+
+\`preview_unavailable\` from get_page_source, or capture.ts exiting 3 with
+\`protection_bypass_missing\` (Vercel's login wall) or \`app_auth_not_configured\` (the app's
+sign-in page; \`capture-failure.json\` then has \`ownership: "person"\` and the \`configError\`), is
+the workspace owner's setup, the one capture failure a person is asked about. A wall is a config
+problem, never a visual finding: do not upload it as a shot. Do not mark the task failed and do
+not complete it. Call the \`AskUserQuestion\` tool with the question "App did not boot: <the error
+name>", the fix capture.ts printed, and the owner-setup options for that error, each with its
+description, not retry or cancel:
+
+- \`protection_bypass_missing\`: "Add the Vercel protection bypass", "Use the sandbox page source".
+- \`app_auth_not_configured\`: "Add a preview auth bypass", "Store a storageState secret", "Use the
+  sandbox page source".
+- \`preview_unavailable\`: "Use the sandbox page source", and say why the preview was unavailable.
+
+Then stop. That parks this task in waiting_input, and the open task holds the mission until the
+owner answers. Do NOT use \`post_note\` for this: a note does not park you, the session ends, and
+the runner's fallback completion is refused for missing screenshots and recorded as a failure.
 
 ## Pull Gates (REQUIRED before saving memory)
 
@@ -836,7 +875,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
     isRole: true,
     // Read-only by prompt: Bash is here to dispatch/download the capture
     // workflow or run shoot.sh, not to edit. No Write/Edit. AskUserQuestion is
-    // the boot-failure parking path. Like every role's allowedTools this is
+    // the preview-auth-wall parking path only; an infrastructure capture
+    // failure is reported on complete_task, never asked. Like every role's allowedTools this is
     // enforced only on the useSkillAgents subagent path.
     allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'AskUserQuestion', ...BUILDD_ACTION_TOOLS],
     canDelegateTo: [],

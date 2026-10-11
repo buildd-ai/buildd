@@ -923,6 +923,13 @@ the auditor role and capture) is coordinated through those path claims.
    generic overwrite on the throwaway clone, so the `artifact_revisions`
    immutability trigger no longer fails it (the concrete failure in §16.1).
 2. Task `89d92f1a`. Typed capture failures, plus the auditor prompt: §16.5, H1, H2.
+   `classifyCaptureFailure` / `classifyConfigError` (`packages/core/visual-qa-page-source.ts`)
+   type a failure as `{ ownership, component, step, errorSignature }`; `capture.ts` and the
+   workflow's "Classify capture failure" step write it as `capture-failure.json` in the
+   `qa-screenshots` artifact, also when the guard never passed. The auditor (role v8)
+   reports it on `complete_task` as `error: capture_failure: ...` (read back with
+   `parseCaptureFailureError`, since a failed completion does not keep `structuredOutput`)
+   and asks a person only about the two preview auth walls, with `CONFIG_ERROR_SETUP_ACTIONS`.
 3. Task `1acc6048`. The `infrastructure_failure` family on this contract, with the task and
    mission adapters and rollout reconciliation: §16.3, §16.4, H3–H5.
 
