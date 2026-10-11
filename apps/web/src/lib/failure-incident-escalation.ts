@@ -44,7 +44,14 @@ import {
   type EscalationVerdict,
 } from '@buildd/core/escalation-gate';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
-import type { FailureIncidentRule, FailureIncidentSeverity, FailureIncidentStatus } from '@buildd/shared';
+import type {
+  FailureIncidentRecovery,
+  FailureIncidentRule,
+  FailureIncidentSeverity,
+  FailureIncidentStatus,
+  FailureRecoveryOwner,
+  FailureRecoveryState,
+} from '@buildd/shared';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import type { WaitingOnYouRawItem } from './action-queue';
 import {
@@ -72,6 +79,30 @@ export interface IncidentSubject {
   recurrenceCount: number;
   /** `impactScope` of the incident. */
   scope: number;
+  /**
+   * The recovery assessment, when there is one (failure-incident-recovery §4).
+   * It decides the owner below critical, and its generation and state are
+   * part of the fingerprint, so a new assessment is a new look.
+   */
+  recovery?: IncidentSubjectRecovery | null;
+}
+
+export interface IncidentSubjectRecovery {
+  generation: number;
+  state: FailureRecoveryState;
+  owner: FailureRecoveryOwner;
+  /** The assessment's own sentence: its question, its gap, or what Buildd is doing. */
+  reason: string;
+  nextCheckAt: string | null;
+}
+
+/** The gate's view of a stored assessment. Null when not assessed. */
+export function incidentSubjectRecovery(r: FailureIncidentRecovery | null | undefined): IncidentSubjectRecovery | null {
+  if (!r || r.v !== 1) return null;
+  const reason = r.state === 'needs_decision' && r.decision ? r.decision.question
+    : r.state === 'needs_operator' && r.capabilityGap ? `Needs an operator: ${r.capabilityGap.reason}`
+      : r.nextAction?.label ?? 'Buildd is checking this incident.';
+  return { generation: r.generation, state: r.state, owner: r.owner, reason, nextCheckAt: r.nextCheckAt };
 }
 
 export const incidentSubjectKey = (incidentId: string) => `${INCIDENT_SUBJECT_TYPE}:${incidentId}`;
@@ -91,6 +122,7 @@ export function incidentEscalationRule(s: IncidentSubject): EscalationVerdict {
   if (s.severity === 'critical') {
     return { owner: 'person', by: 'rule', rail: 'critical_incident', reason: 'A critical platform incident: the owner is told once, whatever else is running.' };
   }
+  if (s.recovery) return recoveryVerdict(s.status, s.recovery);
   if (s.rule && BUILDD_RECOVERS.has(s.rule)) return { owner: 'buildd', by: 'rule', action: 'hold', reason: PATH_OVERLAP_WAIT };
   if (s.fixTask?.running) {
     return { owner: 'buildd', by: 'rule', action: 'wait_machine', reason: `Buildd is fixing it (task ${s.fixTask.id.slice(0, 8)}).` };
@@ -101,11 +133,32 @@ export function incidentEscalationRule(s: IncidentSubject): EscalationVerdict {
   return { owner: 'buildd', by: 'rule', action: 'hold', reason: 'Below the paging line; it stays on the incident page.' };
 }
 
+/**
+ * Below critical, an assessed incident's owner is its assessment's (§4):
+ * only `needs_decision` reaches a person; a dismissal is not paged again; an
+ * operator-owned gap is held off the workspace owner's inbox.
+ */
+function recoveryVerdict(status: FailureIncidentStatus, r: IncidentSubjectRecovery): EscalationVerdict {
+  if (status === 'acknowledged') return { owner: 'buildd', by: 'rule', action: 'hold', reason: 'Dismissed; Buildd keeps checking it.' };
+  switch (r.state) {
+    case 'needs_decision':
+      return { owner: 'person', by: 'rule', rail: 'no_next_step', reason: r.reason };
+    case 'recovering':
+      return { owner: 'buildd', by: 'rule', action: 'wait_machine', reason: r.reason };
+    case 'recovered':
+      return { owner: 'buildd', by: 'rule', action: 'hold', reason: 'Resolved, nothing to do.' };
+    default:
+      return { owner: 'buildd', by: 'rule', action: 'hold', reason: r.reason, ...(r.nextCheckAt ? { holdUntil: r.nextCheckAt } : {}) };
+  }
+}
+
 /** A hash of the state a verdict was made on. Occurrence counts are not state. */
 export function incidentFingerprint(s: IncidentSubject): string {
   const state = {
     v: ESCALATION_GATE_PROMPT_VERSION, key: s.key, severity: s.severity, status: s.status,
     recurrence: s.recurrenceCount, tier: scopeTier(s.scope), fix: s.fixTask ? { id: s.fixTask.id, running: s.fixTask.running } : null,
+    // Only when assessed, so an unassessed incident keeps its stored fingerprint.
+    ...(s.recovery ? { recovery: { g: s.recovery.generation, state: s.recovery.state } } : {}),
   };
   return createHash('sha256').update(JSON.stringify(state)).digest('hex').slice(0, 16);
 }
@@ -133,6 +186,7 @@ async function subjectFor(a: IncidentAlert, teamId: string, deps: IncidentGateDe
   return {
     key: incidentSubjectKey(inc.id), incidentId: inc.id, teamId, workspaceId: inc.workspaceId,
     severity: a.severity, status: inc.status, rule: inc.rule, fixTask, recurrenceCount: inc.recurrenceCount, scope: impactScope(inc),
+    recovery: incidentSubjectRecovery(inc.recovery),
   };
 }
 
@@ -188,6 +242,8 @@ export interface IncidentNeedsYouRow {
   status: FailureIncidentStatus;
   rule?: FailureIncidentRule;
   lastSeenAt: Date;
+  /** The stored assessment; only its owner, generation and question are read here. */
+  recovery?: { generation: number; state: FailureRecoveryState; owner: FailureRecoveryOwner; decision?: { question: string } } | null;
 }
 
 /**
@@ -207,7 +263,12 @@ export function incidentNeedsYouItems(
   const items: WaitingOnYouRawItem[] = [];
   for (const r of rows) {
     if (r.status === 'resolved') continue;
-    if (r.rule && BUILDD_RECOVERS.has(r.rule) && r.severity !== 'critical') continue;
+    // An assessed incident below critical is the person's only while its
+    // CURRENT assessment says so: a person verdict stored for an older
+    // generation is stale (G4), and the next sweep re-gates it.
+    const assessedForPerson = r.recovery?.owner === 'person' && r.recovery.state === 'needs_decision';
+    if (r.severity !== 'critical' && r.recovery && !assessedForPerson) continue;
+    if (!r.recovery && r.rule && BUILDD_RECOVERS.has(r.rule) && r.severity !== 'critical') continue;
     const v = verdicts.get(r.id);
     if (!v || v.owner !== 'person') continue;
     items.push({
@@ -216,7 +277,7 @@ export function incidentNeedsYouItems(
       incidentTitle: r.title,
       workspaceId: r.workspaceId ?? undefined,
       workspaceName: r.workspaceId ? workspaceNameById.get(r.workspaceId) ?? null : null,
-      failureMessage: v.reason,
+      failureMessage: assessedForPerson && r.recovery?.decision?.question ? r.recovery.decision.question : v.reason,
       fixHref: incidentDeepLink(r.id, baseUrl),
       fixLabel: 'Open incident',
     });
@@ -244,7 +305,7 @@ export async function loadIncidentNeedsYou(workspaceIds: readonly string[]): Pro
       .select({
         id: failureIncidents.id, workspaceId: failureIncidents.workspaceId, title: failureIncidents.title,
         severity: failureIncidents.severity, status: failureIncidents.status, rule: failureIncidents.rule,
-        lastSeenAt: failureIncidents.lastSeenAt,
+        lastSeenAt: failureIncidents.lastSeenAt, recovery: failureIncidents.recovery,
       })
       .from(failureIncidents)
       .where(and(

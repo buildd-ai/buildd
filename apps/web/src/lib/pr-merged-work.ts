@@ -123,10 +123,16 @@ export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
   await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, { taskId: worker.taskId });
 
   // The task's file edits landed: held path claims unblock waiting tasks.
-  if (worker.taskId) {
-    const releaseTaskId = worker.taskId;
-    await afterOrNow(`releaseAndNotify(${releaseTaskId})`, () => releaseAndNotify(releaseTaskId, 'merged'));
-  }
+  // Then re-assess the open incidents naming this PR (failure-incident-recovery
+  // §12(a)): the merge is the moment a path-overlap stall behind it can
+  // recover, so it is checked now rather than at the next backstop sweep.
+  // Ordered after the release, so recovery sees it done and does not repeat it.
+  const releaseTaskId = worker.taskId;
+  await afterOrNow(`releaseAndNotify+reassess(PR #${p.prNumber})`, async () => {
+    if (releaseTaskId) await releaseAndNotify(releaseTaskId, 'merged');
+    const { reassessIncidentsNamingPr } = await import('@/lib/failure-pattern-sweep');
+    await reassessIncidentsNamingPr(worker.workspaceId, p.prNumber, 'merge_hook');
+  });
 
   // Close open changeIntent rows, drop merge reservations and re-drive the PR
   // waiting behind it (missions); the reviews module measures the merge

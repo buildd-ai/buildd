@@ -155,6 +155,18 @@ mock.module('@buildd/core/pr-facts', () => ({
 const mockObservePrState = mock(async (_input: any) => false);
 mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState }));
 
+// G6 (failure-incident-recovery): a healed merge releases the PR's paths and
+// re-assesses the incidents naming it, like the webhook's merge work does.
+const healOrder: string[] = [];
+mock.module('@/lib/path-claim-release', () => ({
+  releaseAndNotify: async (taskId: string, reason: string) => { healOrder.push(`release:${taskId}:${reason}`); },
+  deliverPathReleased: async () => {},
+  resolveReleaseReasonForTask: async () => 'merged',
+}));
+mock.module('@/lib/failure-pattern-sweep', () => ({
+  reassessIncidentsNamingPr: async (ws: string, pr: number) => { healOrder.push(`reassess:${ws}:${pr}`); return []; },
+}));
+
 beforeEach(() => {
   recordedFacts.length = 0;
   mockObservePrState.mockClear();
@@ -400,6 +412,28 @@ describe('reconcileStalePrWorkers', () => {
     expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 42, installationId: 123, source: 'sweep:pr-reconcile',
     }));
+  });
+
+  it('G6: healing a missed merge releases the task\'s paths, then re-assesses incidents naming the PR', async () => {
+    healOrder.length = 0;
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+
+    await reconcileStalePrWorkers();
+
+    expect(healOrder).toEqual(['release:t1:merged', 'reassess:ws1:42']);
+  });
+
+  it('G6: an open PR releases nothing', async () => {
+    healOrder.length = 0;
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, mergeable_state: 'clean' });
+
+    await reconcileStalePrWorkers();
+
+    expect(healOrder).toEqual([]);
   });
 
   it('stamps the merge on every other row carrying the PR (cron tier)', async () => {

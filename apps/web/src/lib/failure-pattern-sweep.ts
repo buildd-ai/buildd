@@ -37,7 +37,6 @@ import type {
 import {
   detectFailurePatterns,
   FAILURE_PATTERN_DETECTOR_VERSION,
-  pathOverlapIncidentCleared,
   type BlockerPrState,
   type IncidentCandidate,
   type PathOverlapObservation,
@@ -46,17 +45,34 @@ import {
 import {
   createDbIncidentPort,
   recordIncidentCandidates,
-  updateIncidentState,
   type IncidentStorePort,
+  type StoredIncident,
   type UpsertIncidentResult,
 } from './failure-incident-store';
 import {
   actOnIncidentResults,
+  defaultIncidentSender,
+  formatIncidentAlert,
   type FixTaskPort,
   type IncidentActionResult,
+  type IncidentAlert,
   type IncidentAlertSender,
   type IncidentDecider,
 } from './failure-incident-actions';
+import {
+  assessDueIncidents,
+  assessIncident,
+  claimRecoveryLease,
+  productionRecoveryEffects,
+  readRecovery,
+  recoveryGenerationKey,
+  type AssessResult,
+  type RecoveryDeps,
+  type RecoveryEffects,
+  type RecoveryFamily,
+  type RecoverySource,
+} from './failure-incident-recovery';
+import { pathOverlapRecoveryFamily } from './failure-incident-recovery-path-overlap';
 
 // ── Window math (pure) ──────────────────────────────────────────────────────
 
@@ -126,10 +142,11 @@ export interface SweepDeps {
   setWatermark(workspaceId: string, at: string): Promise<void>;
   collectFacts(workspaceId: string, floors: SweepFloors, now: string): Promise<SentinelFacts>;
   /**
-   * Fresh task and PR state for the subjects of open path-overlap incidents.
-   * Absent: those incidents are never auto-resolved.
+   * The recovery layer (docs/specs/failure-incident-recovery.md): the families
+   * that assess their open incidents, and the existing writers their repairs
+   * go through. Absent: no incident is assessed, repaired or auto-resolved.
    */
-  observePathOverlapSubjects?(workspaceId: string, taskIds: string[], prNumbers: number[]): Promise<PathOverlapObservation>;
+  recovery?: { families: ReadonlyArray<RecoveryFamily<any>>; effects: RecoveryEffects; claimLease?: RecoveryDeps['claimLease'] };
   /** Defaults (DB-backed) apply when omitted — see `recordIncidentCandidates` / `actOnIncidentResults`. */
   incidentPort?: IncidentStorePort;
   decide?: IncidentDecider | null;
@@ -154,6 +171,10 @@ export interface SweepRunCounters {
   incidentsUpdated: number;
   /** Incidents whose resolve check passed on facts read this sweep. */
   incidentsResolved: number;
+  /** Open incidents re-assessed on fresh facts (the backstop). */
+  incidentsAssessed: number;
+  /** Repairs the assessments ran. */
+  recoveryRepairs: number;
   duplicatesSuppressed: number;
   alertsSent: number;
   fixTasksFiled: number;
@@ -170,6 +191,8 @@ function emptyCounters(): SweepRunCounters {
     incidentsOpened: 0,
     incidentsUpdated: 0,
     incidentsResolved: 0,
+    incidentsAssessed: 0,
+    recoveryRepairs: 0,
     duplicatesSuppressed: 0,
     alertsSent: 0,
     fixTasksFiled: 0,
@@ -304,7 +327,7 @@ async function sweepOneWorkspace(
     }
   }
 
-  await reconcilePathOverlapIncidents(deps, workspaceId, now, new Set(candidates.map(c => c.signature)), counters);
+  await recoverOpenIncidents(deps, workspaceId, now, counters);
 
   // Advance the watermark even on a quiet sweep (no candidates): "nothing new"
   // is still progress, and the next run's floor should start from here.
@@ -313,44 +336,117 @@ async function sweepOneWorkspace(
   counters.windowsEvaluated++;
 }
 
-// ── Reconcile: resolve what current facts say is over ───────────────────────
+// ── Recovery backstop: re-assess what is due, on fresh facts ────────────────
 
 /**
- * Resolve every open `path_overlap_stall` incident whose check passes on facts
- * read now (`pathOverlapIncidentCleared`): its blocker merged or closed, or
- * every task it names moved. This is the backstop for a missed merge event: no
- * webhook or wake has to have been seen. An incident its own rule reported in
- * this sweep is never resolved here. Resolve is the store's one lifecycle
- * write, so the row, its evidence and counts stay as history, and a fresh
- * occurrence reopens it (`mergeIncident`). Never throws.
+ * Re-assess every open incident of a family with recovery whose promised
+ * check is due or whose assessment is stale (failure-incident-recovery §8,
+ * §12(a) backstop). A new incident is assessed in the sweep that opened it.
+ * The assessment re-observes its facts, runs at most one repair through an
+ * existing writer and resolves only on a passing check; unknown evidence is
+ * inconclusive. Any change of assessment re-gates the incident. Never throws.
  */
-async function reconcilePathOverlapIncidents(
+async function recoverOpenIncidents(
   deps: SweepDeps,
   workspaceId: string,
   now: string,
-  liveSignatures: ReadonlySet<string>,
   counters: SweepRunCounters,
 ): Promise<void> {
-  if (!deps.observePathOverlapSubjects) return;
+  const recovery = deps.recovery;
+  if (!recovery) return;
   try {
     const port = deps.incidentPort ?? (await createDbIncidentPort());
     if (!port.listUnresolved) return;
-    const open = (await port.listUnresolved(workspaceId, 'path_overlap_stall')).filter(i => !liveSignatures.has(i.signature));
-    if (open.length === 0) return;
-    const taskIds = [...new Set(open.flatMap(i => i.affectedRefs.taskIds))];
-    const prNumbers = [...new Set(open.flatMap(i => i.affectedRefs.prNumbers))];
-    const obs = await deps.observePathOverlapSubjects(workspaceId, taskIds, prNumbers);
-    for (const incident of open) {
-      if (!pathOverlapIncidentCleared(incident, obs)) continue;
-      if (await updateIncidentState(port, incident.id, { type: 'resolve' }, { now })) counters.incidentsResolved++;
+    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease, now: () => now };
+    for (const family of recovery.families) {
+      const open = await port.listUnresolved(workspaceId, family.rule);
+      const results = await assessDueIncidents(rdeps, open, 'backstop');
+      await afterAssessment(deps, results, counters);
     }
   } catch (err) {
     counters.runFailures++;
     await deps.reportOpsError(
-      `Failure Pattern Sentinel: path-overlap reconcile failed for workspace ${workspaceId}`,
+      `Failure Pattern Sentinel: incident recovery failed for workspace ${workspaceId}`,
       err instanceof Error ? err.message : String(err),
       'error',
     ).catch(() => {});
+  }
+}
+
+/** The page the gate reads for a re-gate: the incident, its severity, a dedupe key per (generation, state). */
+export function regateAlert(incident: StoredIncident): IncidentAlert {
+  const r = readRecovery(incident);
+  const { title, message } = formatIncidentAlert(incident, { severity: incident.severity, reason: 'opened' });
+  return {
+    incidentId: incident.id,
+    severity: incident.severity,
+    priority: incident.severity === 'critical' ? 1 : 0,
+    reason: 'opened',
+    title,
+    message,
+    dedupeKey: r ? `${recoveryGenerationKey(incident.id, r.generation)}:${r.state}` : `incident:${incident.id}:unassessed`,
+    incident,
+  };
+}
+
+/**
+ * Count, re-gate on any change of assessment (G4: the verdict is no longer
+ * rewritten only when a page is claimed), and tell the operator through the
+ * existing ops path when recovery needs one. The gate pages only when the
+ * new verdict is the person's, once per fingerprint.
+ */
+async function afterAssessment(deps: Pick<SweepDeps, 'send' | 'reportOpsError'>, results: ReadonlyArray<AssessResult>, counters?: SweepRunCounters): Promise<void> {
+  const send = deps.send ?? defaultIncidentSender();
+  for (const r of results) {
+    if (!r.incident || r.outcome === 'skipped' || r.outcome === 'contended') continue;
+    if (counters) {
+      counters.incidentsAssessed++;
+      if (r.repair) counters.recoveryRepairs++;
+      if (r.incident.status === 'resolved' && r.before?.status !== 'resolved') counters.incidentsResolved++;
+    }
+    if (!r.changed) continue;
+    const rec = readRecovery(r.incident);
+    if (rec?.state === 'needs_operator' && rec.capabilityGap) {
+      await deps.reportOpsError(
+        `Failure incident recovery needs an operator (${rec.capabilityGap.capability})`,
+        `incident ${r.incident.id.slice(0, 8)}: ${rec.capabilityGap.reason}`,
+        'warning',
+      ).catch(() => {});
+    }
+    try {
+      if (await send(regateAlert(r.incident))) { if (counters) counters.alertsSent++; }
+    } catch (err) {
+      console.error(`[failure-pattern-sweep] re-gate failed for incident ${r.incident.id}:`, err);
+    }
+  }
+}
+
+/**
+ * The merge hook (§12(a)): a PR landed, so re-assess at once every open
+ * incident that names it, instead of waiting for the backstop. Runs after
+ * `releaseAndNotify`, so a release the merge already did is seen, not
+ * repeated. Never throws.
+ */
+export async function reassessIncidentsNamingPr(
+  workspaceId: string,
+  prNumber: number,
+  source: RecoverySource = 'merge_hook',
+  deps: SweepDeps = productionSweepDeps(),
+): Promise<AssessResult[]> {
+  try {
+    const recovery = deps.recovery;
+    if (!recovery) return [];
+    const port = deps.incidentPort ?? (await createDbIncidentPort());
+    if (!port.listUnresolvedByPr) return [];
+    const named = await port.listUnresolvedByPr(workspaceId, prNumber);
+    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease };
+    const results: AssessResult[] = [];
+    for (const incident of named) results.push(await assessIncident(rdeps, incident.id, source));
+    await afterAssessment(deps, results);
+    return results;
+  } catch (err) {
+    console.error(`[failure-pattern-sweep] re-assess for PR #${prNumber} failed:`, err);
+    return [];
   }
 }
 
@@ -532,35 +628,68 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
     .orderBy(desc(gateEvents.occurredAt))
     .limit(SWEEP_MAX_ROWS);
 
-  const byTask = new Map<string, { firstDeferredAt: string; lastDeferredAt: string; blockingPrNumber: number | null }>();
+  // One entry per (task, blocker): an episode is per blocker (§5 rule 3), so
+  // a wait behind PR A never lends its age to PR B.
+  const byEpisode = new Map<string, { taskId: string; firstDeferredAt: string; lastDeferredAt: string; blockingPrNumber: number | null }>();
   for (const r of deferralRows) {
     if (!r.taskId) continue;
     const detail = (r.detail ?? {}) as Record<string, unknown>;
     const occurredIso = r.occurredAt.toISOString();
     const detailFirst = typeof detail.firstDeferredAt === 'string' ? detail.firstDeferredAt : occurredIso;
     const blockingPrNumber = typeof detail.prNumber === 'number' ? detail.prNumber : null;
-    const prior = byTask.get(r.taskId);
+    const blockerKey = blockingPrNumber !== null ? `pr:${blockingPrNumber}`
+      : typeof detail.blockingTaskId === 'string' ? `task:${detail.blockingTaskId}` : 'unknown';
+    const key = `${r.taskId}|${blockerKey}`;
+    const prior = byEpisode.get(key);
     if (!prior) {
-      byTask.set(r.taskId, { firstDeferredAt: detailFirst, lastDeferredAt: occurredIso, blockingPrNumber });
+      byEpisode.set(key, { taskId: r.taskId, firstDeferredAt: detailFirst, lastDeferredAt: occurredIso, blockingPrNumber });
     } else if (detailFirst < prior.firstDeferredAt) {
       prior.firstDeferredAt = detailFirst;
     }
   }
   const pathOverlapDeferrals: SentinelFacts['pathOverlapDeferrals'] = [];
-  if (byTask.size > 0) {
-    const taskIds = [...byTask.keys()];
-    const blockers = [...new Set([...byTask.values()].map(d => d.blockingPrNumber).filter((n): n is number => n !== null))];
+  if (byEpisode.size > 0) {
+    const taskIds = [...new Set([...byEpisode.values()].map(d => d.taskId))];
+    const blockers = [...new Set([...byEpisode.values()].map(d => d.blockingPrNumber).filter((n): n is number => n !== null))];
     const obs = await dbObservePathOverlapSubjects(workspaceId, taskIds, blockers);
-    for (const [taskId, d] of byTask) {
-      const workerAt = obs.tasks.get(taskId)?.lastWorkerAt ?? null;
+    // G2: a delivered wake is progress too, not only a worker starting.
+    const { taskDispatchOutbox } = await import('@buildd/core/db/schema');
+    const wakeRows = await db
+      .select({ taskId: taskDispatchOutbox.taskId, deliveredAt: taskDispatchOutbox.deliveredAt })
+      .from(taskDispatchOutbox)
+      .where(and(inArray(taskDispatchOutbox.taskId, taskIds), eq(taskDispatchOutbox.cause, 'path_claim.released'), isNotNull(taskDispatchOutbox.deliveredAt)))
+      .limit(SWEEP_MAX_ROWS);
+    const wokenAt = new Map<string, string>();
+    for (const w of wakeRows) {
+      const at = w.deliveredAt!.toISOString();
+      if (!wokenAt.has(w.taskId) || at > wokenAt.get(w.taskId)!) wokenAt.set(w.taskId, at);
+    }
+    // I-8: when each blocking PR came to exist (its first worker row).
+    const blockerBorn = new Map<number, string>();
+    if (blockers.length > 0) {
+      const born = await db
+        .select({ prNumber: workers.prNumber, createdAt: workers.createdAt })
+        .from(workers)
+        .where(and(eq(workers.workspaceId, workspaceId), inArray(workers.prNumber, blockers)));
+      for (const b of born) {
+        if (b.prNumber === null) continue;
+        const at = b.createdAt.toISOString();
+        if (!blockerBorn.has(b.prNumber) || at < blockerBorn.get(b.prNumber)!) blockerBorn.set(b.prNumber, at);
+      }
+    }
+    for (const d of byEpisode.values()) {
+      const workerAt = obs.tasks.get(d.taskId)?.lastWorkerAt ?? null;
+      const woken = wokenAt.get(d.taskId) ?? null;
+      const moved = [workerAt, woken].filter((x): x is string => !!x && x > d.firstDeferredAt).sort().pop() ?? null;
       pathOverlapDeferrals.push({
-        taskId,
+        taskId: d.taskId,
         blockingPrNumber: d.blockingPrNumber,
         firstDeferredAt: d.firstDeferredAt,
         lastDeferredAt: d.lastDeferredAt,
-        lastProgressAt: workerAt && workerAt > d.firstDeferredAt ? workerAt : null,
-        taskStatus: obs.tasks.get(taskId)?.status ?? null,
+        lastProgressAt: moved,
+        taskStatus: obs.tasks.get(d.taskId)?.status ?? null,
         blockerState: d.blockingPrNumber === null ? 'unknown' : obs.prs.get(d.blockingPrNumber) ?? 'unknown',
+        blockerCreatedAt: d.blockingPrNumber === null ? null : blockerBorn.get(d.blockingPrNumber) ?? null,
       });
     }
   }
@@ -773,7 +902,7 @@ export function productionSweepDeps(): SweepDeps {
         });
     },
     collectFacts: dbCollectFacts,
-    observePathOverlapSubjects: dbObservePathOverlapSubjects,
+    recovery: { families: [pathOverlapRecoveryFamily], effects: productionRecoveryEffects(), claimLease: claimRecoveryLease },
     async reportOpsError(message, detail, severity) {
       const { reportOps } = await import('@buildd/core/report-ops');
       await reportOps({ source: 'failure-pattern-sentinel', severity, message, detail });
