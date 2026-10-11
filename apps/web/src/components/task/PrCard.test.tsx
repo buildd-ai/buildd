@@ -216,3 +216,24 @@ it('uses a single card frame and sentence-case diff labels', () => {
   expect(html).not.toMatch(/upper[c]ase tracking\x2d\[2px\]/);
   expect(html).toContain('>Added<');
 });
+
+// U1 audit (task fcaae6e3): an open PR whose stats were never read showed
+// "+0 −0 · 0 Files · 0 Commits". A PR whose stats were read keeps a real 0.
+describe('PR outcome numbers', () => {
+  it('omits the numbers until the PR has been measured', () => {
+    const o = outcome([{ add: 0, rem: 0, files: 0 }]);
+    const html = render({ prLifecycleStatus: 'pr_open', outcome: { ...o, totals: { ...o.totals, files: 0, commits: 0, measured: false } } });
+    expect(html).toContain('data-testid="pr-outcome"');
+    expect(html).not.toContain('+0');
+    expect(html).not.toMatch(/>Files</);
+    expect(html).not.toMatch(/>Commits?</);
+  });
+
+  it('keeps a measured zero', () => {
+    const o = outcome([{ add: 7, rem: 0, files: 1 }]);
+    const html = render({ prLifecycleStatus: 'pr_open', outcome: { ...o, totals: { ...o.totals, measured: true } } });
+    expect(html).toContain('+7');
+    expect(html).toContain('−0');
+    expect(html).toMatch(/>Files</);
+  });
+});
