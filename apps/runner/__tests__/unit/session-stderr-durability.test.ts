@@ -177,6 +177,12 @@ function tracePatches() {
   return mockUpdateWorker.mock.calls.filter((c: any[]) => Array.isArray(c[1]?.appendErrorTraces));
 }
 
+/** Poll until `cond` holds (or timeout) — fixed sleeps race the session under CI load. */
+async function waitFor(cond: () => boolean, timeoutMs = 5000) {
+  const start = Date.now();
+  while (!cond() && Date.now() - start < timeoutMs) await new Promise(r => setTimeout(r, 25));
+}
+
 describe('SDK stderr durability', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
@@ -216,7 +222,7 @@ describe('SDK stderr durability', () => {
 
     manager = new WorkerManager(makeConfig());
     await startSessionFor(manager, 'w-silent', makeTask('task-silent'), 'buildd/silent');
-    await new Promise(r => setTimeout(r, 250));
+    await waitFor(() => stderrEntries().length > 0);
 
     const entries = stderrEntries();
     expect(entries.length).toBeGreaterThan(0);
@@ -230,7 +236,7 @@ describe('SDK stderr durability', () => {
 
     manager = new WorkerManager(makeConfig());
     await startSessionFor(manager, 'w-zero-turn', makeTask('task-zero'), 'buildd/zero');
-    await new Promise(r => setTimeout(r, 250));
+    await waitFor(() => tracePatches().length > 0);
 
     const patches = tracePatches();
     expect(patches.length).toBeGreaterThan(0);
@@ -247,7 +253,7 @@ describe('SDK stderr durability', () => {
 
     manager = new WorkerManager(makeConfig());
     await startSessionFor(manager, 'w-ok', makeTask('task-ok'), 'buildd/ok');
-    await new Promise(r => setTimeout(r, 300));
+    await waitFor(() => tracePatches().length > 0);
 
     expect(stderrEntries().length).toBeGreaterThan(0);
     const traces = tracePatches().flatMap((c: any[]) => c[1].appendErrorTraces);
