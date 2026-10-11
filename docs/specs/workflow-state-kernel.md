@@ -2,13 +2,13 @@
 title: Workflow State Kernel
 status: draft
 owner: max
-last_verified: 2026-10-10
+last_verified: 2026-10-11
 summary: One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/workflow/landing.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/tests/db/pr-facts.test.ts, apps/web/tests/db/workflow-scenarios-repeat.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/lib/ci-verdict.test.ts, apps/web/tests/db/workflow-probe-github.test.ts, apps/web/tests/db/workflow-probe-concurrency.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/review-request-authority.test.ts, apps/web/tests/db/review-provenance.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/lib/pr-list.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, packages/core/__tests__/workflow-write-sites.test.ts, apps/web/tests/db/workflow-scenarios-treadmill.test.ts, apps/web/src/lib/workflow/base-delta.test.ts, apps/web/tests/db/workflow-scenarios-lane.test.ts]
+verified_by: [apps/web/tests/db/pr-facts.test.ts, apps/web/tests/db/workflow-scenarios-repeat.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/lib/ci-verdict.test.ts, apps/web/tests/db/workflow-probe-github.test.ts, apps/web/tests/db/workflow-probe-concurrency.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/review-request-authority.test.ts, apps/web/tests/db/review-provenance.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/lib/pr-list.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, packages/core/__tests__/workflow-write-sites.test.ts, apps/web/tests/db/workflow-scenarios-treadmill.test.ts, apps/web/src/lib/workflow/base-delta.test.ts, apps/web/tests/db/workflow-scenarios-lane.test.ts, apps/web/src/lib/repair-completion.test.ts, apps/web/src/lib/mission-state-view.landing.test.ts, apps/web/src/lib/pr-predecessors.test.ts, apps/web/src/lib/retry-pr-supersession.test.ts, apps/web/src/lib/migration-inspector.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/runner/__tests__/unit/worktree-mission-integration-guard.test.ts, apps/runner/__tests__/unit/worktree-base-branch.test.ts, packages/core/__tests__/repair-target.test.ts]
 supersedes: []
 ---
 
@@ -2069,8 +2069,8 @@ deferred behind its own lineage's PR.
      branch. Repairing that branch's own PR is the one job that must push there.
 
    Divergence still vetoes a resume branch that is not a repair target (a
-   runaway prior attempt). Regression: `worktree-utils.test.ts`, "diverged mission
-   branch repair".
+   runaway prior attempt). Regression: `worktree-mission-integration-guard.test.ts`
+   and `worktree-base-branch.test.ts`, "diverged mission branch repair".
 
 2. **A conflict or migration repair completes only on evidence.** One pure
    verdict (`repairCompletionVerdict`, `apps/web/src/lib/repair-completion.ts`)
@@ -2104,7 +2104,10 @@ deferred behind its own lineage's PR.
    verdict is `blocked` with a `landing_blocked` descriptor, not `review`. The
    descriptor carries the cause (`conflicted`, `migration_collision`,
    `repair_queued`, `repair_running`, `repair_exhausted`, `human_decision`,
-   `ci_pending`), the owner (`platform` or `person`) and the next action. A mixed
+   `trunk_blocked`, `ci_pending`), the owner (`platform` or `person`) and the
+   next action. A person-owned blocker is `blocked` and counts as needs-you. A
+   platform-owned one is `waiting`. Only refusing landing outcomes
+   (`deferred`, `stranded`, `rejected`) are facts; shadow `warned` rows are not. A mixed
    set keeps the `merge` reading, as `ci_red` does. Regression:
    `mission-state-view.test.ts`, "dirty PR mislabeled ready".
 
@@ -2113,7 +2116,8 @@ deferred behind its own lineage's PR.
    `context.lineagePrNumbers` and every PR opened by an ancestor task
    (`parentTaskId`, `context.rootTaskId`). The active-path-claim layer exempts
    claims held by those ancestors. Other tasks' PRs and claims still block.
-   Regression: `claim-plan-input.test.ts`, "pending retry blocked by own lineage".
+   Regression: `claim-plan-input.test.ts` and the claim route test, "pending
+   retry blocked by own lineage".
 
 5. **A superseded predecessor holds no migration slot, and is retired only on
    verified content.**
@@ -2127,6 +2131,19 @@ deferred behind its own lineage's PR.
 
    Regressions: `migration-inspector.test.ts` and `retry-pr-supersession.test.ts`,
    "superseded predecessor migration reservation".
+
+**Deviations and remaining gaps.**
+
+1. The kernel CI fix (`ci-retry-effects.ts`) does not read the live PR, so it
+   carries no `repairTarget`. It resumes the worker's branch as before. Legacy CI
+   retries and every conflict and migration attempt carry the stamp.
+2. A supersession stated only in prose (a PR body saying "Supersedes #N") is not
+   a recorded edge, so it neither frees the predecessor's slot nor retires it.
+   `record_pr_supersession` still requires a merged successor. Recording an open
+   successor's claim is follow-up work.
+3. Explain never calls GitHub. A legacy PR's landing row is trusted until a
+   repair completes after it. Because rule 2 gates that completion on evidence,
+   the row stays current until the landing door writes a newer one.
 
 **Base churn.** Bounded landing coordination stays the kernel's landing lane
 (`landing-lane.ts`) plus the per-basis conflict budget. A new conflict basis gets one
@@ -2782,6 +2799,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 ## 22. Code surface
 
 - Existing, to be migrated or wrapped: `apps/web/src/app/api/workers/[id]/route.ts`, `apps/web/src/app/api/github/webhook/route.ts`, `apps/web/src/app/api/github/pr/route.ts`, `apps/web/src/app/api/github/pr/review/route.ts`, `apps/web/src/app/api/github/pr/supersede/route.ts`, `apps/web/src/lib/pr-landing.ts`, `apps/web/src/lib/auto-merge.ts`, `apps/web/src/lib/pr-review-status.ts`, `apps/web/src/lib/review-verdict-gate.ts`, `apps/web/src/lib/reviewer.ts`, `apps/web/src/lib/pr-activity-comment.ts`, `apps/web/src/lib/pr-presentation.ts`, `apps/web/src/lib/mission-completion.ts`, `packages/core/pr-shipped.ts`, `packages/core/db/schema.ts`.
+- PR recovery (§13.11): `packages/core/repair-target.ts`, `apps/runner/src/worktree-utils.ts`, `apps/runner/src/git-operations.ts`, `apps/web/src/lib/repair-completion.ts`, `apps/web/src/lib/landing-blocker.ts`, `apps/web/src/lib/pr-predecessors.ts`, `apps/web/src/lib/retry-pr-supersession.ts`, `apps/web/src/lib/attempt-lineage.ts`.
 - Pattern sources: `packages/core/dispatch-outbox.ts`, `apps/web/src/lib/dispatch-authority.ts`, `packages/core/gate-events.ts`.
 - Wired in Slice A part 1: `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/prs/[prNumber]/re-review/route.ts`, `apps/web/src/app/api/cron/pr-reconcile/route.ts`, `apps/web/src/lib/reviewer-subscribers.ts`.
 - New (Phase 2): `apps/web/src/lib/workflow/*` (the route seam is `seam.ts`; landing is `landing.ts` and `pr-landing-effects.ts`; a closed PR's resolution is `supersession-effects.ts`; mission completion's input is `delivery-ship.ts`), `apps/web/src/lib/pr-merged-work.ts`, `packages/core/__tests__/workflow-write-sites.test.ts`, `apps/web/tests/db/workflow-seam.test.ts`.
