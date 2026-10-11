@@ -12,7 +12,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
-import { evidenceForCompletion, keepStoredEvidence, stampEvidence } from '@/lib/verification-provenance';
+import { agentCredential, evidenceForCompletion, keepStoredEvidence, stampEvidence } from '@/lib/verification-provenance';
 import { recordLateRunnerEvidence } from '@/lib/late-runner-evidence';
 import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -788,8 +788,8 @@ export async function PATCH(
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
     // The runner's own verification report for a verification run still counts
     // when the agent made the terminal write first (lib/late-runner-evidence.ts).
-    // A task token is never the runner here, so its late copy is ignored.
-    if (body.verificationEvidence && !account.taskScope) {
+    // A task token on a host worker is the agent, so its late copy is ignored.
+    if (body.verificationEvidence && !agentCredential(account, worker)) {
       await recordLateRunnerEvidence({ workerId: worker.id, taskId: worker.taskId, evidence: body.verificationEvidence })
         .catch((err) => console.error(`[workers] late runner evidence for worker ${worker.id} failed:`, err));
     }
@@ -966,7 +966,9 @@ export async function PATCH(
   } = body;
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
   // on a host runner a task token is the agent's credential, not the runner's.
-  const verificationEvidence = stampEvidence(rawVerificationEvidence, { viaTaskToken: !!account.taskScope }) ?? undefined;
+  const verificationEvidence = stampEvidence(rawVerificationEvidence, {
+    viaTaskToken: agentCredential(account, worker),
+  }) ?? undefined;
   let status = reportedStatus;
   let error = reportedError;
 

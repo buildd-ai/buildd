@@ -13754,13 +13754,13 @@ describe('PATCH /api/workers/[id]', () => {
       const ok = { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' };
       const failed = { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' };
 
-      it('stamps a task-token copy as the agent, even when it claims to be the runner', async () => {
+      it('stamps a task-token copy as the agent on a host-claimed worker, even when it claims to be the runner', async () => {
         asTaskToken();
         const workerSetCalls: any[] = [];
         mockWorkersUpdate.mockReturnValue({
           set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker()]) })) }; }),
         });
-        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker());
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ claimedByCloud: false }));
         mockTasksFindFirst.mockResolvedValue(makeLoopTask());
 
         const res = await PATCH(createMockRequest({
@@ -13811,6 +13811,41 @@ describe('PATCH /api/workers/[id]', () => {
       it('hands the runner report on an already-terminal worker to the late evidence path, and still refuses the write', async () => {
         lateRunnerEvidenceCalls.length = 0;
         mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed' }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: failed },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(409);
+        expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
+      });
+
+      // A cloud container runs its whole runner on a task token, so on a worker
+      // the claim route recorded as cloud-claimed that token is the runner.
+      it('counts a task-token copy as the runner on a worker a cloud container claimed', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ claimedByCloud: true })]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ claimedByCloud: true }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'runner' });
+      });
+
+      it('hands a cloud runner late report on its task token to the late evidence path', async () => {
+        asTaskToken();
+        lateRunnerEvidenceCalls.length = 0;
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed', claimedByCloud: true }));
         mockTasksFindFirst.mockResolvedValue(makeLoopTask());
 
         const res = await PATCH(createMockRequest({

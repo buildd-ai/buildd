@@ -12,11 +12,13 @@
  * The server stamps `reportedVia` on every stored copy; a caller cannot set
  * it. Evidence stored before the stamp existed keeps its old meaning.
  *
- * Not solved here: a cloud container runs its whole runner process on a task
- * token, so its evidence reads `task_token` too and those verdicts stay
- * unverified; and an agent session that fell back to the runner key (mint
- * failure, an admin role) cannot be told from the runner. Both need a
- * runner-only proof (a signed evidence field), which is a separate change.
+ * A cloud container runs its whole runner process on a task token, so on a
+ * worker a cloud container claimed (workers.claimedByCloud, set by the claim
+ * route) a task token counts as the runner. That leaves a known gap: in cloud
+ * the agent and the runner share that token and cannot be told apart, so an
+ * agent there could still report its own pass. An agent session on a host
+ * runner that fell back to the runner key (mint failure, an admin role) is
+ * the same gap. Closing either needs a runner-only proof, a separate change.
  */
 
 export type ReportedVia = 'runner' | 'task_token';
@@ -47,4 +49,16 @@ export function keepStoredEvidence(incoming: unknown, stored: unknown): boolean 
 export function evidenceForCompletion<T>(body: T | null | undefined, stored: T | null | undefined): T | null {
   if (body == null) return stored ?? null;
   return keepStoredEvidence(body, stored) ? (stored as T) : body;
+}
+
+/**
+ * True when the caller is the agent rather than the runner: a task token on a
+ * worker a host runner claimed. On a cloud-claimed worker the task token is
+ * the runner's own credential.
+ */
+export function agentCredential(
+  account: { taskScope?: unknown },
+  worker: { claimedByCloud?: boolean | null },
+): boolean {
+  return !!account.taskScope && worker.claimedByCloud !== true;
 }

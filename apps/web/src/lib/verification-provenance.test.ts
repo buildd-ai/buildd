@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { evidenceForCompletion, isRunnerReported, keepStoredEvidence, stampEvidence } from './verification-provenance';
+import { agentCredential, evidenceForCompletion, isRunnerReported, keepStoredEvidence, stampEvidence } from './verification-provenance';
 
 const ok = { workerId: 'w-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' };
 
@@ -43,5 +43,19 @@ describe('the runner copy wins over an agent copy', () => {
     expect(evidenceForCompletion(runner, agent)).toBe(runner);
     expect(evidenceForCompletion(null, runner)).toBe(runner);
     expect(evidenceForCompletion(agent, null)).toBe(agent);
+  });
+});
+
+describe('agentCredential', () => {
+  const taskToken = { taskScope: { taskId: 't-1' } };
+  test('a task token on a worker a host runner claimed is the agent', () => {
+    expect(agentCredential(taskToken, { claimedByCloud: false })).toBe(true);
+    expect(agentCredential(taskToken, {})).toBe(true);
+  });
+  test('on a worker a cloud container claimed, the task token is the runner', () => {
+    expect(agentCredential(taskToken, { claimedByCloud: true })).toBe(false);
+  });
+  test('a runner key is never the agent', () => {
+    expect(agentCredential({}, { claimedByCloud: false })).toBe(false);
   });
 });
