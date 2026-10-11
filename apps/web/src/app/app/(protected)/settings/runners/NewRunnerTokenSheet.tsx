@@ -9,9 +9,9 @@ import Notice from '@/components/ui/Notice';
 import Sheet from '@/components/ui/Sheet';
 import { useCloseUrlSheet } from '@/components/UrlSheet';
 import { defaultTeamId, readActiveTeamCookie } from '@/lib/active-team-client';
-import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
+import { roleHas } from '@/lib/permission-registry';
 
-interface Team { id: string; name: string; slug: string; role: string; permissionOverrides?: PermissionOverrides }
+interface Team { id: string; name: string; slug: string; role: string }
 interface Workspace { id: string; name: string; repo: string | null }
 type Preset = keyof typeof TOKEN_PRESETS;
 const inputClass = 'w-full min-h-11 px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm';
@@ -39,7 +39,7 @@ export default function NewRunnerTokenSheet() {
   const [accountType, setAccountType] = useState('user');
   const [maxConcurrent, setMaxConcurrent] = useState('5');
   const selectedTeam = teams.find(team => team.id === selectedTeamId);
-  const canAdmin = roleHas(selectedTeam?.role, 'manage_team_keys', selectedTeam?.permissionOverrides ?? null);
+  const canAdmin = roleHas(selectedTeam?.role, 'manage_team_keys');
 
   useEffect(() => {
     fetch('/api/teams').then(async res => {
@@ -108,7 +108,7 @@ export default function NewRunnerTokenSheet() {
         <form onSubmit={handleSubmit} className="space-y-8">
           {error && <Notice tone="err">{error}</Notice>}
           <div className="space-y-4">
-            {teams.length > 1 && <div><label htmlFor="team" className="block text-sm mb-2">Team</label><Select id="team" value={selectedTeamId} onChange={id => { setSelectedTeamId(id); if (!roleHas(teams.find(team => team.id === id)?.role, 'manage_team_keys', teams.find(team => team.id === id)?.permissionOverrides ?? null)) { setScopes(current => current.filter(scope => !scope.endsWith(':admin') && !['admin','secrets','releases','schedules:write'].includes(scope))); if (preset === 'admin') choosePreset('runner'); } }} options={teams.map(team => ({ value: team.id, label: team.name }))} /></div>}
+            {teams.length > 1 && <div><label htmlFor="team" className="block text-sm mb-2">Team</label><Select id="team" value={selectedTeamId} onChange={id => { setSelectedTeamId(id); if (!roleHas(teams.find(team => team.id === id)?.role, 'manage_team_keys')) { setScopes(current => current.filter(scope => !scope.endsWith(':admin') && !['admin','secrets','releases','schedules:write'].includes(scope))); if (preset === 'admin') choosePreset('runner'); } }} options={teams.map(team => ({ value: team.id, label: team.name }))} /></div>}
             <div><label htmlFor="name" className="block text-sm mb-2">Token name</label><input id="name" name="name" required placeholder="release-ci" className={inputClass} /></div>
             {/* Radio rows: the chosen one is marked in ink, never orange. */}
             <fieldset><legend className="section-label mb-2">Preset</legend><div className="border-y border-border-default divide-y divide-border-default">

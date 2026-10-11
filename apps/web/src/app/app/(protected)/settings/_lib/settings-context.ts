@@ -7,7 +7,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
-import { getTeamsPermissionOverrides, type PermissionOverrides } from '@/lib/permissions';
+
 import { NO_PERMISSIONS, settingsPermissions, type SettingsPermissions } from './settings-permissions';
 
 export interface SettingsWorkspace {
@@ -23,8 +23,8 @@ export interface SettingsContext {
   currentTeamId: string | null;
   currentTeam: UserTeam | null;
   /**
-   * What the person may do in the active team, one flag per named permission,
-   * with the team's overrides applied: exactly what the API would accept from
+   * What the person may do in the active team, one flag per named permission:
+   * exactly what the API would accept from
    * this session. A personal team counts as owned. All false with no team.
    */
   perms: SettingsPermissions;
@@ -57,18 +57,8 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
   const teamCookie = (await cookies()).get('buildd-team')?.value;
   const currentTeamId = await resolveActiveTeamId(user.id, teamCookie).catch(() => null);
   const currentTeam = teams.find((t) => t.id === currentTeamId) ?? null;
-  // Overrides are read once per request for every team (cached). A failed read
-  // holds nothing: an override can take a permission away, so guessing the
-  // defaults could offer a control the API would refuse.
-  const overrides = await getTeamsPermissionOverrides(teams.map((t) => t.id)).catch((e) => {
-    console.error('Settings: permission overrides query error:', e);
-    return null as Map<string, PermissionOverrides> | null;
-  });
   const permsByTeam: Record<string, SettingsPermissions> = {};
-  for (const t of teams) {
-    const o = overrides?.get(t.id);
-    permsByTeam[t.id] = o ? settingsPermissions(t, user.id, o) : NO_PERMISSIONS;
-  }
+  for (const t of teams) permsByTeam[t.id] = settingsPermissions(t, user.id);
   const perms = (currentTeam && permsByTeam[currentTeam.id]) || NO_PERMISSIONS;
 
   const rows = wsIds.length > 0

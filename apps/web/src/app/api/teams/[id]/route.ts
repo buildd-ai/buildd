@@ -10,7 +10,7 @@ import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
-import { roleHas, sanitizeOverrides, type Permission, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
 import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
@@ -33,7 +33,7 @@ async function verifyTeamAccess(
 
   const role = membership.role as TeamRole;
 
-  if (permission && !roleHas(role, permission, await getTeamPermissionOverrides(teamId))) {
+  if (permission && !roleHas(role, permission)) {
     return null;
   }
 
@@ -102,7 +102,6 @@ export async function GET(
         chatCapNewSessionTier: true,
         taskEstimates: true,
         timezone: true,
-        permissionOverrides: true,
       },
     });
 
@@ -128,8 +127,7 @@ export async function GET(
     }));
 
     return NextResponse.json({
-      // Sanitized, so a client's roleHas() answers what the server will enforce.
-      team: { ...team, permissionOverrides: sanitizeOverrides(team.permissionOverrides), inferenceKeyPolicy: effectiveKeyPolicy(team) ?? 'team', credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? 'team'),
+      team: { ...team, inferenceKeyPolicy: effectiveKeyPolicy(team) ?? 'team', credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? 'team'),
         // What the team layer allows for Coding, for the Models page. Workspace
         // and personal layers narrow it further per task at claim time.
         effectiveCodingPolicy: describeEffectiveCodingPolicy(resolveCodingPolicy({ team: parseCodingPolicyLayer(team.codingPolicy?.team) })) },

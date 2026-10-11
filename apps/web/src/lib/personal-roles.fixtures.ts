@@ -169,9 +169,8 @@ export function installPersonalRoleMocks() {
   // `can` through the real registry with default grants.
   mock.module('@/lib/permissions', () => ({
     can: async (caller: { kind: string; userId?: string }, permission: any, teamId: string) =>
-      caller.kind === 'user' && roleHas(teamRoles[caller.userId!]?.[teamId], permission, {}),
+      caller.kind === 'user' && roleHas(teamRoles[caller.userId!]?.[teamId], permission),
     roleHas,
-    getTeamPermissionOverrides: async () => ({}),
   }));
   mock.module('@/lib/mission-context', () => ({
     // Reproduces the workspace view's reach with no requester: workspace rows,

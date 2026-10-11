@@ -20,7 +20,7 @@ let actorRole: string | null = 'owner';
 const { roleHas } = await import('@/lib/permission-registry');
 mock.module('@/lib/permissions', () => ({
   can: async (_caller: unknown, permission: any, teamId: string) =>
-    teamId === 'team-1' && roleHas(actorRole, permission, null),
+    teamId === 'team-1' && roleHas(actorRole, permission),
 }));
 mock.module('@/lib/notify', () => ({
   getTeamPreferences: mockGetTeamPreferences,

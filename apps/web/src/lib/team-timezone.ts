@@ -76,7 +76,7 @@ export async function getViewerTimezone(
 }
 
 /** Team roles whose own timezone seeds the team's (`seed_team_timezone`: owner). */
-export const SEEDING_ROLES = TEAM_ROLES.filter(role => roleHas(role, 'seed_team_timezone', null /* locked */));
+export const SEEDING_ROLES = TEAM_ROLES.filter(role => roleHas(role, 'seed_team_timezone'));
 
 /**
  * Persist a zone detected from this user's browser, and seed it onto any team
