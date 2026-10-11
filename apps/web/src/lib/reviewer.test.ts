@@ -38,6 +38,13 @@ const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'created' } as
 
 // reviewer.ts imports @buildd/core/db at the top level — stub the whole thing
 // so these pure-function tests don't need a database connection.
+// Living Spec pinned reads (lib/specs/pin.ts), controlled per test.
+let pinnedReadImpl: (pin: Record<string, unknown>) => Promise<unknown> = async () => ({ ok: false, reason: 'not set' });
+const pinnedReadCalls: Array<Record<string, unknown>> = [];
+mock.module('@/lib/specs/pin', () => ({
+  readPinnedSpecRevision: (pin: Record<string, unknown>) => { pinnedReadCalls.push(pin); return pinnedReadImpl(pin); },
+  pinSpecSource: async (_ws: string, ctx: unknown) => ({ ok: true, context: ctx }),
+}));
 mock.module('@buildd/core/db', () => ({
   db: {
     insert: mock((table: string) => ({
@@ -1955,7 +1962,7 @@ describe('renderSpecConformanceGuidance', () => {
     expect(result.section).toContain('The reviewer must check X against Y.');
   });
 
-  it('is empty when the fetch fails — a doc the reviewer cannot see is not asked about', async () => {
+  it('a doc that fails to fetch is an explicit finding, not silence: the reviewer is told to escalate', async () => {
     githubApiImpl = () => Promise.reject(new Error('boom'));
 
     const result = await renderSpecConformanceGuidance({
@@ -1964,7 +1971,48 @@ describe('renderSpecConformanceGuidance', () => {
       repoFullName: 'buildd-ai/buildd',
       headSha: 'sha1',
     });
-    expect(result).toEqual({ doctrine: '', section: '' });
+    expect(result.doctrine).toContain('SPEC UNAVAILABLE');
+    expect(result.doctrine).toContain('Escalate');
+    expect(result.section).toContain(`## Spec Conformance — ${SPEC_PATH}`);
+    expect(result.section).toContain('UNAVAILABLE');
+  });
+
+  it('a repo doc pinned to a commit is read at that commit, not the PR head', async () => {
+    const paths: string[] = [];
+    githubApiImpl = (_i: number, path: string) => {
+      paths.push(path);
+      return Promise.resolve({ encoding: 'base64', content: Buffer.from('# Pinned\nR-1: as approved.').toString('base64') });
+    };
+    const result = await renderSpecConformanceGuidance({
+      specSource: { specPath: SPEC_PATH, commitSha: 'abc1234def' },
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      headSha: 'sha1',
+    });
+    expect(paths).toEqual([`/repos/buildd-ai/buildd/contents/${SPEC_PATH}?ref=abc1234def`]);
+    expect(result.section).toContain('R-1: as approved.');
+  });
+
+  it('a Living Spec pin is read from the pinned revision, never the PR head or the spec head', async () => {
+    const paths: string[] = [];
+    githubApiImpl = (_i: number, path: string) => { paths.push(path); return Promise.reject(new Error('must not fetch')); };
+    pinnedReadImpl = async () => ({ ok: true, specId: 's-1', revision: 1, contentHash: 'ab'.repeat(32), body: '# Checkout\nR-1: revision one text.', title: 'Checkout' });
+    const pin = { specId: 's-1', specRevisionId: 'r-1', revision: 1, contentHash: 'ab'.repeat(32) };
+    const result = await renderSpecConformanceGuidance({ specSource: pin, installationId: 1, repoFullName: 'buildd-ai/buildd', headSha: 'sha1' });
+    expect(paths).toEqual([]);
+    expect(pinnedReadCalls.at(-1)).toMatchObject({ specRevisionId: 'r-1', contentHash: pin.contentHash });
+    expect(result.doctrine).toContain('SPEC DOCUMENT CONFORMANCE');
+    expect(result.section).toContain('Living Spec "Checkout" revision 1');
+    expect(result.section).toContain('R-1: revision one text.');
+  });
+
+  it('a Living Spec pin that no longer resolves is an explicit finding naming why', async () => {
+    pinnedReadImpl = async () => ({ ok: false, reason: 'pinned spec revision 1 has a different hash than the task was pinned to' });
+    const result = await renderSpecConformanceGuidance({
+      specSource: { specId: 's-1', specRevisionId: 'r-1', contentHash: 'x' }, installationId: 1, repoFullName: 'buildd-ai/buildd', headSha: 'sha1',
+    });
+    expect(result.doctrine).toContain('SPEC UNAVAILABLE');
+    expect(result.section).toContain('different hash');
   });
 
   it('truncates a document past the char budget and notes it', async () => {
