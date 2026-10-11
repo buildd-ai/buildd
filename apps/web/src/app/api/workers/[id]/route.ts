@@ -72,6 +72,7 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
+import { defaultLegacyRepairGateDeps, legacyRepairCompletionGate } from '@/lib/repair-completion';
 import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
@@ -1657,7 +1658,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, conflictRetryHeadSha: tasks.conflictRetryHeadSha, subjectHeadSha: tasks.subjectHeadSha, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1830,7 +1831,7 @@ export async function PATCH(
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'rejected',
-          reason: 'completion refused: delivery_not_advanced',
+          reason: `completion refused: ${refusal.code}`,
           workspaceId: worker.workspaceId,
           missionId: taskMissionId,
           taskId: worker.taskId,
@@ -1847,6 +1848,45 @@ export async function PATCH(
           boundHeadSha: refusal.boundHeadSha,
           liveHeadSha: refusal.liveHeadSha,
           localHeadSha: refusal.localHeadSha,
+        }, { status: 400 });
+      }
+    }
+
+    // The same evidence rule for a LEGACY conflict or migration retry (no
+    // delivery row): it completes only when the PR's head moved, or GitHub
+    // shows the conflict/collision already gone. Without this, attempts that
+    // started fresh from trunk and touched nothing on the PR read as success
+    // (spec workflow-state-kernel §13.11 rule 2).
+    if (worker.taskId && terminalTaskRow[0] && !terminalTaskRow[0].deliveryId && terminalTaskRow[0].conflictRetryPrNumber != null) {
+      const refusal = await legacyRepairCompletionGate({
+        task: { workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
+        localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+      }, defaultLegacyRepairGateDeps()).catch((err) => {
+        console.error(`[repair-completion] gate check failed for worker ${worker.id} (allowing):`, err);
+        return null;
+      });
+      if (refusal) {
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
+        const frictionSignature = fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: `completion refused: ${refusal.code}`,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: { code: refusal.code, boundHeadSha: refusal.boundHeadSha, liveHeadSha: refusal.liveHeadSha },
+        });
+        return NextResponse.json({
+          error: refusal.error,
+          hint: refusal.hint,
+          code: refusal.code,
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          frictionSignature,
+          boundHeadSha: refusal.boundHeadSha,
+          liveHeadSha: refusal.liveHeadSha,
         }, { status: 400 });
       }
     }

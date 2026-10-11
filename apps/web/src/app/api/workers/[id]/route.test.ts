@@ -721,6 +721,13 @@ const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
 const mockRecordReviewVerdict = mock(async (_p: any): Promise<any> => ({ handled: false }));
 const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false);
+// The legacy conflict/migration repair gate (lib/repair-completion.ts) has its
+// own unit suite; here: that the route refuses on its verdict.
+const mockLegacyRepairGate = mock(async (_p: any, _d: any): Promise<any> => null);
+mock.module('@/lib/repair-completion', () => ({
+  legacyRepairCompletionGate: mockLegacyRepairGate,
+  defaultLegacyRepairGateDeps: () => ({}),
+}));
 const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
@@ -3767,6 +3774,39 @@ describe('PATCH /api/workers/[id]', () => {
       mockFixCompletionGate.mockReset();
       await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } }), { params: mockParams });
       expect(mockFixCompletionGate).not.toHaveBeenCalled();
+    });
+
+    // Spec workflow-state-kernel §13.11 rule 2, "zero-diff false success".
+    it('a legacy conflict retry whose PR is still dirty is refused, and nothing is written', async () => {
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({ set: mock(() => { taskUpdateCalled = true; return { where: mock(() => Promise.resolve()) }; }) });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...fixWorker, taskId: 'conflict-task-1' });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'conflict-task-1', outputRequirement: 'auto', category: 'bug', deliveryId: null, conflictRetryPrNumber: 42,
+        context: { failureContext: { errorType: 'merge_conflict', headSha: 'h1' } },
+      });
+      mockLegacyRepairGate.mockReset();
+      mockLegacyRepairGate.mockResolvedValue({
+        ok: false, code: 'repair_still_conflicted', error: 'PR #42 still conflicts', hint: 'merge the base', boundHeadSha: 'h1', liveHeadSha: 'h1',
+      });
+
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } }), { params: mockParams });
+      const body = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(body).toMatchObject({ code: 'repair_still_conflicted', gate: 'output_requirement', boundHeadSha: 'h1' });
+      expect(mockLegacyRepairGate.mock.calls[0][0]).toMatchObject({ task: { conflictRetryPrNumber: 42 } });
+      expect(taskUpdateCalled).toBe(false);
+    });
+
+    it('the legacy repair gate is not consulted for a task that is not a conflict retry', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...fixWorker, taskId: 'task-1' });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+      mockLegacyRepairGate.mockReset();
+      await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } }), { params: mockParams });
+      expect(mockLegacyRepairGate).not.toHaveBeenCalled();
     });
 
     it('T4: a terminal PATCH of a kernel attempt reports AttemptEnded with the local head (a fact, never delivery)', async () => {
