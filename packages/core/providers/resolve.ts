@@ -10,7 +10,9 @@
  *
  * 1. **Eligible providers**: registry providers whose `surfaces[surface].ok`,
  *    narrowed and ordered by `provider` / `providers` when given. The rest are
- *    listed in `why` with the registry's reason.
+ *    listed in `why` with the registry's reason. With no caller preference,
+ *    the team's pick for the surface (`teams.provider_assignments`, see
+ *    `./assignments`) goes first; within a scope it also beats the endpoint tie.
  * 2. **One query** over `secrets` for the team (`providerCredentialWhere`):
  *    every canonical and legacy storage of those providers, plus
  *    `agent_endpoint` on agent surfaces; rows of this workspace or none; rows of
@@ -54,6 +56,7 @@
 // Only and/eq/or/isNull/sql from drizzle, and nothing that imports more: the
 // chat and inference wrappers load this module under test stubs of exactly
 // that set (inference-client, decision-client tests).
+import { assignedPreference, parseProviderAssignments } from './assignments';
 import { and, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { secrets } from '../db/schema';
 import { ROUTES } from '@builddai/ai-kit/models/routes';
@@ -305,6 +308,8 @@ export interface SelectContext {
   purposes?: readonly string[];
   scopes?: readonly PolicyScope[];
   accept?: (value: string) => boolean;
+  /** The team's pick for this surface (`./assignments`): within a scope it beats the endpoint tie. */
+  assigned?: ProviderId;
 }
 
 interface Candidate {
@@ -436,11 +441,15 @@ export function selectProviderCredential(
   const newest = (c: Candidate) => c.row.updatedAt?.getTime() ?? 0;
   const providerIdx = (c: Candidate) => c.match?.providerIndex ?? -1;
   const storageIdx = (c: Candidate) => c.match?.storageIndex ?? 0;
+  // An endpoint's provider is only known after decrypt; assigning the endpoint
+  // needs nothing here, since it already wins a tie.
+  const isAssigned = (c: Candidate) => !!ctx.assigned && c.match?.provider === ctx.assigned;
   candidates.sort(agent
     ? (a, b) =>
         Number(a.revoked) - Number(b.revoked) ||
         a.rank - b.rank ||
-        Number(b.match === null) - Number(a.match === null) || // endpoint wins a tie
+        Number(isAssigned(b)) - Number(isAssigned(a)) || // the team's pick wins a tie
+        Number(b.match === null) - Number(a.match === null) || // then an endpoint
         a.fine - b.fine ||
         providerIdx(a) - providerIdx(b) ||
         storageIdx(a) - storageIdx(b) ||
@@ -569,7 +578,7 @@ async function loadTeamPolicy(teamId: string): Promise<TeamPolicyColumns | null>
     const { teams } = await import('../db/schema');
     return (await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
-      columns: { credentialPolicy: true, inferenceKeyPolicy: true },
+      columns: { credentialPolicy: true, inferenceKeyPolicy: true, providerAssignments: true },
     })) ?? null;
   } catch (e) {
     console.warn('[providers/resolve] team policy lookup failed:', e);
@@ -580,9 +589,11 @@ async function loadTeamPolicy(teamId: string): Promise<TeamPolicyColumns | null>
 
 /** See the module comment. Never throws. */
 export async function resolveProviderCredential(input: ResolveProviderCredentialInput): Promise<ProviderCredentialResult> {
-  const preference = input.provider ? [input.provider] : input.providers;
-  const { eligible, impossible } = eligibleProviders(input.surface, preference);
   const team = input.team !== undefined ? input.team : await loadTeamPolicy(input.teamId);
+  // A caller's own provider narrowing wins; otherwise the team's pick orders.
+  const assigned = input.provider || input.providers ? undefined : parseProviderAssignments(team?.providerAssignments)[input.surface];
+  const preference = input.provider ? [input.provider] : input.providers ?? (assigned ? assignedPreference({ [input.surface]: assigned }, input.surface) : undefined);
+  const { eligible, impossible } = eligibleProviders(input.surface, preference);
   const policy = surfacePolicy(team, input.surface);
   const applied = appliedPolicy({ policy: policy.policy, surface: input.surface, agentEnforced: policy.enforced });
   const requester = normalizeRequester(input.requesterUserId);
@@ -625,6 +636,7 @@ export async function resolveProviderCredential(input: ResolveProviderCredential
     purposes: input.purposes,
     scopes: input.scopes,
     accept: input.accept,
+    assigned,
   }, decrypt);
   for (const { provider, reason } of impossible) result.why.push(`${provider}: impossible on ${input.surface} (${reason})`);
   return result;

@@ -12,6 +12,19 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.27.1 — 2026-10-11
+
+Patch: attachment cards and the Attach button read right on a phone.
+
+- A failed upload's reason wraps instead of ending in an ellipsis, and its
+  composer card grows past the usual 56px to hold it. Ready and uploading
+  cards keep their fixed height.
+- The card's detail line and the composer's character count no longer use
+  `tabular-nums`. Under `tnum` some body fonts (Schibsted Grotesk among them)
+  give "," and "." a full digit's width, so "60,000" read as "60 , 000".
+- The Attach button fills its toolbar cell like Send (48px wide, at least 44px
+  tall, no inner border) instead of a 32px box pinned to the top of the cell.
+
 ## 0.27.0 — 2026-10-11
 
 Minor: a route can carry a threshold measured on the model that answered.

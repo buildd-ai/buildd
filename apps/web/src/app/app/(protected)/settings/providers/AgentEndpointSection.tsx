@@ -116,7 +116,9 @@ function health(e: MaskedAgentEndpointView): { tone: ChipTone; label: string; de
   return { tone: 'warning', label: 'Not confirmed', detail: e.lastVerificationError };
 }
 
-export default function AgentEndpointSection({ teamId, canManage, workspaces, rev = 0 }: {
+export default function AgentEndpointSection({ teamId, canManage, workspaces, rev = 0, embedded = false }: {
+  /** Drawn inside the provider list's custom endpoint row, which already names it. */
+  embedded?: boolean;
   teamId: string;
   canManage: boolean;
   workspaces: EndpointWorkspace[];
@@ -159,9 +161,9 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
   const idle = canManage && editing === null;
 
   return (
-    <section aria-labelledby="agent-endpoint-h" data-testid="agent-endpoint">
-      <h2 id="agent-endpoint-h" className="section-label mb-3">Agent model endpoint</h2>
-      <div className="card p-4 space-y-3 text-xs">
+    <section {...(embedded ? { 'aria-label': 'Custom endpoint' } : { 'aria-labelledby': 'agent-endpoint-h' })} data-testid="agent-endpoint">
+      {!embedded && <h2 id="agent-endpoint-h" className="section-label mb-3">Agent model endpoint</h2>}
+      <div className={embedded ? 'space-y-3 text-xs' : 'card p-4 space-y-3 text-xs'}>
         {endpoints === undefined && <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Loading…</p>}
         {endpoints !== undefined && routes.length === 0 && (
           <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Anthropic (default)</p>

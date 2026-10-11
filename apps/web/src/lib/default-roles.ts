@@ -16,7 +16,7 @@
 
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { BUILDD_ACTION_TOOL_NAMES, LEGACY_BUILDD_ACTION_TOOL, VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
 import { registerTextPrompt, resolvePromptEntry, resolvedPromptVersion } from '@buildd/core/prompts';
@@ -1152,9 +1152,10 @@ function metadataOf(row: { metadata: unknown }): Record<string, unknown> {
 }
 
 /**
- * Which seeded role rows should move to the resolved text: system rows of a
- * default slug whose content is not already it, and that are provably
- * unedited, one of:
+ * Which role rows should move to the resolved text: rows of a default slug
+ * (any source: a workspace override that still holds exactly a shipped text is
+ * unedited too, and is resynced on the hash alone) whose content is not
+ * already it, and that are provably unedited, one of:
  *
  * - a version bump: stamped with an older `metadata.defaultRoleVersion`
  *   (absent = 1) and holding exactly an earlier shipped text
@@ -1176,14 +1177,17 @@ export function planDefaultRoleResync(rows: readonly SeededRoleRow[], roles: rea
   const out: DefaultRoleResync[] = [];
   for (const row of rows) {
     const role = bySlug.get(row.slug);
-    if (!role || row.source !== 'system' || !row.contentHash) continue;
+    if (!role || !row.contentHash) continue;
     const resolvedHash = roleContentHash(role.content);
     if (row.contentHash === resolvedHash) continue;
+    // A row of any other source (a workspace override written by hand) holds
+    // no version stamp, so only its exact hash can show it is unedited.
+    const seeded = row.source === 'system';
     const meta = metadataOf(row);
     const version = typeof meta.defaultRoleVersion === 'number' ? meta.defaultRoleVersion : 1;
-    const bumped = version < role.version && role.supersededContentHashes.includes(row.contentHash);
+    const bumped = (!seeded || version < role.version) && role.supersededContentHashes.includes(row.contentHash);
     const unedited = (role.fromPrompt && role.shippedContentHashes.includes(row.contentHash))
-      || meta.defaultRolePromptHash === row.contentHash;
+      || (seeded && meta.defaultRolePromptHash === row.contentHash);
     if (!bumped && !unedited) continue;
     out.push({ id: row.id, slug: role.slug, version: role.version, content: role.content, contentHash: resolvedHash });
   }
@@ -1218,7 +1222,7 @@ async function applyResync(row: SeededRoleRow, p: DefaultRoleResync, roles: read
  * Never throws: a failed resolve or write delivers the row as stored.
  */
 export async function deliverSeededRoleContent(row: SeededRoleRow & { content: string }): Promise<string> {
-  if (row.source !== 'system' || !DEFAULT_ROLE_SLUGS.has(row.slug)) return row.content;
+  if (!DEFAULT_ROLE_SLUGS.has(row.slug)) return row.content;
   try {
     const roles = await currentDefaultRoles();
     const [p] = planDefaultRoleResync([row], roles);
@@ -1238,7 +1242,7 @@ export async function deliverSeededRoleContent(row: SeededRoleRow & { content: s
  */
 export async function resyncDefaultRolesForTeam(teamId: string): Promise<number> {
   const rows = await db.query.workspaceSkills.findMany({
-    where: and(eq(workspaceSkills.teamId, teamId), eq(workspaceSkills.source, 'system')),
+    where: and(eq(workspaceSkills.teamId, teamId), inArray(workspaceSkills.slug, [...DEFAULT_ROLE_SLUGS])),
     columns: { id: true, slug: true, source: true, contentHash: true, metadata: true },
   }) as SeededRoleRow[];
   const roles = await currentDefaultRoles();
