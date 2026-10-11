@@ -79,11 +79,30 @@ describe('manage_specs', () => {
     expect([r.isError, out(r)]).toEqual([true, 'would form a cycle']);
   });
 
-  it('refuses an unknown sub-action, and no sub-action or param approves', async () => {
-    await expect(handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC }, ctx())).rejects.toThrow('action must be one of');
+  it('refuses an unknown sub-action, and no param sets a status', async () => {
+    await expect(handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'publish', specId: SPEC }, ctx())).rejects.toThrow('action must be one of');
     expect(api).not.toHaveBeenCalled();
     const docs = buildParamsDescription(['manage_specs']);
     expect(docs).not.toMatch(/\bstatus\?/);
-    expect(docs).toContain('Nothing here approves');
+    expect(docs).toContain('a person\'s act');
+  });
+
+  it('approve POSTs the head revision and version; a write scope; an agent run gets the route\'s 403 back as an error', async () => {
+    expect(requiredScopeForAction('manage_specs', { action: 'approve' })).toBe('tasks:write');
+    await expect(handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, expectedVersion: 2 }, ctx())).rejects.toThrow('revision');
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 3, approvedRevision: 2 }, revision: { revision: 2, contentHash: 'ab'.repeat(32) } });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx()))).toContain('Approved: revision 2');
+    const [endpoint, opts] = api.mock.calls[0];
+    expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/${SPEC}/approve`, 'POST', { revision: 2, expectedVersion: 2 }]);
+    api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"Approving a spec is a person\'s decision"}'));
+    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx());
+    expect([r.isError, out(r)]).toEqual([true, "Approving a spec is a person's decision"]);
+  });
+
+  it('submit POSTs the version, and a stale one surfaces currentVersion', async () => {
+    api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"changed","currentVersion":4}'));
+    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'submit', specId: SPEC, expectedVersion: 2 }, ctx());
+    expect([r.isError, out(r).includes('currentVersion: 4')]).toEqual([true, true]);
+    expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual([`/api/specs/${SPEC}/submit`, { expectedVersion: 2 }]);
   });
 });
