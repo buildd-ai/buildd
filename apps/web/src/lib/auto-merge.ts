@@ -16,6 +16,7 @@ import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
 import { agentReviewsDataMigrations, isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
+import { predecessorPrNumbers } from '@/lib/pr-predecessors';
 import { effectiveDeltaFiles, refreshDeltaBase, resolveMergeMethod } from '@/lib/integration-refresh';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
@@ -371,6 +372,8 @@ export async function evaluateAutoMergeSafety(
       headSha,
       files,
       ...(deltaBase ? { deltaBase } : {}),
+      // A PR this one replaces does not hold its migration slot (§13.11 rule 5).
+      ignorePrNumbers: await predecessorPrNumbers(opts?.workspaceId, prNumber),
     });
     // A data migration is a person's call unless the workspace lets the
     // reviewer agent decide it (mergePolicy.dataMigrations, agent-review tier
