@@ -116,6 +116,21 @@ export function CriterionBox({ c, size = 14 }: { c: BoardCriterion; size?: numbe
   if (c.state === 'pass') return <span className={`${base} border-status-success bg-status-success text-card`} style={style}>✓</span>;
   if (c.state === 'fail') return <span className={`${base} border-status-error text-status-error`} style={style}>✕</span>;
   if (c.state === 'running') return <span className={`${base} border-accent`} style={style}><span className="h-1.5 w-1.5 animate-status-pulse bg-accent" /></span>;
+  // A complete live count nothing has evaluated yet: a dashed box, not the
+  // full partial fill that read as met-without-a-tick.
+  if (c.state === 'unchecked') {
+    return (
+      <span
+        data-testid="criterion-box"
+        data-state="unchecked"
+        role="img"
+        aria-label="Not checked yet"
+        title="Not checked yet"
+        className={`${base} border-dashed border-status-success text-text-muted`}
+        style={style}
+      >?</span>
+    );
+  }
   if (c.state === 'partial') {
     return (
       <span

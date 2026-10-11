@@ -2,6 +2,11 @@ import type { ReactNode } from 'react';
 
 export interface Criterion {
   ok: boolean;
+  /**
+   * Not evaluated yet, though the live value is complete (`3/3`): neither met
+   * nor unmet, so it gets its own glyph instead of the unmet circle.
+   */
+  unchecked?: boolean;
   text: ReactNode;
   /** The measured value: `found`, `2/7`, `5 open`. */
   value?: ReactNode;
@@ -9,8 +14,11 @@ export interface Criterion {
 
 /**
  * A mission's goal criteria: `Goal · 2 of 4 criteria`, then one hairline row
- * each, ✓ met / ○ not yet, with the measured value in mono on the right.
+ * each, ✓ met / ◌ not checked yet / ○ not yet, with the measured value in mono on the right.
  */
+const GLYPH = { met: '✓', unchecked: '◌', unmet: '○' } as const;
+const SR_PREFIX = { met: 'Met: ', unchecked: 'Not checked yet: ', unmet: 'Unmet: ' } as const;
+
 export default function Criteria({
   items,
   action,
@@ -32,20 +40,24 @@ export default function Criteria({
         {action}
       </div>
       <ul>
-        {items.map((c, i) => (
+        {items.map((c, i) => {
+          const state = c.ok ? 'met' : c.unchecked ? 'unchecked' : 'unmet';
+          return (
           <li
             key={i}
             data-ok={c.ok}
+            data-state={state}
             className="grid grid-cols-[20px_minmax(0,1fr)_auto] items-baseline gap-2.5 border-t border-[var(--line-soft)] py-[9px] text-title"
           >
-            <span aria-hidden="true" className={c.ok ? 'text-status-success' : 'text-text-muted'}>{c.ok ? '✓' : '○'}</span>
+            <span aria-hidden="true" className={c.ok ? 'text-status-success' : 'text-text-muted'}>{GLYPH[state]}</span>
             <span className="[overflow-wrap:anywhere]">
-              <span className="sr-only">{c.ok ? 'Met: ' : 'Unmet: '}</span>
+              <span className="sr-only">{SR_PREFIX[state]}</span>
               {c.text}
             </span>
-            {c.value != null && <span className="font-mono text-meta text-text-muted">{c.value}</span>}
+            {c.value != null && <span className="font-mono text-meta text-text-muted">{c.value}{state === 'unchecked' ? ' · not checked yet' : ''}</span>}
           </li>
-        ))}
+          );
+        })}
       </ul>
       {evaluated && <div className="mt-2 font-mono text-meta text-text-muted">{evaluated}</div>}
     </div>
