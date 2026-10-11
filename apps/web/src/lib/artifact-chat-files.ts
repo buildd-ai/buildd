@@ -7,9 +7,9 @@ import {
   type ChatFileDraft, type ChatFileRef, type ChatMessagePart,
 } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
-import { buildChatUploadKey } from '@/lib/storage-keys';
+import { buildChatUploadKey, uploadStagingKey } from '@/lib/storage-keys';
 import { uploadBuffer } from '@/lib/storage';
-import { defaultUploadStorage, finalizeArtifactUpload, type FinalizeResult, type UploadStorage } from '@/lib/artifact-upload';
+import { defaultUploadStorage, finalizeArtifactUpload, removeUploadObjects, type FinalizeResult, type UploadStorage } from '@/lib/artifact-upload';
 import { MAX_ATTACHMENTS_PER_MESSAGE, type AttachmentError } from '@/lib/artifact-chat-attachments';
 
 /**
@@ -146,7 +146,7 @@ export async function storeChatUploadBytes(
   if (bytes.byteLength !== Number(meta?.sizeBytes)) return { ok: false, status: 400, error: 'The body is not the size the upload was started with' };
   const type = chatMediaType(meta?.mimeType);
   if (!type || chatMediaType(contentType) !== type) return { ok: false, status: 400, error: 'The body is not the type the upload was started with' };
-  await put(own.row.storageKey!, bytes, type);
+  await put(uploadStagingKey(own.row.storageKey!), bytes, type);
   return { ok: true };
 }
 
@@ -166,7 +166,7 @@ export async function cancelChatUpload(
     ))
     .returning({ id: artifacts.id });
   if (gone.length === 0) return { ok: false, status: 409, error: 'This file was already sent' };
-  await storage.remove(own.row.storageKey!).catch(() => {});
+  await removeUploadObjects(storage, own.row.storageKey!).catch(() => {});
   return { ok: true, removed: true };
 }
 
