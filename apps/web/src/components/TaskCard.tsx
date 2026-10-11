@@ -500,10 +500,10 @@ export function TaskCard({
             )}
           </div>
 
-          {/* T4 — PR link. Below md the ::after widens the hit area without
-              growing the row. It stops at the gap above (the elapsed line
-              stays the task's) and at the row's bottom padding (so it never
-              reaches the next row's overlay). The chip names #N when it can. */}
+          {/* T4 — PR link. Below md its own box is 44px to touch; the negative
+              margins hand the extra back, so the row does not grow. It grows
+              up, and down only as far as the row's bottom padding, so it never
+              reaches the next row's overlay. The chip names #N when it can. */}
           {prUrl && (
             <a
               href={prUrl}
@@ -511,7 +511,7 @@ export function TaskCard({
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
               aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
-              className="relative z-10 pointer-events-auto font-mono text-[11px] md:text-[10px] text-accent-text hover:underline max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-2.5 max-md:after:content-['']"
+              className="relative z-10 pointer-events-auto font-mono text-[11px] md:text-[10px] text-accent-text hover:underline max-md:inline-flex max-md:items-end max-md:min-h-11 max-md:-mt-[17px] max-md:-mb-2.5 max-md:pb-2.5 max-md:px-2.5 max-md:-mx-2.5"
             >
               {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
             </a>
@@ -601,7 +601,7 @@ export function TaskCard({
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
             aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
-            className="relative z-10 pointer-events-auto font-mono text-[11px] md:text-[10px] text-accent-text hover:underline shrink-0 max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-3 max-md:after:content-['']"
+            className="relative z-10 pointer-events-auto font-mono text-[11px] md:text-[10px] text-accent-text hover:underline shrink-0 max-md:inline-flex max-md:items-end max-md:min-h-11 max-md:-mt-[15px] max-md:-mb-3 max-md:pb-3 max-md:px-2.5 max-md:-mx-2.5"
           >
             {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
           </a>
