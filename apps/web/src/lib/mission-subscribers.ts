@@ -56,9 +56,12 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   // trunk first, so the work cuts from current trunk
   // (docs/specs/mission-branch-refresh.md). Awaited by the claim, bounded by
   // START_REFRESH_BUDGET_MS, and never throws. A trunk merge alone no longer
-  // refreshes anything.
+  // refreshes anything. A refresh past its budget is kept alive with after();
+  // if the request dies anyway, its expired lease makes the backstop retry it.
   subscriber('missions', 'tasks.claimed', 'refresh-mission-branches-before-start', async e => {
-    await refreshMissionBranchesBeforeStart(e.tasks);
+    await refreshMissionBranchesBeforeStart(e.tasks, {
+      keepAlive: pending => after(() => pending.then(() => {})),
+    });
   }),
   subscriber('missions', 'task.created', 'task-created-mission-feed', e => {
     if (!e.missionId) return;

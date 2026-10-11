@@ -25,6 +25,7 @@ import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
 import { missionSubscribers } from '@/lib/mission-subscribers';
 import { reviewSubscribers } from '@/lib/review-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
+import { specCheckSubscribers } from '@/lib/spec-check-subscribers';
 import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import type { ApprovedMergeRule } from '@/lib/workflow/delivery-view';
 import { approvedNeedsPerson } from '@/lib/merge-policy-approved';
@@ -72,6 +73,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...notificationSubscribers,
   // pr.ci_failed: the ledger records the red head before the CI-fix retry is asked.
   ...reviewerSubscribers,
+  // A PR head: spec criterion checks for it, after the reviewer reacts to the push.
+  ...specCheckSubscribers,
   ...roleSubscribers,
   ...connectorCatalogSubscribers,
   // A held release's outcome-analytics row, recorded when its CI resolves it.
