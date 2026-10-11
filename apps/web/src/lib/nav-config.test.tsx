@@ -73,6 +73,12 @@ describe('HealthClient viewport parity', () => {
 });
 
 describe('mobilePageTitle', () => {
+  it('names the billing page the way its sub-nav entry does: Budgets while billing is off', () => {
+    expect(mobilePageTitle('/app/settings/billing', { billing: true })).toBe('Billing and budgets');
+    expect(mobilePageTitle('/app/settings/billing', { billing: false })).toBe('Budgets');
+    expect(mobilePageTitle('/app/settings/integrations', { billing: false })).toBe('Integrations');
+  });
+
   it('titles every primary nav surface so the mobile header renders there', () => {
     expect(mobilePageTitle('/app/home')).toBe('Home');
     expect(mobilePageTitle('/app/dashboard')).toBe('Home');

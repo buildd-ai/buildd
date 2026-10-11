@@ -62,6 +62,17 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute(restricted, request('/api/evidence?workspaceId=ws-b&prNumber=1'))).toBe(false);
     expect(canAccessTokenRoute(restricted, request('/api/evidence?workspaceId=ws-a&prNumber=1'))).toBe(true);
   });
+  test('Living Specs routes take the task capabilities, matching manage_specs', () => {
+    expect(requiredTokenScope('/api/specs', 'GET')).toBe('tasks:read');
+    expect(requiredTokenScope('/api/specs/s-1', 'PATCH')).toBe('tasks:write');
+    expect(requiredTokenScope('/api/specs/s-1/parent', 'PUT')).toBe('tasks:write');
+    expect(canAccessTokenRoute({ scopes: ['tasks:read'] }, request('/api/specs', 'POST'))).toBe(false);
+    const restricted = { scopes: ['tasks:read', 'tasks:write'], workspaceIds: ['ws-a'] };
+    expect(canAccessTokenRoute(restricted, request('/api/specs?workspaceId=ws-a'))).toBe(true);
+    expect(canAccessTokenRoute(restricted, request('/api/specs', 'POST'))).toBe(true);
+    expect(canAccessTokenRoute(restricted, request('/api/specs?workspaceId=ws-b'))).toBe(false);
+    expect(canAccessTokenRoute(restricted, request('/api/specs'))).toBe(false);
+  });
   test('Scout runner-host routes take the runner capability, not admin', () => {
     for (const path of [
       '/api/quality-scout/runs/claim', '/api/quality-scout/runs/r1/probes', '/api/quality-scout/runs/r1/release',

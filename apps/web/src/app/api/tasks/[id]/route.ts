@@ -71,7 +71,8 @@ async function wakeIfDependenciesSatisfied(task: typeof tasks.$inferSelect): Pro
 //     completedAt. `artifacts` returns artifacts attached to those workers,
 //     each with a shareUrl. `dispatch` returns the task's dispatch outbox
 //     trail (cause, status, transport, handedOffAt, deliveredVia, attempts,
-//     lastError), oldest first.
+//     lastError), oldest first. `milestones` adds each worker's `milestones` (and returns
+//     the workers even without `workers`).
 //   include=estimate — the task's frozen estimate (task-estimates experiment),
 //     omitted when none was written.
 export async function GET(
@@ -142,7 +143,7 @@ export async function GET(
     let taskWorkers: any[] | undefined;
     let taskArtifacts: any[] | undefined;
 
-    if (include.has('workers') || include.has('artifacts')) {
+    if (include.has('workers') || include.has('artifacts') || include.has('milestones')) {
       taskWorkers = await db.query.workers.findMany({
         where: eq(workers.taskId, id),
         orderBy: [desc(workers.createdAt), desc(workers.id)],
@@ -183,6 +184,9 @@ export async function GET(
           // the raw 400 text in `error`. Surfaced read-only: never a
           // satisfied deliverable, just the salvage record of a refused one.
           rejectedCompletionPayload: true,
+          // include=milestones: the worker's timeline, including the runner's
+          // `Pre-merge:`/`Merge:` lines (what its merge drivers and mergiraf did).
+          ...(include.has('milestones') ? { milestones: true as const } : {}),
         },
       });
     }

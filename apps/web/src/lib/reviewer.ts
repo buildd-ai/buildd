@@ -571,7 +571,7 @@ async function loadCopyReviewSection(params: {
       const fetched = await githubApi(params.installationId, `/repos/${params.repoFullName}/pulls/${params.prNumber}/files?per_page=300`);
       files = Array.isArray(fetched) ? (fetched as GithubPrFile[]) : [];
     }
-    const strings = changedCopyStrings(files, config);
+    const strings = await changedCopyStrings(files, config);
     if (strings.length === 0) return '';
     const roles = await db.query.workspaceSkills.findMany({
       where: and(eq(workspaceSkills.slug, 'copy-editor'), eq(workspaceSkills.enabled, true)),

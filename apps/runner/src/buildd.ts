@@ -6,6 +6,7 @@ import { PERSONAL_CREDENTIAL_RUNNER_FEATURE } from '@buildd/core/providers';
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
+import type { ClaimHandoffSnapshot } from './claim-handoff';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
@@ -1021,7 +1022,14 @@ export class BuilddClient {
      * sent as nulls, matching the runnerCommit/runnerVersion convention below.
      */
     updateSnapshot?: RunnerUpdateSnapshot | null,
-  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number }> {
+    /**
+     * The claim → session-start acknowledgement (claim-handoff.ts): workers
+     * received but not yet started, and whether a claim is in flight. The
+     * server releases any unstarted worker it minted for this runner that is
+     * in neither (apps/web/src/lib/lost-claim.ts).
+     */
+    claimHandoff?: ClaimHandoffSnapshot,
+  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
       activeWorkerCount,
@@ -1048,6 +1056,7 @@ export class BuilddClient {
       payload.sandboxEnabled = sandboxEnabled;
       payload.sandboxProbeAt = sandboxProbeAt;
     }
+    if (claimHandoff) payload.claimHandoff = claimHandoff;
     if (runnerCommit) payload.runnerCommit = runnerCommit;
     if (runnerVersion) payload.runnerVersion = runnerVersion;
     if (updateSnapshot) {
@@ -1062,7 +1071,7 @@ export class BuilddClient {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed };
+    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased };
   }
 
   async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } }> {

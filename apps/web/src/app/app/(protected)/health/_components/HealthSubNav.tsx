@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useEffect, useRef } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
@@ -17,6 +18,14 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
   const active = healthItemFor(pathname);
   const items = healthNavFor(isOperator);
   const workspace = params.get('workspace');
+  const activeTabRef = useRef<HTMLAnchorElement>(null);
+
+  // The strip overflows at phone width; bring the current tab into view so
+  // one reads as selected. block:'nearest' keeps the page from scrolling.
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView?.({ inline: 'center', block: 'nearest' });
+  }, [active?.id]);
+
   const href = (base: string) => (workspace ? `${base}?workspace=${encodeURIComponent(workspace)}` : base);
 
   const mobileNav = useRef<HTMLElement>(null);
@@ -68,6 +77,7 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
           return (
             <Link
               key={item.id}
+              ref={isActive ? activeTabRef : undefined}
               href={href(item.href)}
               aria-current={isActive ? 'page' : undefined}
               className={`shrink-0 px-3 min-h-11 flex items-center text-body border-b-2 ${

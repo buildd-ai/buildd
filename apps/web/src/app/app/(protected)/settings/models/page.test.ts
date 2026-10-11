@@ -32,4 +32,14 @@ describe('Settings → Models page', () => {
     expect(page).not.toContain('←');
     expect(page).not.toMatch(/\buppercase\b/);
   });
+
+  it('shows decision features and chat retros to the platform owner only; goal grading is gone', () => {
+    const features = page.slice(page.indexOf('title="Features"'));
+    expect(page).toMatch(/const showOperatorFeatures = isPlatformOperator\(user\)/);
+    expect(page).toMatch(/\{showOperatorFeatures && \(\s*<Section title="Features"/);
+    expect(features).toContain('<DecisionFeatures');
+    expect(features).toContain('<ChatRetroSection');
+    expect(page).not.toContain('ModelFeatures');
+    expect(page).not.toContain('hasTeamInferenceKey');
+  });
 });

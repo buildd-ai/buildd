@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Settings → AI features → Chat session retros (experiment; see ./REMOVAL.md).
+ * Settings → Models → Features → Chat session retros, platform owner only (experiment; see ./REMOVAL.md).
  * Two switches and a read-only list of recent lessons, for team admins.
  * While an owner's account dogfood holds the team on, both switches show on and
  * locked, with the reason; an owner without it can turn it on here once.

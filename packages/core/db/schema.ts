@@ -615,6 +615,12 @@ export interface WorkspaceGitConfig {
   // 'enforce' defers a PR behind earlier open PRs on a serialized surface and
   // fails closed when intent state cannot be verified.
   surfaceOrdering?: 'off' | 'shadow' | 'enforce' | null;
+  // Landing lane (knowledge-base: buildd/design/landing-lane.md): at most one
+  // behind-refresh in flight per repo + base. Off by default (absent/'off':
+  // no lane reads). 'shadow' takes and releases the lane but never makes a
+  // refresh wait, recording when it would have; 'enforce' parks a refresh
+  // while another delivery on the same base holds the lane.
+  landingLane?: 'off' | 'shadow' | 'enforce' | null;
   // Semantic check before a clean base refresh (conflict-aware-orchestration.md
   // §4, apps/web/src/lib/semantic-refresh.ts). Off by default (no extra reads).
   // 'shadow' records same-symbol / unknown verdicts and refreshes as before;
@@ -2609,6 +2615,88 @@ export const artifactRevisions = pgTable('artifact_revisions', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   artifactRevisionIdx: uniqueIndex('artifact_revisions_artifact_revision_idx').on(t.artifactId, t.revision),
+}));
+
+/**
+ * What an artifact read actually returned, one row per GET that hands back
+ * any of an artifact's body: which revision, which view (full, outline,
+ * section, range, grep) and how many characters. "Available to the agent" is
+ * not "read by the agent"; verification cites this. Content-free (ids,
+ * selectors, counts) and FK-free like memory_uses: the ledger must never make a
+ * read fail, and it outlives the rows it names. Written after the response.
+ */
+export const artifactReads = pgTable('artifact_reads', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').notNull(),
+  revision: integer('revision').notNull(),
+  workspaceId: uuid('workspace_id'),
+  accountId: uuid('account_id'),
+  userId: uuid('user_id'),
+  taskId: uuid('task_id'),
+  view: text('view').notNull().$type<'full' | 'meta' | 'outline' | 'section' | 'range' | 'grep'>(),
+  /** The view's own arguments: { section } | { offset, length } | { pattern }. */
+  selector: jsonb('selector').$type<Record<string, unknown>>(),
+  returnedChars: integer('returned_chars').notNull(),
+  totalChars: integer('total_chars').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  artifactIdx: index('artifact_reads_artifact_idx').on(t.artifactId, t.createdAt),
+  taskIdx: index('artifact_reads_task_idx').on(t.taskId),
+}));
+
+/**
+ * Living Specs: governed intent with immutable revisions (Living Specs v2, G1).
+ * A spec is a stable identity; its body lives in one artifact (`body_artifact_id`)
+ * so storage, history, hashes, bounded reads and redaction are the artifact
+ * machinery's. Each spec revision pins exactly one artifact revision.
+ * Owned by Living Specs (docs/specs/execution-control-plane.md): only
+ * apps/web/src/lib/specs/ writes these tables.
+ *
+ * `version` is the compare-and-swap token for drafts: a revise names the
+ * version it read, so two writers can never silently overwrite each other.
+ * Approval (G2) is a person's act on one revision; nothing here approves.
+ */
+export const SPEC_SCOPES = ['product', 'domain', 'feature', 'mission'] as const;
+export const SPEC_STATUSES = ['draft', 'in_review', 'approved', 'superseded', 'retired'] as const;
+export type SpecScope = (typeof SPEC_SCOPES)[number];
+export type SpecStatus = (typeof SPEC_STATUSES)[number];
+
+export const specs = pgTable('specs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  title: text('title').notNull(),
+  scope: text('scope').notNull().$type<SpecScope>(),
+  parentSpecId: uuid('parent_spec_id'),
+  status: text('status').notNull().default('draft').$type<SpecStatus>(),
+  version: integer('version').notNull().default(1),
+  bodyArtifactId: uuid('body_artifact_id').references(() => artifacts.id, { onDelete: 'restrict' }).notNull(),
+  // The newest revision (the draft head) and the approved one, by spec revision number.
+  headRevision: integer('head_revision').notNull().default(1),
+  approvedRevision: integer('approved_revision'),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: index('specs_workspace_idx').on(t.workspaceId),
+  parentIdx: index('specs_parent_idx').on(t.parentSpecId),
+}));
+
+export const specRevisions = pgTable('spec_revisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  // The body: exactly this revision of the spec's body artifact, and its hash.
+  artifactRevision: integer('artifact_revision').notNull(),
+  contentHash: text('content_hash').notNull(),
+  authorKind: text('author_kind').notNull().$type<'user' | 'agent'>(),
+  authorId: text('author_id').notNull(),
+  changeSummary: text('change_summary'),
+  // Set once by a person's approval (G2); never for an agent.
+  approvedBy: text('approved_by'),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
 }));
 
 /**
@@ -5310,6 +5398,23 @@ export const workflowEffects = pgTable('workflow_effects', {
 }));
 
 export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;
+
+// The landing lane (lib/workflow/landing-lane.ts): one row per repo + base
+// whose delivery is the one behind-refresh in flight there. A row whose
+// delivery left the refresh window, or whose lease ran out, holds nothing;
+// the next acquire takes it over by compare-and-set.
+export const landingLanes = pgTable('landing_lanes', {
+  repoFullName: text('repo_full_name').notNull(),
+  baseRef: text('base_ref').notNull(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  headSha: text('head_sha').notNull(),
+  grantedAt: timestamp('granted_at', { withTimezone: true }).defaultNow().notNull(),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.repoFullName, t.baseRef] }),
+  deliveryIdx: index('landing_lanes_delivery_idx').on(t.deliveryId),
+}));
 
 // §5.7 — one retry ledger per family; the only source for "attempt N of M".
 // Allocation is consumption: the row is inserted by the dispatching statement.

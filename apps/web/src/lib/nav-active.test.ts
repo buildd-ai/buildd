@@ -92,7 +92,7 @@ describe('isNavActive', () => {
 describe('isAccountRoute', () => {
   // Settings (Profile included) is reached from the header avatar, not a tab;
   // the avatar carries the "you are here" state for them.
-  it.each(['/app/settings', '/app/settings/account', '/app/settings/workspace/ws-1', '/app/settings/connectors'])('%s is an account route', (p) => {
+  it.each(['/app/settings', '/app/settings/account', '/app/settings/workspace/ws-1', '/app/settings/connections'])('%s is an account route', (p) => {
     expect(isAccountRoute(p)).toBe(true);
   });
 

@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { HealthClient } from '../HealthClient';
 import { sampleRunnerLanes, resolveRunnerLanesSample } from '../runners/sample-lanes';
 import { loadHealth, type HealthPageKey } from './health-data';
@@ -32,5 +33,5 @@ export async function renderHealthPage(page: HealthPageKey, searchParams: Health
   if (loaded.kind === 'no-workspaces') return <Empty>No workspaces.</Empty>;
   const runnerLanes = page === 'runners' && resolveRunnerLanesSample(params.state)
     ? sampleRunnerLanes(loaded.data.now) : loaded.data.runnerLanes;
-  return <HealthClient page={page} {...loaded.data} runnerLanes={runnerLanes} top={top} />;
+  return <HealthClient page={page} operator={isPlatformOperator(user)} {...loaded.data} runnerLanes={runnerLanes} top={top} />;
 }

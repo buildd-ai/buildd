@@ -47,7 +47,7 @@ import { chatReadRoutes } from './in-process-api';
 import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
 import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON, answerText } from '@builddai/ai-kit/chat/contract';
-import { fitHistoryToBudget, userTextOf } from '@builddai/ai-kit/chat/server';
+import { DEFAULT_HISTORY_TOKENS, fitHistoryToBudget, messageFitsModel, modelTooBig, userTextOf } from '@builddai/ai-kit/chat/server';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
 import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
@@ -78,13 +78,12 @@ import {
 
 export const MAX_STEPS = 8;
 export { TURN_BUDGET_MS } from './turn-deadline';
-/** Longest user message accepted (characters); CHAT_MAX_MESSAGE_CHARS overrides the shared default. */
-export const MAX_USER_TEXT = maxUserTextFromEnv(process.env.CHAT_MAX_MESSAGE_CHARS);
-
-export function maxUserTextFromEnv(raw: string | undefined): number {
-  const n = raw ? Number(raw) : NaN;
-  return Number.isInteger(n) && n > 0 ? n : CHAT_MAX_MESSAGE_CHARS;
-}
+/**
+ * Longest user message accepted (characters). One shared setting: the composer
+ * counts against the same constant, so the two can never disagree and a draft
+ * the composer let through is never refused for length.
+ */
+export const MAX_USER_TEXT = CHAT_MAX_MESSAGE_CHARS;
 
 export interface TurnUser {
   id: string;
@@ -220,8 +219,6 @@ function userTurnUsageRouted(route: Pick<TurnRoute, 'usage' | 'routing'>, routed
   return { ...(usage ?? { inputTokens: 0, outputTokens: 0, costUsd: null }), routedWorkspaceId };
 }
 
-
-
 /** A new mission's draft: its own full card, never a row beside other writes. */
 function isMissionDraft(tool: string, input: unknown): boolean {
   return tool === 'manage_missions' && (input as { action?: unknown } | null)?.action === 'create';
@@ -259,6 +256,10 @@ export async function runChatTurn(args: {
     return Response.json({ error: checked.error, code: checked.code, limit: MAX_USER_TEXT, chars: checked.chars }, { status: 400 });
   }
   const text = checked?.ok ? checked.text : null;
+  if (text && !messageFitsModel(text)) {
+    const tooBig = modelTooBig(text, DEFAULT_HISTORY_TOKENS);
+    return Response.json({ error: tooBig.error, ...tooBig.extra }, { status: 400 });
+  }
   // Limits (budget, then atomic admission), history and the routing call's
   // policy + key lookup run in parallel: the lookup spends nothing, and doing it
   // here leaves routing's whole deadline to the provider. The routing call
