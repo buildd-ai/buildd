@@ -27,3 +27,11 @@ export function requirementIds(body: string): RequirementRef[] {
   });
   return out;
 }
+
+/**
+ * The criteria a governed outcome is verified against (V1): the requirements
+ * (R-n) and acceptance criteria (AC-n). Decisions and invariants are context.
+ */
+export function specCriteria(body: string): RequirementRef[] {
+  return requirementIds(body).filter((r) => r.kind === 'requirement' || r.kind === 'acceptance');
+}

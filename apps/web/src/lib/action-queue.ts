@@ -45,7 +45,7 @@ export type ActionChip =
   | 'RESOLVING' | 'FIXING_CI' | 'FIXING_REVIEW' | 'CI_RUNNING' | 'REVIEW_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
 
 /** docs/design/spec-conformance.md §8 — which way a discrepancy's gap runs. */
-export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
+export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted' | 'conflict';
 
 /**
  * Chips an agent is already handling. They stay visible (a stuck fix must not
@@ -1172,6 +1172,8 @@ const DISCREPANCY_DIRECTION_RANK: Record<DiscrepancyDirection, number> = {
   contradicted: 0,
   spec_ahead: 1,
   code_ahead: 2,
+  // Advisory: two Living Spec criteria disagree. Shown last; only Accept applies.
+  conflict: 3,
 };
 
 /** §12: cap the queue to the top 10 DISCREPANCY cards (specs) per workspace. */

@@ -2006,6 +2006,19 @@ describe('renderSpecConformanceGuidance', () => {
     expect(result.section).toContain('R-1: revision one text.');
   });
 
+  it('a Living Spec pin lists its criteria and asks for one verdict each at this head, for the reviewed task', async () => {
+    pinnedReadImpl = async () => ({ ok: true, specId: 's-1', revision: 1, contentHash: 'ab'.repeat(32), body: '# Checkout\nR-1: one.\n- AC-1: two.\n### D-1 context', title: 'Checkout' });
+    const pin = { specId: 's-1', specRevisionId: 'r-1', revision: 1, contentHash: 'ab'.repeat(32) };
+    const head = 'd'.repeat(40);
+    const withTask = await renderSpecConformanceGuidance({ specSource: pin, installationId: 1, repoFullName: 'buildd-ai/buildd', headSha: head, taskId: 't-1' });
+    expect(withTask.section).toContain('### Criteria to verdict (R-1, AC-1)');
+    expect(withTask.section).toContain(`taskId: "t-1"`);
+    expect(withTask.section).toContain(`headSha: "${head}"`);
+    expect(withTask.section).toContain('never as pass');
+    const without = await renderSpecConformanceGuidance({ specSource: pin, installationId: 1, repoFullName: 'buildd-ai/buildd', headSha: head });
+    expect(without.section).not.toContain('Criteria to verdict');
+  });
+
   it('a Living Spec pin that no longer resolves is an explicit finding naming why', async () => {
     pinnedReadImpl = async () => ({ ok: false, reason: 'pinned spec revision 1 has a different hash than the task was pinned to' });
     const result = await renderSpecConformanceGuidance({
