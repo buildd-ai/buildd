@@ -47,6 +47,7 @@ mock.module('../db/client', () => ({
 
 const src = await import('../manifest-prediction-source');
 const { DONE_LABEL, MANIFEST_DECISION_ID } = await import('../manifest-prediction');
+const { manifestPickIdentity } = await import('../orchestration-promotion');
 const schema = await import('../db/schema');
 
 const dialect = new PgDialect();
@@ -232,6 +233,62 @@ describe('leakage-safe neighbour reads', () => {
 });
 
 describe('predictCreationManifest', () => {
+  const actingRow = (over: Record<string, unknown> = {}) => ({
+    feature: 'orchestration_manifest', mode: 'acting' as const, applyingFraction: 1,
+    measuredFingerprint: manifestPickIdentity(), threshold: 0.85, setByAccountId: null,
+    setAt: new Date('2026-09-01T00:00:00Z'), reason: null, ...over,
+  });
+
+  it('with the owner switch acting, confident picks apply and the outcome says so', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    const recordDecision = mock(async (_row: any) => {});
+    const r = await src.predictCreationManifest(input(), {
+      resolveAccess: async () => okAccess,
+      loadNeighbours: neighbours,
+      call: pickFirst(1) as any,
+      recordPrediction,
+      recordDecision,
+      featureMode: async () => actingRow(),
+    });
+    expect('row' in r && r.acting).toEqual({ threshold: 0.85 });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    expect(row.mode).toBe('gated');
+    expect(row.allApplied).toBe(true);
+    const d0 = (recordDecision.mock.calls[0] as any)[0];
+    expect(d0.status).toBe('applied');
+    expect(d0.applied).toBe(true);
+  });
+
+  it('with no switch, or a stale one, it records only', async () => {
+    for (const featureMode of [async () => null, async () => actingRow({ measuredFingerprint: 'changed' }), async () => { throw new Error('read failed'); }]) {
+      const recordPrediction = mock(async (_row: any) => {});
+      const recordDecision = mock(async (_row: any) => {});
+      const r = await src.predictCreationManifest(input(), {
+        resolveAccess: async () => okAccess,
+        loadNeighbours: neighbours,
+        call: pickFirst(1) as any,
+        recordPrediction,
+        recordDecision,
+        featureMode,
+      });
+      expect('row' in r && r.acting).toBeNull();
+      const row = (recordPrediction.mock.calls[0] as any)[0];
+      expect(row.mode).toBe('shadow');
+      expect(row.allApplied).toBe(false);
+      expect((recordDecision.mock.calls[0] as any)[0].applied).toBe(false);
+    }
+  });
+
+  it('never reads the switch for a team that has the feature off', async () => {
+    const featureMode = mock(async () => actingRow());
+    const r = await src.predictCreationManifest(input(), {
+      resolveAccess: async () => ({ ok: false, error: { kind: 'capability_disabled' } }) as any,
+      featureMode,
+    });
+    expect(r).toEqual({ skipped: 'capability_disabled' });
+    expect(featureMode).not.toHaveBeenCalled();
+  });
+
   const neighbours = async () => [
     { taskId: N1, score: 0.9, completedAt: BEFORE, paths: ['a.ts', 'b.ts'] },
     { taskId: N2, score: 0.9, completedAt: AFTER, paths: ['future.ts'] },

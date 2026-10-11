@@ -2481,3 +2481,13 @@ describe('renderDeltaScopeSection', () => {
     expect(out).toContain('Injection carriers removed');
   });
 });
+
+describe('compositionScopeSection: the delta reviewer of a composed PR', () => {
+  it('scopes the review to the novel paths, and tells a refresh reviewer to check both sides survive the merge', async () => {
+    const { compositionScopeSection } = await import('./reviewer');
+    const text = compositionScopeSection({ novelDeltaPaths: ['apps/web/src/lib/x.ts'] });
+    expect(text).toContain('Review ONLY these paths');
+    expect(text).toContain('- `apps/web/src/lib/x.ts`');
+    expect(text).toContain("keeps both sides' changes");
+  });
+});

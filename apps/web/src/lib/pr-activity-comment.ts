@@ -310,10 +310,10 @@ function present(e: NormalizedEntry, story: Story): Rendered {
     case 'push_undeliverable':
       return { tone: 'human', label: 'Fix never reached GitHub · needs a human', noteLabel: 'Details' };
     case 'composition_verified':
-      return { tone: 'done', label: 'Release composition verified', status: 'every change was reviewed at its own head' };
+      return { tone: 'done', label: 'Composition verified', status: 'every change was reviewed at its own head' };
     case 'composition_delta_approved':
-      // A delta round reviewed only the release-only paths; the rest rests on each change's own review.
-      return { tone: 'done', label: 'Release-only changes approved', status: 'this review covered only the new paths', noteLabel: 'Paths' };
+      // A delta round reviewed only the paths new to this PR; the rest rests on each change's own review.
+      return { tone: 'done', label: 'New changes approved', status: 'this review covered only the new paths', noteLabel: 'Paths' };
     case 'blocked_on_trunk':
       // The base branch fails the same checks: one trunk fix runs, this PR's CI retries wait.
       return { tone: 'waiting', label: 'Blocked on a red base branch', status: 'CI retries paused until the base is green' };

@@ -5422,7 +5422,8 @@ export class WorkerManager {
           }
         }
 
-        this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
+        // The checkpoint is the one "Task completed" entry; a status milestone
+        // with the same label beside it logged the completion twice.
         this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
         worker.currentAction = 'Completed';
         worker.hasNewActivity = true;

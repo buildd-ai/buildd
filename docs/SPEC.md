@@ -179,6 +179,17 @@ Notable fields:
   unfinished or unmerged. A `direct` mission (`integrationBranchEnabled` false) behaves as
   missions did before the integration branch existed: each task PR targets the workspace's
   trunk branch and nothing retargets it.
+  The integration branch is kept current with trunk on demand, never on every trunk
+  merge. It is refreshed when a mission task is claimed to cut its branch from it (the
+  `tasks.claimed` core event), when the mission PR is behind at landing (the kernel's
+  `refresh_branch`), and by a daily backstop while the mission is in use. A conflicting
+  refresh dispatches one conflict task per mission. That task runs `bun run
+  conflicts:generated` to regenerate generated files before resolving the rest, and its
+  PR is reviewed only on what the merge decided (§5.9 composition). A paused or held
+  mission gets no backstop refresh, and a mission state change mid-refresh stops it at
+  the commit boundary. The same contract maps every writer to the integration branch and
+  the mission PR, and how each unfinished refresh is reconciled. Contract:
+  `docs/specs/mission-branch-refresh.md`.
   `primaryPrNumber`/`primaryPrUrl` are reserved for a **trunk-based** PR under the
   mission, i.e. the mission integration PR where one exists; a PR based on the mission
   branch never claims the slot. Both fields stay null for workspace-less missions.
@@ -681,6 +692,7 @@ brutalist UI.
 | `design/reviewer-evidence-and-verification.md` | Reviewer patch evidence, filters, verification | Partly shipped |
 | `design/cross-workspace-retrieval.md` | Team-scoped docs retrieval across workspaces | Proposed |
 | `design/mission-delivery-arc.md` | Mission integration branch (Option A′) | Implemented |
+| `specs/mission-branch-refresh.md` | Keeping an integration branch current with trunk | Live |
 | `design/inference-calls-primitive.md` | Server-side `inferenceCall`, capability policy | Partly shipped |
 | `design/decision-calls.md` | Fixed-label `decisionCall` (shadow) | Partly shipped |
 | `design/model-tiers.md` | Tier vocabulary + registry | Implemented |

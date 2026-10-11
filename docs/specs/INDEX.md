@@ -70,7 +70,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 ### missions (4)
 
 - [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-11
-  A mission's integration branch MUST be brought up to date with trunk when a mission task starts on it or by a daily backstop, never by a trunk merge alone; generated-file conflicts are regenerated.
+  A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 - [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-03
   A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-28
@@ -174,8 +174,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-04
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 
-## Draft (7)
+## Draft (8)
 
+- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-11
+  An inferred path-overlap hold MUST bind only to live work (a live worker, a held lease or an open PR on the same base); overlap between unstarted tasks is settled by the first claim's lease.
 - [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
   The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
 - [Execution Control Plane](./execution-control-plane.md) · @max — verified 2026-10-11

@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-10-11
 summary: Authorized execution (claims, heartbeats, results, webhooks, Dispatch callbacks) MUST keep moving while the web app is down, served by a separate Worker running the same handlers.
 domain: tasks
-surfaces: [apps/control-plane/src/index.ts, apps/control-plane/src/next-server-shim.ts, apps/control-plane/wrangler.jsonc]
+surfaces: [apps/control-plane/src/index.ts, apps/control-plane/src/router.ts, apps/control-plane/src/next-server-shim.ts, apps/control-plane/wrangler.jsonc]
 related: [workflow-state-kernel, task-dispatch-authority, artifacts-and-sharing]
 keywords: [control plane, extraction, cloudflare worker, web outage, execution path, ownership boundary, living specs, kernel, dispatch, cutover]
 verified_by: [packages/core/__tests__/state-ownership.test.ts, apps/control-plane/src/index.test.ts, apps/web/src/app/api/deploy-identity/route.test.ts, apps/web/src/lib/release-health-watcher.test.ts]
@@ -37,6 +37,13 @@ rewrite, and the two cannot drift.
 - `next/server` resolves to a shim: `NextRequest` (Request plus `nextUrl`),
   `NextResponse` (`json`, `redirect`), `after()` (the request's
   `ctx.waitUntil`, and a throw outside a request, as in Next).
+- The main module (`index.ts`) exports only `default`: workerd treats every
+  named export as an entrypoint and refuses to start on one that is not a
+  handler, so routing and health helpers live in `router.ts` (`index.test.ts`).
+- `GITHUB_API_ORIGIN`, honoured only when it is a loopback `http:` origin,
+  sends `https://api.github.com/*` to a local fake for the e2e; any other
+  value is ignored, so it cannot redirect production GitHub calls
+  (`index.test.ts`).
 - `server-only`, `dotenv` and `@ast-grep/napi` resolve to stubs. The native
   `@ast-grep/napi` consumer already falls back when its binary cannot load.
 - Config comes from `process.env` (`nodejs_compat_populate_process_env`); the
@@ -45,8 +52,14 @@ rewrite, and the two cannot drift.
 **Acceptance criteria**:
 - AC-1: GIVEN apps/web is not running WHEN a runner claims, heartbeats and
   completes a task against the control plane THEN the task and worker end
-  `completed` (`apps/control-plane/scripts/web-down-e2e.sh`, run 2026-10-10
-  under wrangler dev against migrated Postgres: PASS).
+  `completed`; WHEN a signed `pull_request.closed` webhook for a merged,
+  kernel-owned PR arrives THEN the delivery reaches `MERGED` and its
+  post-merge effects run in the Worker; WHEN Dispatch sends a signed resolve
+  and then a `delivered` receipt for a published wake THEN the resolve answers
+  `deliver` and the outbox row ends `delivered`
+  (`apps/control-plane/scripts/web-down-e2e.sh`, GitHub played by the kernel
+  DB tests' stateful fake through `GITHUB_API_ORIGIN`; run 2026-10-11 under
+  wrangler dev against migrated Postgres: PASS).
 - AC-2: the router serves exactly these seven routes (`index.test.ts`).
 
 ## 2. Cutover and lockstep
@@ -145,7 +158,8 @@ the kernel nor any other code advances state another system owns.
 1. The bundle carries the whole TypeScript compiler, through the reviewer's
    copy review (`apps/web/src/lib/copy-review.ts`), which is most of its
    18.6 MB (3.4 MB gzip). Startup CPU against the Workers limit is unmeasured.
-2. Only the claim path was exercised end to end in production; webhook and
-   Dispatch callbacks were exercised only to their auth refusals.
+2. Only the claim path was exercised end to end in production. Webhook and
+   Dispatch callbacks pass end to end only locally (AC-1, under wrangler dev);
+   in production they were exercised only to their auth refusals.
 3. While the web app is down, crons, MCP and every non-execution route wait for
    it; `after()` work gets the Workers 30 s `waitUntil` limit.

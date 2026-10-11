@@ -2182,6 +2182,12 @@ export interface PathDeclaration {
    */
   prScope?: PrScopeRecord;
   /**
+   * Set when the file-prediction decision supplied this task's scope (the
+   * platform owner switched it to acting): `declared` stays what the filer
+   * gave, `pathManifest` is the prediction.
+   */
+  predicted?: { source: 'orchestration_manifest'; decisionId: string; candidatePolicyVersion: string; fingerprints: string[]; threshold: number; at: string };
+  /**
    * The last enforce-mode checkpoint collision (lib/path-collision-deferral.ts):
    * a path this task had already changed was held by another live task, so the
    * runner checkpointed and deferred. `path` was appended to the effective
