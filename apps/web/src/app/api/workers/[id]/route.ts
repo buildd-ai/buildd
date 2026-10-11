@@ -259,10 +259,7 @@ async function workerConflictResponse(id: string, extra?: Record<string, unknown
  *  - The write is a compare-and-swap on the status that was read, so a row
  *    moving underneath it yields a retryable conflict rather than a stale write.
  */
-/**
- * Does this report carry usage? Only then does it say anything about the
- * worker's cost basis (docs/specs/real-and-virtual-cost.md).
- */
+/** Serve each message id once; drop blocked-on-you prompts whose sender has no live worker. */
 async function dropUnanswerableMessages<T extends { id?: string; type?: string; fromTaskId?: string }>(
   messages: T[],
 ): Promise<T[]> {
@@ -288,6 +285,10 @@ async function dropUnanswerableMessages<T extends { id?: string; type?: string; 
   }
 }
 
+/**
+ * Does this report carry usage? Only then does it say anything about the
+ * worker's cost basis (docs/specs/real-and-virtual-cost.md).
+ */
 function reportCarriesUsage(body: Record<string, any>): boolean {
   const pos = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
   if (pos(body.costUsd) || pos(body.inputTokens) || pos(body.outputTokens)) return true;

@@ -14789,6 +14789,65 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       expect(data.pendingMessages[1].id).toBe('msg-2');
     });
 
+    function queueTask(messages: any[]) {
+      mockTasksFindFirst.mockResolvedValue({
+        scheduleId: null, outputRequirement: 'none', missionId: null, count: 0,
+        context: { pendingWorkerMessages: messages }, workspace: { teamId: 'team-1' },
+      });
+    }
+    const blocked = (id: string, from: string) => ({
+      id, type: 'path_blocked_on_you', fromTaskId: from, fromWorkerId: `w-${from}`,
+      sentAt: new Date().toISOString(), hopCount: 0, body: { overlappingPaths: ['a.ts'] },
+    });
+    // Liveness read: select().from('workers') resolves to the given live rows;
+    // every other select keeps the default task-row behaviour.
+    function stubLiveness(result: () => Promise<any[]>) {
+      mockSelect.mockImplementation(((projection?: any) => {
+        const base: any = selectAllColumns();
+        const baseThen = base.then;
+        base.from = (table: any) => {
+          if (table === 'workers') base.then = (res: any, rej: any) => result().then(res, rej);
+          else base.then = baseThen;
+          return base;
+        };
+        return base;
+      }) as any);
+    }
+    afterEach(() => { mockSelect.mockImplementation(selectAllColumns as any); });
+
+    it('serves a duplicated message id once', async () => {
+      queueTask([
+        { id: 'msg-1', type: 'question', fromTaskId: 'task-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q' } },
+        { id: 'msg-1', type: 'question', fromTaskId: 'task-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q' } },
+      ]);
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'running' } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect((await res.json()).pendingMessages.map((m: any) => m.id)).toEqual(['msg-1']);
+    });
+
+    it('drops a blocked-on-you message from a terminal sender and keeps one from a live sender', async () => {
+      queueTask([blocked('m-dead', 'task-dead'), blocked('m-live', 'task-live')]);
+      stubLiveness(async () => [{ taskId: 'task-live' }]);
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'running' } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect((await res.json()).pendingMessages.map((m: any) => m.id)).toEqual(['m-live']);
+    });
+
+    it('returns the deduped list when the sender liveness query fails', async () => {
+      queueTask([blocked('m-1', 'task-x'), blocked('m-1', 'task-x'), blocked('m-2', 'task-y')]);
+      stubLiveness(async () => { throw new Error('db down'); });
+      const errSpy = mock(() => {});
+      const orig = console.error;
+      console.error = errSpy as any;
+      try {
+        const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'running' } }), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect((await res.json()).pendingMessages.map((m: any) => m.id)).toEqual(['m-1', 'm-2']);
+      } finally {
+        console.error = orig;
+      }
+    });
+
     // ── Ack protocol ──────────────────────────────────────────────────────
     //
     // The queue used to be cleared on every PATCH that carried touched paths,
@@ -15639,6 +15698,28 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     expect(siblingTaskId).toBe('task-2');
     expect(msg.type).toBe('path_blocked_on_you');
     expect(msg.body.overlappingPaths).toContain('apps/web/src/lib/foo.ts');
+  });
+
+  it('sends no overlap notice from a reviewer task (context.reviewerFor)', async () => {
+    setupBaseWorkerMock();
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2', taskId: 'task-2', branch: 'buildd/task-2', lastCommitSha: 'def456',
+      observedTouches: ['apps/web/src/lib/foo.ts'],
+      task: { pathManifest: ['apps/web/src/lib/foo.ts'] },
+    }]);
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0,
+      context: { reviewerFor: 'original-task-1' },
+    });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    const res = await PATCH(createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    }), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockEnqueueWorkerMessage).not.toHaveBeenCalled();
+    expect(mockQueueSystemInstruction).not.toHaveBeenCalled();
   });
 
   async function patchWithOverlappingSibling(runner: string) {
