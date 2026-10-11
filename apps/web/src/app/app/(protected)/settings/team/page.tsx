@@ -12,7 +12,7 @@ import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
 import { pickShownTeam } from './shown-team';
 
 import { settingsReadOnly } from '@/lib/settings-nav';
-import { settingsPermissions } from '../_lib/settings-permissions';
+import { NO_PERMISSIONS, settingsPermissions } from '../_lib/settings-permissions';
 import UrlSheet from '@/components/UrlSheet';
 import NewTeamForm from './NewTeamForm';
 
@@ -68,7 +68,8 @@ export default async function TeamSettingsPage({
   const role = shown.role as 'owner' | 'admin' | 'member';
   const otherTeams = userTeams.filter((t) => t.id !== shown.id);
   // The shown team's flags (it can differ from the active team via ?team=).
-  const perms = settingsPermissions({ role, slug: team?.slug ?? shown.slug }, user.id);
+  // A failed team read leaves the page read-only, as it says it could not load.
+  const perms = team ? settingsPermissions({ role, slug: team.slug }, user.id) : NO_PERMISSIONS;
 
   const sections = (
     <>
