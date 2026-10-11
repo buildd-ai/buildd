@@ -266,7 +266,7 @@ export async function POST(req: NextRequest) {
   if (kernel?.handled && !kernelReviewTaskMissing) {
     const r = kernel.result;
     const accepted = kernelAccepted;
-    if (!accepted) {
+    if (!accepted && r.result !== 'applied') {
       return bad(`Review not requested: ${r.reason}`, 409, {
         code: r.reason, current: r.current, kernel: true,
         ...(r.reason === 'force_requires_human' ? { hint: FORCE_NEEDS_PERSON } : {}),
