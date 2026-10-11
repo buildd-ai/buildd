@@ -124,6 +124,7 @@ import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
 import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -4859,7 +4860,7 @@ export async function PATCH(
           runner: true,
         },
         with: {
-          task: { columns: { pathManifest: true } },
+          task: { columns: { pathManifest: true, kind: true, roleSlug: true } },
         },
       });
 
@@ -4881,6 +4882,10 @@ export async function PATCH(
         // Wildcard guard: skip siblings with advisory pathManifest (**).
         const siblingManifest = (sibling.task as any)?.pathManifest as string[] | null | undefined;
         if (isAdvisoryManifest(siblingManifest)) continue;
+
+        // No path claim, or an observation / visual-auditor task: it edits
+        // nothing, so a conflict notice only costs it a turn.
+        if (!holdsPathClaim({ ...(sibling.task as any), pathManifest: siblingManifest })) continue;
 
         if (!pathsOverlap(accumulatedTouches, siblingTouches)) continue;
 
