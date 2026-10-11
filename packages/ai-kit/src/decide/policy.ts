@@ -216,6 +216,12 @@ export interface DecisionRoute {
   timeoutMs?: number;
   /** Was the kind's threshold measured on the model that answered? Default yes. */
   isMeasured?: (answeringModel: string) => boolean;
+  /**
+   * A threshold measured for the model that answered, replacing the kind's (or
+   * the escalation's) for this attempt. Null, or a value outside [0, 1], keeps
+   * the kind's own.
+   */
+  thresholdFor?: (answeringModel: string) => number | null;
 }
 
 /** The routes and rollout for one call, resolved by the platform (never by the caller). */
@@ -511,10 +517,13 @@ export async function runDecisionAttempt<K extends string, F, D extends string, 
   }
 
   const measured = route.isMeasured ? route.isMeasured(result.model) : true;
-  const outcome: DecisionAttempt['outcome'] = verdict.confidence < threshold ? 'below_threshold' : measured ? 'decided' : 'unmeasured';
+  const routeThreshold = route.thresholdFor ? route.thresholdFor(result.model) : null;
+  const effective = isUnit(routeThreshold) ? routeThreshold : threshold;
+  const outcome: DecisionAttempt['outcome'] = verdict.confidence < effective ? 'below_threshold' : measured ? 'decided' : 'unmeasured';
   return {
     ...base,
     ...answered,
+    threshold: effective,
     outcome,
     decision: verdict.decision,
     confidence: verdict.confidence,
