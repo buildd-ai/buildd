@@ -2,13 +2,13 @@
 title: Capability Requests and Grants
 status: active
 owner: max
-last_verified: 2026-10-09
+last_verified: 2026-10-11
 summary: An agent MUST get access it lacked at start only by asking for a semantic need, resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
-surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/capability-grants-auth.ts, apps/web/src/app/api/agent-capabilities/requests/route.ts]
+surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/app/api/agent-capabilities/requests/route.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
 keywords: [request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
-verified_by: [apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
+verified_by: [apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
 supersedes: []
 assertions:
   - id: request-route
@@ -52,6 +52,13 @@ assertions:
   - id: store-tests
     type: test_file
     path: apps/web/src/lib/capability-grants-store.test.ts
+  - id: access-gate-rule
+    type: symbol
+    name: accessEscalationRule
+    path: apps/web/src/lib/capability-grants-needs-you.ts
+  - id: access-needs-you-tests
+    type: test_file
+    path: apps/web/src/lib/capability-grants-needs-you.test.ts
 ---
 
 # Capability Requests and Grants
@@ -166,10 +173,42 @@ fact it was granted under still holds; revoking it MUST stop the next call.
 - AC-8: GIVEN a `query` grant with no tool named WHEN the agent calls a write-named tool THEN it is refused `tool_risk_exceeds_grant`.
 - AC-9: GIVEN a grant for worker A WHEN worker B on the same task asks to use it THEN it is refused.
 
+## Showing and deciding
+
+**Capability statement**: A person who can decide MUST be told once, in one
+place, when an agent waits on them, and MUST be able to approve a scoped lease
+or deny from there; everyone in the team MUST be able to see what agents asked
+for, what they hold and the policy, without being able to change any of it.
+
+**Invariants**:
+- An access request is an escalation gate subject (`capability_request:<id>`)
+  with one fixed rule and no model call (`accessEscalationRule`): `pending` is
+  the person's (rail `access_approval`); an auto-grant and anything decided are
+  Buildd's, shown on Settings and never a Needs You card or push.
+- Home lists a pending request only for teams where the viewer holds
+  `manage_connectors`: one card per request (the store already keeps one open
+  row per exact ask). The card names what, who, workspace, why and the lease,
+  and approves for the asked lease or denies in place; Settings → Connected apps
+  → Agent access (`?request=<id>`) offers a shorter lease.
+- A new pending request pages the team once; a repeat ask (same row) does not.
+- Settings → Connected apps shows each catalog provider's real state from the
+  team's connector on the same host (installed, connected, expired, client
+  approval needed) and offers only the step the server can take. A provider
+  that has not approved buildd as a client offers no Connect. Members see
+  non-blocked entries, requests, grants and policy read-only.
+- The UI never decides: every control posts to the routes above and shows
+  what they answered. A repeat decision reads as already done; one someone
+  else made first reads as it stands; a refused approval shows the server's
+  reason.
+
+**Acceptance criteria**:
+- AC-10: GIVEN a pending request WHEN an admin opens Home THEN one access card shows the ask and lease; WHEN a member opens Home THEN none.
+- AC-11: GIVEN an approved request WHEN the admin approves again THEN the page says it is already approved, not an error.
+- AC-12: GIVEN a policy auto-grant THEN no card and no push; it is listed under Allowed now.
+
 **Out of scope**: mounting a granted connector into a running session, or a
 gateway that proxies provider calls (the runtime follow-up calls
-`authorizeCapabilityUse`); the settings UI for policy and requests; the
-model-inference budget ledger. A connector a role already mounts at claim is
+`authorizeCapabilityUse`); the model-inference budget ledger. A connector a role already mounts at claim is
 governed by role `connectorRefs` and catalog policy, not by grants.
 
 **Code surface**:
@@ -178,3 +217,5 @@ governed by role `connectorRefs` and catalog policy, not by grants.
 - Authority: `apps/web/src/lib/capability-grants-auth.ts`
 - Tables: `capabilityPolicies`, `capabilityGrants` in `packages/core/db/schema.ts`
 - MCP: `request_capability` in `packages/core/mcp-tools.ts`
+- Gate and Home: `apps/web/src/lib/capability-grants-needs-you.ts` (`accessEscalationRule`, `loadAccessNeedsYou`, `notifyAccessRequest`), wired through `apps/web/src/modules.ts`
+- UI: `apps/web/src/lib/capability-grants-view.ts`, `apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.tsx`, `CatalogSection.tsx`
