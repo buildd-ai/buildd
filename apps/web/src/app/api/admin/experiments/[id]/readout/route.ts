@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/uuid';
-import { toExperimentDTO } from '@/lib/experiments';
 import { notFound, requirePlatformOwner } from '@/lib/admin/owner-gate';
 import { getExperiment, loadExperimentReadout } from '@/lib/admin/data';
+import { loadAdminViewer } from '@/lib/admin/scope';
+import { viewExperiment } from '@/lib/admin/tenant-privacy';
 
 /**
  * GET /api/admin/experiments/[id]/readout — platform owner only (404 otherwise).
@@ -18,6 +19,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!isUuid(id)) return notFound();
   const row = await getExperiment(id);
   if (!row) return notFound();
-  const { policyVersion, readout, health } = await loadExperimentReadout(row);
-  return NextResponse.json({ experiment: { ...toExperimentDTO(row), teamId: row.teamId }, policyVersion, readout, health });
+  const [{ policyVersion, readout, health }, viewer] = await Promise.all([loadExperimentReadout(row), loadAdminViewer(gate.account)]);
+  return NextResponse.json({ experiment: viewExperiment(viewer, row), policyVersion, readout, health });
 }
