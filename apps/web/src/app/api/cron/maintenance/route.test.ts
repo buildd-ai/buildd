@@ -45,7 +45,7 @@ const mockUploads = mock(async () => ({ finalized: 2, removed: 1, waiting: 0 }))
 mock.module('@/lib/artifact-upload', () => ({ sweepStaleUploads: mockUploads }));
 mock.module('@/lib/storage', () => ({ isStorageConfigured: () => true }));
 const mockChatAttachments = mock(async (_opts: unknown) => ({ removed: 4, objectsRemoved: 2 }));
-mock.module('@/lib/artifact-chat-cleanup', () => ({ removeOrphanChatAttachments: mockChatAttachments }));
+mock.module('@/lib/artifact-attachment-cleanup', () => ({ removeOrphanChatAttachments: mockChatAttachments }));
 
 const { GET } = await import('./route');
 

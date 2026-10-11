@@ -683,7 +683,7 @@ conversation it was sent in (D-2, D-3).
   still refers to it: a link to an existing message, any link to another kind
   of subject, or a spec whose body it is. Its revisions and links go with the
   row; a file's stored object is removed after the row. The read ledger keeps
-  its content-free rows. Only `apps/web/src/lib/artifact-chat-cleanup.ts`
+  its content-free rows. Only `apps/web/src/lib/artifact-attachment-cleanup.ts`
   deletes them.
 
 **Acceptance criteria**:
@@ -698,7 +698,7 @@ conversation it was sent in (D-2, D-3).
 
 **Code surface**:
 - `apps/web/src/lib/artifact-chat-attachments.ts`: `attachmentDraftsOf`, `storeChatAttachments`, `linkChatAttachments`, `conversationAttachments`, `readChatAttachment`, `quoteAttachment`
-- `apps/web/src/lib/artifact-chat-cleanup.ts`: `removeOrphanChatAttachments`, `removeTeamChatAttachments`; called from `apps/web/src/app/api/teams/[id]/route.ts` and `apps/web/src/app/api/cron/maintenance/route.ts`
+- `apps/web/src/lib/artifact-attachment-cleanup.ts`: `removeOrphanChatAttachments`, `removeTeamChatAttachments`; called from `apps/web/src/app/api/teams/[id]/route.ts` and `apps/web/src/app/api/cron/maintenance/route.ts`
 - `apps/web/src/lib/chat/turn.ts` — `runChatTurn`, `toUiHistory`; `apps/web/src/lib/chat/tools.ts` — `read_attachment`
 - `apps/web/src/app/api/chat/[id]/attachments/route.ts`, `apps/web/src/app/api/chat/[id]/attachments/[artifactId]/route.ts`
 - `packages/ai-kit/src/chat/react/Composer.tsx`, `packages/ai-kit/src/chat/react/AttachmentCard.tsx`, `apps/web/src/components/chat/AttachmentReader.tsx`

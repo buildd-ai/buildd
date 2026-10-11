@@ -39,7 +39,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 const chatCleanups: string[] = [];
-mock.module('@/lib/artifact-chat-cleanup', () => ({
+mock.module('@/lib/artifact-attachment-cleanup', () => ({
   removeTeamChatAttachments: async (teamId: string) => { chatCleanups.push(teamId); return { removed: 0, objectsRemoved: 0 }; },
 }));
 

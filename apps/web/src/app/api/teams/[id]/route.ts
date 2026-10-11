@@ -12,7 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { isWarmHandover } from '@buildd/shared';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, sanitizeOverrides, type Permission, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
-import { removeTeamChatAttachments } from '@/lib/artifact-chat-cleanup';
+import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
 const MAX_CHAT_BUDGET_USD = 100_000;

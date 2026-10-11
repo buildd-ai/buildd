@@ -31,7 +31,7 @@ import { runStaleWorkerCleanup } from './stale-workers';
 import { sweepAbandonedPathClaims } from './path-claims';
 import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
 import { sweepStaleUploads } from '@/lib/artifact-upload';
-import { removeOrphanChatAttachments } from '@/lib/artifact-chat-cleanup';
+import { removeOrphanChatAttachments } from '@/lib/artifact-attachment-cleanup';
 import { isStorageConfigured } from '@/lib/storage';
 
 export async function GET(req: NextRequest) {

@@ -1,6 +1,6 @@
 /**
  * Chat attachments do not outlive their conversation
- * (apps/web/src/lib/artifact-chat-cleanup.ts), against real Postgres with an
+ * (apps/web/src/lib/artifact-attachment-cleanup.ts), against real Postgres with an
  * in-memory object store: when a conversation goes, its 60k paste and its
  * uploaded file go too, with their revisions, links and stored object; an
  * attachment something live still refers to stays; the sweep takes orphans a
@@ -16,7 +16,7 @@ const { db } = await import('@buildd/core/db');
 const { artifacts, artifactRevisions, artifactLinks, conversations, conversationMessages, teams } = await import('@buildd/core/db/schema');
 const { storeChatAttachments, linkChatAttachments, attachmentRefPart } = await import('../../src/lib/artifact-chat-attachments');
 const { createChatUpload, finalizeChatUpload, bindChatFiles, fileRefPart } = await import('../../src/lib/artifact-chat-files');
-const { removeOrphanChatAttachments, removeTeamChatAttachments } = await import('../../src/lib/artifact-chat-cleanup');
+const { removeOrphanChatAttachments, removeTeamChatAttachments } = await import('../../src/lib/artifact-attachment-cleanup');
 const { STALE_UPLOAD_MS } = await import('../../src/lib/artifact-upload');
 
 const objects = new Map<string, { bytes: Buffer; type: string }>();
