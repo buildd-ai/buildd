@@ -181,6 +181,21 @@ function tracePatches() {
 async function waitFor(cond: () => boolean, timeoutMs = 5000) {
   const start = Date.now();
   while (!cond() && Date.now() - start < timeoutMs) await new Promise(r => setTimeout(r, 25));
+  await settle();
+}
+
+/** Wait until the session stops writing (no new worker updates for 150ms), so its
+ * remaining flushes land in this test, not in the next one's mock. */
+async function settle(quietMs = 150, timeoutMs = 5000) {
+  const start = Date.now();
+  let seen = mockUpdateWorker.mock.calls.length;
+  let quietSince = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await new Promise(r => setTimeout(r, 25));
+    const now = mockUpdateWorker.mock.calls.length;
+    if (now !== seen) { seen = now; quietSince = Date.now(); }
+    else if (Date.now() - quietSince >= quietMs) return;
+  }
 }
 
 describe('SDK stderr durability', () => {
