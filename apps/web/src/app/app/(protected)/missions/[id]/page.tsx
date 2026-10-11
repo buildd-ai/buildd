@@ -918,6 +918,7 @@ export default async function MissionDetailPage({
         currentInitiativeName={dbInitiative?.title ?? null}
         initiatives={teamInitiativeOptions}
         readonly={isTerminal}
+        teamId={mission.teamId}
       />
 
       {/* Rename only: the masthead shows the title, the description has its
