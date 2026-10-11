@@ -52,6 +52,7 @@ import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { MCP_SESSION_ID_HEADER, mintMcpSessionId, verifyMcpSessionId } from '@/lib/interactive-session';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { scheduleInteractiveTouch } from '@/lib/interactive-worker-liveness';
+import { scheduleActiveDay } from '@/lib/active-days';
 import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/interactive-session';
 import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from '@/lib/self-origin';
 import { getIssuer } from '@/lib/oauth/config';
@@ -318,6 +319,7 @@ async function handle(req: Request, workspace: string): Promise<Response> {
     sessionKey,
     level,
   });
+  scheduleActiveDay((account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null, 'mcp');
 
   // Verify workspace exists and grab its team for memory routing.
   const ws = await db.query.workspaces.findFirst({
