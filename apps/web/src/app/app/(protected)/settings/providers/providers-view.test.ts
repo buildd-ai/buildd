@@ -6,16 +6,15 @@ import {
   ADMINS_ONLY,
   MINE_NEEDS_PERSON,
   POLICY_BLOCKS_MINE,
-  POLICY_OPTIONS,
   cardView,
   coverageText,
   coverageView,
   detectPaste,
-  effectivePolicy,
   groupProviders,
+  keyRuleLine,
   maskedValue,
   rowState,
-  policySentence,
+  storedPolicyLine,
   servesLine,
   surfaceList,
   usedFor,
@@ -134,8 +133,9 @@ describe('cardView', () => {
   it('Mine is read-only under team-only policy, and for a caller who is not a person', () => {
     const team = fixtureResponse({ credentialPolicy: 'team' });
     expect(cardView(listing(team, 'anthropic'), 'mine', team).readOnly).toBe(POLICY_BLOCKS_MINE);
+    // Unset is the default, your own key first: a person may add one.
     const unset = fixtureResponse({ credentialPolicy: null });
-    expect(cardView(listing(unset, 'anthropic'), 'mine', unset).readOnly).toBe(POLICY_BLOCKS_MINE);
+    expect(cardView(listing(unset, 'anthropic'), 'mine', unset).readOnly).toBeNull();
     const key = fixtureResponse({ canSetMine: false, credentialPolicy: 'personal_first' });
     expect(cardView(listing(key, 'anthropic'), 'mine', key).readOnly).toBe(MINE_NEEDS_PERSON);
   });
@@ -159,18 +159,22 @@ describe('cardView', () => {
   });
 });
 
-describe('policy copy', () => {
-  it('offers the three policies in plain words', () => {
-    expect(POLICY_OPTIONS.map((o) => o.label)).toEqual(['Team key', "Mine, then the team's", 'Mine only']);
-    expect(POLICY_OPTIONS.map((o) => o.hint)).toEqual(["Everyone uses the team's key.", "Uses your key when you've added one.", 'You need your own key to start work.']);
+describe('whose key copy', () => {
+  it('the default needs no line on Models; You › Keys states the rule', () => {
+    for (const credentialPolicy of [null, 'personal_first'] as const) {
+      expect(storedPolicyLine({ credentialPolicy })).toBeNull();
+      expect(keyRuleLine({ credentialPolicy })).toBe("Your key goes first. The team's key is the fallback.");
+    }
   });
-  it('an unset policy is Team key, not a prompt to pick one', () => {
-    expect(effectivePolicy({ credentialPolicy: null })).toBe('team');
-    expect(policySentence({ credentialPolicy: null })).toBe("Team key. Everyone uses the team's key.");
-    expect(policySentence({ credentialPolicy: 'personal_first' })).toBe("Mine, then the team's. Uses your key when you've added one.");
+  it('a stored exception is one plain line', () => {
+    expect(storedPolicyLine({ credentialPolicy: 'team' })).toBe('This team uses team keys only.');
+    expect(storedPolicyLine({ credentialPolicy: 'personal_only' })).toBe('This team uses personal keys only.');
+    expect(keyRuleLine({ credentialPolicy: 'team' })).toBe('This team uses team keys only.');
   });
-  it('never uses an em dash', () => {
-    for (const o of POLICY_OPTIONS) expect(`${o.label}${o.hint}`).not.toContain('—');
+  it('never says who pays, never uses an em dash', () => {
+    for (const p of [null, 'team', 'personal_first', 'personal_only'] as const) {
+      expect(keyRuleLine({ credentialPolicy: p })).not.toMatch(/who pays|—/i);
+    }
   });
 });
 

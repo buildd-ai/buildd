@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeDecisionShadows, normalizeFeatureModes } from '@buildd/core/inference-policy';
-import { isInferenceKeyPolicy, isCredentialPolicy, policyColumns, effectiveKeyPolicy, toCredentialPolicy } from '@buildd/core/inference-key-policy';
+import { isInferenceKeyPolicy, isCredentialPolicy, policyColumns, effectiveKeyPolicy, toCredentialPolicy, DEFAULT_KEY_POLICY } from '@buildd/core/inference-key-policy';
 import { normalizeTeamCodingPolicy, parseCodingPolicyLayer, resolveCodingPolicy, describeEffectiveCodingPolicy } from '@buildd/core/coding-policy';
 import { normalizeDecisionModel } from '@buildd/core/decision-model';
 import { db } from '@buildd/core/db';
@@ -127,7 +127,7 @@ export async function GET(
     }));
 
     return NextResponse.json({
-      team: { ...team, inferenceKeyPolicy: effectiveKeyPolicy(team) ?? 'team', credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? 'team'),
+      team: { ...team, inferenceKeyPolicy: effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY, credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY),
         // What the team layer allows for Coding, for the Models page. Workspace
         // and personal layers narrow it further per task at claim time.
         effectiveCodingPolicy: describeEffectiveCodingPolicy(resolveCodingPolicy({ team: parseCodingPolicyLayer(team.codingPolicy?.team) })) },

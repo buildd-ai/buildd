@@ -3831,23 +3831,26 @@ describe('POST /api/workers/claim', () => {
           i.requesterUserId === ALICE ? personal('sk-ant-alice-personal') : { none: true, reason: 'no_credential', why: [] });
       });
 
-      it('credential_policy NULL: the claim payload is byte-identical to a team with no policy row at all, and no personal lookup runs', async () => {
+      it("credential_policy NULL is personal_first: the requester's own key is the model credential", async () => {
         await withEncryptionKey(async () => {
-          // Baseline: no team row, i.e. the claim as it was before policies existed.
-          setup({ requester: ALICE });
-          const before = await claim();
-          // NULL policy, even with the chat-only legacy column set to "own keys",
-          // a requester who HAS a personal key, and a runner declaring the feature.
-          setup({ policy: null, requester: ALICE, legacyColumn: 'own' });
-          const after = await claim();
-          expect(after.status).toBe(200);
-          expect(JSON.stringify(after.data)).toBe(JSON.stringify(before.data));
-          const w = after.data.workers[0];
+          // NULL policy and the legacy column at its default: the default rule.
+          setup({ policy: null, requester: ALICE, legacyColumn: 'team' });
+          const { status, data } = await claim();
+          expect(status).toBe(200);
+          const w = data.workers[0];
+          expect(w.serverApiKey).toBe('sk-ant-alice-personal');
+          expect(w.serverOauthToken).toBeUndefined();
+          expect(w.credentialDecision).toMatchObject({ surface: 'agent-claude', policy: 'personal_first', scope: 'personal' });
+        });
+      });
+
+      it('credential_policy NULL, no requester: team credentials, never a personal one', async () => {
+        await withEncryptionKey(async () => {
+          setup({ policy: null, requester: null });
+          const { data } = await claim();
+          const w = data.workers[0];
           expect(w.serverApiKey).toBe('decrypted-secret-value');
-          expect(w.serverOauthToken).toBe('decrypted-secret-value');
-          expect('credentialDecision' in w).toBe(false);
-          expect(JSON.stringify(after.data)).not.toContain('sk-ant-alice-personal');
-          expect(mockResolveProviderCredential).not.toHaveBeenCalled();
+          expect(JSON.stringify(data)).not.toContain('sk-ant-alice-personal');
         });
       });
 
