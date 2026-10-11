@@ -48,6 +48,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   reject_plan: 'tasks',
   // workers: steering and fleet health
   send_agent_message: 'workers',
+  answer_question: 'workers',
   query_events: 'workers',
   explain: 'workers',
   get_error_traces: 'workers',
@@ -261,6 +262,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   approve_plan: 'more',
   reject_plan: 'more',
   send_agent_message: 'more',
+  answer_question: 'more',
   query_events: 'more',
   emit_event: 'more',
   suggest_schedule_update: 'more',
@@ -360,7 +362,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   runners: {
     parts: [
       { text: 'connectors', actions: ['list_connectors', 'resolve_capability', 'request_capability'] },
-      { text: 'message a running agent', actions: ['send_agent_message'] },
+      { text: 'message or answer an agent', actions: ['send_agent_message', 'answer_question'] },
     ],
   },
   artifacts: {
@@ -421,6 +423,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   approve_plan: 'approve a planning task',
   reject_plan: 'reject a plan with feedback',
   send_agent_message: 'steer the agent running a task',
+  answer_question: 'answer a waiting agent\'s question',
   explain: 'what blocks a task, mission, PR; evidence',
   get_error_traces: 'errors from tool output',
   get_failure_analytics: 'failure patterns; error= finds one',
@@ -695,8 +698,8 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
     param('capability', str, [{ text: 'Need as domain:verb, e.g. observability:query', actions: ['resolve_capability', 'request_capability'] }]),
-    param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
-    param('message', str, [{ text: 'Steering message for the running agent', actions: ['send_agent_message'] }]),
+    param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message', 'answer_question'] }]),
+    param('message', str, [{ text: 'Steering message for the running agent, or the answer to its question', actions: ['send_agent_message', 'answer_question'] }]),
   ],
   prs: [
     param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review'] }]),

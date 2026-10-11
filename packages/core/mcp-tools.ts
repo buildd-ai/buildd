@@ -725,6 +725,7 @@ export const adminActions = [
   'trigger_release',
   'release_status',
   'send_agent_message',
+  'answer_question',
   'correct_task_result',
   'update_incident',
   'consolidate_knowledge',
@@ -1049,6 +1050,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply, and write it as a self-contained decision brief: the reader has not seen the task or the code, so the body says which task this is and what is being decided (one or two sentences), then one line per option of the form "<option>: what it leads to", and why you chose the default. User replies are delivered at your next turn boundary (or call receive_messages). missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
+    answer_question: '{ taskId (required), message (required) } — answer the question a waiting_input agent is parked on (the task page\'s Answer link). Takes the same resume path as the dashboard: the parked session continues with your answer, or a continuation task starts if the session is gone. send_agent_message cannot do this — a parked agent takes no turn, so a queued message is never read. Refused unless the task\'s worker is waiting on a question. [admin]',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     correct_task_result: '{ taskId (required), summary?, prUrl?, prNumber? (at least one of summary / prUrl / prNumber) } — amend a completed or failed task\'s stored result after the fact. summary: replace result.summary (e.g. a stray assistant aside got captured, or a bug garbled it); the prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. prUrl/prNumber: attach the PR that delivered a task closed without a worker (e.g. by update_task status=completed) — the PR is verified in the workspace\'s GitHub repo via the GitHub App, mapped to the task with an external placeholder worker (as request_pr_review adoption does) and written to result.prUrl/prNumber, so the mission page lists it and mission completion sees it. Refused if another task owns the PR, unless that owner is an auto-adopted placeholder (a webhook-created bookkeeping task that only noticed the PR first, never did the work) — then the mapping moves onto this task instead of refusing. Also refused if the task already records a different PR; re-attaching the same PR is a no-op. Commit stats are never touched. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
@@ -7010,6 +7012,27 @@ export async function handleBuilddAction(
       return text(`${header}\n\n${lines.join('\n\n')}`);
     }
 
+    case 'answer_question': {
+      if (!params.message || typeof params.message !== 'string') throw new Error('taskId and message are required');
+      requireFullUuid(params.taskId, 'taskId');
+      const task = await api(`/api/tasks/${params.taskId}?include=workers`);
+      const parked = (Array.isArray(task.workers) ? task.workers : [])
+        .filter((w: any) => w?.waitingFor)
+        .sort((a: any, b: any) => (Date.parse(b.createdAt ?? '') || 0) - (Date.parse(a.createdAt ?? '') || 0))[0];
+      if (!parked) {
+        throw new Error(`Task ${params.taskId} has no agent waiting on a question (task status: ${task.status}). Use send_agent_message to steer a running agent.`);
+      }
+      const result = await api(`/api/workers/${parked.id}/respond`, {
+        method: 'POST',
+        body: JSON.stringify({ message: params.message }),
+      });
+      return text([
+        `Answer sent to worker ${parked.id}.`,
+        result.message || '',
+        result.taskId && result.taskId !== params.taskId ? `Continuing as task ${result.taskId}.` : '',
+      ].filter(Boolean).join('\n'));
+    }
+
     case 'send_agent_message': {
       if (!params.message) throw new Error('taskId and message are required');
       requireFullUuid(params.taskId, 'taskId');
@@ -7037,6 +7060,12 @@ export async function handleBuilddAction(
       // in memory (it restarts an errored session on a follow-up message).
       const activeWorker = liveWorker ?? (isUrgent ? erroredWorker : undefined);
       const workerId = activeWorker?.id;
+
+      // A worker parked on a question takes no turn, so a queued message would
+      // never be read. The answer path is the one that resumes it.
+      if (activeWorker?.waitingFor && activeWorker.status === 'waiting_input') {
+        throw new Error(`Worker ${workerId} is waiting on a question and takes no turn until it is answered, so a steering message would never be read. Use answer_question with taskId ${params.taskId} instead.`);
+      }
 
       if (!workerId) {
         const hint = allWorkers.length === 0

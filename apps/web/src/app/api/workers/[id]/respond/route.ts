@@ -6,6 +6,7 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { callerOwnsWorker } from '@/lib/worker-owner';
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -74,9 +75,15 @@ export async function POST(
   }
 
   // Verify access: a bearer caller must be the principal that claimed the worker
-  // (lib/worker-owner.ts); the dashboard session path checks workspace membership
+  // (lib/worker-owner.ts), or an admin-level token of the worker's own team —
+  // the same authority as /instruct, so an interactive operator session (the
+  // MCP answer_question action) can unblock a parked worker it did not claim.
+  // The dashboard session path checks workspace membership.
   if (account) {
-    if (!callerOwnsWorker(account, worker)) {
+    const teamAdmin = hasTokenRouteAdminAccess(account, req, 'workers:admin')
+      && !!account.teamId
+      && account.teamId === (worker as any).workspace?.teamId;
+    if (!teamAdmin && !callerOwnsWorker(account, worker)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
   } else if (user) {

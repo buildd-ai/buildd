@@ -451,6 +451,28 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(res.status).toBe(403);
   });
 
+  it('lets an admin-level token of the worker\'s team answer a worker it did not claim', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'other-account', teamId: 'team-1', level: 'admin' });
+    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+
+    const req = createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'bld_test');
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('still refuses an admin-level token of another team', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'other-account', teamId: 'team-2', level: 'admin' });
+    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+
+    const req = createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'bld_test');
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(403);
+  });
+
   it('includes iteration count in context', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
@@ -1439,8 +1461,14 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(mockWorkersUpdateSet).toHaveBeenCalled();
     });
 
-    it('another member of the same team on the same account is refused, and nothing is written', async () => {
+    it('an admin-level session of another team member may answer, as it may steer (/instruct)', async () => {
       mockAuthenticateApiKey.mockResolvedValue(session('user-b'));
+      const res = await POST(createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'oauth-token'), { params: mockParams });
+      expect(res.status).toBe(200);
+    });
+
+    it('a worker-level session of another team member is refused, and nothing is written', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session('user-b', { level: 'worker' }));
       // A dashboard cookie for the same person must not rescue the bearer path.
       mockGetCurrentUser.mockResolvedValue({ id: 'user-b' });
       const res = await POST(createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'oauth-token'), { params: mockParams });
