@@ -348,11 +348,12 @@ describe('post_review (§8.4)', () => {
     await __handlers.postReview(E('post_review', { roundId: 'r1', commitId: 'H1', event: 'REQUEST_CHANGES' }));
     expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({ headSha: 'H1', event: 'REQUEST_CHANGES', prNumber: 7 });
   });
-  test('a composition delta approve says it covers only the release-only paths (S33)', async () => {
+  test('a composition delta approve says it covers only the paths new to the PR, naming no PR kind (S33)', async () => {
     await __handlers.postReview(E('post_review', { roundId: 'r1', commitId: 'H1', event: 'APPROVE', scope: { compositionDelta: true, paths: ['packages/core/x.ts'] } }));
     const body = (mockPostPrReview.mock.calls[0][0] as { body: string }).body;
-    expect(body).toStartWith('Release-only changes approved');
-    expect(body).toContain('covers only the 1 new path');
+    expect(body).toStartWith('New changes approved');
+    expect(body).toContain('covers only the 1 path new to this PR');
+    expect(body).not.toMatch(/release/i);
     expect(body).toContain('`packages/core/x.ts`');
     expect(body).not.toStartWith('Approved by buildd reviewer');
   });

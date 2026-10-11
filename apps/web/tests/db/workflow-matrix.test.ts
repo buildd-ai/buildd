@@ -2754,11 +2754,11 @@ describe('S32–S34 — release composition', () => {
 
     // The GitHub review and the headline both say the review covered only the delta.
     expect(posted).toEqual([{ commitId: 'H1', event: 'APPROVE' }]);
-    expect(postedBodies[0]).toStartWith('Release-only changes approved');
+    expect(postedBodies[0]).toStartWith('New changes approved');
     expect(postedBodies[0]).toContain('packages/core/drizzle/9999_hand.sql');
     const view = (await getDeliveryViewsForTasks([agg.ownerTaskId])).get(agg.ownerTaskId)!;
     expect(view.headline).not.toBe('Approved');
-    expect(view.headline).toBe('Release-only changes approved');
+    expect(view.headline).toBe('New changes approved');
   });
 
   test('S33 regression: a conflict resolved while squashing into dev is a novel delta, never "none"', async () => {
