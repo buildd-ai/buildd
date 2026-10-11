@@ -14,10 +14,10 @@ export interface Criterion {
 
 /**
  * A mission's goal criteria: `Goal · 2 of 4 criteria`, then one hairline row
- * each, ✓ met / ◌ not checked yet / ○ not yet, with the measured value in mono on the right.
+ * each, ✓ met / ◌ not checked / ○ unmet, with the measured value in mono on the right.
  */
 const GLYPH = { met: '✓', unchecked: '◌', unmet: '○' } as const;
-const SR_PREFIX = { met: 'Met: ', unchecked: 'Not checked yet: ', unmet: 'Unmet: ' } as const;
+const SR_PREFIX = { met: 'Met: ', unchecked: 'Not checked: ', unmet: 'Unmet: ' } as const;
 
 export default function Criteria({
   items,
@@ -54,7 +54,7 @@ export default function Criteria({
               <span className="sr-only">{SR_PREFIX[state]}</span>
               {c.text}
             </span>
-            {c.value != null && <span className="font-mono text-meta text-text-muted">{c.value}{state === 'unchecked' ? ' · not checked yet' : ''}</span>}
+            {c.value != null && <span className="font-mono text-meta text-text-muted">{c.value}{state === 'unchecked' ? ' · not checked' : ''}</span>}
           </li>
           );
         })}

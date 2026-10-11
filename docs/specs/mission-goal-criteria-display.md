@@ -3,11 +3,11 @@ title: Mission Goal Criteria Display
 status: active
 owner: max
 last_verified: 2026-10-11
-summary: A goal criterion's glyph and its live value MUST come from one evaluation, and a complete count nothing has evaluated reads "not checked yet", never unmet.
+summary: A goal criterion's glyph and its live value MUST come from one evaluation, and a complete count nothing has evaluated reads "not checked", never unmet.
 domain: surfaces
 surfaces: [apps/web/src/lib/mission-board.ts, apps/web/src/components/ui/Criteria.tsx, apps/web/src/lib/mission-overview.ts]
 related: [mission-goal-criteria-quality, mission-legibility, mission-progress-strip-ordering]
-keywords: [Goal panel, goal criteria, PRs merged, open tasks, not checked yet, unchecked, unmet circle, landed, overview counts, criterion box]
+keywords: [Goal panel, goal criteria, PRs merged, open tasks, not checked, unchecked, unmet circle, landed, overview counts, criterion box]
 verified_by: [apps/web/src/app/app/(protected)/missions/[id]/MissionGoalPanel.dom.test.tsx, apps/web/src/lib/mission-board.test.ts, apps/web/src/lib/mission-overview.test.ts]
 supersedes: []
 assertions:
@@ -58,8 +58,8 @@ MUST name its task count so that it cannot be read as the criterion's PR count.
 - An unevaluated complete count is `unchecked`. That means an `all_prs_merged`
   criterion at N/N with N > 0, or a `no_open_tasks` criterion at 0 open over a
   non-empty mission, whose stored verdict is absent, `UNVERIFIED` or
-  `NOT_EVALUATED`. It renders as "not checked yet": a dashed box labelled
-  "Not checked yet" on the Board, `◌` with "not checked yet" after the value on
+  `NOT_EVALUATED`. It renders as "not checked": a dashed box labelled
+  "Not checked" on the Board, `◌` with "not checked" after the value on
   the Overview. It MUST NOT render the unmet glyph (`○`, or the empty or
   tickless box), and it MUST NOT count as passed.
 - The live count is not promoted to a pass. The criterion evaluator reads
@@ -89,10 +89,10 @@ MUST name its task count so that it cannot be read as the criterion's PR count.
   and no verdict, WHEN `buildMissionBoard` runs, THEN its state is `partial`.
 - AC-5: GIVEN an `unchecked` criterion, WHEN the Overview rail renders it,
   THEN its row has `data-state="unchecked"`, its glyph is neither `○` nor `✓`,
-  its text reads "Not checked yet" and not "Unmet", and its value is still
+  its text reads "Not checked" and not "Unmet", and its value is still
   shown.
 - AC-6: GIVEN an `unchecked` criterion, WHEN the Board goal cell renders it,
-  THEN its box has `data-state="unchecked"` and the label "Not checked yet",
+  THEN its box has `data-state="unchecked"` and the label "Not checked",
   and the row still shows the value.
 - AC-7: GIVEN a mission model with some landed tasks, WHEN `overviewCounts`
   formats the header, THEN it reads `X of Y landed` (followed by

@@ -580,7 +580,7 @@ function criterionRow(
 ): BoardCriterion {
   const pass = verdict === 'pass';
   // The circle and the ratio must not disagree: a complete live count with no
-  // verdict on record is "not checked yet", never drawn as unmet beside N/N.
+  // verdict on record is "not checked", never drawn as unmet beside N/N.
   const unchecked = verdict !== 'pass' && verdict !== 'fail' && verdict !== 'PENDING';
   switch (c.type) {
     case 'all_prs_merged': {

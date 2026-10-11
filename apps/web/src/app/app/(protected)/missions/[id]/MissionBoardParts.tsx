@@ -124,8 +124,8 @@ export function CriterionBox({ c, size = 14 }: { c: BoardCriterion; size?: numbe
         data-testid="criterion-box"
         data-state="unchecked"
         role="img"
-        aria-label="Not checked yet"
-        title="Not checked yet"
+        aria-label="Not checked"
+        title="Not checked"
         className={`${base} border-dashed border-status-success text-text-muted`}
         style={style}
       >?</span>

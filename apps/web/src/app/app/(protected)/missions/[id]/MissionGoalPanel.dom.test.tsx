@@ -47,7 +47,7 @@ afterEach(() => {
 });
 
 describe('Goal panel: an unevaluated N/N criterion', () => {
-  it('Overview rail: not the unmet circle, says it is not checked yet, keeps the ratio', () => {
+  it('Overview rail: not the unmet circle, says it is not checked, keeps the ratio', () => {
     act(() => root.render(createElement(MissionOverview, { model, missionId: 'mission-1', workspaceId: 'ws-1' })));
     const row = container.querySelector('[data-testid="criteria"] li')!;
     expect(row).not.toBeNull();
@@ -55,7 +55,7 @@ describe('Goal panel: an unevaluated N/N criterion', () => {
     const glyph = row.querySelector('[aria-hidden="true"]')!.textContent;
     expect(glyph).not.toBe('○');
     expect(glyph).not.toBe('✓');
-    expect(row.textContent).toContain('Not checked yet');
+    expect(row.textContent).toContain('Not checked');
     expect(row.textContent).not.toContain('Unmet');
     expect(row.textContent).toContain('3/3');
   });
@@ -66,7 +66,7 @@ describe('Goal panel: an unevaluated N/N criterion', () => {
     expect(row.getAttribute('data-state')).toBe('unchecked');
     const box = row.querySelector('[data-testid="criterion-box"]')!;
     expect(box.getAttribute('data-state')).toBe('unchecked');
-    expect(box.getAttribute('aria-label')).toBe('Not checked yet');
+    expect(box.getAttribute('aria-label')).toBe('Not checked');
     expect(row.textContent).toContain('3/3');
   });
 });

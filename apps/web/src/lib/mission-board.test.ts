@@ -293,8 +293,8 @@ describe('buildMissionBoard — goal criteria with live counts', () => {
 
   // A full live ratio with no verdict on record read as unmet (an empty or
   // fully-filled box with no tick, an empty circle on the Overview) next to
-  // its own N/N. It is "not checked yet", which is neither met nor unmet.
-  it('a full count with no verdict reads as not checked yet, not unmet (task fc1f5a94)', () => {
+  // its own N/N. It is "not checked", which is neither met nor unmet.
+  it('a full count with no verdict reads as not checked, not unmet (task fc1f5a94)', () => {
     const a = task('a', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(3), prNumber: 1, mergedAt: min(4) })] });
     const b = task('b', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(5), prNumber: 2, mergedAt: min(6) })] });
     const criteria = [{ type: 'all_prs_merged' }, { type: 'no_open_tasks' }];
