@@ -116,7 +116,8 @@ button.kit-live-line:disabled { cursor: default; }
 .kit-stop-mark { width: 12px; height: 12px; background: var(--kit-bg); border-radius: 2px; }
 .kit-form-fallback { display: block; margin-top: 8px; font-size: 14px; color: var(--kit-muted); text-decoration: underline; text-underline-offset: 3px; }
 .kit-steer-hint { padding: 0 14px 8px; font-size: 12px; color: var(--kit-muted); }
-.kit-composer-count { padding: 0 14px 8px; font-size: 12px; color: var(--kit-muted); font-variant-numeric: tabular-nums; }
+/* No tabular-nums on prose lines: a body font may widen "," and "." to a digit under tnum ("60 , 000"). */
+.kit-composer-count { padding: 0 14px 8px; font-size: 12px; color: var(--kit-muted); }
 .kit-composer-count[data-over] { color: var(--kit-ink); }
 /* Extension slots (0.5.0). */
 .kit-composer-edge { position: absolute; left: 0; right: 0; top: -1px; height: 2px; overflow: hidden; pointer-events: none; }
@@ -132,7 +133,7 @@ button.kit-attachment-open { cursor: pointer; }
 .kit-attachment-kind { flex: none; font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; color: var(--kit-muted); }
 .kit-attachment-text { display: flex; flex-direction: column; min-width: 0; }
 .kit-attachment-title { font-size: 14px; color: var(--kit-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.kit-attachment-size { font-size: 12px; color: var(--kit-muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kit-attachment-size { font-size: 12px; color: var(--kit-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kit-msg-attachment { min-width: 0; }
 .kit-msg[data-role="user"] .kit-msg-attachment { margin-left: auto; width: min(100%, 420px); }
 .kit-attachment-remove { flex: none; width: 48px; border: 0; border-left: 1px solid var(--kit-rule); background: transparent; color: var(--kit-ink); font-size: 18px; cursor: pointer; }
@@ -140,8 +141,13 @@ button.kit-attachment-open { cursor: pointer; }
 .kit-file-thumb { flex: none; width: 40px; height: 40px; object-fit: cover; border-radius: var(--kit-radius-hard); background: var(--kit-rule); }
 .kit-attachment[data-state="uploading"] .kit-attachment-size,
 .kit-attachment[data-state="failed"] .kit-attachment-size { color: var(--kit-ink); }
+/* A failed upload's reason is the instruction: it wraps, and the composer card grows to hold it. */
+.kit-attachment[data-state="failed"] { height: auto; min-height: 56px; }
+.kit-attachment[data-state="failed"] .kit-attachment-open { padding-top: 8px; padding-bottom: 8px; }
+.kit-attachment[data-state="failed"] .kit-attachment-size { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 .kit-attachment-retry { flex: none; padding: 0 12px; border: 0; border-left: 1px solid var(--kit-rule); background: transparent; color: var(--kit-ink); font: inherit; font-size: 13px; cursor: pointer; }
-.kit-attach { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: transparent; color: var(--kit-ink); font: inherit; cursor: pointer; }
+/* Fills its toolbar cell like Send: a full-height, 48px-wide target. */
+.kit-attach { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; min-width: 48px; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--kit-ink); font: inherit; cursor: pointer; }
 .kit-composer[data-dropping] { outline: 2px dashed var(--kit-rule); outline-offset: -4px; }
 
 /* ── Menus (tools, scope, tier) ─────────────────────────────────────────── */

@@ -77,7 +77,7 @@ interface Props {
   workspaces: WorkspaceOption[];
   delegateOptions: DelegateOption[];
   /**
-   * Holds `manage_agent_roles` in the role's team (overrides applied). False:
+   * Holds `manage_agent_roles` in the role's team. False:
    * the role and its overrides read-only, with no save, delete or new
    * override. Defaults to true.
    */
@@ -130,7 +130,7 @@ function PersonalSharingSection({
       const data = await res.json().catch(() => null) as { skill?: { visibility?: string } } | null;
       if (!res.ok) {
         // A 409 slug clash carries the message to show as-is.
-        setError(responseErrorMessage(data, next === 'team' ? 'Could not share this role' : 'Could not make this role private'));
+        setError(responseErrorMessage(data, next === 'team' ? 'Could not share this agent' : 'Could not make this agent private'));
         return;
       }
       const stored = data?.skill?.visibility;
@@ -146,9 +146,9 @@ function PersonalSharingSection({
   async function promote() {
     if (busy) return;
     if (!(await confirm({
-      title: 'Make this a team role?',
+      title: 'Make this a team agent?',
       message: 'It becomes the team\u2019s, with no owner, and admins manage it from then on. Its slug stays the same.',
-      confirmLabel: 'Make team role',
+      confirmLabel: 'Make team agent',
     }))) return;
     setBusy('promote');
     setError(null);
@@ -156,7 +156,7 @@ function PersonalSharingSection({
       const res = await fetch(`/api/roles/${roleId}/promote`, { method: 'POST' });
       const data = await res.json().catch(() => null) as { warnings?: unknown } | null;
       if (!res.ok) {
-        setError(responseErrorMessage(data, 'Could not make this a team role'));
+        setError(responseErrorMessage(data, 'Could not make this a team agent'));
         return;
       }
       const raw = data?.warnings;
@@ -182,9 +182,9 @@ function PersonalSharingSection({
       <div data-testid="personal-role-sharing" className="space-y-2">
         {promoteWarnings ? (
           <div className="space-y-2" data-testid="personal-role-promoted">
-            <p className="text-sm text-text-primary">This is now a team role.</p>
+            <p className="text-sm text-text-primary">This is now a team agent.</p>
             {promoteWarnings.map(w => <Notice key={w} tone="warn">{w}</Notice>)}
-            <Link href={teamRoleHref} className="btn btn-sm">Open the team role</Link>
+            <Link href={teamRoleHref} className="btn btn-sm">Open the team agent</Link>
           </div>
         ) : (
           <>
@@ -214,7 +214,7 @@ function PersonalSharingSection({
                   data-testid="personal-role-promote"
                   className="btn"
                 >
-                  {busy === 'promote' ? 'Making team role\u2026' : 'Make team role'}
+                  {busy === 'promote' ? 'Making team agent\u2026' : 'Make team agent'}
                 </button>
                 <span className="text-sm text-text-muted">The team takes it over; the owner no longer manages it.</span>
               </div>
@@ -575,7 +575,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
   }
 
   async function handleDelete() {
-    if (!(await confirm({ title: `Delete role "${role.name}"?`, message: 'Deletes the role and its workspace overrides. You can’t undo this.', confirmLabel: 'Delete role', variant: 'danger' }))) return;
+    if (!(await confirm({ title: `Delete agent "${role.name}"?`, message: 'Deletes the agent and its workspace overrides. You can’t undo this.', confirmLabel: 'Delete agent', variant: 'danger' }))) return;
     setDeleting(true);
     try {
       const res = await fetch(`/api/roles/${role.id}`, { method: 'DELETE' });
@@ -583,7 +583,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
       router.push('/app/settings/roles');
       router.refresh();
     } catch {
-      setError('Failed to delete role');
+      setError('Failed to delete agent');
       setDeleting(false);
     }
   }
@@ -661,11 +661,11 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
       {/* Desktop save; phones get the sticky MobileSaveBar at the bottom. */}
       {canEdit ? (
         <div className="hidden md:flex justify-end">
-          <HeaderSaveButton dirty={dirty} saving={saving} saved={saved} onSave={handleSave} label="Save role" />
+          <HeaderSaveButton dirty={dirty} saving={saving} saved={saved} onSave={handleSave} label="Save agent" />
         </div>
       ) : (
         <p data-testid="role-read-only" className="text-sm text-text-muted">
-          {personal ? 'Only its owner or a team admin can change this role.' : 'Admins can change this role.'}
+          {personal ? 'Only its owner or a team admin can change this agent.' : 'Admins can change this agent.'}
         </p>
       )}
 
@@ -698,7 +698,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 <p className="text-sm text-text-muted">
                   {isWorkspaceRole
                     ? 'Saving makes this the team default for every workspace.'
-                    : 'Every workspace in your team gets this role by default. A workspace can add an override.'}
+                    : 'Every workspace in your team gets this agent by default. A workspace can add an override.'}
                 </p>
               )}
 
@@ -713,9 +713,9 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                   <p className="text-sm text-text-muted">
                     {isWorkspaceRole && targetWorkspaceId === role.workspaceId
                       ? 'Only this workspace runs it.'
-                      : 'Saving moves this role to the selected workspace.'}
+                      : 'Saving moves this agent to the selected workspace.'}
                     {!isWorkspaceRole && overrideList.length > 0 && (
-                      <> {overrideList.length} workspace override{overrideList.length !== 1 ? 's' : ''} become standalone roles.</>
+                      <> {overrideList.length} workspace override{overrideList.length !== 1 ? 's' : ''} become standalone agents.</>
                     )}
                   </p>
                 </>
@@ -724,10 +724,10 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
           </Section>
         )}
 
-        <Section title="Role">
+        <Section title="Agent">
           <div className="space-y-5">
             <div>
-              <label htmlFor="role-name" className="mb-1.5 block text-sm font-medium text-text-primary">Role name</label>
+              <label htmlFor="role-name" className="mb-1.5 block text-sm font-medium text-text-primary">Agent name</label>
               <input
                 id="role-name"
                 type="text"
@@ -745,7 +745,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
-                placeholder="Describe this role's core purpose"
+                placeholder="Describe this agent's core purpose"
               />
             </div>
 
@@ -762,8 +762,8 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
               />
               <p className="mt-1 text-sm text-text-muted">
                 {routingDisabled
-                  ? 'Routing is turned off for this role: tasks reach it only when they name it.'
-                  : `The work this role should pick up, ${WHEN_TO_USE_MIN} to ${WHEN_TO_USE_MAX} characters. Tasks filed without a role are matched against it; a role left blank is never picked.`}
+                  ? 'Routing is turned off for this agent: tasks reach it only when they name it.'
+                  : `The work this agent should pick up, ${WHEN_TO_USE_MIN} to ${WHEN_TO_USE_MAX} characters. Tasks filed without an agent are matched against it; an agent left blank is never picked.`}
               </p>
             </div>
 
@@ -778,7 +778,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
                 placeholder="Investigating without changing code (Researcher)"
               />
-              <p className="mt-1 text-sm text-text-muted">Optional. The nearest work that belongs to another role, and which one.</p>
+              <p className="mt-1 text-sm text-text-muted">Optional. The nearest work that belongs to another agent, and which one.</p>
             </div>
 
             <div>
@@ -791,7 +791,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm text-text-primary"
                 placeholder="You are Builder, a senior software engineer…"
               />
-              <p className="mt-1 text-sm text-text-muted">The full system prompt for this role.{personal || isWorkspaceRole ? '' : ' A workspace can override it.'}</p>
+              <p className="mt-1 text-sm text-text-muted">The full system prompt for this agent.{personal || isWorkspaceRole ? '' : ' A workspace can override it.'}</p>
             </div>
           </div>
         </Section>
@@ -1007,7 +1007,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
 
       {/* Resolution summary */}
       {!personal && !isWorkspaceRole && role.slug !== OPERATOR_ROLE_SLUG && userWorkspaces.length > 0 && (
-        <Section title="Effective role per workspace">
+        <Section title="Effective agent per workspace">
           <div className="divide-y divide-border-default border-y border-border-default">
             {userWorkspaces.map(ws => {
               const override = overrideList.find(o => o.workspaceId === ws.id);
@@ -1028,10 +1028,10 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         <Section title="Danger zone">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-text-secondary">
-              {isWorkspaceRole || personal ? 'Deletes the role.' : 'Deletes the role and its workspace overrides.'}
+              {isWorkspaceRole || personal ? 'Deletes the agent.' : 'Deletes the agent and its workspace overrides.'}
             </p>
             <button type="button" onClick={handleDelete} disabled={deleting} className="btn btn-danger">
-              {deleting ? 'Deleting…' : 'Delete this role'}
+              {deleting ? 'Deleting…' : 'Delete this agent'}
             </button>
           </div>
         </Section>
@@ -1039,7 +1039,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
 
       {/* Saves the role above, not the overrides: those keep their own
           "Save override" buttons. */}
-      {canEdit && <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} dirty={dirty} label="Save role" />}
+      {canEdit && <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} dirty={dirty} label="Save agent" />}
       {confirmDialog}
     </SettingsPage>
   );

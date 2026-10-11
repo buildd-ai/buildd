@@ -24,7 +24,7 @@ import { db } from '@buildd/core/db';
 import { teamMembers } from '@buildd/core/db/schema';
 import { getRequestPrincipal } from '@/lib/auth-helpers';
 import { isUuid } from '@/lib/uuid';
-import { keyLevelHas, roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { keyLevelHas, roleHas } from '@/lib/permissions';
 import { applyChatRetroPatch, chatRetroGloballyEnabled } from '@/lib/chat-retro/settings';
 import {
   activateAccountDogfood, deleteTeamLessons, hasAccountDogfood, listRecentLessons, readTeamRetroState, writeTeamSettings,
@@ -49,7 +49,7 @@ async function requireTeamAdmin(req: NextRequest, teamId: string): Promise<NextR
     columns: { role: true },
   });
   if (!membership) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
-  if (!roleHas(membership.role, 'manage_chat_retro', await getTeamPermissionOverrides(teamId))) {
+  if (!roleHas(membership.role, 'manage_chat_retro')) {
     return NextResponse.json({ error: 'Only a team owner or admin can see or change chat retro settings' }, { status: 403 });
   }
   return { userId: principal.user.id, role: membership.role };
@@ -64,7 +64,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const [state, lessons, ownDogfood] = await Promise.all([
       readTeamRetroState(id),
       listRecentLessons(id),
-      userId && roleHas(role, 'activate_chat_retro_dogfood', null /* locked */) ? hasAccountDogfood(userId) : Promise.resolve(true),
+      userId && roleHas(role, 'activate_chat_retro_dogfood') ? hasAccountDogfood(userId) : Promise.resolve(true),
     ]);
     return NextResponse.json({
       settings: state.settings,
@@ -107,7 +107,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const auth = await requireTeamAdmin(req, id);
   if (auth instanceof NextResponse) return auth;
   const { userId, role } = auth;
-  if (!userId || !roleHas(role, 'activate_chat_retro_dogfood', null /* locked */)) {
+  if (!userId || !roleHas(role, 'activate_chat_retro_dogfood')) {
     return NextResponse.json(
       { error: 'Account dogfood covers every team you own, so only a team owner can turn it on, signed in as themselves' },
       { status: 403 },

@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 import Link from 'next/link';
-import { requirePlatformOperator } from '@/lib/operator-page';
+import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamScope } from '@/lib/team-access';
 import { UsageClient, type HostedRunnerProps } from './UsageClient';
 import { loadUsageView } from './_lib/load-usage-view';
@@ -22,8 +23,8 @@ export const dynamic = 'force-dynamic';
 /**
  * `/app/health/usage`: what a task costs. Where the turns go (code navigation,
  * shell, buildd actions) is buildd's own tuning detail and lives
- * on Health → Operator. Platform owner only (it moved to the admin app;
- * a team's spend is on Settings → Billing and budgets); everyone else gets a 404.
+ * on Health → Operator. A team admin (view_team_usage) sees the team's tasks;
+ * a member sees the tasks they started (load-usage-view.ts).
  *
  * The page is TASK-KEYED — every section reads the `aggregateByTask` fold, so a
  * task retried three times is one task costing the sum of its attempts. The one
@@ -36,7 +37,8 @@ export default async function UsageDrilldownPage({
 }) {
   const { workspace: wsFilter, window: rawWindow } = await searchParams;
 
-  const user = await requirePlatformOperator();
+  const user = await getCurrentUser();
+  if (!user) redirect('/api/auth/signin');
 
   const teamIds = await getUserTeamIds(user.id);
   if (teamIds.length === 0) {

@@ -65,7 +65,7 @@ always wins.
 SSO identity (`googleId`, `githubId`, `email`). Belongs to teams via `team_members`
 (`owner | admin | member`). Invited via `team_invitations`; only the invited
 email may accept. Every team-role decision is a named permission in one
-registry with per-team overrides (`docs/specs/team-permissions.md`): admins move
+registry, the same in every team (`docs/specs/team-permissions.md`): admins move
 people between member and admin, only owners touch `owner` (assign, remove,
 transfer), any member may leave except the last owner, and a person's keys drop
 to what their new role may mint when their role drops or they leave. Members

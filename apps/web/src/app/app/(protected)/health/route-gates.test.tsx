@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 /**
- * Failures, Usage and Insights moved to the private admin app with the
- * Operator page. Everyone but the platform owner gets a 404 at the old routes,
- * as if they did not exist; the owner still reaches them.
+ * Failures, Usage and Insights are the team's own Health pages again: anyone
+ * signed in to the team gets past the route, and each page scopes what it
+ * reads (a team admin sees the team, a member their own work; Insights says
+ * "Team admins only"). Operator stays the platform owner's: everyone else,
+ * team admins included, gets a 404 as if it did not exist.
  */
 const OWNER = 'owner@example.com';
 let signedIn: { id: string; email: string } | null = null;
@@ -30,15 +32,16 @@ mock.module('next/headers', () => ({ cookies: downstream }));
 
 process.env.BUILDD_OPERATOR_USER_EMAILS = OWNER;
 
-const pages: Array<[string, () => Promise<{ default: (p: { searchParams: Promise<Record<string, string>> }) => unknown }>]> = [
+type Load = () => Promise<{ default: (p: { searchParams: Promise<Record<string, string>> }) => unknown }>;
+const teamPages: Array<[string, Load]> = [
   ['/app/health/failures', () => import('./failures/page')],
   ['/app/health/usage', () => import('./usage/page')],
   ['/app/health/insights', () => import('./insights/page')],
   ['/app/health/insights/tasks', () => import('./insights/tasks/page')],
-  ['/app/health/operator', () => import('./operator/page')],
 ];
+const operatorPage: Load = () => import('./operator/page');
 
-async function visit(load: (typeof pages)[number][1]): Promise<'not-found' | 'past-gate'> {
+async function visit(load: Load): Promise<'not-found' | 'past-gate'> {
   const { default: Page } = await load();
   try {
     await Page({ searchParams: Promise.resolve({}) });
@@ -50,16 +53,23 @@ async function visit(load: (typeof pages)[number][1]): Promise<'not-found' | 'pa
 
 beforeEach(() => { signedIn = null; });
 
-describe('operator screens moved to the admin app', () => {
-  for (const [route, load] of pages) {
-    it(`${route} is a 404 for a team member`, async () => {
+describe("the team's Health pages", () => {
+  for (const [route, load] of teamPages) {
+    it(`${route} opens for anyone in the team`, async () => {
       signedIn = { id: 'member', email: 'member@example.com' };
-      expect(await visit(load)).toBe('not-found');
-    });
-
-    it(`${route} still opens for the platform owner`, async () => {
-      signedIn = { id: 'owner', email: OWNER };
       expect(await visit(load)).toBe('past-gate');
     });
   }
+});
+
+describe('Operator', () => {
+  it('is a 404 for a team admin', async () => {
+    signedIn = { id: 'admin', email: 'admin@example.com' };
+    expect(await visit(operatorPage)).toBe('not-found');
+  });
+
+  it('still opens for the platform owner', async () => {
+    signedIn = { id: 'owner', email: OWNER };
+    expect(await visit(operatorPage)).toBe('past-gate');
+  });
 });
