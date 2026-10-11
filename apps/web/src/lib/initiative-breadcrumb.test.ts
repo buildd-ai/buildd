@@ -55,8 +55,8 @@ describe('resolveMissionBreadcrumb — URL param path', () => {
     expect(crumb).toEqual({
       type: 'initiative',
       links: [
-        { label: 'Initiatives', href: '/app/initiatives' },
-        { label: 'Auth Hardening', href: '/app/initiatives/initiative-123' },
+        { label: 'Missions', href: '/app/missions' },
+        { label: 'Auth Hardening', href: '/app/missions?group=initiative-123' },
       ],
       currentLabel: 'Add MFA',
     });
@@ -122,7 +122,7 @@ describe('resolveMissionBreadcrumb — URL param path', () => {
     if (crumb.type !== 'initiative') throw new Error('expected initiative type');
     const initiativeLink = crumb.links[1];
     expect(initiativeLink.label).toBe('Q3 Performance');
-    expect(initiativeLink.href).toBe('/app/initiatives/initiative-abc');
+    expect(initiativeLink.href).toBe('/app/missions?group=initiative-abc');
   });
 
   it('uses the mission title as the current (non-linked) label', () => {
@@ -171,8 +171,8 @@ describe('resolveMissionBreadcrumb — DB-stored initiative path', () => {
     expect(crumb).toEqual({
       type: 'initiative',
       links: [
-        { label: 'Initiatives', href: '/app/initiatives' },
-        { label: 'Platform Reliability', href: '/app/initiatives/initiative-db-1' },
+        { label: 'Missions', href: '/app/missions' },
+        { label: 'Platform Reliability', href: '/app/missions?group=initiative-db-1' },
       ],
       currentLabel: 'Reduce p99 latency',
     });
@@ -192,7 +192,7 @@ describe('resolveMissionBreadcrumb — DB-stored initiative path', () => {
     expect(crumb.type).toBe('initiative');
     if (crumb.type === 'initiative') {
       expect(crumb.links[1].label).toBe('URL Initiative');
-      expect(crumb.links[1].href).toBe('/app/initiatives/initiative-url');
+      expect(crumb.links[1].href).toBe('/app/missions?group=initiative-url');
     }
   });
 
