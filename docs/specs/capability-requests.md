@@ -45,7 +45,7 @@ assertions:
   - id: inference-route-uses-grants
     type: symbol_reachable
     symbol: capabilityGrantSource
-    entry: apps/web/src/app/api/agent-capabilities/model-inference/route.ts
+    entry: apps/web/src/lib/capability-model-inference.ts
   - id: rules-tests
     type: test_file
     path: apps/web/src/lib/capability-grants.test.ts
