@@ -43,10 +43,6 @@ export const teams = pgTable('teams', {
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
 
-  // Unused: which roles hold a permission is fixed in permission-registry.ts
-  // (docs/specs/team-permissions.md, "No per-team grants"). Nothing reads or
-  // writes it; a follow-up migration drops the column.
-  permissionOverrides: jsonb('permission_overrides').$type<Record<string, string[]>>().default({}).notNull(),
   // Hosted plan assignment for Buildd-managed runners: { plan, ...overrides }.
   // NULL = the deployment default (BUILDD_DEFAULT_MANAGED_PLAN), unlimited when
   // that is unset, so a self-hosted install has no commercial limit. Written by
