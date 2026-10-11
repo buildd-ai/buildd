@@ -1,4 +1,6 @@
 import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { cancellationLine } from '@/lib/task-cancellation';
+import { taskRecoverySentence } from '@/lib/task-recovery-hold';
 import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
@@ -707,6 +709,14 @@ export default async function TaskDetailPage({
   });
 
   const initiative = task.mission?.initiative ?? null;
+
+  // One plain line for why a task was cancelled, or what a held task waits on
+  // (failure-incident-recovery §18.5/§18.6): the same sentence explain gives.
+  const recoveryLine = task.status === 'cancelled'
+    ? cancellationLine(task.context)
+    : task.status === 'pending'
+      ? taskRecoverySentence(task.context, iso => `${iso.slice(11, 16)} UTC`)
+      : null;
 
 
   // Parse attachments from context — resolve R2 storage keys to presigned URLs
@@ -1491,6 +1501,9 @@ export default async function TaskDetailPage({
                 {deliverableLink.title ? displayTaskTitle(deliverableLink.title) : 'the original task'} ›
               </Link>
             </p>
+          )}
+          {recoveryLine && (
+            <p data-testid="task-recovery-line" className="mt-2 text-meta text-text-secondary [overflow-wrap:anywhere]">{recoveryLine}</p>
           )}
           {/* The one track, in the delivery's words (task-page State mapping). A
               live run's own view leads with it, so it is drawn here only between runs. */}

@@ -73,7 +73,7 @@ const WAITING_INPUT_MISSION_STALE_MS = PARK_MISSION_MAX_MS;
 async function resolveStaleTask(
   taskId: string,
   workspaceId: string,
-  staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null; branch: string | null; error: string | null } | undefined,
+  staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null; branch: string | null; error: string | null; runner?: string | null } | undefined,
   exitCause?: WorkerExitCause,
 ) {
   // Read current task status and context upfront. A cancelled task must never
@@ -340,7 +340,30 @@ async function resolveStaleTask(
       const existingCtx = (currentTask?.context || {}) as Record<string, unknown>;
       const infraRetryCount = (existingCtx.infraRetryCount as number) || 0;
 
-      if (infraRetryCount >= MAX_INFRA_RETRIES) {
+      if (staleWorker?.runner === INTERACTIVE_WORKER_RUNNER) {
+        // An interactive (local executor) session went quiet: the task goes back
+        // to pending for a session to re-claim — no floor, no infra charge, and
+        // never `failed` (failure-incident-recovery §18.3, I-15). A person's
+        // session is the scheduler here; the detach path does the same
+        // (interactive-detach.ts requeueOpenTask).
+        await db
+          .update(tasks)
+          .set({
+            status: 'pending',
+            claimedBy: null,
+            claimedAt: null,
+            startAt: null,
+            context: {
+              ...withoutForceClaim(existingCtx),
+              ...(staleWorker.branch ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch } : {}),
+              failureContext: staleWorker.error || 'The local session went quiet; a session can re-claim this task',
+              infraRetryCount,
+            },
+            updatedAt: new Date(),
+          })
+          .where(and(eq(tasks.id, taskId), not(eq(tasks.status, 'cancelled'))));
+        await wakeTask(taskId, 'task.requeued');
+      } else if (infraRetryCount >= MAX_INFRA_RETRIES) {
         // Infra retry cap reached — mark as stalled so mission health surfaces the issue
         // and operators know it needs attention (not just queued like a fresh task).
         await db

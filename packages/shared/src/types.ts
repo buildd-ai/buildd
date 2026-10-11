@@ -912,6 +912,12 @@ export type WorkerExitCause =
   | 'code_failure'
   | 'budget_limited'
   | 'infra_failure'
+  /**
+   * The backend credential was rejected (401, expired or invalid login).
+   * Infrastructure, not the work: never charged against the task's retry
+   * budget; the task is held for the credential (failure-incident-recovery §18).
+   */
+  | 'auth_failure'
   /** Row created at claim, never started by any runner (over-claim artifact). */
   | 'never_started'
   /** Session started but streamed no output at all (0 turns, $0). */
@@ -4470,7 +4476,9 @@ export type FailureIncidentRule =
   | 'path_overlap_stall'
   | 'provider_attribution_mismatch'
   | 'failure_rate_spike'
-  | 'output_unmet_boundary';
+  | 'output_unmet_boundary'
+  /** Buildd's own machinery failed: a rejected credential, lost sessions, a capture step (failure-incident-recovery §16, §18). */
+  | 'infrastructure_failure';
 
 /** A pointer at an existing row — never a copy of it. */
 export interface FailureIncidentEvidenceRef {

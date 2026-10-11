@@ -247,6 +247,7 @@ const RULE_LABEL: Record<FailureIncidentRule, string> = {
   repeated_failure: 'Same failure across tasks',
   stranded_gate: 'Tasks stranded at a gate',
   path_overlap_stall: 'Path-overlap stall',
+  infrastructure_failure: 'Infrastructure failure',
   provider_attribution_mismatch: 'Provider attribution mismatch',
   failure_rate_spike: 'Failure-rate spike',
   output_unmet_boundary: 'Output unmet at one boundary',
@@ -366,12 +367,17 @@ export type FixTaskSkipReason =
   | 'transient_or_budget'
   | 'no_workspace'
   | 'claimed_elsewhere'
-  | 'disabled';
+  | 'disabled'
+  /** The incident's own recovery repairs it (a credential is reconnected, not coded). */
+  | 'recovery_owned';
 
 export function shouldFileFixTask(
   incident: StoredIncident,
   triage: IncidentTriage,
 ): { file: true } | { file: false; reason: FixTaskSkipReason } {
+  // A rejected credential is repaired by reconnecting it, not by code: its
+  // incident's recovery owns it (failure-incident-recovery §18.4).
+  if (incident.rule === 'infrastructure_failure' && incident.signature.includes('|component=worker.auth|')) return { file: false, reason: 'recovery_owned' };
   if (triage.classification !== 'systemic_bug' && triage.classification !== 'page_now') return { file: false, reason: 'not_systemic' };
   if (triage.source === 'fallback') return { file: false, reason: 'decision_unavailable' };
   if (triage.source === 'model' && (triage.confidence ?? 0) < FIX_TASK_MIN_CONFIDENCE) return { file: false, reason: 'low_confidence' };

@@ -986,6 +986,66 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(mockResolveCompletedTask).not.toHaveBeenCalled();
     });
 
+    // failure-incident-recovery §18.5 (I-17, AC-22): an API cancel says why.
+    describe('cancel records why', () => {
+      const setSpy = () => {
+        const sets: any[] = [];
+        const mockWhere = mock(() => ({ returning: mock(() => [{ ...baseTask, status: 'cancelled' }]) }));
+        mockTasksUpdate.mockReturnValue({ set: mock((v: any) => { sets.push(v); return { where: mockWhere }; }) });
+        return sets;
+      };
+      const asApiKey = () => {
+        mockGetCurrentUser.mockResolvedValue(null);
+        mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+        mockTasksFindFirst.mockResolvedValue({ ...baseTask, context: { resumeBranch: 'buildd/x' } });
+      };
+      const apiPatch = (body: Record<string, unknown>) =>
+        callHandler(PATCH, createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_xxx' }, body }), TASK_ID);
+
+      it('an API cancel without a reason or supersededBy is refused and writes nothing', async () => {
+        asApiKey();
+        setSpy();
+        const res = await apiPatch({ status: 'cancelled' });
+        expect(res.status).toBe(400);
+        expect((await res.json()).code).toBe('cancel_reason_required');
+        expect(mockTasksUpdate).not.toHaveBeenCalled();
+      });
+
+      it('an API cancel with supersededBy a PR records it, keeping the context', async () => {
+        asApiKey();
+        const sets = setSpy();
+        const res = await apiPatch({ status: 'cancelled', supersededBy: { prNumber: 3936 } });
+        expect(res.status).toBe(200);
+        const c = sets[0].context;
+        expect(c.resumeBranch).toBe('buildd/x');
+        expect(c.cancellation).toMatchObject({ supersededBy: { prNumber: 3936 }, actor: 'account:account-123' });
+        expect(c.cancellation.reason).toMatch(/PR #3936/);
+      });
+
+      it('an API cancel with a reason records it', async () => {
+        asApiKey();
+        const sets = setSpy();
+        const res = await apiPatch({ status: 'cancelled', cancelReason: 'Duplicate of the auth hold task' });
+        expect(res.status).toBe(200);
+        expect(sets[0].context.cancellation.reason).toBe('Duplicate of the auth hold task');
+      });
+
+      it('rejects a malformed supersededBy', async () => {
+        asApiKey();
+        setSpy();
+        expect((await apiPatch({ status: 'cancelled', supersededBy: { prNumber: -1 } })).status).toBe(400);
+        expect((await apiPatch({ status: 'cancelled', supersededBy: { taskId: 'abc' } })).status).toBe(400);
+      });
+
+      it('a dashboard cancel is the person\'s own act: it records the actor and a default reason', async () => {
+        setup(baseTask, { ...baseTask, status: 'cancelled' });
+        const sets = setSpy();
+        const res = await patch({ status: 'cancelled' });
+        expect(res.status).toBe(200);
+        expect(sets[0].context.cancellation).toMatchObject({ actor: 'user:user-123', reason: 'Cancelled by a person from the dashboard' });
+      });
+    });
+
     // Honest cancel: cancelling stops a live agent mid-run and loses its
     // unpushed work, so the caller has to say so (abort: true).
     it('cancel with a live worker and no abort flag is refused, says why, and writes nothing', async () => {

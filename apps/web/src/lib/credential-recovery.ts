@@ -21,6 +21,7 @@ import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { wakeTasks } from '@/lib/dispatch-authority';
+import { releaseCredentialHolds } from '@/lib/task-recovery-hold';
 
 /** How far back a failed task can be to still count as a recoverable casualty. */
 export const RECOVERY_WINDOW_HOURS = 24;
@@ -31,6 +32,18 @@ export interface RequeueResult {
   requeued: string[];
   /** Failed auth-casualties found but skipped because the cap was hit. */
   skippedOverCap: number;
+  /** Tasks held for the credential (failure-incident-recovery §18.3) that this released. */
+  released: string[];
+}
+
+/** Release the team's credential holds; never throws into the requeue. */
+async function releaseTeamHolds(teamId: string): Promise<string[]> {
+  try {
+    return await releaseCredentialHolds({ teamId, by: 'credential.restored' });
+  } catch (err) {
+    console.error(`[credential-recovery] releasing held tasks for team ${teamId} failed:`, err);
+    return [];
+  }
 }
 
 /**
@@ -71,7 +84,7 @@ export async function requeueAuthFailedTasks(teamId: string): Promise<RequeueRes
     .filter(([, v]) => v.error != null && classifyAuthErrorSeverity(v.error) !== 'none')
     .map(([taskId]) => taskId);
 
-  if (candidates.length === 0) return { requeued: [], skippedOverCap: 0 };
+  if (candidates.length === 0) return { requeued: [], skippedOverCap: 0, released: await releaseTeamHolds(teamId) };
 
   const toRequeue = candidates.slice(0, MAX_REQUEUE);
   const skippedOverCap = candidates.length - toRequeue.length;
@@ -93,5 +106,5 @@ export async function requeueAuthFailedTasks(teamId: string): Promise<RequeueRes
     );
   }
 
-  return { requeued: toRequeue, skippedOverCap };
+  return { requeued: toRequeue, skippedOverCap, released: await releaseTeamHolds(teamId) };
 }

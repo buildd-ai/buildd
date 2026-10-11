@@ -3075,3 +3075,47 @@ describe('resolveTasksOfReapedWorkers — lost claim response', () => {
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 });
+
+// failure-incident-recovery §18.3 (I-15, AC-20): an interactive worker's task
+// goes back to pending for a session to re-claim — no floor, no charge, and
+// never `failed`, even at the infra cap.
+describe('resolveTasksOfReapedWorkers — interactive (local session) worker', () => {
+  const idle = { id: 'w-mcp', taskId: 'task-1', runner: 'mcp', prUrl: null, prNumber: null, commitCount: 2, branch: 'buildd/abc-fix', error: 'Interactive worker released: no MCP activity from its session for 2 hours (claim_task worker, not run by a runner)', startedAt: new Date() };
+  let taskUpdateSet: any;
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksUpdate.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReset();
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    taskUpdateSet = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWakeTask.mockClear();
+  });
+
+  for (const infraRetryCount of [0, 3]) {
+    it(`returns the task to pending on its branch, uncharged (infraRetryCount=${infraRetryCount})`, async () => {
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'w-mcp', exitCause: 'infra_failure' }]);
+      mockTasksFindFirst.mockResolvedValueOnce({
+        id: 'task-1', workspaceId: 'ws-1', status: 'in_progress', category: 'feature',
+        context: { infraRetryCount }, loopState: null, loopConfig: null, updatedAt: new Date(),
+      }).mockResolvedValue({ parentTaskId: null });
+      await resolveTasksOfReapedWorkers([idle], 'infra_failure');
+      expect(taskUpdateSet.status).toBe('pending');
+      expect(taskUpdateSet.startAt).toBeNull();
+      expect(taskUpdateSet.context.resumeBranch).toBe('buildd/abc-fix');
+      expect(taskUpdateSet.context.infraRetryCount).toBe(infraRetryCount);
+      expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued']]);
+    });
+  }
+});
