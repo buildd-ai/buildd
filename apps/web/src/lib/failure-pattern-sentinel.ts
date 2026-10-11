@@ -33,6 +33,7 @@ import type {
 } from '@buildd/shared';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import { gateFrictionSignature } from '@buildd/core/gate-friction-signature';
+import type { CaptureFailureComponent } from '@buildd/core/visual-qa-page-source';
 
 /** Part of the incident key. Bump when a rule's signature shape or meaning changes. */
 // fps-v2: path-overlap episodes are per (task, blocker) and never older than
@@ -211,6 +212,26 @@ export interface WorkerInfraFact {
   workerId?: string | null;
 }
 
+/**
+ * A surface audit whose capture failed in Buildd's own capture pipeline
+ * (failure-incident-recovery §16.3): reported by the auditor as a typed
+ * capture failure, or adopted from a legacy question whose run's failed step
+ * is on record (§16.4 rollout).
+ */
+export interface CaptureFailureFact {
+  taskId: string;
+  missionId: string | null;
+  component: CaptureFailureComponent;
+  /** The record's `errorSignature` (toFrictionSignature of the normalized error). */
+  errorSignature: string;
+  /** When the audit reported it (or, for a legacy question, when it asked). */
+  occurredAt: string;
+  workerId?: string | null;
+  runId?: string | null;
+  ref?: string | null;
+  headSha?: string | null;
+}
+
 /** Worker components of the `infrastructure_failure` family (§18.4). Closed. */
 export type WorkerInfraComponent = 'worker.auth' | 'worker.session_lost';
 
@@ -226,6 +247,7 @@ export interface SentinelFacts {
   providerAttributions?: ProviderAttributionFact[];
   failureRate?: FailureRateFact | null;
   workerInfra?: WorkerInfraFact[];
+  captureFailures?: CaptureFailureFact[];
 }
 
 // ── Candidates ──────────────────────────────────────────────────────────────
@@ -608,6 +630,43 @@ function ruleWorkerInfrastructure(facts: SentinelFacts): IncidentCandidate[] {
   return out;
 }
 
+/** The signature of one capture-pipeline cause (§16.3): component and normalized error, never a run or a task. */
+export function captureFailureSignature(workspaceId: string | null, component: CaptureFailureComponent, errorSignature: string): string {
+  return ['infrastructure_failure', wsPart(workspaceId), `component=${component}`, `sig=${seg(errorSignature)}`].join('|');
+}
+
+export const captureFailureReasonCode = (component: CaptureFailureComponent) => `infrastructure_failure.${component}`;
+
+/**
+ * One incident, so at most one fix task, per (workspace, component, error
+ * signature): every audit blocked by the same failing step is a subject of
+ * it (§16.6 I-10). Recovery is Buildd's; a person is never asked.
+ */
+function ruleCaptureFailure(facts: SentinelFacts): IncidentCandidate[] {
+  const rows = newestFirst(facts.captureFailures ?? [], f => f.occurredAt, f => f.taskId).filter(f => f.occurredAt <= facts.now);
+  const out: IncidentCandidate[] = [];
+  for (const group of groupBy(rows, f => `${f.component}|${f.errorSignature}`).values()) {
+    const { component, errorSignature } = group[0];
+    const tasks = new Set(group.map(f => f.taskId));
+    const missions = new Set(group.map(f => f.missionId).filter(Boolean));
+    out.push(buildCandidate(facts, {
+      rule: 'infrastructure_failure',
+      reasonCode: captureFailureReasonCode(component),
+      signature: captureFailureSignature(facts.workspaceId, component, errorSignature),
+      severity: tasks.size >= 2 ? 'high' : 'medium',
+      title: `${tasks.size} surface audit(s) blocked: the capture's ${component.slice('visual_qa.'.length)} step failed`,
+      occurrences: group.map(f => ({ kind: 'task' as const, id: f.taskId, at: f.occurredAt })),
+      affected: {
+        taskIds: boundedUnique(group.map(f => f.taskId)),
+        workerIds: boundedUnique(group.map(f => f.workerId)),
+        prNumbers: [],
+      },
+      impact: { blockedAudits: tasks.size, missions: missions.size },
+    }));
+  }
+  return out;
+}
+
 function ruleProviderMismatch(facts: SentinelFacts, t: SentinelThresholds): IncidentCandidate[] {
   const rows = newestFirst(facts.providerAttributions ?? [], r => r.occurredAt, r => r.workerId)
     .filter(r => r.executedProvider && r.attributedProvider && r.executedProvider !== r.attributedProvider);
@@ -698,6 +757,7 @@ const RULES = [
   ruleFailureRateSpike,
   ruleOutputUnmetBoundary,
   ruleWorkerInfrastructure,
+  ruleCaptureFailure,
 ];
 
 /**

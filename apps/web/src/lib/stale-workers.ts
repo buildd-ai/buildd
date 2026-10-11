@@ -1055,6 +1055,10 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
   return recoveredIds;
 }
 
+/** Why a waiting_input question is closed: it aged out, or recovery owns its failure now. */
+export type WaitingInputCloseReason = 'timeout' | 'superseded_by_recovery';
+export const SUPERSEDED_BY_RECOVERY = 'superseded_by_recovery';
+
 /**
  * Clean up workers stuck in waiting_input for 24+ hours, for ONE account.
  *
@@ -1068,8 +1072,18 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
  * account therefore fired the timeout for every other tenant's waiting workers.
  * Account-wide coverage is the cron sweep's job
  * (`/api/cron/waiting-input-sweep`), which loops accounts explicitly.
+ *
+ * `reason: 'superseded_by_recovery'` closes the named `workerIds` at once: a
+ * failure incident's recovery owns the failure the question was about
+ * (failure-incident-recovery §16.4). The worker is failed with that reason,
+ * its question and attempt stay as history, and the task is failed for the
+ * incident to re-queue: no retry clone, no dependency release.
  */
-export async function cleanupStuckWaitingInput(accountId: string): Promise<{ failedWorkers: number; retriedTasks: number }> {
+export async function cleanupStuckWaitingInput(
+  accountId: string,
+  opts: { reason?: WaitingInputCloseReason; workerIds?: string[] } = {},
+): Promise<{ failedWorkers: number; retriedTasks: number }> {
+  const superseded = opts.reason === 'superseded_by_recovery';
   // Fetch all waiting workers past the shorter (mission) threshold, then filter
   const missionCutoff = new Date(Date.now() - WAITING_INPUT_MISSION_STALE_MS);
   const standaloneCutoff = new Date(Date.now() - WAITING_INPUT_STALE_MS);
@@ -1078,7 +1092,8 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
     where: and(
       eq(workers.accountId, accountId),
       eq(workers.status, 'waiting_input'),
-      lt(workers.updatedAt, missionCutoff),
+      // A superseded question is closed now, whatever its age; only the named workers.
+      superseded ? inArray(workers.id, opts.workerIds?.length ? opts.workerIds : ['']) : lt(workers.updatedAt, missionCutoff),
     ),
     columns: { id: true, taskId: true, accountId: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
     with: { task: { columns: { missionId: true } } },
@@ -1086,6 +1101,7 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
 
   // Mission tasks use 4h timeout, standalone tasks use 24h timeout
   const stuckWorkers = allWaitingWorkers.filter(w => {
+    if (superseded) return true;
     const isMissionTask = !!(w as any).task?.missionId;
     if (isMissionTask) return true; // Already past 4h cutoff
     return w.updatedAt < standaloneCutoff;
@@ -1104,7 +1120,9 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
       .update(workers)
       .set({
         status: 'failed',
-        error: `Worker timed out waiting for user input (${(worker as any).task?.missionId ? '4' : '24'}+ hours)`,
+        error: superseded
+          ? `${SUPERSEDED_BY_RECOVERY}: the failure this question was about is owned by an incident's recovery; the question is kept as history`
+          : `Worker timed out waiting for user input (${(worker as any).task?.missionId ? '4' : '24'}+ hours)`,
         // Not a code defect — an unanswered question timing out is the
         // correct terminal outcome for a hard-blocked worker. Must carry its
         // own exit cause so it stays out of the failure rate and
@@ -1142,6 +1160,11 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         updatedAt: new Date(),
       })
       .where(eq(tasks.id, originalTask.id));
+
+    // Superseded by recovery (failure-incident-recovery §16.4): the incident
+    // re-queues this same task once its check passes. No clone, no
+    // dependency release: the task is not done, it is blocked by a repair.
+    if (superseded) continue;
 
     // An attempt of a workflow-kernel delivery is not cloned here: a clone would
     // run without the delivery link (its push would read as foreign) and the

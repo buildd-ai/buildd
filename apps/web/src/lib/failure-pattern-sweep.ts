@@ -76,7 +76,7 @@ import {
   type RecoverySource,
 } from './failure-incident-recovery';
 import { pathOverlapRecoveryFamily } from './failure-incident-recovery-path-overlap';
-import { workerInfraRecoveryFamily } from './failure-incident-recovery-worker-infra';
+import { createInfrastructureRecoveryFamily } from './failure-incident-recovery-infrastructure';
 import { readCredentialHold } from './task-recovery-hold';
 import { isBookkeepingExit, isInfrastructureExit } from './worker-exit-taxonomy';
 import { dbRecoveryEvents, pruneRecoveryEvents, writeSentinelLastRun, type SentinelLastRun } from './failure-incident-recovery-events';
@@ -417,7 +417,10 @@ async function afterAssessment(deps: Pick<SweepDeps, 'send' | 'reportOpsError'>,
     }
     if (!r.changed) continue;
     const rec = readRecovery(r.incident);
-    if (rec?.state === 'needs_operator' && rec.capabilityGap) {
+    const was = r.before ? readRecovery(r.before) : null;
+    // Once per generation (AC-15): a later change of evidence is not news to the operator.
+    const newlyOperator = !(was?.state === 'needs_operator' && was.generation === rec?.generation);
+    if (rec?.state === 'needs_operator' && rec.capabilityGap && newlyOperator) {
       await deps.reportOpsError(
         `Failure incident recovery needs an operator (${rec.capabilityGap.capability})`,
         `incident ${r.incident.id.slice(0, 8)}: ${rec.capabilityGap.reason}`,
@@ -805,6 +808,10 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
   // ── worker infrastructure (failure-incident-recovery §18.4) ─────────────
   const workerInfra = await dbCollectWorkerInfra(workspaceId, floors.failureRateBaselineSince);
 
+  // ── capture pipeline (§16.3), and the rollout of legacy questions (§16.4) ─
+  const { dbCollectCaptureFailures } = await import('./failure-incident-recovery-capture');
+  const captureFailures = await dbCollectCaptureFailures(workspaceId, floors.retrySince, now);
+
   // ── failure rate: recent vs. baseline ──────────────────────────────────
   const loadTerminalCounts = async (sinceIso: string, untilIso: string) => {
     const rows = await db
@@ -846,6 +853,7 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
     providerAttributions: [],
     failureRate: { recent: recent.counts, baseline: baseline.counts, recentFailures: recent.failures },
     workerInfra,
+    captureFailures,
   };
 }
 
@@ -1008,7 +1016,7 @@ export function productionSweepDeps(): SweepDeps {
         });
     },
     collectFacts: dbCollectFacts,
-    recovery: { families: [pathOverlapRecoveryFamily, workerInfraRecoveryFamily], effects: productionRecoveryEffects(), claimLease: claimRecoveryLease, events: dbRecoveryEvents() },
+    recovery: { families: [pathOverlapRecoveryFamily, createInfrastructureRecoveryFamily()], effects: productionRecoveryEffects(), claimLease: claimRecoveryLease, events: dbRecoveryEvents() },
     recordLastRun: writeSentinelLastRun,
     pruneRecoveryEvents: () => pruneRecoveryEvents(),
     async reportOpsError(message, detail, severity) {

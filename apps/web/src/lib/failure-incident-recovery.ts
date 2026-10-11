@@ -85,7 +85,7 @@ export function recoveryActionKey(k: {
 
 // ── Policy outcome (what a family concluded on fresh facts) ─────────────────
 
-export type RecoveryRepairAction = 'release_blocker' | 'wake_subject' | 'file_fix_task' | 'release_hold';
+export type RecoveryRepairAction = 'release_blocker' | 'wake_subject' | 'file_fix_task' | 'release_hold' | 'retry_capture';
 
 export type RecoveryVerdict =
   /** The family's check passed on this observation. */
@@ -365,6 +365,12 @@ export interface RecoveryFamily<F = unknown> {
   observe(incident: StoredIncident): Promise<{ complete: boolean; facts: F }>;
   /** Pure: the policy over those facts. */
   evaluate(incident: StoredIncident, facts: F, now: string): RecoveryPolicyOutcome;
+  /**
+   * The family's adapters to its subjects (§16.4), after the assessment is
+   * written: `incident` is the row as swapped, `prior` the one it replaced.
+   * Only existing writers; idempotent; a throw is logged, never re-planned.
+   */
+  afterAssess?(incident: StoredIncident, prior: StoredIncident): Promise<void>;
 }
 
 /** The existing writers repairs go through (spec §1.3). Each is idempotent on its own. */
@@ -374,6 +380,8 @@ export interface RecoveryEffects {
   fileFixTask(incident: StoredIncident, key: string): Promise<string | null>;
   /** Release credential holds (task-recovery-hold.ts, §18.4). Optional: families without holds never plan it. */
   releaseHold?(taskIds: string[], key: string): Promise<string[]>;
+  /** Re-queue blocked audits for a fresh capture (§16.3 rule 4). Optional: only the capture family plans it. */
+  retryCapture?(taskIds: string[], key: string): Promise<string[]>;
 }
 
 export interface RecoveryDeps {
@@ -446,6 +454,9 @@ export async function assessIncident(deps: RecoveryDeps, incidentId: string, sou
       const swapped = await deps.port.compareAndSwap(row.id, row.version, applyIncidentAction(row, { type: 'assess', recovery: plan.recovery }, now));
       if (!swapped) continue; // another writer moved it: re-read and re-plan
 
+      if (family.afterAssess) {
+        await family.afterAssess(swapped, row).catch(err => console.error(`[failure-incident-recovery] adapters failed for ${row.id}:`, err));
+      }
       const verified = verifyPriorAttempt(readRecovery(row), plan.recovery);
       if (verified && deps.events) await deps.events.verify(verified.actionKey, verified).catch(() => {});
       if (plan.repair) {
@@ -481,6 +492,12 @@ async function runRepair(effects: RecoveryEffects, incident: StoredIncident, rep
         const ids = Array.isArray(repair.params.taskIds) ? repair.params.taskIds.filter((x): x is string => typeof x === 'string') : [repair.subject.id];
         if (!effects.releaseHold) throw new Error('release_hold has no writer');
         await effects.releaseHold(ids, repair.key);
+        break;
+      }
+      case 'retry_capture': {
+        const ids = Array.isArray(repair.params.taskIds) ? repair.params.taskIds.filter((x): x is string => typeof x === 'string') : [repair.subject.id];
+        if (!effects.retryCapture) throw new Error('retry_capture has no writer');
+        await effects.retryCapture(ids, repair.key);
         break;
       }
     }
@@ -547,6 +564,10 @@ export function productionRecoveryEffects(): RecoveryEffects {
     async releaseHold(taskIds, key) {
       const { releaseCredentialHolds } = await import('./task-recovery-hold');
       return releaseCredentialHolds({ taskIds, by: key });
+    },
+    async retryCapture(taskIds) {
+      const { requeueFailedTasks } = await import('./credential-recovery');
+      return requeueFailedTasks(taskIds, 'task.requeued');
     },
     async fileFixTask(incident) {
       const { createDbFixTaskPort, buildFixTaskDraft } = await import('./failure-incident-actions');

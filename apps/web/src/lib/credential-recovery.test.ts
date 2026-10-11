@@ -3,7 +3,11 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // ── mocks (before importing the module under test) ────────────────────────────
 
 let selectRows: any[] = [];
-const updateWhere = mock((_cond: any) => Promise.resolve());
+// The guarded flip returns the rows it moved; by default every failed task read.
+let flippedIds: string[] | null = null;
+const updateWhere = mock((_cond: any) => ({
+  returning: async () => (flippedIds ?? [...new Set(selectRows.map((r: any) => r.taskId))]).map(id => ({ id })),
+}));
 const updateSet = mock(() => ({ where: updateWhere }));
 const mockUpdate = mock(() => ({ set: updateSet }));
 
@@ -63,7 +67,7 @@ let releasedIds: string[] = [];
 const mockReleaseCredentialHolds = mock(async (_input: any) => releasedIds);
 mock.module('@/lib/task-recovery-hold', () => ({ releaseCredentialHolds: mockReleaseCredentialHolds }));
 
-import { requeueAuthFailedTasks, MAX_REQUEUE } from './credential-recovery';
+import { requeueAuthFailedTasks, requeueFailedTasks, MAX_REQUEUE } from './credential-recovery';
 
 const AUTH_ERR = 'Your access token could not be refreshed because you have since logged out or signed in to another account.';
 const NON_AUTH_ERR = 'Command failed: tsc exited with code 2';
@@ -155,5 +159,32 @@ describe('requeueAuthFailedTasks — credential holds', () => {
     const result = await requeueAuthFailedTasks('team-1');
     expect(result.requeued).toEqual(['task-auth']);
     expect(result.released).toEqual([]);
+  });
+});
+
+describe('requeueFailedTasks — the shared requeue writer', () => {
+  beforeEach(() => {
+    selectRows = [];
+    flippedIds = null;
+    mockUpdate.mockClear();
+    mockWakeTasks.mockClear();
+  });
+
+  it('wakes only the tasks the guarded flip actually moved', async () => {
+    flippedIds = ['task-a'];
+    const ids = await requeueFailedTasks(['task-a', 'task-b'], 'task.requeued');
+    expect(ids).toEqual(['task-a']);
+    expect(mockWakeTasks.mock.calls).toEqual([[['task-a'], 'task.requeued']]);
+  });
+
+  it('a task no longer failed is not woken (nothing flipped)', async () => {
+    flippedIds = [];
+    expect(await requeueFailedTasks(['task-a'], 'task.requeued')).toEqual([]);
+    expect(mockWakeTasks).not.toHaveBeenCalled();
+  });
+
+  it('no ids: no write', async () => {
+    expect(await requeueFailedTasks([], 'task.requeued')).toEqual([]);
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });
