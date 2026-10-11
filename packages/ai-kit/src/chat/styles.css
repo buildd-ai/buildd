@@ -136,6 +136,13 @@ button.kit-attachment-open { cursor: pointer; }
 .kit-msg-attachment { min-width: 0; }
 .kit-msg[data-role="user"] .kit-msg-attachment { margin-left: auto; width: min(100%, 420px); }
 .kit-attachment-remove { flex: none; width: 48px; border: 0; border-left: 1px solid var(--kit-rule); background: transparent; color: var(--kit-ink); font-size: 18px; cursor: pointer; }
+/* Files (0.26.0): same fixed height; a thumbnail stays inside it, a long name truncates. */
+.kit-file-thumb { flex: none; width: 40px; height: 40px; object-fit: cover; border-radius: var(--kit-radius-hard); background: var(--kit-rule); }
+.kit-attachment[data-state="uploading"] .kit-attachment-size,
+.kit-attachment[data-state="failed"] .kit-attachment-size { color: var(--kit-ink); }
+.kit-attachment-retry { flex: none; padding: 0 12px; border: 0; border-left: 1px solid var(--kit-rule); background: transparent; color: var(--kit-ink); font: inherit; font-size: 13px; cursor: pointer; }
+.kit-attach { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: transparent; color: var(--kit-ink); font: inherit; cursor: pointer; }
+.kit-composer[data-dropping] { outline: 2px dashed var(--kit-rule); outline-offset: -4px; }
 
 /* ── Menus (tools, scope, tier) ─────────────────────────────────────────── */
 .kit-menu { position: relative; display: flex; align-items: stretch; }

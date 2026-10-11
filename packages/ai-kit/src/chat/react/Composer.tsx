@@ -9,9 +9,12 @@
  * Controlled (`value` + `onChange`) or uncontrolled. Enter sends, Shift+Enter
  * is a new line, and an IME composition never sends.
  */
-import { forwardRef, useId, useImperativeHandle, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { pasteTitle, type AttachmentDraft } from '@builddai/ai-kit/chat/contract';
-import { AttachmentCard } from './AttachmentCard';
+import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
+import {
+  FILE_MEDIA_TYPES, MAX_FILE_BYTES, attachmentChars, fileMediaType, fileSizeLabel, isFileDraft, isImageMediaType, pasteTitle,
+  type DraftAttachment, type FileDraft,
+} from '@builddai/ai-kit/chat/contract';
+import { AttachmentCard, FileCard } from './AttachmentCard';
 
 export interface ChatComposerHandle {
   focus(): void;
@@ -20,8 +23,12 @@ export interface ChatComposerHandle {
 }
 
 export interface ChatComposerProps {
-  /** `attachments`: the long pastes in the draft (0.25.0), empty when there are none. */
-  onSend(text: string, attachments: AttachmentDraft[]): void;
+  /**
+   * `attachments`: the long pastes (0.25.0) and uploaded files (0.26.0) in the
+   * draft, empty when there are none. A file is here only once its upload is
+   * ready; Send waits while one is still uploading or has failed.
+   */
+  onSend(text: string, attachments: DraftAttachment[]): void;
   /** Stop the running turn. Without it, the Stop button is disabled. */
   onStop?(): void;
   /** A turn is streaming. */
@@ -82,8 +89,33 @@ export interface ChatComposerProps {
    */
   attachFrom?: number;
   /** Controlled attachments (with `onAttachmentsChange`), e.g. to keep them across a refused send. */
-  attachments?: AttachmentDraft[];
-  onAttachmentsChange?(attachments: AttachmentDraft[]): void;
+  attachments?: DraftAttachment[];
+  onAttachmentsChange?(attachments: DraftAttachment[]): void;
+  /**
+   * Upload one image or file (0.26.0): paste, drop and an Attach button go
+   * through it. Resolve with the verified upload once its bytes are stored and
+   * checked; reject (or abort on `signal`) and the card shows it failed, never
+   * attached. Without it the composer takes no files.
+   */
+  onUploadFile?(file: File, signal: AbortSignal): Promise<FileDraft>;
+  /** A ready file taken out of the draft before it was sent (e.g. to delete the upload). */
+  onDiscardFile?(file: FileDraft): void;
+  /** Media types a file may have. Default: `FILE_MEDIA_TYPES`. */
+  fileTypes?: readonly string[];
+  /** Largest file, in bytes. Default: `MAX_FILE_BYTES`. */
+  maxFileBytes?: number;
+}
+
+/** A file on its way up: never in `attachments`, so never sent, until it is ready. */
+interface Upload {
+  key: string;
+  file: File;
+  state: 'uploading' | 'failed';
+  error?: string;
+  /** A refusal before any upload (type, size) cannot be retried. */
+  retryable: boolean;
+  previewUrl?: string;
+  controller?: AbortController;
 }
 
 /** The count appears once a draft reaches this share of `maxLength`. */
@@ -105,16 +137,70 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   showFormFallback = true, label = 'Message', autoFocus, className,
   leading, actions, edge, footer, mood = null, compact = false, inputId: inputIdProp, maxLength,
   attachFrom, attachments: attachmentsProp, onAttachmentsChange,
+  onUploadFile, onDiscardFile, fileTypes = FILE_MEDIA_TYPES, maxFileBytes = MAX_FILE_BYTES,
 }, ref) {
   const [inner, setInner] = useState(defaultValue);
   const [steerSent, setSteerSent] = useState(false);
   const controlled = value !== undefined;
   const text = controlled ? value : inner;
-  const [innerAttachments, setInnerAttachments] = useState<AttachmentDraft[]>([]);
+  const [innerAttachments, setInnerAttachments] = useState<DraftAttachment[]>([]);
   const attachments = attachmentsProp ?? innerAttachments;
-  const setAttachments = (a: AttachmentDraft[]) => {
+  // The latest list, so an upload that resolves later appends to what is there then.
+  const latest = useRef(attachments);
+  latest.current = attachments;
+  const setAttachments = (a: DraftAttachment[]) => {
+    latest.current = a;
     if (attachmentsProp === undefined) setInnerAttachments(a);
     onAttachmentsChange?.(a);
+  };
+  const [uploads, setUploads] = useState<Upload[]>([]);
+  const [dropping, setDropping] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
+  const uploadsRef = useRef(uploads);
+  uploadsRef.current = uploads;
+  // Unmounting cancels what is still uploading.
+  useEffect(() => () => { for (const u of uploadsRef.current) u.controller?.abort(); }, []);
+  const patchUpload = (key: string, patch: Partial<Upload> | null) => setUploads(list => (
+    patch === null ? list.filter(u => u.key !== key) : list.map(u => (u.key === key ? { ...u, ...patch } : u))
+  ));
+  const startUpload = (key: string, file: File, previewUrl: string | undefined) => {
+    if (!onUploadFile) return;
+    const controller = new AbortController();
+    patchUpload(key, { state: 'uploading', error: undefined, controller });
+    onUploadFile(file, controller.signal).then(
+      draft => {
+        if (controller.signal.aborted) return;
+        patchUpload(key, null);
+        setAttachments([...latest.current, { ...draft, ...(previewUrl ? { previewUrl } : {}) }]);
+      },
+      (e: unknown) => {
+        if (controller.signal.aborted) return;
+        patchUpload(key, { state: 'failed', error: e instanceof Error && e.message ? e.message : 'Upload failed', controller: undefined });
+      },
+    );
+  };
+  const addFiles = (files: readonly File[]) => {
+    if (!onUploadFile || files.length === 0) return;
+    const added: Upload[] = files.map(file => {
+      const key = newAttachmentId();
+      const type = fileMediaType(file.type);
+      const allowed = !!type && fileTypes.includes(type);
+      const previewUrl = allowed && isImageMediaType(type!) && typeof URL !== 'undefined' && 'createObjectURL' in URL ? URL.createObjectURL(file) : undefined;
+      if (!allowed) return { key, file, state: 'failed', error: 'File type not supported', retryable: false };
+      if (file.size > maxFileBytes) return { key, file, state: 'failed', error: `Over ${fileSizeLabel(maxFileBytes)}`, retryable: false };
+      if (file.size === 0) return { key, file, state: 'failed', error: 'Empty file', retryable: false };
+      return { key, file, state: 'uploading', retryable: true, previewUrl };
+    });
+    setUploads(list => [...list, ...added]);
+    for (const u of added) if (u.state === 'uploading') startUpload(u.key, u.file, u.previewUrl);
+  };
+  const removeUpload = (u: Upload) => {
+    u.controller?.abort();
+    patchUpload(u.key, null);
+  };
+  const removeAttachment = (a: DraftAttachment) => {
+    setAttachments(attachments.filter(x => x.id !== a.id));
+    if (isFileDraft(a)) onDiscardFile?.(a);
   };
   const area = useRef<HTMLTextAreaElement>(null);
   const generatedId = useId();
@@ -140,12 +226,14 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     },
   }));
 
-  const attachedChars = attachments.reduce((n, a) => n + a.text.length, 0);
+  const attachedChars = attachments.reduce((n, a) => n + (isFileDraft(a) ? 0 : attachmentChars(a)), 0);
   const total = text.trim().length + attachedChars;
   const over = maxLength !== undefined && total > maxLength;
+  // A file still uploading or failed holds Send: it is never sent unready, and never silently left out.
+  const waiting = uploads.length > 0;
   const submit = () => {
     const t = text.trim();
-    if ((!t && attachments.length === 0) || disabled || over) return;
+    if ((!t && attachments.length === 0) || disabled || over || waiting) return;
     if (busy) {
       // Steering is a short instruction; an attachment waits for the next send.
       if (!onSteer || !t || attachments.length > 0) return;
@@ -160,6 +248,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     setAttachments([]);
   };
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (onUploadFile && files.length > 0) {
+      e.preventDefault();
+      addFiles(files);
+      return;
+    }
     if (attachFrom === undefined) return;
     const pasted = e.clipboardData?.getData('text/plain') ?? '';
     if (pasted.length <= attachFrom) return;
@@ -173,6 +267,22 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     }
   };
 
+  const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+  const dropProps = onUploadFile ? {
+    onDragOver: (e: DragEvent<HTMLFormElement>) => { if (!hasFiles(e)) return; e.preventDefault(); setDropping(true); },
+    onDragLeave: () => setDropping(false),
+    onDrop: (e: DragEvent<HTMLFormElement>) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      setDropping(false);
+      addFiles(Array.from(e.dataTransfer.files ?? []));
+    },
+  } : {};
+  const onPick = (e: ChangeEvent<HTMLInputElement>) => {
+    addFiles(Array.from(e.target.files ?? []));
+    e.target.value = '';
+  };
+
   const steering = busy && !!onSteer;
   const empty = !text.trim() && attachments.length === 0;
   const showCount = maxLength !== undefined && total >= maxLength * COMPOSER_COUNT_FROM;
@@ -184,14 +294,29 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         data-mood={mood || undefined}
         data-compact={compact || undefined}
         data-testid="kit-composer"
+        data-dropping={dropping || undefined}
         onSubmit={e => { e.preventDefault(); submit(); }}
+        {...dropProps}
       >
         {edge != null && edge !== false && <span className="kit-composer-edge" aria-hidden="true" data-testid="kit-composer-edge">{edge}</span>}
         {leading != null && leading !== false && <div className="kit-composer-leading" data-testid="kit-composer-leading">{leading}</div>}
-        {attachments.length > 0 && (
+        {(attachments.length > 0 || uploads.length > 0) && (
           <div className="kit-composer-attachments" data-testid="kit-composer-attachments">
-            {attachments.map(a => (
-              <AttachmentCard key={a.id} attachment={a} onRemove={() => setAttachments(attachments.filter(x => x.id !== a.id))} />
+            {attachments.map(a => (isFileDraft(a)
+              ? <FileCard key={a.id} name={a.name} mediaType={a.mediaType} sizeBytes={a.sizeBytes} {...(a.previewUrl ? { imageUrl: a.previewUrl } : {})} onRemove={() => removeAttachment(a)} />
+              : <AttachmentCard key={a.id} attachment={a} onRemove={() => removeAttachment(a)} />))}
+            {uploads.map(u => (
+              <FileCard
+                key={u.key}
+                name={u.file.name || 'file'}
+                mediaType={fileMediaType(u.file.type) ?? (u.file.type || 'application/octet-stream')}
+                sizeBytes={u.file.size}
+                state={u.state}
+                {...(u.error ? { error: u.error } : {})}
+                {...(u.previewUrl ? { imageUrl: u.previewUrl } : {})}
+                {...(u.state === 'failed' && u.retryable ? { onRetry: () => startUpload(u.key, u.file, u.previewUrl) } : {})}
+                onRemove={() => removeUpload(u)}
+              />
             ))}
           </div>
         )}
@@ -225,6 +350,14 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           <div className="kit-toolbar-slot" data-slot="scope">{scope}</div>
           {tools && <div className="kit-toolbar-slot" data-slot="tools">{tools}</div>}
           {tier && <div className="kit-toolbar-slot" data-slot="tier">{tier}</div>}
+          {onUploadFile && (
+            <div className="kit-toolbar-slot" data-slot="attach">
+              <button type="button" className="kit-attach" aria-label="Attach a file" onClick={() => picker.current?.click()} disabled={disabled} data-testid="kit-attach">
+                <span aria-hidden="true">+</span>
+              </button>
+              <input ref={picker} type="file" multiple accept={fileTypes.join(',')} className="kit-sr-only" tabIndex={-1} aria-hidden="true" onChange={onPick} data-testid="kit-attach-input" />
+            </div>
+          )}
           {actions != null && actions !== false && <div className="kit-toolbar-slot" data-slot="actions">{actions}</div>}
           {busy && !(steering && !empty) ? (
             <button type="button" className="kit-stop" aria-label="Stop" disabled={!onStop} onClick={() => onStop?.()} data-testid="kit-stop">
@@ -236,7 +369,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               className="kit-send"
               aria-label={steering ? 'Steer' : 'Send'}
               // Not dimmed: a faded arrow fails contrast. Assistive tech hears it; submit() ignores it.
-              aria-disabled={disabled || empty || over ? true : undefined}
+              aria-disabled={disabled || empty || over || waiting ? true : undefined}
               data-testid="kit-send"
             >
               <span aria-hidden="true">↑</span>

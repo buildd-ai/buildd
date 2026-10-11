@@ -47,6 +47,7 @@ import { tmpdir } from 'node:os';
 // states why.
 const ALLOWLIST: string[] = [
   'packages/core/model-aliases.ts', // the alias map itself is derived from the bundled policy
+  'apps/web/src/lib/chat/file-input.ts', // which model families take image/PDF input: matched by family pattern, like model-thinking
   'packages/core/model-thinking.ts', // thinking guards match model families by pattern (split out of model-aliases so the runner never loads the db client)
   'packages/core/model-prices.ts', // price book keyed by model ID
   'packages/core/model-tier-liveness.ts', // audits tier IDs; the IDs in its docstrings ARE the spec of the parser
