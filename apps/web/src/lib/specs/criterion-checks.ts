@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from './check-lines';
 import { isRunnerReported } from '@/lib/verification-provenance';
@@ -83,9 +83,8 @@ const sameRun = (m: Omit<CriterionCheckMarker, 'command'>) =>
 
 /**
  * File one check run per checked criterion for `headSha`, unless that head
- * already has one. Two deliveries racing on one head both insert, then both
- * read the runs for the key: the earliest stands and the later one deletes its
- * own row before anything could claim it, so exactly one run is woken.
+ * already has one. Deliveries racing on one head serialize on a per-key lock,
+ * so exactly one run is filed and woken.
  */
 export async function dispatchCriterionChecks(
   opts: { taskId: string; headSha: string; headBranch: string | null },
@@ -107,42 +106,43 @@ export async function dispatchCriterionChecks(
     const command = checkCommandAt(check.command, headSha);
     const marker: CriterionCheckMarker = { ...key, command: check.command };
     const title = `${TITLE_PREFIX} ${check.criterionId} at ${headSha.slice(0, 7)}`;
-    const [row] = await db.insert(tasks).values({
-      workspaceId: p.workspaceId,
-      title,
-      description:
-        '## Spec criterion check\n\n' +
-        `Run this command and report what happened. Do NOT change code, do NOT open a PR, do NOT fix failures: this task only observes.\n\n` +
-        '```sh\n' + command + '\n```\n\n' +
-        'The runner re-runs the command itself after you finish and reports its exit code. That exit code, not your summary, ' +
-        `is the verdict on ${check.criterionId}. Keep your turn short.`,
-      priority: 2,
-      status: 'pending',
-      mode: 'execution',
+    const description =
+      '## Spec criterion check\n\n' +
+      `Run this command and report what happened. Do NOT change code, do NOT open a PR, do NOT fix failures: this task only observes.\n\n` +
+      '```sh\n' + command + '\n```\n\n' +
+      'The runner re-runs the command itself after you finish and reports its exit code. That exit code, not your summary, ' +
+      `is the verdict on ${check.criterionId}. Keep your turn short.`;
+    const loopConfig = { exitCondition: { type: 'command', command }, maxLoops: 1 };
+    const context = {
+      specCriterionCheck: marker,
+      verificationCommand: command,
+      // Cut the worktree from the PR branch; the command checks out headSha itself.
+      ...(opts.headBranch ? { baseBranch: opts.headBranch } : {}),
+      // One honest run per head: no silent second attempt.
+      retryCount: 1,
+    };
+    // One statement under a per-key lock, in one transaction: a racing delivery
+    // waits for the first to commit, then finds its run and inserts nothing.
+    // (Insert-then-read-back could not do this: a racer whose insert commits
+    // after the other's read, with an earlier created_at, also won.)
+    const lockKey = `${opts.taskId}:${p.specRevisionId}:${check.criterionId}:${headSha}`;
+    const [, inserted] = await db.batch([
+      db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('spec_criterion_check'), hashtext(${lockKey}))`),
       // Bookkeeping: a check run is not a deliverable of anything.
-      taskClass: 'bookkeeping',
-      creationSource: 'orchestrator',
-      outputRequirement: 'none',
-      tier: 'budget',
-      loopConfig: { exitCondition: { type: 'command', command }, maxLoops: 1 },
-      context: {
-        specCriterionCheck: marker,
-        verificationCommand: command,
-        // Cut the worktree from the PR branch; the command checks out headSha itself.
-        ...(opts.headBranch ? { baseBranch: opts.headBranch } : {}),
-        // One honest run per head: no silent second attempt.
-        retryCount: 1,
-      },
-    } as never).returning({ id: tasks.id });
+      db.execute(sql`
+        INSERT INTO ${tasks} (workspace_id, title, description, priority, status, mode, task_class, creation_source, output_requirement, tier, loop_config, context)
+        SELECT ${p.workspaceId}::uuid, ${title}, ${description}, 2, 'pending', 'execution', 'bookkeeping', 'orchestrator', 'none', 'budget',
+          ${JSON.stringify(loopConfig)}::jsonb, ${JSON.stringify(context)}::jsonb
+        WHERE NOT EXISTS (
+          SELECT 1 FROM ${tasks} t_run
+          WHERE t_run.workspace_id = ${p.workspaceId}::uuid
+          AND t_run.context @> ${JSON.stringify({ specCriterionCheck: key })}::jsonb
+        )
+        RETURNING id
+      `),
+    ]);
+    const row = (inserted as { rows?: Array<Record<string, unknown>> })?.rows?.[0] as { id: string } | undefined;
     if (!row) continue;
-
-    const runs = await db.select({ id: tasks.id }).from(tasks)
-      .where(and(eq(tasks.workspaceId, p.workspaceId), sameRun(key)))
-      .orderBy(asc(tasks.createdAt), asc(tasks.id));
-    if (runs[0]?.id !== row.id) {
-      await db.delete(tasks).where(eq(tasks.id, row.id));
-      continue;
-    }
     await wake({ id: row.id, title, workspaceId: p.workspaceId });
     dispatched++;
   }

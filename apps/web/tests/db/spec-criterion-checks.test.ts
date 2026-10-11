@@ -91,7 +91,7 @@ describe('one verification run per checked criterion per head', () => {
   test('two deliveries of the same head racing still dispatch exactly once', async () => {
     const g = await governedTask();
     const f = fakeWake();
-    const results = await Promise.all(Array.from({ length: 4 }, () =>
+    const results = await Promise.all(Array.from({ length: 8 }, () =>
       dispatchCriterionChecks({ taskId: g.taskId, headSha: HEAD1, headBranch: 'buildd/x' }, f.deps)));
     expect(results.reduce((n, r) => n + r.dispatched, 0)).toBe(1);
     expect(await checksFor(g.taskId)).toHaveLength(1);

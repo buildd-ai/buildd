@@ -13,7 +13,6 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { agentCredential, evidenceForCompletion, keepStoredEvidence, stampEvidence } from '@/lib/verification-provenance';
-import { recordLateRunnerEvidence } from '@/lib/late-runner-evidence';
 import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
@@ -789,9 +788,14 @@ export async function PATCH(
     // The runner's own verification report for a verification run still counts
     // when the agent made the terminal write first (lib/late-runner-evidence.ts).
     // A task token on a host worker is the agent, so its late copy is ignored.
-    if (body.verificationEvidence && !agentCredential(account, worker)) {
-      await recordLateRunnerEvidence({ workerId: worker.id, taskId: worker.taskId, evidence: body.verificationEvidence })
-        .catch((err) => console.error(`[workers] late runner evidence for worker ${worker.id} failed:`, err));
+    if (body.verificationEvidence && worker.taskId && !agentCredential(account, worker)) {
+      await emit({
+        type: 'worker.late_verification_reported',
+        taskId: worker.taskId,
+        workerId: worker.id,
+        workspaceId: worker.workspaceId,
+        verificationEvidence: body.verificationEvidence,
+      });
     }
     // Reactivation must be requested EXPLICITLY. The runner's deliberate resume
     // (sendMessage follow-up) sets `reactivate: true`; its periodic 10s keepalive
