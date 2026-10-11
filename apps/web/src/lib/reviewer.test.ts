@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
 let insertedTask: Record<string, unknown> | undefined;
 let insertedMissionNote: Record<string, unknown> | undefined;
@@ -233,6 +233,31 @@ import { composeBodyWithLede } from '@buildd/core/pr-lede';
 import { toReviewerCriterionRefs } from './criteria-reviewer-findings';
 import { resolvePolicy } from './merge-policy';
 import type { MergePolicy } from '@buildd/shared';
+
+// Global beforeEach to reset variables affected by concurrent-insert regression tests.
+// This ensures tests in different describe blocks don't inherit state from previous tests.
+beforeEach(() => {
+  insertedTask = undefined;
+  insertedMissionNote = undefined;
+  insertedSubjectReport = undefined;
+  reviewerTaskFindFirstResult = null;
+  liveReviewerTaskResult = null;
+  liveReviewerProbeArgs = [];
+  taskUpdateReturning = [];
+  liveReviewerProbeSequence = null;
+  liveReviewerProbeCallIndex = 0;
+  fixCandidates = null;
+  cancellationWon = false;
+  workerReadAfterCancellation = false;
+  reviewerInsertConflictWinner = null;
+  onConflictDoNothingCalls = 0;
+  workerUpdateCalls = [];
+  missionFindFirstResult = null;
+  parentPhaseRow = null;
+  originalTaskContextRow = null;
+  kernelOwner = null;
+  pinnedReadCalls.splice(0);
+});
 
 describe('createReviewerTask — workflow kernel ownership', () => {
   const base = {
@@ -2314,6 +2339,8 @@ describe('createReviewerTask — role, work-kind and inherited phase', () => {
     liveReviewerTaskResult = null;
     liveReviewerProbeArgs = [];
     parentPhaseRow = null;
+    liveReviewerProbeSequence = null;
+    liveReviewerProbeCallIndex = 0;
   }
 
   it('AC-16: carries the merge policy\'s reviewer slug AND kind "analysis"', async () => {
