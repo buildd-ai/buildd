@@ -4,7 +4,7 @@
  * Mission · Overview: what the mission is doing and what sets its finish.
  *
  * ```
- * 2 of 7 merged
+ * 2 of 7 landed
  * [■][■][▶][▦][▦][░][░]        TaskStrip (lg): one cell per task, marks on the ticks
  *  01 02 03 04 05 06 07
  * ┌ 03 of 07 · level 1 of 3 ───┐   FocusCard: the selected task
@@ -101,7 +101,7 @@ function OverviewView({
               <p className="text-body text-text-muted">No goal criteria set.</p>
             ) : (
               <Criteria
-                items={model.criteria.map<Criterion>(c => ({ ok: c.state === 'pass', text: c.label, value: unevaluated && c.state === 'pending' ? undefined : c.value }))}
+                items={model.criteria.map<Criterion>(c => ({ ok: c.state === 'pass', unchecked: c.state === 'unchecked', text: c.label, value: unevaluated && c.state === 'pending' ? undefined : c.value }))}
                 action={unevaluated ? <CriteriaCheckNow missionId={link.missionId} /> : undefined}
                 evaluated={unevaluated ? 'Criteria not evaluated' : undefined}
               />

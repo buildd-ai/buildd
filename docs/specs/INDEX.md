@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (69)
+## Active (70)
 
 ### auth (9)
 
@@ -114,7 +114,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-07
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (14)
+### surfaces (15)
 
 - [Chat Stream Composition](./chat-stream-composition.md) · @max — verified 2026-10-10
   An assistant chat turn MUST render in fixed, keyed regions so streaming text, finished tools and loading cards never move, reparent or duplicate what is already on screen.
@@ -124,6 +124,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
 - [Mission Flow Timeline](./mission-flow-timeline.md) · @builder — verified 2026-10-09
   The mission Flow tab MUST draw one row per task in dependency order on one time axis, every gate as an edge lit by the strip's relation rule, and one sentence naming what sets the finish.
+- [Mission Goal Criteria Display](./mission-goal-criteria-display.md) · @max — verified 2026-10-11
+  A goal criterion's glyph and its live value MUST come from one evaluation, and a complete count nothing has evaluated reads "not checked", never unmet.
 - [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-09-23
   A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 - [Mission Progress Strip — Topological Order and Dependency-on-Selection](./mission-progress-strip-ordering.md) · @builder — verified 2026-10-03

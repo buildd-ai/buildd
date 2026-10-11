@@ -59,10 +59,13 @@ describe('overviewSelection', () => {
 });
 
 describe('overviewCounts', () => {
-  it('prints merged, then criteria when there are any', () => {
-    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [], criteriaPassed: 0 } as never)).toBe('2 of 7 merged');
-    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [{}, {}, {}, {}], criteriaPassed: 1 } as never)).toBe('2 of 7 merged · 1 of 4 criteria');
-    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [{}, {}, {}, {}], criteriaPassed: 1 } as never, { criteria: false })).toBe('2 of 7 merged');
+  // "Landed" counts every finished task, PR or not; the PRs merged criterion
+  // counts only PR-bearing tasks. Calling both "merged" put two different
+  // merged counts on one screen (task fc1f5a94).
+  it('prints landed (not merged), then criteria when there are any', () => {
+    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [], criteriaPassed: 0 } as never)).toBe('2 of 7 landed');
+    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [{}, {}, {}, {}], criteriaPassed: 1 } as never)).toBe('2 of 7 landed · 1 of 4 criteria');
+    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [{}, {}, {}, {}], criteriaPassed: 1 } as never, { criteria: false })).toBe('2 of 7 landed');
     expect(overviewCounts({ landed: { done: 0, total: 0 }, criteria: [], criteriaPassed: 0 } as never)).toBe('No tasks yet');
   });
 });

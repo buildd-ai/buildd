@@ -290,6 +290,42 @@ describe('buildMissionBoard — goal criteria with live counts', () => {
     expect(m.criteria[0].frac).toBe(0.5);
     expect(m.criteriaPassed).toBe(1);
   });
+
+  // A full live ratio with no verdict on record read as unmet (an empty or
+  // fully-filled box with no tick, an empty circle on the Overview) next to
+  // its own N/N. It is "not checked", which is neither met nor unmet.
+  it('a full count with no verdict reads as not checked, not unmet (task fc1f5a94)', () => {
+    const a = task('a', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(3), prNumber: 1, mergedAt: min(4) })] });
+    const b = task('b', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(5), prNumber: 2, mergedAt: min(6) })] });
+    const criteria = [{ type: 'all_prs_merged' }, { type: 'no_open_tasks' }];
+    for (const criteriaState of [[], [{ index: 0, verdict: 'UNVERIFIED' }, { index: 1, verdict: 'NOT_EVALUATED' }]]) {
+      const m = board([a, b], { criteria, criteriaState });
+      expect(m.criteria.map(c => [c.label, c.value, c.state])).toEqual([
+        ['PRs merged', '2/2', 'unchecked'],
+        ['open tasks', '0 open', 'unchecked'],
+      ]);
+      expect(m.criteriaPassed).toBe(0);
+    }
+  });
+
+  it('a stored pass never stands beside open tasks', () => {
+    const done = task('a', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(3), prNumber: 1, mergedAt: min(4) })] });
+    const open1 = task('b');
+    const open2 = task('c');
+    const m = board([done, open1, open2], { criteria: [{ type: 'no_open_tasks' }], criteriaState: [{ index: 0, verdict: 'pass' }] });
+    expect(m.criteria[0].value).toBe('2 open');
+    expect(m.criteria[0].state).not.toBe('pass');
+    expect(m.criteriaPassed).toBe(0);
+  });
+
+  it('a recorded fail on a full count stays a fail, and a partial count stays partial', () => {
+    const a = task('a', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(3), prNumber: 1, mergedAt: min(4) })] });
+    const failed = board([a], { criteria: [{ type: 'all_prs_merged' }], criteriaState: [{ index: 0, verdict: 'fail' }] });
+    expect(failed.criteria[0].state).toBe('fail');
+    const pending = task('b', { outputRequirement: 'pr_required' });
+    const partial = board([a, pending], { criteria: [{ type: 'all_prs_merged' }] });
+    expect(partial.criteria[0].state).toBe('partial');
+  });
 });
 
 describe('buildMissionBoard — ticker, clock and record', () => {

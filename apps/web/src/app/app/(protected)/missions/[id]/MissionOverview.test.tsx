@@ -28,7 +28,7 @@ describe('MissionOverview', () => {
   it('draws the lg strip, a focus card and the counts', () => {
     expect(html).toContain('data-size="lg"');
     expect(html).toContain('data-testid="focus-card"');
-    expect(html).toContain('1 of 5 merged');
+    expect(html).toContain('1 of 5 landed');
     expect(html).toContain('data-testid="overview-stepper"');
   });
 
@@ -56,6 +56,6 @@ describe('MissionOverview, 11 tasks with delivery', () => {
 
   it('the counts line is merged only; criteria live in the Verified pill and the rail', () => {
     const counts = out.match(/data-testid="overview-counts"[^>]*>([^<]*)</)?.[1];
-    expect(counts).toBe('3 of 11 merged');
+    expect(counts).toBe('3 of 11 landed');
   });
 });
