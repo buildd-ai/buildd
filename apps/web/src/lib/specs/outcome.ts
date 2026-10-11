@@ -168,6 +168,33 @@ export async function recordSpecVerdict(caller: SpecCaller, taskId: unknown, inp
 }
 
 /**
+ * Record a verdict a check run produced (./criterion-checks.ts): server-side,
+ * no caller. The verdict is the run's exit code, not anyone's word, so it is
+ * authored by the check (`recordedBy: check:<verification task id>`). Refused
+ * unless the task is still pinned to `specRevisionId` and the criterion is one
+ * of that revision's.
+ */
+export async function recordCheckVerdict(taskId: string, input: {
+  specRevisionId: string; criterionId: string; verdict: VerificationVerdict; headSha: string; verificationTaskId: string; evidence: Record<string, unknown>;
+}): Promise<{ ok: true; verdictId: string } | SpecError> {
+  const l = await loadGoverned(null, taskId, 'record');
+  if ('ok' in l) return l;
+  if (l.specRevisionId !== input.specRevisionId) return fail(409, 'The task is no longer pinned to the revision this check ran against');
+  if (!l.criteria.some((c) => c.id === input.criterionId)) return fail(400, `${input.criterionId} is not a criterion of the pinned revision ${l.revision}`);
+  if (!SHA.test(input.headSha)) return fail(400, 'headSha must be a commit SHA');
+  const [row] = await db.insert(specOutcomeVerdicts).values({
+    workspaceId: l.task.workspaceId,
+    taskId: l.task.id,
+    specRevisionId: l.specRevisionId,
+    criterionId: input.criterionId,
+    verdict: input.verdict,
+    headSha: input.headSha.toLowerCase(),
+    evidence: { ...input.evidence, verificationTaskId: input.verificationTaskId, recordedBy: `check:${input.verificationTaskId}` },
+  }).returning({ id: specOutcomeVerdicts.id });
+  return { ok: true, verdictId: row.id };
+}
+
+/**
  * Record that two criteria of an approved revision conflict. Advisory (D-5):
  * a `conflict` discrepancy is shown for a person to accept; it is never
  * promoted, flipped or used to block anything. Identity is the spec and the

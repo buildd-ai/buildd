@@ -7,6 +7,8 @@ import {
   SELF_HEALTH_CONSECUTIVE_THRESHOLD,
   SELF_HEALTH_SIGNATURE,
   SWEEP_LOOKBACK_MINUTES,
+  tallyFailureRateWindow,
+  type FailureRateWorkerRow,
   type SweepDeps,
   type SweepFloors,
 } from './failure-pattern-sweep';
@@ -159,6 +161,53 @@ describe('computeSweepFloors', () => {
     expect(floors.failureRateBaselineSince).toBe(
       minutesBeforeIso(now(), SWEEP_LOOKBACK_MINUTES.failureRateRecent + SWEEP_LOOKBACK_MINUTES.failureRateBaseline),
     );
+  });
+});
+
+describe('tallyFailureRateWindow', () => {
+  const IN_FLIGHT = ['idle', 'starting', 'running', 'waiting_input', 'paused', 'superseded'] as const;
+  const at = (minutesAgo: number) => minutesBeforeIso(now(), minutesAgo);
+  const row = (id: string, status: string, createdMinutesAgo: number, completedMinutesAgo: number | null, exitCause: FailureRateWorkerRow['exitCause'] = null): FailureRateWorkerRow => ({
+    id, status, exitCause, createdAt: at(createdMinutesAgo), completedAt: completedMinutesAgo === null ? null : at(completedMinutesAgo),
+  });
+
+  // The incident shape: fast failures created this hour have already ended,
+  // the successes created this hour are still running, and the successes that
+  // ended this hour were created earlier. Windowing on createdAt read this as
+  // a 100% failure rate; windowing on when the worker ended reads 3 of 8.
+  it('windows on when the worker ended, not when it was created', () => {
+    const rows = [
+      row('fast-fail-1', 'failed', 20, 19, 'budget_limited'),
+      row('fast-fail-2', 'failed', 15, 14, 'code_failure'),
+      row('fast-fail-3', 'error', 10, 9, 'code_failure'),
+      row('still-running-1', 'running', 30, null),
+      row('still-running-2', 'running', 5, null),
+      ...[1, 2, 3, 4, 5].map(i => row(`long-ok-${i}`, 'completed', 90 + i, 10 + i)),
+    ];
+    const recent = tallyFailureRateWindow(rows, at(60), now(), IN_FLIGHT);
+    expect(recent.counts).toEqual({ failed: 3, total: 8 });
+    expect(recent.failures.map(f => f.at)).toEqual([at(19), at(14), at(9)]);
+  });
+
+  it('keeps a worker that ended in the window out of the window it was created in', () => {
+    const rows = [row('ok', 'completed', 90, 10)];
+    expect(tallyFailureRateWindow(rows, at(60 + 1440), at(60), IN_FLIGHT).counts).toEqual({ failed: 0, total: 0 });
+    expect(tallyFailureRateWindow(rows, at(60), now(), IN_FLIGHT).counts).toEqual({ failed: 0, total: 1 });
+  });
+
+  it('drops bookkeeping exits from numerator and denominator, as failure analytics does', () => {
+    const rows = [
+      row('never-started', 'failed', 20, 10, 'never_started'),
+      row('parked', 'failed', 20, 10, 'needs_input'),
+      row('real', 'failed', 20, 10, 'code_failure'),
+      row('ok', 'completed', 20, 10),
+    ];
+    expect(tallyFailureRateWindow(rows, at(60), now(), IN_FLIGHT).counts).toEqual({ failed: 1, total: 2 });
+  });
+
+  it('falls back to createdAt for a terminal row with no completedAt', () => {
+    const rows = [row('legacy', 'failed', 10, null, 'code_failure')];
+    expect(tallyFailureRateWindow(rows, at(60), now(), IN_FLIGHT).counts).toEqual({ failed: 1, total: 1 });
   });
 });
 

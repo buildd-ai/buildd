@@ -38,6 +38,35 @@ const BASE: DecisionLedgerInput = {
 };
 
 describe('recordDecision', () => {
+  it('keeps a replayable copy keyed by the new row id, and never puts it in the row', async () => {
+    const insert = mock(async () => 'rec-9');
+    const capture = mock(() => 'scheduled' as const);
+    const replay = { state: { holder: 'busy' }, questionIds: ['role'], candidates: ['builder', 'researcher'], promptRef: { id: 'task_role', version: 'tr1', contentHash: 'h1' } };
+    await expect(recordDecision({ ...BASE, replay }, { insert, capture })).resolves.toBe('rec-9');
+    expect(insert.mock.calls[0][0]).not.toHaveProperty('replay');
+    expect(capture).toHaveBeenCalledTimes(1);
+    const arg = capture.mock.calls[0][0] as any;
+    expect(arg).toMatchObject({
+      ...replay,
+      decisionId: 'rec-9',
+      source: 'decision_records',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      capability: 'task_role_shadow',
+      model: 'typesafe/jev-1.13',
+      ruleAnswer: null,
+    });
+    expect(arg.askedAt).toBeInstanceOf(Date);
+  });
+
+  it('keeps no copy when the row was not written or no input was given', async () => {
+    const capture = mock(() => 'scheduled' as const);
+    await recordDecision({ ...BASE, replay: { state: 's', questionIds: ['q'] } }, { insert: mock(async () => { throw new Error('db down'); }), capture });
+    await recordDecision({ ...BASE, replay: { state: 's', questionIds: ['q'] } }, { insert: mock(async () => {}), capture });
+    await recordDecision(BASE, { insert: mock(async () => 'rec-1'), capture });
+    expect(capture).not.toHaveBeenCalled();
+  });
+
   it('inserts exactly the row it was given, with null defaults for omitted optionals', async () => {
     const insert = mock(async () => {});
     await recordDecision(BASE, { insert });

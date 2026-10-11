@@ -9,7 +9,6 @@ import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { isUuid } from '@/lib/uuid';
-import { isWarmHandover } from '@buildd/shared';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, sanitizeOverrides, type Permission, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
 import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
@@ -104,7 +103,6 @@ export async function GET(
         chatCapNewSessionTier: true,
         taskEstimates: true,
         timezone: true,
-        warmHandover: true,
         permissionOverrides: true,
       },
     });
@@ -176,8 +174,7 @@ export async function PATCH(
     };
 
     if ('warmHandover' in body) {
-      if (!isWarmHandover(body.warmHandover)) return NextResponse.json({ error: "warmHandover must be 'off', 'repo' or 'deps'" }, { status: 400 });
-      updates.warmHandover = body.warmHandover;
+      return NextResponse.json({ error: "warmHandover is no longer a team setting: the platform decides it. A workspace can opt out with gitConfig.warmHandover: 'off'." }, { status: 400 });
     }
     if (name !== undefined) updates.name = name;
     if (enabledBackends !== undefined) {

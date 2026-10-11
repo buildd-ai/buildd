@@ -19,6 +19,7 @@ import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql } from 'drizzle-orm
 import { db } from './db/client';
 import { decisionChallengerRuns, decisionOutcomes, decisionRecords } from './db/schema';
 import type { ChallengerRun } from '@builddai/ai-kit/decide';
+import { captureDecisionReplay, type DecisionReplayCapture } from './decision-replay';
 
 export interface DecisionLedgerInput {
   teamId: string;
@@ -56,6 +57,11 @@ export interface DecisionLedgerInput {
   experimentId?: string | null;
   experimentArm?: string | null;
   propensity?: number | null;
+  /**
+   * The input the model saw, kept as a replayable copy once the row exists
+   * (decision-replay.ts). Never part of the row.
+   */
+  replay?: DecisionReplayCapture | null;
 }
 
 /** Coerce every optional to an explicit null, so a test can assert on the full row. */
@@ -109,13 +115,32 @@ async function dbInsertDecisionRow(row: ReturnType<typeof rowFromRecord>): Promi
  * row, not the caller. Resolves to the row id (null on failure), which is what
  * a challenger run or an outcome label attaches to.
  */
-export async function recordDecision(input: DecisionLedgerInput, deps: { insert?: InsertDecisionRow } = {}): Promise<string | null> {
+export async function recordDecision(
+  input: DecisionLedgerInput,
+  deps: { insert?: InsertDecisionRow; capture?: typeof captureDecisionReplay } = {},
+): Promise<string | null> {
+  let id: string | null;
   try {
-    return (await (deps.insert ?? dbInsertDecisionRow)(rowFromRecord(input))) ?? null;
+    id = (await (deps.insert ?? dbInsertDecisionRow)(rowFromRecord(input))) ?? null;
   } catch (err) {
     console.warn('[decision-ledger] insert failed (non-fatal):', (err as Error)?.message ?? err);
     return null;
   }
+  // After the row: the copy is keyed by its id, and capture never throws or waits.
+  if (id && input.replay) {
+    (deps.capture ?? captureDecisionReplay)({
+      ...input.replay,
+      decisionId: id,
+      source: 'decision_records',
+      teamId: input.teamId,
+      workspaceId: input.workspaceId ?? null,
+      capability: input.capability,
+      model: input.model ?? null,
+      ruleAnswer: input.ruleAnswer ?? null,
+      askedAt: new Date(),
+    });
+  }
+  return id;
 }
 
 /** A challenger run (ai-kit `runChallenger`) against a recorded decision. */

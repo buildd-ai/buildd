@@ -13495,6 +13495,33 @@ describe('PATCH /api/workers/[id]', () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     });
 
+    it('a loop hold still reports the completed owner attempt to the kernel (approved PR must not stick in WORKING)', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) })),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ commitCount: 1, prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42 }));
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask({ deliveryId: 'delivery-1', deliveryRole: 'owner' }));
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' },
+        },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'task-1', deliveryId: 'delivery-1', deliveryRole: 'owner' }, status: 'completed',
+      });
+    });
+
     it('requeues task to pending when condition is unmet (command exit code != 0)', async () => {
       const taskSetCalls: any[] = [];
       const workerSetCalls: any[] = [];

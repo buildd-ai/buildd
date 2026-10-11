@@ -518,11 +518,18 @@ describe('PATCH /api/teams/[id] — task estimates experiment switch', () => {
   });
 });
 describe('warm handover team settings', () => {
-  it('stores all supported modes and rejects invalid policy', async () => {
-    for (const mode of ['off', 'repo', 'deps']) {
-      expect((await PATCH(patchReq({ warmHandover: mode }), ctx)).status).toBe(200);
-      expect(capturedUpdates.at(-1).warmHandover).toBe(mode);
+  it('is no longer a team setting: a PATCH that sends it is refused by name, not ignored', async () => {
+    for (const mode of ['off', 'repo', 'deps', null]) {
+      const res = await PATCH(patchReq({ warmHandover: mode }), ctx);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('warmHandover');
     }
-    for (const value of [null, true, 'unknown']) expect((await PATCH(patchReq({ warmHandover: value }), ctx)).status).toBe(400);
+  });
+  it('GET no longer reads it', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
+    expect(teamQueries[0].columns.warmHandover).toBeUndefined();
+    principal = null;
   });
 });

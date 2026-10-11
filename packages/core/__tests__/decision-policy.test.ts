@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { choice } from '@builddai/ai-kit/decide';
 import { defineBuilddDecisionKind, listBuilddDecisionKinds, isMeasuredForKind } from '../decision-kinds';
-import { resolveBuilddDecisionRuntime, runBuilddDecision, toDecisionLedgerInput, type BuilddDecisionDeps } from '../decision-policy';
+import { replayOf, resolveBuilddDecisionRuntime, runBuilddDecision, toDecisionLedgerInput, type BuilddDecisionDeps } from '../decision-policy';
 import type { DecisionLedgerInput } from '../decision-ledger';
 import { assignExperimentArm } from '../experiment-randomizer';
 
@@ -113,6 +113,24 @@ describe('resolveBuilddDecisionRuntime', () => {
   });
 });
 
+describe('runBuilddDecision replay', () => {
+  it('keeps the parsed features and the prompt identity with the ledger row', async () => {
+    const h = harness();
+    const r = await runBuilddDecision(kind, { features: feats(0.7, true) }, scope, h.deps);
+    expect(h.rows[0].replay).toEqual({
+      state: feats(0.7, true),
+      featureSchemaVersion: r.featureSchemaVersion,
+      questionIds: Object.keys(kind.questions),
+      candidates: null,
+      promptRef: { id: 'buildd.test_probe_selection', version: r.policyVersion, contentHash: r.promptFingerprint },
+    });
+  });
+
+  it('keeps nothing when the features did not parse', () => {
+    expect(replayOf(kind, { features: { risk: 'x' } }, { featureDigest: null, featureSchemaVersion: 'v', policyVersion: 'p', promptFingerprint: 'f' })).toBeNull();
+  });
+});
+
 describe('runBuilddDecision', () => {
   it('spends through decisionCall with the pre-resolved access, never naming a model in the caller', async () => {
     const h = harness();
@@ -142,7 +160,9 @@ describe('runBuilddDecision', () => {
     const h = harness({ replies: [answer('skip', 0.5, 'typesafe/jev-1.13-20260917'), answer('run', 0.75, 'acme/rich-1', 0.003)] });
     const r = await runBuilddDecision(kind, { features: feats() }, scope, h.deps);
     expect(h.rows).toHaveLength(1);
-    expect(h.rows[0]).toEqual(toDecisionLedgerInput(r, scope));
+    const { replay, ...row } = h.rows[0];
+    expect(row).toEqual(toDecisionLedgerInput(r, scope));
+    expect(replay).not.toBeNull();
     expect(h.rows[0]).toMatchObject({
       teamId: 'team-1', workspaceId: 'ws-1', taskId: 'task-1', capability: 'buildd.test_probe_selection',
       fingerprint: r.featureDigest, model: 'acme/rich-1', minConfidence: 0.7,

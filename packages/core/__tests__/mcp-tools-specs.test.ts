@@ -61,6 +61,23 @@ describe('manage_specs', () => {
     expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/${SPEC}`, 'PATCH', { expectedVersion: 2, body: 'new' }]);
   });
 
+  it('revise with section or heading sends only that section, byte for byte, and says which section changed', async () => {
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false });
+    const text = '## Caching\nR-2: 5 minutes.\n\n';
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, section: 's3', body: text }, ctx()));
+    const [endpoint, opts] = api.mock.calls[0];
+    expect([endpoint, opts.method]).toEqual([`/api/specs/${SPEC}`, 'PATCH']);
+    expect(JSON.parse(opts.body)).toEqual({ expectedVersion: 2, section: 's3', body: text });
+    expect(r).toContain('section s3');
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false });
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, heading: 'Caching', body: text }, ctx());
+    expect(JSON.parse(api.mock.calls[1][1].body)).toEqual({ expectedVersion: 2, heading: 'Caching', body: text });
+  });
+
+  it('the long help documents section revise', () => {
+    expect(buildParamsDescription(workerActions)).toMatch(/manage_specs[\s\S]*section\?/);
+  });
+
   it('revise requires expectedVersion; other API errors are not swallowed', async () => {
     await expect(handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, body: 'b' }, ctx())).rejects.toThrow('expectedVersion');
     api.mockRejectedValueOnce(new Error('API error: 404 - {"error":"Spec not found"}'));
@@ -167,5 +184,28 @@ describe('manage_specs', () => {
     api.mockRejectedValueOnce(new Error('API error: 404 - {"error":"Revision 2 does not cite docs/other.md"}'));
     const miss = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'read_ref', specId: SPEC, path: 'docs/other.md' }, ctx());
     expect([miss.isError, out(miss)]).toEqual([true, 'Revision 2 does not cite docs/other.md']);
+  });
+  it('diff reads what changed between two revisions, with a read scope', async () => {
+    expect(requiredScopeForAction('manage_specs', { action: 'diff' })).toBe('tasks:read');
+    api.mockResolvedValueOnce({
+      specId: SPEC, identical: false, omittedLines: 12,
+      from: { revision: 1, contentHash: 'a', approved: true }, to: { revision: 3, contentHash: 'b', approved: false },
+      sections: [{ kind: 'changed', path: 'Checkout > Rates', level: 2, linesAdded: 1, linesRemoved: 1 }],
+      diff: '@@ Checkout > Rates (changed) @@\n-R-2: old\n+R-2: new',
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'diff', specId: SPEC, from: 1 }, ctx()));
+    expect(api.mock.calls[0][0]).toBe(`/api/specs/${SPEC}/diff?from=1`);
+    expect(r).toContain('revision 1 (approved) → revision 3: 1 section(s) changed.');
+    expect(r).toContain('changed Checkout > Rates (+1 −1)');
+    expect(r).toContain('+R-2: new');
+    expect(r).toContain('12 more diff line(s) not shown');
+
+    api.mockResolvedValueOnce({ specId: SPEC, identical: true, omittedLines: 0, from: { revision: 2, approved: false }, to: { revision: 2, approved: false }, sections: [], diff: '' });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'diff', specId: SPEC }, ctx()))).toBe('revision 2 → revision 2: no change.');
+    expect(api.mock.calls[1][0]).toBe(`/api/specs/${SPEC}/diff`);
+
+    api.mockRejectedValueOnce(new Error('API error: 404 - {"error":"Spec has no revision 9"}'));
+    const miss = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'diff', specId: SPEC, to: 9 }, ctx());
+    expect([miss.isError, out(miss)]).toEqual([true, 'Spec has no revision 9']);
   });
 });

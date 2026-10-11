@@ -92,6 +92,7 @@ import { workspaceExecutorGate } from './workspace-executor-gate';
 import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-paused-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
+import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
 import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
@@ -2729,6 +2730,20 @@ export async function POST(req: NextRequest) {
     delete (patchedContext as Record<string, unknown>)[INTERACTIVE_CLAIM_SESSION_KEY];
     if (interactiveSession?.sessionKey) {
       (patchedContext as Record<string, unknown>)[INTERACTIVE_CLAIM_SESSION_KEY] = interactiveSession.sessionKey;
+    }
+
+    // A task naming a Living Spec is held to the revision approved when its
+    // work starts: the first claim re-pins, riding on this claim's own context
+    // write (lib/specs/claim-pin.ts). A failed read never fails the claim; the
+    // task keeps the pin it was filed with.
+    const claimPin = await repinSpecAtClaim({ id: task.id, workspaceId: task.workspaceId, context: taskContext, taskClass: (task as any).taskClass })
+      .catch((err): ClaimPin => {
+        console.warn(`[claim] spec pin read failed for task ${task.id} (keeping the filing pin):`, (err as Error)?.message ?? err);
+        return { specSource: null, reason: null };
+      });
+    if (claimPin.specSource) {
+      (patchedContext as Record<string, unknown>).specSource = claimPin.specSource;
+      console.log(`[claim] task ${task.id}: ${claimPin.reason}`);
     }
 
     // Gated START only (never as shipped): the relaxed overlap's declared

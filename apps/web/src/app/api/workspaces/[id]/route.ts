@@ -11,7 +11,7 @@ import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
-import { findRemovedPathFieldInGitConfig, isWarmHandover, isRunnerSize, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
+import { findRemovedPathFieldInGitConfig, isWarmHandoverOptOut, isRunnerSize, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
@@ -407,7 +407,7 @@ export async function PATCH(
       // next dispatch derive the size afresh.
       if ('warmHandover' in gitConfig) {
         const value = (gitConfig as Record<string, unknown>).warmHandover;
-        if (value !== null && !isWarmHandover(value)) return NextResponse.json({ error: "gitConfig.warmHandover must be 'off', 'repo', 'deps' or null" }, { status: 400 });
+        if (!isWarmHandoverOptOut(value)) return NextResponse.json({ error: "gitConfig.warmHandover must be 'off' (start every task in a fresh container) or null; the platform decides everything else" }, { status: 400 });
       }
       if ('runnerSize' in gitConfig) {
         const value = (gitConfig as Record<string, unknown>).runnerSize;

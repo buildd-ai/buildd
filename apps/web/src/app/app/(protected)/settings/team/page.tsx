@@ -1,4 +1,3 @@
-import WarmHandoverSection from '@/components/WarmHandoverSection';
 import Link from 'next/link';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
@@ -77,8 +76,6 @@ export default async function TeamSettingsPage({
 
   const sections = (
     <>
-      <WarmHandoverSection teamId={shown.id} canEdit={roleHas(role, 'manage_team_settings', permissionOverrides)} />
-
       {/* This team only: another team's timezone is on its own Members page. */}
       <TimezoneSection teams={[{ id: shown.id, name: shown.name }]} currentTeamId={shown.id} />
 
