@@ -354,7 +354,7 @@ describe('POST /api/connectors', () => {
     const data = await res.json();
     expect(data.error).toBe('needs_approved_client');
     expect(data.message).toMatch(/Vercel/);
-    expect(data.actionUrl).toMatch(/^https:\/\/vercel\.com\//);
+    expect(data.actionUrl).toBeUndefined();
     expect(mockConnectorsInsert).not.toHaveBeenCalled();
   });
 
