@@ -1,6 +1,6 @@
 {
-  "id": "2b6526fd-859c-4e06-831b-923e43c47b3e",
-  "prevId": "27d5ec44-54d3-40d4-b158-4ab826804286",
+  "id": "fb90e859-1114-4005-8d60-daf8e6e5920b",
+  "prevId": "4d310364-14d8-4bed-9cc0-d84b1142b687",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -17651,6 +17651,12 @@
         "change_summary": {
           "name": "change_summary",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "repo_refs": {
+          "name": "repo_refs",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
