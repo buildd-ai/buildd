@@ -8,7 +8,7 @@ import type { BuilddObjectRef, ChatMessage, ChatToolPart } from '@/components/ch
 import type { MissionObjectView, ObjectView, PrObjectView, QuestionObjectView, TaskObjectView } from '@/components/chat/objects/object-views';
 import { CHAT_EVENT_PART_TYPE } from '@/components/chat/chat-contract';
 import { watchNotice } from '@/lib/watch-notice';
-import { encodeApprovalPreview, type ChatApprovalPreview, type ChatToolPermissionRow, type GetChatTiersResponse, type VisualReviewModel } from '@buildd/shared';
+import { encodeApprovalPreview, type ChatApprovalPreview, type ChatDraftAttachment, type ChatFileDraft, type ChatToolPermissionRow, type GetChatTiersResponse, type VisualReviewModel } from '@buildd/shared';
 import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
 import { visualReviewEventData, visualReviewEventText, type VisualReviewMoment } from '@/lib/chat/visual-review-text';
 import { backfillSteps, mergeStepParts } from '@/lib/chat/thinking-steps';
@@ -238,8 +238,8 @@ function explore(): ChatMessage[] {
   ];
 }
 
-export type ChatFixtureState = 'empty' | 'starting' | 'streaming' | 'streaming-long' | 'revised' | 'composed' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual' | 'attachment' | 'files';
-export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'starting', 'streaming', 'streaming-long', 'revised', 'composed', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual', 'attachment', 'files'];
+export type ChatFixtureState = 'empty' | 'starting' | 'streaming' | 'streaming-long' | 'revised' | 'composed' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual' | 'attachment' | 'files' | 'draft-attachments';
+export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'starting', 'streaming', 'streaming-long', 'revised', 'composed', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual', 'attachment', 'files', 'draft-attachments'];
 
 /** `attachment`: a long build log, pasted. */
 const PASTED_LOG = (() => {
@@ -247,6 +247,51 @@ const PASTED_LOG = (() => {
   for (let i = 1; out.length < 60_000; i++) out += `[${String(i).padStart(5, '0')}] step ${1 + (i % 5)}: ${i % 97 === 0 ? 'ERROR lock timeout on migrations table' : 'ok'}\n`;
   return out.slice(0, 60_000);
 })();
+
+/**
+ * `draft-attachments`: the composer before Send (Living Specs C2/C3). A long
+ * paste as a card above the box, an image with its thumbnail and a PDF, both
+ * ready; the page then drops two more files through the composer's own file
+ * input: one refused before any upload (type), and (`&attach=error`) one whose
+ * upload fails. No network: the image is an inline SVG, the uploader is local.
+ */
+export const DRAFT_TEXT = 'Why did this deploy fail? The log, the dashboard and the runbook are attached.';
+const DRAFT_CHART_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" fill="#F4F1EA"/><rect x="14" y="52" width="14" height="30" fill="#6366F1"/><rect x="34" y="34" width="14" height="48" fill="#6366F1"/><rect x="54" y="20" width="14" height="62" fill="#C2410C"/><rect x="74" y="44" width="10" height="38" fill="#6366F1"/></svg>`;
+export const DRAFT_ATTACHMENTS: ChatDraftAttachment[] = [
+  { id: 'fixture-draft-paste', title: 'deploy-2026-10-10.log', text: PASTED_LOG },
+  { kind: 'file', id: 'fixture-draft-image', name: 'error-rate-dashboard-after-deploy.png', mediaType: 'image/png', sizeBytes: 318_442, previewUrl: `data:image/svg+xml;utf8,${encodeURIComponent(DRAFT_CHART_SVG)}` },
+  { kind: 'file', id: 'fixture-draft-pdf', name: 'Release runbook.pdf', mediaType: 'application/pdf', sizeBytes: 1_204_736 },
+];
+/** Refused before upload: not a type chat takes. */
+export const DRAFT_REFUSED_FILE = { name: 'staging-backup.zip', type: 'application/zip', bytes: 4_096 } as const;
+/** `&attach=error`: a supported file whose upload fails, so it offers Retry. */
+export const DRAFT_FAILED_FILE = { name: 'migration-notes.md', type: 'text/markdown', bytes: 2_048 } as const;
+export const DRAFT_UPLOAD_ERROR = 'Upload failed. Check your connection and retry.';
+
+/** The fixture's uploader: a failure when asked for one, else ready at once. */
+export function draftUploader(fail: boolean) {
+  let n = 0;
+  return async (file: File): Promise<ChatFileDraft> => {
+    if (fail) throw new Error(DRAFT_UPLOAD_ERROR);
+    return { kind: 'file', id: `fixture-upload-${++n}`, name: file.name, mediaType: file.type, sizeBytes: file.size };
+  };
+}
+
+/** The files the page drops through the composer's file input. */
+export function draftDroppedFiles(attachError: boolean): File[] {
+  const mk = (f: { name: string; type: string; bytes: number }) => new File([new Uint8Array(f.bytes)], f.name, { type: f.type });
+  return [mk(DRAFT_REFUSED_FILE), ...(attachError ? [mk(DRAFT_FAILED_FILE)] : [])];
+}
+
+/** Hand files to a file input as a person picking them would. */
+export function pickFiles(input: HTMLInputElement, files: File[]) {
+  let list: FileList | File[] = files;
+  if (typeof DataTransfer === 'function') {
+    try { const dt = new DataTransfer(); files.forEach(f => dt.items.add(f)); list = dt.files; } catch { /* no DataTransfer: a plain list */ }
+  }
+  Object.defineProperty(input, 'files', { configurable: true, value: list });
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
 
 /** `revised`: the hypothesis the turn writes before its tools run, which they disprove. */
 export const REVISED_EARLY = 'A fix for the rounding bug is already queued. Let me check why nobody has claimed it.';
@@ -367,6 +412,7 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
   pseq = 0;
   switch (state) {
     case 'empty':
+    case 'draft-attachments':
       return { messages: [], title: null, status: 'ready' };
     case 'starting':
       // Sent, nothing streamed yet: the live line is the square alone.

@@ -19,6 +19,9 @@
  * `?state=revised` plays a turn whose early hypothesis the tools disprove: the
  * early prose, the tools under it, the final answer in its place, settled
  * (`&frame=0..3` holds one frame, for screenshots; `&settled=1` is frame 3).
+ * `?state=draft-attachments` is the composer before Send: a pasted-text card, an
+ * image with its thumbnail, a PDF, and a file refused for its type, each with
+ * its remove control (`&attach=error`: plus an upload that failed, with Retry).
  * Confirm, Discard and the question options work against the fixture.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -37,6 +40,7 @@ import {
   CHAT_FIXTURE_STATES, ORGANIZER, TEAM_NAME, VIEWER, WORKSPACES, WS, chatFixture, fixtureViews, isChatFixtureState,
   missionRef, questionRef, revisedFrames, composedFrames, RESUME_REPLY, type ChatFixtureState, VISUAL_FIXTURE_OPTS, VISUAL_FIXTURE_PHASE,
   FIXTURE_TIERS, FIXTURE_TOOL_ROWS, STEER_MESSAGES, STEER_TASK_ID, STEER_WORKER_ID, steerTaskView,
+  DRAFT_ATTACHMENTS, DRAFT_TEXT, draftDroppedFiles, draftUploader, pickFiles,
 } from './chat-fixtures';
 import SteerConversation from '@/components/chat/SteerConversation';
 import { TurnFeedbackProvider } from '@/components/chat/TurnFeedback';
@@ -202,6 +206,21 @@ export default function DevChatPage() {
     setMessages(ms => [...ms, { id: `u-${ms.length}`, role: 'user', metadata: { createdAt: new Date().toISOString(), authorName: VIEWER }, parts: [{ type: 'text', text }] }]);
   }, []);
 
+  // `draft-attachments`: the draft held here, and the refused (and `&attach=error` failed)
+  // files dropped through the composer's own file input once it is on screen.
+  const drafting = state === 'draft-attachments';
+  const attachError = params?.get('attach') === 'error';
+  const [draft, setDraft] = useState(DRAFT_TEXT);
+  const uploadFile = useMemo(() => (drafting ? draftUploader(attachError) : undefined), [drafting, attachError]);
+  const dropped = useRef(false);
+  useEffect(() => {
+    if (!drafting || dropped.current) return;
+    const input = document.querySelector<HTMLInputElement>('[data-testid="kit-attach-input"]');
+    if (!input) return;
+    dropped.current = true;
+    pickFiles(input, draftDroppedFiles(attachError));
+  }, [drafting, attachError, params]);
+
   if (!params) return null;
 
   if (params.get('steer') === '1') {
@@ -248,6 +267,7 @@ export default function DevChatPage() {
               messages={messages}
               status={resumeStatus ?? fixture.status}
               onSend={onSend}
+              {...(drafting ? { draft, onDraftChange: setDraft, initialAttachments: DRAFT_ATTACHMENTS, uploadFile } : {})}
               onApproval={onApproval}
               onStop={() => {}}
               answerQuestion={() => new Promise(r => setTimeout(r, 400))}
