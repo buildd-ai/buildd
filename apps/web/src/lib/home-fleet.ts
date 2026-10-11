@@ -23,7 +23,7 @@ import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { deriveRunEvidence } from '@buildd/core/run-evidence';
 import { noRowOfPrMerged } from './pr-merge-stamp';
 import { homeQuestionView } from './home-attention';
-import { loadSupersededQuestionTaskIds } from './incident-recovery-refs';
+import { loadSupersededQuestionTaskIds } from './incident-recovery-load';
 import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
 export interface HomeFleetStats {

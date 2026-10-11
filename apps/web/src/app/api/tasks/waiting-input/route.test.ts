@@ -38,7 +38,7 @@ mock.module('drizzle-orm', () => ({
 
 // Questions a failure incident's recovery has superseded (lib/incident-recovery-refs.ts).
 const mockSuperseded = mock(async (_ids: string[]) => new Set<string>());
-mock.module('@/lib/incident-recovery-refs', () => ({ loadSupersededQuestionTaskIds: mockSuperseded }));
+mock.module('@/lib/incident-recovery-load', () => ({ loadSupersededQuestionTaskIds: mockSuperseded }));
 
 // Import route handler after mocks
 const { GET } = await import('./route');

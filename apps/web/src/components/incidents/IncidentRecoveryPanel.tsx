@@ -8,12 +8,16 @@ import PrimaryAction from '@/components/ui/PrimaryAction';
 import { formatInZone } from '@/lib/zoned-time';
 import type { IncidentOptionView, IncidentProjection } from '@/lib/incident-view';
 
+const RETRY = 'That did not go through. Try again.';
+
 export interface IncidentRecoveryPanelProps {
   incidentId: string;
   projection: IncidentProjection;
   timeZone: string;
   /** Fixtures: render the options without posting anywhere. */
   readOnly?: boolean;
+  /** Fixtures: the clock durations are measured against. Default: now. */
+  now?: string;
 }
 
 function when(iso: string | null, tz: string): string | null {
@@ -34,13 +38,13 @@ function since(iso: string | null, nowMs: number): string | null {
  * goes to the re-check route, and a 409 replaces this projection with the
  * fresh one instead of acting on a stale screen.
  */
-export default function IncidentRecoveryPanel({ incidentId, projection: initial, timeZone, readOnly = false }: IncidentRecoveryPanelProps) {
+export default function IncidentRecoveryPanel({ incidentId, projection: initial, timeZone, readOnly = false, now }: IncidentRecoveryPanelProps) {
   const router = useRouter();
   const [projection, setProjection] = useState(initial);
   const [pending, setPending] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: 'warn' | 'err' | 'info'; text: string } | null>(null);
   const p = projection;
-  const nowMs = Date.now();
+  const nowMs = now ? Date.parse(now) : Date.now();
 
   async function choose(o: IncidentOptionView) {
     if (readOnly || o.mode !== 'post') return;
@@ -55,10 +59,10 @@ export default function IncidentRecoveryPanel({ incidentId, projection: initial,
       const body = await res.json().catch(() => null);
       if (body?.projection) setProjection(body.projection as IncidentProjection);
       if (res.status === 409) setNotice({ tone: 'warn', text: 'This changed since you opened it. Here is where it stands now.' });
-      else if (!res.ok) setNotice({ tone: 'err', text: typeof body?.error === 'string' && res.status < 500 ? body.error : 'That did not go through. Try again.' });
+      else if (!res.ok) setNotice({ tone: 'err', text: typeof body?.error === 'string' && res.status < 500 ? body.error : RETRY });
       else router.refresh();
     } catch {
-      setNotice({ tone: 'err', text: 'That did not go through. Try again.' });
+      setNotice({ tone: 'err', text: RETRY });
     } finally {
       setPending(null);
     }

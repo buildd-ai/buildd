@@ -39,7 +39,7 @@ import TaskModelCell from './TaskModelCell';
 import { getModelDisplayName, primaryModelFromUsage, compareAssignedActual } from '@buildd/core/model-display';
 import TaskAutoRefresh from './TaskAutoRefresh';
 import { DisplayTimezoneProvider, ZonedTime } from '@/components/DisplayTimezone';
-import { getTeamTimezoneSetting, getViewerTimezone } from '@/lib/team-timezone';
+import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
 import TaskQuestionFeed from './TaskQuestionFeed';
 import MarkdownContent from '@/components/MarkdownContent';
@@ -125,7 +125,7 @@ import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-conse
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
 import Notice from '@/components/ui/Notice';
-import { loadTaskRecoveryViews } from '@/lib/incident-recovery-refs';
+import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -208,7 +208,7 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
+  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat, taskRecoveryViews] = await Promise.all([
     // Open question notes scoped to this task (drives the "Waiting on you"
     // badge, and lets the live worker view show the note and the worker's
     // waitingFor as ONE question). A mission task's questions carry its
@@ -290,6 +290,8 @@ export default async function TaskDetailPage({
     // An answer link for a mission filed from the reader's own conversation
     // opens that conversation instead, when chat is on for them.
     focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
+    // A failure incident's recovery holding this task (failure-incident-recovery §16.4).
+    loadTaskRecoveryViewsForViewer([task.id], { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null }),
   ]);
   if (answerInChat) redirect(answerInChat);
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
@@ -644,9 +646,7 @@ export default async function TaskDetailPage({
   // A task blocked by a failure incident reads the incident's recovery (failure-incident-recovery
   // §16.4, §17.2): while recovery owns the next step, a question the worker asked about the same
   // failure is stale, so its controls are not offered; history keeps it.
-  const taskRecovery = (await loadTaskRecoveryViews([task.id], {
-    timeZone: await getViewerTimezone(user?.id ?? null, (task.workspace as { teamId?: string } | null)?.teamId ?? null),
-  })).get(task.id) ?? null;
+  const taskRecovery = taskRecoveryViews.get(task.id) ?? null;
   const activeWorker = activeWorkerRow?.waitingFor && (!isOpenAsk(task.status, activeWorkerRow.status) || taskRecovery?.supersedesQuestion)
     ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
 

@@ -3,7 +3,9 @@
 /**
  * `?state=home-cards`: Home with a busy fleet, the same tree at every width:
  * eight decisions, Agents, Moving toward delivery and Landed.
- * `&data=one` is one decision; `&data=empty` is a team with a runner, nothing
+ * `&data=one` is one decision; `&data=incident` leads with two incident cards;
+ * `&data=incident-<case>` is the incident page in one recovery state
+ * (IncidentStatesFixture.tsx); `&data=empty` is a team with a runner, nothing
  * moving, nothing shipped and nothing to decide. The CI clone has no live
  * runner or queue, so this is where both are seen populated. Invented data.
  */
@@ -17,6 +19,7 @@ import type { DeliveryCounts, MissionDelivery } from '@/lib/delivery-projection'
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
 import type { AgentsModel } from '@/lib/home-agents';
 import type { IdleStretch } from '@/lib/idle-while-queued';
+import IncidentStatesFixture, { incidentHomeItems } from './IncidentStatesFixture';
 
 const H = 3_600_000;
 const NOW = Date.UTC(2026, 9, 9, 15, 0);
@@ -79,14 +82,23 @@ const STRANDS = [
 ].map(({ id, title }) => ({ view: { id, title, href: '#' }, model: { strand: { missionId: id, quietMs: 5 * H, blockedReason: null } } }));
 const DECISIONS = deriveHomeAttention({ queue: QUEUE, missions: STRANDS as never, questions: [], held: [], isActionable: () => true });
 const ONE = deriveHomeAttention({ queue: QUEUE.slice(0, 1), missions: [], questions: [], held: [], isActionable: () => true });
+// `&data=incident`: Home with the two incident cards the projection lists
+// (a recovery decision and a critical incident), as buildActionQueue folds them.
+const INCIDENT_QUEUE: ActionQueueItem[] = incidentHomeItems().map(({ incident, title, p }) => ({
+  subjectKey: `incident:${incident.id}`, chip: 'INCIDENT', incidentId: incident.id, incidentTitle: title,
+  incidentDecision: p.phase === 'decision', workspaceName: 'Workspace 3', failureMessage: p.sentence,
+  fixHref: '#', fixLabel: p.phase === 'decision' ? 'Choose…' : 'Open incident',
+}) as ActionQueueItem);
+const INCIDENTS = deriveHomeAttention({ queue: [...INCIDENT_QUEUE, ...QUEUE.slice(0, 2)], missions: [], questions: [], held: [], isActionable: () => true });
 const COUNTS: DeliveryCounts = { openMissions: 11, executingMissions: 3, liveAgents: 3, slots: { used: 3, total: 4 } };
 const COUNTS_EMPTY: DeliveryCounts = { openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 4 } };
 
 export default function HomeCardsFixture() {
   const [data, setData] = useState<string | null>(null);
   useEffect(() => { setData(new URLSearchParams(window.location.search).get('data')); }, []);
+  if (data?.startsWith('incident-')) return <IncidentStatesFixture which={data.slice('incident-'.length)} />;
   const empty = data === 'empty';
-  const items = empty ? [] : data === 'one' ? ONE : DECISIONS;
+  const items = empty ? [] : data === 'one' ? ONE : data === 'incident' ? INCIDENTS : DECISIONS;
   const agents = <AgentsPanel model={empty ? AGENTS_IDLE : AGENTS} occupancy={empty ? QUIET_DAY : BUSY_DAY} idle={empty ? [] : IDLE} />;
   const milestones = empty ? [] : MILESTONES;
   const counts = empty ? COUNTS_EMPTY : COUNTS;

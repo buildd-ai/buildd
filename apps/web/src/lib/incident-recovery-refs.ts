@@ -6,6 +6,9 @@
  * incident's assessment through it, via the same projection as the incident
  * page, and never parse the question text.
  *
+ * Pure, so client fixtures can draw it; the DB loaders are in
+ * `incident-recovery-load.ts`.
+ *
  * The key is `incidentRecovery`, not `recoveryRef`: `tasks.context.recoveryRef`
  * already holds the runner's WIP checkpoint (`origin/<branch>@<sha>`).
  */
@@ -62,46 +65,4 @@ export function taskRecoveryView(incident: IncidentForView | null | undefined, o
     supersedesQuestion: p.phase !== 'decision',
     holdsCompletion: p.phase !== 'recovered',
   };
-}
-
-/**
- * The recovery view for each task that carries a ref, by task id. Two reads:
- * the tasks' context and the incidents named. Never throws: a failed read
- * leaves every question as it is.
- */
-export async function loadTaskRecoveryViews(taskIds: readonly string[], opts: { timeZone?: string } = {}): Promise<Map<string, TaskRecoveryView>> {
-  const out = new Map<string, TaskRecoveryView>();
-  const ids = [...new Set(taskIds.filter(Boolean))];
-  if (ids.length === 0) return out;
-  try {
-    const [{ db }, { tasks, failureIncidents }, { inArray, sql, and }] = await Promise.all([
-      import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm'),
-    ]);
-    const rows = await db
-      .select({ id: tasks.id, context: tasks.context })
-      .from(tasks)
-      .where(and(inArray(tasks.id, ids), sql`${tasks.context} -> ${INCIDENT_RECOVERY_CONTEXT_KEY} is not null`));
-    const refs = rows.flatMap(r => {
-      const ref = readIncidentRecoveryRef(r.context);
-      return ref ? [{ taskId: r.id, ref }] : [];
-    });
-    if (refs.length === 0) return out;
-    const incidents = await db.query.failureIncidents.findMany({
-      where: inArray(failureIncidents.id, [...new Set(refs.map(r => r.ref.incidentId))]),
-    });
-    const byId = new Map(incidents.map(i => [i.id, i]));
-    for (const { taskId, ref } of refs) {
-      const view = taskRecoveryView(byId.get(ref.incidentId) ?? null, { timeZone: opts.timeZone });
-      if (view) out.set(taskId, view);
-    }
-  } catch (err) {
-    console.warn('[incident-recovery-refs] read failed (non-fatal):', (err as Error)?.message ?? err);
-  }
-  return out;
-}
-
-/** Task ids whose open question recovery has superseded. */
-export async function loadSupersededQuestionTaskIds(taskIds: readonly string[]): Promise<Set<string>> {
-  const views = await loadTaskRecoveryViews(taskIds);
-  return new Set([...views].filter(([, v]) => v.supersedesQuestion).map(([id]) => id));
 }

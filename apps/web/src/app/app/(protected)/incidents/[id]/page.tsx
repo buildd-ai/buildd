@@ -7,7 +7,6 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import { getViewerTimezone } from '@/lib/team-timezone';
 import { displayTaskTitle } from '@/lib/task-title';
 import { normalizeRepoFullName, prUrlFor } from '@/lib/repo-scope';
-import { incidentRuleLabel } from '@/lib/failure-incident-actions';
 import { incidentAffected, incidentCause, incidentEvidence, projectIncident } from '@/lib/incident-view';
 import IncidentDetail from '@/components/incidents/IncidentDetail';
 import { INCIDENT_VERDICTS } from '@/modules';
@@ -51,7 +50,7 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
   return (
     <IncidentDetail
       incidentId={incident.id}
-      headline={incidentCause(incident.recovery?.cause.reasonCode ?? incident.reasonCode, incident.rule, incidentRuleLabel(incident.rule))}
+      headline={incidentCause(incident.recovery?.cause.reasonCode ?? incident.reasonCode, incident.rule)}
       meta={[`${severity} incident`, ws?.name].filter(Boolean).join(' · ')}
       projection={projection}
       timeZone={timeZone}

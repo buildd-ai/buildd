@@ -7,7 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { admitsToNeedsYou } from '@buildd/core/needs-you';
 import type { WaitingFor } from '@buildd/shared';
-import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-refs';
+import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
 
 export async function GET() {
   const user = await getCurrentUser();

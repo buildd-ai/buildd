@@ -95,7 +95,7 @@ import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
-import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-refs';
+import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
 
 // --- Helpers ---
 

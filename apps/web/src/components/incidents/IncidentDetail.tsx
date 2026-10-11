@@ -18,6 +18,7 @@ export interface IncidentDetailProps {
   /** Raw facts for the evidence disclosure: ids, paths, history. Shown as-is. */
   evidence: Array<[string, string | string[]]>;
   readOnly?: boolean;
+  now?: string;
 }
 
 /**
@@ -25,7 +26,7 @@ export interface IncidentDetailProps {
  * (cause, recovery, the one choice); raw ids, paths and history only inside
  * the evidence disclosure.
  */
-export default function IncidentDetail({ incidentId, headline, meta, projection, timeZone, fixTask, affected, evidence, readOnly }: IncidentDetailProps) {
+export default function IncidentDetail({ incidentId, headline, meta, projection, timeZone, fixTask, affected, evidence, readOnly, now }: IncidentDetailProps) {
   const affectedCount = affected.tasks.length + affected.moreTasks + affected.prs.length;
   return (
     <main className="min-h-screen pt-4 px-4 pb-8 md:p-8">
@@ -36,7 +37,7 @@ export default function IncidentDetail({ incidentId, headline, meta, projection,
           <p className="mt-1 text-meta text-text-secondary">{meta}</p>
         </div>
 
-        <IncidentRecoveryPanel incidentId={incidentId} projection={projection} timeZone={timeZone} readOnly={readOnly} />
+        <IncidentRecoveryPanel incidentId={incidentId} projection={projection} timeZone={timeZone} readOnly={readOnly} now={now} />
 
         {fixTask && (
           <Section title="Fix task">
