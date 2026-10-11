@@ -17,6 +17,9 @@ export interface PortfolioRow {
   status: string;
   workspaceId: string | null;
   workspaceName: string | null;
+  /** The mission's group: its initiative link. Null when ungrouped. */
+  groupId?: string | null;
+  groupName?: string | null;
   /** `missions.priority`; higher first. */
   priority: number;
   /** Live workers on the mission right now. */
@@ -104,6 +107,26 @@ export interface PortfolioFilter {
   q?: string;
   workspaceId?: string | null;
   status?: PortfolioStatusFilter;
+  /** A group id, or NO_GROUP for missions without one. */
+  groupId?: string | null;
+}
+
+/** The group filter value for missions that have no group. */
+export const NO_GROUP = 'none';
+
+/** Groups that have at least one mission (named, then No group), with how many each holds. */
+export function portfolioGroups(rows: readonly PortfolioRow[]): Array<{ id: string; name: string; count: number }> {
+  const named = new Map<string, { id: string; name: string; count: number }>();
+  let ungrouped = 0;
+  for (const r of rows) {
+    if (!r.groupId) { ungrouped++; continue; }
+    const g = named.get(r.groupId);
+    if (g) g.count++;
+    else named.set(r.groupId, { id: r.groupId, name: r.groupName ?? 'Untitled', count: 1 });
+  }
+  const out = [...named.values()].sort((a, b) => a.name.localeCompare(b.name));
+  if (ungrouped > 0) out.push({ id: NO_GROUP, name: 'No group', count: ungrouped });
+  return out;
 }
 
 export function filterPortfolio(rows: readonly PortfolioRow[], f: PortfolioFilter): PortfolioRow[] {
@@ -112,6 +135,7 @@ export function filterPortfolio(rows: readonly PortfolioRow[], f: PortfolioFilte
   return rows.filter(r =>
     match(r)
     // Team-level missions (no workspace) belong to every workspace view, as on the server filter.
+    && (!f.groupId || (f.groupId === NO_GROUP ? !r.groupId : r.groupId === f.groupId))
     && (!f.workspaceId || r.workspaceId === f.workspaceId || r.workspaceId == null)
     && (!q || r.delivery.title.toLowerCase().includes(q) || (r.workspaceName ?? '').toLowerCase().includes(q)));
 }

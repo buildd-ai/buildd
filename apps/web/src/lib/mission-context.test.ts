@@ -75,6 +75,9 @@ const mockInnerJoin = mock(() => ({ where: mockWhere }));
 const mockFrom = mock(() => ({ innerJoin: mockInnerJoin, where: mockWhere }));
 const mockSelect = mock(() => ({ from: mockFrom }));
 
+// Typed links have real-PG tests (apps/web/tests/db/artifact-links.test.ts); here a mission has none.
+const mockLinked = mock(async (..._a: unknown[]) => [] as Array<{ artifactId: string }>);
+mock.module('@/lib/artifact-links', () => ({ artifactsLinkedTo: mockLinked }));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {

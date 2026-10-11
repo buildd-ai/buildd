@@ -56,6 +56,7 @@ const EXPECTED: Record<Permission, Row> = {
   steer_workers: { roles: OA, keys: ADMIN_KEY },
   force_reassign_task: { roles: OA, keys: ANY_KEY },
   manage_releases: { roles: OA, keys: ADMIN_KEY },
+  approve_specs: { roles: OA, keys: NONE },
   manage_connectors: { roles: OA, keys: ADMIN_KEY },
   manage_evidence_backends: { roles: OA, keys: ADMIN_KEY },
   run_experiments: { roles: OA, keys: ADMIN_KEY },

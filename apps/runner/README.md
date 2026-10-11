@@ -147,6 +147,19 @@ environment:
 | `prefer` | The machine's login, even when a seat is stored in buildd. |
 | `off` | Never the machine's env token; a stored seat as before. |
 
+`BUILDD_MODEL_AUTH_SOURCE=runner` ("runner-managed", no automatic paid
+fallback) makes your own `claude login` / `CLAUDE_CODE_OAUTH_TOKEN` the only
+Claude Coding auth unless a paid route was deliberately selected: the team's
+agent model endpoint, this runner's `LLM_PROVIDER`, or an `ANTHROPIC_BASE_URL`
+you set. A stored team API key, an inherited `ANTHROPIC_API_KEY` /
+`ANTHROPIC_AUTH_TOKEN` and any server-delivered seat are not used. With no login
+and no selected route the run does not start ("No coding authentication
+available") and claims back off; it never retries on a paid key. The default
+(unset or `auto`) is unchanged. Not applicable to Codex, Chat/inference calls
+or hosted runners. buildd checks that a login is present, never that it is
+valid. Server-side claim deferral and the Codex backend failover are not
+covered here.
+
 Before you switch a runner that uses a stored seat to `prefer`, check the
 machine's login with one real session as the runner user, for example
 `claude -p 'reply ok'` with the same environment the runner has. A check

@@ -123,6 +123,16 @@ export const NEVER_STARTED_ERROR =
   'Worker was never started by a runner (claimed but no session began) — cleaned up as a bookkeeping artifact, not a task failure';
 
 /**
+ * Error text for a worker row the claim route minted for a runner that then
+ * reported, on its heartbeat, that it does not hold it and has no claim in
+ * flight: the claim response never reached the runner (client timeout, dropped
+ * connection, process restart). Still `never_started` — no session ran — but
+ * its own text, so the mechanism is countable apart from the generic reap.
+ */
+export const CLAIM_RESPONSE_LOST_ERROR =
+  'Claim response never reached the runner (runner reported it does not hold this worker) — released as a bookkeeping artifact, not a task failure';
+
+/**
  * Error text for an interactive (MCP-claimed) worker reaped after its session
  * made no MCP call and sent no hook event for INTERACTIVE_WORKER_IDLE_TTL_MS
  * (and its presence was not inside a turn). Its own text, because

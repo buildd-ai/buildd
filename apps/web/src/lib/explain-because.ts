@@ -58,6 +58,8 @@ export interface StateBecauseExtras {
     title: string | null;
     status: string;
     live?: boolean;
+    /** A reviewer task: runners claim it even in a local-executor mission. */
+    runnerClaimable?: boolean;
     missingBrowser?: boolean;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
@@ -91,7 +93,7 @@ export interface StateBecauseExtras {
    * (not gated on `view.kind`), since these tasks never drive `failing` and
    * would otherwise be invisible to `because[]`.
    */
-  supersededTasks?: Array<{ id: string; title: string | null; prNumber: number; supersedingTaskId?: string | null }>;
+  supersededTasks?: Array<{ id: string; title: string | null; prNumber: number | null; supersedingTaskId?: string | null; replacedByAudit?: true }>;
 }
 
 /**
@@ -124,6 +126,16 @@ export function buildStateBecause(
   }
 
   for (const t of extra.supersededTasks ?? []) {
+    if (t.replacedByAudit || t.prNumber == null) {
+      links.push(
+        link(
+          `Visual audit "${t.title ?? t.id}" failed, but a later audit${t.supersedingTaskId ? ` ("${t.supersedingTaskId}")` : ''} completed with passing phone and desktop screenshots of the same routes, so it does not count as a mission failure.`,
+          'artifacts.metadata.qa (replacedAudits)',
+          { ...base, taskId: t.id },
+        ),
+      );
+      continue;
+    }
     links.push(
       link(
         t.supersedingTaskId
@@ -189,7 +201,7 @@ function openTaskLinks(
     }
     // A local-executor mission: its rows are the person's session's to claim,
     // so "no live worker" (read: a runner should have it) is the wrong claim.
-    if (w.local && !t.live) {
+    if (w.local && !t.live && !t.runnerClaimable) {
       return link(
         t.status === 'pending'
           ? `Task "${t.title ?? t.id}" is pending, waiting for a local session to claim it (runners never pick up this mission's tasks).`

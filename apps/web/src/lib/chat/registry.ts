@@ -196,6 +196,9 @@ export const CHAT_TOOL_SPECS = withAreas({
   list_artifact_templates: one(read()),
   create_artifact: one(write({ param: 'missionId', is: 'mission' }, 'POST /api/missions/:id/artifacts', 'POST /api/initiatives/:id/artifacts')),
   update_artifact: one(deferred(KEY_ONLY)),
+  link_artifact: one(deferred(KEY_ONLY)),
+  list_artifact_links: one(deferred(KEY_ONLY)),
+  manage_specs: one(deferred('Living Specs are drafted and revised by agents first; chat gets them with the approval flow (G2)')),
 
   // ── admin: workspace config, roles, experiments, models ──
   manage_workspaces: {
@@ -319,6 +322,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   complete_task: { reason: 'worker-only', note: 'A worker completes its own task.' },
   create_pr: { reason: 'worker-only', note: 'PRs are opened by the worker that wrote the branch.' },
   emit_event: { reason: 'worker-only', note: 'Worker milestone events.' },
+  request_capability: { reason: 'worker-only', note: 'A running agent asks for access for its own worker; people decide on Settings.' },
   upload_artifact: { reason: 'worker-only', note: 'Uploads a worker-produced file.' },
   get_page_source: { reason: 'worker-only', note: 'The visual auditor asks where its own pages come from.' },
   deploy: { reason: 'worker-only', note: 'Authority is an Operator task\'s role grant in its workspace; a person in chat has no task.' },

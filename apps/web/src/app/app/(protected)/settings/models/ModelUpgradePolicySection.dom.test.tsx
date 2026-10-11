@@ -13,14 +13,19 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ModelUpgradePolicySection } = await import('./ModelUpgradePolicySection');
 const { MODEL_TIERS_CHANGED_EVENT } = await import('./CellEditor');
+const { describeControls } = await import('../_lib/form-controls');
 
 let policyReads = 0;
+let policy: Record<string, unknown>;
+let tiers: unknown[];
 beforeEach(() => {
   policyReads = 0;
+  policy = { mode: 'manual' };
+  tiers = [];
   globalThis.fetch = mock(async (url: string) => {
     if (String(url).startsWith('/api/model-tiers/policy')) {
       policyReads++;
-      return new Response(JSON.stringify({ policy: { mode: 'manual' }, source: 'default', tiers: [] }), { status: 200 });
+      return new Response(JSON.stringify({ policy, source: 'team', tiers }), { status: 200 });
     }
     return new Response('{}', { status: 200 });
   }) as unknown as typeof fetch;
@@ -62,6 +67,31 @@ describe('ModelUpgradePolicySection: one row, no second tier list', () => {
     expect(host.querySelector('[data-testid="model-upgrade-mode"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="model-upgrade-tiers"]')).toBeNull();
     expect(host.querySelector('.card')).toBeNull();
+  });
+});
+
+describe('ModelUpgradePolicySection: a member reads it', () => {
+  async function mountMember() {
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => { root.render(<ModelUpgradePolicySection teamId="team-demo" isAdmin={false} />); });
+    await flush();
+  }
+
+  it('shows the mode as text with no control, even with a newer model to adopt', async () => {
+    tiers = [{ tier: 'standard', model: 'claude-model-a', selectedBy: 'catalog', why: '', newer: { model: 'claude-model-b', certifiedAt: null }, withheld: { reason: 'manual', eligibleAt: null }, deprecated: null }];
+    await mountMember();
+    expect(host.querySelector('[data-testid="model-upgrade-mode-value"]')!.textContent).toBe('Manual');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this/);
+  });
+
+  it('shows the soak window as text', async () => {
+    policy = { mode: 'soak', soakHours: 48 };
+    await mountMember();
+    expect(host.querySelector('[data-testid="model-upgrade-mode-value"]')!.textContent).toBe('Soak first for 48 hours');
+    expect(describeControls(host)).toEqual([]);
   });
 });
 

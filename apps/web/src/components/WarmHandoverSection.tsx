@@ -50,8 +50,12 @@ export default function WarmHandoverSection({ teamId, workspaceId, initial = nul
   return <section className="mt-10">
     <h2 className="section-label mb-3">Warm handover</h2>
     <div className="card p-4 space-y-3">
-      <Select<Choice> value={value} options={options} onChange={save} disabled={saving || !canEdit}
-        aria-label="Warm handover" testId="warm-handover-select" />
+      {canEdit ? (
+        <Select<Choice> value={value} options={options} onChange={save} disabled={saving}
+          aria-label="Warm handover" testId="warm-handover-select" />
+      ) : (
+        <p className="text-body text-text-primary" data-testid="warm-handover-value">{options.find(option => option.value === value)?.label}</p>
+      )}
       {modes.map(mode => <p key={mode} className="text-body text-text-secondary">{options.find(option => option.value === mode)?.label}: {COPY[mode]}</p>)}
       {workspaceId && value === 'inherit' && <p className="text-meta text-text-muted">Team default: {options.find(option => option.value === teamMode)?.label}</p>}
       {error && <p role="alert" className="text-body text-status-error">{error}</p>}

@@ -10,6 +10,8 @@ interface Props {
   explicit: WorkspaceExecutor | null;
   /** Resolved server-side via resolveWorkspaceExecutor, so the page never shows a value the claim route does not apply. */
   effective: WorkspaceExecutor;
+  /** Holds manage_workspace_settings. False: the value above as text, no picker. */
+  canEdit: boolean;
   source: WorkspaceExecutorSource;
 }
 
@@ -36,7 +38,7 @@ export function describeExecutorSource(source: WorkspaceExecutorSource): string 
  * runners from claiming them, so a cold-starting cloud container is not
  * beaten to its own task. Saved through PATCH /api/workspaces/[id].
  */
-export default function ExecutorSection({ workspaceId, explicit, effective, source }: Props) {
+export default function ExecutorSection({ workspaceId, explicit, effective, source, canEdit }: Props) {
   const [value, setValue] = useState<Choice>(explicit ?? 'auto');
   const [shown, setShown] = useState({ effective, source });
   const [saving, setSaving] = useState(false);
@@ -73,14 +75,16 @@ export default function ExecutorSection({ workspaceId, explicit, effective, sour
           <span className="text-text-muted"> · {describeExecutorSource(shown.source)}</span>
         </p>
       </div>
-      <Select<Choice>
-        value={value}
-        options={OPTIONS}
-        disabled={saving}
-        onChange={save}
-        aria-labelledby="workspace-executor-label"
-        testId="workspace-executor-select"
-      />
+      {canEdit && (
+        <Select<Choice>
+          value={value}
+          options={OPTIONS}
+          disabled={saving}
+          onChange={save}
+          aria-labelledby="workspace-executor-label"
+          testId="workspace-executor-select"
+        />
+      )}
       <p className="text-xs text-text-muted">
         Cloud only: only the cloud runner claims tasks. Host runners only: only your own runners do.
         Automatic picks cloud when the cloud dispatch webhook is on, and any runner otherwise.

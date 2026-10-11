@@ -165,7 +165,8 @@ describe('loadRunnerAccounts: only the fields the runner tokens section renders'
     const [dto] = await loadRunnerAccounts(['team-acme']);
     expect(Object.keys(dto).sort()).toEqual([
       'accountWorkspaces', 'activeSessions', 'apiKeyPrefix', 'authType', 'budgetExhaustedAt', 'budgetResetsAt', 'createdAt',
-      'hostRunner', 'id', 'maxConcurrentSessions', 'maxConcurrentWorkers', 'name', 'team', 'teamId', 'totalCost', 'type',
+      // Read so the page can offer Delete on your own key; the page strips it before the client.
+      'createdByUserId', 'hostRunner', 'id', 'maxConcurrentSessions', 'maxConcurrentWorkers', 'name', 'team', 'teamId', 'totalCost', 'type',
     ]);
     for (const k of ['apiKey', 'apiKeyHash', 'oauthToken', 'hasOauthToken', 'seatId', 'githubId', 'maxCostPerDay', 'monthlyBudgetUsd', 'monthlyCostUsd', 'budgetAlertsSent', 'aiDailyBudgetUsd']) {
       expect(k in dto).toBe(false);

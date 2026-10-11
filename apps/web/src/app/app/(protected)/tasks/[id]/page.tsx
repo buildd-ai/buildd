@@ -16,6 +16,7 @@ import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { parseCredentialBlock, CREDENTIAL_BLOCK_CONTEXT_KEY } from '@/lib/credential-block-copy';
 import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
@@ -461,15 +462,21 @@ export default async function TaskDetailPage({
   });
 
   // Spec traceability (docs/design/spec-to-build-pattern.md §3) — which spec
-  // doc authorized this task, written by approvePlan onto every child of an
-  // emitsPlan-originated plan. Absent on ordinary tasks.
+  // authorized this task: the repo doc approvePlan writes onto every child of
+  // an emitsPlan-originated plan, and/or the Living Spec revision the server
+  // pinned it to when it was filed (lib/specs/pin.ts). Absent on ordinary tasks.
   const specSourceRaw = (task.context as Record<string, unknown> | null)?.specSource as
     | Partial<SpecSourceContext>
     | undefined;
-  const specSource: SpecSourceContext | null =
-    specSourceRaw && typeof specSourceRaw.specPath === 'string' && typeof specSourceRaw.planningTaskId === 'string'
-      ? { specPath: specSourceRaw.specPath, planningTaskId: specSourceRaw.planningTaskId }
-      : null;
+  const specSource: SpecSourceContext | null = specSourceRaw && typeof specSourceRaw === 'object'
+    ? {
+        ...(typeof specSourceRaw.specPath === 'string' ? { specPath: specSourceRaw.specPath } : {}),
+        ...(typeof specSourceRaw.planningTaskId === 'string' ? { planningTaskId: specSourceRaw.planningTaskId } : {}),
+        ...(typeof specSourceRaw.specId === 'string' ? { specId: specSourceRaw.specId } : {}),
+        ...(typeof specSourceRaw.revision === 'number' ? { revision: specSourceRaw.revision } : {}),
+        ...(typeof specSourceRaw.contentHash === 'string' ? { contentHash: specSourceRaw.contentHash } : {}),
+      }
+    : null;
 
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'
@@ -1414,7 +1421,7 @@ export default async function TaskDetailPage({
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
         {verdict && (
-          <TaskVerdictBlock verdict={verdict} decision={storedVerdictDecision} displayStatus={displayStatus} />
+          <TaskVerdictBlock verdict={verdict} decision={storedVerdictDecision} displayStatus={displayStatus} showDecisionRows={isPlatformOperator(user)} />
         )}
 
         {runnerReach && (

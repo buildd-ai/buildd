@@ -20,7 +20,7 @@ import { scheduleAuthedIconRefresh } from '@/lib/connector-icon-refresh';
 export const dynamic = 'force-dynamic';
 
 function errorRedirect(req: NextRequest, error: string) {
-  const url = new URL('/app/settings/connectors', req.url);
+  const url = new URL('/app/settings/connections', req.url);
   url.searchParams.set('error', error);
   return NextResponse.redirect(url);
 }
@@ -202,7 +202,7 @@ export async function GET(req: NextRequest) {
 
   // Clear the state cookie
   const response = NextResponse.redirect(
-    new URL(`/app/settings/connectors?connected=${encodeURIComponent(connectorId)}`, req.url),
+    new URL(`/app/settings/connections?connected=${encodeURIComponent(connectorId)}`, req.url),
   );
   response.cookies.delete(OAUTH_STATE_COOKIE);
   return response;

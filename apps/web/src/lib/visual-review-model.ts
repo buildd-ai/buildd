@@ -27,6 +27,7 @@ import type {
   VisualReviewModel,
   VisualReviewNeedsYou,
   VisualReviewPhase,
+  VisualReviewReplacedAudit,
   VisualReviewResolvedElsewhere,
   VisualReviewShot,
   VisualReviewStanding,
@@ -544,10 +545,17 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     coverage = requiredCoverage(liveCells.map(c => c.current.shot as VisualShot), [...routes]);
   }
 
+  // 4b. Failed audits a later completed audit replaced. Their failure is
+  // history, not the mission's state, so they leave the phase below.
+  const replacedAudits = replacedFailedAudits(auditTasks, liveCells, requiredRoutesOf, openFixes, input.roundCapOpen === true);
+  const replacedIds = new Set(replacedAudits.map(r => r.auditTaskId));
+  const unreplaced = replacedIds.size > 0 ? tasks.filter(t => !replacedIds.has(t.id)) : tasks;
+
   // 5. Phase.
   const latest = latestAuditOf(tasks);
-  const bootFailed = auditBootFailed(tasks);
-  const bootFailure = bootFailed ? bootFailureOf(auditTasks) : null;
+  const latestFailed = !!latest && latest.status === 'failed' && !replacedIds.has(latest.id);
+  const bootFailed = auditBootFailed(unreplaced);
+  const bootFailure = bootFailed ? bootFailureOf(unreplaced.filter(isAudit)) : null;
   const awaitingHuman = liveCells.filter(c => c.needsHuman).length;
   const roundCapOpen = input.roundCapOpen === true;
   let phase: VisualReviewPhase;
@@ -558,9 +566,9 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     || (latest.status !== 'pending' && !TERMINAL.has(latest.status) && (latest.workers ?? []).some(w => RUNNING_WORKER.has(w.status ?? ''))));
   if (bootFailed) {
     phase = 'boot_failed';
-  } else if (latest && latest.status === 'failed' && errorTypeOf(latest) === 'infra_stalled') {
+  } else if (latestFailed && errorTypeOf(latest) === 'infra_stalled') {
     phase = 'stalled';
-  } else if (latest && latest.status === 'failed') {
+  } else if (latestFailed) {
     // Any other failure (max turns, a crash): never "off", and never an older
     // round's "reviewed", which would hide the failed re-check.
     phase = 'failed';
@@ -640,8 +648,46 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     superseded,
     captureGaps,
     resolvedElsewhere,
+    replacedAudits,
     generatedAt: new Date(now).toISOString(),
   };
+}
+
+/**
+ * Which failed audits a later completed audit replaced. Only mechanically
+ * checkable evidence counts: each route the failed audit was sent to check
+ * (`requiredRoutesOf`, so unknown obligations never qualify) needs a phone and
+ * a desktop shot in a live cell (wrong-ref shots never get there) from an
+ * audit that completed and started after the failed one. Any cell not settled
+ * fine, an open fix or the open round-cap question holds every failure: an
+ * unresolved finding is not a replacement.
+ */
+function replacedFailedAudits(
+  auditTasks: readonly VisualReviewTaskInput[],
+  liveCells: readonly VisualReviewCell[],
+  requiredRoutesOf: ((t: VisualReviewTaskInput) => readonly string[]) | null,
+  openFixes: number,
+  roundCapOpen: boolean,
+): VisualReviewReplacedAudit[] {
+  if (!requiredRoutesOf || openFixes > 0 || roundCapOpen) return [];
+  if (liveCells.some(c => c.standing !== 'fine')) return [];
+  const out: VisualReviewReplacedAudit[] = [];
+  for (const failed of auditTasks) {
+    if (failed.status !== 'failed') continue;
+    const routes = requiredRoutesOf(failed);
+    const since = ms(failed.createdAt);
+    if (routes.length === 0 || since === -Infinity) continue;
+    const later = new Set(auditTasks
+      .filter(t => t.id !== failed.id && t.status === 'completed' && ms(t.createdAt) > since)
+      .map(t => t.id));
+    const evidence = liveCells
+      .map(c => c.current.shot)
+      .filter(s => !!s.auditTaskId && later.has(s.auditTaskId) && ms(s.createdAt) > since);
+    const cov = requiredCoverage(evidence as VisualShot[], routes);
+    if (!cov || cov.covered < cov.required) continue;
+    out.push({ auditTaskId: failed.id, replacedBy: [...new Set(evidence.map(s => s.auditTaskId!))].sort() });
+  }
+  return out;
 }
 
 /**

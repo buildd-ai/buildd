@@ -31,6 +31,6 @@ describe('CredentialBlockedNotice', () => {
 
   it('opens the Mine tab under a personal-only policy', async () => {
     await mount({ route: 'codex', scope: 'personal' });
-    expect(host.querySelector('a')!.getAttribute('href')).toBe('/app/settings/models?scope=mine#keys');
+    expect(host.querySelector('a')!.getAttribute('href')).toBe('/app/settings/keys');
   });
 });

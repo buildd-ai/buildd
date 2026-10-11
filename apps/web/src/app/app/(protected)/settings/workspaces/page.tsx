@@ -4,7 +4,8 @@ import { db } from '@buildd/core/db';
 import { workspaces as workspacesTable, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
-import { teamIdsHolding } from '../_lib/settings-permissions';
+import { permsInAnyTeam, teamIdsHolding } from '../_lib/settings-permissions';
+import { settingsReadOnly } from '@/lib/settings-nav';
 import WorkspacesTable from './WorkspacesTable';
 import { buildWorkspaceRows, WORKSPACE_DEFAULTS } from './rows';
 import { loadWorkspaceActivity } from '@/lib/workspace-activity';
@@ -48,13 +49,11 @@ export default async function WorkspacesSettingsPage() {
   });
 
   return (
-    <SettingsPage title="Workspaces" wide>
+    <SettingsPage title="Workspaces" wide readOnly={settingsReadOnly('workspaces', permsInAnyTeam(permsByTeam))}>
       <section aria-labelledby="ws-list-h">
         <div className="flex items-center justify-between gap-3 mb-1 min-h-8">
           <h2 id="ws-list-h" className="section-label">Your workspaces</h2>
-          {canCreate
-            ? <Link href="/app/settings/workspaces/new" className="btn btn-sm">New workspace</Link>
-            : <span data-testid="create-workspace-read-only" className="text-xs text-text-muted">Admins can create workspaces.</span>}
+          {canCreate && <Link href="/app/settings/workspaces/new" className="btn btn-sm">New workspace</Link>}
         </div>
         {rows.length === 0 ? (
           <p className="text-sm text-text-muted" data-testid="workspaces-empty">

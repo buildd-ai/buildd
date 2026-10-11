@@ -79,7 +79,7 @@ export default function ChatTierPolicySection({ teamId, isAdmin }: { teamId: str
     }
   }
 
-  const disabled = !isAdmin || !loaded;
+  const disabled = !loaded;
   const options = [
     { value: 'auto', label: 'auto', description: 'Last tier used' },
     ...CHAT_TIER_NAMES.map((t) => {
@@ -97,6 +97,10 @@ export default function ChatTierPolicySection({ teamId, isAdmin }: { teamId: str
             <span id="chat-default-tier-label" className="block text-sm font-semibold text-text-primary">Starting tier for new chats</span>
             <span className="block text-meta text-text-muted">A default only. People can change the tier in a chat; the limit is Maximum allowed above.</span>
           </span>
+          {!isAdmin ? (
+            // Read-only: the value, no control (the page says who manages it).
+            <span className="text-sm text-text-primary sm:text-right" data-testid="chat-default-tier-value">{loaded ? (tier ?? 'auto') : '…'}</span>
+          ) : (
           <Select
             aria-labelledby="chat-default-tier-label"
             testId="chat-default-tier"
@@ -111,10 +115,11 @@ export default function ChatTierPolicySection({ teamId, isAdmin }: { teamId: str
               void save({ chatDefaultTier: next }, () => setTier(before));
             }}
           />
+          )}
         </div>
         {startBlocked && (
           <p role="alert" className="text-meta text-status-warning" data-testid="starting-tier-blocked">
-            {tier} is above the Chat maximum ({chatMax}), so new chats start at {chatMax}. Choose a lower starting tier{isAdmin ? ' or raise the maximum above' : ''}.
+            {tier} is above the Chat maximum ({chatMax}), so new chats start at {chatMax}.{isAdmin ? ' Choose a lower starting tier or raise the maximum above.' : ''}
           </p>
         )}
         {legacyReset && (

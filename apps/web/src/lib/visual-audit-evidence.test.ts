@@ -38,8 +38,11 @@ const FIX = '11111111-2222-4333-8444-555555555555';
 function shot(id: string, qa: Record<string, unknown> | null, storageKey: string | null = `artifacts/ws-1/${id}/s.png`) {
   return { id, storageKey, metadata: qa ? { qa, filename: 's.png' } : { filename: 's.png' } };
 }
+// A mobile + desktop pair covers both themes by default (dark phone, light
+// desktop), so tests about other rules need not restate the theme rule.
 const qa = (route: string, viewport: string, extra: Record<string, unknown> = {}) => ({
-  runKey: 'run-1', route, viewport, finding: 'Header and list render; no overflow.', verdict: 'ok', ...extra,
+  runKey: 'run-1', route, viewport, finding: 'Header and list render; no overflow.', verdict: 'ok',
+  theme: viewport === 'mobile' ? 'dark' : 'light', ...extra,
 });
 
 describe('parseQaMeta', () => {
@@ -219,6 +222,73 @@ describe('state shots (QA_PLAN, docs/specs/qa-capture-steps.md)', () => {
     expect(v.unlinkedIssues).toEqual(['si']);
     expect(v.emptyFindings).toEqual(['se']);
     expect(ev(['/app/tasks/:id'], [...shots.slice(0, 2), shot('si', qa('/app/tasks/:id', 'mobile', { state: STATE, verdict: 'issue', fixTaskId: FIX }))], [FIX]).ok).toBe(true);
+  });
+});
+
+describe('theme coverage (both themes per required route)', () => {
+  const ev = (requiredRoutes: string[], shots: ReturnType<typeof shot>[]) =>
+    evaluateVisualAuditEvidence({ requiredRoutes, shots, uploadedIds: new Set(shots.map((s) => s.id)), linkedFixTaskIds: new Set() });
+
+  it('reads the theme a shot was captured in, lowercased, and drops an unknown one', () => {
+    expect(parseQaMeta({ qa: qa('/x', 'mobile', { theme: 'Light' }) })?.theme).toBe('light');
+    expect(parseQaMeta({ qa: qa('/x', 'mobile', { theme: 'sepia' }) })).not.toHaveProperty('theme');
+    expect(parseQaMeta({ qa: qa('/x', 'mobile', { theme: undefined }) })).not.toHaveProperty('theme');
+  });
+
+  it('one theme at both viewports is not covered: the other theme is named', () => {
+    const v = ev(['/app/missions'], [
+      shot('m', qa('/app/missions', 'mobile', { theme: 'dark' })),
+      shot('d', qa('/app/missions', 'desktop', { theme: 'dark' })),
+    ]);
+    expect(v.ok).toBe(false);
+    expect(v.missing).toEqual([]);
+    expect(v.missingThemes).toEqual(['/app/missions @ light theme']);
+  });
+
+  it('shots with no theme recorded count toward neither theme', () => {
+    const v = ev(['/app/missions'], [
+      shot('m', qa('/app/missions', 'mobile', { theme: undefined })),
+      shot('d', qa('/app/missions', 'desktop', { theme: undefined })),
+    ]);
+    expect(v.ok).toBe(false);
+    expect(v.missingThemes).toEqual(['/app/missions @ light theme', '/app/missions @ dark theme']);
+  });
+
+  it('a light and a dark base shot of the route, at any viewport, cover it', () => {
+    const v = ev(['/app/missions'], [
+      shot('md', qa('/app/missions', 'mobile', { theme: 'dark' })),
+      shot('ml', qa('/app/missions', 'mobile', { theme: 'light' })),
+      shot('d', qa('/app/missions', 'desktop', { theme: 'dark' })),
+    ]);
+    expect(v.ok).toBe(true);
+    expect(v).not.toHaveProperty('missingThemes');
+  });
+
+  it('a state shot does not cover a theme', () => {
+    const v = ev(['/app/missions'], [
+      shot('m', qa('/app/missions', 'mobile', { theme: 'dark' })),
+      shot('d', qa('/app/missions', 'desktop', { theme: 'dark' })),
+      shot('s', qa('/app/missions', 'mobile', { theme: 'light', state: 'menu' })),
+    ]);
+    expect(v.missingThemes).toEqual(['/app/missions @ light theme']);
+  });
+
+  it('with no derived routes, the routes the auditor shot need both themes too', () => {
+    const v = ev([], [
+      shot('m', qa('/app/x', 'mobile', { theme: 'dark' })),
+      shot('d', qa('/app/x', 'desktop', { theme: 'dark' })),
+    ]);
+    expect(v.missingThemes).toEqual(['/app/x @ light theme']);
+  });
+
+  it('the rejection names the missing theme and how to record it', () => {
+    const msg = formatVisualEvidenceRejection({
+      ok: false, requiredRoutes: ['/app/x'], missing: [], emptyFindings: [], notUploaded: [], unlinkedIssues: [], invalidVerdicts: [],
+      missingThemes: ['/app/x @ light theme'],
+    });
+    expect(msg).toContain('/app/x @ light theme');
+    expect(msg).toContain('QA_THEME');
+    expect(msg).toContain('qa.theme');
   });
 });
 

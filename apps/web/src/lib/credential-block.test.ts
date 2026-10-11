@@ -38,7 +38,7 @@ describe('credentialBlockCopy', () => {
     expect(credentialBlockCopy({ route: 'cloud', scope: 'team' }).line).toBe('Needs a cloud route key');
   });
   it('opens the Mine tab under a personal-only policy', () => {
-    expect(credentialBlockCopy({ route: 'claude', scope: 'personal' }).href).toBe('/app/settings/models?scope=mine#keys');
+    expect(credentialBlockCopy({ route: 'claude', scope: 'personal' }).href).toBe('/app/settings/keys');
   });
 });
 

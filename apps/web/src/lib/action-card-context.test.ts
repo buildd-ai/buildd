@@ -43,7 +43,7 @@ describe('resolveActionCardContext', () => {
     expect(ctx).toEqual({
       kind: 'initiative',
       label: 'Mobile decision flow',
-      href: '/app/initiatives/ini-1',
+      href: '/app/missions?group=ini-1',
     });
   });
 

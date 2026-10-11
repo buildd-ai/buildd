@@ -447,6 +447,7 @@ async function viewForMission(missionId: string): Promise<{
       title: t.title,
       subjectPrNumber: t.subjectPrNumber,
       createdAt: t.createdAt,
+      roleSlug: t.roleSlug,
     })),
   );
 
@@ -599,6 +600,7 @@ async function viewForMission(missionId: string): Promise<{
         title: t.title,
         status: t.status,
         live: hasLiveWorker(t),
+        runnerClaimable: !!(t.context as Record<string, unknown> | null)?.reviewerFor,
         missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
         waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
       })),
@@ -614,6 +616,7 @@ async function viewForMission(missionId: string): Promise<{
         title: task.title,
         prNumber: superseded.prNumber,
         supersedingTaskId: superseded.supersedingTaskId,
+        ...(superseded.replacedByAudit ? { replacedByAudit: true as const } : {}),
       })),
     },
   };
@@ -776,7 +779,11 @@ async function viewForTask(taskId: string): Promise<{
         columns: { executor: true, isHeld: true },
       })
     : null;
-  const executor = parentMission && !parentMission.isHeld ? parentMission.executor ?? null : null;
+  // A reviewer task is runner-claimable whatever the mission's executor (the
+  // claim gate's missionNotLocal() exempts context.reviewerFor), so it is never
+  // read as waiting on a local session.
+  const isReviewerTask = !!(task.context as Record<string, unknown> | null)?.reviewerFor;
+  const executor = parentMission && !parentMission.isHeld && !isReviewerTask ? parentMission.executor ?? null : null;
 
   const family = [task as LoadedTask, ...attempts];
   // History reads the whole chain: from an attempt (a CI fix that opened a PR

@@ -61,8 +61,9 @@ describe('CiRetrySection', () => {
     expect(host.textContent).toContain('Forbidden');
   });
 
-  it('is disabled for someone who cannot edit the workspace', () => {
+  it('reads as text, with no switch, for someone who cannot edit the workspace', () => {
     act(() => root.render(<CiRetrySection workspaceId="ws-1" initial={false} canEdit={false} />));
-    expect(sw().disabled).toBe(true);
+    expect(sw()).toBeNull();
+    expect(host.querySelector('[data-testid="ci-retry-value"]')!.textContent).toBe('Off');
   });
 });

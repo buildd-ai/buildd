@@ -101,8 +101,9 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   claudeTokenScopes: 'not_secret',
   claudeAiArtifacts: 'not_secret',
   mcpSecrets: 'secret',
-  // Resolved connector descriptors; credential values arrive via mcpSecrets.
-  mcpConnectors: 'not_secret',
+  // A directly mounted oauth/header connector carries its provider token in
+  // `headers`, and a stdio one its env values. Gateway entries carry none.
+  mcpConnectors: 'secret',
   codexCredential: 'secret',
   // Team agent model endpoint: authToken is a credential the agent env carries.
   modelEndpoint: 'secret',
@@ -138,6 +139,7 @@ export interface WorkerSecretChannels {
     [k: string]: unknown;
   };
   modelEndpoint?: { authToken?: string; headers?: Record<string, string>; [k: string]: unknown };
+  mcpConnectors?: Array<{ name?: string; headers?: Record<string, string>; env?: Record<string, string>; [k: string]: unknown }>;
   roleInstructions?: { slug?: string; content?: string } | null;
   skillBundles?: Array<{ slug?: string; content?: string; files?: Array<{ path?: string; content?: string; encoding?: string }> }>;
   /** The packaged role bundle held in memory (not a claim field; carries the same kind of text). */
@@ -203,6 +205,14 @@ export function buildWorkerSecretValues(
     ...Object.entries(worker.modelEndpoint?.headers ?? {}).flatMap(([name, value]) => [
       { label: `modelEndpointHeader:${name}`, value },
       { label: `modelEndpointHeader:${name}`, value: typeof value === 'string' ? value.replace(/^Bearer\s+/i, '') : undefined },
+    ]),
+    // Directly mounted connectors: header values whole and without `Bearer `, stdio env values.
+    ...(Array.isArray(worker.mcpConnectors) ? worker.mcpConnectors : []).flatMap(c => [
+      ...Object.entries(c?.headers ?? {}).flatMap(([name, value]) => [
+        { label: `mcpConnector:${c?.name ?? 'connector'}:${name}`, value },
+        { label: `mcpConnector:${c?.name ?? 'connector'}:${name}`, value: typeof value === 'string' ? value.replace(/^Bearer\s+/i, '') : undefined },
+      ]),
+      ...Object.entries(c?.env ?? {}).map(([name, value]) => ({ label: `mcpConnector:${c?.name ?? 'connector'}:${name}`, value })),
     ]),
     ...promptTextValues(worker),
   ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);

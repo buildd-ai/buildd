@@ -14,7 +14,7 @@ const enabledConfig: WorkspaceReleaseConfig = {
 describe('ReleaseSection — AC-47 (no Release now trigger on workspace config)', () => {
   it('does not render a Release now button when a release strategy is configured', () => {
     const html = renderToStaticMarkup(
-      <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={enabledConfig} hasRepo={true} />,
+      <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={enabledConfig} hasRepo={true} canEdit />,
     );
     // "Release now" only appears (if at all) as a quoted reference inside help copy,
     // never as the text of a rendered <button> (which would read exactly `>Release now<`).
@@ -24,14 +24,14 @@ describe('ReleaseSection — AC-47 (no Release now trigger on workspace config)'
 
   it('does not render a Release now button when no strategy is configured', () => {
     const html = renderToStaticMarkup(
-      <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={null} hasRepo={true} />,
+      <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={null} hasRepo={true} canEdit />,
     );
     expect(html).not.toContain('>Release now<');
   });
 
   it('keeps the strategy selector, branch/workflow fields, trigger-policy selector, and read-only token status', () => {
     const html = renderToStaticMarkup(
-      <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={enabledConfig} hasRepo={true} />,
+      <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={enabledConfig} hasRepo={true} canEdit />,
     );
     expect(html).toContain('Strategy');
     expect(html).toContain('Workflow file');
@@ -43,7 +43,7 @@ describe('ReleaseSection — AC-47 (no Release now trigger on workspace config)'
 
   it('points manual-trigger help text at Home / MCP instead of the removed button', () => {
     const html = renderToStaticMarkup(
-      <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={enabledConfig} hasRepo={true} />,
+      <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={enabledConfig} hasRepo={true} canEdit />,
     );
     // Mission detail no longer carries the trigger (a release ships the workspace, not a mission).
     expect(html).toContain('on Home');

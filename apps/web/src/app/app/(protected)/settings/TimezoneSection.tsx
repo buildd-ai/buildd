@@ -119,10 +119,7 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
   );
 
   return (
-    <Section
-      title="Timezone"
-      action={!loading && !canEdit ? <span data-testid="timezone-read-only" className="text-xs text-text-muted">Admins can change this.</span> : undefined}
-    >
+    <Section title="Timezone">
       {/* One fact, one select: an L1 row on a hairline, never a card. */}
       <div className="divide-y divide-border-default border-y border-border-default">
         {teams.length > 1 && (
@@ -149,11 +146,14 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
           <div className="sm:w-64 shrink-0">
             {loading ? (
               <p className="text-sm text-text-muted">Loading…</p>
+            ) : !canEdit ? (
+              // Read-only: the value, no control (the page says who manages it).
+              <p data-testid="timezone-value" className="text-sm text-text-primary sm:text-right">{stored ?? 'UTC'}</p>
             ) : (
               <Select
                 aria-label="Team timezone"
                 value={draft}
-                disabled={!canEdit || busy}
+                disabled={busy}
                 onChange={setDraft}
                 searchable
                 options={zones.map((z) => ({ value: z, label: z }))}
