@@ -176,7 +176,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Authorized execution (claims, heartbeats, results, webhooks, Dispatch callbacks) MUST keep moving while the web app is down, served by a separate Worker running the same handlers.
 - [Failure Incident Recovery](./failure-incident-recovery.md) · @max — verified 2026-10-11
   A failure incident MUST carry one fresh, versioned recovery assessment that is re-checked before any repair, resolved only by a passing check, and shown identically on every surface.
-- [Living Specs](./living-specs.md) · @max — verified 2026-10-10
+- [Living Specs](./living-specs.md) · @max — verified 2026-10-11
   Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 - [Pluggable Knowledge Store](./pluggable-knowledge-store.md) · @max — verified 2026-10-10
   The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
