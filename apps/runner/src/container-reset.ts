@@ -49,6 +49,8 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { pidsToStop, type ProcInfo } from './run-once';
 import { resolveBuilddHome } from './buildd-home';
+import { DEPENDENCY_MANIFEST_FILENAME, findDependencyRoots, verifyDependencyHandover, type DependencyManifest, type DependencyHandoverReport } from './dependency-manifest';
+import { pnpmStoreDir } from './warm-repo';
 import { emitMetric, emitPhase, emitRepoSource } from './phase-lines';
 
 /** Printed on success, last line: the agent reads it next to exit code 0. */
@@ -66,6 +68,8 @@ const PACK_RE = /^pack-[0-9a-f]{40,64}\.pack$/;
 export interface ResetPaths {
   /** The container user's HOME. Wiped, except KEEP_DIRNAME. */
   home: string;
+  warmHandover?: 'off' | 'repo' | 'deps';
+  expectedDigest?: string;
   /** Where --once clones each workspace (BUILDD_HOME/once-workspaces). */
   isolationRoot: string;
   /** The bun install cache (warm-repo.ts bunCacheDir). Kept, scrubbed. */
@@ -93,6 +97,7 @@ export interface ResetResult {
   killed: number;
   keptPacks: number;
   keptCache: boolean;
+  handover?: DependencyHandoverReport;
 }
 
 export function keepDirOf(home: string): string {
@@ -114,6 +119,8 @@ export function containerResetPaths(env: Record<string, string | undefined>, cac
   const builddHome = resolveBuilddHome({ env, home });
   return {
     home,
+    warmHandover: env.BUILDD_WARM_HANDOVER === 'deps' ? 'deps' : env.BUILDD_WARM_HANDOVER === 'repo' ? 'repo' : 'off',
+    expectedDigest: env.BUILDD_DEPS_EXPECTED_DIGEST,
     isolationRoot: env.BUILDD_WORKSPACE_ISOLATION_ROOT || join(builddHome, 'once-workspaces'),
     cacheDir,
     skeletonDirs: [builddHome, join(home, 'work')],
@@ -266,12 +273,32 @@ export function resetContainer(paths: ResetPaths, d: ResetDeps): ResetResult {
     for (const name of (() => { try { return readdirSync(paths.isolationRoot); } catch { return []; } })()) {
       const clone = join(paths.isolationRoot, name);
       if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
-      try { if (!lstatSync(join(clone, '.git')).isDirectory()) continue; } catch { continue; }
-      result.keptPacks += keepClone(clone, join(keep, 'git', name));
+      try { if (!lstatSync(clone).isDirectory() || !lstatSync(join(clone, '.git')).isDirectory()) continue; } catch { continue; }
+      if (!paths.warmHandover || paths.warmHandover === 'off') continue;
+      const cloneKeep = join(keep, 'git', name);
+      result.keptPacks += keepClone(clone, cloneKeep);
+      if (paths.warmHandover === 'deps') {
+        let expected: DependencyManifest | null = null;
+        try { expected = JSON.parse(readFileSync(join(clone, DEPENDENCY_MANIFEST_FILENAME), 'utf8')); } catch { /* absence falls back */ }
+        // ls-files cannot execute hooks; explicitly disable the optional fsmonitor.
+        const listed = git(clone, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', 'ls-files', '-z']);
+        const trackedPaths = listed.ok ? listed.out.split('\0').filter(Boolean) : [];
+        result.handover = verifyDependencyHandover({ repoRoot: clone, storeDir: pnpmStoreDir(paths.cacheDir), expected,
+          expectedDigest: paths.expectedDigest ?? '', trackedPaths });
+        if (result.handover.fellBack) writeFileSync(join(keep, 'deps-fallback'), result.handover.reason ?? 'verification_failed');
+        if (!result.handover.fellBack) {
+          for (const path of findDependencyRoots(clone)) {
+            if (trackedPaths.some(t => t === path || t.startsWith(`${path}/`))) continue;
+            const destination = join(cloneKeep, 'deps', path);
+            mkdirSync(dirname(destination), { recursive: true });
+            renameSync(join(clone, path), destination);
+          }
+        }
+      }
     }
 
     const keptCache = join(keep, 'cache');
-    if (isInside(paths.cacheDir, paths.home) && existsSync(paths.cacheDir) && lstatSync(paths.cacheDir).isDirectory()) {
+    if (paths.warmHandover && paths.warmHandover !== 'off' && isInside(paths.cacheDir, paths.home) && existsSync(paths.cacheDir) && lstatSync(paths.cacheDir).isDirectory()) {
       renameSync(paths.cacheDir, keptCache);
       scrubCache(keptCache, keptCache);
       result.keptCache = true;
@@ -476,6 +503,16 @@ function seed(clonePath: string, cloneUrl: string, keptDir: string, o: SeedOptio
     git(clonePath, ['config', '--unset', 'gc.auto']);
     git(clonePath, ['symbolic-ref', 'refs/remotes/origin/HEAD', head]);
     if (!git(clonePath, ['checkout', '-q', '-B', branch, '--track', `origin/${branch}`]).ok) return failWith('checkout failed');
+    const dependencyRoot = join(keptDir, 'deps');
+    if (existsSync(dependencyRoot)) {
+      for (const path of findDependencyRoots(dependencyRoot)) {
+        const destination = join(clonePath, path);
+        // The freshly checked-out origin owns every tracked path.
+        if (existsSync(destination)) continue;
+        mkdirSync(dirname(destination), { recursive: true });
+        renameSync(join(dependencyRoot, path), destination);
+      }
+    }
     rmSync(keptDir, { recursive: true, force: true });
     o.log(`[reuse] seeded ${clonePath} from ${packs} kept pack(s); refs fetched from origin`);
     return true;

@@ -40,6 +40,7 @@ export interface RunnerSizeDecision {
    * report (normalizeRunnerSizeDecision drops it). Keys container reuse.
    */
   workspaceId?: string;
+  warmHandover?: 'off' | 'repo' | 'deps';
 }
 
 /**
@@ -93,10 +94,11 @@ export function runnerSizeRequest(cfg: {
 
 /** buildd's answer, or null when it is not one (wrong task, unknown size). */
 export function parseRunnerSizeResponse(body: unknown, taskId: string): RunnerSizeDecision | null {
-  const b = (body ?? {}) as { taskId?: unknown; workspaceId?: unknown; runnerSize?: unknown; source?: unknown; reason?: unknown };
+  const b = (body ?? {}) as { taskId?: unknown; workspaceId?: unknown; warmHandover?: unknown; runnerSize?: unknown; source?: unknown; reason?: unknown };
   if (b.taskId !== taskId) return null;
   const decision = normalizeRunnerSizeDecision({ size: b.runnerSize, source: b.source, reason: b.reason });
   if (!decision) return null;
+  if (b.warmHandover === 'off' || b.warmHandover === 'repo' || b.warmHandover === 'deps') decision.warmHandover = b.warmHandover;
   return typeof b.workspaceId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(b.workspaceId) ? { ...decision, workspaceId: b.workspaceId } : decision;
 }
 

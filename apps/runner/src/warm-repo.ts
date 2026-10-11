@@ -42,7 +42,7 @@ import {
   type WarmRefreshReason,
 } from './phase-lines';
 import { fetchOriginWithRetry } from './git-clone';
-import { isReusedContainer } from './container-reset';
+import { isReusedContainer, keepDirOf } from './container-reset';
 import { depsWorkSettled, setDepsPrelude } from './deps-gate';
 
 export const WARM_ENV_FLAG = 'BUILDD_WARM_REPO';
@@ -508,6 +508,8 @@ export interface WarmRepoDeps {
    * against its store index).
    */
   reusedContainer?: boolean;
+  /** Reset rejected dependencies: restore a clean cache before the next install. */
+  depsFallback?: boolean;
   /**
    * Restore the dependency cache in the background instead of before the
    * clone is handed over (cloud --once runs; deps-gate.ts). The promise goes
@@ -816,7 +818,14 @@ export class WarmRepoSession {
         this.clonePath = clonePath;
         emitMetric('clone_bytes', objectBytes(clonePath), this.d.lineOpts);
       },
-      afterSeed: (clonePath) => { this.clonePath = clonePath; },
+      afterSeed: (clonePath) => {
+        this.clonePath = clonePath;
+        if (!this.disabled && this.d.depsFallback) {
+          const got = this.d.transport.getJson('/warm');
+          const manifest = got.status === 200 ? parseWarmManifest(got.body) : null;
+          if (manifest) this.restoreCache(manifest);
+        }
+      },
     };
   }
 
@@ -885,7 +894,7 @@ export class WarmRepoSession {
     }
 
     let cacheInBackground = false;
-    if (this.d.reusedContainer && dirHasEntries(this.d.cacheDir)) {
+    if (this.d.reusedContainer && !this.d.depsFallback && dirHasEntries(this.d.cacheDir)) {
       this.d.log('[warm] reused container: keeping the dependency cache on disk, not restoring the snapshot\'s');
     } else if (this.d.deferCache && manifest.cacheBytes > 0) {
       // Started now, so the extract overlaps the fetch below and the checkout
@@ -1222,6 +1231,7 @@ export function createWarmRepoSession(
   const session = new WarmRepoSession({
     ...(opts.deferCache ? { deferCache: true, onDeferredCache: setDepsPrelude } : {}),
     reusedContainer: isReusedContainer(env),
+    depsFallback: !!env.HOME && existsSync(join(keepDirOf(env.HOME), 'deps-fallback')),
     deferUpload: env[WARM_UPLOAD_DEFER_ENV] === '1',
     transport: curlTransport(env[SNAPSHOT_URL_ENV] ?? ''),
     cacheDir: bunCacheDir(env),

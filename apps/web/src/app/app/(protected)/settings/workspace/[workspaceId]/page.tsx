@@ -36,6 +36,7 @@ import BranchStrategySection from './BranchStrategySection';
 import CopyReviewSection from './CopyReviewSection';
 import { copyReviewConfigOf } from '@buildd/shared';
 import CiRetrySection from './CiRetrySection';
+import WarmHandoverSection from '@/components/WarmHandoverSection';
 import ReleaseSection from './ReleaseSection';
 import SubjectPolicySection from './SubjectPolicySection';
 import ExecutorSection from './ExecutorSection';
@@ -243,6 +244,7 @@ export default async function WorkspaceSettingsPage({
             effectiveBranchStrategy={resolveBranchStrategy(gitConfig)}
             defaultBranch={gitConfig?.defaultBranch || 'main'}
           />
+          <WarmHandoverSection workspaceId={workspace.id} teamId={workspace.teamId} initial={gitConfig?.warmHandover ?? null} canEdit={canManageSettings} />
           <CiRetrySection
             workspaceId={workspace.id}
             initial={gitConfig?.enforceGreenCI === true}

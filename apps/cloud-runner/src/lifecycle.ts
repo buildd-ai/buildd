@@ -71,7 +71,23 @@ export type RunOutcome = 'done' | 'failed' | 'refused' | 'usage' | 'parked' | 'd
 /** What happened to the best-effort "mark the worker failed" call after a crash. */
 export type CrashReport = 'sent' | 'rejected' | 'error' | 'no_worker_id';
 
+export type WarmHandoverMode = 'off' | 'repo' | 'deps';
+export interface HandoverReport {
+  mode: WarmHandoverMode;
+  verifyMs: number | null;
+  entriesChanged: number;
+  entriesExplained: number;
+  entriesDeleted: number;
+  fellBack: boolean;
+  reason?: string;
+  storeHashMs?: number | null;
+}
+
 export interface RunState {
+  warmHandover?: WarmHandoverMode;
+  depsDigest?: string;
+  depsBaselineClosed?: boolean;
+  handover?: HandoverReport;
   taskId: string | null;
   /** 1 for the first run of this task, +1 for each later dispatch after an exit. */
   attempt: number;
@@ -170,6 +186,7 @@ export type DispatchDecision =
   | { action: 'ignore'; reason: 'already_live' | 'not_parked' };
 
 export interface DispatchRequest {
+  warmHandover?: WarmHandoverMode;
   /** `task.resume`: continue this parked worker instead of claiming. */
   resumeWorkerId?: string;
   /** A `task.scheduled` wake: the time it was scheduled for (epoch ms), for the run report. */

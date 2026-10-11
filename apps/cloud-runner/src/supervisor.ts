@@ -132,6 +132,7 @@ export interface SupervisorConfig extends ContainerEnvSource, OtelEnv {
   resumableRuns?: boolean;
   /** Set on a lease agent (container-lease.ts): its workspace, size and slot. Absent: a task agent. */
   lease?: LeaseKey;
+  reuseEnabled?: boolean;
   /** How long a lease keeps a container warm after a run (resolveReuseWindowMs). */
   reuseWindowMs?: number;
 }
@@ -292,6 +293,7 @@ export class TaskSupervisor {
       taskId: this.d.taskId,
       attempt: decision.attempt,
       status: 'starting',
+      warmHandover: this.d.config.reuseEnabled === false ? 'off' : (request.warmHandover === 'repo' || request.warmHandover === 'deps' ? request.warmHandover : (request.resumeWorkerId || request.deferredRetry ? state.warmHandover : 'off')),
       startedAt: this.d.now(),
       ...(this.d.config.agentVersion ? { agentVersion: this.d.config.agentVersion } : {}),
       outputTail: [],
@@ -346,7 +348,7 @@ export class TaskSupervisor {
       return r.accepted ? { ...r, reused: false } : r;
     }
     if (sameTask && (state.status === 'starting' || state.status === 'running')) return refuse('already_live');
-    const decision = decideLeaseClaim(state, {
+    const leaseDecision = decideLeaseClaim(state, {
       key: lease,
       workspaceId: request.workspaceId,
       size: lease.size,
@@ -354,6 +356,7 @@ export class TaskSupervisor {
       windowMs: this.d.config.reuseWindowMs ?? 0,
       containerRunning: this.d.container.running,
     });
+    const decision = leaseDecision.claim === 'warm' && (this.d.config.reuseEnabled === false || (request.warmHandover !== 'repo' && request.warmHandover !== 'deps')) ? { claim: 'cold' as const } : leaseDecision;
     if (decision.claim === 'busy') return refuse(decision.reason === 'tail' ? 'tail' : 'busy');
     if (request.warmOnly && decision.claim !== 'warm') return refuse('not_warm');
     const reuse: ReusedContainer | undefined = decision.claim === 'warm'
@@ -361,6 +364,7 @@ export class TaskSupervisor {
           fromTaskId: decision.warm.fromTaskId,
           idleMs: Math.max(0, this.d.now() - decision.warm.since),
           baselinePrepMs: decision.warm.baselinePrepMs,
+          ...(request.warmHandover === 'deps' && decision.warm.depsDigest ? { depsDigest: decision.warm.depsDigest } : {}),
           // The upload the previous run deferred is not needed: this run takes its container.
           ...(decision.warm.uploadPending ? { uploadSkipped: true } : {}),
         }
@@ -684,6 +688,7 @@ export class TaskSupervisor {
       const env = {
         ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()),
         ...otelEnv,
+        BUILDD_WARM_HANDOVER: this.d.getState().warmHandover ?? 'off',
         ...(await this.modelAuthEnv()),
         // A lease keeps the container: its run leaves the warm upload for the lease's end.
         ...(this.d.config.lease && this.d.config.WARM_REPOS === '1' ? { [WARM_UPLOAD_DEFER_ENV]: '1' } : {}),
@@ -760,7 +765,8 @@ export class TaskSupervisor {
     // A lease keeps the container of a run that ended done or failed for the
     // next task of its workspace (container-lease.ts); everything else stops.
     const browser = await this.d.closeBrowser?.();
-    const keepWarm = !!this.d.config.lease && keepsContainerWarm(r.outcome) && this.d.container.running;
+    const mode = this.d.getState().warmHandover;
+    const keepWarm = this.d.config.reuseEnabled !== false && (mode === 'repo' || mode === 'deps') && !!this.d.config.lease && keepsContainerWarm(r.outcome) && this.d.container.running;
     if (!keepWarm) await this.stopContainer(r.outcome === 'crashed' ? 'run crashed' : r.outcome === 'parked' ? 'run parked' : 'run finished');
     const crashReport = await this.reportCrashIfNeeded(r);
     // An attempt that died before claiming (no worker) because the agent
@@ -795,6 +801,7 @@ export class TaskSupervisor {
       parkedAt: state.parkedAt,
       deferredRetry,
       reusedContainer: state.reusedContainer,
+      handover: state.handover ?? { mode: state.warmHandover ?? 'off', verifyMs: null, entriesChanged: 0, entriesExplained: 0, entriesDeleted: 0, fellBack: false },
       modelAuth: this.d.ownerSeat?.modelAuth() ?? null,
     });
     const lease = this.d.config.lease;
@@ -804,6 +811,7 @@ export class TaskSupervisor {
           workspaceId: lease.workspaceId,
           size: lease.size,
           fromTaskId: this.d.taskId,
+          ...(state.depsDigest ? { depsDigest: state.depsDigest } : {}),
           since: this.d.now(),
           // The baseline is a fresh container's prep: measured by the run that
           // started this container, carried through every reuse after it.
@@ -898,7 +906,7 @@ export class TaskSupervisor {
     let detail = '';
     const resetStart = this.d.now();
     try {
-      const proc = await c.exec([...RESET_COMMAND], { stdout: 'pipe', stderr: 'pipe', env: { ...IMAGE_ENV, BUILDD_EXECUTOR: 'cloud' } });
+      const proc = await c.exec([...RESET_COMMAND], { stdout: 'pipe', stderr: 'pipe', env: { ...IMAGE_ENV, BUILDD_EXECUTOR: 'cloud', BUILDD_WARM_HANDOVER: this.d.getState().warmHandover ?? 'off', ...(reuse.depsDigest ? { BUILDD_DEPS_EXPECTED_DIGEST: reuse.depsDigest } : {}) } });
       const lines: string[] = [];
       const read = async (stream: ReadableStream<Uint8Array> | null) => {
         if (!stream) return;
@@ -910,6 +918,15 @@ export class TaskSupervisor {
         this.d.sleep(RESET_TIMEOUT_MS).then(() => null),
       ]);
       ok = code === 0 && lines.includes(RESET_OK_LINE);
+      for (const line of lines) {
+        if (!line.startsWith('BUILDD_HANDOVER=')) continue;
+        try {
+          const report = JSON.parse(line.slice('BUILDD_HANDOVER='.length));
+          if (report && typeof report.verifyMs === 'number' && typeof report.fellBack === 'boolean') {
+            this.patch({ handover: { ...report, mode: this.d.getState().warmHandover ?? 'off' } });
+          }
+        } catch { /* Failed reset still replaces container. */ }
+      }
       detail = code === null ? 'timed out' : `exit ${code}: ${lines.slice(-2).join(' | ')}`.slice(0, 300);
     } catch (err) {
       detail = describe(err);
@@ -921,7 +938,7 @@ export class TaskSupervisor {
       return true;
     }
     this.d.log(`[cloud-runner] task ${this.d.taskId}: container reset failed (${detail}); starting a fresh container instead`);
-    this.patch({ reusedContainer: { fromTaskId: reuse.fromTaskId, idleMs: reuse.idleMs, fallback: 'reset_failed', resetMs } });
+    this.patch({ handover: { mode: this.d.getState().warmHandover ?? 'off', verifyMs: resetMs, entriesChanged: 0, entriesExplained: 0, entriesDeleted: 0, fellBack: true, reason: 'reset_failed' }, reusedContainer: { fromTaskId: reuse.fromTaskId, idleMs: reuse.idleMs, fallback: 'reset_failed', resetMs } });
     await this.stopContainer('container reset failed');
     return false;
   }
@@ -957,6 +974,13 @@ export class TaskSupervisor {
           return;
         }
       }
+      // Only one runner-issued baseline, before any agent can execute.
+      // This latch survives DO restarts; later stdout cannot replace it.
+      if (line.startsWith('BUILDD_DEPS_MANIFEST=')) {
+        const digest = line.slice('BUILDD_DEPS_MANIFEST='.length);
+        if (state.warmHandover === 'deps' && !state.depsBaselineClosed && !state.depsDigest && /^[a-f0-9]{64}$/.test(digest)) this.patch({ depsDigest: digest });
+        return;
+      }
       const claimDeferredReason = parseClaimDeferredLine(line);
       if (claimDeferredReason) {
         this.patch({ claimDeferredReason });
@@ -966,6 +990,7 @@ export class TaskSupervisor {
       if (worktreeMode) { this.patchTimings({ worktreeMode }); return; }
       const phase = parsePhaseLine(line);
       if (phase) {
+        if (phase.phase === 'session_start') this.patch({ depsBaselineClosed: true });
         const runnerPhases = recordPhase(state.timings?.runnerPhases, phase.phase, phase.at);
         if (runnerPhases !== state.timings?.runnerPhases) this.patchTimings({ runnerPhases });
         return;

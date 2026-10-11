@@ -17,6 +17,9 @@ mock.module('@/lib/runner-size-store', () => ({
   runnerSizeOfWorker: mockRunnerSizeOfWorker,
 }));
 
+const mockWarmHandover = mock(() => Promise.resolve('off'));
+mock.module('@/lib/warm-handover-store', () => ({ resolveWorkspaceWarmHandover: mockWarmHandover }));
+
 import { POST } from './route';
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -52,21 +55,27 @@ describe('POST /api/runner/runner-size', () => {
     const res = await POST(req());
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
-    expect(await res.json()).toEqual({ taskId: 'task-1', workspaceId: 'ws-1', runnerSize: 'large', source: 'derived', reason: 'memory_pressure' });
+    expect(await res.json()).toEqual({ taskId: 'task-1', workspaceId: 'ws-1', warmHandover: 'off', runnerSize: 'large', source: 'derived', reason: 'memory_pressure' });
     // Resolved server-side from the workspace row the dispatch token matched, and a fresh derivation is stored.
     expect(mockResolveWorkspaceRunnerSize).toHaveBeenCalledWith(WS, { persist: true });
     expect(mockResolveDispatchTask.mock.calls[0]![1]).toEqual({ taskId: 'task-1', dispatchToken: DISPATCH });
   });
 
+  it('passes authenticated policy to the dispatcher', async () => {
+    mockWarmHandover.mockResolvedValueOnce('deps');
+    expect((await (await POST(req())).json()).warmHandover).toBe('deps');
+    expect(mockWarmHandover).toHaveBeenCalledWith(WS);
+  });
+
   it('a default (standard) answer', async () => {
     mockResolveWorkspaceRunnerSize.mockResolvedValue({ size: 'standard', source: 'default', reason: null });
-    expect(await (await POST(req())).json()).toEqual({ taskId: 'task-1', workspaceId: 'ws-1', runnerSize: 'standard', source: 'default', reason: null });
+    expect(await (await POST(req())).json()).toEqual({ taskId: 'task-1', workspaceId: 'ws-1', warmHandover: 'off', runnerSize: 'standard', source: 'default', reason: null });
   });
 
   it("a resume is pinned to the class the worker's parked attempt ran in", async () => {
     mockRunnerSizeOfWorker.mockResolvedValue('standard');
     const body = await (await POST(req({ body: { taskId: 'task-1', workerId: 'worker-1' } }))).json();
-    expect(body).toEqual({ taskId: 'task-1', workspaceId: 'ws-1', runnerSize: 'standard', source: 'pinned', reason: null });
+    expect(body).toEqual({ taskId: 'task-1', workspaceId: 'ws-1', warmHandover: 'off', runnerSize: 'standard', source: 'pinned', reason: null });
     expect(mockRunnerSizeOfWorker).toHaveBeenCalledWith('ws-1', 'worker-1');
     expect(mockResolveWorkspaceRunnerSize).not.toHaveBeenCalled();
   });

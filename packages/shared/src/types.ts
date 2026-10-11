@@ -227,6 +227,7 @@ export interface BillingRedirectResponse {
 }
 
 export interface Team {
+  warmHandover?: import('./warm-handover').WarmHandover;
   id: string;
   name: string;
   slug: string;

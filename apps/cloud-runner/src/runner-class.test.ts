@@ -131,3 +131,11 @@ describe('runnerSeconds (fair-use hook)', () => {
     expect(runnerSeconds('large', 5_000, 1_000)).toBeNull();
   });
 });
+
+
+test('warm handover only comes from the authenticated size response', () => {
+  for (const mode of ['off', 'repo', 'deps'] as const) {
+    expect(parseRunnerSizeResponse({ taskId: TASK, runnerSize: 'standard', warmHandover: mode }, TASK)?.warmHandover).toBe(mode);
+  }
+  expect(parseRunnerSizeResponse({ taskId: TASK, runnerSize: 'standard', warmHandover: 'anything' }, TASK)?.warmHandover).toBeUndefined();
+});

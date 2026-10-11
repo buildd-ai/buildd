@@ -132,6 +132,7 @@ beforeEach(() => {
   const home = join(dir, 'home');
   const builddHome = join(home, '.buildd');
   paths = {
+    warmHandover: 'repo',
     home,
     isolationRoot: join(builddHome, 'once-workspaces'),
     cacheDir: join(home, '.bun', 'install', 'cache'),
