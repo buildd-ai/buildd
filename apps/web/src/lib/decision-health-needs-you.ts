@@ -155,8 +155,10 @@ async function dbReadCounts(teamId: string, since: Date): Promise<DecisionHealth
     .orderBy(desc(decisionRecords.createdAt)).limit(1);
 
   const { providerErrorExcerpt } = await import('@builddai/ai-kit/decide');
-  const orchError = (lastOrch?.receipt as { error?: { status?: number; body?: string } } | null)?.error;
-  const fromOrch = orchError?.status ? providerErrorExcerpt(orchError.status, orchError.body ?? '') : null;
+  const orchError = (lastOrch?.receipt as { error?: unknown } | null)?.error as { status?: unknown; body?: unknown } | undefined;
+  const fromOrch = typeof orchError?.status === 'number' && orchError.status
+    ? providerErrorExcerpt(orchError.status, typeof orchError.body === 'string' ? orchError.body : '')
+    : null;
   const fromKind = providerErrorFromReason(lastKind?.reason);
   const orchNewer = (lastOrch?.createdAt?.getTime() ?? 0) >= (lastKind?.createdAt?.getTime() ?? 0);
   return { calls, providerErrors, lastError: (orchNewer ? fromOrch ?? fromKind : fromKind ?? fromOrch) ?? null };

@@ -37,8 +37,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
-import { ACCESS_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
-import { loadDecisionHealthNeedsYou } from '@/lib/decision-health-needs-you';
+import { ACCESS_NEEDS_YOU, DECISION_HEALTH_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -1844,9 +1843,9 @@ export default async function HomePage({
 
         // 9. A team whose decisions all fail at the provider (a token Workers AI
         // refuses, a revoked key): one card per team for people who can change
-        // the decision model. Read from the ledgers; no push (lib/decision-health-needs-you.ts).
+        // the decision model. Read from the ledgers; no push (DECISION_HEALTH_NEEDS_YOU in modules.ts).
         if (wsIds.length > 0) {
-          waitingOnYou.push(...await loadDecisionHealthNeedsYou(user?.id, wsIds));
+          waitingOnYou.push(...await DECISION_HEALTH_NEEDS_YOU(user?.id, wsIds));
         }
 
         // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d

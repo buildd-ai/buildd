@@ -46,8 +46,8 @@ mock.module('@/lib/artifact-attachment-cleanup', () => ({
 // Saving a decision model probes it first (packages/core/decision-probe.ts).
 const probeCalls: any[] = [];
 let probeResult: any = { ok: true, model: 'probe-model', latencyMs: 10 };
-mock.module('@buildd/core/decision-probe', () => ({
-  probeDecisionModel: async (config: any, scope: any) => { probeCalls.push({ config, scope }); return probeResult; },
+mock.module('@/modules', () => ({
+  DECISION_MODEL_PROBE: async (config: any, scope: any) => { probeCalls.push({ config, scope }); return probeResult; },
 }));
 
 import { DELETE, GET, PATCH } from './route';
