@@ -24,6 +24,8 @@ let worktrees: Map<string, string>;
 let existingPaths: Set<string>;
 /** Branch names whose `origin/<name>` ref the fetchBranch probe reports missing. */
 let missingBranches: Set<string>;
+/** Branch names the fetchBranch probe counts as more than 50 commits ahead of trunk. */
+let divergedBranches: Set<string>;
 const MAIN_WORKTREE = '/repo';
 const DEFAULT_BRANCH = 'dev';
 // Real mission branches always carry the `mission/` prefix
@@ -64,6 +66,7 @@ function mockExecSync(cmd: string, opts: Record<string, unknown>) {
     if (candidate && missingBranches.has(candidate)) {
       fail(`unknown revision or path not in the working tree: ${candidate}`, 128);
     }
+    if (candidate && divergedBranches.has(candidate)) return '240';
     return '5'; // fetchBranch probe: candidate exists, not diverged
   }
 
@@ -107,7 +110,7 @@ function mockExecFile(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { setupWorktree, __setGitOpsDeps, __resetGitOpsDeps } = require('../../src/git-operations');
+const { setupWorktree, takeSetupWorktreeError, __setGitOpsDeps, __resetGitOpsDeps } = require('../../src/git-operations');
 
 function injectDeps() {
   __setGitOpsDeps({
@@ -130,6 +133,7 @@ beforeEach(() => {
   worktrees = new Map([[DEFAULT_BRANCH, MAIN_WORKTREE]]);
   existingPaths = new Set([MAIN_WORKTREE, `${MAIN_WORKTREE}/.git`, `${MAIN_WORKTREE}/.buildd-worktrees`]);
   missingBranches = new Set();
+  divergedBranches = new Set();
   injectDeps();
 });
 
@@ -386,5 +390,64 @@ describe('setupWorktree — mission integration branch guard', () => {
     expect(adds[0].cmd).not.toContain(`-b "${MISSION_BRANCH}"`);
     expect(adds[0].cmd).toContain(`-b "${TASK_BRANCH}"`);
     expect(adds[0].cmd).toContain(`"origin/${MISSION_BRANCH}"`);
+  });
+
+  // Regression (spec workflow-state-kernel §13.11 rule 1, "diverged mission
+  // branch repair"): every conflict / CI / migration attempt on a mission
+  // integration PR logged "diverged on remote — starting fresh from dev",
+  // committed nothing to the PR and still completed. The PR's head is the
+  // mission branch, which is far ahead of trunk by construction, and the
+  // integration-branch guard then refused to check it out anyway.
+  test('repair target is a diverged mission branch: worktree is the PR head itself, no fallback to trunk', async () => {
+    divergedBranches.add(MISSION_BRANCH);
+    const result = await setupWorktree(
+      MAIN_WORKTREE,
+      'buildd/fixit12-after-conflict',
+      DEFAULT_BRANCH,
+      'worker-repair-mission',
+      {
+        baseBranch: MISSION_BRANCH,
+        resumeBranch: MISSION_BRANCH,
+        prNumber: 4328,
+        repairTarget: { prNumber: 4328, headRef: MISSION_BRANCH, headSha: 'abc1234', baseRef: DEFAULT_BRANCH },
+      },
+    );
+
+    expect(result).not.toBeNull();
+    expect(result.fallback).toBeUndefined();
+    expect(result.base).toBe(`origin/${MISSION_BRANCH}`);
+    expect(result.branch).toBe(MISSION_BRANCH);
+    expect(result.sharedBranch).toBeUndefined();
+  });
+
+  test('without a repairTarget stamp a diverged mission resume branch still falls back (runaway-attempt rule unchanged)', async () => {
+    divergedBranches.add(MISSION_BRANCH);
+    const result = await setupWorktree(
+      MAIN_WORKTREE,
+      'buildd/fixit12-after-conflict',
+      DEFAULT_BRANCH,
+      'worker-no-target',
+      { resumeBranch: MISSION_BRANCH },
+    );
+    expect(result).not.toBeNull();
+    expect(result.fallback).toEqual({ candidate: MISSION_BRANCH, reason: 'diverged' });
+    expect(result.base).toBe(`origin/${DEFAULT_BRANCH}`);
+  });
+
+  test('repair target head missing on the remote: setup fails with repair_target_missing instead of starting fresh', async () => {
+    missingBranches.add(MISSION_BRANCH);
+    const result = await setupWorktree(
+      MAIN_WORKTREE,
+      'buildd/fixit12-after-conflict',
+      DEFAULT_BRANCH,
+      'worker-repair-gone',
+      {
+        resumeBranch: MISSION_BRANCH,
+        repairTarget: { prNumber: 4328, headRef: MISSION_BRANCH, headSha: null, baseRef: null },
+      },
+    );
+    expect(result).toBeNull();
+    expect(takeSetupWorktreeError('worker-repair-gone')).toContain('repair_target_missing');
+    expect(syncCalls.some(c => c.cmd.includes('git worktree add'))).toBe(false);
   });
 });

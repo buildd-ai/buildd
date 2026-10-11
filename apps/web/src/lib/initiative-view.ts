@@ -270,7 +270,7 @@ export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number
     }
     if (missions.length === 0) {
       facts.push({ key: 'no_missions', text: 'No missions yet', href: null });
-      action = { kind: 'add_mission', label: 'Add mission', href: `/app/missions/new?initiative=${encodeURIComponent(input.id)}`, missionId: null };
+      action = { kind: 'add_mission', label: 'Add mission', href: `/app/missions?new=1&initiative=${encodeURIComponent(input.id)}`, missionId: null };
     }
     action ??= { kind: 'open', label: 'Open', href, missionId: null };
   }

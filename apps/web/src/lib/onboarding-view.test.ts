@@ -71,7 +71,7 @@ describe('orderedItems', () => {
 
 describe('missionHref', () => {
   it('deep-links the new-mission form with the workspace preselected', () => {
-    expect(missionHref('ws 1')).toBe('/app/missions/new?workspace=ws%201');
+    expect(missionHref('ws 1')).toBe('/app/missions?new=1&workspace=ws%201');
   });
 });
 

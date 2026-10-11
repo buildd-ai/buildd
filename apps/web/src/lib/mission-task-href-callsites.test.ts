@@ -38,8 +38,7 @@ const CALL_SITES = [
   'app/app/(protected)/missions/MissionGrid.tsx',
   'app/app/(protected)/missions/page.tsx',
   'app/app/(protected)/tasks/[id]/page.tsx',
-  'app/app/(protected)/tasks/[id]/respond/page.tsx',
-  'app/app/(protected)/tasks/[id]/respond/RespondForm.tsx',
+  'lib/chat/answer-link.ts',
 ];
 
 const HAND_BUILT_TASK_LINK = /`\/app\/tasks\/\$\{/;

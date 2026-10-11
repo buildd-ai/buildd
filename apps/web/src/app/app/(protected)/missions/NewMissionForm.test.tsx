@@ -8,8 +8,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 mock.module('next/navigation', () => ({
   useRouter: () => ({ replace: () => {}, refresh: () => {}, push: () => {} }),
-  usePathname: () => '/app/missions/new',
-  useSearchParams: () => new URLSearchParams(''),
+  usePathname: () => '/app/missions',
+  useSearchParams: () => new URLSearchParams('new=1'),
 }));
 
 const { default: NewMissionForm, CriterionRow } = await import('./NewMissionForm');

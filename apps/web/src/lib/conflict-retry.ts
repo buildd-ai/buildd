@@ -38,6 +38,7 @@ import type { SemanticAssessment } from '@/lib/semantic-refresh';
 import type { BranchUpdateFailure } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
+import { repairBranchContext } from '@buildd/core/repair-target';
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -211,6 +212,13 @@ export interface ConflictRetryInput {
    * neither is known, never guessed.
    */
   prBase?: string | null;
+  /**
+   * The PR's head and base as GitHub reported them, for branch continuity
+   * only: with a head, the attempt resumes on that exact branch and carries a
+   * `repairTarget` stamp (packages/core/repair-target.ts). Separate from
+   * `prRefs`, which also changes the brief's wording.
+   */
+  targetRefs?: { headRef: string; baseRef: string | null } | null;
 }
 
 /** A branch name safe to merge as `origin/<name>`. */
@@ -249,6 +257,7 @@ export interface ConflictRetryTask {
  */
 export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?: string | null }): ConflictRetryTask | null {
   const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, migrationSplit, semanticConflict, prRefs, conflictBasis } = params;
+  const targetRefs = params.targetRefs ?? prRefs ?? null;
   const prBase = params.prBase ?? prRefs?.baseRef ?? null;
   const ctx = originalTask.context || {};
 
@@ -293,9 +302,10 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
     conflictRetryHeadSha: headSha,
     pathManifest,
     context: {
-      // Branch continuity — agent starts from the conflicted branch
-      baseBranch: worker.branch,
-      resumeBranch: worker.branch,
+      // Branch continuity: the agent starts from the conflicted PR's exact
+      // head (spec workflow-state-kernel §13.11 rule 1), or the worker's branch
+      // when GitHub's head was not read.
+      ...repairBranchContext({ prNumber: worker.prNumber, workerBranch: worker.branch, headRef: targetRefs?.headRef, headSha, baseRef: targetRefs?.baseRef ?? null }),
       // Structured failure context
       failureContext: migrationSplit
         ? {
@@ -1198,6 +1208,7 @@ export async function dispatchConflictRetry(
     prRepoUrl,
     migrationCollision,
     prRefs,
+    targetRefs: fetchedRefs,
     prBase: fetchedRefs?.baseRef ?? null,
     semanticConflict,
     conflictBasis: basis,

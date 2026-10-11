@@ -1,14 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { TOKEN_PRESETS, TOKEN_SCOPE_DEFINITIONS, type TokenScope } from '@buildd/core/token-scopes';
 import { Select } from '@/components/ui/Select';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import Notice from '@/components/ui/Notice';
-import SettingsPage from '../../../_components/SettingsPage';
+import Sheet from '@/components/ui/Sheet';
+import { useCloseUrlSheet } from '@/components/UrlSheet';
 import { defaultTeamId, readActiveTeamCookie } from '@/lib/active-team-client';
 import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 
@@ -17,11 +16,14 @@ interface Workspace { id: string; name: string; repo: string | null }
 type Preset = keyof typeof TOKEN_PRESETS;
 const inputClass = 'w-full min-h-11 px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm';
 
-const RUNNERS_HREF = '/app/settings/runners';
-
-/** Settings → Runners → New runner token (was /app/accounts/new). */
-export default function NewRunnerTokenPage() {
-  const router = useRouter();
+/**
+ * Settings → Runners → New runner token, a sheet over Runners at `?new=1`
+ * (was /app/settings/runners/tokens/new, and before that /app/accounts/new).
+ * Once the token exists the sheet gives way to the key dialog; closing that
+ * drops `?new` and the list behind shows the new token.
+ */
+export default function NewRunnerTokenSheet() {
+  const close = useCloseUrlSheet(['new']);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [createdAccount, setCreatedAccount] = useState<{ name: string; apiKey: string } | null>(null);
@@ -95,8 +97,14 @@ export default function NewRunnerTokenPage() {
     finally { setLoading(false); }
   }
 
+  // The key shows once: the dialog replaces the sheet so no Escape aimed at
+  // the sheet can unmount it before the key is copied.
+  if (createdAccount) {
+    return <ApiKeyModal open accountName={createdAccount.name} apiKey={createdAccount.apiKey} onClose={close} />;
+  }
+
   return (
-    <SettingsPage title="New runner token" description="Choose the access this token needs. Review its permissions before creating it.">
+    <Sheet open onClose={close} title="New runner token" height="tall" trapFocus testId="new-token-sheet">
         <form onSubmit={handleSubmit} className="space-y-8">
           {error && <Notice tone="err">{error}</Notice>}
           <div className="space-y-4">
@@ -136,9 +144,8 @@ export default function NewRunnerTokenPage() {
             <p className="text-xs text-text-secondary mt-4">{limited ? `Restricted to ${workspaceIds.length ? workspaces.filter(ws => workspaceIds.includes(ws.id)).map(ws => ws.name).join(', ') : 'no workspaces selected'}.` : 'Available in all linked workspaces.'}</p>
             <p className="text-xs text-text-secondary mt-2">{expiry === 'never' ? 'Does not expire.' : expiry === 'custom' ? `Expires ${customExpiry || 'on your selected date'}.` : `Expires ${expiry} days after creation.`}</p>
           </section>
-          <div className="flex items-center gap-3"><PrimaryAction type="submit" pending={loading} disabled={!selectedTeamId || !scopes.length || (scopes.includes('admin') && !canAdmin)} fullWidthOnMobile>{loading ? 'Creating…' : 'Create token'}</PrimaryAction><Link href={RUNNERS_HREF} className="btn min-h-11 md:min-h-0">Cancel</Link></div>
+          <div className="flex items-center gap-3"><PrimaryAction type="submit" pending={loading} disabled={!selectedTeamId || !scopes.length || (scopes.includes('admin') && !canAdmin)} fullWidthOnMobile>{loading ? 'Creating…' : 'Create token'}</PrimaryAction><button type="button" onClick={close} className="btn min-h-11 md:min-h-0">Cancel</button></div>
         </form>
-      {createdAccount && <ApiKeyModal open accountName={createdAccount.name} apiKey={createdAccount.apiKey} onClose={() => { setCreatedAccount(null); router.push(RUNNERS_HREF); }} />}
-    </SettingsPage>
+    </Sheet>
   );
 }
