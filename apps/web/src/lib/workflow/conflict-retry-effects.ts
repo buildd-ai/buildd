@@ -392,6 +392,7 @@ const dispatchConflictFix: EffectHandler = async (e) => {
     worker: { id: prw.id, branch: prw.branch, prNumber: b.d.prNumber! },
     headSha,
     repoFullName: b.d.repoFullName!,
+    ...(b.live.headRef ? { targetRefs: { headRef: b.live.headRef, baseRef: b.live.baseRef ?? null } } : {}),
     maxConflictIterations: Math.max(b.attempt.maxAttempts, b.attempt.attemptNo),
     ...(collision ? { migrationCollision: collision } : {}),
     ...(repairKind === 'migration_split' ? { migrationSplit: { reason: String((e.payload.detail as { reason?: string } | null)?.reason ?? '') } } : {}),

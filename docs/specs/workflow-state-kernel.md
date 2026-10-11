@@ -761,7 +761,8 @@ same `L` gets its own tries and its own T22, never the first visit's spent keys 
   `completed` PATCH is refused with 400 `delivery_not_advanced` when the live head
   has not advanced, telling the worker to push. This sits beside the existing
   `pr_required` gate and closes G1–G3 of §17.4, which accept a `prUrl` or an open PR on
-  the branch without comparing heads.
+  the branch without comparing heads. Conflict and migration repairs read one
+  verdict, kernel-owned or legacy, defined in §13.11.
 - **Runner.** The completion payload gains `remoteHeadSha` (from `git ls-remote`
   after the final push attempt) and `unpushedCommits` (from `rev-list origin/<branch>..HEAD`).
   Both are facts for diagnosis; the server still verifies against GitHub (R2). Today
@@ -2034,6 +2035,104 @@ Deviations, each deliberate:
 4. **`CondensedTimeline` keeps its column reads.** It is not mounted anywhere,
    and its rows already pass `delivery` to `TaskCard`. It goes away with the
    legacy readers.
+
+### 13.11 PR recovery: exact-target repair, evidence-gated completion, landing truth
+
+**The incident.** A mission integration PR conflicted with trunk. Each conflict,
+CI and migration-collision attempt filed for it carried `resumeBranch` = the PR's
+head, a `mission/<slug>` branch. The runner's resume probe (`fetchBranch` in
+`apps/runner/src/git-operations.ts`) counts any resume branch more than 50 commits
+ahead of trunk as "diverged" and falls back to trunk. A mission branch is ahead of
+trunk by construction. So every attempt logged `resume_branch_fallback` ("diverged
+on remote — starting fresh from dev"), changed nothing on the PR, and still
+completed: no gate compared heads on a legacy (non-kernel) repair task. `explain`
+then reported the PR as READY FOR REVIEW while the newest `pr_landing` row said
+`mergeable_state: dirty` plus a migration collision. A sibling PR's still-open
+predecessor could also hold its migration slot, and a pending retry could be
+deferred behind its own lineage's PR.
+
+**Rules.** Each is the contract; the regression it pins is named.
+
+1. **A repair targets the exact existing remote head.** A *repair target* is a
+   task context carrying `resumeBranch` together with the PR it repairs
+   (`prNumber`, or `failureContext.prNumber`). Conflict, migration and CI attempts
+   name the PR's actual `head.ref` as `resumeBranch`/`baseBranch` when GitHub
+   reported one, and stamp `repairTarget: { prNumber, headRef, headSha, baseRef }`.
+   For a repair target the runner:
+   - treats `'diverged'` as expected, never a veto. The worktree is cut from
+     `origin/<head>` exactly as fetched, and the agent reconciles from there by
+     merging the PR's base in;
+   - treats `'missing'` as a hard setup failure (`repair_target_missing`). It never
+     starts fresh from trunk, because a fresh branch cannot update the PR;
+   - may check the target out even when it is a mission integration branch. The
+     integration-branch guard exists to stop ordinary work landing on the shared
+     branch. Repairing that branch's own PR is the one job that must push there.
+
+   Divergence still vetoes a resume branch that is not a repair target (a
+   runaway prior attempt). Regression: `worktree-utils.test.ts`, "diverged mission
+   branch repair".
+
+2. **A conflict or migration repair completes only on evidence.** One pure
+   verdict (`repairCompletionVerdict`, `apps/web/src/lib/repair-completion.ts`)
+   decides, from a live GitHub read of the PR:
+   - PR closed or merged, or GitHub unreadable → allowed. The unreadable case
+     fails open, as the kernel gate already does.
+   - `conflict` with live `mergeable_state: dirty` → refused
+     `repair_still_conflicted`, whether or not the head moved.
+   - `migration` with the collision still present at the live head → refused
+     `repair_still_colliding`.
+   - head moved off the bound head → allowed (`head_advanced`).
+   - head unchanged → allowed only when the PR is verifiably fine without the
+     repair (`no_repair_needed`): `conflict` with a mergeable state other than
+     `dirty` or `unknown`, or `migration` with the collision gone. Anything else
+     is refused `repair_not_advanced`.
+
+   Kernel `conflict_fix` attempts read it through `fixCompletionGate`; legacy
+   conflict and migration retries (`conflictRetryPrNumber`, no `deliveryId`)
+   read it through `legacyRepairCompletionGate`. A refusal is a 400 on the
+   completion PATCH under gate `output_requirement`. A runner session that ends
+   without delivering fails the attempt, and the existing budget and escalation
+   (`escalateConflictExhaustion`, kernel T22) decide the next step. No loop is
+   added: every refusal consumes the same per-head budget. Regression:
+   `repair-completion.test.ts`, "zero-diff false success".
+
+3. **A PR that cannot land never reads as ready.** `deriveMissionStateView`
+   takes `landingBlocked`, one entry per unmerged PR, built in `explain.ts` from
+   current landing facts. Precedence: kernel delivery state (`REPAIRING`,
+   `BLOCKED_ON_TRUNK`, `ESCALATED`), then the newest `pr_landing` gate row, then
+   `prLifecycleStatus = 'conflict'`. When every unmerged PR has a blocker, the
+   verdict is `blocked` with a `landing_blocked` descriptor, not `review`. The
+   descriptor carries the cause (`conflicted`, `migration_collision`,
+   `repair_queued`, `repair_running`, `repair_exhausted`, `human_decision`,
+   `ci_pending`), the owner (`platform` or `person`) and the next action. A mixed
+   set keeps the `merge` reading, as `ci_red` does. Regression:
+   `mission-state-view.test.ts`, "dirty PR mislabeled ready".
+
+4. **An attempt is never blocked by its own lineage.** For `taskClass: 'attempt'`
+   the claim route's open-PR backstop exempts every PR in
+   `context.lineagePrNumbers` and every PR opened by an ancestor task
+   (`parentTaskId`, `context.rootTaskId`). The active-path-claim layer exempts
+   claims held by those ancestors. Other tasks' PRs and claims still block.
+   Regression: `claim-plan-input.test.ts`, "pending retry blocked by own lineage".
+
+5. **A superseded predecessor holds no migration slot, and is retired only on
+   verified content.**
+   - `inspectPullRequestMigrations` takes `ignorePrNumbers`. The landing door and
+     the conflict effects pass the PR's own lineage and recorded predecessors, so
+     a successor is never told to renumber around the PR it replaces.
+   - `closeAncestorRetryPrs` closes an open ancestor only when
+     `verifyByContent(ancestor files, successor files)` holds, ignoring
+     regenerated migration artifacts. Otherwise the ancestor stays open and is
+     named on the successor.
+
+   Regressions: `migration-inspector.test.ts` and `retry-pr-supersession.test.ts`,
+   "superseded predecessor migration reservation".
+
+**Base churn.** Bounded landing coordination stays the kernel's landing lane
+(`landing-lane.ts`) plus the per-basis conflict budget. A new conflict basis gets one
+attempt, and the same basis twice escalates to a person. This change adds no freeze.
+Rule 2 means a no-progress attempt can no longer read as success and reset the
+cycle. Each conflict therefore spends budget until it escalates.
 
 ---
 

@@ -14,6 +14,7 @@ import { formatAttemptTitle } from '@/lib/task-title';
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { MODEL_REJECTION_CONTEXT_KEY } from '@/lib/worker-exit-taxonomy';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
+import { repairBranchContext } from '@buildd/core/repair-target';
 
 /**
  * Default CI fix attempts per PR when the workspace sets no gitConfig.maxCiRetries.
@@ -171,11 +172,10 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
     // Inherit missionId so the retry stays attached to the mission loop.
     missionId: originalTask.missionId ?? null,
     context: {
-      // Branch continuity — the new worker's worktree starts from the previous
-      // attempt's branch, so fixes land on the same PR.
-      baseBranch: worker.branch,
-      // Explicit continuity marker (same value; preferred over baseBranch going forward)
-      resumeBranch: worker.branch,
+      // Branch continuity: the new worker's worktree starts from the PR's exact
+      // head (GitHub's head.ref when known, else the worker's branch), so fixes
+      // land on the same PR. Spec workflow-state-kernel §13.11 rule 1.
+      ...repairBranchContext({ prNumber: worker.prNumber ?? null, workerBranch: worker.branch, headRef: prRefs?.headRef, baseRef: prRefs?.baseRef ?? null }),
       // Copy lastCommitSha from parent context if captured by failure-capture path
       ...(typeof ctx.lastCommitSha === 'string' ? { lastCommitSha: ctx.lastCommitSha } : {}),
       // Structured failure context (replaces bare string going forward)

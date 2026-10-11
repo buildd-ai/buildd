@@ -24,6 +24,7 @@ import { archiveWorktreeWork, archiveWorktreeWorkSync, type ArchiveResult } from
 import { isGeneratedPath } from '@buildd/shared';
 import { detectInstallPlans, resolveManifest, MANIFEST_PATH } from './env-verify';
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
+import { readRepairTarget } from '@buildd/core/repair-target';
 import { describePrimaryCloneDrift } from './worktree-confinement';
 import { diagnoseRegistryAuth, type RegistryAuthDiagnosis } from './install-diagnosis';
 import { emitPhase, emitWorktreeMode } from './phase-lines';
@@ -1026,16 +1027,24 @@ export async function setupWorktree(
     // `mission/<slug>-<id8>` (generateMissionBranchName), never `buildd/...`.
     // Checked independently of `branchEqualsBase` so it also catches a stale
     // resume value regardless of what the task's own `branch` parameter is.
+    // The one exception to that guard: a repair attempt filed against the PR
+    // whose head IS the integration branch (a mission PR conflicting with
+    // trunk). Its whole job is to push there; diverting it to a task branch
+    // produced attempts that never touched the PR (spec workflow-state-kernel
+    // §13.11 rule 1). Only a GitHub-stamped `repairTarget` grants it.
+    const repairTargetHead = isDirectResumeTarget ? readRepairTarget(taskContext)?.headRef ?? null : null;
     /** Why a branch cannot be the checkout target of a new worktree, if it cannot. */
     const unusable = (candidate: string): 'default_branch' | 'checked_out' | 'mission_branch' | null =>
       candidate === defaultBranch
         ? 'default_branch'
         : branchOwners.has(candidate)
           ? 'checked_out'
-          : (branchEqualsBase && candidate === baseWithoutPrefix && !(isDirectResumeTarget && candidate === resumeCandidate)) ||
-              looksLikeMissionIntegrationBranch(candidate)
-            ? 'mission_branch'
-            : null;
+          : candidate === repairTargetHead
+            ? null
+            : (branchEqualsBase && candidate === baseWithoutPrefix && !(isDirectResumeTarget && candidate === resumeCandidate)) ||
+                looksLikeMissionIntegrationBranch(candidate)
+              ? 'mission_branch'
+              : null;
 
     // M1 — lineage-held resume branch. The branch we mean to resume is still
     // checked out in another worktree; usually the prior attempt's, retained
