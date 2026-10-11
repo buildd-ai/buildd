@@ -27,7 +27,6 @@ import {
   parseModelInferenceRequest,
   MODEL_INFERENCE_CAPABILITY,
 } from '@/lib/capability-model-inference';
-import { capabilityGrantSource } from '@/lib/capability-grants-store';
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -98,9 +97,7 @@ export async function POST(req: NextRequest) {
       sideEffect: row.sideEffect,
     });
   });
-  // Grants come from the capability request service (lib/capability-grants-store.ts);
-  // the budget ledger is still NO_LEDGER, so an allowed grant is refused 503 until it lands.
-  const result = await invokeModelInference(principal, parsed.request, { ...deps, grants: capabilityGrantSource });
+  const result = await invokeModelInference(principal, parsed.request, deps);
 
   if (result.ok) return NextResponse.json({ answers: result.answers, receipt: result.receipt }, { headers: NO_STORE });
   if ('receipt' in result) return fail(result.status, result.error, result.code, { receipt: result.receipt });

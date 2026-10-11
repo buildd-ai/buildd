@@ -20,7 +20,7 @@ const mockFindLiveGrant = mock((_q: any) => Promise.resolve(null as any));
 mock.module('@/lib/capability-grants-store', () => ({ capabilityGrantSource: { findLiveGrant: mockFindLiveGrant } }));
 
 // The adapter is real except for the call itself, which is spied so the route's
-// wiring (default deps: no grant service, no ledger) is observable.
+// wiring (default deps: the grant service and the durable ledger) is observable.
 const real = { ...(await import('@/lib/capability-model-inference')) };
 mock.module('@/lib/capability-model-inference', () => ({ ...real, invokeModelInference: mockInvoke }));
 
@@ -116,11 +116,12 @@ describe('POST /api/agent-capabilities/model-inference', () => {
     expect(res.status).toBe(403);
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(await res.json()).toEqual({ error: 'No live model.inference grant for this task', code: 'no_grant' });
-    // Grants from the capability grant service; the ledger still fails closed.
+    // Grants from the capability grant service, spend through the durable ledger.
     const deps = mockInvoke.mock.calls[0][2];
-    expect(deps.grants).not.toBe(real.NO_GRANT_SERVICE);
+    expect(deps.grants).toBe(real.capabilityGrantsGrantSource);
     expect(mockFindLiveGrant).toHaveBeenCalled();
-    expect(deps.ledger).toBe(real.NO_LEDGER);
+    expect(deps.ledger).toBe(real.durableModelInferenceLedger);
+    expect(deps.ledger).not.toBe(real.NO_LEDGER);
     expect(mockInvoke.mock.calls[0][0].via).toBe('task_token');
     expect(mockAudit.mock.calls.at(-1)![0]).toMatchObject({
       capability: 'model.inference', decision: 'refused', reasonCode: 'no_grant',
