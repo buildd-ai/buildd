@@ -18,6 +18,8 @@ let tasksById: Record<string, any> = {};
 /** taskId → the worker row carrying its PR (the conflict task's PR). */
 let prWorkerByTaskId: Record<string, { prNumber: number }> = {};
 let nextTaskId = 1;
+/** missionId → it has a non-terminal task (the backstop's activity test). */
+let liveWorkByMission: Record<string, boolean> = {};
 const insertedNotes: any[] = [];
 const insertedTasks: any[] = [];
 const mockTaskInsert = mock(() => Promise.resolve());
@@ -33,9 +35,11 @@ function resetFixtures() {
     branchRefreshHeadSha: null,
     branchRefreshLeaseUntil: null,
     branchRefreshConflictTaskId: null,
+    branchRefreshedAt: null,
   };
   tasksById = {};
   prWorkerByTaskId = {};
+  liveWorkByMission = {};
   nextTaskId = 1;
   insertedNotes.length = 0;
   insertedTasks.length = 0;
@@ -96,6 +100,10 @@ mock.module('@buildd/core/db', () => ({
       },
       tasks: {
         findFirst: (args: any) => {
+          const byMission = args?.where?.op === 'and' ? args.where.args[0] : null;
+          if (byMission?.op === 'eq' && byMission.args?.[0] === 'missionId') {
+            return Promise.resolve(liveWorkByMission[byMission.args[1]] ? { id: 'live-task' } : null);
+          }
           const id = args?.where?.args?.[1];
           const task = typeof id === 'string' ? tasksById[id] : undefined;
           return Promise.resolve(task ?? null);
@@ -143,6 +151,9 @@ function makeUpdateChain(table: any) {
       if (Object.prototype.hasOwnProperty.call(setVals, 'branchRefreshHeadSha')) {
         missionRow.branchRefreshHeadSha = setVals.branchRefreshHeadSha;
       }
+      if (Object.prototype.hasOwnProperty.call(setVals, 'branchRefreshedAt')) {
+        missionRow.branchRefreshedAt = setVals.branchRefreshedAt;
+      }
       if (Object.prototype.hasOwnProperty.call(setVals, 'branchRefreshConflictTaskId')) {
         missionRow.branchRefreshConflictTaskId = setVals.branchRefreshConflictTaskId;
       }
@@ -179,7 +190,7 @@ function makeUpdateChain(table: any) {
 function makeInsertChain(table: any) {
   return {
     values: (v: any) => {
-      if (table === 'tasks') {
+      if (String(table) === 'tasks') {
         const id = v.id ?? `task-${nextTaskId++}`;
         const row = { id, status: 'pending', ...v };
         return {
@@ -203,7 +214,7 @@ function makeInsertChain(table: any) {
 mock.module('@buildd/core/db/schema', () => ({
   missions: Object.assign(new String('missions'), Object.fromEntries(['id', 'branchRefreshLeaseUntil', 'branchRefreshLeaseToken', 'branchRefreshConflictTaskId'].map(k => [k, k]))),
   missionNotes: 'missionNotes',
-  tasks: 'tasks',
+  tasks: Object.assign(new String('tasks'), { id: 'id', missionId: 'missionId', status: 'status' }),
   workers: { taskId: 'taskId', prNumber: 'prNumber', createdAt: 'createdAt' },
   workspaces: 'workspaces',
   githubRepos: 'githubRepos',
@@ -213,6 +224,7 @@ mock.module('drizzle-orm', () => ({
   eq: (...args: any[]) => ({ op: 'eq', args }),
   and: (...args: any[]) => ({ op: 'and', args }),
   inArray: (...args: any[]) => args,
+  notInArray: (...args: any[]) => ({ op: 'notInArray', args }),
   isNull: (field: any) => ({ isNull: field }),
   isNotNull: (field: any) => ({ isNotNull: field }),
   desc: (field: any) => ({ desc: field }),
@@ -266,7 +278,8 @@ mock.module('@/lib/repo-scope', () => ({
 const {
   refreshMissionIntegrationBranch,
   sweepMissionBranchRefresh,
-  refreshMissionBranchesForTrunkMerge,
+  refreshMissionBranchesBeforeStart,
+  BRANCH_REFRESH_BACKSTOP_MS,
 } = await import('./mission-branch-refresh');
 
 function githubError(status: number, body: unknown): Error {
@@ -672,63 +685,182 @@ describe('refreshMissionIntegrationBranch', () => {
   });
 });
 
-describe('sweepMissionBranchRefresh', () => {
+describe('the last confirmed refresh is timestamped', () => {
+  beforeEach(() => {
+    resetFixtures();
+    mockGithubApi.mockReset();
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: missionRow.workingBranch, created: false });
+    mockFindMissionPrOwner.mockReset();
+    mockFindMissionPrOwner.mockResolvedValue(null);
+  });
+
+  const withMerge = (answer: unknown) => mockGithubApi.mockImplementation(((_i: number, path: string, opts?: any) => {
+    if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: 'dev-sha-current' } });
+    if (path.endsWith('/merges') && opts?.method === 'POST') return Promise.resolve(answer);
+    return Promise.resolve(null);
+  }) as any);
+
+  it('on a clean merge', async () => {
+    withMerge({ sha: 'merge-commit-sha' });
+    await refreshMissionIntegrationBranch('m-1');
+    expect(missionRow.branchRefreshedAt).toBeInstanceOf(Date);
+  });
+
+  it('on a 204 (the branch already contained trunk)', async () => {
+    withMerge(null);
+    await refreshMissionIntegrationBranch('m-1');
+    expect(missionRow.branchRefreshedAt).toBeInstanceOf(Date);
+  });
+
+  it('on a freshly cut branch', async () => {
+    withMerge(null);
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: missionRow.workingBranch, created: true });
+    await refreshMissionIntegrationBranch('m-1');
+    expect(missionRow.branchRefreshedAt).toBeInstanceOf(Date);
+  });
+
+  it('never on a conflict: the branch is not current', async () => {
+    mockGithubApi.mockImplementation(((_i: number, path: string, opts?: any) => {
+      if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: 'dev-sha-current' } });
+      if (path.endsWith('/merges') && opts?.method === 'POST') return Promise.reject(githubError(409, { message: 'Merge conflict' }));
+      return Promise.resolve(null);
+    }) as any);
+    await refreshMissionIntegrationBranch('m-1');
+    expect(missionRow.branchRefreshedAt).toBeNull();
+  });
+});
+
+describe('sweepMissionBranchRefresh (the daily backstop)', () => {
   beforeEach(() => {
     resetFixtures();
     mockTaskInsert.mockReset();
     mockTaskInsert.mockResolvedValue(undefined);
     mockMissionsFindMany.mockReset();
+    mockFindMissionPrOwner.mockReset();
+    mockFindMissionPrOwner.mockResolvedValue(null);
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: missionRow.workingBranch, created: false });
     mockGithubApi.mockReset();
-    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+    mockGithubApi.mockImplementation(((_i: number, path: string, opts?: any) => {
       if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: 'dev-sha-current' } });
+      if (path.endsWith('/merges') && opts?.method === 'POST') return Promise.resolve({ sha: 'merge-commit-sha' });
       return Promise.resolve(null);
     }) as any);
   });
 
-  it('scans every candidate the query returns and tallies outcomes', async () => {
-    mockMissionsFindMany.mockResolvedValue([{ id: 'm-1' }]);
-    missionRow.branchRefreshHeadSha = 'dev-sha-current'; // already current → skipped
+  const merges = () => mockGithubApi.mock.calls.filter(c => String(c[1]).endsWith('/merges')).length;
+  const candidate = (refreshedAt: Date | null) => [{ id: 'm-1', branchRefreshedAt: refreshedAt }];
 
+  it('refreshes a stale mission that still has live work', async () => {
+    mockMissionsFindMany.mockResolvedValue(candidate(new Date(Date.now() - BRANCH_REFRESH_BACKSTOP_MS - 60_000)));
+    liveWorkByMission['m-1'] = true;
     const result = await sweepMissionBranchRefresh();
-
-    expect(result.scanned).toBe(1);
-    expect(result.skipped).toBe(1);
-    expect(result.merged).toBe(0);
-    expect(result.errors).toBe(0);
+    expect(result).toMatchObject({ scanned: 1, merged: 1 });
+    expect(merges()).toBe(1);
   });
 
-  it('is a no-op backstop when nothing is eligible', async () => {
-    mockMissionsFindMany.mockResolvedValue([]);
+  it('refreshes a never-refreshed mission (null reads as stale)', async () => {
+    mockMissionsFindMany.mockResolvedValue(candidate(null));
+    liveWorkByMission['m-1'] = true;
+    expect((await sweepMissionBranchRefresh()).merged).toBe(1);
+  });
+
+  it('leaves a mission refreshed within the window alone, with no GitHub call', async () => {
+    mockMissionsFindMany.mockResolvedValue(candidate(new Date(Date.now() - 60_000)));
+    liveWorkByMission['m-1'] = true;
     const result = await sweepMissionBranchRefresh();
-    expect(result).toEqual({ scanned: 0, merged: 0, conflicts: 0, skipped: 0, errors: 0 });
+    expect(result).toMatchObject({ scanned: 1, skipped: 1, merged: 0 });
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('leaves an idle mission alone: no live task and no open mission PR', async () => {
+    mockMissionsFindMany.mockResolvedValue(candidate(null));
+    const result = await sweepMissionBranchRefresh();
+    expect(result).toMatchObject({ scanned: 1, skipped: 1, merged: 0 });
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('counts an open mission PR as live work', async () => {
+    mockMissionsFindMany.mockResolvedValue(candidate(null));
+    mockFindMissionPrOwner.mockResolvedValue({ state: 'open' });
+    expect((await sweepMissionBranchRefresh()).merged).toBe(1);
+  });
+
+  it('is a no-op when nothing is eligible', async () => {
+    mockMissionsFindMany.mockResolvedValue([]);
+    expect(await sweepMissionBranchRefresh()).toEqual({ scanned: 0, merged: 0, conflicts: 0, skipped: 0, errors: 0 });
   });
 });
 
-describe('refreshMissionBranchesForTrunkMerge', () => {
+describe('refreshMissionBranchesBeforeStart (a mission task is starting)', () => {
+  const BRANCH = 'mission/example-slug-0a1b2c3d';
   beforeEach(() => {
     resetFixtures();
-    mockWorkspacesFindMany.mockReset();
     mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm-1', workingBranch: BRANCH, integrationBranchEnabled: true }]);
+    mockFindMissionPrOwner.mockReset();
+    mockFindMissionPrOwner.mockResolvedValue(null);
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: BRANCH, created: false });
     mockGithubApi.mockReset();
-    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+    mockGithubApi.mockImplementation(((_i: number, path: string, opts?: any) => {
       if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: 'dev-sha-current' } });
+      if (path.endsWith('/merges') && opts?.method === 'POST') return Promise.resolve({ sha: 'merge-commit-sha' });
       return Promise.resolve(null);
     }) as any);
   });
 
-  it('does nothing when no workspace trunk matches the merged base ref', async () => {
-    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', gitConfig: { targetBranch: 'dev' } }]);
-    await refreshMissionBranchesForTrunkMerge({ repoFullName: 'buildd-ai/buildd', baseRef: 'some-feature-branch' });
-    expect(mockMissionsFindMany).not.toHaveBeenCalled();
+  const merges = () => mockGithubApi.mock.calls.filter(c => String(c[1]).endsWith('/merges')).length;
+  const task = (context: Record<string, unknown>, missionId: string | null = 'm-1') => ({ missionId, context });
+
+  it('merges trunk into the branch a mission work task is about to cut from', async () => {
+    const out = await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH })]);
+    expect(merges()).toBe(1);
+    expect(out).toEqual({ 'm-1': { kind: 'merged', headSha: 'dev-sha-current' } });
   });
 
-  it('refreshes active missions scoped to a workspace whose trunk matches', async () => {
-    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', gitConfig: { targetBranch: 'dev' } }]);
-    mockMissionsFindMany.mockResolvedValue([{ id: 'm-1' }]);
-    missionRow.branchRefreshHeadSha = 'dev-sha-current';
+  it('refreshes a mission once however many of its tasks start together', async () => {
+    await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH }), task({ baseBranch: BRANCH }), task({ baseBranch: BRANCH })]);
+    expect(merges()).toBe(1);
+  });
 
-    await refreshMissionBranchesForTrunkMerge({ repoFullName: 'buildd-ai/buildd', baseRef: 'dev' });
+  it('ignores a task based on anything other than its mission branch (a fix or CI-fix retry)', async () => {
+    const out = await refreshMissionBranchesBeforeStart([task({ baseBranch: 'buildd/0a1b2c3d-fix-something' }), task({})]);
+    expect(out).toEqual({});
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
 
-    expect(mockMissionsFindMany).toHaveBeenCalledTimes(1);
+  it('ignores the refresh conflict task itself', async () => {
+    const out = await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH, requireMergeCommit: true })]);
+    expect(out).toEqual({});
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('ignores a task with no mission, and a mission not using an integration branch', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm-1', workingBranch: BRANCH, integrationBranchEnabled: false }]);
+    const out = await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH }, null), task({ baseBranch: BRANCH })]);
+    expect(out).toEqual({});
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('never holds the claim past its budget: a slow refresh is left to finish on its own', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    mockGithubApi.mockImplementation((async (_i: number, path: string) => {
+      await gate;
+      if (path.endsWith('/git/ref/heads/dev')) return { object: { sha: 'dev-sha-current' } };
+      return null;
+    }) as any);
+    const started = Date.now();
+    const out = await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH })], { budgetMs: 30 });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(out).toEqual({ 'm-1': 'timed_out' });
+    release();
+  });
+
+  it('fails open: a refresh that throws never fails the claim', async () => {
+    mockMissionsFindMany.mockRejectedValue(new Error('db down'));
+    expect(await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH })])).toEqual({});
   });
 });

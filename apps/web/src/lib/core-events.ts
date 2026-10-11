@@ -166,6 +166,16 @@ export type CoreEvent =
         workerId: string | null;
       };
     }
+  /**
+   * POST /api/workers/claim claimed these tasks and is about to answer. The
+   * claim awaits its subscribers, so each must be bounded and fail open: it
+   * may prepare what the worker starts from (a mission branch refresh), never
+   * refuse or fail the claim.
+   */
+  | {
+      type: 'tasks.claimed';
+      tasks: Array<{ id: string; workspaceId: string; missionId: string | null; context: unknown }>;
+    }
   /** A team row and its owner membership are written. */
   | { type: 'team.created'; teamId: string }
   /** A workspace row is written (POST /api/workspaces). `origin` is the request origin, for OAuth callbacks. */
