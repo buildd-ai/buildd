@@ -1921,6 +1921,13 @@ export type WorkerWaitingFor = {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
+  /**
+   * Interactive (runner = 'mcp') worker parked by ask_human only: the last
+   * time its session polled for the answer (await_answer / receive_messages),
+   * ISO. Written by its own UPDATE that leaves updated_at (the park clock)
+   * alone. See INTERACTIVE_SESSION_POLL_STALE_MS in apps/web/src/lib/answer-resume.ts.
+   */
+  sessionSeenAt?: string;
 };
 
 /**
