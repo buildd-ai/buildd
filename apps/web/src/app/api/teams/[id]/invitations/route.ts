@@ -4,7 +4,7 @@ import { teamInvitations, teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import crypto from 'crypto';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 
 // GET /api/teams/[id]/invitations — list pending invitations
@@ -26,7 +26,7 @@ export async function GET(
     ),
   });
 
-  if (!membership || !roleHas(membership.role, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
+  if (!membership || !roleHas(membership.role, 'manage_team_members')) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -70,8 +70,7 @@ export async function POST(
     ),
   });
 
-  const overrides = await getTeamPermissionOverrides(teamId);
-  if (!membership || !roleHas(membership.role, 'manage_team_members', overrides)) {
+  if (!membership || !roleHas(membership.role, 'manage_team_members')) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -88,7 +87,7 @@ export async function POST(
     }
 
     // Widening manage_team_members must not let its holders mint admins.
-    if (role === 'admin' && !roleHas(membership.role, 'assign_team_roles', overrides)) {
+    if (role === 'admin' && !roleHas(membership.role, 'assign_team_roles')) {
       return NextResponse.json({ error: 'Inviting an admin needs the assign_team_roles permission' }, { status: 403 });
     }
 

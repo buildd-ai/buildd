@@ -335,10 +335,29 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(cf.attempts[0]).toMatchObject({ attemptId: 'm1', set: { outcome: 'delivered', pushedHeadSha: 'H2' } });
     // The platform's own refresh_branch is an own refresh even when the caller did not say so (T13).
     expect(applied(h(v, 'H2', { proof: { liveContainsLocal: false, contentDiffChanged: true } })).toState).toBe('APPROVED');
-    // A known non-descendant while the attempt runs is a foreign push: recorded, the attempt still decides.
-    const foreign = applied(h(v, 'H2', { attribution: { descendsFromBound: false } }));
+    // A known non-descendant while an agent attempt runs is a foreign push: recorded, the attempt still decides.
+    const agent = V(D({ state: 'REPAIRING', stateReason: 'conflict', approvedHeads: ['H1'], approvalBasis: 'verdict', boundAttemptId: 'c1' }), [], [A({ id: 'c1', family: 'conflict', mode: 'agent', status: 'running', triggerReason: 'conflict' })]);
+    const foreign = applied(h(agent, 'H2', { attribution: { descendsFromBound: false } }));
     expect(foreign.toState).toBe('REPAIRING');
     expect(foreign.evidence.foreignPush).toBe(true);
+  });
+
+  // 75c04d5d (#4440): a CI-fix worker rebased and force-pushed after the approved head had a behind
+  // refresh queued. The rebase does not descend from the pinned head, so the refresh can never land,
+  // and no worker ends a mechanical row: recording it as foreign_running left the delivery REPAIRING
+  // with the head already held, and every later read of that head was a duplicate.
+  test('REPAIRING: a non-descendant head ends a mechanical refresh instead of waiting on it', () => {
+    for (const status of ['queued', 'running'] as const) {
+      const v = V(D({ state: 'REPAIRING', stateReason: 'behind', approvedHeads: ['H1'], approvalBasis: 'verdict', boundAttemptId: 'm1', currentRound: 2 }),
+        [R({ round: 2, status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })],
+        [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status, triggerReason: 'behind', taskId: null })]);
+      const dec = applied(h(v, 'H2', { attribution: { descendsFromBound: false } }));
+      // A rebase is new content: reviewed, never carried on the old approval.
+      expect(dec.toState).toBe('AWAITING_REVIEW');
+      expect(effectKinds(dec)).toContain('dispatch_review');
+      expect(dec.patch).toMatchObject({ currentHeadSha: 'H2', boundAttemptId: null });
+      expect(dec.attempts[0]).toMatchObject({ attemptId: 'm1', set: { status: 'skipped', outcome: 'noop' } });
+    }
   });
 });
 

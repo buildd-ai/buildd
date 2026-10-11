@@ -95,7 +95,7 @@ credential at once. `POST /api/secrets` still writes the purpose it is given.
 
 Writing or deleting a team-wide, workspace-wide or account-wide credential
 requires a named team permission (`docs/specs/team-permissions.md`), resolved
-through `can()` so a team's permission overrides apply:
+through `can()`:
 
 - `manage_team_model_keys` — `inference_key`, `decision_key`, `cloudflare_token`.
 - `manage_team_credentials` — every other purpose `/api/secrets` stores, and the
