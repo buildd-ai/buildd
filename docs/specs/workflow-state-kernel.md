@@ -426,8 +426,15 @@ an ordinary task PR into the same branch is not one). `isCompositionPr` recognis
    Those paths are novel even when the PR diff does not list them, because taking the
    mission side whole drops a trunk change without leaving a line in the diff.
 3. Paths CI regenerates and compares for equality (`isCiVerifiedGeneratedPath`: the
-   specs index and the drizzle directory) are left out of what the merge decided. The
-   design-check baseline is generated but only ratcheted by CI, so it is still novel.
+   specs index and the drizzle journal and snapshots under `meta/`) are left out of what
+   the merge decided. Two generated kinds stay novel. The design-check baseline is only
+   ratcheted by CI. A migration `.sql` can hold a hand-written step that the
+   up-to-date check never sees.
+4. A migration the merge only moved to a free index is left out too
+   (`renumberedMigrations`). That means a mission-side `.sql` the merge dropped, paired
+   one to one with a new `.sql` that holds the same blob and is on neither side. This
+   is what the generated-conflict resolver's renumber produces. A moved migration whose
+   content changed, or one written in the merge, stays novel.
 
 A truncated or unreadable tree makes the result `unverifiable` (full review). With
 nothing left novel, the refresh is approved on composition with no reviewer. Otherwise a
@@ -2500,7 +2507,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S32 | Release PR composed only of reviewed constituents | composition attestation accepted (`approval_basis = composition`, head in `composition_heads` only); CI still gates; no second reviewer or human escalation; idempotent under duplicate delivery | `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/src/lib/workflow/review-composition.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S33 | Release PR plus a release-only novel delta (conflict resolution, changed migration or generated output) | prior verdicts cover only mapped constituents; a delta round scoped to the novel paths; can still need a human | as S32 |
 | S34 | Stale constituent review, head mismatch, missing equivalence proof, incomplete set | composition proof fails closed; the release PR borrows nothing; ordinary PRs stay exact-head bound | as S32 |
-| S38 | Mission branch refresh PR (trunk merged into the integration branch by the refresh conflict task) | trunk commits proven as constituents against their trunk PRs; the merge read from whole trees; only paths the merge decided are novel, a dropped trunk change included; CI-regenerated files left out; nothing novel → `approval_basis = composition`, no reviewer; real code → delta round scoped to it; unreadable tree → full review; the same PR without the refresh context stays ordinary | `apps/web/src/lib/workflow/review-composition.test.ts`, `apps/web/src/lib/workflow/review-effects.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` (S38), `packages/core/__tests__/generated-artifacts.test.ts` |
+| S38 | Mission branch refresh PR (trunk merged into the integration branch by the refresh conflict task) | trunk commits proven as constituents against their trunk PRs; the merge read from whole trees; only paths the merge decided are novel, a dropped trunk change included; CI-regenerated files left out; nothing novel → `approval_basis = composition`, no reviewer; a migration renumbered unchanged is not novel, one edited in the merge is; real code → delta round scoped to it; unreadable tree → full review; the same PR without the refresh context stays ordinary | `apps/web/src/lib/workflow/review-composition.test.ts`, `apps/web/src/lib/workflow/review-effects.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` (S38), `packages/core/__tests__/generated-artifacts.test.ts` |
 | S36 | Needs You reads the kernel, not a raw worker status | Home/task surfaces project the owner of the next move; a recoverable blocker stays platform-owned; failure evidence preserved | `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.test.tsx`, `apps/web/tests/db/workflow-matrix.test.ts` |
 
 **The live matrix.** `apps/web/tests/db/workflow-matrix.test.ts` (`bun run test:db`) carries
