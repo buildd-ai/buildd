@@ -64,8 +64,8 @@ interface Workspace {
   repo: string | null;
 }
 
-/** Where a new runner token is made. */
-export const NEW_TOKEN_HREF = '/app/settings/runners/tokens/new';
+/** Where a new runner token is made: a sheet over Runners. */
+export const NEW_TOKEN_HREF = '/app/settings/runners?new=1';
 
 export default function RunnerTokensSection({ accounts, workspaces = [] }: { accounts: Account[]; workspaces?: Workspace[] }) {
   const router = useRouter();
@@ -119,7 +119,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       id="runner-tokens"
       // One primary: with tokens the header link is a plain button; empty, the
       // inline "Create a runner token" below is the primary and this is hidden.
-      action={accounts.length > 0 ? <Link href={NEW_TOKEN_HREF} className="btn" data-testid="new-token">+ New token</Link> : undefined}
+      action={accounts.length > 0 ? <Link href={NEW_TOKEN_HREF} scroll={false} className="btn" data-testid="new-token">+ New token</Link> : undefined}
     >
       <p className="text-xs text-text-secondary mb-3">
         For runners, CI and analytics clients. Model sign-ins are on Models.
