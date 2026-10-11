@@ -9,6 +9,17 @@ surfaces: [apps/web/src/lib/failure-incident-escalation.ts, apps/web/src/lib/hom
 related: [team-permissions, credential-refresh-lifecycle, auth-oauth-boundaries, runner-liveness, human-in-the-loop-protocol, surface-ia-home-missions-initiatives]
 keywords: [service status, runner needs sign-in, waiting for runner sign-in, quiet status surface, needs you, credential owner, incident, root cause, member, team admin]
 verified_by: [apps/web/src/app/app/(protected)/health/member-scope.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/incident-view.test.ts, apps/web/src/lib/home-attention.test.ts]
+assertions:
+  - id: "escalation-rule"
+    type: "symbol"
+    name: "incidentEscalationRule"
+    path: "apps/web/src/lib/failure-incident-escalation.ts"
+  - id: "member-scope-tests"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/health/member-scope.test.ts"
+  - id: "escalation-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/failure-incident-escalation.test.ts"
 supersedes: []
 ---
 
