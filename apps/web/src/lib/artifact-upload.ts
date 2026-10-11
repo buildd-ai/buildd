@@ -103,6 +103,10 @@ export async function finalizeArtifactUpload(
  * failed row past it (and its object). An uploaded, matching object is kept.
  * A row something still refers to (a typed link, or a spec whose body it is)
  * is never deleted: it is skipped, and its object stays.
+ *
+ * A chat upload (lib/artifact-chat-files.ts) is sent by linking it to its
+ * message, so one still unlinked past STALE_UPLOAD_MS was never sent: it goes
+ * whatever its state, ready included.
  */
 export async function sweepStaleUploads(now: Date = new Date(), storage: UploadStorage = defaultUploadStorage, limit = 100): Promise<{ finalized: number; removed: number; waiting: number }> {
   // Checked again in the DELETE itself: a link made after selection still saves the row.
@@ -110,22 +114,30 @@ export async function sweepStaleUploads(now: Date = new Date(), storage: UploadS
     sql`NOT EXISTS (SELECT 1 FROM ${artifactLinks} WHERE ${artifactLinks.artifactId} = ${artifacts.id})`,
     sql`NOT EXISTS (SELECT 1 FROM ${specs} WHERE ${specs.bodyArtifactId} = ${artifacts.id})`,
   );
+  const unsentChatUpload = sql`(${artifacts.uploadState} = 'ready' AND ${artifacts.workspaceId} IS NULL AND ${artifacts.metadata} #>> '{chatAttachment,source}' = 'upload')`;
+  const sweepable = sql`(${artifacts.uploadState} in ('pending', 'failed') OR ${unsentChatUpload})`;
   const rows = await db
     .select({ id: artifacts.id, storageKey: artifacts.storageKey, uploadState: artifacts.uploadState, createdAt: artifacts.createdAt })
     .from(artifacts)
     .where(and(
-      sql`${artifacts.uploadState} in ('pending', 'failed')`,
+      sweepable,
       lt(artifacts.createdAt, new Date(now.getTime() - SWEEP_GRACE_MS)),
       unreferenced,
     ))
     .limit(limit);
   let finalized = 0, removed = 0, waiting = 0;
   for (const r of rows) {
-    const result = r.uploadState === 'pending' ? await finalizeArtifactUpload(r.id, { storage }) : { state: 'failed' as const };
-    if (result.state === 'ready') { finalized++; continue; }
-    if (now.getTime() - r.createdAt.getTime() < STALE_UPLOAD_MS) { waiting++; continue; }
+    const stale = now.getTime() - r.createdAt.getTime() >= STALE_UPLOAD_MS;
+    if (r.uploadState === 'ready') {
+      // An unsent chat upload: nothing to finalize, it only waits out its time.
+      if (!stale) { waiting++; continue; }
+    } else {
+      const result = r.uploadState === 'pending' ? await finalizeArtifactUpload(r.id, { storage }) : { state: 'failed' as const };
+      if (result.state === 'ready') { finalized++; continue; }
+      if (!stale) { waiting++; continue; }
+    }
     const gone = await db.delete(artifacts)
-      .where(and(eq(artifacts.id, r.id), sql`${artifacts.uploadState} in ('pending', 'failed')`, unreferenced))
+      .where(and(eq(artifacts.id, r.id), sweepable, unreferenced))
       .returning({ id: artifacts.id });
     if (gone.length === 0) continue;
     if (r.storageKey) await storage.remove(r.storageKey).catch(() => {});

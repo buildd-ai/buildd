@@ -16,7 +16,12 @@ const typeParity: [
   Same<shared.ChatMessagePart, kit.ChatMessagePart>,
   Same<shared.ChatUsage, kit.ChatUsage>,
   Same<shared.ChatUnavailableReason, kit.ChatUnavailableReason>,
-] = [true, true, true, true, true, true];
+  Same<shared.ChatAttachmentDraft, kit.AttachmentDraft>,
+  Same<shared.ChatAttachmentRef, kit.AttachmentRef>,
+  Same<shared.ChatFileDraft, kit.FileDraft>,
+  Same<shared.ChatFileRef, kit.FileRef>,
+  Same<shared.ChatDraftAttachment, kit.DraftAttachment>,
+] = [true, true, true, true, true, true, true, true, true, true, true];
 
 const preview: shared.ChatApprovalPreview = {
   v: 1, verb: 'Hold task', target: { kind: 'task', id: 't', label: 'checkout', detail: 'running' },
@@ -31,6 +36,11 @@ describe('shared ↔ kit chat contract parity', () => {
 
   it('approval previews encode, parse and render identically', () => {
     expect(kit.APPROVAL_PREVIEW_PREFIX).toBe(shared.CHAT_PREVIEW_PREFIX);
+    expect(kit.ATTACHMENT_PART_TYPE).toBe(shared.CHAT_ATTACHMENT_PART_TYPE as typeof kit.ATTACHMENT_PART_TYPE);
+    expect(kit.PASTE_ATTACHMENT_CHARS).toBe(shared.CHAT_PASTE_ATTACHMENT_CHARS);
+    expect(kit.FILE_PART_TYPE).toBe(shared.CHAT_FILE_PART_TYPE as typeof kit.FILE_PART_TYPE);
+    expect([...kit.FILE_MEDIA_TYPES]).toEqual([...shared.CHAT_FILE_MEDIA_TYPES]);
+    expect(kit.MAX_FILE_BYTES).toBe(shared.CHAT_MAX_FILE_BYTES);
     expect(kit.encodeApprovalPreview(preview)).toBe(shared.encodeApprovalPreview(preview));
     const enc = shared.encodeApprovalPreview(preview);
     expect(kit.parseApprovalPreview(enc)).toEqual(shared.parseApprovalPreview(enc));
