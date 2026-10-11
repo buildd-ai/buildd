@@ -3,6 +3,7 @@ import { normalizeDecisionShadows, normalizeFeatureModes } from '@buildd/core/in
 import { isInferenceKeyPolicy, isCredentialPolicy, policyColumns, effectiveKeyPolicy, toCredentialPolicy } from '@buildd/core/inference-key-policy';
 import { normalizeTeamCodingPolicy, parseCodingPolicyLayer, resolveCodingPolicy, describeEffectiveCodingPolicy } from '@buildd/core/coding-policy';
 import { normalizeDecisionModel } from '@buildd/core/decision-model';
+import { probeDecisionModel } from '@buildd/core/decision-probe';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers, users, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -227,6 +228,15 @@ export async function PATCH(
       // Which model answers decision calls. null = Jev on OpenRouter.
       const normalized = normalizeDecisionModel(decisionModel);
       if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 });
+      // A model that cannot answer fails silently at run time (every call falls
+      // back to its rule), so one test decision goes through its exact route
+      // now, while someone is looking. Jev (null) is the default and not probed.
+      if (normalized.value) {
+        const probe = await probeDecisionModel(normalized.value, { teamId: id, userId: user.id });
+        if (!probe.ok) {
+          return NextResponse.json({ error: `${probe.error} The decision model was not saved.` }, { status: 422 });
+        }
+      }
       updates.decisionModel = normalized.value;
     }
     if (timezone !== undefined) {

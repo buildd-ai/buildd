@@ -93,6 +93,21 @@ describe('GatewayAndDecisionModel', () => {
     expect(writes.at(-1)).toEqual({ url: '/api/teams/t', method: 'PATCH', body: { decisionModel: { endpoint: 'systemone', model: 'clef-flash', via: 'cloudflare' } } });
   });
 
+  it("shows the provider's refusal when the test decision fails, and keeps the current model", async () => {
+    const refusal = 'Cloudflare rejected a test decision: HTTP 401: Authentication error (code 10000) The decision model was not saved.';
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'PATCH') return new Response(JSON.stringify({ error: refusal }), { status: 422 });
+      if (url.endsWith('/litellm-gateway')) return new Response(JSON.stringify({ gateway }), { status: 200 });
+      return new Response(JSON.stringify({ team: { decisionModel } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await mount();
+    await click(host.querySelectorAll('input[name="decision-model"]')[1]);
+    await click(host.querySelectorAll('input[name="decision-via"]')[2]);
+    await click([...host.querySelectorAll('[data-testid="decision-model"] button')].find((b) => b.textContent === 'Save'));
+    expect(host.querySelector('[data-testid="decision-model"] [role="alert"]')?.textContent).toBe(refusal);
+    expect(text('decision-model-current')).toBe('Jev (default)');
+  });
+
   it('names Cloudflare in the current model', async () => {
     decisionModel = { endpoint: 'systemone', model: 'clef', via: 'cloudflare' };
     await mount(false);

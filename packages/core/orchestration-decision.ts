@@ -40,6 +40,7 @@
 import { createHash } from 'node:crypto';
 import {
   applyDecisionPolicy,
+  decisionReceiptError,
   type Decision,
   type DecisionQuestions,
   type DecisionReceipt,
@@ -475,6 +476,7 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
       kind: 'decision', decisionId: decision.id, provider: 'openrouter', model: answeredModel,
       usage: result.ok ? { ...result.usage } : { inputTokens: 0, outputTokens: 0, costUsd: null },
       latencyMs: result.latencyMs, outcome: result.ok ? 'ok' : 'error', attempts: result.attempts,
+      ...(result.ok ? {} : { error: decisionReceiptError(result.error as Parameters<typeof decisionReceiptError>[0]) }),
     };
 
     if (!result.ok) {

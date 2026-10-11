@@ -288,8 +288,10 @@ function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged 
                     <input id="decision-model-id" value={model} onChange={(e) => setModel(e.target.value)} placeholder="qwen3-8b" className={INPUT} spellCheck={false} />
                   </>
                 )}
+                {/* Save sends one test decision through the model's route first; a refusal is the provider's own words. */}
                 <button className="btn btn-primary" disabled={busy || !model.trim()}
-                  onClick={() => save({ endpoint: onCloudflare ? 'systemone' : 'chat', model: model.trim(), via })}>Save</button>
+                  onClick={() => save({ endpoint: onCloudflare ? 'systemone' : 'chat', model: model.trim(), via })}>{busy ? 'Testing…' : 'Save'}</button>
+                <p className="text-text-muted">Saving sends one test decision through this route first.</p>
               </div>
             )}
           </div>

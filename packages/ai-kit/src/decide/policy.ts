@@ -48,6 +48,7 @@
 import {
   canonicalJson,
   decide,
+  decisionReceiptError,
   describeDecideError,
   isRetryableStatus,
   resolveDecisionEndpoint,
@@ -113,6 +114,8 @@ export interface DecisionFailure {
   retryable: boolean;
   /** HTTP status, for `provider_error`. */
   status?: number;
+  /** The provider's own words, for `provider_error`: the start of its body, key redacted (`decisionReceiptError`). */
+  body?: string;
 }
 
 /** A decision a rule or fallback produced. */
@@ -333,8 +336,10 @@ export function normalizeDecisionFailure(error: DecideError | { kind: string; [k
       return { kind: 'timeout', detail: describeDecideError(e), retryable: true };
     case 'rate_limited':
       return { kind: 'rate_limited', detail: describeDecideError(e), retryable: true };
-    case 'provider_error':
-      return { kind: 'provider_error', detail: describeDecideError(e), retryable: isRetryableStatus(e.status), status: e.status };
+    case 'provider_error': {
+      const body = decisionReceiptError(e).body;
+      return { kind: 'provider_error', detail: describeDecideError(e), retryable: isRetryableStatus(e.status), status: e.status, ...(body ? { body } : {}) };
+    }
     case 'transport':
       return { kind: 'transport', detail: e.message, retryable: true };
     case 'invalid_request':

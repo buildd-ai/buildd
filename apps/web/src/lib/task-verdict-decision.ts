@@ -33,6 +33,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { ChoiceQuestion, DecisionResult, decisionCall } from '@buildd/core/decision-client';
 import { parseBashTraceExcerpt } from '@buildd/core/bash-failure-trace';
+import { decisionReceiptError, type DecisionReceiptError } from '@builddai/ai-kit/decide';
 import type { TaskMismatch } from '@buildd/shared';
 import type { MismatchDiagnosis, StoredVerdictDecision, TaskVerdict, VerdictWording } from './task-verdict';
 import type { ConsequenceTrace, TraceConsequence } from './trace-consequence';
@@ -257,7 +258,8 @@ export interface VerdictLedgerRow {
   experimentArm: 'apply';
   propensity: number;
   applyingFraction: number;
-  receipt: null;
+  /** Only on a failed call: why it failed (the provider's status and words, key redacted). */
+  receipt: { error: DecisionReceiptError } | null;
 }
 
 export type InsertVerdictRows = (rows: VerdictLedgerRow[]) => Promise<void>;
@@ -380,6 +382,7 @@ export async function decideTaskVerdict(record: VerdictRecord, deps: DecideVerdi
         model: null, suggested: null, confidence: null, effective: a.ruleVerdict, applied: false, status: 'fallback',
         reason, errorKind: thrown ? 'thrown' : result && !result.ok ? result.error.kind : null,
         latencyMs: result?.latencyMs ?? 0, inputTokens: null, outputTokens: null, costUsd: null,
+        receipt: result && !result.ok ? { error: decisionReceiptError(result.error as Parameters<typeof decisionReceiptError>[0]) } : null,
       });
       stored.decisionIds.push({ kind: a.kind, id, status: 'fallback' });
     }

@@ -12,6 +12,21 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.27.0 — 2026-10-11
+
+Minor: a failed decision says why.
+
+- `DecisionReceipt.error` (optional, failures only): `{ kind, status?, body? }`.
+  A `provider_error` keeps the status and the first
+  `PROVIDER_ERROR_EXCERPT_CHARS` (200) characters of the provider's body, one
+  line, so a ledger can say "Authentication error" instead of only
+  `provider_error`.
+- `decide` redacts the API key, any auth header value and any `Bearer` value
+  from a `provider_error` body before it returns it or emits a receipt.
+- `DecisionFailure.body` carries the same excerpt for a `provider_error`.
+- New helpers: `redactSecrets`, `providerErrorExcerpt(status, body)`
+  (`HTTP 401: …`), `decisionReceiptError(error)`.
+
 ## 0.26.0 — 2026-10-11
 
 Minor: images and files attach to a message.
