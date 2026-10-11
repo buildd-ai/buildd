@@ -73,6 +73,7 @@ import {
   type RecoverySource,
 } from './failure-incident-recovery';
 import { pathOverlapRecoveryFamily } from './failure-incident-recovery-path-overlap';
+import { dbRecoveryEvents, pruneRecoveryEvents, writeSentinelLastRun, type SentinelLastRun } from './failure-incident-recovery-events';
 
 // ── Window math (pure) ──────────────────────────────────────────────────────
 
@@ -146,7 +147,11 @@ export interface SweepDeps {
    * that assess their open incidents, and the existing writers their repairs
    * go through. Absent: no incident is assessed, repaired or auto-resolved.
    */
-  recovery?: { families: ReadonlyArray<RecoveryFamily<any>>; effects: RecoveryEffects; claimLease?: RecoveryDeps['claimLease'] };
+  recovery?: { families: ReadonlyArray<RecoveryFamily<any>>; effects: RecoveryEffects; claimLease?: RecoveryDeps['claimLease']; events?: RecoveryDeps['events'] };
+  /** Persist the finished run (`system_cache` `failure-sentinel-last-run`) for the operator read model. Never throws. */
+  recordLastRun?(run: SentinelLastRun): Promise<void>;
+  /** Delete recovery attempt rows past their retention (180 days). Full sweeps only. Returns rows removed. */
+  pruneRecoveryEvents?(): Promise<number>;
   /** Defaults (DB-backed) apply when omitted — see `recordIncidentCandidates` / `actOnIncidentResults`. */
   incidentPort?: IncidentStorePort;
   decide?: IncidentDecider | null;
@@ -357,7 +362,7 @@ async function recoverOpenIncidents(
   try {
     const port = deps.incidentPort ?? (await createDbIncidentPort());
     if (!port.listUnresolved) return;
-    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease, now: () => now };
+    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease, events: recovery.events, now: () => now };
     for (const family of recovery.families) {
       const open = await port.listUnresolved(workspaceId, family.rule);
       const results = await assessDueIncidents(rdeps, open, 'backstop');
@@ -439,7 +444,7 @@ export async function reassessIncidentsNamingPr(
     const port = deps.incidentPort ?? (await createDbIncidentPort());
     if (!port.listUnresolvedByPr) return [];
     const named = await port.listUnresolvedByPr(workspaceId, prNumber);
-    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease };
+    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease, events: recovery.events };
     const results: AssessResult[] = [];
     for (const incident of named) results.push(await assessIncident(rdeps, incident.id, source));
     await afterAssessment(deps, results);
@@ -518,6 +523,20 @@ export async function runFailurePatternSweep(deps: SweepDeps, opts: SweepOpts = 
   }
 
   counters.elapsedMs = Date.now() - start;
+  // Only a sweep over every workspace says the platform was looked at: a
+  // triggered one-workspace run must not hide a backstop that stopped.
+  if (!opts.workspaceIds) {
+    await deps.pruneRecoveryEvents?.().catch(err => console.error('[failure-pattern-sweep] recovery event prune failed:', err));
+  }
+  if (!opts.workspaceIds) await deps.recordLastRun?.({
+    startedAt: new Date(start).toISOString(),
+    finishedAt: new Date().toISOString(),
+    full: true,
+    workspaces: workspaceIds.length,
+    runFailures: counters.runFailures,
+    incidentsAssessed: counters.incidentsAssessed,
+    recoveryRepairs: counters.recoveryRepairs,
+  }).catch(err => console.error('[failure-pattern-sweep] last-run record failed:', err));
   return counters;
 }
 
@@ -902,7 +921,9 @@ export function productionSweepDeps(): SweepDeps {
         });
     },
     collectFacts: dbCollectFacts,
-    recovery: { families: [pathOverlapRecoveryFamily], effects: productionRecoveryEffects(), claimLease: claimRecoveryLease },
+    recovery: { families: [pathOverlapRecoveryFamily], effects: productionRecoveryEffects(), claimLease: claimRecoveryLease, events: dbRecoveryEvents() },
+    recordLastRun: writeSentinelLastRun,
+    pruneRecoveryEvents: () => pruneRecoveryEvents(),
     async reportOpsError(message, detail, severity) {
       const { reportOps } = await import('@buildd/core/report-ops');
       await reportOps({ source: 'failure-pattern-sentinel', severity, message, detail });

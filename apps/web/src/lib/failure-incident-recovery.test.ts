@@ -156,6 +156,32 @@ describe('AC-4: a merged blocker whose leases are still held', () => {
   });
 });
 
+describe('attempt events (operator-recovery §4.2)', () => {
+  it('writes one attempt row per repair, then fills its verify on the re-check that saw progress', async () => {
+    const store = memoryPort(incident());
+    const { effects } = recordingEffects();
+    const attempts: any[] = [];
+    const verifies: any[] = [];
+    let now = at(20);
+    let facts: PathOverlapRecoveryFacts = { subjects: [subject()], blocker: blocker({ prState: 'merged', deliveryState: 'MERGED' }), fixTask: null };
+    const d: RecoveryDeps = {
+      ...deps(store.port, () => facts, () => now, effects),
+      events: { async attempt(e) { attempts.push(e); }, async verify(key, v) { verifies.push({ key, ...v }); } },
+    };
+    await assessIncident(d, 'inc-1', 'merge_hook');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].detail).toMatchObject({ capability: 'wake_subject', incidentId: 'inc-1', generation: 1, attempt: 1, actor: 'buildd:merge_hook' });
+    expect(attempts[0].detail.causeKey).toMatch(/^c1:[0-9a-f]{20}$/);
+    expect(store.get().recovery?.causeGroup?.key).toBe(attempts[0].detail.causeKey);
+
+    now = at(26);
+    facts = { ...facts, subjects: [subject({ wokenAt: at(20), lastWorkerAt: at(24), status: 'in_progress' })] };
+    await assessIncident(d, 'inc-1', 'backstop');
+    expect(attempts).toHaveLength(1);
+    expect(verifies).toEqual([expect.objectContaining({ key: attempts[0].detail.actionKey, passed: true })]);
+  });
+});
+
 describe('§5 rule 1 / I-3: re-observe before acting', () => {
   it('drops the repair when the facts moved between the two reads, and writes the fresher assessment', async () => {
     const store = memoryPort(incident());

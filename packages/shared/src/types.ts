@@ -4605,4 +4605,25 @@ export interface FailureIncidentRecovery {
   budget: { spent: number; limit: number; deadlineAt: string; spentKeys: string[] };
   /** The repairs actually run, across generations (bounded). Never rewritten. */
   attempts: FailureRecoveryAttempt[];
+  /**
+   * The cause this incident groups under (operator-recovery §4.2). Additive and
+   * optional: absent reads as unknown, and readers fall back to the rule key.
+   */
+  causeGroup?: FailureRecoveryCauseGroup;
+}
+
+/** Cause membership of one incident. A rule key always exists; operator and promoted model groupings override it. */
+export interface FailureRecoveryCauseGroup {
+  /** `c1:<20 hex>` (apps/web/src/lib/failure-incident-cause-key.ts). */
+  key: string;
+  source: 'rule' | 'model' | 'operator';
+  /** decision_records.id for `model`; the audit event id for `operator`. */
+  decisionId: string | null;
+  /** Model only. */
+  confidence: number | null;
+  assignedAt: string;
+  /** A newer causeKey this membership was merged into. */
+  supersededBy?: string;
+  /** The rule key when this membership was assigned: an override lapses once the rule key changes. */
+  ruleKey?: string;
 }

@@ -30,6 +30,8 @@ import type {
   FailureRecoveryState,
 } from '@buildd/shared';
 import { MAX_AFFECTED_REFS } from './failure-pattern-sentinel';
+import { nextCauseGroup, ruleCauseKey } from './failure-incident-cause-key';
+import { buildAttemptEvent, dbRecoveryEvents, verifyPriorAttempt, type RecoveryEventsPort } from './failure-incident-recovery-events';
 import {
   applyIncidentAction,
   DEFAULT_MAX_UPSERT_ATTEMPTS,
@@ -210,6 +212,8 @@ export function planRecovery(input: {
     lastProgressAt: outcome.lastProgressAt,
     verification: outcome.verification,
     attempts: prior?.attempts ?? [],
+    // Cause membership (operator-recovery §4.2), keyed on the refined cause code.
+    causeGroup: nextCauseGroup(prior?.causeGroup, ruleCauseKey({ ...incident, recovery: { cause: outcome.cause } }), now),
   };
   // Backoff only grows while the state holds within one generation.
   const backoffFrom = prior && prior.generation === generation ? prior : null;
@@ -367,6 +371,8 @@ export interface RecoveryDeps {
   effects: RecoveryEffects;
   /** The repair lease (insert-or-take-if-expired). Absent: the action key alone guards. */
   claimLease?(incidentId: string, ms: number): Promise<boolean>;
+  /** Attempt rows (gate `incident_recovery`). Absent: nothing is recorded. */
+  events?: RecoveryEventsPort;
   now?: () => string;
 }
 
@@ -429,7 +435,14 @@ export async function assessIncident(deps: RecoveryDeps, incidentId: string, sou
       const swapped = await deps.port.compareAndSwap(row.id, row.version, applyIncidentAction(row, { type: 'assess', recovery: plan.recovery }, now));
       if (!swapped) continue; // another writer moved it: re-read and re-plan
 
-      if (plan.repair) await runRepair(deps.effects, swapped, plan.repair);
+      const verified = verifyPriorAttempt(readRecovery(row), plan.recovery);
+      if (verified && deps.events) await deps.events.verify(verified.actionKey, verified).catch(() => {});
+      if (plan.repair) {
+        const ok = await runRepair(deps.effects, swapped, plan.repair);
+        if (deps.events) {
+          await deps.events.attempt(buildAttemptEvent({ incident: swapped, recovery: plan.recovery, repair: plan.repair, source, ok })).catch(() => {});
+        }
+      }
       return { outcome: plan.repair ? 'repaired' : 'assessed', before: row, incident: swapped, changed: plan.changed, repair: plan.repair };
     }
     return none('contended');
@@ -439,7 +452,7 @@ export async function assessIncident(deps: RecoveryDeps, incidentId: string, sou
   }
 }
 
-async function runRepair(effects: RecoveryEffects, incident: StoredIncident, repair: PlannedRepair): Promise<void> {
+async function runRepair(effects: RecoveryEffects, incident: StoredIncident, repair: PlannedRepair): Promise<boolean> {
   try {
     switch (repair.action) {
       case 'release_blocker': {
@@ -454,10 +467,12 @@ async function runRepair(effects: RecoveryEffects, incident: StoredIncident, rep
         await effects.fileFixTask(incident, repair.key);
         break;
     }
+    return true;
   } catch (err) {
     // The key is spent and the attempt recorded: a repair that threw is a
     // failed attempt, re-checked at nextCheckAt, never silently retried.
     console.error(`[failure-incident-recovery] repair ${repair.key} failed:`, err);
+    return false;
   }
 }
 
@@ -532,5 +547,5 @@ export function productionRecoveryEffects(): RecoveryEffects {
 
 /** The production deps. Families are passed in so this module stays family-free. */
 export function productionRecoveryDeps(port: IncidentStorePort, families: ReadonlyArray<RecoveryFamily<any>>): RecoveryDeps {
-  return { port, families, effects: productionRecoveryEffects(), claimLease: claimRecoveryLease };
+  return { port, families, effects: productionRecoveryEffects(), claimLease: claimRecoveryLease, events: dbRecoveryEvents() };
 }
