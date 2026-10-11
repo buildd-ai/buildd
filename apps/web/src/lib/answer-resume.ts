@@ -79,7 +79,25 @@ export const ANSWER_PATH_REASONS = {
     'the question came from an interactive session that is still checking in, so the answer goes straight back to it',
   interactive_session_gone:
     'the interactive session that asked has ended or stopped checking in, so nobody was there to receive the answer',
+  interactive_session_stopped_polling:
+    'the interactive session that asked stopped waiting for the answer (its terminal likely closed), so nobody was there to receive it',
 } as const;
+
+/**
+ * How old an interactive session's poll heartbeat (`waitingFor.sessionSeenAt`,
+ * stamped by every await_answer and receive_messages call while parked) may
+ * be before the session is treated as gone.
+ *
+ * A session waiting correctly calls await_answer back to back: each call holds
+ * at most 45 s server-side, so a live session's heartbeat is never older than
+ * one wait plus the model turn between calls. 5 minutes is over 6x the wait —
+ * room for a slow turn, a dropped call and a retry — and above the ~3 minute
+ * update_progress cadence the skills ask for, so a session that falls back to
+ * polling receive_messages at that cadence is never judged gone. Far below the
+ * 2 h idle TTL: an answer to a closed terminal goes cold within minutes, not
+ * hours.
+ */
+export const INTERACTIVE_SESSION_POLL_STALE_MS = 5 * 60 * 1000;
 
 export type AnswerPathReason = keyof typeof ANSWER_PATH_REASONS;
 
@@ -122,6 +140,11 @@ export interface AnswerPathInput {
    * holds — see `evaluateInteractiveAnswerPath`.
    */
   workerRunner?: string | null;
+  /**
+   * `workers.waitingFor.sessionSeenAt`: the parked interactive session's last
+   * poll (ISO). Absent when it never polled.
+   */
+  sessionSeenAt?: string | Date | number | null;
   /** Injectable clock. Defaults to now. */
   now?: number;
 }
@@ -143,9 +166,9 @@ function cold(reasonCode: Exclude<AnswerPathReason, 'resume_eligible' | 'interac
   return { path: 'cold_continuation', reasonCode, reason: ANSWER_PATH_REASONS[reasonCode] };
 }
 
-function toEpoch(value: Date | number | null | undefined): number | null {
+function toEpoch(value: Date | number | string | null | undefined): number | null {
   if (value == null) return null;
-  const ms = value instanceof Date ? value.getTime() : Number(value);
+  const ms = value instanceof Date ? value.getTime() : typeof value === 'string' ? Date.parse(value) : Number(value);
   return Number.isFinite(ms) ? ms : null;
 }
 
@@ -173,7 +196,11 @@ export const INTERACTIVE_ANSWER_LIVE_STATUSES: readonly string[] = LIVE_WORKER_S
  *    judging it by the 2h idle TTL would send any answer slower than 2h cold
  *    while the session is still polling. That sweep owns expiry: once it fails
  *    the worker, the status check below sends the answer cold. `/respond` has
- *    already required an answerable question before calling this.
+ *    already required an answerable question before calling this. The one
+ *    exception is the poll heartbeat: a parked session whose last
+ *    await_answer / receive_messages poll is older than
+ *    INTERACTIVE_SESSION_POLL_STALE_MS has stopped waiting, and goes cold
+ *    with `interactive_session_stopped_polling`. No heartbeat at all = live.
  *  - any other live status: checked in within INTERACTIVE_WORKER_IDLE_TTL_MS,
  *    the same window the reaper uses before freeing an interactive claim.
  */
@@ -181,12 +208,22 @@ export function evaluateInteractiveAnswerPath(input: {
   workerRunner: string | null | undefined;
   workerStatus: string | null;
   workerUpdatedAt: Date | number | null;
+  /** `waitingFor.sessionSeenAt`, see INTERACTIVE_SESSION_POLL_STALE_MS. */
+  sessionSeenAt?: string | Date | number | null;
   now?: number;
 }): AnswerPathDecision | null {
   if (input.workerRunner !== INTERACTIVE_WORKER_RUNNER) return null;
   const now = input.now ?? Date.now();
   const updatedAt = toEpoch(input.workerUpdatedAt);
   const parked = input.workerStatus === 'waiting_input';
+  // A parked session that WAS polling and stopped has gone (its terminal
+  // closed mid-wait). One that never polled proves nothing either way — an
+  // older client, or a session that asked and is about to wait — so it keeps
+  // the parked-is-live rule below.
+  const seenAt = toEpoch(input.sessionSeenAt as Date | number | string | null | undefined);
+  if (parked && seenAt !== null && now - seenAt > INTERACTIVE_SESSION_POLL_STALE_MS) {
+    return cold('interactive_session_stopped_polling');
+  }
   const alive = parked || (
     input.workerStatus !== null
     && INTERACTIVE_ANSWER_LIVE_STATUSES.includes(input.workerStatus)
@@ -217,6 +254,7 @@ export function evaluateAnswerPath(input: AnswerPathInput): AnswerPathDecision {
     workerRunner: input.workerRunner,
     workerStatus: input.workerStatus,
     workerUpdatedAt: input.workerUpdatedAt,
+    sessionSeenAt: input.sessionSeenAt,
     now,
   });
   if (interactive) return interactive;
@@ -409,6 +447,12 @@ export interface AnswerDeliveryRecord {
   decidedAt: string;
   /** Resume path only: when an unacknowledged answer degrades to cold. */
   ackDeadlineAt?: string;
+  /**
+   * Interactive path only: the id of the `answer` worker message (and of its
+   * instruction-history entry). await_answer finds the answer by it after the
+   * capped message queue has evicted the message.
+   */
+  messageId?: string;
   /**
    * The question being answered, kept so the deadline sweep can build a
    * continuation description after `waitingFor` has been cleared. Omitted when

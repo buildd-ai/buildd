@@ -14,6 +14,7 @@ import {
   isAnswerQueued,
   recordedAnswerOf,
   evaluateInteractiveAnswerPath,
+  INTERACTIVE_SESSION_POLL_STALE_MS,
   type AnswerPathInput,
 } from './answer-resume';
 import { INTERACTIVE_WORKER_IDLE_TTL_MS, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
@@ -565,5 +566,55 @@ describe('explainNotWaiting: an interactive session already answered', () => {
   it('a running runner-managed worker with a queued instruction still reads as moved on', () => {
     const r = explainNotWaiting({ workerStatus: 'running', continuationTaskId: null, answerQueued: true });
     expect(r.reasonCode).toBe('no_longer_waiting');
+  });
+});
+
+// await_answer and receive_messages stamp waitingFor.sessionSeenAt on every
+// poll of a parked interactive worker. A session whose terminal closed
+// mid-wait stops stamping; its answer must go cold instead of being queued
+// for nobody until the park sweep fails the worker hours later.
+describe('evaluateInteractiveAnswerPath: the poll heartbeat', () => {
+  const parked = (sessionSeenAt: unknown) => ({
+    workerRunner: INTERACTIVE_WORKER_RUNNER,
+    workerStatus: 'waiting_input',
+    workerUpdatedAt: new Date(NOW - 60 * 60 * 1000),
+    sessionSeenAt: sessionSeenAt as string | null,
+    now: NOW,
+  });
+
+  it('is more than twice the 45 s long-poll, and well under the idle TTL', () => {
+    expect(INTERACTIVE_SESSION_POLL_STALE_MS).toBeGreaterThan(2 * 45_000);
+    expect(INTERACTIVE_SESSION_POLL_STALE_MS).toBeLessThan(INTERACTIVE_WORKER_IDLE_TTL_MS);
+  });
+
+  it('answers in place while the session polled recently', () => {
+    const d = evaluateInteractiveAnswerPath(parked(new Date(NOW - 30_000).toISOString()));
+    expect(d?.path).toBe('interactive');
+  });
+
+  it('answers in place right at the staleness line', () => {
+    const d = evaluateInteractiveAnswerPath(parked(new Date(NOW - INTERACTIVE_SESSION_POLL_STALE_MS).toISOString()));
+    expect(d?.path).toBe('interactive');
+  });
+
+  it('goes cold, with its own recorded reason, once the session stopped polling', () => {
+    const d = evaluateInteractiveAnswerPath(parked(new Date(NOW - INTERACTIVE_SESSION_POLL_STALE_MS - 1).toISOString()));
+    expect(d?.path).toBe('cold_continuation');
+    expect(d?.reasonCode).toBe('interactive_session_stopped_polling');
+    expect(d?.reason).toBe(ANSWER_PATH_REASONS.interactive_session_stopped_polling);
+  });
+
+  it('no heartbeat at all keeps the parked session live (a session that never polled is not proof of absence)', () => {
+    expect(evaluateInteractiveAnswerPath(parked(null))?.path).toBe('interactive');
+    expect(evaluateInteractiveAnswerPath(parked(undefined))?.path).toBe('interactive');
+    expect(evaluateInteractiveAnswerPath(parked('not a date'))?.path).toBe('interactive');
+  });
+
+  it('evaluateAnswerPath carries the heartbeat through', () => {
+    const d = evaluateAnswerPath(eligible({
+      workerRunner: INTERACTIVE_WORKER_RUNNER,
+      sessionSeenAt: new Date(NOW - INTERACTIVE_SESSION_POLL_STALE_MS - 1).toISOString(),
+    }));
+    expect(d.reasonCode).toBe('interactive_session_stopped_polling');
   });
 });

@@ -17660,6 +17660,42 @@ describe('PATCH /api/workers/[id] — interactive worker parked on a question', 
     expect(capturedSet.updatedAt).toEqual(parkedAt);
   });
 
+  // The poll heartbeat: a session that stopped polling is gone, and /respond
+  // sends its answer cold. Recorded in waitingFor, by its own write that
+  // never touches updated_at (the park clock) and never resurrects a
+  // question an answer has just cleared.
+  it('a receive_messages poll while parked stamps waitingFor.sessionSeenAt without moving the park clock', async () => {
+    const parkedAt = new Date('2026-10-01T09:00:00.000Z');
+    const sets: any[] = [];
+    setup({ ...interactive, status: 'waiting_input', updatedAt: parkedAt, waitingFor: { type: 'question', prompt: 'Q?' } });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        sets.push(updates);
+        capturedSet = updates;
+        return { where: mock(() => Object.assign(Promise.resolve([]), { returning: mock(() => [{ ...interactive, ...updates }]) })) };
+      }),
+    });
+    const res = await patch({ consumer: 'agent' });
+    expect(res.status).toBe(200);
+    const beat = sets.find(u => u.waitingFor && u.waitingFor.type === 'sql');
+    expect(beat).toBeTruthy();
+    expect(JSON.stringify(beat.waitingFor.strings)).toContain('sessionSeenAt');
+    expect(beat.updatedAt).toBeUndefined();
+  });
+
+  it('a runner worker is never stamped', async () => {
+    const sets: any[] = [];
+    setup({ ...interactive, runner: 'runner-1', status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        sets.push(updates);
+        return { where: mock(() => Object.assign(Promise.resolve([]), { returning: mock(() => [{ ...interactive, ...updates }]) })) };
+      }),
+    });
+    await patch({ consumer: 'runner' });
+    expect(sets.some(u => u.waitingFor && u.waitingFor.type === 'sql')).toBe(false);
+  });
+
   it('a runner worker parked on a question is unchanged: every PATCH bumps updated_at', async () => {
     setup({ ...interactive, runner: 'runner-1', status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
     await patch({ consumer: 'runner' });

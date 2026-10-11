@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, missionNotes } from '@buildd/core/db/schema';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { callerOwnsWorker } from '@/lib/worker-owner';
@@ -143,7 +143,7 @@ export async function POST(
   const isSensitive = (worker as any).workspace?.dataClass === 'sensitive';
   // Sensitive-dataClass workspaces strip milestone labels, leaving { type, ts }.
   const milestones = (worker.milestones as unknown as Array<{ type?: string; label?: string; timestamp: number }>) || [];
-  const waitingFor = worker.waitingFor as { type?: string; prompt: string };
+  const waitingFor = worker.waitingFor as { type?: string; prompt: string; sessionSeenAt?: string };
   const question = waitingFor.prompt;
 
   // ── The decision ──────────────────────────────────────────────────────────
@@ -157,6 +157,8 @@ export async function POST(
     workerRunner: (worker as { runner?: string | null }).runner ?? null,
     workerStatus: worker.status,
     workerUpdatedAt: worker.updatedAt,
+    // The parked session's poll heartbeat (await_answer / receive_messages).
+    sessionSeenAt: waitingFor.sessionSeenAt ?? null,
   });
   if (interactiveDecision?.path === 'interactive') {
     return respondToInteractiveSession({
@@ -217,6 +219,7 @@ export async function POST(
     waitingForType: waitingFor.type ?? null,
     parkedUntil: (worker as { parkedUntil?: Date | null }).parkedUntil ?? null,
     workerRunner: (worker as { runner?: string | null }).runner ?? null,
+    sessionSeenAt: waitingFor.sessionSeenAt ?? null,
   });
 
   const deliveryRecord = buildAnswerDeliveryRecord({
@@ -436,7 +439,22 @@ async function respondToInteractiveSession(args: {
   }
 
   if (task?.id) {
-    await recordAnswerDelivery(task.id, task.context, deliveryRecord);
+    // Merged into the LIVE context in SQL: enqueueWorkerMessage just appended
+    // the answer to that same column, and spreading the context read before
+    // it (recordAnswerDelivery) would delete the answer from the queue. The
+    // record names the message so await_answer can find the answer by it even
+    // after the capped queue has evicted it.
+    const record = { ...deliveryRecord, messageId: answerMessage.id };
+    await db
+      .update(tasks)
+      .set({
+        context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('answerDelivery', ${JSON.stringify(record)}::jsonb)` as any,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, task.id))
+      .catch((err: unknown) => {
+        console.error(`[Task ${task.id}] Failed to record answerDelivery:`, err);
+      });
   }
 
   // The status changed outside PATCH /api/workers/[id], which normally emits
