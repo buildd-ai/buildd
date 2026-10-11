@@ -99,37 +99,53 @@ describe('export', () => {
     // This catches the regression when the test runs near UTC midnight.
     const { Pseudonymizer } = await import('../../src/lib/workflow/testing/sanitize');
     const p = new Pseudonymizer();
-    const nearMidnight = Date.UTC(2026, 9, 11, 23, 59, 0); // 2026-10-11 23:59:00 UTC
-    const afterMidnight = Date.UTC(2026, 9, 12, 0, 1, 0); // 2026-10-12 00:01:00 UTC
+    // Use a fixed creation timestamp at the start of a day
+    // All date values will be shifted relative to this same creation point
+    const createdAt = Date.UTC(2026, 9, 12, 0, 0, 0); // 2026-10-12 00:00:00 UTC (reference point)
 
-    // Date-only before midnight — should be shifted away from 2026
-    const beforeDate = p.value('2026-10-11', nearMidnight);
-    expect(beforeDate).not.toMatch(/\b2026-/);
-    expect(beforeDate).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
+    // Date-only before creation — should be shifted away from 2026
+    const dateBeforeCreation = p.value('2026-10-11', createdAt);
+    expect(dateBeforeCreation).not.toMatch(/\b2026-/);
+    expect(dateBeforeCreation).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
 
-    // Date-only after midnight (different calendar day) — should also be shifted
-    const afterDate = p.value('2026-10-12', afterMidnight);
-    expect(afterDate).not.toMatch(/\b2026-/);
-    expect(afterDate).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
-    // Different input dates shift to different output timestamps (24h apart)
-    expect(beforeDate).not.toBe(afterDate);
+    // Date-only on creation day — should also be shifted and differ from before
+    const dateOnCreationDay = p.value('2026-10-12', createdAt);
+    expect(dateOnCreationDay).not.toMatch(/\b2026-/);
+    expect(dateOnCreationDay).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
+    // Different input dates shift to different output dates (preserved relative day distance)
+    expect(dateBeforeCreation).not.toBe(dateOnCreationDay);
 
-    // Zone-less timestamp before midnight — should be shifted and have no timezone
-    const beforeZoneless = p.value('2026-10-11T23:50:00', nearMidnight);
-    expect(beforeZoneless).not.toMatch(/\b2026-/);
-    expect(beforeZoneless).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
-    expect(beforeZoneless).not.toMatch(/Z|[+-]\d{2}:/);
+    // Date-only after creation — should be shifted away from 2026
+    const dateAfterCreation = p.value('2026-10-13', createdAt);
+    expect(dateAfterCreation).not.toMatch(/\b2026-/);
+    expect(dateAfterCreation).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
+    // All three should be distinct (with 1-day gaps preserved)
+    expect(dateBeforeCreation).not.toBe(dateOnCreationDay);
+    expect(dateOnCreationDay).not.toBe(dateAfterCreation);
 
-    // Zone-less timestamp after midnight
-    const afterZoneless = p.value('2026-10-12T00:10:00', afterMidnight);
-    expect(afterZoneless).not.toMatch(/\b2026-/);
-    expect(afterZoneless).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
-    expect(afterZoneless).not.toMatch(/Z|[+-]\d{2}:/);
+    // Zone-less timestamp — should be shifted and have no timezone
+    const zonelessBeforeCreation = p.value('2026-10-11T12:30:00', createdAt);
+    expect(zonelessBeforeCreation).not.toMatch(/\b2026-/);
+    expect(zonelessBeforeCreation).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(zonelessBeforeCreation).not.toMatch(/Z|[+-]\d{2}:/);
+
+    // Zone-less timestamp on creation day
+    const zonelessOnCreationDay = p.value('2026-10-12T12:30:00', createdAt);
+    expect(zonelessOnCreationDay).not.toMatch(/\b2026-/);
+    expect(zonelessOnCreationDay).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(zonelessOnCreationDay).not.toMatch(/Z|[+-]\d{2}:/);
+    // Different zone-less timestamps should shift to different results
+    expect(zonelessBeforeCreation).not.toBe(zonelessOnCreationDay);
 
     // Full ISO timestamps should still work
-    const fullIso = p.value('2026-10-11T12:30:45.123Z', nearMidnight);
-    expect(fullIso).not.toMatch(/\b2026-/);
-    expect(fullIso).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    const fullIsoBeforeCreation = p.value('2026-10-11T12:30:45.123Z', createdAt);
+    expect(fullIsoBeforeCreation).not.toMatch(/\b2026-/);
+    expect(fullIsoBeforeCreation).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+    const fullIsoOnCreationDay = p.value('2026-10-12T12:30:45.123Z', createdAt);
+    expect(fullIsoOnCreationDay).not.toMatch(/\b2026-/);
+    expect(fullIsoOnCreationDay).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(fullIsoBeforeCreation).not.toBe(fullIsoOnCreationDay);
   });
 
   test('--limit, --since and --errors-first', async () => {

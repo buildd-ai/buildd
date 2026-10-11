@@ -138,10 +138,21 @@ export class Pseudonymizer {
   private shiftIso(createdAtMs: number) {
     return (_m: string, date: string, time: string | undefined, frac: string | undefined, zone: string | undefined): string => {
       // Handle date-only strings (e.g., "2026-10-11")
+      // For dates without time, calculate day offset from the creation date, not millisecond offset
+      // This avoids negative offsets when the creation time is late in the day
       if (!time) {
-        const ms = Date.parse(`${date}T00:00:00Z`);
-        if (Number.isNaN(ms)) return REDACTED;
-        const shifted = new Date(EPOCH_BASE_MS + (ms - createdAtMs));
+        const inputDate = Date.parse(`${date}T00:00:00Z`);
+        const createdDate = new Date(createdAtMs);
+        // Get the date part of createdAtMs in UTC (YYYY-MM-DD)
+        const createdDateStr = createdDate.toISOString().slice(0, 10);
+        const createdDateMs = Date.parse(`${createdDateStr}T00:00:00Z`);
+
+        if (Number.isNaN(inputDate) || Number.isNaN(createdDateMs)) return REDACTED;
+
+        // Calculate day offset (in days, not milliseconds)
+        const dayOffset = (inputDate - createdDateMs) / (24 * 60 * 60 * 1000);
+        // Apply day offset to epoch base (shift to a date, preserving relative day distance)
+        const shifted = new Date(EPOCH_BASE_MS + dayOffset * 24 * 60 * 60 * 1000);
         return shifted.toISOString().slice(0, 10);
       }
       // Handle zone-less timestamps (e.g., "2026-10-11T12:30:00") or full ISO
