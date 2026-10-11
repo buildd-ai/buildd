@@ -13,11 +13,7 @@ mock.module('@/lib/task-dependencies', () => ({ checkDependsOnResolved: async ()
 mock.module('@/lib/interactive-detach', () => ({ detachInteractiveWorkersOfEndedTasks: async () => {} }));
 mock.module('@/lib/pusher', () => ({ triggerEvent: async () => {}, channels: { workspace: () => 'c' }, events: { WORKER_PROGRESS: 'p' } }));
 mock.module('@/lib/work-tracker', () => ({ postWorkTrackerCompletionUpdate: async () => {} }));
-const order: string[] = [];
-mock.module('@/lib/path-claim-release', () => ({ releaseAndNotify: async (taskId: string) => { order.push(`release:${taskId}`); } }));
-mock.module('@/lib/failure-pattern-sweep', () => ({
-  reassessIncidentsNamingPr: async (ws: string, pr: number, source: string) => { order.push(`reassess:${ws}:${pr}:${source}`); return []; },
-}));
+mock.module('@/lib/path-claim-release', () => ({ releaseAndNotify: async () => {} }));
 mock.module('@/lib/pr-merge-stamp', () => ({ stampPrMergedOnAllRows: async () => {} }));
 mock.module('@/lib/repo-scope', () => ({ workerOwnsPr: () => ({}), workerOwnsPrUrl: () => ({}) }));
 mock.module('@/lib/task-open-prs', () => ({ otherOpenPrsOfTask: async () => [] }));
@@ -44,14 +40,5 @@ describe('runMergedPrWork completion', () => {
   it('still completes a runner-held task', async () => {
     await runMergedPrWork(input('runner-1'));
     expect(updateSpy).toHaveBeenCalled();
-  });
-});
-
-describe('runMergedPrWork re-assesses the incidents that name the PR (failure-incident-recovery §12(a))', () => {
-  beforeEach(() => { order.length = 0; });
-
-  it('after the release, so a release the merge did is seen, not repeated', async () => {
-    await runMergedPrWork(input('runner-1'));
-    expect(order).toEqual(['release:t1', 'reassess:ws:1:merge_hook']);
   });
 });

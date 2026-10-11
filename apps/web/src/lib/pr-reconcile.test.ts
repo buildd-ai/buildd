@@ -155,16 +155,13 @@ mock.module('@buildd/core/pr-facts', () => ({
 const mockObservePrState = mock(async (_input: any) => false);
 mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState }));
 
-// G6 (failure-incident-recovery): a healed merge releases the PR's paths and
-// re-assesses the incidents naming it, like the webhook's merge work does.
+// G6 (failure-incident-recovery): a healed merge releases the PR's paths,
+// like the webhook's merge work does.
 const healOrder: string[] = [];
 mock.module('@/lib/path-claim-release', () => ({
   releaseAndNotify: async (taskId: string, reason: string) => { healOrder.push(`release:${taskId}:${reason}`); },
   deliverPathReleased: async () => {},
   resolveReleaseReasonForTask: async () => 'merged',
-}));
-mock.module('@/lib/failure-pattern-sweep', () => ({
-  reassessIncidentsNamingPr: async (ws: string, pr: number) => { healOrder.push(`reassess:${ws}:${pr}`); return []; },
 }));
 
 beforeEach(() => {
@@ -414,7 +411,7 @@ describe('reconcileStalePrWorkers', () => {
     }));
   });
 
-  it('G6: healing a missed merge releases the task\'s paths, then re-assesses incidents naming the PR', async () => {
+  it('G6: healing a missed merge releases the task\'s paths', async () => {
     healOrder.length = 0;
     mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1' }]);
     mockWorkspacesFindFirst.mockResolvedValue(ws);
@@ -422,7 +419,7 @@ describe('reconcileStalePrWorkers', () => {
 
     await reconcileStalePrWorkers();
 
-    expect(healOrder).toEqual(['release:t1:merged', 'reassess:ws1:42']);
+    expect(healOrder).toEqual(['release:t1:merged']);
   });
 
   it('G6: an open PR releases nothing', async () => {

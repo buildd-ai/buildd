@@ -504,12 +504,8 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
           }
           // A lost webhook also skipped the path-claim release (G6 in
           // failure-incident-recovery): without it the PR's waiters wake only
-          // on the hourly lease sweep or their own next poll. Idempotent. Then
-          // the incidents naming the PR are re-assessed, as the merge work does.
+          // on the hourly lease sweep or their own next poll. Idempotent.
           if (worker.taskId) await releaseAndNotify(worker.taskId, 'merged');
-          await import('@/lib/failure-pattern-sweep')
-            .then(m => m.reassessIncidentsNamingPr(worker.workspaceId, worker.prNumber!, 'merge_hook'))
-            .catch(err => console.error(`[pr-reconcile] incident re-assess failed for PR #${worker.prNumber}:`, err));
           // The fifth consumer of a merge event, and the one this route was
           // missing. The other four are above; see reconcileSubjectAnchors.
           result.subjectsReconciled += await reconcileSubjectAnchors(

@@ -303,7 +303,7 @@ export async function dbObservePathOverlapRecovery(incident: StoredIncident): Pr
     import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm'), import('@buildd/shared'),
     import('@buildd/core/gate-slugs'),
   ]);
-  const { tasks, workers, gateEvents, taskDispatchOutbox, pathClaims, pathClaimWaiters, workflowDeliveries } = schema;
+  const { tasks, workers, gateEvents, taskDispatchOutbox, pathClaims, pathClaimWaiters } = schema;
   const { and, eq, desc, inArray, isNull, sql, or, notInArray } = orm;
   const workspaceId = incident.workspaceId;
   const taskIds = incident.affectedRefs.taskIds;
@@ -368,12 +368,9 @@ export async function dbObservePathOverlapRecovery(incident: StoredIncident): Pr
   // Blocker: kernel delivery first, then the PR's worker rows.
   let blocker: PathOverlapBlockerFacts | null = null;
   if (prNumber !== null) {
-    const [delivery] = await db
-      .select({ ownerTaskId: workflowDeliveries.ownerTaskId, state: workflowDeliveries.state, mergedAt: workflowDeliveries.mergedAt, lastTransitionAt: workflowDeliveries.lastTransitionAt, updatedAt: workflowDeliveries.updatedAt })
-      .from(workflowDeliveries)
-      .where(and(eq(workflowDeliveries.workspaceId, workspaceId), eq(workflowDeliveries.prNumber, prNumber)))
-      .orderBy(desc(workflowDeliveries.updatedAt))
-      .limit(1);
+    // The kernel's delivery, through its own read (the kernel tables have one reader module).
+    const { deliveryBlockerFacts } = await import('./workflow/delivery-view');
+    const delivery = await deliveryBlockerFacts(workspaceId, prNumber);
     const prWorkers = await db
       .select({ taskId: workers.taskId, createdAt: workers.createdAt, updatedAt: workers.updatedAt, mergedAt: workers.mergedAt, prLifecycleStatus: workers.prLifecycleStatus })
       .from(workers)
@@ -429,7 +426,7 @@ export async function dbObservePathOverlapRecovery(incident: StoredIncident): Pr
       createdAt,
       prState,
       deliveryState: delivery?.state ?? null,
-      lastMovedAt: later(delivery?.lastTransitionAt?.toISOString() ?? null, workerMoved),
+      lastMovedAt: later(delivery?.lastMovedAt ?? null, workerMoved),
       leasesHeld,
       unnotifiedWaiters,
       dependsOnSubjects,

@@ -200,6 +200,31 @@ WHERE d.workspace_id = ${workspaceId}
 }
 
 /**
+ * The newest delivery of one PR, as failure-incident recovery reads a blocker
+ * (docs/specs/failure-incident-recovery.md §6): who owns it, its state, when
+ * it merged and when it last moved. Any authority, like `deliveryPrStates`.
+ * A SELECT; throws on a read failure, and the caller treats the assessment as
+ * inconclusive.
+ */
+export async function deliveryBlockerFacts(
+  workspaceId: string,
+  prNumber: number,
+  exec: Exec = dbExec,
+): Promise<{ ownerTaskId: string; state: string; mergedAt: string | null; lastMovedAt: string | null } | null> {
+  const res = await exec(sql`-- workflow:delivery_blocker_facts
+SELECT d.owner_task_id AS "ownerTaskId", d.state AS state, d.merged_at AS "mergedAt",
+       COALESCE(d.last_transition_at, d.updated_at) AS "lastMovedAt"
+FROM workflow_deliveries d
+WHERE d.workspace_id = ${workspaceId} AND d.pr_number = ${prNumber}
+ORDER BY d.updated_at DESC
+LIMIT 1`);
+  const r = (res.rows ?? [])[0] as { ownerTaskId: unknown; state: unknown; mergedAt: unknown; lastMovedAt: unknown } | undefined;
+  if (!r || typeof r.state !== 'string' || r.ownerTaskId == null) return null;
+  const iso = (v: unknown) => (v == null ? null : new Date(v as string).toISOString());
+  return { ownerTaskId: String(r.ownerTaskId), state: r.state, mergedAt: iso(r.mergedAt), lastMovedAt: iso(r.lastMovedAt) };
+}
+
+/**
  * Slice E (§17.5): taskId → the serialisable `DeliveryDisplay` for each given
  * task that OWNS a kernel-owned delivery. The one load a list surface makes;
  * every chip, tile and badge it draws for those rows projects from it. Never

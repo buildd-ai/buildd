@@ -126,6 +126,14 @@ There is no recovery state machine. These are the only states that exist:
   calls `releaseAndNotify(..., 'merged')`) and G7 (deferral `detail` carries
   `blockingTaskId` and up to 20 overlapping `paths`). G5 and G9 belong to
   workstream (b). G8 (`checkStarvation`) is untouched.
+- **The merge hook is a subscriber.** Core (`pr-merged-work.ts`) may not
+  import the sentinel module (`scripts/module-boundaries.test.ts`), so the
+  re-assessment runs from a `pr.closed` subscriber in
+  `apps/web/src/lib/failure-pattern-subscribers.ts`. `runMergedPrWork` emits
+  that event after it schedules `releaseAndNotify`; the subscriber runs after
+  the response, merged or closed. A merge healed by `reconcileStalePrWorkers`
+  reaches it through the kernel import for a kernel-owned PR. For any other
+  PR, the backstop sweep catches it.
 
 ---
 
