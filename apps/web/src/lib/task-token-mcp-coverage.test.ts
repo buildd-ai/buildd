@@ -55,8 +55,11 @@ function trackedRoutes(): string[] {
 
 function optedIn(): Set<string> {
   const src = readFileSync(join(REPO, 'apps/web/src/lib/task-token-routes.test.ts'), 'utf8');
-  const list = /const OPTED_IN = \[([\s\S]*?)\];/.exec(src)?.[1] ?? '';
-  return new Set([...list.matchAll(/'([^']+)'/g)].map(m => m[1]!));
+  // Comments go first: an apostrophe in one would pair with the next quote.
+  const list = (/const OPTED_IN = \[([\s\S]*?)\];/.exec(src)?.[1] ?? '').replace(/\/\/.*$/gm, '');
+  const routes = [...list.matchAll(/'([^']+)'/g)].map(m => m[1]!);
+  if (routes.some(r => !r.startsWith('apps/'))) throw new Error(`OPTED_IN parse produced a non-path entry: ${routes.find(r => !r.startsWith('apps/'))}`);
+  return new Set(routes);
 }
 
 /** The source of `case '<action>':` up to the next top-level case. */
