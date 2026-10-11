@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-09-26
 summary: The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
 domain: surfaces
-surfaces: [apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx, apps/web/src/app/api/workspaces/route.ts, apps/web/src/app/api/workspaces/[id]/create-repo/route.ts, apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx]
+surfaces: [apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx, apps/web/src/app/api/workspaces/route.ts, apps/web/src/app/api/workspaces/[id]/create-repo/route.ts, apps/web/src/app/app/(protected)/missions/NewMissionForm.tsx]
 related: [surface-ia-home-missions-initiatives, team-namespace-scoping, mission-task-lifecycle]
 keywords: [create-repo, githubinstallationid, githubrepoid, repo picker, new workspace form, personal team]
 supersedes: []
@@ -195,7 +195,7 @@ workspace and MAY carry a schedule.
 - A mission with a `cronExpression` MUST create a backing task schedule.
 
 **Acceptance criteria**:
-- AC-1: WHEN the user submits `/app/missions/new` with a title, THEN `POST /api/missions`
+- AC-1: WHEN the user submits `/app/missions?new=1` (the New mission sheet) with a title, THEN `POST /api/missions`
   creates the mission and redirects to `/app/missions/[id]`.
 - AC-2: GIVEN a `cronExpression` is set, WHEN the mission is created, THEN a
   schedule is created and the UI previews the next runs.
@@ -216,7 +216,7 @@ workspace and MAY carry a schedule.
     is no automatic inference from the mission to its tasks.
 
 **Code surface**:
-- UI: `apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx`
+- UI: `apps/web/src/app/app/(protected)/missions/NewMissionForm.tsx`
 - Route: `apps/web/src/app/api/missions/route.ts` (POST)
 - Model: `packages/core/db/schema.ts` (`missions`, `taskSchedules`)
 

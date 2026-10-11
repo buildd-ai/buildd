@@ -52,12 +52,12 @@ export default async function AccountSettingsPage() {
 
       <Section
         title="Your teams"
-        action={teams.length > 0 ? <Link href="/app/settings/team/new" className="btn btn-sm h-11 md:h-6">New team</Link> : undefined}
+        action={teams.length > 0 ? <Link href="/app/settings/team?new=1" className="btn btn-sm h-11 md:h-6">New team</Link> : undefined}
       >
         {teams.length === 0 ? (
           <p className="text-sm text-text-muted">
             No teams.{' '}
-            <Link href="/app/settings/team/new" className="font-medium text-text-primary underline underline-offset-2">Create a team</Link>
+            <Link href="/app/settings/team?new=1" className="font-medium text-text-primary underline underline-offset-2">Create a team</Link>
           </p>
         ) : (
           <div data-testid="profile-teams" className={ROWS}>

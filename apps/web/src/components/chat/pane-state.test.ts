@@ -22,7 +22,7 @@ describe('paneReducer', () => {
 describe('popOutHref', () => {
   it('opens each object on its own page', () => {
     expect(popOutHref(mission)).toBe('/app/missions/m1');
-    expect(popOutHref({ kind: 'question', id: 'w1', taskId: 't1', workspaceId: 'ws', fallbackText: 'q' })).toBe('/app/tasks/t1/respond');
+    expect(popOutHref({ kind: 'question', id: 'w1', taskId: 't1', workspaceId: 'ws', fallbackText: 'q' })).toBe('/app/tasks/t1?respond=1');
     expect(popOutHref({ kind: 'pr', id: 'o/r#1', repo: 'o/r', prNumber: 1, url: 'https://github.com/o/r/pull/1', workspaceId: 'ws', fallbackText: '#1' }))
       .toBe('https://github.com/o/r/pull/1');
     expect(popOutHref({ kind: 'task', id: 't1', workspaceId: 'ws', fallbackText: 't' })).toBe('/app/tasks/t1');
