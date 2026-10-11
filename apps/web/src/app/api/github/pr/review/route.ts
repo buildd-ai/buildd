@@ -274,6 +274,11 @@ export async function POST(req: NextRequest) {
         .where(eq(tasks.id, latest.id));
     }
     const kernelPolicy = await resolveEffectivePolicy(workspace, null);
+    // If the kernel reported a review task but we can't find it in the DB
+    // (rare race condition), construct a minimal task object for status derivation
+    const taskForStatus = latest ?? (kernel.reviewTaskId
+      ? { id: kernel.reviewTaskId, status: r.result === 'applied' ? 'pending' : 'in_progress', result: null, context: { prNumber } }
+      : null);
     return NextResponse.json({
       ok: true,
       kernel: true,
@@ -282,12 +287,12 @@ export async function POST(req: NextRequest) {
         ? { hint: person ? 'this head already has a verdict; pass force to re-review' : 'this head already has a verdict; a new round starts when the PR head moves (a forced re-review is a person\'s call)' }
         : {}),
       prNumber,
-      reviewTaskId: latest?.id ?? null,
+      reviewTaskId: latest?.id ?? kernel.reviewTaskId ?? null,
       taskId: existingWorker?.taskId ?? null,
       autoMergeExpected: autoMergeExpectedFor(kernelPolicy),
       callback: callbackUrl && r.result === 'applied' ? { url: callbackUrl, on: callbackOn } : null,
-      status: latest
-        ? derivePrReviewStatus({ reviewTask: latest, worker: existingWorker ?? null, autoMergeExpected: autoMergeExpectedFor(kernelPolicy) })
+      status: taskForStatus
+        ? derivePrReviewStatus({ reviewTask: taskForStatus, worker: existingWorker ?? null, autoMergeExpected: autoMergeExpectedFor(kernelPolicy) })
         : null,
     }, { status: r.result === 'applied' ? 201 : 200 });
   }

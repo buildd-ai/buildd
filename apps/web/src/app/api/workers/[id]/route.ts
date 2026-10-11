@@ -3668,9 +3668,8 @@ export async function PATCH(
       }
 
       // Fallback: if structured output parsing failed and it's due to missing
-      // verdict (not malformed), try to extract from prose summary. Legacy
-      // reviews only: on a kernel round the prose fallback can only propose.
-      if (reviewContractViolation && !malformedVerdictReason && !isSilentStartCompletion && !kernelReviewRound) {
+      // verdict (not malformed), try to extract from prose summary.
+      if (reviewContractViolation && !malformedVerdictReason && !isSilentStartCompletion) {
         const proseExtraction = extractVerdictFromProse(body.summary);
         if (proseExtraction.verdict) {
           const fallbackOutput = constructFallbackStructuredOutput(body.summary, proseExtraction);
