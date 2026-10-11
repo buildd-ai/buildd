@@ -42,7 +42,6 @@ export const teams = pgTable('teams', {
   // active hours — where there is no single known viewer. Seeded from the detected zone
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
-  warmHandover: text('warm_handover').$type<'off' | 'repo' | 'deps'>().default('off').notNull(),
 
   // Per-team permission grants: permission name -> team roles that hold it. An
   // absent key = the registry default (apps/web/src/lib/permission-registry.ts).
@@ -510,7 +509,7 @@ export interface WorkspaceGitConfig {
   // Cloud-runner container class. Absent = derived from recent run reports
   // (apps/web/src/lib/runner-size.ts); an explicit value always wins.
   runnerSize?: 'standard' | 'large';
-  /** Null/absent inherits the team policy. */
+  /** `off` starts every task in a fresh container; null/absent takes the platform default. `repo`/`deps` are stored opt-ins from before the team setting was removed and raise nothing. */
   warmHandover?: 'off' | 'repo' | 'deps' | null;
   // Written by buildd, never by the settings form: the first derivation that
   // moved this workspace to `large`, kept so one light run does not move it back.

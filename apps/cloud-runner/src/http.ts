@@ -18,6 +18,7 @@
 import { isValidTaskId, type DispatchRequest, type RunState } from './lifecycle';
 import type { DispatchResult, ScheduleDispatchResult } from './supervisor';
 import { FALLBACK_DECISION, type RunnerSize, type RunnerSizeDecision } from './runner-class';
+import { effectiveWarmHandover } from './container-lease';
 
 /**
  * How far ahead a `task.scheduled` may point. buildd sends nothing further
@@ -42,6 +43,9 @@ export interface DispatcherEnv {
   BUILDD_API_KEY?: string;
   /** `1` enables POST /tasks/:id/kill, for recovery testing. Off by default. */
   ALLOW_DEBUG_KILL?: string;
+  /** Warm handover switches (container-lease.ts effectiveWarmHandover). */
+  CONTAINER_REUSE?: string;
+  CONTAINER_REUSE_DEPS?: string;
 }
 
 /** The RPC surface of a WorkerAgent stub that the Worker calls. */
@@ -199,7 +203,9 @@ export async function handleRequest(
     }
     dispatchRequest.runnerSize = size === runnerSize.size ? runnerSize : { size, source: 'pinned', reason: null };
     // Container reuse keys on the workspace buildd named (container-lease.ts), never the body's.
-    if (runnerSize.warmHandover) dispatchRequest.warmHandover = runnerSize.warmHandover;
+    // The platform's switches decide the mode; buildd's answer can only lower it (workspace opt-out).
+    const warmHandover = effectiveWarmHandover(env, runnerSize.warmHandover);
+    if (warmHandover !== 'off') dispatchRequest.warmHandover = warmHandover;
     if (!dispatchRequest.resumeWorkerId && runnerSize.workspaceId) dispatchRequest.workspaceId = runnerSize.workspaceId;
     const result = await agent.dispatch(dispatchRequest);
     // 202 for a duplicate too: buildd treats a non-2xx as "webhook failed" and

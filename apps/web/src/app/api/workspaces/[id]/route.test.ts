@@ -797,12 +797,12 @@ describe('PATCH /api/workspaces/[id]', () => {
     }
   });
 
-  it('validates workspace warm handover and allows clearing to team policy', async () => {
-    for (const value of ['off', 'repo', 'deps', null, 'unknown', true]) {
+  it('a workspace may only opt out of warm handover, or clear its opt-out', async () => {
+    for (const value of ['off', null, 'repo', 'deps', 'unknown', true]) {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
       mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
       const res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { warmHandover: value } } }), { params: mockParams });
-      expect(res.status).toBe(value === 'unknown' || value === true ? 400 : 200);
+      expect(res.status).toBe(value === 'off' || value === null ? 200 : 400);
       if (res.status === 200) expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, warmHandover: value });
     }
   });

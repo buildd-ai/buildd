@@ -35,8 +35,8 @@ import MergePolicyEditor from './MergePolicyEditor';
 import BranchStrategySection from './BranchStrategySection';
 import CopyReviewSection from './CopyReviewSection';
 import { copyReviewConfigOf } from '@buildd/shared';
+import FreshContainerSection from './FreshContainerSection';
 import CiRetrySection from './CiRetrySection';
-import WarmHandoverSection from '@/components/WarmHandoverSection';
 import ReleaseSection from './ReleaseSection';
 import SubjectPolicySection from './SubjectPolicySection';
 import ExecutorSection from './ExecutorSection';
@@ -247,7 +247,7 @@ export default async function WorkspaceSettingsPage({
             defaultBranch={gitConfig?.defaultBranch || 'main'}
             canEdit={canManageSettings}
           />
-          <WarmHandoverSection workspaceId={workspace.id} teamId={workspace.teamId} initial={gitConfig?.warmHandover ?? null} canEdit={canManageSettings} />
+          <FreshContainerSection workspaceId={workspace.id} initial={gitConfig?.warmHandover === 'off'} canEdit={canManageSettings} />
           <CiRetrySection
             workspaceId={workspace.id}
             initial={gitConfig?.enforceGreenCI === true}

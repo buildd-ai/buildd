@@ -242,6 +242,20 @@ describe('container class routing', () => {
     expect((other.byName.get(TASK_ID)!.requests[0] as { workspaceId?: string }).workspaceId).toBeUndefined();
   });
 
+  test("the agent gets the platform's warm handover mode; buildd's answer can only lower it", async () => {
+    const decision = { size: 'standard', source: 'default', reason: null, workspaceId: 'ws-from-buildd', warmHandover: 'repo' } as RunnerSizeDecision;
+    const modeFor = async (env: DispatcherEnv, d: RunnerSizeDecision = decision) => {
+      const agents = stubAgents();
+      await handleRequest(post({ ...payload, warmHandover: 'deps' }), env, agents.get, undefined, sizes(d));
+      return (agents.byName.get(TASK_ID)!.requests[0] as { warmHandover?: string }).warmHandover;
+    };
+    // Off is no field at all: the agent treats a missing mode as fresh containers.
+    expect(await modeFor(ENV)).toBeUndefined();
+    expect(await modeFor({ ...ENV, CONTAINER_REUSE: '1' })).toBe('repo');
+    expect(await modeFor({ ...ENV, CONTAINER_REUSE: '1', CONTAINER_REUSE_DEPS: '1' })).toBe('deps');
+    expect(await modeFor({ ...ENV, CONTAINER_REUSE: '1', CONTAINER_REUSE_DEPS: '1' }, { ...decision, warmHandover: 'off' })).toBeUndefined();
+  });
+
   test('the webhook body cannot choose the class', async () => {
     const agents = stubAgents();
     await handleRequest(post({ ...payload, runnerSize: 'large', size: 'large' }), ENV, agents.get, undefined, sizes({ size: 'standard', source: 'default', reason: null }));
