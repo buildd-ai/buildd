@@ -24,6 +24,7 @@ import ModelProvidersFixture from './ModelProvidersFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import TaskErrorEvidenceFixture from './TaskErrorEvidenceFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
+import { TaskPageFixture } from './TaskPageFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import FailureKindsFixture from './FailureKindsFixture';
 import DeliveryStatesFixture from './DeliveryStatesFixture';
@@ -66,6 +67,7 @@ import {
     TASK_ERROR_EVIDENCE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
+    TASK_PAGE_FIXTURE_STATE,
     ANSWER_STATES_FIXTURE_STATE,
     AGENT_ACCESS_FIXTURE_STATE,
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
@@ -148,6 +150,10 @@ export default function DevFixturesPage() {
 
     if (state === TASK_SHIPPED_FIXTURE_STATE) {
         return <TaskShippedFixture />;
+    }
+
+    if (state === TASK_PAGE_FIXTURE_STATE) {
+        return <TaskPageFixture />;
     }
 
     if (state === COMMIT_CHECKS_FIXTURE_STATE) {

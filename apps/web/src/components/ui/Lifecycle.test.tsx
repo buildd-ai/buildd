@@ -67,3 +67,21 @@ describe('Lifecycle: inline', () => {
     expect(current(renderToStaticMarkup(<Lifecycle state="recovering" repairs={1} />))[1]).toBe('⊘ Audit paused ↻1');
   });
 });
+
+describe('Lifecycle: phrase (docs/specs/task-page.md, State mapping)', () => {
+  it('a phrase replaces the state variant on the current step', () => {
+    expect(current(renderToStaticMarkup(<Lifecycle state="review" phrase="updating branch" />))[1]).toBe('◐ Audit · updating branch');
+    expect(current(renderToStaticMarkup(<Lifecycle state="landing" phrase="awaiting merge" />))[1]).toBe('▲ Land · awaiting merge');
+  });
+
+  it('a phrase never turns a non-repair into "repair N"', () => {
+    const html = renderToStaticMarkup(<Lifecycle state="review" phrase="in review" repairs={0} />);
+    expect(html).not.toContain('repair');
+  });
+
+  it('done steps stay ticked with a phrase on the current one', () => {
+    const html = renderToStaticMarkup(<Lifecycle state="landing" phrase="awaiting merge" />);
+    expect(html).toContain('✓ Build');
+    expect(html).toContain('✓ Audit');
+  });
+});
