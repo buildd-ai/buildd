@@ -215,9 +215,19 @@ describe('contrast over the sea (AA)', () => {
 
   it('the intent tag sits on its own ground chip in muted text, never dim text on the sea', async () => {
     await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
+    const chip = cls(q('[data-testid="feed-intent-chip"]'));
+    expect(chip).toContain('bg-[var(--chat-ground)]');
+    expect(chip).toContain('text-[var(--chat-muted)]');
+  });
+
+  // Regression (U1 visual audit, task 2ae639ce): the tag measured 162x24 at
+  // 320px. The button is the 44px box; only the chip inside carries the ground.
+  it('the intent tag is 44px to touch below md without a bigger chip', async () => {
+    await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
     const tag = cls(q('[data-testid="feed-intent-tag"]'));
-    expect(tag).toContain('bg-[var(--chat-ground)]');
-    expect(tag).toContain('text-[var(--chat-muted)]');
+    expect(tag).toContain('max-md:min-h-11');
+    expect(tag).toContain('max-md:-my-[10px]');
+    expect(tag).not.toContain('bg-[var(--chat-ground)]');
   });
 
   it('the composer top rule is the strong rule (copper only when something needs you), focused or not, on a phone', async () => {

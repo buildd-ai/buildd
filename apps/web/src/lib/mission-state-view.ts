@@ -1934,7 +1934,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       if (waitingOn.suggestions && waitingOn.suggestions.length > 0) {
         return 'GitHub will not let this PR merge. Confirm the suggested PR if the work shipped there, or mark the PR abandoned with a reason if the work is not shipping.';
       }
-      return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work shipped under a different PR, or mark the PR abandoned with a reason if the work is not shipping.';
+      return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work shipped under a different PR, or have the owner mark the PR abandoned with a reason (POST /api/tasks/[id]/closed-pr, or Abandon on the mission page) if the work is not shipping.';
     case 'criterion_failing':
       if (waitingOn.stale) {
         return 'Re-run goal-criteria verification: the failing verdict predates the current task state.';

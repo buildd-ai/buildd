@@ -314,15 +314,18 @@ export async function postPrReview(params: {
   headSha: string;
   event: 'APPROVE' | 'REQUEST_CHANGES';
   body: string;
-}): Promise<{ posted: boolean; reviewId?: number; reason?: string }> {
+}): Promise<{ posted: boolean; reviewId?: number; reason?: string; commentedOwnPr?: true }> {
   const { installationId, repoFullName, prNumber, headSha, event, body } = params;
   const state = event === 'APPROVE' ? 'APPROVED' : 'CHANGES_REQUESTED';
+  const path = `/repos/${repoFullName}/pulls/${prNumber}/reviews`;
 
   try {
     const existing = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/reviews`);
     if (Array.isArray(existing)) {
+      // A verdict that went up as a comment review (own PR, below) is matched by its body.
       const duplicate = existing.find(
-        (r: { commit_id?: string; state?: string }) => r.commit_id === headSha && r.state === state,
+        (r: { commit_id?: string; state?: string; body?: string }) =>
+          r.commit_id === headSha && (r.state === state || (r.state === 'COMMENTED' && r.body === body)),
       );
       if (duplicate) {
         return { posted: false, reason: 'a matching review already exists for this commit' };
@@ -334,17 +337,32 @@ export async function postPrReview(params: {
     console.warn(`[github] could not list reviews on ${repoFullName}#${prNumber} before posting:`, err);
   }
 
+  const post = (ev: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT') =>
+    githubApi(installationId, path, { method: 'POST', body: JSON.stringify({ commit_id: headSha, event: ev, body }) });
   try {
-    const result = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/reviews`, {
-      method: 'POST',
-      body: JSON.stringify({ commit_id: headSha, event, body }),
-    });
+    const result = await post(event);
     return { posted: true, reviewId: result?.id };
   } catch (err) {
-    const reason = err instanceof Error ? err.message : 'unknown error';
+    let reason = err instanceof Error ? err.message : 'unknown error';
+    // GitHub refuses an approve or request-changes from the PR's own author, and
+    // buildd's App opens the PRs it reviews. The verdict is buildd's own record,
+    // not this review, so the same text goes up as a comment review instead.
+    if (isOwnPrReviewRefusal(reason)) {
+      try {
+        const result = await post('COMMENT');
+        return { posted: true, reviewId: result?.id, commentedOwnPr: true };
+      } catch (commentErr) {
+        reason = commentErr instanceof Error ? commentErr.message : 'unknown error';
+      }
+    }
     console.warn(`[github] failed to post review on ${repoFullName}#${prNumber}:`, reason);
     return { posted: false, reason };
   }
+}
+
+/** GitHub's 422 for an approve or request-changes review by the PR's own author. */
+export function isOwnPrReviewRefusal(message: string): boolean {
+  return /GitHub API error: 422\b/.test(message) && /Can not (approve|request changes on) your own pull request/i.test(message);
 }
 
 interface CheckSuiteSummary {

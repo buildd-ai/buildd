@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.319.0",
+  "version": "0.320.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -190,6 +190,7 @@
     "./flight-strip-store": "./flight-strip-store.ts",
     "./mission-completion-codes": "./mission-completion-codes.ts",
     "./mission-integration": "./mission-integration.ts",
+    "./generated-artifacts": "./generated-artifacts.ts",
     "./mission-branch-trace": "./mission-branch-trace.ts",
     "./repair-target": "./repair-target.ts",
     "./task-title": "./task-title.ts",

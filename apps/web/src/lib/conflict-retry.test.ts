@@ -534,6 +534,7 @@ describe('buildConflictRetryTask', () => {
       const result = buildConflictRetryTask(makeInput({}));
       expect(result!.description).toContain('migrations:renumber');
       expect(result!.description).toContain('migration-index collision, not text to merge');
+      expect(result!.description).toContain('bun run conflicts:generated');
     });
 
     it('sets errorType to migration_collision in failureContext', () => {
