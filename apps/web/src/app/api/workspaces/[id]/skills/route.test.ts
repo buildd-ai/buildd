@@ -15,8 +15,8 @@ const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(false));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(false));
 const ADMIN_ACCESS: any = { teamId: 'team-123', role: 'admin' };
 
-// Session role checks run through the real registry with no team overrides.
-mock.module('@/lib/permissions', () => ({ roleHas, getTeamPermissionOverrides: async () => ({}) }));
+// Session role checks run through the real registry.
+mock.module('@/lib/permissions', () => ({ roleHas }));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({

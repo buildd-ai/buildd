@@ -20,7 +20,7 @@ mock.module('@buildd/core/db', () => ({
     update: () => ({ set: mockUpdateSet }),
   },
 }));
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' }, accounts: { id: 'id', teamId: 'teamId' } }));
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' }, accounts: { id: 'id', teamId: 'teamId' } }));
 mock.module('drizzle-orm', () => ({
   eq: (f: unknown, v: unknown) => ({ f, v }),
   and: (...a: unknown[]) => ({ a }),

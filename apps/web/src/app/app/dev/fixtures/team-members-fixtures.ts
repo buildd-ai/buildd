@@ -46,7 +46,6 @@ export function teamMembersFixtureProps(viewer: TeamMembersFixtureViewer) {
     currentUserRole: viewer,
     currentUserId: me.userId,
     isPersonal: false,
-    canManage: roleHas(viewer, 'manage_team_members', null),
-    permissionOverrides: null,
+    canManage: roleHas(viewer, 'manage_team_members'),
   };
 }

@@ -23,7 +23,7 @@ mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
-mock.module('@/lib/permissions', () => ({ roleHas, getTeamPermissionOverrides: async () => ({}) }));
+mock.module('@/lib/permissions', () => ({ roleHas }));
 
 mock.module('@buildd/core/db', () => ({
   db: {

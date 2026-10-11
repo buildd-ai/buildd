@@ -82,7 +82,7 @@ import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-loa
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadRunnerReachDiagnosis } from '@/lib/runner-reach';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
@@ -346,15 +346,12 @@ export default async function TaskDetailPage({
   // fix). Runner work only; a local mission's task is claimed from a session.
   // Shown only when the task can start (filtered below, once deps are known).
   const runnerReachLoad = task.status === 'pending' && missionExecutorOf(missionContextRow) !== 'local' && task.workspace
-    ? Promise.all([
-        loadRunnerReachDiagnosis({
-          id: task.workspace.id,
-          teamId: task.workspace.teamId,
-          accessMode: task.workspace.accessMode,
-        }),
-        getTeamPermissionOverrides(access.teamId),
-      ])
-        .then(([diagnosis, overrides]) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role, overrides) } : null)
+    ? loadRunnerReachDiagnosis({
+        id: task.workspace.id,
+        teamId: task.workspace.teamId,
+        accessMode: task.workspace.accessMode,
+      })
+        .then((diagnosis) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role) } : null)
         .catch(() => null)
     : Promise.resolve(null);
   // Cloud runs only: its time on the hosted runner, all attempts. Started
