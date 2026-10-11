@@ -61,7 +61,10 @@ import {
   attachmentBodies, attachmentDraftsOf, attachmentRefOf, attachmentRefPart, linkChatAttachments, messageChars,
   quoteAttachment, storeChatAttachments, conversationAttachments, readChatAttachment,
 } from '@/lib/artifact-chat-attachments';
-import type { ChatAttachmentDraft, ChatAttachmentRef } from '@buildd/shared';
+import { bindChatFiles, chatUploadKey, fileDraftsOf, fileRefOf, fileRefPart } from '@/lib/artifact-chat-files';
+import { earlierFileNote, modelFileParts, modelInputs } from './file-input';
+import { readObject } from '@/lib/storage';
+import type { ChatAttachmentDraft, ChatAttachmentRef, ChatFileDraft, ChatFileRef } from '@buildd/shared';
 import { loadTierCeiling } from '@buildd/core/model-tier-ceiling-store';
 import { enforceModelCeiling } from '@buildd/core/model-tier-ceiling';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
@@ -163,7 +166,23 @@ export interface TurnDeps {
   directives?: ChatDirectiveHooks;
   /** Test seam: where long pastes are stored and read (lib/artifact-chat-attachments.ts). */
   attachments?: TurnAttachments;
+  /** Test seam: uploaded images and files (lib/artifact-chat-files.ts) and their original bytes. */
+  files?: TurnFiles;
 }
+
+/** Uploaded images and files: bound to the conversation at send, read for the model. */
+export interface TurnFiles {
+  bind: typeof bindChatFiles;
+  read(ref: ChatFileRef, maxBytes: number): Promise<Buffer | null>;
+}
+const DB_FILES: TurnFiles = {
+  bind: bindChatFiles,
+  // The key is the bound upload's own; never one a caller named.
+  read: async (ref, maxBytes) => {
+    const key = await chatUploadKey(ref.artifactId);
+    return key ? readObject(key, maxBytes) : null;
+  },
+};
 
 /** Long pastes: stored once as artifacts, linked to the message, read back for history. */
 export interface TurnAttachments {
@@ -199,7 +218,9 @@ export function toUiHistory(rows: MessageRow[], attachmentText: ReadonlyMap<stri
       const body = attachmentText.get(r.artifactId);
       return { type: 'text' as const, text: body !== undefined ? quoteAttachment(r.title, body) : `[Attachment "${r.title}", ${r.chars.toLocaleString('en-US')} characters, could not be read.]` };
     });
-    const parts = [...m.parts.filter(p => p.type === 'text' || p.type === 'step-start' || p.type === 'reasoning' || isToolPart(p)), ...quoted];
+    // An earlier message's file is named, not re-sent.
+    const fileNotes = m.parts.map(fileRefOf).filter((r): r is ChatFileRef => !!r).map(r => ({ type: 'text' as const, text: earlierFileNote(r) }));
+    const parts = [...m.parts.filter(p => p.type === 'text' || p.type === 'step-start' || p.type === 'reasoning' || isToolPart(p)), ...quoted, ...fileNotes];
     if (parts.length > 0) out.push({ id: m.id, role: m.role, parts } as UIMessage);
   }
   return out;
@@ -275,8 +296,12 @@ export async function runChatTurn(args: {
   const drafted = message.role === 'user' ? attachmentDraftsOf(message.parts as ChatMessagePart[]) : null;
   if (drafted && !drafted.ok) return Response.json({ error: drafted.error, code: drafted.code }, { status: drafted.status });
   const drafts: ChatAttachmentDraft[] = drafted?.ok ? drafted.drafts : [];
+  // Images and files ride as `data-file` parts naming a ready upload (C3).
+  const filed = message.role === 'user' ? fileDraftsOf(message.parts as ChatMessagePart[]) : null;
+  if (filed && !filed.ok) return Response.json({ error: filed.error, code: filed.code }, { status: filed.status });
+  const fileDrafts: ChatFileDraft[] = filed?.ok ? filed.drafts : [];
   const checked = message.role === 'user' ? userTextOf(message as Parameters<typeof userTextOf>[0], MAX_USER_TEXT) : null;
-  const attachmentOnly = !!checked && !checked.ok && checked.code === 'message_empty' && drafts.length > 0;
+  const attachmentOnly = !!checked && !checked.ok && checked.code === 'message_empty' && (drafts.length > 0 || fileDrafts.length > 0);
   if (checked && !checked.ok && !attachmentOnly) {
     return Response.json({ error: checked.error, code: checked.code, limit: MAX_USER_TEXT, chars: checked.chars }, { status: 400 });
   }
@@ -289,7 +314,7 @@ export async function runChatTurn(args: {
     }, { status: 400 });
   }
   // What routing, titles and rules read: the typed words, or the attachments' titles when there are none.
-  const text = message.role !== 'user' ? null : typed || drafts.map(d => `[Attached: ${d.title}]`).join(' ');
+  const text = message.role !== 'user' ? null : typed || [...drafts.map(d => `[Attached: ${d.title}]`), ...fileDrafts.map(f => `[Attached: ${f.name || 'a file'}]`)].join(' ');
   // What the model reads: the typed words, then each attachment quoted in full.
   const modelText = text === null ? null : [typed, ...drafts.map(d => quoteAttachment(d.title, d.text))].filter(Boolean).join('\n\n');
   // Too large for the model in one turn: refused before any spend, the draft
@@ -354,6 +379,7 @@ export async function runChatTurn(args: {
     : null;
 
   const attachments = deps.attachments ?? DB_ATTACHMENTS;
+  const files = deps.files ?? DB_FILES;
   const historyAttachmentIds = stored.slice(-HISTORY_LIMIT).flatMap(m => m.parts.map(attachmentRefOf).filter((r): r is ChatAttachmentRef => !!r).map(r => r.artifactId));
   const history = toUiHistory(stored, historyAttachmentIds.length > 0 ? await attachments.bodies(conv.id, historyAttachmentIds).catch(() => new Map<string, string>()) : new Map());
   // The "Allow" taint covers the whole stored conversation, not only the
@@ -463,9 +489,16 @@ export async function runChatTurn(args: {
       if (!storedAttachments.ok) return Response.json({ error: storedAttachments.error, code: storedAttachments.code }, { status: storedAttachments.status });
       refs = storedAttachments.refs;
     }
+    // Each file must be the sender's own ready upload; it is tied to this conversation once.
+    let fileRefs: ChatFileRef[] = [];
+    if (fileDrafts.length > 0) {
+      const bound = await files.bind({ id: conv.id, teamId: conv.teamId }, user.id, fileDrafts);
+      if (!bound.ok) return Response.json({ error: bound.error, code: bound.code }, { status: bound.status });
+      fileRefs = bound.refs;
+    }
     const saved = await insertMessage({
       conversationId: conv.id, role: 'user', authorUserId: user.id,
-      parts: [...(typed ? [{ type: 'text', text: typed }] : []), ...refs.map(attachmentRefPart)],
+      parts: [...(typed ? [{ type: 'text', text: typed }] : []), ...refs.map(attachmentRefPart), ...fileRefs.map(fileRefPart)],
       // The routing decision call's spend, so the daily budget counts it, and
       // its content-free record (a failed call spent nothing: zero, cost null),
       // and the routed workspace, so the next turn can carry it over. `turn.ref`
@@ -473,9 +506,11 @@ export async function runChatTurn(args: {
       // (./turn-signal.ts), never any text.
       usage: withTurnRef(userTurnUsageRouted(route, routedWs?.id), message.id) as ChatUsage | null,
     });
-    if (refs.length > 0) await attachments.link(saved.id, conv.teamId, user.id, refs);
+    if (refs.length + fileRefs.length > 0) await attachments.link(saved.id, conv.teamId, user.id, [...refs, ...fileRefs]);
     void pingConversation(conv.id, 'message', saved.id);
-    uiMessages = [...history, { id: saved.id, role: 'user', parts: [{ type: 'text', text: modelText! }] }];
+    // Images and PDFs as file input where the model takes them; otherwise a note naming each.
+    const fileParts = fileRefs.length > 0 ? await modelFileParts(fileRefs, modelInputs(resolved.provider, resolved.modelId), files.read) : [];
+    uiMessages = [...history, { id: saved.id, role: 'user', parts: [...(modelText ? [{ type: 'text' as const, text: modelText }] : []), ...fileParts] } as UIMessage];
   } else {
     uiMessages = history.map(m => (m.id === continuing!.id ? { ...m, parts: continuing!.parts } as UIMessage : m));
   }

@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/artifacts/[artifactId]/share/route.ts, apps/web/src/app/api/share/[token]/route.ts, apps/web/src/app/api/artifacts/upload-url/route.ts, apps/web/src/lib/storage-keys.ts]
 related: [mcp-action-contracts, team-namespace-scoping, mission-task-lifecycle, credential-isolation]
 keywords: [sharetoken, visibility public, presigned put, r2, artifacts_share_token_idx, http 413, dataclass sensitive, upsert by key]
-verified_by: [packages/core/__tests__/artifact-read.test.ts, packages/core/__tests__/mcp-tools-artifact-links.test.ts, apps/web/src/app/api/workers/claim/artifact-manifest.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts, apps/web/tests/db/artifact-links.test.ts, apps/web/tests/db/artifact-upload.test.ts, apps/web/tests/db/chat-paste-attachment.test.ts]
+verified_by: [packages/core/__tests__/artifact-read.test.ts, packages/core/__tests__/mcp-tools-artifact-links.test.ts, apps/web/src/app/api/workers/claim/artifact-manifest.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts, apps/web/tests/db/artifact-links.test.ts, apps/web/tests/db/artifact-upload.test.ts, apps/web/tests/db/chat-paste-attachment.test.ts, apps/web/tests/db/chat-file-attachment.test.ts, apps/web/src/lib/chat/file-input.test.ts, apps/web/src/components/chat/upload-file.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -60,7 +60,84 @@ artifact that had ever been created. The fix added
 row to private (deliberately breaking previously minted links, with no
 grandfathering), and moved publication behind an explicit Share action. Two
 write paths were **not** converted and still mint tokens at insert time; see
-`## Verification gaps`.
+`## 11. Chat images and files
+
+**Capability statement**: An image or file attached to a chat message MUST be
+one artifact per original, holding the exact bytes and their sha256, verified
+before it can be sent, and private to the person who uploaded it and then to
+the conversation it was sent in. An upload that is still running, failed its
+check, or was cancelled MUST never show as attached or be sent.
+
+**Invariants**:
+- Types: `image/png`, `image/jpeg`, `image/webp`, `image/gif`,
+  `application/pdf`, `text/plain`, `text/markdown`, `text/csv`,
+  `application/json` (`CHAT_FILE_MEDIA_TYPES`); at most 20 MB
+  (`CHAT_MAX_FILE_BYTES`); at most 10 files a message. Anything else is refused
+  before an upload starts.
+- Upload: `POST /api/chat/uploads` makes a `pending` artifact (no workspace, no
+  worker, key `chat/<team>/<id>/<name>` from `buildChatUploadKey`) and a PUT
+  signed for exactly that size and media type (`generateConstrainedUploadUrl`).
+  When the browser's direct PUT is refused (the bucket's CORS policy), the
+  bytes are relayed through `PUT /api/chat/uploads/[id]/content`, at most
+  4 MB, exactly the started size and type. Then
+  `POST /api/chat/uploads/[id]/finalize { sha256? }` runs §8's check (size,
+  type, the browser's hash) and marks it `ready` or `failed`. Only the uploader
+  may finalize, relay or cancel (`DELETE /api/chat/uploads/[id]`); anyone else
+  reads 404.
+- Send: the message carries a `data-file` part `{ kind: 'file', id, name,
+  mediaType, sizeBytes }`. The turn takes name, type and size from the upload,
+  never from the part, and refuses (409, before any spend and before the message
+  is saved) an upload that is not the sender's, not `ready`, or already sent in
+  another conversation. The upload is tied to the conversation once (a retry of
+  the same message is the same file), linked to the saved message (`message` /
+  `context`, pinned to revision 1), and the message keeps only
+  `{ artifactId, revision, sha256, name, mediaType, sizeBytes }`.
+- Read: `GET /api/chat/[id]/attachments/[artifactId]/download` redirects to the
+  original bytes for the conversation's owner only; another conversation, even
+  one holding a link to it, reads 404. No artifact route or workspace listing
+  reaches it (§5).
+- Composer: Send waits while any file is uploading or has failed; a failed one
+  says why and offers Retry when retrying can help; Remove while uploading
+  aborts and takes the upload back; Remove of a ready, unsent file deletes it.
+  Nothing unready is ever sent, and nothing is silently left out.
+- Never sent: an upload with no link is swept (§8) once older than 24 hours,
+  `ready` included; a sent one is kept.
+- Model: an image goes as file input only to a model that takes images, a PDF
+  only to one that takes PDFs (`modelInputs`, an explicit map by provider and
+  family, since the catalog has no such field: Claude takes both, the OpenAI
+  GPT-4o, 4.1 and 5 families and o-series take images, Gemini both, anything
+  unnamed neither). Any other model, or a file over what the model takes
+  (5 MB an image, 10 MB a PDF), gets a note naming the file and saying it
+  cannot be read; never a silent drop. A text-like file is quoted as material,
+  like a paste, up to 100,000 characters. Only the message being sent carries
+  file content; an earlier message's file is a note naming it.
+- In a message, a file is a fixed-height card like a paste's (an image shows
+  its original as the thumbnail) that opens the original; a long name
+  truncates inside the card.
+- Only `apps/web/src/lib/artifact-chat-files.ts` writes these artifacts; the
+  links go through `linkChatAttachments`.
+
+**Acceptance criteria**:
+- AC-11.1: GIVEN an image and a PDF sent in a message WHEN the conversation is
+  reloaded THEN each downloads byte-identical with the sha256 the message keeps.
+- AC-11.2: GIVEN an upload cancelled, never finalized or never sent THEN it is
+  never on a message, and is removed with its bytes.
+- AC-11.3: GIVEN a failed check (size, type or hash) THEN the upload never
+  reads ready and cannot be sent.
+- AC-11.4: GIVEN another person THEN they cannot finalize, relay, cancel, send
+  or download it.
+
+**Not yet**: the agent tool `read_attachment` reads pastes only; files reach
+the model in the message that carries them. A deleted conversation leaves its
+files until a cleanup lands (task `b89da258`).
+
+**Code surface**:
+- `apps/web/src/lib/artifact-chat-files.ts`: `createChatUpload`, `finalizeChatUpload`, `storeChatUploadBytes`, `cancelChatUpload`, `fileDraftsOf`, `bindChatFiles`, `conversationFiles`
+- `apps/web/src/lib/chat/file-input.ts`: `modelInputs`, `modelFileParts`; `apps/web/src/lib/chat/turn.ts`
+- `apps/web/src/app/api/chat/uploads/route.ts`, `apps/web/src/app/api/chat/uploads/[artifactId]/route.ts`, `apps/web/src/app/api/chat/uploads/[artifactId]/finalize/route.ts`, `apps/web/src/app/api/chat/uploads/[artifactId]/content/route.ts`, `apps/web/src/app/api/chat/[id]/attachments/[artifactId]/download/route.ts`
+- `packages/ai-kit/src/chat/react/Composer.tsx`, `packages/ai-kit/src/chat/react/AttachmentCard.tsx`, `apps/web/src/components/chat/upload-file.ts`
+
+## Verification gaps`.
 
 Terminology: *publication* = setting `visibility = 'public'` and issuing a
 token. *Revocation* = returning to `visibility = 'private'` and nulling the
