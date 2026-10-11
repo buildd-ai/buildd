@@ -92,6 +92,42 @@ describe('record_pr_supersession', () => {
   });
 });
 
+describe('bound-workspace default for prNumber resolution', () => {
+  const ok = { ok: true, supersededPrNumber: 34, supersedingPrNumber: 40, supersedingPrUrl: 'u' };
+  const args = { prNumber: 34, supersedingPrNumber: 40, reason: 'x' };
+
+  it('sends the connection workspace when none is named', async () => {
+    const calls: Array<{ path: string; init: any }> = [];
+    await handleBuilddAction(apiRecording(calls, ok), 'record_pr_supersession', args, context({ workspaceId: 'ws-bound' }));
+    expect(JSON.parse(calls[0]!.init.body).workspaceId).toBe('ws-bound');
+  });
+
+  it('an explicit workspaceId wins and is never retried', async () => {
+    const calls: Array<{ path: string; init: any }> = [];
+    await handleBuilddAction(apiRecording(calls, ok), 'record_pr_supersession', { ...args, workspaceId: 'ws-x' }, context({ workspaceId: 'ws-bound' }));
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0]!.init.body).workspaceId).toBe('ws-x');
+  });
+
+  it('falls back to the cross-workspace search when the bound workspace has no such PR', async () => {
+    const bodies: any[] = [];
+    const api = (async (_p: string, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (body.workspaceId) throw new Error('API error: 404 - {"error":"PR not found"}');
+      return ok;
+    }) as unknown as ApiFn;
+    await handleBuilddAction(api, 'record_pr_supersession', args, context({ workspaceId: 'ws-bound' }));
+    expect(bodies.map((b) => b.workspaceId)).toEqual(['ws-bound', undefined]);
+  });
+
+  it('get_pr puts the bound workspace on the query', async () => {
+    const calls: Array<{ path: string; init: any }> = [];
+    await handleBuilddAction(apiRecording(calls, { ok: true, pr: { number: 34, state: 'open', url: 'u', additions: 0, deletions: 0 }, ...CI_AND_REVIEWS }), 'get_pr', { prNumber: 34 }, context({ workspaceId: 'ws-bound' })).catch(() => {});
+    expect(calls[0]!.path).toContain('workspaceId=ws-bound');
+  });
+});
+
 describe('get_pr renders a recorded supersession edge', () => {
   it('names the successor PR and reason on a closed, superseded PR', async () => {
     const api = apiReturning({
