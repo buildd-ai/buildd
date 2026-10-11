@@ -55,6 +55,21 @@ export function incidentAffected(refs: FailureIncidentAffectedRefs | null | unde
   };
 }
 
+const CAUSE_TEXT: Record<string, string> = {
+  'path_overlap.no_progress': 'Work is waiting on a change to the same files',
+  'path_overlap.blocker_open': 'A task is waiting for a change to the same files to land',
+  'path_overlap.blocker_merged_unreleased': 'A change landed but still holds its files',
+  'path_overlap.blocker_stuck': 'A task is waiting on a change that stopped moving',
+  'path_overlap.cycle': 'Two pieces of work are waiting on each other',
+  'path_overlap.subject_exempt_violated': 'A task is held by the change it is meant to update',
+  'path_overlap.spurious_overlap': 'A change claims files it does not touch',
+};
+
+/** What is wrong, as a headline: the assessment's refined cause, else the rule's label. No ids (design-system §5). */
+export function incidentCause(reasonCode: string | null | undefined, rule: FailureIncidentRule, ruleLabel?: string): string {
+  return (reasonCode && CAUSE_TEXT[reasonCode]) ?? ruleLabel ?? cap(rule.replace(/_/g, ' '));
+}
+
 // ── The projection ─────────────────────────────────────────────────────────
 
 /** Rules whose incidents below critical Buildd recovers on its own: an unassessed one is never the person's. */
@@ -291,7 +306,7 @@ export function projectIncident(
     waiting: 'Waiting',
     inconclusive: "Couldn't confirm",
     unavailable: 'Automatic recovery unavailable',
-    decision: 'Needs your decision',
+    decision: 'Needs you',
     recovered: 'Recovered',
   };
 
@@ -364,4 +379,32 @@ function optionView(
   }
   if (href) return { ...base, mode: 'link', href };
   return { ...base, mode: 'unavailable', unavailableReason: where ? `Do this on ${where}.` : 'This choice is not available from here.' };
+}
+
+/** Raw facts for the page's evidence disclosure: ids, paths and repair history, as stored. */
+export function incidentEvidence(
+  incident: IncidentForView & { title: string; reasonCode: string; signature?: string; occurrenceCount: number; recurrenceCount: number },
+  tz = 'UTC',
+): Array<[string, string | string[]]> {
+  const r = readRecovery(incident.recovery);
+  const t = (v: string) => formatInZone(v, tz, 'datetime-short');
+  const rows: Array<[string, string | string[]]> = [
+    ['Pattern', incident.title],
+    ['Incident', incident.id],
+    ['Seen', `${incident.occurrenceCount} times since ${t(iso(incident.firstSeenAt)!)}; came back ${incident.recurrenceCount} times`],
+    ['Cause code', r?.cause.reasonCode ?? incident.reasonCode],
+  ];
+  if (incident.signature) rows.push(['Signature', incident.signature]);
+  if (!r) return rows;
+  rows.push(
+    ['Assessment', `generation ${r.generation}, ${r.state}, owner ${r.owner}, from ${r.observation.source} at ${t(r.observation.observedAt)}`],
+    ['Evidence revision', r.observation.evidenceRevision],
+    ['Subjects', r.subjects.map(s => `${s.kind} ${s.id}`)],
+    ['Blockers', r.blockers.map(b => `${b.kind} ${b.id}: ${b.state}`)],
+    ['Overlapping paths', r.overlappingPaths],
+    ['Repair budget', `${r.budget.spent} of ${r.budget.limit} used; deadline ${t(r.budget.deadlineAt)}`],
+    ['Repairs run', r.attempts.map(a => `${t(a.at)} ${a.action} on ${a.subject.kind} ${short(a.subject.id)} (generation ${a.generation})`)],
+  );
+  if (r.capabilityGap) rows.push(['Capability gap', `${r.capabilityGap.capability}: ${r.capabilityGap.reason}`]);
+  return rows;
 }

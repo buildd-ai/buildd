@@ -294,7 +294,7 @@ describe('formatIncidentAlert — the projection\'s words (failure-incident-reco
       },
     };
     const { message } = formatIncidentAlert(asks, planIncidentAlert(asks, 'high'), { baseUrl: 'https://example.test', verdict: { owner: 'person', by: 'rule', rail: 'no_next_step', reason: 'x', generation: 3 } });
-    expect(message).toContain('Needs your decision: Task 1a2b3c4d and PR #77\'s fix are waiting on each other. Choose one to stop.');
+    expect(message).toContain('Needs you: Task 1a2b3c4d and PR #77\'s fix are waiting on each other. Choose one to stop.');
     expect(message).not.toMatch(/Nothing is fixing|\bfixed\b|\bresolved\b/i);
     expect(message.split('\n').length).toBeLessThanOrEqual(5);
   });

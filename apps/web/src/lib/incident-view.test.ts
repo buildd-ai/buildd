@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import type { FailureIncidentRecovery } from '@buildd/shared';
-import { incidentStateLine, incidentAffected, projectIncident, type IncidentForView, type IncidentVerdictView } from './incident-view';
+import { incidentCause, incidentStateLine, incidentAffected, projectIncident, type IncidentForView, type IncidentVerdictView } from './incident-view';
 
 describe('incident page words', () => {
   const now = new Date('2026-10-09T23:00:00Z');
@@ -135,7 +135,7 @@ describe('projectIncident: one state word, sentence and owner per assessment', (
       recommended: 'cancel_attempt' as const,
     };
     const p = projectIncident(incident({ recovery: recovery({ state: 'needs_decision', owner: 'person', decision, nextCheckAt: null }) }), personVerdict(2), opts);
-    expect(p).toMatchObject({ phase: 'decision', stateWord: 'Needs your decision', owner: 'person', ownerLabel: 'You', needsYou: true, sentence: decision.question });
+    expect(p).toMatchObject({ phase: 'decision', stateWord: 'Needs you', owner: 'person', ownerLabel: 'You', needsYou: true, sentence: decision.question });
     expect(p.options.map(o => o.capability)).toEqual(['cancel_attempt', 'dismiss', 'open_blocker']);
     expect(p.options[0]).toMatchObject({ recommended: true, mode: 'link', href: 'https://github.com/o/r/pull/77' });
     expect(p.options.find(o => o.capability === 'dismiss')).toMatchObject({ mode: 'post' });
@@ -199,6 +199,17 @@ describe('projectIncident: one state word, sentence and owner per assessment', (
     for (const state of states) {
       const p = projectIncident(incident({ recovery: recovery({ state, decision: state === 'needs_decision' ? { question: 'Choose one.', options: [], recommended: 'dismiss' } : undefined, capabilityGap: state === 'needs_operator' ? { capability: 'c', reason: 'r' } : undefined }) }), personVerdict(2), opts);
       expect(`${p.stateWord} ${p.sentence}`).not.toMatch(FORBIDDEN);
+    }
+  });
+});
+
+describe('incidentCause: the headline says what is wrong, in plain words', () => {
+  it('names the refined path-overlap causes without PR or task numbers', () => {
+    expect(incidentCause('path_overlap.cycle', 'path_overlap_stall')).toBe('Two pieces of work are waiting on each other');
+    expect(incidentCause('path_overlap.blocker_open', 'path_overlap_stall')).toBe('A task is waiting for a change to the same files to land');
+    expect(incidentCause('something.new', 'retry_fork', 'Same failure across tasks')).toBe('Same failure across tasks');
+    for (const code of ['path_overlap.no_progress', 'path_overlap.blocker_merged_unreleased', 'path_overlap.blocker_stuck', 'path_overlap.subject_exempt_violated', 'path_overlap.spurious_overlap']) {
+      expect(incidentCause(code, 'path_overlap_stall')).not.toMatch(/#\d|[0-9a-f]{8}/);
     }
   });
 });

@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { admitsToNeedsYou } from '@buildd/core/needs-you';
 import type { WaitingFor } from '@buildd/shared';
+import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-refs';
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -41,7 +42,14 @@ export async function GET() {
       return NextResponse.json({ tasks: [] });
     }
 
-    const taskIds = relevantWorkers.map(w => w.taskId!);
+    // A question recovery has superseded (its task carries an incident ref and
+    // the incident's assessment owns the next step) is not a banner or a
+    // Needs You row: the incident's own status says what is happening.
+    const superseded = await loadSupersededQuestionTaskIds(relevantWorkers.map(w => w.taskId!));
+    const taskIds = relevantWorkers.map(w => w.taskId!).filter(id => !superseded.has(id));
+    if (taskIds.length === 0) {
+      return NextResponse.json({ tasks: [] });
+    }
     const waitingTasks = await db.query.tasks.findMany({
       where: inArray(tasks.id, taskIds),
       columns: { id: true, title: true, status: true, workspaceId: true, missionId: true },

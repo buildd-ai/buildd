@@ -23,6 +23,7 @@ import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { deriveRunEvidence } from '@buildd/core/run-evidence';
 import { noRowOfPrMerged } from './pr-merge-stamp';
 import { homeQuestionView } from './home-attention';
+import { loadSupersededQuestionTaskIds } from './incident-recovery-refs';
 import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
 export interface HomeFleetStats {
@@ -261,9 +262,12 @@ export async function loadHomeFleet(input: {
 
   const merged = workerRows.filter(r => r.mergedAt && new Date(r.mergedAt).getTime() >= dayStart && r.prNumber);
   const mergedPrNumbers = [...new Set(merged.map(r => r.prNumber!))].sort((a, b) => b - a);
-  const questions: HomeFleetQuestion[] = workerRows
+  const asking = workerRows.filter(r => isOpenAsk(r.taskStatus, r.status) && admitsToNeedsYou(r.waitingFor as Record<string, unknown> | null, now));
+  // A question recovery superseded is the incident's, not the owner's (failure-incident-recovery §17.2).
+  const superseded = asking.length ? await loadSupersededQuestionTaskIds(asking.map(r => r.taskId ?? '')) : new Set<string>();
+  const questions: HomeFleetQuestion[] = asking
     // Needs You admission: an open ask whose park a disposition hands to a person.
-    .filter(r => isOpenAsk(r.taskStatus, r.status) && admitsToNeedsYou(r.waitingFor as Record<string, unknown> | null, now))
+    .filter(r => !(r.taskId && superseded.has(r.taskId)))
     .sort((a, b) => new Date(a.updatedAt ?? 0).getTime() - new Date(b.updatedAt ?? 0).getTime())
     .flatMap(r => {
       const question = homeQuestionView({ waitingFor: r.waitingFor, error: r.error, taskTitle: r.taskTitle });

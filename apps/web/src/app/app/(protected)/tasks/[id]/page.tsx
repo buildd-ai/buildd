@@ -39,7 +39,7 @@ import TaskModelCell from './TaskModelCell';
 import { getModelDisplayName, primaryModelFromUsage, compareAssignedActual } from '@buildd/core/model-display';
 import TaskAutoRefresh from './TaskAutoRefresh';
 import { DisplayTimezoneProvider, ZonedTime } from '@/components/DisplayTimezone';
-import { getTeamTimezoneSetting } from '@/lib/team-timezone';
+import { getTeamTimezoneSetting, getViewerTimezone } from '@/lib/team-timezone';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
 import TaskQuestionFeed from './TaskQuestionFeed';
 import MarkdownContent from '@/components/MarkdownContent';
@@ -124,6 +124,8 @@ import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
+import Notice from '@/components/ui/Notice';
+import { loadTaskRecoveryViews } from '@/lib/incident-recovery-refs';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -639,7 +641,13 @@ export default async function TaskDetailPage({
   // Never revive an ended worker merely because it retained a question.
   const activeWorkerRow = !isTerminalTaskStatus(task.status)
     ? workerPicks.activeWorker : undefined;
-  const activeWorker = activeWorkerRow?.waitingFor && !isOpenAsk(task.status, activeWorkerRow.status)
+  // A task blocked by a failure incident reads the incident's recovery (failure-incident-recovery
+  // §16.4, §17.2): while recovery owns the next step, a question the worker asked about the same
+  // failure is stale, so its controls are not offered; history keeps it.
+  const taskRecovery = (await loadTaskRecoveryViews([task.id], {
+    timeZone: await getViewerTimezone(user?.id ?? null, (task.workspace as { teamId?: string } | null)?.teamId ?? null),
+  })).get(task.id) ?? null;
+  const activeWorker = activeWorkerRow?.waitingFor && (!isOpenAsk(task.status, activeWorkerRow.status) || taskRecovery?.supersedesQuestion)
     ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
 
   const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
@@ -1507,6 +1515,19 @@ export default async function TaskDetailPage({
             different things. The page alone adds runner targeting. An open
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
+        {taskRecovery?.holdsCompletion && (
+          <Notice
+            tone={taskRecovery.phase === 'unavailable' ? 'err' : taskRecovery.phase === 'decision' ? 'warn' : 'info'}
+            title={taskRecovery.stateWord}
+            action={{ label: 'Open incident', href: taskRecovery.href }}
+            className="mt-4"
+            data-testid="task-recovery-status"
+          >
+            <p>{taskRecovery.sentence}</p>
+            <p className="text-meta text-text-muted">Owner: {taskRecovery.ownerLabel}</p>
+          </Notice>
+        )}
+
         {verdict && (
           <TaskVerdictBlock verdict={verdict} displayStatus={displayStatus} />
         )}
