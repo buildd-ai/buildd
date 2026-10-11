@@ -858,8 +858,10 @@ before editing. The overlap with the control-plane mission (`27b1fe42`, which
 hosts crons and drains) and the automatic visual-review mission (which owns
 the auditor role and capture) is coordinated through those path claims.
 
-1. Task `b3cb321d`. Repair the scrub itself: `scripts/qa/scrub-pii.sql` must run under the
-   `artifact_revisions` immutability trigger (the concrete failure in §16.1).
+1. Task `b3cb321d`, **shipped in #4420**. Repair the scrub itself:
+   `scripts/qa/scrub-pii.sql` now switches a table's user triggers off for the
+   generic overwrite on the throwaway clone, so the `artifact_revisions`
+   immutability trigger no longer fails it (the concrete failure in §16.1).
 2. Task `89d92f1a`. Typed capture failures, plus the auditor prompt: §16.5, H1, H2.
 3. Task `1acc6048`. The `infrastructure_failure` family on this contract, with the task and
    mission adapters and rollout reconciliation: §16.3, §16.4, H3–H5.
