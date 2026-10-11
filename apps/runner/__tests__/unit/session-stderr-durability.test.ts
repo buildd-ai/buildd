@@ -266,9 +266,13 @@ describe('SDK stderr durability', () => {
 
     manager = new WorkerManager(makeConfig());
     await startSessionFor(manager, 'w-once', makeTask('task-once'), 'buildd/once');
-    await waitFor(() => tracePatches().length > 0);
-    // Settle briefly so a duplicate flush would also have landed.
-    await new Promise(r => setTimeout(r, 250));
+    const filed = () => tracePatches()
+      .filter((c: any[]) => c[0] === 'w-once')
+      .flatMap((c: any[]) => c[1].appendErrorTraces)
+      .filter((t: any) => t.excerpt.includes('single failure line'));
+    await waitFor(() => filed().length > 0);
+    // Short settle so a duplicate flush, if there were one, has a chance to land.
+    await new Promise(r => setTimeout(r, 100));
 
     // Scope to this worker: a straggler session from an earlier test (destroyed
     // manager, late retry) re-invokes the shared fake SDK with this test's chunks.
@@ -289,7 +293,8 @@ describe('SDK stderr durability', () => {
 
     manager = new WorkerManager(makeConfig());
     await startSessionFor(manager, 'w-upload-fail', makeTask('task-up'), 'buildd/up');
-    await new Promise(r => setTimeout(r, 300));
+    await waitFor(() => mockRequestSessionUploadUrl.mock.calls.length > 0);
+    await new Promise(r => setTimeout(r, 100));
 
     const worker = manager.getWorker('w-upload-fail');
     expect(worker?.status).not.toBe('error');
