@@ -52,6 +52,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/github/pr/supersede/route.ts',
   'apps/web/src/app/api/health/dispatch/route.ts',
   'apps/web/src/app/api/health/failures/route.ts',
+  'apps/web/src/app/api/health/incidents/route.ts',
   'apps/web/src/app/api/initiatives/[id]/artifacts/route.ts',
   // Connector gateway: its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); every tools/call re-checked per call.
   'apps/web/src/app/api/mcp/c/[connectorId]/route.ts',
