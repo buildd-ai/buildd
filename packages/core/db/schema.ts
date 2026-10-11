@@ -1827,7 +1827,9 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   // §8: which way the gap runs. code_ahead/contradicted may be written by
   // Tier-2 CI; spec_ahead is written only by the Tier-3 cron (slice 7) after
   // its deeper search rules out a rename — CI never writes it directly.
-  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted'>(),
+  // `conflict` (Living Specs, D-5): two requirements of approved revisions
+  // disagree. Advisory only: it never blocks a merge or a completion.
+  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted' | 'conflict'>(),
   // §9: open -> accepted is a parked, not closed, state; -> resolved happens
   // only when a re-run's assertion result lands cleanly, never by self-report.
   status: text('status').notNull().default('open').$type<'open' | 'accepted' | 'resolved'>(),
@@ -1860,6 +1862,9 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   proposalRejectedReason: text('proposal_rejected_reason'),
   // The exact read that produced the current verdict — never a similarity score.
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  // A Living Spec finding names the exact approved revision it was judged
+  // against; NULL for a repo-spec (docs/specs) assertion.
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'set null' }),
 }, (t) => ({
   workspaceIdx: index('spec_discrepancies_workspace_idx').on(t.workspaceId),
   // THE identity constraint (§7): exactly one row per (workspace, spec, assertion).
@@ -2572,10 +2577,17 @@ export const artifacts = pgTable('artifacts', {
   // Who is writing this body ("user:<id>" / "account:<id>"), copied onto the
   // revision the trigger records. Optional: an unset author records the worker.
   contentAuthor: text('content_author'),
+  // An uploaded file's state (lib/artifact-upload.ts): 'pending' from the
+  // presigned URL until its bytes are verified (size, then sha256 onto the
+  // revision), then 'ready', or 'failed'. NULL = not an upload (inline body, or
+  // a row from before this column), treated as ready. Set by the server only:
+  // metadata is caller-writable, so a flag there could be forged.
+  uploadState: text('upload_state').$type<'pending' | 'ready' | 'failed'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workerIdx: index('artifacts_worker_idx').on(t.workerId),
+  uploadPendingIdx: index('artifacts_upload_pending_idx').on(t.createdAt).where(sql`upload_state = 'pending'`),
   shareTokenIdx: uniqueIndex('artifacts_share_token_idx').on(t.shareToken),
   workspaceIdx: index('artifacts_workspace_idx').on(t.workspaceId),
   workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
@@ -2639,6 +2651,40 @@ export const artifactReads = pgTable('artifact_reads', {
 }));
 
 /**
+ * Typed links from an artifact to the things it informs: a chat message or
+ * conversation, a task, a mission, a plan, and later a spec revision or a
+ * verification. One payload row, many links; nothing is copied.
+ * Owned by Living Specs (docs/specs/execution-control-plane.md): only
+ * apps/web/src/lib/artifact-links.ts writes it; the kernel reads it by id.
+ *
+ * `relation` says what the artifact is to the subject. Only an approved spec
+ * revision confers authority (decision D-6), so `normative_reference` is legal
+ * only with a pinned `artifact_revision`, and no relation approves anything.
+ * `artifact_revision` NULL = floating (follows the current body).
+ */
+export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec_revision', 'verification'] as const;
+export const ARTIFACT_LINK_RELATIONS = ['context', 'requirement', 'normative_reference', 'design_reference', 'evidence', 'output'] as const;
+export type ArtifactLinkSubject = (typeof ARTIFACT_LINK_SUBJECTS)[number];
+export type ArtifactLinkRelation = (typeof ARTIFACT_LINK_RELATIONS)[number];
+
+export const artifactLinks = pgTable('artifact_links', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'cascade' }).notNull(),
+  artifactRevision: integer('artifact_revision'),
+  subjectKind: text('subject_kind').notNull().$type<ArtifactLinkSubject>(),
+  subjectId: uuid('subject_id').notNull(),
+  relation: text('relation').notNull().$type<ArtifactLinkRelation>(),
+  // The subject's team, resolved and checked at write; reads scope by it.
+  teamId: uuid('team_id').notNull(),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniqueLink: uniqueIndex('artifact_links_unique_idx').on(t.artifactId, t.subjectKind, t.subjectId, t.relation),
+  subjectIdx: index('artifact_links_subject_idx').on(t.subjectKind, t.subjectId),
+  normativeIsPinned: check('artifact_links_normative_is_pinned', sql`${t.relation} <> 'normative_reference' OR ${t.artifactRevision} IS NOT NULL`),
+}));
+
+/**
  * Living Specs: governed intent with immutable revisions (Living Specs v2, G1).
  * A spec is a stable identity; its body lives in one artifact (`body_artifact_id`)
  * so storage, history, hashes, bounded reads and redaction are the artifact
@@ -2691,6 +2737,30 @@ export const specRevisions = pgTable('spec_revisions', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/**
+ * One verdict on one acceptance criterion of an approved spec revision, for
+ * one task's outcome (Living Specs V1, D-5). Append-only: a re-check adds a
+ * row, and the outcome reads the newest row per criterion. A verdict is bound
+ * to the PR head it judged and the references it actually read, so a verdict
+ * on an older head never speaks for the current one. Distinct from task and PR
+ * state: a task can complete and its PR merge while its governed outcome
+ * reads fail.
+ */
+export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
+  headSha: text('head_sha'),
+  // The check's evidence refs and the artifact reads (F4 ledger ids) behind it.
+  evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskCriterionIdx: index('spec_outcome_verdicts_task_idx').on(t.taskId, t.specRevisionId, t.criterionId, t.createdAt),
 }));
 
 /**

@@ -10,6 +10,7 @@
  * rows on hairlines, no boxes; one column on phones, two from md. Workspace
  * scope comes from the shell's switcher (the page reads `?workspace=`).
  */
+import { Select } from '@/components/ui/Select';
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import Disclosure from '@/components/ui/Disclosure';
@@ -22,6 +23,8 @@ import {
   PORTFOLIO_STATUS_FILTERS,
   filterPortfolio,
   portfolioFilterCounts,
+  portfolioGroups,
+  NO_GROUP,
   splitPortfolio,
   type PortfolioRow,
   type PortfolioStatusFilter,
@@ -30,12 +33,17 @@ import { shortDuration } from '@/lib/mission-list-card';
 
 export type { PortfolioRow } from '@/lib/mission-portfolio';
 
+const ALL_GROUPS = '__all__';
+
 export function MissionGrid({
   rows,
+  initialGroup = null,
   slots,
   now = Date.now(),
 }: {
   rows: PortfolioRow[];
+  /** `?group=` from the URL: a group id, or `none`. */
+  initialGroup?: string | null;
   /** Live workers / seats across the team. */
   slots: { live: number; max: number };
   now?: number;
@@ -43,8 +51,18 @@ export function MissionGrid({
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<PortfolioStatusFilter>('all');
   const [showOlder, setShowOlder] = useState(false);
+  const groups = useMemo(() => portfolioGroups(rows), [rows]);
+  // A link to a group with no missions left falls back to all of them.
+  const [group, setGroup] = useState(initialGroup && groups.some(g => g.id === initialGroup) ? initialGroup : '');
+  const hasGroups = groups.some(g => g.id !== NO_GROUP);
+  const chooseGroup = (id: string) => {
+    setGroup(id);
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set('group', id); else url.searchParams.delete('group');
+    window.history.replaceState(null, '', url);
+  };
 
-  const { open, recentDone, olderDone } = useMemo(() => splitPortfolio(rows, now), [rows, now]);
+  const { open, recentDone, olderDone } = useMemo(() => splitPortfolio(group ? filterPortfolio(rows, { groupId: group }) : rows, now), [rows, group, now]);
   // Header counts never follow the search: they describe the portfolio.
   const totals = useMemo(() => portfolioFilterCounts(open), [open]);
   // Filter counts follow the search, so each number is what tapping it shows.
@@ -55,7 +73,7 @@ export function MissionGrid({
   const doneRows = filterPortfolio([...recentDone, ...(showOlder || recentDone.length === 0 ? olderDone : [])], { q });
 
   const multiWorkspace = new Set(rows.map(r => r.workspaceId ?? '')).size > 1;
-  const filtered = q.trim() !== '' || status !== 'all';
+  const filtered = q.trim() !== '' || status !== 'all' || group !== '';
   const listed = sections.filter(sec => sec.key !== 'landed');
   const onDev = sections.find(sec => sec.key === 'landed');
 
@@ -91,6 +109,20 @@ export function MissionGrid({
             className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-surface-1 to-transparent md:hidden"
           />
         </div>
+        <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center">
+        {hasGroups && (
+          <Select
+            testId="portfolio-group"
+            aria-label="Group"
+            value={group || ALL_GROUPS}
+            onChange={v => chooseGroup(v === ALL_GROUPS ? '' : v)}
+            options={[
+              { value: ALL_GROUPS, label: 'All groups' },
+              ...groups.map(g => ({ value: g.id, label: `${g.name} (${g.count})` })),
+            ]}
+            className="md:w-auto md:min-w-[180px]"
+          />
+        )}
         <input
           type="search"
           data-testid="portfolio-search"
@@ -100,6 +132,7 @@ export function MissionGrid({
           onChange={e => setQ(e.target.value)}
           className="min-h-11 w-full min-w-0 rounded-[var(--radius-card)] border border-border-default bg-transparent px-3 text-[16px] text-text-primary placeholder:text-text-muted focus:border-border-strong focus:outline-none md:min-h-9 md:w-[240px] md:text-body"
         />
+        </div>
       </div>
 
       <div data-testid="mission-group" data-group="open" aria-label="Open missions" className="space-y-6">
@@ -127,7 +160,7 @@ export function MissionGrid({
             {filtered && open.length > 0 && (
               <button
                 type="button"
-                onClick={() => { setQ(''); setStatus('all'); }}
+                onClick={() => { setQ(''); setStatus('all'); chooseGroup(''); }}
                 className="ml-2 min-h-11 text-text-muted underline underline-offset-4 md:min-h-0"
               >
                 Clear filters

@@ -14,7 +14,7 @@
  */
 import { forwardRef, useImperativeHandle, useRef, type ReactNode } from 'react';
 import { ChatComposer as KitComposer, type ChatComposerHandle as KitComposerHandle } from '@builddai/ai-kit/chat/react';
-import { CHAT_MAX_MESSAGE_CHARS, type ChatTierName } from '@buildd/shared';
+import { CHAT_MAX_MESSAGE_CHARS, CHAT_PASTE_ATTACHMENT_CHARS, type ChatAttachmentDraft, type ChatTierName } from '@buildd/shared';
 import ToolsMenu from './ToolsMenu';
 import TierSwitch from './TierSwitch';
 import { WorkspaceSwitcher } from '@/components/WorkspaceSwitcher';
@@ -28,7 +28,11 @@ export interface ChatComposerHandle { focus(): void }
 interface Props {
   value: string;
   onChange(value: string): void;
-  onSend(text: string): void;
+  /** `attachments`: long pastes, shown as cards above the message (Living Specs C2). */
+  onSend(text: string, attachments: ChatAttachmentDraft[]): void;
+  /** The draft's attachments, held by the caller so a refused send can put them back. */
+  attachments?: ChatAttachmentDraft[];
+  onAttachmentsChange?(attachments: ChatAttachmentDraft[]): void;
   onStop?: () => void;
   /** A turn is streaming: Enter doesn't send, the button stops. */
   busy?: boolean;
@@ -66,7 +70,7 @@ interface Props {
 export const BUSY_PLACEHOLDER = 'Steer while I think…';
 
 const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer({
-  value, onChange, onSend, onStop, busy = false, disabled = false, placeholder = 'Ask about your fleet, or describe the work…',
+  value, onChange, onSend, attachments, onAttachmentsChange, onStop, busy = false, disabled = false, placeholder = 'Ask about your fleet, or describe the work…',
   workspaces, workspaceId, onWorkspaceChange, routedWorkspace = null, teamName = null, tier, compact = false,
   teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, mood = null, scopeLock,
 }, ref) {
@@ -115,6 +119,8 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
         onChange={onChange}
         onSend={onSend}
         maxLength={CHAT_MAX_MESSAGE_CHARS}
+        attachFrom={CHAT_PASTE_ATTACHMENT_CHARS}
+        {...(attachments ? { attachments, onAttachmentsChange } : {})}
         onStop={onStop}
         busy={busy}
         disabled={disabled}

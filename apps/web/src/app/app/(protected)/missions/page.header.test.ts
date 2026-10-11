@@ -18,9 +18,14 @@ describe('missions page header', () => {
     expect(h1).not.toContain('font-mono');
   });
 
-  it('links to Releases and Initiatives from the header', () => {
+  it('links to Releases from the header, and no longer to Initiatives', () => {
     expect(src).toMatch(/<Link[^>]*href="\/app\/releases"[^>]*data-testid="missions-releases-link"/);
-    expect(src).toMatch(/<Link[^>]*href="\/app\/initiatives"[^>]*data-testid="missions-initiatives-link"/);
+    expect(src).not.toContain('/app/initiatives');
+  });
+
+  it('hands the group filter the mission initiative link and the ?group= param', () => {
+    expect(src).toContain('groupId: obj.initiativeId');
+    expect(src).toMatch(/initialGroup=\{/);
   });
 
   it('the create entry is a small .btn, not an orange 2px frame', () => {

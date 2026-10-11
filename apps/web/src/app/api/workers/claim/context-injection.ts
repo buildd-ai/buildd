@@ -532,3 +532,85 @@ export async function attachDiscrepancyContext(
     sink(cw, block);
   }
 }
+
+/** One line of the claim-time reference manifest: what is linked, never its body. */
+export interface ArtifactManifestEntry {
+  artifactId: string; title: string | null; type: string; relation: string;
+  revision: number | null; pinned: boolean; sizeBytes: number | null; contentHash: string | null; via: 'task' | 'mission';
+}
+
+/** At most this many linked artifacts are listed; the rest are counted. */
+export const ARTIFACT_MANIFEST_MAX = 20;
+
+export const ARTIFACT_MANIFEST_CONTEXT_KEY = 'artifactManifest';
+
+/** The prompt block for a task's linked artifacts. Ids, titles and hashes only; bodies are read with get_artifact. */
+export function renderArtifactManifest(entries: readonly ArtifactManifestEntry[]): string | null {
+  if (entries.length === 0) return null;
+  const shown = entries.slice(0, ARTIFACT_MANIFEST_MAX);
+  const lines = shown.map((e) => {
+    const rev = e.revision === null ? 'current' : `rev ${e.revision}${e.pinned ? ' pinned' : ''}`;
+    const size = e.sizeBytes === null ? '' : `, ${e.sizeBytes} bytes`;
+    const hash = e.contentHash ? `, sha256 ${e.contentHash.slice(0, 12)}` : '';
+    return `- ${e.title || '(untitled)'} — ${e.relation} (${e.via}), ${e.type}${size}, ${rev}${hash}. id: ${e.artifactId}`;
+  });
+  const more = entries.length > shown.length ? [`- …and ${entries.length - shown.length} more (list_artifact_links)`] : [];
+  return [
+    '## Linked artifacts',
+    'Linked to this task or its mission. Not loaded: read one with get_artifact (a long one comes back as an outline you read by section; pass revision for a pinned one). A normative_reference is the revision you are held to.',
+    ...lines,
+    ...more,
+  ].join('\n');
+}
+
+/**
+ * Claim-time reference manifest (Living Specs links, docs/specs/artifacts-and-sharing.md §9).
+ * The task's links, then its mission's, as one compact block and as structured
+ * `task.context.artifactManifest`. Best-effort: a failure attaches nothing.
+ */
+export async function attachArtifactReferences(
+  claimedWorkers: ClaimTasksResponse['workers'],
+  claimedTasks: readonly ClaimedTask[],
+): Promise<void> {
+  let artifactsLinkedTo: typeof import('@/lib/artifact-links')['artifactsLinkedTo'];
+  try {
+    ({ artifactsLinkedTo } = await import('@/lib/artifact-links'));
+  } catch (err) {
+    console.warn('[claim] artifact manifest unavailable:', err);
+    return;
+  }
+  for (const cw of claimedWorkers) {
+    const task = claimedTasks.find(t => t.id === cw.taskId);
+    if (!task) continue;
+    try {
+      const missionId = (task as { missionId?: string | null }).missionId ?? null;
+      const sources: Array<['task' | 'mission', string]> = [['task', task.id], ...(missionId ? [['mission', missionId] as ['mission', string]] : [])];
+      const entries: ArtifactManifestEntry[] = [];
+      const seen = new Set<string>();
+      for (const [via, id] of sources) {
+        const linked = await artifactsLinkedTo(via, id);
+        if (!Array.isArray(linked)) continue;
+        for (const l of linked) {
+          const key = `${l.artifactId}:${l.relation}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          entries.push({
+            artifactId: l.artifactId, title: l.title, type: l.type, relation: l.relation,
+            revision: l.pinnedRevision ?? (l.currentRevision > 0 ? l.currentRevision : null), pinned: l.pinnedRevision !== null,
+            sizeBytes: l.sizeBytes, contentHash: l.contentHash, via,
+          });
+        }
+      }
+      const block = renderArtifactManifest(entries);
+      if (!block) continue;
+      const taskObj = cw.task as any;
+      if (taskObj) {
+        taskObj.context = taskObj.context ?? {};
+        taskObj.context[ARTIFACT_MANIFEST_CONTEXT_KEY] = entries.slice(0, ARTIFACT_MANIFEST_MAX);
+      }
+      appendContextBlock(cw, block);
+    } catch (err) {
+      console.warn('[claim] artifact manifest injection failed:', err);
+    }
+  }
+}

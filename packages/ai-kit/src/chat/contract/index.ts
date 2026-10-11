@@ -337,6 +337,71 @@ export const HANDOFF_PART_TYPE = 'data-handoff' as const;
 export const EVENT_PART_TYPE = 'data-event' as const;
 export const STEER_PART_TYPE = 'data-steer' as const;
 export const TURN_ERROR_PART_TYPE = 'data-turn-error' as const;
+export const ATTACHMENT_PART_TYPE = 'data-attachment' as const;
+
+/**
+ * A paste longer than this many characters becomes an attachment in the
+ * composer (0.25.0). Presentation only: a message is never refused for
+ * crossing it; the composer's `maxLength` still caps text and attachments
+ * together.
+ */
+export const PASTE_ATTACHMENT_CHARS = 8_000;
+
+/**
+ * A long paste, as the composer sends it: the text itself under an id the
+ * client chose when the paste happened. A retry sends the same id, so the
+ * server keeps one attachment per paste however often it is sent.
+ */
+export interface AttachmentDraft {
+  id: string;
+  title: string;
+  text: string;
+}
+
+/**
+ * A stored attachment: what a saved message keeps instead of the text. The
+ * body lives once, behind `artifactId` at `revision`, hashed as `sha256`.
+ */
+export interface AttachmentRef {
+  artifactId: string;
+  revision: number;
+  /** sha256 hex of the UTF-8 text. */
+  sha256: string;
+  /** Length in characters (UTF-16 code units, as `String.length` counts). */
+  chars: number;
+  title: string;
+}
+
+/** Either form: a draft on its way to the server, or the stored reference. */
+export type AttachmentData = AttachmentDraft | AttachmentRef;
+
+export function isAttachmentPart(part: ChatPart): part is { type: typeof ATTACHMENT_PART_TYPE; data: AttachmentData } {
+  if (part.type !== ATTACHMENT_PART_TYPE) return false;
+  const d = (part as { data?: Partial<AttachmentDraft & AttachmentRef> }).data;
+  if (!d || typeof d.title !== 'string') return false;
+  return (typeof d.id === 'string' && typeof d.text === 'string')
+    || (typeof d.artifactId === 'string' && typeof d.sha256 === 'string' && typeof d.chars === 'number' && typeof d.revision === 'number');
+}
+
+export function isAttachmentDraft(d: AttachmentData): d is AttachmentDraft {
+  return typeof (d as AttachmentDraft).text === 'string';
+}
+
+/** Characters an attachment carries, either form. */
+export function attachmentChars(d: AttachmentData): number {
+  return isAttachmentDraft(d) ? d.text.length : d.chars;
+}
+
+/** The id that names an attachment, either form: the draft's id is its artifact id. */
+export function attachmentId(d: AttachmentData): string {
+  return isAttachmentDraft(d) ? d.id : d.artifactId;
+}
+
+/** A title for a paste: its first non-blank line, shortened. */
+export function pasteTitle(text: string, max = 60): string {
+  const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? 'Pasted text';
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
 
 /**
  * Why a turn that had started streaming failed. `insufficient_credit`: the

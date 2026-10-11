@@ -13,7 +13,7 @@
  * select-then-decide-then-write is correct — no concurrent writer to race.
  */
 
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, isNull, ne } from 'drizzle-orm';
 import { db } from './db';
 import { specDiscrepancies } from './db/schema';
 import {
@@ -26,7 +26,9 @@ import {
 
 // ─── Direction (§8) ─────────────────────────────────────────────────────────
 
-export type Direction = 'spec_ahead' | 'code_ahead' | 'contradicted';
+// `conflict`: two criteria of an approved Living Spec revision disagree
+// (lib/specs/outcome.ts). Advisory only: never promoted, flipped or blocking.
+export type Direction = 'spec_ahead' | 'code_ahead' | 'contradicted' | 'conflict';
 export type DiscrepancyStatus = 'open' | 'accepted' | 'resolved';
 
 /**
@@ -270,7 +272,7 @@ function emptySummary(): LedgerRunSummary {
     skipped: 0,
     rechecked: 0,
     unasserted: 0,
-    byDirection: { spec_ahead: 0, code_ahead: 0, contradicted: 0 },
+    byDirection: { spec_ahead: 0, code_ahead: 0, contradicted: 0, conflict: 0 },
   };
 }
 
@@ -441,7 +443,9 @@ export async function writeLedgerFromEvaluations(
     const live = await db
       .select({ specPath: specDiscrepancies.specPath, assertionId: specDiscrepancies.assertionId })
       .from(specDiscrepancies)
-      .where(and(eq(specDiscrepancies.workspaceId, workspaceId), ne(specDiscrepancies.status, 'resolved')));
+      // A Living Spec finding (it names a spec revision) is not a repo-doc
+      // assertion: a doc run never saw it, so it must not resolve it.
+      .where(and(eq(specDiscrepancies.workspaceId, workspaceId), ne(specDiscrepancies.status, 'resolved'), isNull(specDiscrepancies.specRevisionId)));
     for (const row of live) {
       if (seen.has(`${row.specPath}\u0000${row.assertionId}`)) continue;
       await db

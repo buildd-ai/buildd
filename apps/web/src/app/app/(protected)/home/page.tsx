@@ -37,7 +37,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
-import { ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
+import { ACCESS_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -1826,6 +1826,12 @@ export default async function HomePage({
         // through the composition root).
         if (wsIds.length > 0) {
           waitingOnYou.push(...await INCIDENT_NEEDS_YOU(wsIds));
+        }
+
+        // 8. Agent access requests team policy leaves to a person, for teams
+        // where this viewer can decide them (lib/capability-grants-needs-you.ts).
+        if (wsIds.length > 0) {
+          waitingOnYou.push(...await ACCESS_NEEDS_YOU(user?.id, wsIds));
         }
 
         // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d
