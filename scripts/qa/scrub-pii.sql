@@ -250,6 +250,10 @@ DELETE FROM platform_admin_audit_events;
 DELETE FROM stripe_events;
 -- Capability decisions: per-run grant/PR audit; resources name repos and PRs.
 DELETE FROM agent_capability_decisions;
+-- Capability requests/grants carry agent-written reasons, tool and resource
+-- names; team capability policy names providers, roles and resources.
+DELETE FROM capability_grants;
+DELETE FROM capability_policies;
 -- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
 DELETE FROM task_dispatch_outbox;
 -- Workflow kernel ledger: facts, transitions and effects carry repo names, PR
@@ -533,6 +537,13 @@ FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM artifacts) s WHERE a.
 DELETE FROM artifact_revisions;
 -- The read ledger's selectors hold search text agents typed.
 DELETE FROM artifact_reads;
+-- Links carry ids only; who made one is an account or user id.
+UPDATE artifact_links SET created_by = NULL;
+-- Living Specs: titles and summaries are prose; who wrote or approved a
+-- revision is an account or user id. Bodies are artifacts, scrubbed above.
+UPDATE specs SET title = 'Spec ' || left(md5(id::text), 8), created_by = NULL;
+UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
+  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END;
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.

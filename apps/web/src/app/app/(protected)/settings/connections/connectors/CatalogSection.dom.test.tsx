@@ -1,6 +1,7 @@
 /**
  * Settings → MCP connectors → Catalog in a browser (happy-dom): admins set a
- * per-entry policy and add team entries; members see nothing.
+ * per-entry policy and add team entries; members read what is available and
+ * change nothing; each provider shows its real state for the team.
  * Runs in its own process (scripts/run-unit-tests.ts), so the globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
@@ -22,7 +23,7 @@ const entry = (slug: string, over: Record<string, unknown> = {}) => ({
 });
 
 type Call = { url: string; method: string; body?: any };
-function stubFetch(routes: { catalog: unknown; policy?: () => Response; post?: () => Response }) {
+function stubFetch(routes: { catalog: unknown; connectors?: unknown[]; policy?: () => Response; post?: () => Response; install?: () => Response; connect?: () => Response }) {
   const calls: Call[] = [];
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
@@ -30,6 +31,9 @@ function stubFetch(routes: { catalog: unknown; policy?: () => Response; post?: (
     calls.push({ url: String(url), method, body });
     if (url === '/api/connectors/catalog/policy') return routes.policy?.() ?? new Response(JSON.stringify({ ok: true }));
     if (url === '/api/connectors/catalog' && method === 'POST') return routes.post?.() ?? new Response(JSON.stringify({ entry: {} }), { status: 201 });
+    if (url === '/api/connectors' && method === 'POST') return routes.install?.() ?? new Response(JSON.stringify({ connector: { id: 'new-1' } }), { status: 201 });
+    if (String(url).endsWith('/connect')) return routes.connect?.() ?? new Response(JSON.stringify({ error: 'needs_approved_client', message: 'The provider has not approved buildd as a client.' }), { status: 422 });
+    if (String(url).startsWith('/api/connectors') && !String(url).startsWith('/api/connectors/catalog')) return new Response(JSON.stringify({ connectors: routes.connectors ?? [] }));
     return new Response(JSON.stringify(routes.catalog));
   }) as typeof fetch;
   return calls;
@@ -54,11 +58,62 @@ async function type(input: HTMLInputElement, value: string) {
 }
 
 describe('CatalogSection', () => {
-  it('renders nothing for a member', async () => {
-    stubFetch({ catalog: { canManage: false, entries: [entry('vercel')] } });
+  it('shows a member what is available, read-only: no policy, install or connect controls', async () => {
+    // The API never sends a member a blocked entry; the page shows what it gets.
+    stubFetch({ catalog: { canManage: false, entries: [entry('axiom', { policy: 'preinstalled' }), entry('neon')] } });
     const { el, unmount } = await mount();
-    expect(el.textContent).toBe('');
-    expect(describeControls(el)).toEqual([]);
+    expect(q(el, 'catalog-member-note')).not.toBeNull();
+    expect(q(el, 'catalog-entry-axiom')!.textContent).toContain('In every workspace');
+    expect(q(el, 'catalog-state-neon')!.getAttribute('data-state')).toBe('not_installed');
+    expect(q(el, 'catalog-add-toggle')).toBeNull();
+    expect(q(el, 'catalog-step-neon')).toBeNull();
+    expect(el.querySelector('[role="radiogroup"]')).toBeNull();
+    expect(describeControls(el).filter(c => !/details/i.test(JSON.stringify(c)))).toEqual([]);
+    await unmount();
+  });
+
+  it('shows each provider\'s real state: connected, expired with Reconnect, not installed with Install', async () => {
+    stubFetch({
+      catalog: { canManage: true, entries: [entry('axiom'), entry('sentry'), entry('neon')] },
+      connectors: [
+        { id: 'c-ax', url: 'https://mcp.axiom.example/mcp', authMode: 'oauth', status: 'connected' },
+        { id: 'c-se', url: 'https://mcp.sentry.example/sse', authMode: 'oauth', status: 'expired' },
+      ],
+    });
+    const { el, unmount } = await mount();
+    expect(q(el, 'catalog-state-axiom')!.getAttribute('data-state')).toBe('connected');
+    expect(q(el, 'catalog-step-axiom')).toBeNull();
+    expect(q(el, 'catalog-state-sentry')!.getAttribute('data-state')).toBe('reconnect');
+    expect(q(el, 'catalog-step-sentry')!.textContent).toBe('Reconnect');
+    expect(q(el, 'catalog-step-neon')!.textContent).toBe('Install');
+    await unmount();
+  });
+
+  it('a provider that has not approved buildd offers no Connect, only its review link', async () => {
+    stubFetch({ catalog: { canManage: true, entries: [entry('vercel', { clientSupport: { status: 'needs_approved_client', detail: 'Vercel only lets reviewed clients sign in.', actionLabel: 'Vercel client review', actionUrl: 'https://vercel.example/review' } })] } });
+    const { el, unmount } = await mount();
+    expect(q(el, 'catalog-state-vercel')!.getAttribute('data-state')).toBe('needs_client_approval');
+    expect(q(el, 'catalog-state-vercel')!.textContent).toBe('Client approval needed');
+    expect(q(el, 'catalog-step-vercel')).toBeNull();
+    expect(q(el, 'connector-client-support')!.textContent).toContain('Vercel client review');
+    await unmount();
+  });
+
+  it('install shows the provider\'s own refusal instead of pretending to connect', async () => {
+    const calls = stubFetch({ catalog: { canManage: true, entries: [entry('neon')] } });
+    const { el, unmount } = await mount();
+    await click(q(el, 'catalog-step-neon'));
+    expect(calls.some(c => c.url === '/api/connectors' && c.method === 'POST' && c.body.url === 'https://mcp.neon.example/mcp')).toBe(true);
+    expect(calls.some(c => c.url === '/api/connectors/new-1/connect')).toBe(true);
+    expect(q(el, 'catalog-message')!.textContent).toContain('has not approved buildd');
+    await unmount();
+  });
+
+  it('a blocked entry reads Blocked and offers no install, even to an admin', async () => {
+    stubFetch({ catalog: { canManage: true, entries: [entry('axiom', { policy: 'blocked' })] } });
+    const { el, unmount } = await mount();
+    expect(q(el, 'catalog-state-axiom')!.textContent).toBe('Blocked');
+    expect(q(el, 'catalog-step-axiom')).toBeNull();
     await unmount();
   });
 
@@ -67,7 +122,8 @@ describe('CatalogSection', () => {
     const { el, unmount } = await mount();
     expect(q(el, 'catalog-policy-vercel-preinstalled')!.getAttribute('aria-checked')).toBe('true');
     expect(q(el, 'catalog-policy-vercel-available')!.getAttribute('aria-checked')).toBe('false');
-    expect(q(el, 'catalog-entry-vercel')!.textContent).toContain('Roles still choose');
+    // Preinstalled never reads as an agent grant.
+    expect(q(el, 'catalog-entry-vercel')!.textContent).toContain('Agents get it only through a role that uses it');
     // Only team entries carry a source tag; built-in rows carry none.
     expect(q(el, 'catalog-entry-internal')!.textContent).toContain('Team');
     expect(q(el, 'catalog-entry-vercel')!.textContent).not.toContain('Built-in');

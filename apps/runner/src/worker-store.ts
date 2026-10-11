@@ -5,6 +5,7 @@ import { resolveBuilddHome } from './buildd-home';
 import type { LocalWorker, CheckpointEventType } from './types';
 import { teardownStableCodexHome } from './codex-auth';
 import { sessionLog } from './session-logger';
+import { gatewayConnectorsOnly } from './mcp-json';
 
 /**
  * Best-effort terminal teardown of a Codex worker's stable CODEX_HOME when its
@@ -142,6 +143,12 @@ function truncateToolCalls(toolCalls: Array<{ name: string; timestamp: number; i
   });
 }
 
+/** Gateway connectors from a persisted record, re-validated on the way in. */
+function restoredConnectors(data: PersistedWorker): { mcpConnectors?: ReturnType<typeof gatewayConnectorsOnly> } {
+  const list = gatewayConnectorsOnly(data.mcpConnectors);
+  return list.length > 0 ? { mcpConnectors: list } : {};
+}
+
 /** Save a worker's state to disk (atomic write) */
 export function saveWorker(worker: LocalWorker): void {
   ensureDir();
@@ -158,6 +165,14 @@ export function saveWorker(worker: LocalWorker): void {
       data[field] = value;
     }
   }
+
+  // Claim connectors, gateway entries only: they carry no credential, and a
+  // restored or park-adopted worker needs them to resume with its connectors
+  // (the session re-mounts them with a freshly minted agent token, and the
+  // gateway re-checks every call, so no grant goes stale). A direct mount's
+  // headers or a stdio env never reach disk.
+  const gatewayConnectors = gatewayConnectorsOnly((worker as { mcpConnectors?: unknown }).mcpConnectors);
+  if (gatewayConnectors.length > 0) data.mcpConnectors = gatewayConnectors;
 
   // Apply bounds
   if (data.messages && Array.isArray(data.messages)) {
@@ -291,6 +306,7 @@ export function loadAllWorkers(): LocalWorker[] {
         prBaseRef: data.prBaseRef as string | undefined,
         promptSuggestions: data.promptSuggestions as string[] | undefined,
         lastAssistantMessage: data.lastAssistantMessage as string | undefined,
+        ...restoredConnectors(data),
         // Transient defaults
         hasNewActivity: false,
         currentAction: '',
@@ -362,6 +378,7 @@ export function loadWorker(workerId: string): LocalWorker | null {
       prBaseRef: data.prBaseRef as string | undefined,
       promptSuggestions: data.promptSuggestions as string[] | undefined,
       lastAssistantMessage: data.lastAssistantMessage as string | undefined,
+      ...restoredConnectors(data),
       hasNewActivity: false,
       currentAction: '',
       subagentTasks: [],
