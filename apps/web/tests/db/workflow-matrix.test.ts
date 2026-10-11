@@ -1,6 +1,6 @@
 /**
  * The §16 test matrix of the workflow state kernel (docs/specs/workflow-state-kernel.md
- * §16), S1–S37, as the acceptance for its live path.
+ * §16), S1–S38, as the acceptance for its live path.
  *
  * Every passing case drives the functions the routes and sweeps call (seam.ts)
  * through the real CAS statements on real Postgres, and drains the outbox
@@ -2805,6 +2805,105 @@ describe('S32–S34 — release composition', () => {
     const stale = { ...forged, aggregateHeadSha: 'H-OLD', constituents: [{ ...forged.constituents[0], reviewedHeadSha: 'H1', landedSha: 'H1' }] };
     expect(await ingestFact({ kind: 'composition_attested', workspaceId, source: 'test', attestation: stale })).toMatchObject({ result: 'stale' });
     expect(await delivery(trunc.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', compositionHeads: [], approvalBasis: null });
+  });
+});
+
+// ══ S38: a mission branch refresh PR ═════════════════════════════════════════
+
+describe('S38 — a refresh PR (trunk merged into a mission branch) reviews only its resolution', () => {
+  /** Two trunk PRs, each approved by a kernel round at its own head (H1), then squashed into dev as SQ0, SQ1. */
+  async function trunkConstituents() {
+    const out: Delivery[] = [];
+    for (let i = 0; i < 2; i++) {
+      const c = await openAndHandOn();
+      expect(await verdict(c, 'approve')).toMatchObject({ toState: 'APPROVED' });
+      out.push(c);
+    }
+    return out;
+  }
+  const tree = (m: Record<string, string>) => ({ truncated: false, tree: Object.entries(m).map(([path, sha]) => ({ path, mode: '100644', type: 'blob', sha })) });
+  /**
+   * Fake GitHub for the refresh PR: base `mission/x`, its commits are dev's SQ0 and SQ1 and the
+   * agent's merge H1 = merge(MS, SQ1). `resolved` is what the merge left in the file both sides changed.
+   */
+  function refreshGithub(aggPr: number, cs: Delivery[], resolved: Record<string, string>) {
+    const patch = (f: string) => ({ filename: f, status: 'modified', patch: `@@ -1 +1 @@\n-before\n+reviewed change to ${f}` });
+    const sq = cs.map((c, i) => ({ sha: `SQ${i}`, parent: i ? `SQ${i - 1}` : 'DEV0', file: `src/c${i}.ts`, pr: c.prNumber }));
+    const shared = Object.keys(resolved);
+    const baseTree: Record<string, string> = { 'src/c0.ts': 'b', 'src/c1.ts': 'b', ...Object.fromEntries(shared.map((f) => [f, 'b'])) };
+    const trees: Record<string, Record<string, string>> = {
+      DEV0: baseTree,
+      MS: { ...baseTree, ...Object.fromEntries(shared.map((f) => [f, 'mission'])) },
+      SQ1: { ...baseTree, 'src/c0.ts': 'd', 'src/c1.ts': 'd', ...Object.fromEntries(shared.map((f) => [f, 'dev'])) },
+      H1: { ...baseTree, 'src/c0.ts': 'd', 'src/c1.ts': 'd', ...resolved },
+    };
+    ghApi = (path) => {
+      if (path === `/repos/${REPO}/pulls/${aggPr}`) return { head: { ref: 'buildd/abc-chore-mission-merge-dev', sha: gh.head }, base: { ref: 'mission/x' } };
+      if (path.startsWith(`/repos/${REPO}/compare/mission%2Fx...`)) return {
+        merge_base_commit: { sha: 'MS' }, base_commit: { sha: 'MS' }, total_commits: sq.length + 1,
+        commits: [...sq.map((c) => ({ sha: c.sha, parents: [{ sha: c.parent }], commit: { message: `feat: trunk (#${c.pr})` } })),
+          { sha: 'H1', parents: [{ sha: 'MS' }, { sha: 'SQ1' }], commit: { message: 'Merge dev into mission/x' } }],
+        files: [...sq.map((c) => ({ filename: c.file })), ...shared.map((filename) => ({ filename }))],
+      };
+      if (path === `/repos/${REPO}/compare/SQ1...MS`) return { status: 'diverged' };
+      if (path === `/repos/${REPO}/compare/SQ1...dev`) return { status: 'ahead' };
+      if (path === `/repos/${REPO}/compare/MS...SQ1`) return { merge_base_commit: { sha: 'DEV0' } };
+      const rv = /^\/repos\/[^/]+\/[^/]+\/compare\/([^.]+)\.\.\.H1$/.exec(path);
+      const ri = rv ? sq.findIndex((c) => c.parent === rv[1]) : -1;
+      if (ri >= 0) return { files: [patch(sq[ri].file)] };
+      if (path === `/repos/${REPO}/commits/H1`) return { files: [...sq.map((c) => patch(c.file)), ...shared.map(patch)] };
+      const m = /^\/repos\/[^/]+\/[^/]+\/commits\/([^/]+)(\/pulls)?$/.exec(path);
+      const c = m && sq.find((x) => x.sha === m[1]);
+      if (c && !m![2]) return { files: [patch(c.file)] };
+      if (c) return [{ number: c.pr, merged_at: '2026-10-11T00:00:00Z', base: { ref: 'dev' }, head: { sha: 'H1' } }];
+      const gc = /\/git\/commits\/(\w+)$/.exec(path);
+      if (gc && trees[gc[1]]) return { tree: { sha: `tree-${gc[1]}` } };
+      const gt = /\/git\/trees\/tree-(\w+)\?recursive=1$/.exec(path);
+      if (gt && trees[gt[1]]) return tree(trees[gt[1]]);
+      return undefined;
+    };
+  }
+  /** The refresh conflict task's PR into `mission/x`; round 1's dispatch runs the check. */
+  async function refreshPr(cs: Delivery[], resolved: Record<string, string>, o: { refreshContext?: boolean } = {}) {
+    const agg = await open();
+    const [m] = await q<{ id: string }>(sql`INSERT INTO missions (team_id, workspace_id, title, is_held, working_branch, integration_branch_enabled)
+      VALUES (${teamId}::uuid, ${workspaceId}::uuid, 'refresh mission', true, 'mission/x', true) RETURNING id`);
+    const ctx = o.refreshContext === false ? {} : { baseBranch: 'mission/x', requireMergeCommit: true, refreshTrunk: 'dev', refreshTrunkSha: 'SQ1', refreshMissionHeadSha: 'MS' };
+    await q(sql`UPDATE tasks SET mission_id = ${m.id}::uuid, context = ${JSON.stringify(ctx)}::jsonb WHERE id = ${agg.ownerTaskId}::uuid`);
+    refreshGithub(agg.prNumber, cs, resolved);
+    const workerId = await seedWorker(agg.ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber: agg.prNumber, commitCount: 1 });
+    await seam.attemptEnded({ task: ownerTask(agg), workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
+    return agg;
+  }
+  const reviewersFor = (d: Delivery) => q<{ id: string }>(sql`SELECT id FROM tasks WHERE delivery_id = ${d.deliveryId}::uuid AND delivery_role = 'review'`);
+
+  test('S38: a resolution of CI-regenerated files only is approved on composition, with no reviewer', async () => {
+    const cs = await trunkConstituents();
+    const agg = await refreshPr(cs, { 'docs/specs/INDEX.md': 'regenerated', 'packages/core/drizzle/meta/_journal.json': 'regenerated' });
+    expect(await delivery(agg.deliveryId)).toMatchObject({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1'], approvedHeads: [] });
+    expect(await reviewersFor(agg)).toEqual([]);
+    expect((await effects(agg.deliveryId, 'dispatch_review')).map((e) => e.outcome)).toEqual(['ok:composition_attested']);
+    const [t] = (await transitions(agg.deliveryId)).filter((x) => x.command === 'CompositionAttested');
+    expect((t.evidence.constituents as Array<{ prNumber: number }>).map((c) => c.prNumber).sort()).toEqual(cs.map((c) => c.prNumber).sort());
+  });
+
+  test('S38: a real code resolution gets a delta round scoped to exactly that file', async () => {
+    const cs = await trunkConstituents();
+    const agg = await refreshPr(cs, { 'apps/web/src/lib/shared.ts': 'resolved', 'docs/specs/INDEX.md': 'regenerated' });
+    await drain(agg.deliveryId);
+    expect(await delivery(agg.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentRound: 2, compositionHeads: [] });
+    const [, r2] = await rounds(agg.deliveryId);
+    const [scope] = await q<{ scope: { novelDeltaPaths: string[]; composition: boolean } }>(sql`SELECT scope FROM workflow_review_rounds WHERE id = ${r2.id}::uuid`);
+    expect(scope.scope).toMatchObject({ composition: true, novelDeltaPaths: ['apps/web/src/lib/shared.ts'] });
+    expect((await reviewersFor(agg)).length).toBe(1);
+  });
+
+  test('S38: the same PR shape without the refresh context is an ordinary task PR and is reviewed in full', async () => {
+    const cs = await trunkConstituents();
+    const agg = await refreshPr(cs, { 'docs/specs/INDEX.md': 'regenerated' }, { refreshContext: false });
+    expect(await delivery(agg.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', compositionHeads: [] });
+    expect((await effects(agg.deliveryId, 'dispatch_review')).map((e) => e.outcome)).toEqual(['ok']);
+    expect((await reviewersFor(agg)).length).toBe(1);
   });
 });
 
