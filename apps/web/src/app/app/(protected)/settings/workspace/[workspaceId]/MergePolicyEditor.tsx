@@ -207,7 +207,7 @@ export default function MergePolicyEditor({
                 : []),
               ...(policy.tier === 'agent-review'
                 ? [
-                    { label: 'Reviewer role', value: roles.find(r => r.slug === reviewerRole)?.name ?? (reviewerRole || 'None') },
+                    { label: 'Reviewer agent', value: roles.find(r => r.slug === reviewerRole)?.name ?? (reviewerRole || 'None') },
                     { label: 'Confidence threshold', value: <span className="font-mono">{maxConfidence}</span> },
                     { label: 'Gate condition', value: GATE_LABEL[gateCondition] },
                     { label: 'Data migrations', value: DATA_MIGRATIONS_LABEL[dataMigrations] },
@@ -261,19 +261,19 @@ export default function MergePolicyEditor({
       {policy.tier === 'agent-review' && (
         <div className="space-y-4">
           <div className="space-y-1">
-            <label className="text-sm text-text-primary">Reviewer role</label>
+            <label className="text-sm text-text-primary">Reviewer agent</label>
             {roles.length > 0 ? (
               <Select
-                aria-label="Reviewer role"
+                aria-label="Reviewer agent"
                 value={reviewerRole}
                 onChange={setReviewerRole}
-                placeholder="Select a role"
+                placeholder="Select an agent"
                 options={roles.map(r => ({ value: r.slug, label: r.name }))}
               />
             ) : (
               <p className="text-xs text-text-muted">
-                No roles found in this workspace.{' '}
-                <Link href="/app/settings/roles" className="underline text-text-primary">Create a role</Link> first.
+                No agents in this workspace.{' '}
+                <Link href="/app/settings/roles" className="underline text-text-primary">Create an agent</Link> first.
               </p>
             )}
           </div>
