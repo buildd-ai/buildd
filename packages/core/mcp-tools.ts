@@ -12,7 +12,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendP
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isTerminalTaskStatus, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
+import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isTerminalTaskStatus, INTERACTIVE_WORKER_RUNNER, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
 import type { DispatchHistoryEntry } from './dispatch-outbox';
@@ -610,6 +610,10 @@ export const workerActions = [
   // The agent's own read of messages sent to it (interactive / local-plugin
   // sessions; a runner-managed worker gets them from its runner instead).
   'receive_messages',
+  // An interactive session parks its own worker on a question for a person
+  // (the runner's AskUserQuestion, for a session no runner manages). Worker
+  // level: the agent that needs the answer is the one asking.
+  'ask_human',
   'create_pr', 'close_pr', 'update_pr', 'merge_pr', 'get_pr', 'list_prs', 'request_pr_review', 'get_pr_review',
   'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
@@ -1050,6 +1054,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply, and write it as a self-contained decision brief: the reader has not seen the task or the code, so the body says which task this is and what is being decided (one or two sentences), then one line per option of the form "<option>: what it leads to", and why you chose the default. User replies are delivered at your next turn boundary (or call receive_messages). missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
+    ask_human: '{ workerId?, question (required), options? (string[] — quick replies shown as buttons), context? (one or two sentences: which task this is and what is being decided) } — park your own interactive worker (claimed with claim_task from this session) on a question for a person. It takes the same path as a runner agent\'s AskUserQuestion: the worker goes to waiting_input, the question shows in Needs you on the dashboard and the team gets the push. Returns immediately with { waiting: true, workerId, askedAt }; then wait with await_answer, or poll receive_messages. Unanswered, it expires like any question (24 h, 4 h in a mission). Refused for a runner-managed worker, which asks with AskUserQuestion instead. workerId auto-resolved from context if omitted.',
     answer_question: '{ taskId (required), message (required) } — answer the question a waiting_input agent is parked on (the task page\'s Answer link). Takes the same resume path as the dashboard: the parked session continues with your answer, or a continuation task starts if the session is gone. send_agent_message cannot do this — a parked agent takes no turn, so a queued message is never read. Refused unless the task\'s worker is waiting on a question. [admin]',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
@@ -2959,6 +2964,49 @@ export async function handleBuilddAction(
       }
       const messages = await renderAndAckMessages(api, workerId, response);
       return text(messages ?? 'No messages for you right now.');
+    }
+
+    case 'ask_human': {
+      const question = typeof params.question === 'string' ? params.question.trim() : '';
+      if (!question) throw new Error('question is required: the one thing you need a person to decide.');
+      if (params.options !== undefined && !(Array.isArray(params.options) && params.options.every((o: unknown) => typeof o === 'string' && o.trim()))) {
+        throw new Error('options must be an array of non-empty strings (quick replies).');
+      }
+      if (params.context !== undefined && typeof params.context !== 'string') {
+        throw new Error('context must be a string.');
+      }
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      const worker = await api(`/api/workers/${workerId}`);
+      // A runner-managed agent already asks with AskUserQuestion; its runner
+      // owns the park and the resume, so a second path would race it.
+      if (worker?.runner !== INTERACTIVE_WORKER_RUNNER) {
+        throw new Error(`Worker ${workerId} is managed by a runner, so ask_human does not apply: ask with AskUserQuestion, which parks the session and resumes it with the answer.`);
+      }
+      if (isTerminalWorkerStatus(worker.status)) {
+        throw new Error(`Worker ${workerId} has already ended (${worker.status}); there is no session left to answer.`);
+      }
+      const options = Array.isArray(params.options) ? (params.options as string[]).map(o => o.trim()) : undefined;
+      const contextText = typeof params.context === 'string' && params.context.trim() ? params.context.trim() : undefined;
+      // The runner's park, unchanged: PATCH /api/workers/[id] stores the
+      // question, fires Pusher, Needs You and the team push.
+      await api(`/api/workers/${workerId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status: 'waiting_input',
+          waitingFor: {
+            type: 'question',
+            prompt: question,
+            ...(options && options.length > 0 ? { options } : {}),
+            ...(contextText ? { context: contextText } : {}),
+          },
+        }),
+      });
+      return text(JSON.stringify({
+        waiting: true,
+        workerId,
+        askedAt: new Date().toISOString(),
+        hint: 'Your question is with a person. Wait for the answer with await_answer, or call receive_messages until it arrives. Do not carry on with the decision it covers until then.',
+      }, null, 2));
     }
 
     case 'complete_task': {
