@@ -208,6 +208,8 @@ describe('incidentCause: the headline says what is wrong, in plain words', () =>
     expect(incidentCause('path_overlap.cycle', 'path_overlap_stall')).toBe('Two pieces of work are waiting on each other');
     expect(incidentCause('path_overlap.blocker_open', 'path_overlap_stall')).toBe('A task is waiting for a change to the same files to land');
     expect(incidentCause('something.new', 'retry_fork', 'Same failure across tasks')).toBe('Same failure across tasks');
+    // An infrastructure cause never reads as the family's rule name.
+    expect(incidentCause('infrastructure_failure.visual_qa.scrub', 'path_overlap_stall')).toBe('A step in Buildd\'s own machinery keeps failing');
     for (const code of ['path_overlap.no_progress', 'path_overlap.blocker_merged_unreleased', 'path_overlap.blocker_stuck', 'path_overlap.subject_exempt_violated', 'path_overlap.spurious_overlap']) {
       expect(incidentCause(code, 'path_overlap_stall')).not.toMatch(/#\d|[0-9a-f]{8}/);
     }

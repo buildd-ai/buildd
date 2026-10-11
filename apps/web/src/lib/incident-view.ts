@@ -67,7 +67,10 @@ const CAUSE_TEXT: Record<string, string> = {
 
 /** What is wrong, as a headline: the assessment's refined cause, else the rule's label. No ids (design-system §5). */
 export function incidentCause(reasonCode: string | null | undefined, rule: FailureIncidentRule, ruleLabel?: string): string {
-  return (reasonCode && CAUSE_TEXT[reasonCode]) ?? ruleLabel ?? cap(rule.replace(/_/g, ' '));
+  if (reasonCode && CAUSE_TEXT[reasonCode]) return CAUSE_TEXT[reasonCode];
+  // §16: Buildd's own machinery failed; no workspace person's decision fixes it.
+  if (reasonCode?.startsWith('infrastructure_failure')) return 'A step in Buildd\'s own machinery keeps failing';
+  return ruleLabel ?? cap(rule.replace(/_/g, ' '));
 }
 
 // ── The projection ─────────────────────────────────────────────────────────
