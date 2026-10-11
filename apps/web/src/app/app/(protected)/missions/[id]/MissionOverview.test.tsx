@@ -54,8 +54,8 @@ describe('MissionOverview, 11 tasks with delivery', () => {
     expect(out).not.toContain('data-testid="delivery-stages"');
   });
 
-  it('the counts line is merged only; criteria live in the Verified pill and the rail', () => {
+  it('the counts line is landed only; criteria live in the Verified pill and the rail', () => {
     const counts = out.match(/data-testid="overview-counts"[^>]*>([^<]*)</)?.[1];
-    expect(counts).toBe('3 of 11 merged');
+    expect(counts).toBe('3 of 11 landed');
   });
 });
