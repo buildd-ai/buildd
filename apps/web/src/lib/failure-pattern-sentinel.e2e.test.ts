@@ -30,7 +30,14 @@ import type {
   IncidentAlertSender,
   IncidentDecider,
 } from './failure-incident-actions';
-import type { RetryChildFact, SentinelFacts, WorkerFailureFact } from './failure-pattern-sentinel';
+import type { PathOverlapDeferralFact, RetryChildFact, SentinelFacts, WorkerFailureFact } from './failure-pattern-sentinel';
+import { reassessIncidentsNamingPr } from './failure-pattern-sweep';
+import { readRecovery, type RecoveryEffects, type RecoveryFamily } from './failure-incident-recovery';
+import { evaluatePathOverlap, type PathOverlapRecoveryFacts } from './failure-incident-recovery-path-overlap';
+import { createGatedIncidentSender, incidentNeedsYouItems, verdictGeneration, type IncidentGateDeps } from './failure-incident-escalation';
+import { projectIncident, type IncidentVerdictView } from './incident-view';
+import { applyIncidentCapability } from '../app/api/health/incidents/[id]/actions/apply';
+import { verdictFromCode } from '@buildd/core/escalation-gate';
 
 const WS = '00000000-0000-4000-8000-0000000000e2';
 const T0 = Date.parse('2026-10-05T09:00:00.000Z');
@@ -281,5 +288,274 @@ describe('Failure Pattern Sentinel — transient/budget noise stays ledger-only'
     expect(again.duplicatesSuppressed).toBe(1);
     expect(again.alertsSent).toBe(0);
     expect(again.fixTasksFiled).toBe(0);
+  });
+});
+
+// ── path-overlap recovery: sweep → assessment → gate → every surface ───────
+//
+// failure-incident-recovery §12(c), without a database: the production sweep,
+// recovery planner, path-overlap policy, escalation gate, Home projection and
+// click-time action route, over an in-memory world whose writers do what the
+// real ones do (a release frees the leases and wakes every waiter once). The
+// same scenario runs on real Postgres in tests/db/failure-incident-recovery.test.ts.
+
+/** Clock-relative: `reassessIncidentsNamingPr` (the merge hook) reads the real clock. */
+const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+const RECOVERED_WORDS = /Nothing is fixing|\bfixed\b|\bresolved\b/i;
+const PR_A = 4385;
+const PR_B = 4386;
+const T = '00000000-0000-4000-8000-0000000000f1';
+const OTHERS = ['00000000-0000-4000-8000-0000000000f2', '00000000-0000-4000-8000-0000000000f3'];
+const B_TASK = '00000000-0000-4000-8000-0000000000fb';
+
+function listingPort() {
+  const port = memoryIncidentPort();
+  return Object.assign(port, {
+    async listUnresolved(ws: string, rule: string) {
+      return [...port.rows.values()].filter(r => r.workspaceId === ws && r.rule === rule && r.status !== 'resolved').map(r => structuredClone(r));
+    },
+    async listUnresolvedByPr(ws: string, pr: number) {
+      return [...port.rows.values()].filter(r => r.workspaceId === ws && r.status !== 'resolved' && r.affectedRefs.prNumbers.includes(pr)).map(r => structuredClone(r));
+    },
+  });
+}
+
+/** The world the sentinel and the recovery family read: three tasks behind PR B, T earlier behind PR A. */
+function pathOverlapWorld() {
+  const subjects = new Map([T, ...OTHERS].map(id => [id, { status: 'pending', lastWorkerAt: null as string | null, wokenAt: null as string | null }]));
+  const blocker = { prState: 'open' as 'open' | 'merged' | 'closed', leasesHeld: 1, unnotified: [T, ...OTHERS], lastMovedAt: ago(1), dependsOn: [] as string[] };
+  const bFirst = { at: ago(10) };
+  // Fixed per world: the recovery reads facts twice per repair (I-3) and must see the same ones.
+  const bBorn = ago(180);
+  const aBorn = ago(400);
+  const lastPoll = ago(0);
+  const releases: string[] = [];
+  const wakes: Record<string, number> = Object.fromEntries([T, ...OTHERS].map(id => [id, 0]));
+  let readFails = false;
+
+  const deferral = (taskId: string, pr: number, first: string, last: string): PathOverlapDeferralFact => {
+    const st = subjects.get(taskId)!;
+    return {
+      taskId, blockingPrNumber: pr, firstDeferredAt: first, lastDeferredAt: last,
+      lastProgressAt: [st.lastWorkerAt, st.wokenAt].filter((x): x is string => !!x && x > first).sort().pop() ?? null,
+      taskStatus: st.status, blockerState: pr === PR_A ? 'open' : blocker.prState, blockerCreatedAt: pr === PR_A ? aBorn : bBorn,
+    };
+  };
+  const sentinelFacts = (): SentinelFacts => ({
+    workspaceId: WS, now: new Date().toISOString(),
+    pathOverlapDeferrals: [
+      // T waited 3 h behind A, then moved on to B: a separate, earlier episode.
+      deferral(T, PR_A, ago(380), ago(200)),
+      ...[T, ...OTHERS].map(id => deferral(id, PR_B, bFirst.at, lastPoll)),
+    ],
+  });
+  const family: RecoveryFamily<PathOverlapRecoveryFacts> = {
+    rule: 'path_overlap_stall',
+    async observe(incident) {
+      if (readFails) throw new Error('read timed out');
+      return {
+        complete: true,
+        facts: {
+          subjects: incident.affectedRefs.taskIds.map(id => {
+            const st = subjects.get(id)!;
+            return {
+              taskId: id, status: st.status, lastWorkerAt: st.lastWorkerAt, wokenAt: st.wokenAt, subjectPrNumber: null,
+              lastDeferral: { at: lastPoll, prNumber: PR_B, blockingTaskId: B_TASK, firstDeferredAt: bFirst.at, paths: ['src/shared/x.ts'] },
+            };
+          }),
+          blocker: {
+            prNumber: PR_B, taskId: B_TASK, createdAt: bBorn, prState: blocker.prState, deliveryState: null,
+            lastMovedAt: blocker.lastMovedAt, leasesHeld: blocker.leasesHeld, unnotifiedWaiters: blocker.unnotified,
+            dependsOnSubjects: blocker.dependsOn, diffPaths: null,
+          },
+          fixTask: null,
+        },
+      };
+    },
+    evaluate: evaluatePathOverlap,
+  };
+  const effects: RecoveryEffects = {
+    // releaseAndNotify: the leases go and every waiter gets one wake, in one statement.
+    async releaseBlocker(taskId, _reason, key) {
+      releases.push(key);
+      if (blocker.leasesHeld === 0) return;
+      blocker.leasesHeld = 0;
+      for (const id of blocker.unnotified) { wakes[id]++; subjects.get(id)!.wokenAt = new Date().toISOString(); }
+      blocker.unnotified = [];
+      void taskId;
+    },
+    async wakeSubject(taskId) { wakes[taskId]++; subjects.get(taskId)!.wokenAt = new Date().toISOString(); },
+    async fileFixTask() { return null; },
+  };
+  return {
+    subjects, blocker, bFirst, releases, wakes, family, effects, sentinelFacts,
+    set readFails(v: boolean) { readFails = v; },
+    start(id: string) { const st = subjects.get(id)!; st.status = 'in_progress'; st.lastWorkerAt = new Date().toISOString(); },
+  };
+}
+
+/** The escalation gate over an in-memory decision ledger; pushes are recorded. */
+function memoryGate() {
+  const records: Array<{ subjectId: string; fingerprint: string; appliedAnswer: string; reason: string }> = [];
+  const pushes: Array<{ title: string; message: string; url: string }> = [];
+  const deps: IncidentGateDeps = {
+    async loadTeamId() { return 'team-1'; },
+    async loadFixTask() { return null; },
+    async loadStored(_team, key) {
+      const r = [...records].reverse().find(x => x.subjectId === key);
+      return r ? { fingerprint: r.fingerprint, appliedAnswer: r.appliedAnswer } : null;
+    },
+    async record(input) { records.push({ subjectId: input.subjectId!, fingerprint: input.fingerprint, appliedAnswer: input.appliedAnswer!, reason: input.reason ?? '' }); },
+    async notify(_team, payload) { pushes.push(payload); },
+  };
+  /** loadIncidentVerdicts' reading of the ledger: newest per incident, with its generation stamp. */
+  const verdicts = (): Map<string, IncidentVerdictView> => {
+    const out = new Map<string, IncidentVerdictView>();
+    for (const r of [...records].reverse()) {
+      const id = r.subjectId.slice('incident:'.length);
+      const v = verdictFromCode(r.appliedAnswer);
+      if (v && !out.has(id)) out.set(id, { ...v, generation: verdictGeneration(r.reason) });
+    }
+    return out;
+  };
+  return { send: createGatedIncidentSender(deps), pushes, verdicts };
+}
+
+function recoveryHarness() {
+  const world = pathOverlapWorld();
+  const gate = memoryGate();
+  const incidentPort = listingPort();
+  const deps: SweepDeps = {
+    async listWorkspaceIds() { return [WS]; },
+    async getWatermark() { return null; },
+    async setWatermark() {},
+    async collectFacts() { return world.sentinelFacts(); },
+    incidentPort,
+    decide: null,
+    send: gate.send,
+    fixTasks: null,
+    recovery: { families: [world.family], effects: world.effects },
+    async reportOpsError() {},
+    async recordSelfHealth() { return { consecutiveFailures: 0 }; },
+  };
+  const sweepNow = () => runFailurePatternSweep(deps, { workspaceIds: [WS] });
+  const only = () => { expect(incidentPort.rows.size).toBe(1); return [...incidentPort.rows.values()][0]; };
+  /** Home's Needs You rows (the badge counts these). */
+  const home = () => incidentNeedsYouItems(
+    [...incidentPort.rows.values()].filter(r => r.status !== 'resolved' && (r.severity === 'high' || r.severity === 'critical')),
+    gate.verdicts(),
+  );
+  return { world, gate, incidentPort, deps, sweepNow, only, home };
+}
+
+describe('Failure Pattern Sentinel — path-overlap recovery end to end (§12(c))', () => {
+  it('T behind PR A then PR B: no inflated age (AC-1); B merges: one release, one wake each (AC-4); resolved only once the tasks move, then gone from Home (AC-2)', async () => {
+    const h = recoveryHarness();
+
+    // AC-1: ten minutes behind B is under the threshold, and A's three hours are not B's.
+    let counters = await h.sweepNow();
+    expect(counters.candidates).toBe(0);
+    expect(h.incidentPort.rows.size).toBe(0);
+
+    // B's wait passes the threshold: one high incident, its episode starting at B's first deferral.
+    h.world.bFirst.at = ago(150);
+    counters = await h.sweepNow();
+    expect(counters.incidentsOpened).toBe(1);
+    let inc = h.only();
+    expect(inc.severity).toBe('high');
+    expect(inc.affectedRefs.prNumbers).toEqual([PR_B]);
+    expect(Date.parse(inc.firstSeenAt)).toBeGreaterThan(Date.parse(ago(151)));
+    expect(readRecovery(inc)!.firstSeenAt).toBe(h.world.bFirst.at);
+    // An open, moving PR: Buildd waits; no page, not on Home.
+    expect(readRecovery(inc)!.state).toBe('waiting');
+    expect(h.gate.pushes).toHaveLength(0);
+    expect(h.home()).toHaveLength(0);
+
+    // B lands; its leases are still held. The merge hook fires twice at once.
+    h.world.blocker.prState = 'merged';
+    await Promise.all([
+      reassessIncidentsNamingPr(WS, PR_B, 'merge_hook', h.deps),
+      reassessIncidentsNamingPr(WS, PR_B, 'merge_hook', h.deps),
+    ]);
+    expect(h.world.releases).toHaveLength(1);
+    expect(h.world.wakes).toEqual({ [T]: 1, [OTHERS[0]]: 1, [OTHERS[1]]: 1 });
+    inc = h.only();
+    expect(inc.status).toBe('open');
+    // The run that lost the CAS re-read after the release: it may already record the wait for a runner.
+    expect(['recovering', 'waiting']).toContain(readRecovery(inc)!.state);
+    expect(readRecovery(inc)!.budget.spent).toBe(1);
+
+    // Woken, not started: still open, and the hook does nothing more.
+    await reassessIncidentsNamingPr(WS, PR_B, 'merge_hook', h.deps);
+    expect(h.only().status).toBe('open');
+    expect(h.world.releases).toHaveLength(1);
+
+    // Every task starts: resolved on fresh facts, Buildd's, absent from Home.
+    for (const id of [T, ...OTHERS]) h.world.start(id);
+    await reassessIncidentsNamingPr(WS, PR_B, 'merge_hook', h.deps);
+    inc = h.only();
+    expect(inc.status).toBe('resolved');
+    expect(readRecovery(inc)!.state).toBe('recovered');
+    expect(h.home()).toHaveLength(0);
+    expect(h.gate.verdicts().get(inc.id)?.owner).toBe('buildd');
+    expect(projectIncident(inc, h.gate.verdicts().get(inc.id)).sentence).toMatch(/^Recovered at /);
+    expect(h.gate.pushes).toHaveLength(0);
+    expect(h.world.wakes).toEqual({ [T]: 1, [OTHERS[0]]: 1, [OTHERS[1]]: 1 });
+  });
+
+  it('a cycle asks once with typed options (page, Home and push agree, AC-11); a stale click is a 409 with the new assessment (AC-7); the old verdict leaves Home (AC-5); an unreadable re-check is inconclusive, never resolved (AC-3)', async () => {
+    const h = recoveryHarness();
+    h.world.bFirst.at = ago(150);
+    h.world.blocker.dependsOn = [T];
+    await h.sweepNow();
+    let inc = h.only();
+    const g1 = readRecovery(inc)!.generation;
+    expect(readRecovery(inc)!.state).toBe('needs_decision');
+
+    // One push; Home lists it; all three carry the projection's sentence and no "fixed"/"resolved".
+    expect(h.gate.pushes).toHaveLength(1);
+    const view = projectIncident(inc, h.gate.verdicts().get(inc.id));
+    expect(view.needsYou).toBe(true);
+    const [card] = h.home();
+    expect(card.failureMessage).toBe(view.sentence);
+    expect(h.gate.pushes[0].message).toContain(view.sentence);
+    for (const text of [view.sentence, card.failureMessage!, h.gate.pushes[0].message]) expect(text).not.toMatch(RECOVERED_WORDS);
+    expect(view.options.map(o => o.capability)).toContain('cancel_attempt');
+
+    // The cycle breaks before the click lands: a new generation, waiting.
+    h.world.blocker.dependsOn = [];
+    const actionDeps = {
+      port: h.incidentPort,
+      async reassess(id: string) {
+        const [r] = await reassessIncidentsNamingPr(WS, PR_B, 'click', { ...h.deps, send: async () => false });
+        return r?.incident ?? h.incidentPort.findById(id);
+      },
+      async loadVerdict(row: StoredIncident) { return h.gate.verdicts().get(row.id) ?? null; },
+      async regate() {},
+      now: () => new Date().toISOString(),
+    };
+    const res = await applyIncidentCapability(actionDeps, inc.id, { capability: 'cancel_attempt', generation: g1 });
+    expect(res.status).toBe(409);
+    if (res.status !== 409) throw new Error('expected 409');
+    expect(res.body.reason).toBe('generation_changed');
+    expect(res.body.projection.generation).toBe(g1 + 1);
+    expect(res.body.projection.phase).toBe('waiting');
+    expect(res.body.projection.sentence).not.toMatch(RECOVERED_WORDS);
+
+    // AC-5: the stored person verdict is generation 1's; the incident is at 2 and waiting.
+    inc = h.only();
+    expect(h.gate.verdicts().get(inc.id)?.generation).toBe(g1);
+    expect(h.home()).toHaveLength(0);
+
+    // AC-3: the re-check cannot read its facts: inconclusive, still open, Buildd's, checked again.
+    h.world.readFails = true;
+    const [r3] = await reassessIncidentsNamingPr(WS, PR_B, 'merge_hook', h.deps);
+    inc = r3.incident!;
+    expect(inc.status).toBe('open');
+    expect(readRecovery(inc)!.state).toBe('inconclusive');
+    const v3 = projectIncident(inc, h.gate.verdicts().get(inc.id));
+    expect(v3.needsYou).toBe(false);
+    expect(v3.sentence).not.toMatch(RECOVERED_WORDS);
+    expect(h.gate.pushes).toHaveLength(1);
   });
 });
