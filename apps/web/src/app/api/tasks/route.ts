@@ -1340,7 +1340,7 @@ export async function POST(req: NextRequest) {
       targetWorkspace.gitConfig?.enforceGreenCI === true &&
       outputRequirement === 'pr_required'
     ) {
-      loopConfig = parseLoopConfig({ exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }, undefined);
+      loopConfig = parseLoopConfig({ exitCondition: { type: 'pr_checks_green' }, maxLoops: 3, waitExpiryMinutes: 240 }, undefined);
     }
 
     // Who the task is for (resolveTaskRequesterUserId): decides which personal
