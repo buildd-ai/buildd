@@ -10,6 +10,7 @@
  * rows on hairlines, no boxes; one column on phones, two from md. Workspace
  * scope comes from the shell's switcher (the page reads `?workspace=`).
  */
+import { Select } from '@/components/ui/Select';
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import Disclosure from '@/components/ui/Disclosure';
@@ -31,6 +32,8 @@ import {
 import { shortDuration } from '@/lib/mission-list-card';
 
 export type { PortfolioRow } from '@/lib/mission-portfolio';
+
+const ALL_GROUPS = '__all__';
 
 export function MissionGrid({
   rows,
@@ -108,16 +111,17 @@ export function MissionGrid({
         </div>
         <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center">
         {hasGroups && (
-          <select
-            data-testid="portfolio-group"
+          <Select
+            testId="portfolio-group"
             aria-label="Group"
-            value={group}
-            onChange={e => chooseGroup(e.target.value)}
-            className="min-h-11 w-full min-w-0 rounded-[var(--radius-card)] border border-border-default bg-transparent px-3 text-[16px] text-text-primary focus:border-border-strong focus:outline-none md:min-h-9 md:w-auto md:text-body"
-          >
-            <option value="">All groups</option>
-            {groups.map(g => <option key={g.id} value={g.id}>{g.name} ({g.count})</option>)}
-          </select>
+            value={group || ALL_GROUPS}
+            onChange={v => chooseGroup(v === ALL_GROUPS ? '' : v)}
+            options={[
+              { value: ALL_GROUPS, label: 'All groups' },
+              ...groups.map(g => ({ value: g.id, label: `${g.name} (${g.count})` })),
+            ]}
+            className="md:w-auto md:min-w-[180px]"
+          />
         )}
         <input
           type="search"
