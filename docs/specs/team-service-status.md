@@ -1,6 +1,6 @@
 ---
 title: Team Service Status
-status: draft
+status: active
 owner: max
 last_verified: 2026-10-11
 summary: A team MUST see one plain-language service status per root cause, scoped to what each viewer may act on, never the incident machinery, and never as a Needs You count unless a named person has a concrete action.
@@ -14,12 +14,13 @@ supersedes: []
 
 # Team Service Status
 
-**Status of this document**: draft. The viewer-scoping of Health
-(`member-scope.test.ts`) and the escalation gate exist today; the
-service-status projection (section 6), the team-facing vocabulary (section 2)
-and the credential-owner path (section 4) are not built. Each acceptance
-criterion below names the test that MUST exist before this spec is promoted to
-`active`. A name marked *(new)* does not exist yet and is plain text on purpose.
+**Status of this document**: active, promoted before the implementation
+merged, by owner decision. The viewer-scoping of Health (`member-scope.test.ts`)
+and the escalation gate exist today; the service-status projection (section 6),
+the team-facing vocabulary (section 2) and the credential-owner path (section 4)
+are not yet on this branch. Each acceptance criterion below names the test that
+MUST exist; a name marked *(new)* does not exist yet, is plain text on purpose,
+and is to be replaced with the real file when it lands.
 
 **Capability statement**: When something degrades the service a team's work
 depends on, each person on the team MUST see it once, in words about their own
