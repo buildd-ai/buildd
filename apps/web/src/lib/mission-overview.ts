@@ -55,7 +55,7 @@ export function overviewSelection(model: Model, order: readonly string[], select
   return { marks: sel.marks, reason: null };
 }
 
-/** `2 of 7 landed · 1 of 4 criteria`: the header's counts. */
+/** `2 of 7 landed · 1 of 4 criteria`; `{ criteria: false }` leaves the criteria to the Verified pill. */
 export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criteria' | 'criteriaPassed'>, opts: { criteria?: boolean } = {}): string {
   // "landed", not "merged": this counts every finished task, PR or not (the
   // Board's LANDED cell), while the PRs merged criterion counts PR-bearing
