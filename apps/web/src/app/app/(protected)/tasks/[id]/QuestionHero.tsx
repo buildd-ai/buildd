@@ -289,7 +289,7 @@ function OptionCard({
             {i + 1}
           </kbd>
         )}
-        <span className={`block font-mono text-[11px] font-semibold ${o.recommended ? '' : 'text-text-muted'}`}>
+        <span className={`block font-mono text-chip font-semibold ${o.recommended ? '' : 'text-text-muted'}`}>
           {o.recommended ? <>Recommended<span className="hidden md:inline"> by the agent</span></> : 'Alternative'}
         </span>
         <span className={`block ${d.optionLabel} ${density === 'hero' && showKeyPad ? 'pr-0 md:pr-10' : ''} font-semibold leading-tight [overflow-wrap:anywhere]`}>
@@ -311,7 +311,7 @@ function OptionCard({
           data-testid="clamp-toggle"
           aria-expanded={open}
           onClick={() => setOpen(!open)}
-          className="md:hidden self-start px-3 pb-1 min-h-8 font-mono text-[12px] font-semibold underline"
+          className="md:hidden self-start px-3 pb-1 min-h-8 font-mono text-chip font-semibold underline"
         >
           {open ? 'less' : 'more'}
         </button>

@@ -66,7 +66,7 @@ export default function ClampText({
           data-testid="clamp-toggle"
           aria-expanded={open}
           onClick={() => setOpen(!open)}
-          className={`md:hidden mt-1 min-h-8 font-mono text-[12px] font-semibold text-accent-text underline ${toggleClassName}`}
+          className={`md:hidden mt-1 min-h-8 font-mono text-chip font-semibold text-accent-text underline ${toggleClassName}`}
         >
           {open ? 'less' : 'more'}
         </button>
