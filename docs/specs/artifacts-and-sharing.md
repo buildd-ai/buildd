@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/artifacts/[artifactId]/share/route.ts, apps/web/src/app/api/share/[token]/route.ts, apps/web/src/app/api/artifacts/upload-url/route.ts, apps/web/src/lib/storage-keys.ts]
 related: [mcp-action-contracts, team-namespace-scoping, mission-task-lifecycle, credential-isolation]
 keywords: [sharetoken, visibility public, presigned put, r2, artifacts_share_token_idx, http 413, dataclass sensitive, upsert by key]
-verified_by: [packages/core/__tests__/artifact-read.test.ts, packages/core/__tests__/mcp-tools-artifact-links.test.ts, apps/web/src/app/api/workers/claim/artifact-manifest.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts, apps/web/tests/db/artifact-links.test.ts, apps/web/tests/db/artifact-upload.test.ts, apps/web/tests/db/chat-paste-attachment.test.ts, apps/web/tests/db/chat-file-attachment.test.ts, apps/web/src/lib/chat/file-input.test.ts, apps/web/src/components/chat/upload-file.test.ts]
+verified_by: [packages/core/__tests__/artifact-read.test.ts, packages/core/__tests__/mcp-tools-artifact-links.test.ts, apps/web/src/app/api/workers/claim/artifact-manifest.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts, apps/web/tests/db/artifact-links.test.ts, apps/web/tests/db/artifact-upload.test.ts, apps/web/tests/db/chat-paste-attachment.test.ts, apps/web/tests/db/chat-file-attachment.test.ts, apps/web/src/lib/chat/file-input.test.ts, apps/web/src/components/chat/upload-file.test.ts, apps/web/tests/db/chat-attachment-cleanup.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -128,8 +128,8 @@ check, or was cancelled MUST never show as attached or be sent.
   or download it.
 
 **Not yet**: the agent tool `read_attachment` reads pastes only; files reach
-the model in the message that carries them. A deleted conversation leaves its
-files until a cleanup lands (task `b89da258`).
+the model in the message that carries them. Retention on delete is §10's
+(it covers files too).
 
 **Code surface**:
 - `apps/web/src/lib/artifact-chat-files.ts`: `createChatUpload`, `finalizeChatUpload`, `storeChatUploadBytes`, `cancelChatUpload`, `fileDraftsOf`, `bindChatFiles`, `conversationFiles`
@@ -674,15 +674,31 @@ conversation it was sent in (D-2, D-3).
   the reply streams) that opens a reader paging the stored text.
 - Only `apps/web/src/lib/artifact-chat-attachments.ts` writes these artifacts
   and their links.
+- Retention: an attachment (a paste, or a §11 file) does not outlive its
+  conversation. Conversations go only by cascade (their team or their creator
+  is deleted); deleting a team removes its chat attachments in the same
+  request, and the maintenance sweep takes any left over. An attachment is
+  removed when the conversation it names is gone, or when nothing links to it
+  past 24 hours (its message was never saved). It is kept while anything live
+  still refers to it: a link to an existing message, any link to another kind
+  of subject, or a spec whose body it is. Its revisions and links go with the
+  row; a file's stored object is removed after the row. The read ledger keeps
+  its content-free rows. Only `apps/web/src/lib/artifact-chat-cleanup.ts`
+  deletes them.
 
 **Acceptance criteria**:
 - AC-10.1: GIVEN a 60,000-character paste WHEN it is sent and reopened THEN the
   text reads back byte-identical and its sha256 matches the stored revision.
 - AC-10.2: GIVEN another team's conversation THEN it can neither read the
   attachment nor claim its id.
+- AC-10.3: GIVEN a conversation with a 60,000-character paste and an uploaded
+  file WHEN the conversation is gone THEN both artifacts, their revisions,
+  links and the stored object are removed; an attachment still linked from a
+  live subject, and every other team's attachments, stay.
 
 **Code surface**:
 - `apps/web/src/lib/artifact-chat-attachments.ts`: `attachmentDraftsOf`, `storeChatAttachments`, `linkChatAttachments`, `conversationAttachments`, `readChatAttachment`, `quoteAttachment`
+- `apps/web/src/lib/artifact-chat-cleanup.ts`: `removeOrphanChatAttachments`, `removeTeamChatAttachments`; called from `apps/web/src/app/api/teams/[id]/route.ts` and `apps/web/src/app/api/cron/maintenance/route.ts`
 - `apps/web/src/lib/chat/turn.ts` — `runChatTurn`, `toUiHistory`; `apps/web/src/lib/chat/tools.ts` — `read_attachment`
 - `apps/web/src/app/api/chat/[id]/attachments/route.ts`, `apps/web/src/app/api/chat/[id]/attachments/[artifactId]/route.ts`
 - `packages/ai-kit/src/chat/react/Composer.tsx`, `packages/ai-kit/src/chat/react/AttachmentCard.tsx`, `apps/web/src/components/chat/AttachmentReader.tsx`

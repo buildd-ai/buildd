@@ -38,6 +38,11 @@ mock.module('@buildd/core/db/schema', () => ({
   users: 'users',
 }));
 
+const chatCleanups: string[] = [];
+mock.module('@/lib/artifact-chat-cleanup', () => ({
+  removeTeamChatAttachments: async (teamId: string) => { chatCleanups.push(teamId); return { removed: 0, objectsRemoved: 0 }; },
+}));
+
 import { DELETE, GET, PATCH } from './route';
 
 const ctx = { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) };
@@ -402,12 +407,13 @@ describe('DELETE /api/teams/[id]', () => {
   const del = () =>
     DELETE(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111', { method: 'DELETE' }), ctx);
 
-  beforeEach(() => { deletedTeams = 0; });
+  beforeEach(() => { deletedTeams = 0; chatCleanups.length = 0; });
 
   it('a member cannot delete the team', async () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     expect((await del()).status).toBe(403);
     expect(deletedTeams).toBe(0);
+    expect(chatCleanups).toEqual([]);
   });
 
   it('an admin cannot delete the team', async () => {
@@ -426,6 +432,8 @@ describe('DELETE /api/teams/[id]', () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
     expect((await del()).status).toBe(200);
     expect(deletedTeams).toBe(1);
+    // Its conversations cascade; their chat attachments are removed in the same request.
+    expect(chatCleanups).toEqual(['11111111-1111-4111-8111-111111111111']);
   });
 
   it('an owner still cannot delete a personal team', async () => {
