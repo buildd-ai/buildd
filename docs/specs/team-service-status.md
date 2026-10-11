@@ -1,6 +1,6 @@
 ---
 title: Team Service Status
-status: draft
+status: active
 owner: max
 last_verified: 2026-10-11
 summary: A team MUST see one plain-language service status per root cause, scoped to what each viewer may act on, never the incident machinery, and never as a Needs You count unless a named person has a concrete action.
@@ -9,17 +9,29 @@ surfaces: [apps/web/src/lib/failure-incident-escalation.ts, apps/web/src/lib/hom
 related: [team-permissions, credential-refresh-lifecycle, auth-oauth-boundaries, runner-liveness, human-in-the-loop-protocol, surface-ia-home-missions-initiatives]
 keywords: [service status, runner needs sign-in, waiting for runner sign-in, quiet status surface, needs you, credential owner, incident, root cause, member, team admin]
 verified_by: [apps/web/src/app/app/(protected)/health/member-scope.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/incident-view.test.ts, apps/web/src/lib/home-attention.test.ts]
+assertions:
+  - id: "escalation-rule"
+    type: "symbol"
+    name: "incidentEscalationRule"
+    path: "apps/web/src/lib/failure-incident-escalation.ts"
+  - id: "member-scope-tests"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/health/member-scope.test.ts"
+  - id: "escalation-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/failure-incident-escalation.test.ts"
 supersedes: []
 ---
 
 # Team Service Status
 
-**Status of this document**: draft. The viewer-scoping of Health
-(`member-scope.test.ts`) and the escalation gate exist today; the
-service-status projection (section 6), the team-facing vocabulary (section 2)
-and the credential-owner path (section 4) are not built. Each acceptance
-criterion below names the test that MUST exist before this spec is promoted to
-`active`. A name marked *(new)* does not exist yet and is plain text on purpose.
+**Status of this document**: active, promoted before the implementation
+merged, by owner decision. The viewer-scoping of Health (`member-scope.test.ts`)
+and the escalation gate exist today; the service-status projection (section 6),
+the team-facing vocabulary (section 2) and the credential-owner path (section 4)
+are not yet on this branch. Each acceptance criterion below names the test that
+MUST exist; a name marked *(new)* does not exist yet, is plain text on purpose,
+and is to be replaced with the real file when it lands.
 
 **Capability statement**: When something degrades the service a team's work
 depends on, each person on the team MUST see it once, in words about their own
