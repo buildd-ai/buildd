@@ -800,3 +800,149 @@ describe('ChatSetupCard title (0.6.1)', () => {
     expect($('[data-testid="kit-setup-title"]')).toBeNull();
   });
 });
+
+describe('ChatComposer files (0.26.0)', () => {
+  type Sent = { text: string; attachments: Array<Record<string, unknown>> };
+  const file = (name: string, type: string, size = 10) => new File([new Uint8Array(size)], name, { type });
+  const deferred = <T,>() => {
+    let resolve!: (v: T) => void; let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+  const pick = async (files: File[]) => {
+    const input = $<HTMLInputElement>('[data-testid="kit-attach-input"]')!;
+    Object.defineProperty(input, 'files', { value: files, configurable: true });
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); });
+  };
+  const ready = (id: string, f: File) => ({ kind: 'file' as const, id, name: f.name, mediaType: f.type, sizeBytes: f.size });
+
+  it('no upload handler, no Attach button: the composer takes no files', async () => {
+    await render(h(kit.ChatComposer, { onSend: () => {} }));
+    expect($('[data-testid="kit-attach"]')).toBeNull();
+  });
+
+  it('uploading never reads as attached and holds Send; once ready it is sent by id', async () => {
+    const sent: Sent[] = [];
+    const up = deferred<ReturnType<typeof ready>>();
+    await render(h(kit.ChatComposer, { onSend: (text: string, attachments: Sent['attachments']) => sent.push({ text, attachments }), onUploadFile: () => up.promise }));
+    const pdf = file('Q3 report.pdf', 'application/pdf');
+    await pick([pdf]);
+    const card = $('[data-testid="kit-file"]')!;
+    expect(card.getAttribute('data-state')).toBe('uploading');
+    expect($('[data-testid="kit-file-state"]')!.textContent).toBe('Uploading…');
+    expect($('[data-testid="kit-attachment-open"]')).toBeNull();
+    expect($('[data-testid="kit-send"]')!.getAttribute('aria-disabled')).toBe('true');
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await type(box, 'summarize');
+    await key(box, 'Enter');
+    expect(sent).toEqual([]);
+
+    await act(async () => { up.resolve(ready('11111111-1111-4111-8111-111111111111', pdf)); await up.promise; });
+    expect($('[data-testid="kit-file"]')!.getAttribute('data-state')).toBe('ready');
+    expect($('[data-testid="kit-file-state"]')!.textContent).toContain('PDF ·');
+    await key(box, 'Enter');
+    expect(sent).toEqual([{ text: 'summarize', attachments: [ready('11111111-1111-4111-8111-111111111111', pdf)] }]);
+  });
+
+  it('a failed upload says so, holds Send, and Retry runs it again', async () => {
+    const attempts: Array<ReturnType<typeof deferred<ReturnType<typeof ready>>>> = [];
+    const sent: Sent[] = [];
+    await render(h(kit.ChatComposer, {
+      onSend: (text: string, attachments: Sent['attachments']) => sent.push({ text, attachments }),
+      onUploadFile: () => { const d = deferred<ReturnType<typeof ready>>(); attempts.push(d); return d.promise; },
+    }));
+    const png = file('chart.png', 'image/png');
+    await pick([png]);
+    await act(async () => { attempts[0]!.reject(new Error('Upload check failed')); await attempts[0]!.promise.catch(() => {}); });
+    expect($('[data-testid="kit-file"]')!.getAttribute('data-state')).toBe('failed');
+    expect($('[data-testid="kit-file-state"]')!.textContent).toBe('Upload check failed');
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await type(box, 'look');
+    await key(box, 'Enter');
+    expect(sent).toEqual([]);
+    await click($('[data-testid="kit-file-retry"]'));
+    expect(attempts).toHaveLength(2);
+    expect($('[data-testid="kit-file"]')!.getAttribute('data-state')).toBe('uploading');
+    await act(async () => { attempts[1]!.resolve(ready('22222222-2222-4222-8222-222222222222', png)); await attempts[1]!.promise; });
+    await key(box, 'Enter');
+    expect(sent).toHaveLength(1);
+  });
+
+  it('Remove while uploading cancels it: aborted, never attached, never sent', async () => {
+    let signal: AbortSignal | null = null;
+    const up = deferred<ReturnType<typeof ready>>();
+    const sent: Sent[] = [];
+    await render(h(kit.ChatComposer, {
+      onSend: (text: string, attachments: Sent['attachments']) => sent.push({ text, attachments }),
+      onUploadFile: (_f: File, s: AbortSignal) => { signal = s; return up.promise; },
+    }));
+    const png = file('chart.png', 'image/png');
+    await pick([png]);
+    await click($('[data-testid="kit-attachment-remove"]'));
+    expect(signal!.aborted).toBe(true);
+    expect($('[data-testid="kit-file"]')).toBeNull();
+    // The upload finishing after the cancel changes nothing.
+    await act(async () => { up.resolve(ready('33333333-3333-4333-8333-333333333333', png)); await up.promise; });
+    expect($('[data-testid="kit-file"]')).toBeNull();
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await type(box, 'hi');
+    await key(box, 'Enter');
+    expect(sent).toEqual([{ text: 'hi', attachments: [] }]);
+  });
+
+  it('Remove of a ready, unsent file hands it back to discard', async () => {
+    const discarded: string[] = [];
+    const png = file('chart.png', 'image/png');
+    await render(h(kit.ChatComposer, {
+      onSend: () => {},
+      onUploadFile: async () => ready('44444444-4444-4444-8444-444444444444', png),
+      onDiscardFile: (f: { id: string }) => discarded.push(f.id),
+    }));
+    await pick([png]);
+    await click($('[data-testid="kit-attachment-remove"]'));
+    expect(discarded).toEqual(['44444444-4444-4444-8444-444444444444']);
+  });
+
+  it('a type outside the list, or a file over the cap, fails at once with no upload and no Retry', async () => {
+    let uploads = 0;
+    await render(h(kit.ChatComposer, { onSend: () => {}, onUploadFile: async () => { uploads++; throw new Error('x'); }, maxFileBytes: 100 }));
+    await pick([file('run.exe', 'application/x-msdownload'), file('big.png', 'image/png', 101)]);
+    expect(uploads).toBe(0);
+    const states = $$('[data-testid="kit-file-state"]').map(e => e.textContent);
+    expect(states).toEqual(['File type not supported', 'Over 100 bytes']);
+    expect($('[data-testid="kit-file-retry"]')).toBeNull();
+  });
+
+  it('a pasted image goes up as a file, not text', async () => {
+    const uploaded: File[] = [];
+    await render(h(kit.ChatComposer, { onSend: () => {}, onUploadFile: async (f: File) => { uploaded.push(f); return ready('55555555-5555-4555-8555-555555555555', f); } }));
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    const img = file('image.png', 'image/png');
+    await act(async () => {
+      const ev = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, 'clipboardData', { value: { files: [img], getData: () => '' } });
+      box.dispatchEvent(ev);
+    });
+    expect(uploaded).toEqual([img]);
+  });
+
+  it('a long file name truncates inside the card instead of widening it', async () => {
+    const name = `${'quarterly-revenue-by-region-'.repeat(8)}final.png`;
+    await render(h(kit.FileCard, { name, mediaType: 'image/png', sizeBytes: 482_113 }));
+    const title = $('[data-testid="kit-attachment-title"]')!;
+    expect(title.className).toBe('kit-attachment-title');
+    // The truncation chain: every flex box between the card and the title can shrink.
+    expect(title.parentElement!.className).toBe('kit-attachment-text');
+    expect($('[data-testid="kit-file"]')!.className).toContain('kit-attachment');
+    expect(container.textContent).toContain('PNG · 471 KB');
+  });
+
+  it('a stored file in a message renders as a card that opens it, with its thumbnail', async () => {
+    const opened: string[] = [];
+    const msg = { id: 'm1', role: 'user', parts: [{ type: 'data-file', data: { artifactId: 'a1', revision: 1, sha256: 'f'.repeat(64), name: 'chart.png', mediaType: 'image/png', sizeBytes: 10 } }] };
+    await render(h(kit.ChatThread, { messages: [msg], status: 'ready', onOpenFile: (d: { artifactId: string }) => opened.push(d.artifactId), fileImageUrl: () => '/thumb/a1' }));
+    expect($<HTMLImageElement>('[data-testid="kit-file-thumb"]')!.getAttribute('src')).toBe('/thumb/a1');
+    await click($('[data-testid="kit-attachment-open"]'));
+    expect(opened).toEqual(['a1']);
+  });
+});
