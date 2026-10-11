@@ -210,7 +210,7 @@ describe('what needs you comes from the missions', () => {
   it('an initiative with no missions offers Add mission', () => {
     const card = buildInitiativeCard(initiative({ id: 'i9' }), { now: NOW });
     expect(card.facts.map((f) => f.text)).toEqual(['No missions yet']);
-    expect(card.action).toMatchObject({ kind: 'add_mission', label: 'Add mission', href: '/app/missions/new?initiative=i9' });
+    expect(card.action).toMatchObject({ kind: 'add_mission', label: 'Add mission', href: '/app/missions?new=1&initiative=i9' });
     expect(card.section).toBe('active');
   });
 

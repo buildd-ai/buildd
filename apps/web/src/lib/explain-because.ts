@@ -312,6 +312,24 @@ function causeLinksFor(
           ),
         );
 
+    case 'landing_blocked':
+      return (extra.unmergedPrs ?? [])
+        .filter(p => w.taskIds.includes(p.taskId))
+        .slice(0, 10)
+        .map(p =>
+          link(
+            `Task "${p.title}" is completed but its PR cannot land yet: ${w.label}. `
+              + `${w.owner === 'person' ? 'This needs a person' : 'buildd owns the next step'}: ${w.nextAction}`,
+            'deriveLandingBlocker',
+            {
+              ...base,
+              taskId: p.taskId,
+              ...(p.prNumber != null ? { prNumber: p.prNumber } : {}),
+              ...(p.prUrl ? { prUrl: p.prUrl } : {}),
+            },
+          ),
+        );
+
     case 'pr_closed_unmerged':
       return (extra.unmergedPrs ?? [])
         .filter(p => p.closedUnsuperseded)

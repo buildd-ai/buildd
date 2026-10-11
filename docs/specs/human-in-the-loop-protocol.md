@@ -55,7 +55,7 @@ ignored my answer" incidents.
 | | Channel A — retry | Channel B — steering |
 |---|---|---|
 | Endpoint | `POST /api/workers/[id]/respond` | `POST /api/workers/[id]/instruct` |
-| UI entry | needs-input banner, `/app/tasks/[id]/respond` | instruct form, `TaskQuestionFeed` reply |
+| UI entry | needs-input banner, `/app/tasks/[id]?respond=1` (the reply box on the task page) | instruct form, `TaskQuestionFeed` reply |
 | MCP entry | none | `send_agent_message` (admin) |
 | Precondition | `workers.waitingFor` is non-null — **any** status | worker status not `completed`/`failed` |
 | Effect | resume the parked session, or a new `pending` task with the old worker `superseded` | message queued or pushed to the same session |
@@ -452,8 +452,8 @@ path unchanged.
 **Code surface**:
 - `apps/web/src/app/api/workers/[id]/respond/route.ts:49` (the `waitingFor`
   gate), `:93` (retry task), `:120` (supersede the worker)
-- Client entries: `apps/web/src/app/app/(protected)/tasks/[id]/respond/RespondForm.tsx`,
-  `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx:130`
+- Client entry: `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx`
+  (an answer link, `?respond=1`, focuses its reply box; the old `/respond` page redirects there)
 
 ---
 

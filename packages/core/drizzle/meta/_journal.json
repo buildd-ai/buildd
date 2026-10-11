@@ -326,10 +326,31 @@
       "breakpoints": true
     },
     {
-      "idx": 302,
+      "idx": 304,
       "version": "7",
-      "when": 1791690707851,
-      "tag": "0302_tidy_oracle",
+      "when": 1791692698954,
+      "tag": "0304_smiling_the_watchers",
+      "breakpoints": true
+    },
+    {
+      "idx": 305,
+      "version": "7",
+      "when": 1791714216401,
+      "tag": "0305_misty_wonder_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 306,
+      "version": "7",
+      "when": 1791714602373,
+      "tag": "0306_amusing_omega_sentinel",
+      "breakpoints": true
+    },
+    {
+      "idx": 307,
+      "version": "7",
+      "when": 1791715270109,
+      "tag": "0307_chemical_slayback",
       "breakpoints": true
     }
   ]

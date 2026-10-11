@@ -246,6 +246,115 @@ describe('ChatComposer', () => {
   });
 });
 
+const paste = async (el: Element, text: string) => {
+  let prevented = false;
+  await act(async () => {
+    const ev = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, 'clipboardData', { value: { getData: (t: string) => (t === 'text/plain' ? text : '') } });
+    el.dispatchEvent(ev);
+    prevented = ev.defaultPrevented;
+  });
+  return prevented;
+};
+
+describe('ChatComposer attachments (0.25.0)', () => {
+  type Sent = { text: string; attachments: Array<{ id: string; title: string; text: string }> };
+
+  it('a paste over attachFrom becomes a card, not text; a shorter one stays in the box', async () => {
+    const sent: Sent[] = [];
+    await render(h(kit.ChatComposer, { onSend: (text: string, attachments: Sent['attachments']) => sent.push({ text, attachments }), attachFrom: 8000 }));
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    expect(await paste(box, 'x'.repeat(8000))).toBe(false); // at the threshold: the browser inserts it
+    expect($('[data-testid="kit-attachment"]')).toBeNull();
+    const long = `Quarterly report\n${'y'.repeat(60_000)}`;
+    expect(await paste(box, long)).toBe(true);
+    expect($$('[data-testid="kit-attachment"]')).toHaveLength(1);
+    expect($('[data-testid="kit-attachment-title"]')!.textContent).toBe('Quarterly report');
+    expect(container.textContent).toContain(`${long.length.toLocaleString('en-US')} characters`);
+    expect(box.value).toBe('');
+    // An attachment alone can be sent; the text is exact, byte for byte.
+    expect($('[data-testid="kit-send"]')!.getAttribute('aria-disabled')).toBeNull();
+    await key(box, 'Enter');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toBe('');
+    expect(sent[0].attachments[0].text).toBe(long);
+    expect(sent[0].attachments[0].id).toMatch(/^[0-9a-f-]{36}$/);
+    expect($('[data-testid="kit-attachment"]')).toBeNull();
+  });
+
+  it('Remove takes the card out of the draft', async () => {
+    const sent: Sent[] = [];
+    await render(h(kit.ChatComposer, { onSend: (text: string, attachments: Sent['attachments']) => sent.push({ text, attachments }), attachFrom: 10 }));
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await paste(box, 'a long paste here');
+    await type(box, 'summarize');
+    await click($('[data-testid="kit-attachment-remove"]'));
+    expect($('[data-testid="kit-attachment"]')).toBeNull();
+    await key(box, 'Enter');
+    expect(sent).toEqual([{ text: 'summarize', attachments: [] }]);
+  });
+
+  it('maxLength counts the text and the attachments together', async () => {
+    const sent: Sent[] = [];
+    await render(h(kit.ChatComposer, { onSend: (text: string, attachments: Sent['attachments']) => sent.push({ text, attachments }), attachFrom: 10, maxLength: 100 }));
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await paste(box, 'z'.repeat(95));
+    await type(box, 'x'.repeat(6));
+    expect($('[data-testid="kit-composer-count"]')!.textContent).toContain('101 / 100 characters');
+    await key(box, 'Enter');
+    expect(sent).toEqual([]);
+    expect($('[data-testid="kit-attachment"]')).not.toBeNull();
+  });
+
+  it('controlled attachments survive a refused send: the app puts them back', async () => {
+    let attachments = [{ id: '11111111-1111-4111-8111-111111111111', title: 'Pasted', text: 'q'.repeat(9000) }];
+    const sent: Sent[] = [];
+    const view = () => h(kit.ChatComposer, {
+      attachFrom: 8000, attachments,
+      onAttachmentsChange: (a: Sent['attachments']) => { attachments = a; },
+      onSend: (text: string, a: Sent['attachments']) => sent.push({ text, attachments: a }),
+    });
+    await render(view());
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await key(box, 'Enter');
+    expect(sent[0].attachments[0].id).toBe('11111111-1111-4111-8111-111111111111');
+    expect(attachments).toEqual([]);
+    // The send was refused: the app restores the same draft, same id.
+    attachments = sent[0].attachments;
+    await render(view());
+    expect($$('[data-testid="kit-attachment"]')).toHaveLength(1);
+    await key(box, 'Enter');
+    expect(sent[1].attachments[0].id).toBe(sent[0].attachments[0].id);
+  });
+
+  it('busy with onSteer: a draft holding an attachment does not steer', async () => {
+    const steers: string[] = [];
+    await render(h(kit.ChatComposer, {
+      busy: true, onSend() {}, onStop() {}, onSteer: (t: string) => steers.push(t), attachFrom: 10,
+      attachments: [{ id: '22222222-2222-4222-8222-222222222222', title: 'P', text: 'long enough text' }],
+    }));
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await type(box, 'also this');
+    await key(box, 'Enter');
+    expect(steers).toEqual([]);
+  });
+});
+
+describe('ChatThread attachments (0.25.0)', () => {
+  it('a message carrying an attachment shows a fixed card that opens the reader; the text stays out of the thread', async () => {
+    const opened: string[] = [];
+    const ref = { artifactId: '33333333-3333-4333-8333-333333333333', revision: 1, sha256: 'a'.repeat(64), chars: 60_000, title: 'Logs' };
+    await render(h(kit.ChatThread, {
+      messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: 'what failed?' }, { type: 'data-attachment', data: ref }] }],
+      onOpenAttachment: (d: typeof ref) => opened.push(d.artifactId),
+    }));
+    expect($('[data-testid="kit-attachment-title"]')!.textContent).toBe('Logs');
+    expect(container.textContent).toContain('60,000 characters');
+    await click($('[data-testid="kit-attachment-open"]'));
+    expect(opened).toEqual([ref.artifactId]);
+  });
+});
+
 describe('ChatEmpty', () => {
   it('greets by name and hands the chip back', async () => {
     const got: string[] = [];
@@ -689,5 +798,151 @@ describe('ChatSetupCard title (0.6.1)', () => {
   it('no title: no heading', async () => {
     await render(h(kit.ChatSetupCard, { reason: 'no_key', message: 'm' }));
     expect($('[data-testid="kit-setup-title"]')).toBeNull();
+  });
+});
+
+describe('ChatComposer files (0.26.0)', () => {
+  type Sent = { text: string; attachments: Array<Record<string, unknown>> };
+  const file = (name: string, type: string, size = 10) => new File([new Uint8Array(size)], name, { type });
+  const deferred = <T,>() => {
+    let resolve!: (v: T) => void; let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+  const pick = async (files: File[]) => {
+    const input = $<HTMLInputElement>('[data-testid="kit-attach-input"]')!;
+    Object.defineProperty(input, 'files', { value: files, configurable: true });
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); });
+  };
+  const ready = (id: string, f: File) => ({ kind: 'file' as const, id, name: f.name, mediaType: f.type, sizeBytes: f.size });
+
+  it('no upload handler, no Attach button: the composer takes no files', async () => {
+    await render(h(kit.ChatComposer, { onSend: () => {} }));
+    expect($('[data-testid="kit-attach"]')).toBeNull();
+  });
+
+  it('uploading never reads as attached and holds Send; once ready it is sent by id', async () => {
+    const sent: Sent[] = [];
+    const up = deferred<ReturnType<typeof ready>>();
+    await render(h(kit.ChatComposer, { onSend: (text: string, attachments: Sent['attachments']) => sent.push({ text, attachments }), onUploadFile: () => up.promise }));
+    const pdf = file('Q3 report.pdf', 'application/pdf');
+    await pick([pdf]);
+    const card = $('[data-testid="kit-file"]')!;
+    expect(card.getAttribute('data-state')).toBe('uploading');
+    expect($('[data-testid="kit-file-state"]')!.textContent).toBe('Uploading…');
+    expect($('[data-testid="kit-attachment-open"]')).toBeNull();
+    expect($('[data-testid="kit-send"]')!.getAttribute('aria-disabled')).toBe('true');
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await type(box, 'summarize');
+    await key(box, 'Enter');
+    expect(sent).toEqual([]);
+
+    await act(async () => { up.resolve(ready('11111111-1111-4111-8111-111111111111', pdf)); await up.promise; });
+    expect($('[data-testid="kit-file"]')!.getAttribute('data-state')).toBe('ready');
+    expect($('[data-testid="kit-file-state"]')!.textContent).toContain('PDF ·');
+    await key(box, 'Enter');
+    expect(sent).toEqual([{ text: 'summarize', attachments: [ready('11111111-1111-4111-8111-111111111111', pdf)] }]);
+  });
+
+  it('a failed upload says so, holds Send, and Retry runs it again', async () => {
+    const attempts: Array<ReturnType<typeof deferred<ReturnType<typeof ready>>>> = [];
+    const sent: Sent[] = [];
+    await render(h(kit.ChatComposer, {
+      onSend: (text: string, attachments: Sent['attachments']) => sent.push({ text, attachments }),
+      onUploadFile: () => { const d = deferred<ReturnType<typeof ready>>(); attempts.push(d); return d.promise; },
+    }));
+    const png = file('chart.png', 'image/png');
+    await pick([png]);
+    await act(async () => { attempts[0]!.reject(new Error('Upload check failed')); await attempts[0]!.promise.catch(() => {}); });
+    expect($('[data-testid="kit-file"]')!.getAttribute('data-state')).toBe('failed');
+    expect($('[data-testid="kit-file-state"]')!.textContent).toBe('Upload check failed');
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await type(box, 'look');
+    await key(box, 'Enter');
+    expect(sent).toEqual([]);
+    await click($('[data-testid="kit-file-retry"]'));
+    expect(attempts).toHaveLength(2);
+    expect($('[data-testid="kit-file"]')!.getAttribute('data-state')).toBe('uploading');
+    await act(async () => { attempts[1]!.resolve(ready('22222222-2222-4222-8222-222222222222', png)); await attempts[1]!.promise; });
+    await key(box, 'Enter');
+    expect(sent).toHaveLength(1);
+  });
+
+  it('Remove while uploading cancels it: aborted, never attached, never sent', async () => {
+    let signal: AbortSignal | null = null;
+    const up = deferred<ReturnType<typeof ready>>();
+    const sent: Sent[] = [];
+    await render(h(kit.ChatComposer, {
+      onSend: (text: string, attachments: Sent['attachments']) => sent.push({ text, attachments }),
+      onUploadFile: (_f: File, s: AbortSignal) => { signal = s; return up.promise; },
+    }));
+    const png = file('chart.png', 'image/png');
+    await pick([png]);
+    await click($('[data-testid="kit-attachment-remove"]'));
+    expect(signal!.aborted).toBe(true);
+    expect($('[data-testid="kit-file"]')).toBeNull();
+    // The upload finishing after the cancel changes nothing.
+    await act(async () => { up.resolve(ready('33333333-3333-4333-8333-333333333333', png)); await up.promise; });
+    expect($('[data-testid="kit-file"]')).toBeNull();
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await type(box, 'hi');
+    await key(box, 'Enter');
+    expect(sent).toEqual([{ text: 'hi', attachments: [] }]);
+  });
+
+  it('Remove of a ready, unsent file hands it back to discard', async () => {
+    const discarded: string[] = [];
+    const png = file('chart.png', 'image/png');
+    await render(h(kit.ChatComposer, {
+      onSend: () => {},
+      onUploadFile: async () => ready('44444444-4444-4444-8444-444444444444', png),
+      onDiscardFile: (f: { id: string }) => discarded.push(f.id),
+    }));
+    await pick([png]);
+    await click($('[data-testid="kit-attachment-remove"]'));
+    expect(discarded).toEqual(['44444444-4444-4444-8444-444444444444']);
+  });
+
+  it('a type outside the list, or a file over the cap, fails at once with no upload and no Retry', async () => {
+    let uploads = 0;
+    await render(h(kit.ChatComposer, { onSend: () => {}, onUploadFile: async () => { uploads++; throw new Error('x'); }, maxFileBytes: 100 }));
+    await pick([file('run.exe', 'application/x-msdownload'), file('big.png', 'image/png', 101)]);
+    expect(uploads).toBe(0);
+    const states = $$('[data-testid="kit-file-state"]').map(e => e.textContent);
+    expect(states).toEqual(['File type not supported', 'Over 100 bytes']);
+    expect($('[data-testid="kit-file-retry"]')).toBeNull();
+  });
+
+  it('a pasted image goes up as a file, not text', async () => {
+    const uploaded: File[] = [];
+    await render(h(kit.ChatComposer, { onSend: () => {}, onUploadFile: async (f: File) => { uploaded.push(f); return ready('55555555-5555-4555-8555-555555555555', f); } }));
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    const img = file('image.png', 'image/png');
+    await act(async () => {
+      const ev = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, 'clipboardData', { value: { files: [img], getData: () => '' } });
+      box.dispatchEvent(ev);
+    });
+    expect(uploaded).toEqual([img]);
+  });
+
+  it('a long file name truncates inside the card instead of widening it', async () => {
+    const name = `${'quarterly-revenue-by-region-'.repeat(8)}final.png`;
+    await render(h(kit.FileCard, { name, mediaType: 'image/png', sizeBytes: 482_113 }));
+    const title = $('[data-testid="kit-attachment-title"]')!;
+    expect(title.className).toBe('kit-attachment-title');
+    // The truncation chain: every flex box between the card and the title can shrink.
+    expect(title.parentElement!.className).toBe('kit-attachment-text');
+    expect($('[data-testid="kit-file"]')!.className).toContain('kit-attachment');
+    expect(container.textContent).toContain('PNG · 471 KB');
+  });
+
+  it('a stored file in a message renders as a card that opens it, with its thumbnail', async () => {
+    const opened: string[] = [];
+    const msg = { id: 'm1', role: 'user', parts: [{ type: 'data-file', data: { artifactId: 'a1', revision: 1, sha256: 'f'.repeat(64), name: 'chart.png', mediaType: 'image/png', sizeBytes: 10 } }] };
+    await render(h(kit.ChatThread, { messages: [msg], status: 'ready', onOpenFile: (d: { artifactId: string }) => opened.push(d.artifactId), fileImageUrl: () => '/thumb/a1' }));
+    expect($<HTMLImageElement>('[data-testid="kit-file-thumb"]')!.getAttribute('src')).toBe('/thumb/a1');
+    await click($('[data-testid="kit-attachment-open"]'));
+    expect(opened).toEqual(['a1']);
   });
 });
