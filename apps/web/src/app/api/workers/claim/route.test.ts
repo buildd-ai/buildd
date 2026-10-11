@@ -3736,6 +3736,29 @@ describe('POST /api/workers/claim', () => {
       });
     });
 
+    /** The claimed_by_cloud flag the latest conditional worker INSERT carried. */
+    const insertedCloud = (): unknown => {
+      const insert = (mockDbExecute.mock.calls as any[]).map(c => c[0]).filter((q: any) =>
+        Array.isArray(q?.strings) && q.strings.join('').includes('INSERT INTO')).pop();
+      expect(insert.strings.join('')).toContain('claimed_by_cloud');
+      // values: workers, task_id, workspace_id, account_id, name, runner, branch, claimed_by_user_id, claimed_by_cloud
+      return insert?.values?.[8];
+    };
+
+    // A cloud container runs its runner on a task token, so the worker records
+    // that a cloud container claimed it: on that worker, task-token
+    // verification evidence is the runner's (lib/verification-provenance.ts).
+    it('a cloud executor claim records the worker as cloud-claimed; a host claim does not', async () => {
+      await withEncryptionKey(async () => {
+        setupTeamWithEveryCredential();
+        await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner', executor: 'cloud' } }));
+        expect(insertedCloud()).toBe(true);
+        setupTeamWithEveryCredential();
+        await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+        expect(insertedCloud()).toBe(false);
+      });
+    });
+
     it("executor 'cloud': no credential field, nothing decrypted, no refresh list", async () => {
       await withEncryptionKey(async () => {
         setupTeamWithEveryCredential();

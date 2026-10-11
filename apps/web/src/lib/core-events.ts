@@ -145,6 +145,18 @@ export type CoreEvent =
       verificationEvidence: unknown;
     }
   | WorkerOutcomeEvent
+  /**
+   * The runner reported verification evidence on a worker that was already
+   * terminal: the agent made the terminal write first (lib/late-runner-evidence.ts).
+   * Never a task-token report on a host-claimed worker; the route drops those.
+   */
+  | {
+      type: 'worker.late_verification_reported';
+      taskId: string;
+      workerId: string;
+      workspaceId: string | null;
+      verificationEvidence: unknown;
+    }
   /** A merged PR completed the task (GitHub webhook). */
   | { type: 'task.completed'; via: 'merge'; taskId: string; workerId: string; workspaceId: string | null }
   | { type: 'task.needs_input'; taskId: string; workerId: string; prompt: string | null | undefined }
