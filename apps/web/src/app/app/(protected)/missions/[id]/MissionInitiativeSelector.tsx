@@ -189,7 +189,7 @@ export default function MissionInitiativeSelector({
               </button>
             )}
             {filtered.length === 0 ? (typed ? null : (
-              <p className="text-[12px] text-text-muted px-3 py-3 text-center">Type a name to create a group</p>
+              <p className="text-[12px] text-text-muted px-3 py-3 text-center">No groups</p>
             )) : (
               filtered.map(initiative => (
                 <button
