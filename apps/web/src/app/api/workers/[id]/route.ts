@@ -72,6 +72,7 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
+import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
 import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
@@ -258,6 +259,32 @@ async function workerConflictResponse(id: string, extra?: Record<string, unknown
  *  - The write is a compare-and-swap on the status that was read, so a row
  *    moving underneath it yields a retryable conflict rather than a stale write.
  */
+/** Serve each message id once; drop blocked-on-you prompts whose sender has no live worker. */
+async function dropUnanswerableMessages<T extends { id?: string; type?: string; fromTaskId?: string }>(
+  messages: T[],
+): Promise<T[]> {
+  const seen = new Set<string>();
+  const unique = messages.filter(m => {
+    if (!m?.id) return true;
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+  const senderIds = [...new Set(unique.filter(m => m?.type === 'path_blocked_on_you' && m.fromTaskId).map(m => m.fromTaskId!))];
+  if (senderIds.length === 0) return unique;
+  try {
+    const live = await db
+      .select({ taskId: workers.taskId })
+      .from(workers)
+      .where(and(inArray(workers.taskId, senderIds), not(inArray(workers.status, [...TERMINAL_WORKER_STATUSES]))));
+    const liveIds = new Set(live.map(r => r.taskId));
+    return unique.filter(m => !(m?.type === 'path_blocked_on_you' && m.fromTaskId && !liveIds.has(m.fromTaskId)));
+  } catch (err) {
+    console.error('[worker-messages] sender liveness check failed:', err);
+    return unique;
+  }
+}
+
 /**
  * Does this report carry usage? Only then does it say anything about the
  * worker's cost basis (docs/specs/real-and-virtual-cost.md).
@@ -1283,7 +1310,7 @@ export async function PATCH(
     void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
       title: note.title,
       message: note.message,
-      url: `${appBaseUrl}/app/tasks/${worker.taskId}/respond`,
+      url: `${appBaseUrl}/app/tasks/${worker.taskId}?respond=1`,
       urlTitle: 'Respond',
       priority: 0,
     });
@@ -1657,7 +1684,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, conflictRetryHeadSha: tasks.conflictRetryHeadSha, subjectHeadSha: tasks.subjectHeadSha, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1830,7 +1857,7 @@ export async function PATCH(
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'rejected',
-          reason: 'completion refused: delivery_not_advanced',
+          reason: `completion refused: ${refusal.code}`,
           workspaceId: worker.workspaceId,
           missionId: taskMissionId,
           taskId: worker.taskId,
@@ -1847,6 +1874,45 @@ export async function PATCH(
           boundHeadSha: refusal.boundHeadSha,
           liveHeadSha: refusal.liveHeadSha,
           localHeadSha: refusal.localHeadSha,
+        }, { status: 400 });
+      }
+    }
+
+    // The same evidence rule for a LEGACY conflict or migration retry (no
+    // delivery row): it completes only when the PR's head moved, or GitHub
+    // shows the conflict/collision already gone. Without this, attempts that
+    // started fresh from trunk and touched nothing on the PR read as success
+    // (spec workflow-state-kernel §13.11 rule 2).
+    if (worker.taskId && terminalTaskRow[0] && !terminalTaskRow[0].deliveryId && terminalTaskRow[0].conflictRetryPrNumber != null) {
+      const refusal = await legacyRepairCompletionGate({
+        task: { workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
+        localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+      }, legacyRepairGateDeps()).catch((err) => {
+        console.error(`[repair-completion] gate check failed for worker ${worker.id} (allowing):`, err);
+        return null;
+      });
+      if (refusal) {
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
+        const frictionSignature = fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: `completion refused: ${refusal.code}`,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: { code: refusal.code, boundHeadSha: refusal.boundHeadSha, liveHeadSha: refusal.liveHeadSha },
+        });
+        return NextResponse.json({
+          error: refusal.error,
+          hint: refusal.hint,
+          code: refusal.code,
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          frictionSignature,
+          boundHeadSha: refusal.boundHeadSha,
+          liveHeadSha: refusal.liveHeadSha,
         }, { status: 400 });
       }
     }
@@ -4616,9 +4682,13 @@ export async function PATCH(
   // removal itself runs in SQL against the live column (clearWorkerMessages), so
   // an ack for an id that is not queued writes nothing and a message that
   // arrived after this snapshot is never dropped.
-  const retainedWorkerMessages = deliveredMessageIds.length > 0
+  const unackedWorkerMessages = deliveredMessageIds.length > 0
     ? pendingWorkerMessages.filter(m => !deliveredMessageIds.includes(m?.id ?? ''))
     : pendingWorkerMessages;
+  // Serve each message id once, and not a blocked-on-you prompt whose sender is
+  // already terminal: the recipient's reply to it bounces (recipient_terminal),
+  // so it only costs an interruption nobody can receive.
+  const retainedWorkerMessages = await dropUnanswerableMessages(unackedWorkerMessages);
 
   // §6d-derived lease: the observed touch is also a claim.
   //
@@ -4799,7 +4869,11 @@ export async function PATCH(
           : [];
       const newNotifications: Array<{ path: string; siblingTaskId: string }> = [];
 
-      for (const sibling of siblings) {
+      // A reviewer is read-only: its touches are reads of the PR it reviews, not
+      // edits, so it never blocks anyone and the PR's author must not be asked
+      // to answer for it.
+      const senderIsReviewer = Boolean(taskContext?.reviewerFor);
+      for (const sibling of senderIsReviewer ? [] : siblings) {
         if (!sibling.taskId) continue;
         const siblingTouches = Array.isArray(sibling.observedTouches) ? sibling.observedTouches as string[] : [];
         if (siblingTouches.length === 0) continue;
@@ -4863,7 +4937,11 @@ export async function PATCH(
         const deliver = async (message: WorkerMessage) => {
           await enqueueWorkerMessage(sibling.taskId!, message);
           if (sibling.runner !== INTERACTIVE_WORKER_RUNNER) {
-            await queueSystemInstruction(sibling.id, formatWorkerMessages([message]))
+            // Marker: one uncollected notice per (type, sender) — a re-detection
+            // before the runner's next check-in must not stack a copy.
+            await queueSystemInstruction(sibling.id, formatWorkerMessages([message]), {
+              marker: `(${message.type}, from task ${message.fromTaskId}`,
+            })
               .catch(err => console.error(`[Worker ${id}] overlap instruction to ${sibling.id} failed:`, err));
           }
         };
@@ -5996,4 +6074,27 @@ async function handleReviewerOutcomeIfNeeded(
       break;
     }
   }
+}
+
+/**
+ * Production reads for the legacy repair completion gate: the workspace repo,
+ * a live PR read, and the migration inspector, ignoring the PR's own recorded
+ * predecessors (spec workflow-state-kernel §13.11 rules 2 and 5).
+ */
+function legacyRepairGateDeps(): LegacyRepairGateDeps {
+  return {
+    repoFor: async (workspaceId) => (await import('@/lib/workflow/github-facts')).workspaceRepo(workspaceId),
+    readPr: async (installationId, repoFullName, prNumber) =>
+      (await import('@/lib/workflow/github-facts')).githubReader(installationId).readPr(repoFullName, prNumber),
+    collisionAt: async (p) => {
+      const { inspectPullRequestMigrations } = await import('@/lib/migration-inspector');
+      const { predecessorPrNumbers } = await import('@/lib/pr-predecessors');
+      const safety = await inspectPullRequestMigrations({
+        installationId: p.installationId, repoFullName: p.repoFullName, prNumber: p.prNumber, headSha: p.headSha, baseRef: p.baseRef,
+        files: [], ignorePrNumbers: await predecessorPrNumbers(p.workspaceId, p.prNumber),
+      });
+      if (safety.safe) return false;
+      return safety.collision ? true : null;
+    },
+  };
 }

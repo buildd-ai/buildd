@@ -18,10 +18,12 @@ import {
   isSteerPart,
   isTextPart,
   isAttachmentPart,
+  isFilePart,
   isToolPart,
   isTurnErrorPart,
   latestHandoffs,
   type AttachmentData,
+  type FileData,
   type ChatMessage,
   type ChatPart,
   type ChatTextPart,
@@ -34,7 +36,7 @@ import {
 import { ApprovalCard, ApprovalRowsCard, HandoffCard, ThinkingPanel } from './cards';
 import { THINKING_TAIL_ID, approvalRowGroup, composeTurn, isApprovalPart, thinkingSteps, toolRowLabel, toolRowState, toolSummary, type TurnPhase } from './model';
 import { ToolCallGroup } from './ToolCalls';
-import { AttachmentCard } from './AttachmentCard';
+import { AttachmentCard, FileCard } from './AttachmentCard';
 import type { ToolCallOptions } from './tool-calls';
 
 export type ChatStatus = 'ready' | 'submitted' | 'streaming' | 'error';
@@ -100,6 +102,14 @@ export interface ChatThreadProps {
    */
   renderAttachment?(data: AttachmentData, message: ChatMessage): ReactNode;
   onOpenAttachment?(data: AttachmentData, message: ChatMessage): void;
+  /**
+   * An image or file the message carries (`data-file`, 0.26.0). Default: a
+   * `FileCard`, a button to `onOpenFile` when that is set, with a thumbnail
+   * from `fileImageUrl` for an image.
+   */
+  renderFile?(data: FileData, message: ChatMessage): ReactNode;
+  onOpenFile?(data: FileData, message: ChatMessage): void;
+  fileImageUrl?(data: FileData, message: ChatMessage): string | undefined;
   /** Above a message's parts, e.g. the author, avatar and time (0.9.0). Null: nothing. */
   renderMessageHeader?(message: ChatMessage, ctx: ThreadMessageContext): ReactNode;
   /** After a message's parts, e.g. feedback thumbs (0.9.0). Null: nothing. */
@@ -201,7 +211,7 @@ function eventOf(m: ChatMessage, type: string): EventData | null {
 
 export function ChatThread({
   messages, status = 'ready', onApprovalResponse, onEditApproval, renderText = defaultText, renderObject,
-  renderTool, renderToolGroup: appToolGroup, toolRows = 'line', toolCallOptions, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff, renderAttachment, onOpenAttachment,
+  renderTool, renderToolGroup: appToolGroup, toolRows = 'line', toolCallOptions, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff, renderAttachment, onOpenAttachment, renderFile, onOpenFile, fileImageUrl,
   renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingName, renderPinnedStep, turnFold, answer = 'append',
   compose = 'parts', renderPhaseResults: appPhaseResults, viewerName = null, empty, error, label = 'Conversation', className,
 }: ChatThreadProps) {
@@ -338,6 +348,19 @@ export function ChatThread({
       if (isTurnErrorPart(p)) {
         flush();
         out.push(<div key={key} className="kit-error" role="alert" data-turn-error={p.data.code}>{p.data.message}</div>);
+        return;
+      }
+      if (isFilePart(p)) {
+        flush();
+        const data = p.data;
+        const imageUrl = fileImageUrl?.(data, m) ?? (data as { previewUrl?: string }).previewUrl;
+        out.push(
+          <div key={key} className="kit-msg-attachment">
+            {renderFile
+              ? renderFile(data, m)
+              : <FileCard name={data.name} mediaType={data.mediaType} sizeBytes={data.sizeBytes} {...(imageUrl ? { imageUrl } : {})} {...(onOpenFile ? { onOpen: () => onOpenFile(data, m) } : {})} />}
+          </div>,
+        );
         return;
       }
       if (isAttachmentPart(p)) {

@@ -32,7 +32,7 @@ export const EMPTY_CHAT_ENTRY: ChatEntry = { intent: null, about: null, workspac
  * URL redirects to chat), so a task falls back to the mission form.
  */
 export function formHref(_kind: NewWorkKind, _workspaceId?: string | null): string {
-  return '/app/missions/new';
+  return '/app/missions?new=1';
 }
 
 function entryQuery(entry: Partial<ChatEntry>): string {

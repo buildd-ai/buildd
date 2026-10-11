@@ -2731,6 +2731,10 @@ export const specRevisions = pgTable('spec_revisions', {
   authorKind: text('author_kind').notNull().$type<'user' | 'agent'>(),
   authorId: text('author_id').notNull(),
   changeSummary: text('change_summary'),
+  // Repo specs (docs/specs, Git-canonical per D-1) this revision cites, each
+  // pinned to the exact commit it was validated at on write. Immutable with
+  // the revision, so a moving branch never changes what it cites.
+  repoRefs: jsonb('repo_refs').$type<Array<{ path: string; commitSha: string }>>(),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
