@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { buildLineage } from './pr-lineage';
+import { buildLineage, diffStatsRecorded } from './pr-lineage';
 
 const T = 10_000_000;
 const s = (sec: number) => T + sec * 1000;
@@ -60,5 +60,35 @@ describe('buildLineage', () => {
     });
     expect(l.steps[0]).toMatchObject({ sub: '4 commits, PR opened', at: null });
     expect(l.steps.map(x => x.kind)).toEqual(['attempt']);
+  });
+});
+
+// Surface audit (task eed1b3d8): a merged PR shipped from an interactive
+// session read "+0 −0 · 0 Files · 0 Commits" and "0 commits, PR opened". That
+// worker recorded a head SHA but never its commit or diff counters. A PR is
+// never opened from zero commits, so those zeros are unrecorded, not measured.
+describe('unrecorded commit stats', () => {
+  const unrecorded = { ...attempt1, commits: 0, add: 0, rem: 0, files: 0, headSha: 'ccccccc3' };
+
+  test('a head SHA alone is not a measurement', () => {
+    expect(diffStatsRecorded([unrecorded])).toBe(false);
+    expect(diffStatsRecorded([{ ...unrecorded, commits: null }])).toBe(false);
+  });
+
+  test('any recorded counter is', () => {
+    expect(diffStatsRecorded([unrecorded, attempt2])).toBe(true);
+    expect(diffStatsRecorded([{ ...unrecorded, files: 1 }])).toBe(true);
+  });
+
+  test('the first attempt does not claim 0 commits', () => {
+    const l = buildLineage({ attempts: [unrecorded], retries: [], pr: { lifecycle: 'merged', mergedAt: s(834) } });
+    expect(l.steps[0].sub).toBe('Builder on cedar · PR opened');
+    const n = buildLineage({ attempts: [{ ...unrecorded, commits: null }], retries: [], pr: { lifecycle: 'merged', mergedAt: s(834) } });
+    expect(n.steps[0].sub).toBe('Builder on cedar · PR opened');
+  });
+
+  test('a later attempt with no recorded count says nothing about commits', () => {
+    const l = buildLineage({ attempts: [attempt1, { ...attempt2, commits: null }], retries: [retry], pr: { lifecycle: 'merged', mergedAt: s(834) } });
+    expect(l.steps[3].sub).toBe('Builder on birch · same branch');
   });
 });

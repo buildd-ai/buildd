@@ -90,7 +90,7 @@ export default async function RoleProfilePage({
 
   if (!role) notFound();
 
-  // Editing needs manage_agent_roles in the role's team (overrides applied);
+  // Editing needs manage_agent_roles in the role's team;
   // without it this page is the read-only view and the editor redirects here.
   const canEdit = await can({ kind: 'user', userId: user.id }, 'manage_agent_roles', role.teamId).catch(() => false);
 
@@ -268,7 +268,7 @@ export default async function RoleProfilePage({
     >
       {canEdit && (
         <div>
-          <PrimaryAction href={editHref}>Edit role</PrimaryAction>
+          <PrimaryAction href={editHref}>Edit agent</PrimaryAction>
         </div>
       )}
 
@@ -300,7 +300,7 @@ export default async function RoleProfilePage({
 
       <Section title="Assigned missions" count={assignedMissions.length || undefined}>
         {assignedMissions.length === 0 ? (
-          <p className="text-sm text-text-muted">No missions assigned to this role.</p>
+          <p className="text-sm text-text-muted">No missions assigned to this agent.</p>
         ) : (
           <div className={ROWS}>
             {assignedMissions.map(mission => {
