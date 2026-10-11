@@ -13,11 +13,12 @@
  *  - **One overall deadline** (default 5s) covers access, retrieval/state
  *    assembly AND the decision call. Retrieval receives an `AbortSignal` that
  *    fires when the deadline passes; anything still running is abandoned.
- *  - **Application needs three yeses**: the kit's policy (`gated`/`live` and
- *    the measured threshold) permits it, `isJevModel` passes on the model that
- *    actually answered (thresholds were measured on Jev; another team model is
- *    recorded, never applied, even in `live`), and the unit was drawn into the
- *    applying cohort. The cohort fraction defaults to ZERO, so a new policy
+ *  - **Application needs three yeses**: the policy (`gated`/`live`) permits
+ *    it, the model that actually answered is measured for this decision and
+ *    cleared that measurement's threshold (Jev at the definition's threshold
+ *    unless a stored measurement moves it; any other model only once one is
+ *    stored, decision-model-measurements.ts, and recorded until then), and the
+ *    unit was drawn into the applying cohort. The cohort fraction defaults to ZERO, so a new policy
  *    applies nothing until someone raises it after a readout.
  *  - **Every failure falls back** to the deterministic rule verdict the caller
  *    passed in: no key, timeout, invalid answer, provider error, empty
@@ -47,9 +48,10 @@ import {
   type DecideResult,
   type QuestionOutcome,
 } from '@builddai/ai-kit/decide';
-import { isJevModel } from './decision-model';
+import { loadMeasurementsSafe, measurementFor, type StoredMeasurement } from './decision-model-measurements';
 import type { DecisionAccess, DecisionResult, DecisionCallParams } from './decision-client';
 import type { InferenceCapability } from './inference-policy';
+import type { DecisionReplayCapture } from './decision-replay';
 
 /** Overall ceiling: access + retrieval + decision. */
 export const ORCHESTRATION_DECISION_DEADLINE_MS = 5_000;
@@ -178,10 +180,13 @@ export interface OrchestrationDecisionDeps {
   resolveAccess?: ResolveAccessFn;
   call?: CallFn;
   /** Persist the row. Awaited; a throw is swallowed. */
-  record?: (row: OrchestrationDecisionRow) => Promise<void>;
+  /** `replay` is the input the model saw (decision-replay.ts); null when no state was built. */
+  record?: (row: OrchestrationDecisionRow, replay?: DecisionReplayCapture | null) => Promise<void>;
   /** Forward the provider receipt (e.g. to `ai_usage`). Fire-and-forget. */
   onReceipt?: (receipt: DecisionReceipt) => void | Promise<void>;
   now?: () => number;
+  /** Stored (kind, model) measurements. Default: `loadMeasurementsSafe` (cached, never throws). */
+  measurements?: () => Promise<readonly StoredMeasurement[]>;
 }
 
 export interface OrchestrationDecisionParams<Q extends DecisionQuestions> {
@@ -301,9 +306,9 @@ const defaultCall: CallFn = async (params) => {
   return decisionCall(params);
 };
 
-const defaultRecord = async (row: OrchestrationDecisionRow): Promise<void> => {
+const defaultRecord = async (row: OrchestrationDecisionRow, replay?: DecisionReplayCapture | null): Promise<void> => {
   const { recordOrchestrationDecision } = await import('./orchestration-ledger-source');
-  await recordOrchestrationDecision(row);
+  await recordOrchestrationDecision(row, replay);
 };
 
 // ── The adapter ──────────────────────────────────────────────────────────────
@@ -372,9 +377,11 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
     receipt: null,
   });
 
+  // Set once state exists: every row written after that point keeps a replayable copy.
+  let replay: DecisionReplayCapture | null = null;
   const record = async (row: OrchestrationDecisionRow) => {
     try {
-      await (deps.record ?? defaultRecord)(row);
+      await (deps.record ?? defaultRecord)(row, replay);
     } catch (err) {
       console.warn('[orchestration-decision] ledger write failed (non-fatal):', (err as Error)?.message ?? err);
     }
@@ -442,6 +449,12 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
     }
     if (state === null || state === undefined) return await fallback('no_candidates', { model: access.model });
     if (state === RULE_DECIDED) return await fallback('rule_decided', { model: access.model });
+    replay = {
+      state,
+      questionIds: Object.keys(decision.questions),
+      candidates: null,
+      promptRef: { id: decision.id, version: decision.version ?? null, contentHash: decision.fingerprint ?? null },
+    };
 
     // 3. The decision, with whatever budget is left.
     const budget = remaining();
@@ -494,10 +507,22 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
       return await fallback('invalid', { ...rowPatch, errorKind: 'invalid_answer' }, { suggested, confidence: outcome.confidence });
     }
 
+    // Whether the answering model may act on this decision, and at what
+    // confidence: a stored measurement (decision-model-measurements.ts) keyed
+    // on the decision id and its prompt version. Jev with no row keeps the
+    // definition's threshold; any other model needs a row.
     let reason: OrchestrationSuggestReason | null = null;
-    if (outcome.status === 'suggested') reason = outcome.reason;
-    else if (!isJevModel(answeredModel)) reason = 'non_jev';
-    else if (cohort.arm !== 'apply') reason = 'not_in_cohort';
+    if (outcome.status === 'suggested' && outcome.reason === 'shadow') {
+      reason = 'shadow';
+    } else {
+      const rows = await (deps.measurements ?? (() => loadMeasurementsSafe()))().catch(() => [] as readonly StoredMeasurement[]);
+      const m = measurementFor(rows, { kind: decision.id, answeringModel: answeredModel, fingerprint: decision.promptVersion });
+      const policy = decision.policyOf(question);
+      const threshold = m.threshold ?? policy.minConfidence ?? (policy.mode === 'live' ? 0 : Infinity);
+      if (!m.measured) reason = 'non_jev';
+      else if (outcome.confidence < threshold) reason = 'below_threshold';
+      else if (cohort.arm !== 'apply') reason = 'not_in_cohort';
+    }
 
     if (reason) {
       return await finish(

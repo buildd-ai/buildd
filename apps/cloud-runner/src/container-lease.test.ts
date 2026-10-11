@@ -13,6 +13,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   containerReuseEnabled,
+  effectiveWarmHandover,
   DEFAULT_REUSE_SLOTS,
   DEFAULT_REUSE_WINDOW_MS,
   MAX_INSTANCES,
@@ -727,6 +728,19 @@ test('platform kill switch is above every opt-in policy', () => {
   expect(containerReuseEnabled({ CONTAINER_REUSE: '1' }, 'off')).toBe(false);
   expect(containerReuseEnabled({ CONTAINER_REUSE: '1' }, 'repo')).toBe(true);
   expect(containerReuseEnabled({ CONTAINER_REUSE: '1' }, 'deps')).toBe(true);
+});
+
+
+test("the platform decides the mode: buildd's answer can only lower it", () => {
+  // Kill switch off: nothing reuses, whatever buildd said.
+  for (const answer of ['off', 'repo', 'deps', undefined]) expect(effectiveWarmHandover({}, answer)).toBe('off');
+  // Reuse on: repo by default, deps only when the platform says so too.
+  expect(effectiveWarmHandover({ CONTAINER_REUSE: '1' }, 'repo')).toBe('repo');
+  expect(effectiveWarmHandover({ CONTAINER_REUSE: '1' }, 'deps')).toBe('repo');
+  expect(effectiveWarmHandover({ CONTAINER_REUSE: '1', CONTAINER_REUSE_DEPS: '1' }, 'repo')).toBe('deps');
+  expect(effectiveWarmHandover({ CONTAINER_REUSE_DEPS: '1' }, 'repo')).toBe('off');
+  // A workspace opt-out, or no answer from buildd, stays off.
+  for (const answer of ['off', undefined, 'anything']) expect(effectiveWarmHandover({ CONTAINER_REUSE: '1', CONTAINER_REUSE_DEPS: '1' }, answer)).toBe('off');
 });
 
 
