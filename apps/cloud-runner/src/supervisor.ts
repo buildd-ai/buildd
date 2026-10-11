@@ -293,7 +293,13 @@ export class TaskSupervisor {
       taskId: this.d.taskId,
       attempt: decision.attempt,
       status: 'starting',
-      warmHandover: this.d.config.reuseEnabled === false ? 'off' : (request.warmHandover === 'repo' || request.warmHandover === 'deps' ? request.warmHandover : (request.resumeWorkerId || request.deferredRetry ? state.warmHandover : 'off')),
+      // The dispatch's own mode wins, 'off' included: a resume after the
+      // workspace opted out must not carry on under the parked run's mode.
+      // Only a dispatch that names none (the agent's own deferred retry)
+      // continues the previous attempt's.
+      warmHandover: this.d.config.reuseEnabled === false ? 'off'
+        : request.warmHandover !== undefined ? (request.warmHandover === 'repo' || request.warmHandover === 'deps' ? request.warmHandover : 'off')
+        : (request.resumeWorkerId || request.deferredRetry ? state.warmHandover : 'off'),
       startedAt: this.d.now(),
       ...(this.d.config.agentVersion ? { agentVersion: this.d.config.agentVersion } : {}),
       outputTail: [],

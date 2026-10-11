@@ -129,6 +129,28 @@ describe('categorizeTask', () => {
     expect(w.calls[0]).toMatchObject({ category: null, record: { jev: 'feature', source: 'keyword', v: 'tc1|qwen3-8b' } });
   });
 
+  it('a team model with a stored measurement applies at its measured threshold, for fills and overrides alike', async () => {
+    const row = (fingerprint: string, threshold = 0.6) => async () => [{
+      kind: 'task_category', model: 'qwen3-8b', threshold, precisionLower: 0.95, coverage: 0.5, n: 90, evalRunId: null,
+      measuredFingerprint: fingerprint, status: 'active' as const, setByAccountId: null, setAt: new Date(), reason: null,
+    }];
+    const qwen = (c: string, conf: number) => async () => ({ ...okResult(c, conf), model: 'qwen3-8b' });
+
+    const fill = writer();
+    expect((await categorizeTask({ ...INPUT, stored: null }, { ...deps(qwen('feature', 0.65), fill, null), measurements: row('tc1') })).outcome).toBe('applied');
+    expect(fill.calls[0]).toMatchObject({ category: 'feature', record: { source: 'jev', jev: 'feature' } });
+
+    // An override of the keyword category uses the same measured threshold.
+    const over = writer();
+    expect((await categorizeTask({ ...INPUT, stored: 'bug' }, { ...deps(qwen('feature', 0.65), over), measurements: row('tc1') })).outcome).toBe('applied');
+
+    // Below it, or with a stale prompt version: kept.
+    const low = writer();
+    expect((await categorizeTask({ ...INPUT, stored: null }, { ...deps(qwen('feature', 0.5), low, null), measurements: row('tc1') })).outcome).toBe('kept');
+    const stale = writer();
+    expect((await categorizeTask({ ...INPUT, stored: null }, { ...deps(qwen('feature', 0.99), stale, null), measurements: row('tc0') })).outcome).toBe('kept');
+  });
+
   it('asks with a short deadline and the task text, and writes a confident fill with its provenance', async () => {
     const decide = mock(async () => okResult('docs', 0.93));
     const w = writer();

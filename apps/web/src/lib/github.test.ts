@@ -153,6 +153,70 @@ describe('postPrReview', () => {
   });
 });
 
+describe('postPrReview on a PR buildd itself opened', () => {
+  const OWN_APPROVE = { message: 'Unprocessable Entity', errors: ['Review Can not approve your own pull request'] };
+  const OWN_CHANGES = { message: 'Unprocessable Entity', errors: ['Review Can not request changes on your own pull request'] };
+  const call = (event: 'APPROVE' | 'REQUEST_CHANGES', body = 'Verdict body') =>
+    postPrReview({ installationId: 5000, repoFullName: 'org/repo', prNumber: 42, headSha: 'sha-1', event, body });
+
+  for (const [event, refusal] of [['APPROVE', OWN_APPROVE], ['REQUEST_CHANGES', OWN_CHANGES]] as const) {
+    it(`re-posts a refused ${event} as a COMMENT review at the same commit with the same body`, async () => {
+      const posts: Array<Record<string, unknown>> = [];
+      global.fetch = mock(async (_url: unknown, opts?: RequestInit) => {
+        if (opts?.method !== 'POST') return jsonResponse(200, []);
+        const sent = JSON.parse(String(opts.body));
+        posts.push(sent);
+        return sent.event === 'COMMENT' ? jsonResponse(200, { id: 77, state: 'COMMENTED' }) : jsonResponse(422, refusal);
+      }) as unknown as typeof fetch;
+
+      const result = await call(event);
+
+      expect(posts).toEqual([
+        { commit_id: 'sha-1', event, body: 'Verdict body' },
+        { commit_id: 'sha-1', event: 'COMMENT', body: 'Verdict body' },
+      ]);
+      expect(result).toEqual({ posted: true, reviewId: 77, commentedOwnPr: true });
+    });
+  }
+
+  it('does not stack a second comment review when the same verdict is redelivered for the same commit', async () => {
+    global.fetch = mock(async (_url: unknown, opts?: RequestInit) => {
+      if (opts?.method === 'POST') throw new Error('must not POST again');
+      return jsonResponse(200, [{ id: 77, commit_id: 'sha-1', state: 'COMMENTED', body: 'Verdict body' }]);
+    }) as unknown as typeof fetch;
+
+    const result = await call('APPROVE');
+    expect(result.posted).toBe(false);
+    expect(result.reason).toBe('a matching review already exists for this commit');
+  });
+
+  it('a 422 for any other reason is not retried as a comment', async () => {
+    const events: string[] = [];
+    global.fetch = mock(async (_url: unknown, opts?: RequestInit) => {
+      if (opts?.method !== 'POST') return jsonResponse(200, []);
+      events.push(JSON.parse(String(opts.body)).event);
+      return jsonResponse(422, { message: 'Unprocessable Entity', errors: ['Pull request review thread line must be part of the diff'] });
+    }) as unknown as typeof fetch;
+
+    const result = await call('APPROVE');
+    expect(events).toEqual(['APPROVE']);
+    expect(result.posted).toBe(false);
+  });
+
+  it('a comment fallback that fails too reports the failure', async () => {
+    global.fetch = mock(async (_url: unknown, opts?: RequestInit) => {
+      if (opts?.method !== 'POST') return jsonResponse(200, []);
+      const sent = JSON.parse(String(opts.body));
+      return sent.event === 'COMMENT' ? jsonResponse(500, { message: 'Server Error' }) : jsonResponse(422, OWN_APPROVE);
+    }) as unknown as typeof fetch;
+
+    const result = await call('APPROVE');
+    expect(result.posted).toBe(false);
+    expect(result.commentedOwnPr).toBeUndefined();
+    expect(result.reason).toBeTruthy();
+  });
+});
+
 describe('retryAfterFromHeaders', () => {
   const now = Date.parse('2026-10-01T00:00:00Z');
   it('reads retry-after in seconds', () => {

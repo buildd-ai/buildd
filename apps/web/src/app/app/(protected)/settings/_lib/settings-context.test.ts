@@ -27,21 +27,7 @@ mock.module('next/headers', () => ({ cookies: async () => ({ get: (n: string) =>
 mock.module('next/navigation', () => ({ redirect: (to: string) => { throw new Error(`redirect ${to}`); } }));
 let accountRows: any[] = [];
 let accountQuery: any = null;
-// teams.findFirst serves getTeamPermissionOverrides (permissions.ts, real): the
-// stored teams.permission_overrides per team, or a thrown read.
-let storedOverrides: Record<string, unknown> = {};
-let overridesFail = false;
-const teamIdOf = (q: any): string | undefined => {
-  // The where clause is eq(teams.id, <id>); its params carry the id.
-  const chunks = q?.where?.queryChunks ?? [];
-  for (const c of chunks) if (c && typeof c === 'object' && 'value' in c && typeof c.value === 'string') return c.value;
-  return undefined;
-};
-mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async (q: any) => {
-  if (overridesFail) throw new Error('db down');
-  const id = teamIdOf(q);
-  return id && storedOverrides[id] ? { permissionOverrides: storedOverrides[id] } : null;
-} }, workspaces: { findMany: async () => [] }, accounts: { findMany: async (q: any) => { accountQuery = q; return accountRows; } } } } }));
+mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async () => null }, workspaces: { findMany: async () => [] }, accounts: { findMany: async (q: any) => { accountQuery = q; return accountRows; } } } } }));
 mock.module('@/lib/team-access', () => ({
   getUserTeamsWithDetails: async () => TEAMS,
   getUserWorkspaceIds: async () => [],
@@ -54,8 +40,6 @@ beforeEach(() => {
   cookie = undefined;
   active = 'team-acme';
   activeCalls.length = 0;
-  storedOverrides = {};
-  overridesFail = false;
 });
 
 describe('loadSettingsContext — active team', () => {
@@ -87,8 +71,8 @@ describe('loadSettingsContext — active team', () => {
 
 /**
  * Every settings page draws its controls from `perms` / `permsByTeam`, so the
- * flags must be the server's answer: the person's role in the team under that
- * team's overrides (permissions.ts `can`), a personal team counting as owned.
+ * flags must be the server's answer: the person's role in the team
+ * (permissions.ts `can`), a personal team counting as owned.
  */
 describe('loadSettingsContext — permission flags', () => {
   // The flags each settings page reads, by page.
@@ -119,33 +103,6 @@ describe('loadSettingsContext — permission flags', () => {
     expect(Object.keys(ctx.permsByTeam).sort()).toEqual(['team-acme', 'team-beta', 'team-gamma', 'team-personal']);
     expect(ctx.permsByTeam['team-personal'].create_workspace).toBe(true);
     expect(ctx.permsByTeam['team-beta'].create_workspace).toBe(false);
-  });
-
-  it("a team's override that grants members a permission shows that control to a member", async () => {
-    storedOverrides = { 'team-beta': { manage_inference_providers: ['owner', 'admin', 'member'] } };
-    cookie = 'team-beta';
-    active = 'team-beta';
-    const ctx = await loadSettingsContext();
-    expect(ctx.perms.manage_inference_providers).toBe(true);
-    expect(ctx.perms.manage_team_settings).toBe(false);
-  });
-
-  it("a team's override that takes a permission from admins hides that control from an admin", async () => {
-    storedOverrides = { 'team-gamma': { manage_connectors: ['owner'] }, 'team-acme': { manage_connectors: ['owner'] } };
-    cookie = 'team-gamma';
-    active = 'team-gamma';
-    const ctx = await loadSettingsContext();
-    expect(ctx.perms.manage_connectors).toBe(false);
-    expect(ctx.perms.manage_team_settings).toBe(true);
-    // An owner always holds it, whatever the team stores.
-    expect(ctx.permsByTeam['team-acme'].manage_connectors).toBe(true);
-  });
-
-  it('a failed overrides read holds nothing, never the defaults', async () => {
-    overridesFail = true;
-    const ctx = await loadSettingsContext();
-    expect(ctx.currentTeamId).toBe('team-acme');
-    expect(Object.values(ctx.perms).every((v) => v === false)).toBe(true);
   });
 });
 

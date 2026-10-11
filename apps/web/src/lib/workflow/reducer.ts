@@ -1481,12 +1481,14 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         // and the attempt's own end still decides.
         return c.apply(key, 'REPAIRING', { patch: { currentHeadSha: h }, evidence: { ...evidence, foreignPush: true } });
       }
-      // The repair never started (or already ended): the new head makes it moot. The queued row is
-      // skipped, so it spends nothing, and the head is handled as it would have been before the repair.
-      const attempts: AttemptOp[] = a && a.status === 'queued'
-        ? [{ op: 'update', attemptId: a.id, whenStatus: ['queued'], set: { status: 'skipped', outcome: 'noop', ended: true } }]
+      // The repair never started (or already ended), or it is a mechanical one the head has left
+      // behind: the new head makes it moot. The row is skipped, so it spends nothing, and the head
+      // is handled as it would have been before the repair.
+      const moot = !!a && (a.status === 'queued' || (a.mode === 'mechanical' && a.status === 'running'));
+      const attempts: AttemptOp[] = a && moot
+        ? [{ op: 'update', attemptId: a.id, whenStatus: [a.status], set: { status: 'skipped', outcome: 'noop', ended: true } }]
         : [];
-      const effects: EffectSpec[] = a && a.status === 'queued'
+      const effects: EffectSpec[] = a && moot
         ? [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: [a.family], reason: 'head_moved' } }]
         : [];
       const ev = { ...evidence, foreignPush: true, repairSkipped: attempts.length > 0 };
@@ -1996,7 +1998,10 @@ export function attributeHead(a: AttemptSnapshot | undefined, h: string, attribu
   if (a.reportedShas.includes(h)) return 'attempt';
   const live = a.status === 'running' || (a.mode === 'mechanical' && a.status === 'queued');
   if (!live) return 'none';
-  return attribution?.descendsFromBound === false ? 'foreign_running' : 'attempt';
+  if (attribution?.descendsFromBound !== false) return 'attempt';
+  // A mechanical write is pinned to its bound head and has no worker to end it: a head that left
+  // that line means the write can never land, so nothing is left to wait on (75c04d5d).
+  return a.mode === 'mechanical' ? 'none' : 'foreign_running';
 }
 
 // ── Repair family claim and resume (§10.5) ──────────────────────────────────

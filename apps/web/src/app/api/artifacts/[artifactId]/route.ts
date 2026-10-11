@@ -13,6 +13,7 @@ import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { triggerEvent, channels } from '@/lib/pusher';
 import { artifactMetadataMergeSql, isJsonObject } from '@/lib/artifact-metadata-merge';
 import { getArtifactRevision, writeArtifactBody } from '@/lib/artifact-revisions';
+import { SPEC_BODY_WRITE_REFUSED, specIdForBodyArtifact } from '@/lib/specs/body-guard';
 import { recordArtifactRead } from '@/lib/artifact-reads';
 import { finalizeArtifactUpload } from '@/lib/artifact-upload';
 import { ArtifactReadError, parseReadSelector, readArtifactBody, returnedChars, type ArtifactReadSelector } from '@buildd/core/artifact-read';
@@ -252,6 +253,13 @@ export async function PATCH(
     }
   }
 
+  // A Living Spec body changes only through a spec revise: its title and
+  // metadata too, so the spec's own view of its body never drifts.
+  const specId = await specIdForBodyArtifact(artifactId);
+  if (specId) {
+    return NextResponse.json({ error: SPEC_BODY_WRITE_REFUSED, code: 'spec_body', specId }, { status: 409 });
+  }
+
   const body = await req.json();
   const { title, content, metadata, expectedRevision } = body;
   if (metadata !== undefined && !isJsonObject(metadata)) {
@@ -284,6 +292,9 @@ export async function PATCH(
       updateFields,
     );
     if (!written.ok) {
+      if ('specBody' in written) {
+        return NextResponse.json({ error: SPEC_BODY_WRITE_REFUSED, code: 'spec_body', specId: written.specId }, { status: 409 });
+      }
       return written.conflict
         ? NextResponse.json(
           {

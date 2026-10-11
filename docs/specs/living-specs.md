@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
 supersedes: []
 ---
 # Living Specs
@@ -54,12 +54,37 @@ whole or not at all.
   an API key or task token.
 - A revise always leaves the head a draft. On an approved spec it proposes
   N+1; `approved_revision` stays N (§6).
+- A revise MAY name one section instead of sending the whole body:
+  `{ expectedVersion, section | heading, body }`, where `section` is an outline
+  id from the bounded read views and `heading` a heading used exactly once.
+  The server replaces that section's span (heading line to the next heading at
+  the same or a higher level) and revises the result as a whole body, so every
+  rule above applies unchanged. An unknown id, a missing or repeated heading,
+  or a result over the body cap is a 400 and nothing is written.
+- A spec's body artifact changes only through a revise. A generic artifact
+  write (`PATCH /api/artifacts/[id]`, MCP `update_artifact`, `writeArtifactBody`)
+  on it is a 409 `spec_body` naming `manage_specs revise`, title and metadata
+  included, and writes nothing. Keyed upserts cannot reach it: it has no key.
+- An operator redaction (`redactArtifactText`) still removes a value from a
+  spec body and its history, because removing a leaked secret outranks the
+  spec's history. The body then sits past the revision the head pins, so the
+  next revise is a 409 `spec_body_moved` that says so, with no
+  `currentVersion` to retry at; the recovery is a new spec from the current
+  text.
 
 **Acceptance criteria**:
 - AC-1: GIVEN two writers at version 1 WHEN both revise THEN one lands as
   revision 2 and the other gets 409 with currentVersion 2; re-reading and
   revising on top lands revision 3 (`apps/web/tests/db/specs.test.ts`).
 - AC-2: GIVEN revision 2 WHEN revision 1 is read THEN its body is unchanged.
+- AC-3: GIVEN a spec at version 1 WHEN one section is revised THEN revision 2
+  is the old body with only that span replaced, hash-pinned; a stale version
+  is 409 and an unknown section 400, both writing nothing
+  (`apps/web/tests/db/spec-section-revise.test.ts`).
+- AC-4: GIVEN a spec WHEN its body artifact is written through a generic
+  artifact path THEN the write is refused and nothing changes, and the spec
+  still revises; GIVEN a redacted spec body WHEN it is revised THEN the 409
+  names the out-of-band change (`apps/web/tests/db/spec-body-guard.test.ts`).
 
 ## 3. Agents over MCP
 
@@ -224,9 +249,11 @@ the task completed or its PR merged.
 - Advisory: no outcome blocks completing a task or merging its PR. A failed
   outcome is reported as failed beside a completed task and a merged PR.
 - Who records: a person or account with write access to the workspace, or the
-  per-task token of a task filed under the subject (its reviewer). A task's
-  own token reads its outcome but cannot record on it (403): a task never
-  grades itself. Another workspace can neither record nor read (404).
+  per-task token of the review round the platform filed for the subject's own
+  PR delivery. A task's own token reads its outcome but cannot record on it
+  (403): a task never grades itself. Nor does a builder fix attempt (CI,
+  conflict or review fix) or any other task filed under the subject (403).
+  Another workspace can neither record nor read (404).
 - The reviewer of a pinned task is given the revision's criteria and asked to
   record one verdict each at the head it reviews (`manage_specs action=verdict`).
   Its review verdict still alone decides the merge.

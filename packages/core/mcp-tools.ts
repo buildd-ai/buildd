@@ -12,7 +12,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendP
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isTerminalTaskStatus, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
+import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isTerminalTaskStatus, INTERACTIVE_WORKER_RUNNER, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
 import type { DispatchHistoryEntry } from './dispatch-outbox';
@@ -610,6 +610,12 @@ export const workerActions = [
   // The agent's own read of messages sent to it (interactive / local-plugin
   // sessions; a runner-managed worker gets them from its runner instead).
   'receive_messages',
+  // An interactive session parks its own worker on a question for a person
+  // (the runner's AskUserQuestion, for a session no runner manages). Worker
+  // level: the agent that needs the answer is the one asking.
+  'ask_human',
+  // ...and waits for the answer: a server-side long-poll that returns it once.
+  'await_answer',
   'create_pr', 'close_pr', 'update_pr', 'merge_pr', 'get_pr', 'list_prs', 'request_pr_review', 'get_pr_review',
   'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
@@ -725,6 +731,7 @@ export const adminActions = [
   'trigger_release',
   'release_status',
   'send_agent_message',
+  'answer_question',
   'correct_task_result',
   'update_incident',
   'consolidate_knowledge',
@@ -993,7 +1000,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body), view? ("outline"|"section"|"range"|"grep"|"meta"; default: the whole body when it is short, its outline when long), section? (id from the outline, with view section), offset? + length? (view range), grep? (literal text, with view grep), full? (true: the whole body however long) } — fetch an artifact by ID with its current revision and sha256. A long body comes back as an outline you read part by part, so a large reference never floods your context; what you read is recorded. File artifacts include a short-lived presigned download URL',
     link_artifact: '{ artifactId (required), subjectKind ("task"|"mission"|"plan"|"conversation"|"message"), subjectId, relation ("context"|"requirement"|"normative_reference"|"design_reference"|"evidence"|"output"), revision? (pin; a normative_reference always pins, the current revision when omitted), linkId? + unlink: true (remove that link instead) } — attach an artifact to something it informs, in the same team, without copying it. Linking twice updates the link',
     list_artifact_links: '{ artifactId? (this artifact\'s links) | subjectKind + subjectId (what is linked to that subject), relation? (comma-separated filter, with subjectKind) } — a reference manifest: id, title, type, relation, pinned revision, size and sha256, never the bodies; read one with get_artifact',
-    manage_specs: '{ action (required): "create_draft" | "get" | "revise" | "list" | "relate" | "submit" | "approve" | "outcome" | "verdict" | "conflict" | "read_ref", specId? (all but create_draft/list/outcome/verdict), workspaceId? (create_draft/list; defaults to the session workspace), title? (create_draft), body? (create_draft/revise: the spec text, Markdown, at most 400,000 characters), scope? (create_draft: product|domain|feature|mission, default feature), parentSpecId? (create_draft; relate: a spec id, or null to clear), changeSummary? (create_draft/revise), repoRefs? (create_draft/revise: [{ path, commitSha }] repo specs cited at a full commit SHA; omitted on revise keeps the head\'s, [] clears), path? + view? (read_ref: a cited path, read at its commit; view as get_artifact), expectedVersion? (revise/submit/approve, required: the version get showed), revision? (get: read that revision exactly as written; approve, required: the head revision; conflict, required: the approved revision), taskId? (outcome/verdict: the task whose outcome it is), criterionId? + verdict? (pass|fail|inconclusive|unsupported) + headSha? (verdict, required: the PR head judged), evidenceRefs? ([{kind, ref}]) + readIds? (artifact read ids) + observed? (verdict), criterionIds? ([a, b], conflict), note? (conflict) } — Living Specs: governed intent with immutable revisions. revise writes only if the spec is still at expectedVersion; otherwise nothing is written and the reply carries currentVersion: re-read, merge, revise on top. relate refuses a parent in another workspace or one that would form a cycle. get inlines a body up to 20,000 characters, else points at get_artifact views. submit and approve are a person\'s act (team owner/admin or a delegated approver, from their own session): an agent run or API key gets a 403. Approval puts the head revision in force; later revisions stay proposed until approved. outcome reads a task\'s governed outcome against the approved revision it is pinned to: verified only when every R-n/AC-n criterion passes on the current PR head, fail when one fails, else unverified; it never blocks completing or merging. verdict records one criterion\'s verdict at headSha; a task cannot grade itself (its reviewer or a person does). conflict flags two criteria of an approved revision as disagreeing: an advisory discrepancy, never a block. repoRefs are checked on write against the linked repo (the file must exist at that commit, else 400, nothing written); read_ref reads only a file the revision cites, at the cited commit, never the moving branch.',
+    manage_specs: '{ action (required): "create_draft" | "get" | "revise" | "list" | "relate" | "submit" | "approve" | "outcome" | "verdict" | "conflict" | "read_ref" | "diff", specId? (all but create_draft/list/outcome/verdict), workspaceId? (create_draft/list; defaults to the session workspace), title? (create_draft), body? (create_draft/revise: the spec text, Markdown, at most 400,000 characters; with section, the new text of that section), section? | heading? (revise: replace one section, named by its get_artifact outline id or a heading used once; the rest of the body is kept byte for byte), scope? (create_draft: product|domain|feature|mission, default feature), parentSpecId? (create_draft; relate: a spec id, or null to clear), changeSummary? (create_draft/revise), repoRefs? (create_draft/revise: [{ path, commitSha }] repo specs cited at a full commit SHA; omitted on revise keeps the head\'s, [] clears), path? + view? (read_ref: a cited path, read at its commit; view as get_artifact), expectedVersion? (revise/submit/approve, required: the version get showed), revision? (get: read that revision exactly as written; approve, required: the head revision; conflict, required: the approved revision), taskId? (outcome/verdict: the task whose outcome it is), criterionId? + verdict? (pass|fail|inconclusive|unsupported) + headSha? (verdict, required: the PR head judged), evidenceRefs? ([{kind, ref}]) + readIds? (artifact read ids) + observed? (verdict), criterionIds? ([a, b], conflict), note? (conflict) } — Living Specs: governed intent with immutable revisions. revise writes only if the spec is still at expectedVersion; otherwise nothing is written and the reply carries currentVersion: re-read, merge, revise on top. relate refuses a parent in another workspace or one that would form a cycle. get inlines a body up to 20,000 characters, else points at get_artifact views. submit and approve are a person\'s act (team owner/admin or a delegated approver, from their own session): an agent run or API key gets a 403. Approval puts the head revision in force; later revisions stay proposed until approved. outcome reads a task\'s governed outcome against the approved revision it is pinned to: verified only when every R-n/AC-n criterion passes on the current PR head, fail when one fails, else unverified; it never blocks completing or merging. verdict records one criterion\'s verdict at headSha; a task cannot grade itself (its reviewer or a person does). A criterion may name a check on a line under it (`check: <command>`): on each PR head buildd runs that command at the head and records its exit code as the verdict (0 pass, non-zero fail, a timeout inconclusive), authored by the check. conflict flags two criteria of an approved revision as disagreeing: an advisory discrepancy, never a block. repoRefs are checked on write against the linked repo (the file must exist at that commit, else 400, nothing written); read_ref reads only a file the revision cites, at the cited commit, never the moving branch. diff { specId, from?, to? } (read-only) says what changed between two revisions: to defaults to the head, from to the approved revision (else the one before to); sections added, removed and changed by heading, then a capped line diff with a count of what it left out.',
     update_artifact: '{ artifactId (required), title?, content?, metadata?, expectedRevision? (with content: write only if the body is still at that revision, else refused with the current one — pass the currentRevision get_artifact showed) } — every content change is kept as a new immutable revision',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
@@ -1049,6 +1056,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply, and write it as a self-contained decision brief: the reader has not seen the task or the code, so the body says which task this is and what is being decided (one or two sentences), then one line per option of the form "<option>: what it leads to", and why you chose the default. User replies are delivered at your next turn boundary (or call receive_messages). missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
+    ask_human: '{ workerId?, question (required), options? (string[] — quick replies shown as buttons), context? (one or two sentences: which task this is and what is being decided) } — park your own interactive worker (claimed with claim_task from this session) on a question for a person. It takes the same path as a runner agent\'s AskUserQuestion: the worker goes to waiting_input, the question shows in Needs you on the dashboard and the team gets the push. Returns immediately with { waiting: true, workerId, askedAt }; then wait with await_answer, or poll receive_messages. Unanswered, it expires like any question (24 h, 4 h in a mission). Refused for a runner-managed worker, which asks with AskUserQuestion instead. workerId auto-resolved from context if omitted.',
+    await_answer: '{ workerId?, waitSeconds? (0-45, default 40) } — after ask_human, wait for the person\'s answer. Long-polls server-side until the question is answered, then returns { answered: true, answer, question } and marks it read, so it comes back once (receive_messages would return the same answer, also once). On timeout returns { timedOut: true, stillWaiting: true }: call again straight away, and keep calling until it answers — each call is also how buildd knows your session is still there, and a session that stops calling for a few minutes has its answer sent to a follow-up task instead. A longer wait is clamped to 45 s. { answered: false, stillWaiting: false } means nothing is waiting any more (the worker ended, or the answer already went to a follow-up task — reasonCode says which). Interactive sessions only; a runner-managed worker is resumed by its runner. workerId auto-resolved from context if omitted.',
+    answer_question: '{ taskId (required), message (required) } — answer the question a waiting_input agent is parked on (the task page\'s Answer link). Takes the same resume path as the dashboard: the parked session continues with your answer, or a continuation task starts if the session is gone. send_agent_message cannot do this — a parked agent takes no turn, so a queued message is never read. Refused unless the task\'s worker is waiting on a question. [admin]',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     correct_task_result: '{ taskId (required), summary?, prUrl?, prNumber? (at least one of summary / prUrl / prNumber) } — amend a completed or failed task\'s stored result after the fact. summary: replace result.summary (e.g. a stray assistant aside got captured, or a bug garbled it); the prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. prUrl/prNumber: attach the PR that delivered a task closed without a worker (e.g. by update_task status=completed) — the PR is verified in the workspace\'s GitHub repo via the GitHub App, mapped to the task with an external placeholder worker (as request_pr_review adoption does) and written to result.prUrl/prNumber, so the mission page lists it and mission completion sees it. Refused if another task owns the PR, unless that owner is an auto-adopted placeholder (a webhook-created bookkeeping task that only noticed the PR first, never did the work) — then the mapping moves onto this task instead of refusing. Also refused if the task already records a different PR; re-attaching the same PR is a no-op. Commit stats are never touched. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
@@ -2613,7 +2623,12 @@ export async function handleBuilddAction(
       if (task.startAt) lines.push(`**Starts at:** ${new Date(task.startAt).toISOString()}`);
       if (task.loopConfig) {
         const maxLoops = task.loopConfig.maxLoops ?? 5;
-        const attempt = Math.min((task.loopIteration ?? 0) + 1, maxLoops);
+        // loopIteration counts evaluations already done. Only a loop still
+        // going has an attempt in progress (one past that); a stopped one
+        // reports the count itself, matching its history rows.
+        const loopDone = task.loopState === 'satisfied' || task.loopState === 'exhausted';
+        const completed = task.loopIteration ?? 0;
+        const attempt = Math.min(loopDone ? Math.max(completed, 1) : completed + 1, maxLoops);
         lines.push(`**Loop:** ${task.loopState ?? 'pending'} — attempt ${attempt}/${maxLoops}`);
         const condition = task.loopConfig.exitCondition;
         const conditionDetail = condition.type === 'command' && condition.command
@@ -2957,6 +2972,104 @@ export async function handleBuilddAction(
       }
       const messages = await renderAndAckMessages(api, workerId, response);
       return text(messages ?? 'No messages for you right now.');
+    }
+
+    case 'ask_human': {
+      const question = typeof params.question === 'string' ? params.question.trim() : '';
+      if (!question) throw new Error('question is required: the one thing you need a person to decide.');
+      if (params.options !== undefined && !(Array.isArray(params.options) && params.options.every((o: unknown) => typeof o === 'string' && o.trim()))) {
+        throw new Error('options must be an array of non-empty strings (quick replies).');
+      }
+      if (params.context !== undefined && typeof params.context !== 'string') {
+        throw new Error('context must be a string.');
+      }
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      const worker = await api(`/api/workers/${workerId}`);
+      // A runner-managed agent already asks with AskUserQuestion; its runner
+      // owns the park and the resume, so a second path would race it.
+      if (worker?.runner !== INTERACTIVE_WORKER_RUNNER) {
+        throw new Error(`Worker ${workerId} is managed by a runner, so ask_human does not apply: ask with AskUserQuestion, which parks the session and resumes it with the answer.`);
+      }
+      if (isTerminalWorkerStatus(worker.status)) {
+        throw new Error(`Worker ${workerId} has already ended (${worker.status}); there is no session left to answer.`);
+      }
+      const options = Array.isArray(params.options) ? (params.options as string[]).map(o => o.trim()) : undefined;
+      const contextText = typeof params.context === 'string' && params.context.trim() ? params.context.trim() : undefined;
+      // The runner's park, unchanged: PATCH /api/workers/[id] stores the
+      // question, fires Pusher, Needs You and the team push.
+      await api(`/api/workers/${workerId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status: 'waiting_input',
+          waitingFor: {
+            type: 'question',
+            prompt: question,
+            ...(options && options.length > 0 ? { options } : {}),
+            ...(contextText ? { context: contextText } : {}),
+          },
+        }),
+      });
+      return text(JSON.stringify({
+        waiting: true,
+        workerId,
+        askedAt: new Date().toISOString(),
+        hint: 'Your question is with a person. Wait for the answer with await_answer, or call receive_messages until it arrives. Do not carry on with the decision it covers until then.',
+      }, null, 2));
+    }
+
+    case 'await_answer': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      const raw = params.waitSeconds;
+      const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
+      const waitSeconds = Number.isFinite(n) ? Math.min(Math.max(n, 0), 45) : 40;
+      // The server holds the call until the answer lands or the wait runs out,
+      // reading the answer from its durable record (not only the capped
+      // message queue). The call itself is the session's heartbeat.
+      const data = await api(`/api/workers/${workerId}/answer`, {
+        method: 'POST',
+        body: JSON.stringify({ waitSeconds }),
+      });
+      if (data?.state === 'answered') {
+        // Read once: the same by-id ack receive_messages sends. A failed ack
+        // leaves it unread, so the next call returns it again.
+        if (typeof data.messageId === 'string') {
+          try {
+            await api(`/api/workers/${workerId}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ workerMessagesDelivered: [data.messageId] }),
+            });
+          } catch {
+            // Unconfirmed: served again next time.
+          }
+        }
+        return text(JSON.stringify({
+          answered: true,
+          answer: data.text ?? null,
+          question: data.question ?? null,
+          messageId: data.messageId ?? null,
+          answeredAt: data.answeredAt ?? null,
+          ...(data.text == null ? { note: 'The answer was recorded, but its text was not kept (sensitive workspace). Check receive_messages, or ask again.' } : {}),
+          hint: 'Carry on with the decision it covers, and resume your update_progress cadence.',
+        }, null, 2));
+      }
+      if (data?.state === 'not_waiting' && data.reasonCode === 'not_interactive') {
+        return errorResult(data.message ?? `Worker ${workerId} is managed by a runner, so await_answer does not apply.`);
+      }
+      if (data?.state === 'not_waiting') {
+        return text(JSON.stringify({
+          answered: false,
+          stillWaiting: false,
+          reasonCode: data.reasonCode ?? null,
+          message: data.message ?? null,
+          ...(data.continuationTaskId ? { continuationTaskId: data.continuationTaskId } : {}),
+        }, null, 2));
+      }
+      return text(JSON.stringify({
+        answered: false,
+        timedOut: true,
+        stillWaiting: true,
+        hint: 'No answer yet. Call await_answer again now; keep calling until it answers.',
+      }, null, 2));
     }
 
     case 'complete_task': {
@@ -4781,12 +4894,15 @@ export async function handleBuilddAction(
         throw new Error(`Invalid type. Must be one of: ${NOTE_TYPES.join(', ')}`);
       }
 
-      const workerId = resolveWorkerId(params.workerId, ctx);
-      const workerData = await api(`/api/workers/${workerId}`);
+      // A mission-level note needs no worker: an interactive session with an
+      // explicit missionId posts straight to the mission feed.
+      let missionId = params.missionId as string | undefined;
+      const explicitWorker = (params.workerId as string | undefined) || ctx.workerId;
+      const workerId = missionId && !explicitWorker ? undefined : resolveWorkerId(params.workerId, ctx);
+      const workerData = workerId ? await api(`/api/workers/${workerId}`) : {};
       const taskId = workerData.taskId || workerData.task?.id;
 
       // Resolve missionId from task context if not provided.
-      let missionId = params.missionId as string | undefined;
       if (!missionId) {
         missionId = workerData.task?.missionId;
       }
@@ -7007,6 +7123,27 @@ export async function handleBuilddAction(
       return text(`${header}\n\n${lines.join('\n\n')}`);
     }
 
+    case 'answer_question': {
+      if (!params.message || typeof params.message !== 'string') throw new Error('taskId and message are required');
+      requireFullUuid(params.taskId, 'taskId');
+      const task = await api(`/api/tasks/${params.taskId}?include=workers`);
+      const parked = (Array.isArray(task.workers) ? task.workers : [])
+        .filter((w: any) => w?.waitingFor)
+        .sort((a: any, b: any) => (Date.parse(b.createdAt ?? '') || 0) - (Date.parse(a.createdAt ?? '') || 0))[0];
+      if (!parked) {
+        throw new Error(`Task ${params.taskId} has no agent waiting on a question (task status: ${task.status}). Use send_agent_message to steer a running agent.`);
+      }
+      const result = await api(`/api/workers/${parked.id}/respond`, {
+        method: 'POST',
+        body: JSON.stringify({ message: params.message }),
+      });
+      return text([
+        `Answer sent to worker ${parked.id}.`,
+        result.message || '',
+        result.taskId && result.taskId !== params.taskId ? `Continuing as task ${result.taskId}.` : '',
+      ].filter(Boolean).join('\n'));
+    }
+
     case 'send_agent_message': {
       if (!params.message) throw new Error('taskId and message are required');
       requireFullUuid(params.taskId, 'taskId');
@@ -7034,6 +7171,12 @@ export async function handleBuilddAction(
       // in memory (it restarts an errored session on a follow-up message).
       const activeWorker = liveWorker ?? (isUrgent ? erroredWorker : undefined);
       const workerId = activeWorker?.id;
+
+      // A worker parked on a question takes no turn, so a queued message would
+      // never be read. The answer path is the one that resumes it.
+      if (activeWorker?.waitingFor && activeWorker.status === 'waiting_input') {
+        throw new Error(`Worker ${workerId} is waiting on a question and takes no turn until it is answered, so a steering message would never be read. Use answer_question with taskId ${params.taskId} instead.`);
+      }
 
       if (!workerId) {
         const hint = allWorkers.length === 0

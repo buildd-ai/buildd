@@ -34,6 +34,7 @@ import {
   INTERACTIVE_CLAIM_USER_KEY,
   INTERACTIVE_TOUCH_THROTTLE_MS,
   isInteractiveWorker,
+  keepsParkClock,
   resetInteractiveTouchMemo,
   runnerWorkerOnly,
   scheduleInteractiveTouch,
@@ -162,5 +163,33 @@ describe('isInteractiveWorker / runnerWorkerOnly', () => {
     const q = dialect.sqlToQuery(runnerWorkerOnly());
     expect(q.sql).toMatch(/"workers"\."runner" <> \$1/);
     expect(q.params).toEqual(['mcp']);
+  });
+});
+
+/**
+ * ask_human parks an interactive worker on a question. Its expiry is the
+ * waiting_input sweep's (24 h standalone, 4 h in a mission), keyed on
+ * updated_at. A session waiting for the answer keeps calling receive_messages,
+ * a PATCH that would push updated_at forward on every poll, so the question
+ * would never expire. A pure read on a parked interactive worker must leave
+ * the clock where the park set it.
+ */
+describe('keepsParkClock', () => {
+  const parked = { runner: INTERACTIVE_WORKER_RUNNER, status: 'waiting_input' };
+
+  it('a read or ack on a parked interactive worker keeps the park clock', () => {
+    expect(keepsParkClock(parked, { consumer: 'agent' })).toBe(true);
+    expect(keepsParkClock(parked, { consumer: 'agent', instructionIdsDelivered: ['i-1'] })).toBe(true);
+  });
+
+  it('a status change or a new question restarts it', () => {
+    expect(keepsParkClock(parked, { status: 'running', consumer: 'agent' })).toBe(false);
+    expect(keepsParkClock(parked, { status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q2?' } })).toBe(false);
+    expect(keepsParkClock(parked, { waitingFor: null })).toBe(false);
+  });
+
+  it('never applies to a runner worker or an interactive worker that is not parked', () => {
+    expect(keepsParkClock({ runner: 'runner-1', status: 'waiting_input' }, { consumer: 'agent' })).toBe(false);
+    expect(keepsParkClock({ runner: INTERACTIVE_WORKER_RUNNER, status: 'running' }, { consumer: 'agent' })).toBe(false);
   });
 });

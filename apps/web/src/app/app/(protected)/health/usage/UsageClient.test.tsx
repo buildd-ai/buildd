@@ -420,7 +420,7 @@ it('owns role costs and calendar-month spend even when no terminal task has usag
   const html = renderToStaticMarkup(<UsageClient view={view({ rows: [] })} wsFilter={null}
     roleUsage={{ rows: [{ role: 'Builder', tier: 'standard', tokens: 100, costUsd: 2, hours: 1, basis: 'real', executor: 'runner' }], truncated: true }}
     monthly={{ kind: 'monthly', spentUsd: 12.5, budgetUsd: 100, pctUsed: 13, resetsAt: '2026-10-01T00:00:00.000Z', burnRateUsdPerDay: 3, daysToDepletion: 4.25, confidence: 'high' }} />);
-  expect(html).toContain('Usage by role');
+  expect(html).toContain('Usage by agent');
   expect(html).toContain('Builder');
   expect(html).toContain('Real ($)');
   expect(html).toContain('Plan ($)');

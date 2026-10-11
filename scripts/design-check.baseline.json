@@ -187,8 +187,7 @@
     "apps/web/src/components/visual-review/VisualReviewAsk.tsx": 5,
     "apps/web/src/components/visual-review/VisualReviewLine.tsx": 3,
     "apps/web/src/components/visual-review/VisualReviewTray.tsx": 6,
-    "apps/web/src/components/visual-review/review-ui.tsx": 2,
-    "apps/web/src/lib/chat-retro/ChatRetroSection.tsx": 2
+    "apps/web/src/components/visual-review/review-ui.tsx": 2
   },
   "rawHexColors": {
     "apps/web/src/app/api/oauth/authorize/route.ts": 4,

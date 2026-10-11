@@ -494,7 +494,8 @@ describe('POST /api/missions/[id]/notes — per-task token', () => {
     mockAuthenticateApiKey.mockResolvedValue(SCOPED);
     const other = '33333333-3333-4333-8333-333333333333';
     const res = await post({ type: 'update', title: 'Elsewhere' }, other);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('own task');
     expect(mockMissionsFindFirst).not.toHaveBeenCalled();
     expect(insertedNoteValues).toBeNull();
   });

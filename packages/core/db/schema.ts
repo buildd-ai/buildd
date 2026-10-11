@@ -42,13 +42,7 @@ export const teams = pgTable('teams', {
   // active hours — where there is no single known viewer. Seeded from the detected zone
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
-  warmHandover: text('warm_handover').$type<'off' | 'repo' | 'deps'>().default('off').notNull(),
 
-  // Per-team permission grants: permission name -> team roles that hold it. An
-  // absent key = the registry default (apps/web/src/lib/permission-registry.ts).
-  // Read only through sanitizeOverrides; owners always hold everything, and
-  // locked permissions ignore this. Written by PUT /api/teams/[id]/permissions.
-  permissionOverrides: jsonb('permission_overrides').$type<Record<string, string[]>>().default({}).notNull(),
   // Hosted plan assignment for Buildd-managed runners: { plan, ...overrides }.
   // NULL = the deployment default (BUILDD_DEFAULT_MANAGED_PLAN), unlimited when
   // that is unset, so a self-hosted install has no commercial limit. Written by
@@ -132,6 +126,10 @@ export const teams = pgTable('teams', {
   // credentialPolicyOf (apps/web/src/lib/inference-key-policy.ts), which maps
   // team/team_or_own/own one-to-one. inferenceKeyPolicy is dropped later.
   credentialPolicy: text('credential_policy').$type<'team' | 'personal_first' | 'personal_only'>(),
+  // Which connected provider serves each surface (packages/core/providers/assignments.ts).
+  // NULL or a missing surface = the resolver's own ranking. A set surface puts
+  // that provider first within a scope; it never widens what the resolver may pick.
+  providerAssignments: jsonb('provider_assignments').$type<import('../providers/assignments').ProviderAssignments | null>(),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
@@ -510,7 +508,7 @@ export interface WorkspaceGitConfig {
   // Cloud-runner container class. Absent = derived from recent run reports
   // (apps/web/src/lib/runner-size.ts); an explicit value always wins.
   runnerSize?: 'standard' | 'large';
-  /** Null/absent inherits the team policy. */
+  /** `off` starts every task in a fresh container; null/absent takes the platform default. `repo`/`deps` are stored opt-ins from before the team setting was removed and raise nothing. */
   warmHandover?: 'off' | 'repo' | 'deps' | null;
   // Written by buildd, never by the settings form: the first derivation that
   // moved this workspace to `large`, kept so one light run does not move it back.
@@ -1276,6 +1274,10 @@ export const missions = pgTable('missions', {
   // idempotency half of debouncing a burst of dev merges. Null means never
   // refreshed (or opted in after the column existed).
   branchRefreshHeadSha: text('branch_refresh_head_sha'),
+  // When the branch was last confirmed to contain trunk (a merge, a 204, or a
+  // fresh cut). The daily backstop reads it (docs/specs/mission-branch-refresh.md):
+  // a refresh otherwise only runs when a mission task starts. Null reads as stale.
+  branchRefreshedAt: timestamp('branch_refreshed_at', { withTimezone: true }),
   // Single-flight lease for the refresh itself: a claim sets this to now() +
   // the lease window, and a second caller racing the same mission (the
   // concurrency half of debouncing a burst) only proceeds once it is null or
@@ -1919,6 +1921,13 @@ export type WorkerWaitingFor = {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
+  /**
+   * Interactive (runner = 'mcp') worker parked by ask_human only: the last
+   * time its session polled for the answer (await_answer / receive_messages),
+   * ISO. Written by its own UPDATE that leaves updated_at (the park clock)
+   * alone. See INTERACTIVE_SESSION_POLL_STALE_MS in apps/web/src/lib/answer-resume.ts.
+   */
+  sessionSeenAt?: string;
 };
 
 /**
@@ -1971,6 +1980,10 @@ export const workers = pgTable('workers', {
   // No FK on purpose: a deleted user must not turn the claim back into an
   // account-owned (NULL) one.
   claimedByUserId: uuid('claimed_by_user_id'),
+  // Set at claim when a cloud container claimed this worker (executor 'cloud' or a
+  // task-token claim). There the task token is the runner's own credential, so its
+  // verification evidence counts as the runner's (lib/verification-provenance.ts).
+  claimedByCloud: boolean('claimed_by_cloud').default(false).notNull(),
   name: text('name').notNull(),
   runner: text('runner').notNull(),
   branch: text('branch').notNull(),
@@ -5979,7 +5992,7 @@ export const platformAdminAuditEvents = pgTable('platform_admin_audit_events', {
   actorAccountId: uuid('actor_account_id'),
   // e.g. 'experiment.update', 'team.experiment_flags.update'
   action: text('action').notNull(),
-  targetType: text('target_type').notNull().$type<'experiment' | 'team'>(),
+  targetType: text('target_type').notNull().$type<'experiment' | 'team' | 'decision_feature' | 'decision_measurement'>(),
   targetId: text('target_id').notNull(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
   before: jsonb('before').$type<Record<string, unknown>>(),
@@ -5989,6 +6002,60 @@ export const platformAdminAuditEvents = pgTable('platform_admin_audit_events', {
 }));
 
 export type PlatformAdminAuditEvent = typeof platformAdminAuditEvents.$inferSelect;
+
+/**
+ * The platform owner's switch per decision feature: recording only, or acting
+ * (packages/core/decision-feature-modes.ts). One row per feature; no row means
+ * the feature's code default. A team still turns the feature on for itself
+ * (teams.enabledDecisionShadows); this decides what it does once on.
+ *
+ * `measuredFingerprint` and `threshold` pin what was switched: if the
+ * feature's questions or model change later, the row stops matching and the
+ * feature records again until it is switched on anew.
+ */
+export const decisionFeatureModes = pgTable('decision_feature_modes', {
+  feature: text('feature').primaryKey(),
+  mode: text('mode').notNull().$type<'acting' | 'recording'>(),
+  applyingFraction: real('applying_fraction').default(1).notNull(),
+  measuredFingerprint: text('measured_fingerprint'),
+  threshold: real('threshold'),
+  setByAccountId: uuid('set_by_account_id'),
+  setAt: timestamp('set_at', { withTimezone: true }).defaultNow().notNull(),
+  reason: text('reason'),
+});
+
+export type DecisionFeatureModeRow = typeof decisionFeatureModes.$inferSelect;
+
+/**
+ * Which model may act on which decision kind, and at what confidence
+ * (packages/core/decision-model-measurements.ts). One row per (kind, model):
+ * an eval measured the lowest threshold at which that model is right often
+ * enough on that kind, and the platform owner stored it. No row: Jev keeps the
+ * kind's own threshold and every other model records only.
+ *
+ * `measuredFingerprint` pins what was measured (the call site's prompt
+ * version or fingerprint): when it changes the row stops applying until the
+ * model is measured again. `retired` records only.
+ */
+export const decisionModelMeasurements = pgTable('decision_model_measurements', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  kind: text('kind').notNull(),
+  model: text('model').notNull(),
+  threshold: real('threshold').notNull(),
+  precisionLower: real('precision_lower'),
+  coverage: real('coverage'),
+  n: integer('n').notNull(),
+  evalRunId: text('eval_run_id'),
+  measuredFingerprint: text('measured_fingerprint').notNull(),
+  status: text('status').notNull().default('active').$type<'active' | 'retired'>(),
+  setByAccountId: uuid('set_by_account_id'),
+  setAt: timestamp('set_at', { withTimezone: true }).defaultNow().notNull(),
+  reason: text('reason'),
+}, (t) => ({
+  kindModelIdx: uniqueIndex('decision_model_measurements_kind_model_idx').on(t.kind, t.model),
+}));
+
+export type DecisionModelMeasurementRow = typeof decisionModelMeasurements.$inferSelect;
 
 /**
  * One row per worker session end, on every path — completed, failed, the
@@ -6105,7 +6172,7 @@ export const orchestrationDecisions = pgTable('orchestration_decisions', {
   outputTokens: integer('output_tokens'),
   costUsd: real('cost_usd'),
   // Applying-cohort assignment, recorded at draw time (never reconstructed).
-  experimentArm: text('experiment_arm').notNull().$type<'apply' | 'observe'>(),
+  experimentArm: text('experiment_arm').notNull().$type<'apply' | 'observe' | 'human'>(),
   propensity: real('propensity').notNull(),
   applyingFraction: real('applying_fraction').notNull(),
   // The kit's content-free DecisionReceipt (model, usage, latency, attempts).

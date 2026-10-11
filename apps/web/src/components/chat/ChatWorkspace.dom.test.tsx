@@ -215,9 +215,19 @@ describe('contrast over the sea (AA)', () => {
 
   it('the intent tag sits on its own ground chip in muted text, never dim text on the sea', async () => {
     await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
+    const chip = cls(q('[data-testid="feed-intent-chip"]'));
+    expect(chip).toContain('bg-[var(--chat-ground)]');
+    expect(chip).toContain('text-[var(--chat-muted)]');
+  });
+
+  // Regression (U1 visual audit, task 2ae639ce): the tag measured 162x24 at
+  // 320px. The button is the 44px box; only the chip inside carries the ground.
+  it('the intent tag is 44px to touch below md without a bigger chip', async () => {
+    await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
     const tag = cls(q('[data-testid="feed-intent-tag"]'));
-    expect(tag).toContain('bg-[var(--chat-ground)]');
-    expect(tag).toContain('text-[var(--chat-muted)]');
+    expect(tag).toContain('max-md:min-h-11');
+    expect(tag).toContain('max-md:-my-[10px]');
+    expect(tag).not.toContain('bg-[var(--chat-ground)]');
   });
 
   it('the composer top rule is the strong rule (copper only when something needs you), focused or not, on a phone', async () => {
@@ -1004,5 +1014,50 @@ describe('a long paste (Living Specs C2)', () => {
     expect(qa('[data-testid="kit-composer-attachments"] [data-testid="kit-attachment"]')).toHaveLength(1);
     await enter();
     expect(payload!.attachments[0].id).toBeTruthy();
+  });
+});
+
+describe('the draft-attachments fixture (/app/dev/chat?state=draft-attachments)', () => {
+  it('is a fixture state with no messages', () => {
+    expect(fixtures.CHAT_FIXTURE_STATES).toContain('draft-attachments');
+    expect(fixtures.isChatFixtureState('draft-attachments')).toBe(true);
+    expect(fixtures.chatFixture('draft-attachments').messages).toHaveLength(0);
+  });
+
+  const mount = async (attachError: boolean) => {
+    await render({
+      draft: fixtures.DRAFT_TEXT, onDraftChange() {},
+      initialAttachments: fixtures.DRAFT_ATTACHMENTS, uploadFile: fixtures.draftUploader(attachError),
+    }, { state: 'draft-attachments' });
+    const input = q('[data-testid="kit-attach-input"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    await act(async () => { fixtures.pickFiles(input, fixtures.draftDroppedFiles(attachError)); });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+  };
+  const tray = () => q('[data-testid="kit-composer-attachments"]')!;
+
+  it('renders the real composer with a paste card, an image thumbnail, a PDF and a refused file, each removable', async () => {
+    await mount(false);
+    expect((q('#chat-composer-input') as HTMLTextAreaElement).value).toBe(fixtures.DRAFT_TEXT);
+    expect(tray().querySelectorAll('[data-testid="kit-attachment"]')).toHaveLength(1);
+    const files = [...tray().querySelectorAll('[data-testid="kit-file"]')] as HTMLElement[];
+    expect(files).toHaveLength(3);
+    expect(tray().querySelector('[data-testid="kit-file-thumb"]')?.getAttribute('src')).toStartWith('data:image/svg+xml');
+    const refused = files.find(f => f.dataset.state === 'failed')!;
+    expect(refused.textContent).toContain(fixtures.DRAFT_REFUSED_FILE.name);
+    expect(refused.textContent).toContain('File type not supported');
+    expect(refused.querySelector('[data-testid="kit-file-retry"]')).toBeNull();
+    // Every card carries its remove control.
+    const removes = tray().querySelectorAll('button[aria-label^="Remove"]');
+    expect(removes).toHaveLength(4);
+  });
+
+  it('&attach=error adds an upload that failed, with Retry', async () => {
+    await mount(true);
+    const failed = ([...tray().querySelectorAll('[data-testid="kit-file"]')] as HTMLElement[]).filter(f => f.dataset.state === 'failed');
+    expect(failed).toHaveLength(2);
+    const upload = failed.find(f => f.textContent?.includes(fixtures.DRAFT_FAILED_FILE.name))!;
+    expect(upload.textContent).toContain(fixtures.DRAFT_UPLOAD_ERROR);
+    expect(upload.querySelector('[data-testid="kit-file-retry"]')).not.toBeNull();
   });
 });
