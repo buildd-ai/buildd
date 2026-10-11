@@ -97,12 +97,17 @@ const livePr = (n: number, s?: LivePr) => ({
 });
 // Mutating calls fail this many times, per `${method} ${path}`, before succeeding.
 let failuresLeft: Record<string, { n: number; err: Error }> = {};
+/** Every PR carries the same change unless a test says otherwise (content verification, §13.11 rule 5). */
+const SHARED_FILES = [{ filename: 'apps/web/src/a.ts', status: 'modified', patch: '@@ -1 +1,3 @@\n+const first = 1;\n+const second = 2;\n+const third = 3;' }];
+let prFiles: Record<number, unknown[]> = {};
 const mockGithubApi = mock(async (_inst: number, path: string, init?: any) => {
   const method = init?.method ?? 'GET';
   const key = `${method} ${path}`;
   const f = failuresLeft[key];
   if (f && f.n > 0) { f.n--; throw f.err; }
   if (method === 'GET') {
+    const files = String(path).match(/\/pulls\/(\d+)\/files/);
+    if (files) return prFiles[Number(files[1])] ?? SHARED_FILES;
     const n = Number(String(path).match(/\/pulls\/(\d+)$/)?.[1]);
     const s = prState[n];
     if (s instanceof Error) throw s;
@@ -169,6 +174,7 @@ beforeEach(() => {
   TRACES = [];
   WORKSPACES = [{ id: 'ws', gitConfig: { defaultBranch: 'dev' }, releaseConfig: { enabled: true, releaseBranch: 'dev', prodBranch: 'main' } }];
   prState = {};
+  prFiles = {};
   failuresLeft = {};
   mockGithubApi.mockClear();
   mockFireGateEvent.mockClear();
@@ -223,6 +229,25 @@ describe('closeAncestorRetryPrs — lineage scope', () => {
     const res = await closeAncestorRetryPrs({ ...base, parentTaskId: 'retry-b', successorPrNumber: 30 });
     expect(res).toEqual([]);
     expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+});
+
+// Spec workflow-state-kernel §13.11 rule 5: retire a predecessor only on verified content.
+describe('closeAncestorRetryPrs — the successor must carry the ancestor', () => {
+  it('leaves open, and names on the successor, an ancestor whose changes the successor dropped', async () => {
+    prFiles[10] = [{ filename: 'apps/web/src/dropped.ts', status: 'added', patch: '@@ -0,0 +1,3 @@\n+export const lostWork = 1;\n+export const moreLost = 2;\n+export const allGone = 3;' }];
+    const res = await closeAncestorRetryPrs({ ...base, parentTaskId: 'retry-b', successorPrNumber: 30 });
+    expect(patchedPrs()).toEqual([20]);
+    expect(res.find(r => r.prNumber === 10)).toMatchObject({ closed: false });
+    expect(res.find(r => r.prNumber === 10)!.reason).toStartWith('not carried by #30');
+    expect(commentsOn(30).join('\n')).toContain('#10 was left open');
+    expect(gateEvents('stranded')).toEqual([]);
+  });
+
+  it('a renumbered migration is not "missing" work: regenerated files are not compared', async () => {
+    prFiles[10] = [{ filename: 'packages/core/drizzle/0094_old.sql', status: 'added', patch: '+CREATE TABLE "x" ("id" uuid);' }, { filename: 'packages/core/drizzle/meta/_journal.json', status: 'modified', patch: null }];
+    await closeAncestorRetryPrs({ ...base, parentTaskId: 'retry-b', successorPrNumber: 30 });
+    expect(patchedPrs().sort()).toEqual([10, 20]);
   });
 });
 
