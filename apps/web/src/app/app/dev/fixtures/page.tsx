@@ -32,6 +32,7 @@ import DeliveryActionsFixture, { DELIVERY_ACTION_FIXTURE_STATES, type DeliveryAc
 import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
+import CoordinationHoldFixture from './CoordinationHoldFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
@@ -72,6 +73,7 @@ import {
     ANSWER_STATES_FIXTURE_STATE,
     AGENT_ACCESS_FIXTURE_STATE,
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
+    COORDINATION_HOLD_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
     DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
@@ -191,6 +193,9 @@ export default function DevFixturesPage() {
     }
     if (state === ENTITLEMENT_BLOCKED_FIXTURE_STATE) {
         return <EntitlementBlockedFixture />;
+    }
+    if (state === COORDINATION_HOLD_FIXTURE_STATE) {
+        return <CoordinationHoldFixture />;
     }
 
     if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {

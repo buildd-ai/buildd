@@ -1,5 +1,5 @@
 {
-  "id": "f8042b63-ca5b-4c57-99ad-aa44f9fb8fea",
+  "id": "5d32eacf-c22e-4379-90b2-a58c151a555f",
   "prevId": "fde4f92d-a0ec-4c77-868e-4cc29a0a0c87",
   "version": "7",
   "dialect": "postgresql",
@@ -9558,12 +9558,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "busy_since": {
-          "name": "busy_since",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "bound_worker_id": {
           "name": "bound_worker_id",
           "type": "uuid",
@@ -11261,6 +11255,12 @@
         "branch_refresh_head_sha": {
           "name": "branch_refresh_head_sha",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "branch_refreshed_at": {
+          "name": "branch_refreshed_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { beginAdminRead } from '@/lib/admin/scope';
-import { loadGates } from '@/lib/admin/data';
+import { viewGates } from '@/lib/admin/tenant-privacy';
 
 /**
  * GET /api/admin/gates — platform owner only (404 otherwise).
@@ -14,6 +14,6 @@ export async function GET(req: NextRequest) {
   const read = await beginAdminRead(req);
   if ('response' in read) return read.response;
   const errorPrefix = read.params.get('errorPrefix')?.trim().slice(0, 200) || null;
-  const data = await loadGates({ workspaceIds: read.workspaceIds, window: read.scope.window, errorPrefix });
+  const data = await viewGates(read.viewer, { window: read.scope.window, errorPrefix });
   return NextResponse.json({ ...read.scope, since: read.scope.since.toISOString(), errorPrefix, ...data });
 }

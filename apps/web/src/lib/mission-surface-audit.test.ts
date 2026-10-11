@@ -423,6 +423,35 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
     expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'builder-2']);
   });
 
+  it('a builder task never extends a re-check round: it extends the newest round-1 audit instead', async () => {
+    // A round-2 audit re-checks the routes its fixes touched. Giving it a
+    // builder dependency makes the evidence check demand that builder's whole
+    // route set (over the shot cap) while its description still names one route.
+    tasksFindFirst
+      .mockResolvedValueOnce(round2('pending'))
+      .mockResolvedValueOnce(round1('completed'));
+
+    await run({ ...uiTask('builder-2') } as any);
+
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+    expect(tasksUpdateSet).toHaveBeenCalledTimes(1);
+    expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'builder-2']);
+    const roundOneLookup = render((tasksFindFirst.mock.calls[1] as any[])[0].where);
+    expect(roundOneLookup.sql).toContain('not like');
+    expect(roundOneLookup.params).toContain('[surface audit] round %');
+  });
+
+  it('a builder task after only re-check rounds (no round-1 audit) writes nothing', async () => {
+    tasksFindFirst
+      .mockResolvedValueOnce(round2('failed'))
+      .mockResolvedValueOnce(null);
+
+    await run({ ...uiTask('builder-2') } as any);
+
+    expect(tasksUpdateSet).not.toHaveBeenCalled();
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+  });
+
   it('a fix task in a mission with no audit is treated like any builder task', async () => {
     await run(fixTask('fix-1'));
     // Non-UI manifest and no audit: nothing to mint.

@@ -28,6 +28,7 @@ import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import { refreshDeltaBase } from '@/lib/integration-refresh';
 import type { EffectKind } from './commands';
 import type { ClaimedEffect, EffectHandler, EffectHandlers } from './effects';
 import { insertFollowupEffectSql } from './effects';
@@ -103,6 +104,8 @@ async function tryCompositionAttestation(p: {
   mission: { workingBranch?: string | null } | null | undefined;
   workspace: { releaseConfig?: unknown };
   repo: { installationId: number };
+  /** The trunk a mission branch refresh merges in, when the owner task is one; else null. */
+  refreshTrunk: string | null;
 }): Promise<string | null> {
   const { d, round } = p;
   if (!d.repoFullName || d.prNumber == null || round.headSha !== d.currentHeadSha) return null;
@@ -119,10 +122,13 @@ async function tryCompositionAttestation(p: {
     const headRef = pull?.head?.ref ?? null;
     const baseRef = pull?.base?.ref ?? d.baseRef;
     if (!headRef || !baseRef) return null;
-    if (!isCompositionPr({ headRef, baseRef, missionWorkingBranch: p.mission?.workingBranch ?? null, releaseConfig: (p.workspace.releaseConfig ?? null) as never })) return null;
+    const missionWorkingBranch = p.mission?.workingBranch ?? null;
+    if (!isCompositionPr({ headRef, baseRef, missionWorkingBranch, releaseConfig: (p.workspace.releaseConfig ?? null) as never, refreshTrunk: p.refreshTrunk })) return null;
+    // A refresh PR is composed from trunk's PRs; a PR from the mission branch (its integration PR) is not a refresh.
+    const refreshTrunk = p.refreshTrunk && missionWorkingBranch && baseRef === missionWorkingBranch.trim() ? p.refreshTrunk : null;
     const built = await collectComposition({
       api: githubApi, exec: dbExec, installationId: p.repo.installationId, workspaceId: d.workspaceId,
-      repoFullName: d.repoFullName, prNumber: d.prNumber, baseRef, headRef, aggregateHeadSha: round.headSha,
+      repoFullName: d.repoFullName, prNumber: d.prNumber, baseRef, headRef, aggregateHeadSha: round.headSha, refreshTrunk,
     });
     if (built.attestation.novelDelta.result === 'unverifiable') {
       console.log(`[workflow] composition of ${d.repoFullName}#${d.prNumber} unverifiable (${built.attestation.novelDelta.reason}); full review`);
@@ -155,7 +161,7 @@ const dispatchReview: EffectHandler = async (e) => {
   const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, d.workspaceId) });
   const owner = await db.query.tasks.findFirst({
     where: eq(tasks.id, d.ownerTaskId),
-    columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true },
+    columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
   });
   const repo = await workspaceRepo(d.workspaceId);
   const prw = await prWorker(d.workspaceId, d.repoFullName, d.prNumber);
@@ -168,7 +174,8 @@ const dispatchReview: EffectHandler = async (e) => {
   // all already-reviewed changes needs no second full review. Runs once per
   // round that is not itself the composition's delta round.
   if (!round.scope?.composition) {
-    const composed = await tryCompositionAttestation({ d, round, mission, workspace, repo });
+    const refreshTrunk = refreshDeltaBase(owner.context, (workspace.gitConfig ?? null) as never);
+    const composed = await tryCompositionAttestation({ d, round, mission, workspace, repo, refreshTrunk });
     if (composed) return { outcome: composed };
   }
 
@@ -434,7 +441,7 @@ const postReview: EffectHandler = async (e) => {
     }
     return { outcome: `failed_post:${res.reason ?? 'unknown'}` };
   }
-  return { outcome: 'ok' };
+  return { outcome: 'commentedOwnPr' in res && res.commentedOwnPr ? 'ok:commented_own_pr' : 'ok' };
 };
 
 // ── Escalations ─────────────────────────────────────────────────────────────

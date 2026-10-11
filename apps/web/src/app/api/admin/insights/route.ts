@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { beginAdminRead } from '@/lib/admin/scope';
-import { loadInsights } from '@/lib/admin/data';
+import { viewInsights } from '@/lib/admin/tenant-privacy';
 
 /**
  * GET /api/admin/insights — platform owner only (404 otherwise).
@@ -13,6 +13,6 @@ export async function GET(req: NextRequest) {
   const read = await beginAdminRead(req);
   if ('response' in read) return read.response;
   const window = read.scope.window === '30d' ? '30d' : '7d';
-  const data = await loadInsights({ workspaceIds: read.workspaceIds, window });
+  const data = await viewInsights(read.viewer, window);
   return NextResponse.json({ ...read.scope, since: read.scope.since.toISOString(), flowWindow: window, ...data });
 }

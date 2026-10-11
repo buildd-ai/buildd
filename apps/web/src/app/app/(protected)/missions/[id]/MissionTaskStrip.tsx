@@ -347,6 +347,7 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
             missionExecutor={executor}
             hideQueuedNote={!!why}
             framed={false}
+            taskTitle={t.title}
             onChanged={onChanged}
           />
         )}

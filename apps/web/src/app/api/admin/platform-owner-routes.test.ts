@@ -41,8 +41,9 @@ mock.module('@/lib/admin/data', () => ({
   resolveScopeWorkspaces: async (scope: any) => {
     scopes.push(scope);
     if (scope.teamId === '99999999-9999-4999-8999-999999999999') return null;
-    return { workspaceIds: [WS] };
+    return { workspaces: [{ id: WS, teamId: TEAM }] };
   },
+  loadOwnTeams: async () => [{ id: TEAM, name: 'Team A' }],
   loadDecisionFeatureCounts: async () => [
     { capability: 'task_role_shadow', count: 4, applied: 3, suggested: 1, fallback: 0, overridden: 1, costUsd: 0.0002, inputTokens: 900 },
     { capability: 'orchestration_claim', count: 2, applied: 0, suggested: 2, fallback: 0, overridden: 0, costUsd: 0.001, inputTokens: 300 },
@@ -56,14 +57,14 @@ mock.module('@/lib/admin/data', () => ({
   readTeamExperimentFlags: async (teamId: string) => (teamId === TEAM ? flags : null),
   writeTeamExperimentFlags: async (teamId: string, next: any) => { writes.push({ teamId, next }); return { deletedLessons: 0 }; },
   listChatRetros: async () => [{ id: 'r1', teamId: TEAM, status: 'judged', turns: 6 }],
-  loadUsage: async () => ({ totals: { tasks: 3 }, groups: [] }),
-  loadDispatchHealth: async () => ({ verdict: 'healthy' }),
-  loadGates: async () => ({ gates: { totals: { events: 5 } } }),
-  loadFailures: async () => ({ analytics: { totals: { failed: 2 } } }),
+  loadUsage: async () => ({ totals: { tasks: 3 }, groups: [], topTasks: [] }),
+  loadDispatchHealth: async () => ({ verdict: 'healthy', workspaces: [] }),
+  loadGates: async () => ({ gates: { totals: { events: 5 }, gates: [] } }),
+  loadFailures: async () => ({ analytics: { totals: { failed: 2 }, signatures: [], diedEarlySignatures: [], repeatFailureTasks: [], byWorkspace: [] }, family: null, stalledIngest: null }),
   loadOperatorData: async () => ({ orphanedPrs: [], subagentDelegation: null, errorPatterns: null }),
-  loadInsights: async (opts: any) => { insightCalls.push(opts); return { series: { buckets: [] }, usage: { rows: [] }, truncated: false }; },
-  loadInsightsBand: async (opts: any) => { insightCalls.push(opts); return opts.filter.band === 'none' ? null : { label: 'Released', tasks: [{ id: 't1', title: 'Task 1', status: 'completed' }] }; },
-  loadAgentAccess: async (opts: any) => { insightCalls.push(opts); return { windowHours: opts.windowHours, granted: 3, refusals: [] }; },
+  loadInsights: async (opts: any) => { insightCalls.push(opts); return { series: { buckets: [], tasks: [] }, usage: { rows: [] }, truncated: false }; },
+  loadInsightsBand: async (opts: any) => { insightCalls.push(opts); return opts.filter.band === 'none' ? null : { label: 'Released', tasks: [{ id: 't1', title: 'Task 1', status: 'completed', workspaceId: WS }] }; },
+  loadAgentAccess: async (opts: any) => { insightCalls.push(opts); return { windowHours: opts.windowHours, granted: 3, refusals: [], grantProblems: [] }; },
   listTeamsWithWorkspaces: async () => [{ id: TEAM, name: 'Team A', workspaces: [{ id: WS, name: 'repo-a' }] }],
   loadExperimentReadout: async (row: any) => ({ policyVersion: row.policyVersion, readout: { verdict: 'insufficient_n', arms: [] }, health: [] }),
 }));
@@ -284,7 +285,7 @@ describe('names and readouts for the admin app', () => {
   it('lists every team with its workspaces by name', async () => {
     const res = await routes.teams.GET(req('teams'));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ teams: [{ id: TEAM, name: 'Team A', workspaces: [{ id: WS, name: 'repo-a' }] }] });
+    expect(await res.json()).toEqual({ teams: [{ id: TEAM, name: 'Team A', own: true, workspaces: [{ id: WS, name: 'repo-a' }] }] });
   });
 
   it('reads one experiment\'s readout, and 404s an unknown id', async () => {

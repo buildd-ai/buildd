@@ -1276,6 +1276,10 @@ export const missions = pgTable('missions', {
   // idempotency half of debouncing a burst of dev merges. Null means never
   // refreshed (or opted in after the column existed).
   branchRefreshHeadSha: text('branch_refresh_head_sha'),
+  // When the branch was last confirmed to contain trunk (a merge, a 204, or a
+  // fresh cut). The daily backstop reads it (docs/specs/mission-branch-refresh.md):
+  // a refresh otherwise only runs when a mission task starts. Null reads as stale.
+  branchRefreshedAt: timestamp('branch_refreshed_at', { withTimezone: true }),
   // Single-flight lease for the refresh itself: a claim sets this to now() +
   // the lease window, and a second caller racing the same mission (the
   // concurrency half of debouncing a burst) only proceeds once it is null or
@@ -6112,7 +6116,7 @@ export const orchestrationDecisions = pgTable('orchestration_decisions', {
   outputTokens: integer('output_tokens'),
   costUsd: real('cost_usd'),
   // Applying-cohort assignment, recorded at draw time (never reconstructed).
-  experimentArm: text('experiment_arm').notNull().$type<'apply' | 'observe'>(),
+  experimentArm: text('experiment_arm').notNull().$type<'apply' | 'observe' | 'human'>(),
   propensity: real('propensity').notNull(),
   applyingFraction: real('applying_fraction').notNull(),
   // The kit's content-free DecisionReceipt (model, usage, latency, attempts).
