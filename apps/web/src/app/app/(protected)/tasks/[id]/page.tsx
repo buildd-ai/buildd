@@ -845,6 +845,8 @@ export default async function TaskDetailPage({
 
 
   let prOutcome: PrOutcome | null = null;
+  // Claim to merge, for the status row (the one place a merged PR is stated).
+  let lineageClaimToMergeMs: number | null = null;
   if (prWorker) {
     const firstAttempt = {
       runner: runnerLabel(prWorker),
@@ -886,6 +888,7 @@ export default async function TaskDetailPage({
       })),
       pr: { lifecycle: prWorker.prLifecycleStatus ?? null, mergedAt: prWorker.mergedAt?.getTime() ?? null },
     });
+    lineageClaimToMergeMs = lineage.totals.claimToMergeMs;
     prOutcome = {
       repoLabel: task.workspace?.repo ? normalizeRepoFullName(task.workspace.repo) : null,
       summary: ((task.result as { summary?: string } | null)?.summary) ?? null,
@@ -922,7 +925,7 @@ export default async function TaskDetailPage({
     // The platform updating the branch or merging: in progress, not "ready to merge".
     deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null,
     // A merged PR is stated once, on the status row, and the time goes with it.
-    claimToMerge: prOutcome?.totals.claimToMerge ?? null });
+    claimToMerge: lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : null });
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
   // The status row names and links the PR: the side panel and the PR card do not say it again.
   const prStatedAbove = verdictLinksPr(verdict, prWorker?.prUrl);

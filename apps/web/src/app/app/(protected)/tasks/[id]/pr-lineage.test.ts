@@ -17,7 +17,7 @@ describe('buildLineage', () => {
     expect(l.steps[2]).toMatchObject({ title: 'Retry sent', sub: 'A new builder got the failure excerpt' });
     expect(l.steps[3]).toMatchObject({ title: 'Attempt 2', sub: 'Builder on birch · 1 commit, same branch', at: '3:11' });
     expect(l.steps[5]).toMatchObject({ title: 'Merged', at: '+0:20' });
-    expect(l.totals).toEqual({ add: 425, rem: 70, files: 13, commits: 5, attempts: 2, claimToMerge: '13:54' });
+    expect(l.totals).toEqual({ add: 425, rem: 70, files: 13, commits: 5, attempts: 2, claimToMerge: '13:54', claimToMergeMs: 834_000 });
   });
 
   test('per-commit check rows: the retried head failed, the final head passed', () => {
