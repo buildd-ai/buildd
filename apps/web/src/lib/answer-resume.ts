@@ -165,8 +165,16 @@ export const INTERACTIVE_ANSWER_LIVE_STATUSES: readonly string[] = ['waiting_inp
  * person's own seat — so a revoked managed credential must not refuse an
  * answer to it. The cold fallback does run on a runner, and is preflighted.
  *
- * Alive = a live status AND checked in within INTERACTIVE_WORKER_IDLE_TTL_MS,
- * the same window the reaper uses before freeing an interactive claim.
+ * Alive:
+ *  - `waiting_input` (parked on its question): alive, whatever `updatedAt`
+ *    says. While parked, `updatedAt` is frozen at the ask so the waiting_input
+ *    sweep can measure the park from it (PARK_MAX_MS / PARK_MISSION_MAX_MS);
+ *    judging it by the 2h idle TTL would send any answer slower than 2h cold
+ *    while the session is still polling. That sweep owns expiry: once it fails
+ *    the worker, the status check below sends the answer cold. `/respond` has
+ *    already required an answerable question before calling this.
+ *  - any other live status: checked in within INTERACTIVE_WORKER_IDLE_TTL_MS,
+ *    the same window the reaper uses before freeing an interactive claim.
  */
 export function evaluateInteractiveAnswerPath(input: {
   workerRunner: string | null | undefined;
@@ -177,10 +185,13 @@ export function evaluateInteractiveAnswerPath(input: {
   if (input.workerRunner !== INTERACTIVE_WORKER_RUNNER) return null;
   const now = input.now ?? Date.now();
   const updatedAt = toEpoch(input.workerUpdatedAt);
-  const alive = input.workerStatus !== null
+  const parked = input.workerStatus === 'waiting_input';
+  const alive = parked || (
+    input.workerStatus !== null
     && INTERACTIVE_ANSWER_LIVE_STATUSES.includes(input.workerStatus)
     && updatedAt !== null
-    && now - updatedAt <= INTERACTIVE_WORKER_IDLE_TTL_MS;
+    && now - updatedAt <= INTERACTIVE_WORKER_IDLE_TTL_MS
+  );
   if (!alive) return cold('interactive_session_gone');
   return {
     path: 'interactive',

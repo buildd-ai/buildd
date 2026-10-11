@@ -344,11 +344,15 @@ local work to a runner. So it gets its own path.
 **Invariants**:
 - G0 (`evaluateInteractiveAnswerPath`) runs before G1–G5. It returns nothing
   for a runner-managed worker. For an interactive worker it returns
-  `interactive` / `interactive_session` while the worker is in a live status
-  (`waiting_input`, `running`, `idle`, `starting`) AND its `updatedAt` is
-  within `INTERACTIVE_WORKER_IDLE_TTL_MS`; otherwise `cold_continuation` /
-  `interactive_session_gone`. A gone interactive session MUST NOT be resumed
-  on a runner.
+  `interactive` / `interactive_session` when the worker is parked
+  (`waiting_input`) however old its `updatedAt` is, or when it is `running`,
+  `idle` or `starting` with `updatedAt` within `INTERACTIVE_WORKER_IDLE_TTL_MS`;
+  otherwise `cold_continuation` / `interactive_session_gone`. A gone
+  interactive session MUST NOT be resumed on a runner.
+- A parked interactive worker's `updatedAt` is frozen at the ask, so the
+  waiting_input sweep measures the park from it. That sweep, not the idle TTL,
+  owns a parked session's expiry: once it fails the worker, G0 sends the answer
+  cold.
 - `/respond` takes G0 BEFORE the backend credential preflight: the session
   runs on the person's own seat, so the workspace's managed credential (even a
   revoked one) MUST NOT refuse or reroute an answer to it. A gone session's
@@ -378,9 +382,12 @@ local work to a runner. So it gets its own path.
   write sets `status: 'running'` and `waitingFor: null`.
 - AC-AQR-I2: GIVEN the same worker and a revoked managed credential THEN the
   answer is accepted on the interactive path and no preflight runs.
-- AC-AQR-I3: GIVEN an interactive worker past the idle window, or `failed` /
-  `error`, THEN `path: 'cold_continuation'`, `reasonCode:
+- AC-AQR-I3: GIVEN a `running` interactive worker past the idle window, or a
+  `failed` / `error` one, THEN `path: 'cold_continuation'`, `reasonCode:
   'interactive_session_gone'`.
+- AC-AQR-I5: GIVEN an interactive worker in `waiting_input` whose `updatedAt`
+  is 3h old (past the idle window) WHEN `POST /respond` THEN `path:
+  'interactive'`, and no continuation task is inserted.
 - AC-AQR-I4: GIVEN a `workerMessagesDelivered` ack naming an instruction-history
   entry's id THEN that entry is `acknowledged`.
 
@@ -643,3 +650,9 @@ them.
    dies after the answer is queued and before it reads it, the answer waits on
    the task until a later worker on the same task reads the queue, or the
    reaper frees the claim; it is not converted to a cold continuation.
+8. **A terminal closed mid-wait still reads as a live interactive session.**
+   A parked interactive worker is judged live on status alone, because its
+   `updatedAt` is frozen at the ask. If the person closes the session while it
+   waits, an answer is still queued to it until the waiting_input sweep fails
+   the worker. Detecting that needs a poll heartbeat from the waiting session,
+   which this path does not have.

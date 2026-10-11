@@ -1599,8 +1599,22 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(mockInsertValues).not.toHaveBeenCalled();
     });
 
+    // Regression: updatedAt is frozen at the ask while parked, so an answer
+    // given hours later must still reach the session that is polling for it.
+    it('answers a session parked 3h ago in place, not via a runner continuation', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker({ updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000) }));
+
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).path).toBe('interactive');
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockEnqueueWorkerMessage).toHaveBeenCalledTimes(1);
+    });
+
     it.each([
-      ['past the interactive idle window', { updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000) }],
+      ['running but past the interactive idle window', { status: 'running', updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000) }],
       ['failed', { status: 'failed' }],
       ['errored', { status: 'error' }],
     ])('a session that is gone (%s) goes cold with its reason recorded', async (_label, overrides) => {

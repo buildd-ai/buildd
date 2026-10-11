@@ -482,15 +482,25 @@ describe('evaluateInteractiveAnswerPath', () => {
     expect(decision?.path).toBe('interactive');
   });
 
-  it('goes cold, with a recorded reason, once the session is past the idle window', () => {
-    const decision = evaluateInteractiveAnswerPath(live({ workerUpdatedAt: new Date(NOW - INTERACTIVE_WORKER_IDLE_TTL_MS - 1) }));
+  // Regression: updatedAt is frozen at the ask while an interactive worker is
+  // parked (the park sweep measures from it), so a slow human must not read as
+  // a dead session. The park sweep owns expiry; once it fails the worker, the
+  // status gate below sends the answer cold.
+  it('treats a parked (waiting_input) session as live however long ago it asked', () => {
+    const decision = evaluateInteractiveAnswerPath(live({ workerUpdatedAt: new Date(NOW - 3 * 60 * 60 * 1000) }));
+    expect(decision?.path).toBe('interactive');
+    expect(evaluateInteractiveAnswerPath(live({ workerUpdatedAt: null }))?.path).toBe('interactive');
+  });
+
+  it('goes cold, with a recorded reason, once a running session is past the idle window', () => {
+    const decision = evaluateInteractiveAnswerPath(live({ workerStatus: 'running', workerUpdatedAt: new Date(NOW - INTERACTIVE_WORKER_IDLE_TTL_MS - 1) }));
     expect(decision?.path).toBe('cold_continuation');
     expect(decision?.reasonCode).toBe('interactive_session_gone');
     expect(decision?.reason).toBe(ANSWER_PATH_REASONS.interactive_session_gone);
   });
 
-  it('goes cold when nothing ever recorded the session checking in', () => {
-    expect(evaluateInteractiveAnswerPath(live({ workerUpdatedAt: null }))?.reasonCode).toBe('interactive_session_gone');
+  it('goes cold when nothing ever recorded a non-parked session checking in', () => {
+    expect(evaluateInteractiveAnswerPath(live({ workerStatus: 'running', workerUpdatedAt: null }))?.reasonCode).toBe('interactive_session_gone');
   });
 
   it.each([['completed'], ['failed'], ['error'], ['superseded'], [null]])(
@@ -512,7 +522,7 @@ describe('evaluateInteractiveAnswerPath', () => {
   it('evaluateAnswerPath never resumes a gone interactive worker on a runner', () => {
     const decision = evaluateAnswerPath(eligible({
       workerRunner: INTERACTIVE_WORKER_RUNNER,
-      workerUpdatedAt: new Date(NOW - INTERACTIVE_WORKER_IDLE_TTL_MS - 1),
+      workerStatus: 'failed',
     }));
     expect(decision.path).toBe('cold_continuation');
     expect(decision.reasonCode).toBe('interactive_session_gone');
