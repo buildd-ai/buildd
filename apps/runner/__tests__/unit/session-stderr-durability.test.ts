@@ -280,7 +280,11 @@ describe('SDK stderr durability', () => {
     // Short settle so a duplicate flush, if there were one, has a chance to land.
     await new Promise(r => setTimeout(r, 100));
 
-    const traces = tracePatches('w-once').flatMap((c: any[]) => c[1].appendErrorTraces);
+    // Scope to this worker: a straggler session from an earlier test (destroyed
+    // manager, late retry) re-invokes the shared fake SDK with this test's chunks.
+    const traces = tracePatches('w-once')
+      .filter((c: any[]) => c[0] === 'w-once')
+      .flatMap((c: any[]) => c[1].appendErrorTraces);
     const matching = traces.filter((t: any) => t.excerpt.includes('single failure line'));
     expect(matching.length).toBe(1);
   });

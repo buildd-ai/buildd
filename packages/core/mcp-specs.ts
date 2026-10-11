@@ -137,6 +137,8 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         if (e?.status === 409 && typeof e.body?.currentVersion === 'number') {
           return errorResult(`Version conflict: the spec is now at version ${e.body.currentVersion}, not ${params.expectedVersion}; nothing was written. Re-read it (manage_specs action=get), merge your change into that text, then revise with expectedVersion ${e.body.currentVersion}.\ncurrentVersion: ${e.body.currentVersion}`);
         }
+        // A body changed outside a revise: no version to retry at, so the reason as the server gave it.
+        if (e?.status === 409) return errorResult(String(e.body?.error ?? 'Refused (409).'));
         throw err;
       }
     }
