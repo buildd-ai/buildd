@@ -169,7 +169,7 @@ import {
   type SessionEndLabel,
 } from './session-end-classification.js';
 import { withoutRunnerKeyValues } from './runner-key-guard.js';
-import { buildCodexMcpServers, describeSkippedMcpServer, resolveMcpJsonHttpServers, urlOrigin, type BuilddCredentialExpansion } from './mcp-json.js';
+import { buildCodexMcpServers, describeSkippedMcpServer, gatewayConnectorsOnly, gatewayConnectorUrl, resolveMcpJsonHttpServers, urlOrigin, type BuilddCredentialExpansion } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -524,6 +524,10 @@ export interface ResolvedMcpConnector {
   mintApiUrl?: string;
   audience?: string;
   tokenEndpoint?: string;
+  // Gateway mode: no url/headers; mounted at <buildd origin><gatewayPath>?worker=<id>
+  // with the agent's own buildd token (mcp-json.ts gatewayConnectorUrl).
+  gateway?: true;
+  gatewayPath?: string;
 }
 
 /**
@@ -550,11 +554,20 @@ type SdkMcpServerEntry =
  */
 export function buildMcpServerEntries(
   connectors: ResolvedMcpConnector[] | undefined,
+  /**
+   * How gateway connectors are mounted: the runner's buildd origin, the
+   * agent's own buildd token and the worker id. Without it they are skipped.
+   */
+  gateway?: { origin: string; token: string; workerId: string },
 ): Record<string, SdkMcpServerEntry> {
   const out: Record<string, SdkMcpServerEntry> = {};
   if (!connectors) return out;
+  for (const g of gatewayConnectorsOnly(connectors)) {
+    const url = gateway?.token ? gatewayConnectorUrl(gateway.origin, g.gatewayPath, gateway.workerId) : null;
+    if (url) out[g.name] = { type: 'http', url, headers: { Authorization: `Bearer ${gateway!.token}` } };
+  }
   for (const c of connectors) {
-    if (!c?.name) continue;
+    if (!c?.name || c.gateway) continue;
     // Assertion-mode connectors require async mint+exchange — skip here; handled separately.
     if (c.assertionMode) continue;
     // Default to http for back-compat with older claim payloads that omit transport.
@@ -3980,6 +3993,7 @@ export class WorkerManager {
           connectors: (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined,
           env: headerExpansionEnv,
           builddCredential: builddMcpCredential,
+          workerId: worker.id,
         });
         Object.assign(cleanEnv, codexMcp.bearerEnv);
         for (const w of codexMcp.warnings) console.warn(`[Worker ${worker.id}] Codex: ${w}`);
@@ -4585,7 +4599,11 @@ export class WorkerManager {
       const claimConnectors = (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined;
       if (claimConnectors && claimConnectors.length > 0) {
         // Non-assertion connectors: build entries synchronously (credentials already decrypted).
-        const entries = buildMcpServerEntries(claimConnectors);
+        const entries = buildMcpServerEntries(claimConnectors, {
+          origin: urlOrigin(this.config.builddServer) ?? '',
+          token: agentBuilddToken ?? '',
+          workerId: worker.id,
+        });
         for (const [name, cfg] of Object.entries(entries)) {
           if (name === 'buildd') continue; // never override the buildd coordination server
           // Resolve per-worker placeholder tokens in stdio server env values.
@@ -6761,7 +6779,10 @@ export class WorkerManager {
             source?.startsWith('mcp__')
           ) {
             const connector = findConnectorFor(source, worker.mcpConnectors as any[]);
-            if (connector) {
+            // A gateway connector's provider auth is refreshed server-side and a
+            // dead credential comes back as a structured `reconnect_required`
+            // tool result, so the session is never aborted for it here.
+            if (connector && !(connector as { gateway?: unknown }).gateway) {
               if (is403PermissionError(text)) {
                 console.log(`[Worker ${worker.id}] 403 permission gap from connector "${connector.name}" (${connector.id}) — signaling API`);
                 worker.error = `connector_permission_insufficient:${connector.id}`;

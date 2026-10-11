@@ -218,6 +218,48 @@ export function resolveMcpJsonHttpServers(
   return { servers, skipped };
 }
 
+// ── Connector gateway entries ────────────────────────────────────────────────
+
+/**
+ * A claim connector brokered by buildd's connector gateway: no url and no
+ * credential, only a path on the runner's own buildd server. The agent's
+ * runtime mounts `<buildd origin><gatewayPath>?worker=<id>` with the agent's
+ * own buildd token; the provider credential never reaches this machine.
+ */
+export interface GatewayConnector {
+  id?: string;
+  name: string;
+  transport: 'http';
+  gateway: true;
+  gatewayPath: string;
+}
+
+const GATEWAY_PATH_RE = /^\/api\/mcp\/c\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The gateway entries of a connector list, rebuilt field by field, so whatever
+ * else an entry carries (a direct mount's headers, a stdio env) is dropped.
+ * Safe to persist: it holds no credential.
+ */
+export function gatewayConnectorsOnly(list: unknown): GatewayConnector[] {
+  if (!Array.isArray(list)) return [];
+  const out: GatewayConnector[] = [];
+  for (const c of list as Array<Record<string, unknown>>) {
+    if (!c || c.gateway !== true || typeof c.name !== 'string' || !c.name) continue;
+    if (typeof c.gatewayPath !== 'string' || !GATEWAY_PATH_RE.test(c.gatewayPath)) continue;
+    out.push({ ...(typeof c.id === 'string' ? { id: c.id } : {}), name: c.name, transport: 'http', gateway: true, gatewayPath: c.gatewayPath });
+  }
+  return out;
+}
+
+/** The gateway URL on the runner's own buildd origin, or null for a malformed path. */
+export function gatewayConnectorUrl(builddOrigin: string, gatewayPath: string, workerId: string): string | null {
+  if (!GATEWAY_PATH_RE.test(gatewayPath) || !builddOrigin) return null;
+  const url = new URL(gatewayPath, builddOrigin);
+  url.searchParams.set('worker', workerId);
+  return url.toString();
+}
+
 /** The connector fields the Codex config.toml builder reads. */
 export interface CodexConnectorInput {
   name?: string;
@@ -225,6 +267,8 @@ export interface CodexConnectorInput {
   headers?: Record<string, string>;
   transport?: string;
   assertionMode?: unknown;
+  gateway?: unknown;
+  gatewayPath?: string;
 }
 
 export interface CodexMcpServer {
@@ -256,13 +300,30 @@ export function buildCodexMcpServers(input: {
   connectors: CodexConnectorInput[] | undefined;
   env: Record<string, string | undefined>;
   builddCredential?: BuilddCredentialExpansion;
+  /** Needed to mount gateway connectors; without it they are skipped with a warning. */
+  workerId?: string;
 }): { servers: CodexMcpServer[]; bearerEnv: Record<string, string>; warnings: string[] } {
   const servers: CodexMcpServer[] = [];
   const bearerEnv: Record<string, string> = {};
   const warnings: string[] = [];
 
+  // Gateway connectors: the agent's own buildd token, sent only to the
+  // runner's own buildd origin. Never a provider credential.
+  for (const conn of gatewayConnectorsOnly(input.connectors)) {
+    if (conn.name === 'buildd' || servers.some(s => s.name === conn.name)) continue;
+    const cred = input.builddCredential;
+    const url = cred?.token && input.workerId ? gatewayConnectorUrl(cred.origin, conn.gatewayPath, input.workerId) : null;
+    if (!url) {
+      warnings.push(`gateway connector "${conn.name}" not mounted: no agent buildd token or worker id`);
+      continue;
+    }
+    const envVar = `MCP_BEARER_CONN_${envSlug(conn.name)}`;
+    bearerEnv[envVar] = cred!.token;
+    servers.push({ name: conn.name, url, bearerTokenEnvVar: envVar });
+  }
+
   for (const conn of input.connectors ?? []) {
-    if (!conn?.name || conn.name === 'buildd' || !conn.url) continue;
+    if (!conn?.name || conn.name === 'buildd' || !conn.url || conn.gateway) continue;
     if (conn.assertionMode) continue; // async mint+exchange not supported here
     if ((conn.transport ?? 'http') !== 'http') {
       warnings.push(`skipping stdio connector "${conn.name}" (not supported in config.toml)`);

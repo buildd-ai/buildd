@@ -29,7 +29,9 @@ import { TOKEN_PRESETS, hasTokenScope, type TokenScope } from '@buildd/core/toke
  * to that one workspace, never team-wide); and listing or reading team-visible
  * experiments (no readouts, no changes); and brokered model calls for its own
  * worker, only under a live `model.inference` grant; and asking for a capability
- * grant for its own worker (never approving one: deciding is a signed-in person's act). It may also post notes, always as an
+ * grant for its own worker (never approving one: deciding is a signed-in person's act); and calling a mounted
+ * provider MCP through the connector gateway for its own worker, each call decided and audited, the provider
+ * credential never handed to it. It may also post notes, always as an
  * agent, on its own task or its own task's mission; read task messages and
  * artifacts in its own workspace; upload artifacts for its own worker; update
  * its own task's artifacts and its mission's mission-level ones; and create

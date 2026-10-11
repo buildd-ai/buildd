@@ -16,6 +16,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { loadIncidentNeedsYou, loadIncidentVerdicts } from '@/lib/failure-incident-escalation';
+import { loadAccessNeedsYou } from '@/lib/capability-grants-needs-you';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
 import { loopPolicy } from '@/lib/loop-dispatcher-policy';
@@ -158,3 +159,10 @@ export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
  */
 export const INCIDENT_NEEDS_YOU = loadIncidentNeedsYou;
 export const INCIDENT_VERDICTS = loadIncidentVerdicts;
+
+/**
+ * The connectors module's slot for Home (lib/capability-grants-needs-you.ts):
+ * pending capability requests the escalation gate gives to a person, for the
+ * teams where the viewer can decide them. A fixed rule; no model call.
+ */
+export const ACCESS_NEEDS_YOU = loadAccessNeedsYou;

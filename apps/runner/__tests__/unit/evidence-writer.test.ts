@@ -567,6 +567,7 @@ describe('secret channel coverage', () => {
         modelEndpoint: { kind: 'gateway', baseUrl: 'https://proxy.example', authToken: `seed-${field}`, authHeader: 'authorization', models: {} },
         roleInstructions: { slug: 'builder', name: 'Builder', content: `seed-${field}` },
         skillBundles: [{ slug: 'demo', name: 'Demo', content: `seed-${field}` }],
+        mcpConnectors: [{ name: 'axiom', transport: 'http', url: 'https://mcp.example', headers: { Authorization: `seed-${field}` } }],
       };
       const worker = { [field]: seeded[field] ?? `seed-${field}` };
       const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);
@@ -586,5 +587,22 @@ describe('model endpoint headers are redacted', () => {
     const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);
     expect(values).toContain('Bearer gw-run-token-value');
     expect(values).toContain('gw-run-token-value');
+  });
+});
+
+describe('directly mounted connector credentials are redacted', () => {
+  test('header tokens (whole and bare) and stdio env values are on the redactor list; gateway entries add nothing', () => {
+    const worker = {
+      mcpConnectors: [
+        { name: 'linear', transport: 'http', url: 'https://mcp.example', headers: { Authorization: 'Bearer conn-provider-token' } },
+        { name: 'local', transport: 'stdio', command: 'npx', env: { API_KEY: 'stdio-env-secret' } },
+        { id: 'c1', name: 'axiom', transport: 'http', gateway: true, gatewayPath: '/api/mcp/c/c1' },
+      ],
+    };
+    const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);
+    expect(values).toContain('Bearer conn-provider-token');
+    expect(values).toContain('conn-provider-token');
+    expect(values).toContain('stdio-env-secret');
+    expect(values).not.toContain('/api/mcp/c/c1');
   });
 });

@@ -209,6 +209,8 @@ const SAFE: Record<string, string[]> = {
   // each write); evidence is refs, counts and labels. Cascades with conversations.
   chat_retros: ['status', 'skip_reason', 'intent', 'satisfied', 'primary_cause', 'fix_class', 'tool_name', 'signature', 'version', 'error', 'evidence'],
   artifacts: ['type'],
+  // Closed vocabularies (ARTIFACT_LINK_SUBJECTS / ARTIFACT_LINK_RELATIONS in the schema).
+  artifact_links: ['subject_kind', 'relation'],
   // Closed vocabularies (SPEC_SCOPES / SPEC_STATUSES) and a sha256 of a body scrubbed elsewhere.
   specs: ['scope', 'status'],
   spec_revisions: ['content_hash'],
