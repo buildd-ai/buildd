@@ -1396,27 +1396,30 @@ export default async function TaskDetailPage({
             one status pill with the admin actions behind ⋯ (D9). Chips that
             used to crowd the title line sit on the quiet meta line below. */}
         <div className="mb-5 md:mb-6" data-testid="task-header">
-          <div className="flex flex-col-reverse md:flex-row md:items-start md:justify-between gap-3 md:gap-4">
+          {/* The actions (⋯) sit at the right of the title at every width. A
+              status pill (only without a verdict) sits between them on desktop
+              and under the title on a phone, so the title keeps its width. */}
+          <div className={`grid items-start gap-x-3 gap-y-2 md:gap-x-4 ${!shippedView && !verdict ? 'grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_auto_auto]' : 'grid-cols-[minmax(0,1fr)_auto]'}`}>
             {shippedView ? (
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 col-start-1 row-start-1">
                 <TaskShippedTitle view={shippedView} title={heading.heading} />
               </div>
             ) : (
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 col-start-1 row-start-1">
               <h1 className="text-[22px] md:text-[24px] font-semibold leading-snug tracking-[-0.2px] break-words max-w-[760px]">{heading.heading}</h1>
             </div>
             )}
-            <div className={`flex items-center gap-2 shrink-0 md:mt-0.5 ${shippedView ? 'justify-end' : 'justify-between md:justify-start'}`}>
-              {/* With a verdict, the verdict block carries the state (and this hook). */}
-              {!shippedView && !verdict && (
-                <span data-testid="task-header-status" data-status={displayStatus}>
-                  <HeaderStatusPill
-                    status={displayStatus}
-                    merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
-                    delivery={deliveryPill}
-                  />
-                </span>
-              )}
+            {/* With a verdict, the verdict block carries the state (and this hook). */}
+            {!shippedView && !verdict && (
+              <span data-testid="task-header-status" data-status={displayStatus} className="col-span-2 row-start-2 md:col-span-1 md:col-start-2 md:row-start-1 md:mt-0.5">
+                <HeaderStatusPill
+                  status={displayStatus}
+                  merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
+                  delivery={deliveryPill}
+                />
+              </span>
+            )}
+            <div data-testid="task-header-actions" className={`flex items-center justify-end gap-2 col-start-2 row-start-1 md:mt-0.5 ${!shippedView && !verdict ? 'md:col-start-3' : ''}`}>
               <AskAboutLink kind="task" id={task.id} teamId={(task.workspace as { teamId?: string } | null)?.teamId ?? null} workspaceId={task.workspaceId} />
               <TaskOverflowMenu>
                 <EditTaskButton
