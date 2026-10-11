@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/uuid';
 import { notFound, requirePlatformOwner } from './owner-gate';
-import { resolveScopeWorkspaces } from './data';
+import { loadOwnTeams, resolveScopeWorkspaces } from './data';
+import { scopeViewer, type AdminViewer, type ScopedViewer } from './tenant-privacy';
 
 export const ADMIN_WINDOWS = { '24h': 1, '7d': 7, '30d': 30 } as const;
 export type AdminWindow = keyof typeof ADMIN_WINDOWS;
@@ -37,12 +38,19 @@ export function parseAdminScope(params: URLSearchParams, now = Date.now()): { sc
 }
 
 type Owner = NonNullable<Awaited<ReturnType<typeof requirePlatformOwner>>['account']>;
-export type AdminRead = { account: Owner; scope: AdminScope; workspaceIds: string[]; params: URLSearchParams };
+export type AdminRead = { account: Owner; scope: AdminScope; workspaceIds: string[]; viewer: ScopedViewer; params: URLSearchParams };
+
+/** Which teams this owner sees in full; see lib/admin/tenant-privacy.ts. */
+export async function loadAdminViewer(account: Owner): Promise<AdminViewer> {
+  const ownTeams = await loadOwnTeams(account);
+  return { ownTeams, ownTeamIds: new Set(ownTeams.map(t => t.id)) };
+}
 
 /**
  * Gate, then scope: the owner check runs first, so a non-owner gets the same
  * 404 whatever query string they sent. A team or workspace that does not
- * exist is a 404 too.
+ * exist is a 404 too. The read carries the viewer: which of its workspaces
+ * are the owner's own teams' and so may be shown in detail.
  */
 export async function beginAdminRead(req: NextRequest): Promise<AdminRead | { response: NextResponse }> {
   const gate = await requirePlatformOwner(req);
@@ -50,9 +58,10 @@ export async function beginAdminRead(req: NextRequest): Promise<AdminRead | { re
   const params = req.nextUrl.searchParams;
   const parsed = parseAdminScope(params);
   if ('response' in parsed) return parsed;
-  const resolved = await resolveScopeWorkspaces(parsed.scope);
+  const [resolved, viewer] = await Promise.all([resolveScopeWorkspaces(parsed.scope), loadAdminViewer(gate.account)]);
   if (!resolved) return { response: notFound() };
-  return { account: gate.account, scope: parsed.scope, workspaceIds: resolved.workspaceIds, params };
+  const scoped = scopeViewer(viewer, resolved.workspaces);
+  return { account: gate.account, scope: parsed.scope, workspaceIds: scoped.workspaceIds, viewer: scoped, params };
 }
 
 /** Bounded integer query param. */
