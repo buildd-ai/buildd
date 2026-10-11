@@ -232,7 +232,11 @@ references it AND the connector is enabled for the task's workspace.
   ignored at injection time (never errors the claim).
 - Deleting a connector removes its id from every role's `connectorRefs`
   (cleanup on delete; a dangling ref is tolerated but cleaned).
-- Injection set for a task = `connectorRefs(role) ∩ enabledForWorkspace ∩ teamConnectors`.
+- Injection set for a task = `connectorRefs(role) ∩ enabledForWorkspace ∩ teamConnectors`,
+  plus, for a routed task, owned gateway connectors (Axiom, Vercel) that are enabled
+  and connected. Those carry no credential and confer no access: every call goes through the
+  connector gateway and needs a grant unless the role lists the connector
+  ([capability-requests.md](capability-requests.md) §Connector gateway).
 
 **Acceptance criteria**:
 - AC-1: GIVEN role R with `connectorRefs=[c1]`, workspace enables `{c1,c2}`
