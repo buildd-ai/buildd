@@ -126,6 +126,10 @@ export const teams = pgTable('teams', {
   // credentialPolicyOf (apps/web/src/lib/inference-key-policy.ts), which maps
   // team/team_or_own/own one-to-one. inferenceKeyPolicy is dropped later.
   credentialPolicy: text('credential_policy').$type<'team' | 'personal_first' | 'personal_only'>(),
+  // Which connected provider serves each surface (packages/core/providers/assignments.ts).
+  // NULL or a missing surface = the resolver's own ranking. A set surface puts
+  // that provider first within a scope; it never widens what the resolver may pick.
+  providerAssignments: jsonb('provider_assignments').$type<import('../providers/assignments').ProviderAssignments | null>(),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
