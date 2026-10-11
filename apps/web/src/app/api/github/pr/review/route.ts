@@ -259,11 +259,13 @@ export async function POST(req: NextRequest) {
         columns: { id: true, status: true, result: true, context: true },
       })) ?? null
     : null;
-  const kernelReviewTaskMissing = !!kernel?.handled && !!kernel.reviewTaskId && !kernelReviewTask;
+  // Only an accepted result may fall through: a refusal (escalation, force) keeps its 409.
+  const kernelAccepted = !!kernel?.handled && (kernel.result.result === 'applied'
+    || (kernel.result.result === 'rejected' && (kernel.result.reason === 'review_in_flight' || kernel.result.reason === 'head_already_reviewed')));
+  const kernelReviewTaskMissing = kernelAccepted && !!kernel?.reviewTaskId && !kernelReviewTask;
   if (kernel?.handled && !kernelReviewTaskMissing) {
     const r = kernel.result;
-    const accepted = r.result === 'applied'
-      || (r.result === 'rejected' && (r.reason === 'review_in_flight' || r.reason === 'head_already_reviewed'));
+    const accepted = kernelAccepted;
     if (!accepted) {
       return bad(`Review not requested: ${r.reason}`, 409, {
         code: r.reason, current: r.current, kernel: true,
