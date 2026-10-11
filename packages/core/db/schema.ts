@@ -1827,7 +1827,9 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   // §8: which way the gap runs. code_ahead/contradicted may be written by
   // Tier-2 CI; spec_ahead is written only by the Tier-3 cron (slice 7) after
   // its deeper search rules out a rename — CI never writes it directly.
-  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted'>(),
+  // `conflict` (Living Specs, D-5): two requirements of approved revisions
+  // disagree. Advisory only: it never blocks a merge or a completion.
+  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted' | 'conflict'>(),
   // §9: open -> accepted is a parked, not closed, state; -> resolved happens
   // only when a re-run's assertion result lands cleanly, never by self-report.
   status: text('status').notNull().default('open').$type<'open' | 'accepted' | 'resolved'>(),
@@ -1860,6 +1862,9 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   proposalRejectedReason: text('proposal_rejected_reason'),
   // The exact read that produced the current verdict — never a similarity score.
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  // A Living Spec finding names the exact approved revision it was judged
+  // against; NULL for a repo-spec (docs/specs) assertion.
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'set null' }),
 }, (t) => ({
   workspaceIdx: index('spec_discrepancies_workspace_idx').on(t.workspaceId),
   // THE identity constraint (§7): exactly one row per (workspace, spec, assertion).
@@ -2725,6 +2730,30 @@ export const specRevisions = pgTable('spec_revisions', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/**
+ * One verdict on one acceptance criterion of an approved spec revision, for
+ * one task's outcome (Living Specs V1, D-5). Append-only: a re-check adds a
+ * row, and the outcome reads the newest row per criterion. A verdict is bound
+ * to the PR head it judged and the references it actually read, so a verdict
+ * on an older head never speaks for the current one. Distinct from task and PR
+ * state: a task can complete and its PR merge while its governed outcome
+ * reads fail.
+ */
+export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
+  headSha: text('head_sha'),
+  // The check's evidence refs and the artifact reads (F4 ledger ids) behind it.
+  evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskCriterionIdx: index('spec_outcome_verdicts_task_idx').on(t.taskId, t.specRevisionId, t.criterionId, t.createdAt),
 }));
 
 /**
