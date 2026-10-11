@@ -1395,6 +1395,10 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
     case 'WORKING':
       return record();
     case 'ESCALATED':
+      // A spent conflict budget asked a person only to resolve the conflict. A head that is not
+      // conflicted answers that, whoever pushed it, so it is reviewed like any new head: the
+      // review gate decides the landing, and a dirty head is only recorded.
+      if (d.stateReason === 'conflict_exhausted') return cmd.live.mergeableState === 'dirty' ? record() : toReview();
       if (d.stateReason !== 'push_undeliverable') return d.stateReason?.startsWith('review_') ? toReview() : record();
       // T22: a head with §9 proof observed after the escalation wins over it.
     // falls through

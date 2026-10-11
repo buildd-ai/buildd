@@ -285,6 +285,48 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(other.toState).toBe('ESCALATED');
     expect(other.patch).toMatchObject({ currentHeadSha: 'H7' });
   });
+  test('ESCALATED(conflict_exhausted): a repaired head that is not conflicted re-enters review; a dirty one is only recorded', () => {
+    // The spent conflict budget was the only reason a person was asked. A head someone else
+    // repaired answers it, so it gets a review round instead of waiting on the dashboard.
+    const spent = [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'conflict', attemptNo: n, status: 'ended' }));
+    const v = V(D({ state: 'ESCALATED', stateReason: 'conflict_exhausted', currentRound: 9, currentHeadSha: 'H1' }), [], spent);
+    for (const mergeableState of ['clean', 'unknown', 'blocked', undefined]) {
+      const ok = applied(h(v, 'H5', { live: live('H5', { mergeableState }) }));
+      expect(ok.toState).toBe('AWAITING_REVIEW');
+      expect(ok.patch).toMatchObject({ currentHeadSha: 'H5', currentRound: 10, stateReason: null });
+      expect(effectKinds(ok)).toContain('dispatch_review');
+    }
+    const dirty = applied(h(v, 'H5', { live: live('H5', { mergeableState: 'dirty' }) }));
+    expect(dirty.toState).toBe('ESCALATED');
+    expect(dirty.patch).toEqual({ currentHeadSha: 'H5' });
+    // Every other non-review escalation still waits for a person.
+    for (const stateReason of ['ci_exhausted', 'landing_needs_human', 'policy_human', 'effect_dead', 'unsafe_to_merge']) {
+      const held = applied(h(V(D({ state: 'ESCALATED', stateReason, currentRound: 9 })), 'H5', { live: live('H5', { mergeableState: 'clean' }) }));
+      expect(held.toState).toBe('ESCALATED');
+    }
+  });
+  test('a PR repaired after its conflict budget was spent reaches the merge call despite the earlier no-progress retries', () => {
+    const spent = [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'conflict', attemptNo: n, status: 'ended', outcome: 'noop' }));
+    const escalated = D({ state: 'ESCALATED', stateReason: 'conflict_exhausted', currentRound: 9, currentHeadSha: 'H1', version: 20 });
+    // 1. The externally repaired head arrives: a review round at that head.
+    const seen = applied(h(V(escalated, [], spent), 'H5', { live: live('H5', { mergeableState: 'clean' }) }));
+    expect(seen.toState).toBe('AWAITING_REVIEW');
+    const round = R({ id: 'r10', round: 10, headSha: 'H5', status: 'queued' });
+    const reviewing = D({ ...escalated, ...seen.patch, state: 'AWAITING_REVIEW', version: 21 });
+    // 2. The reviewer approves that exact head.
+    const approved = applied(run(V(reviewing, [round], spent), {
+      type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: 'r10', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H5',
+    }));
+    expect(approved.toState).toBe('APPROVED');
+    expect(approved.patch.approvedHeads).toEqual(['H5']);
+    // 3. A door lands it: the spent conflict ledger does not stand in the way.
+    const ready = D({ ...reviewing, ...approved.patch, state: 'APPROVED', version: 22 });
+    const landing = applied(run(V(ready, [{ ...round, status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' }], spent), {
+      type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H5', live: live('H5', { mergeableState: 'clean' }), rails: { passed: true },
+    }));
+    expect(landing.toState).toBe('LANDING');
+    expect(effectKinds(landing)).toContain('merge_call');
+  });
   test('REPAIRING: proof → new round, or APPROVED by carry-forward (T11/T13); no proof records only', () => {
     const v = V(D({ state: 'REPAIRING', stateReason: 'behind', approvedHeads: ['H1'], approvalBasis: 'verdict', boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'running', triggerReason: 'behind' })]);
     const cf = applied(h(v, 'H2', { carryForward: 'own_refresh', proof: { liveContainsLocal: false, contentDiffChanged: true } }));
