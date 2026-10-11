@@ -657,6 +657,11 @@ UPDATE migration_log SET
 -- -v known lists this checkout's text-like columns (scripts/qa/known-columns.ts);
 -- every other text-like column is invisible to this checkout's app, so it is
 -- overwritten outright: NULL where allowed, else a per-row md5 (unique-safe).
+-- Its triggers are this checkout's blind spot too, and an append-only table
+-- refuses any UPDATE (artifact_revisions did, on every branch cut before it):
+-- a table's enabled user triggers are switched off for the overwrite and back
+-- on after it, by name, so prod's trigger states come out as they went in.
+-- Inside this transaction, on the throwaway clone; migrations are untouched.
 -- An unset -v known leaves `:'known'` literal, a syntax error (fail closed).
 SET qa.known = :'known';
 
@@ -666,6 +671,10 @@ DECLARE
   r record;
   val text;
   wiped text[] := '{}';
+  quieted text[] := '{}';  -- tables whose triggers are off, by name
+  paused text[] := '{}';   -- 'table|trigger' pairs to switch back on
+  pair text;
+  tg text;
 BEGIN
   IF NOT coalesce('tasks.title' = ANY (known), false) THEN
     RAISE EXCEPTION 'scrub: known-column list (-v known) is empty or malformed';
@@ -690,8 +699,22 @@ BEGIN
       WHEN r.dt = 'ARRAY' THEN format('ARRAY[''x'' || md5(%I::text)]', r.col)
       ELSE format('left(''x'' || md5(%I::text), %s)', r.col, coalesce(r.maxlen, 33))
     END;
+    IF NOT (r.t = ANY (quieted)) THEN
+      FOR tg IN
+        SELECT tgname::text FROM pg_trigger
+        WHERE tgrelid = format('public.%I', r.t)::regclass AND NOT tgisinternal AND tgenabled <> 'D'
+        ORDER BY 1
+      LOOP
+        EXECUTE format('ALTER TABLE %I DISABLE TRIGGER %I', r.t, tg);
+        paused := paused || (r.t || '|' || tg);
+      END LOOP;
+      quieted := quieted || r.t;
+    END IF;
     EXECUTE format('UPDATE %I SET %I = %s WHERE %I IS NOT NULL', r.t, r.col, val, r.col);
     wiped := wiped || (r.t || '.' || r.col);
+  END LOOP;
+  FOREACH pair IN ARRAY paused LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE TRIGGER %I', split_part(pair, '|', 1), split_part(pair, '|', 2));
   END LOOP;
   -- Schema names only (public code), never values.
   IF cardinality(wiped) > 0 THEN
