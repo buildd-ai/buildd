@@ -2,7 +2,6 @@
 
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { useEffect, useRef } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { healthItemFor, healthNavFor } from '@/lib/health-nav';
 
@@ -27,16 +26,6 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
   }, [active?.id]);
 
   const href = (base: string) => (workspace ? `${base}?workspace=${encodeURIComponent(workspace)}` : base);
-
-  const mobileNav = useRef<HTMLElement>(null);
-
-  // The mobile row scrolls sideways; bring the active tab into view (e.g. a clipped last tab).
-  useEffect(() => {
-    const nav = mobileNav.current;
-    const tab = nav?.querySelector<HTMLElement>('[aria-current="page"]');
-    if (!nav || !tab) return;
-    nav.scrollLeft = Math.max(0, tab.offsetLeft - (nav.clientWidth - tab.offsetWidth) / 2);
-  }, [active?.id]);
 
   return (
     <>
@@ -67,7 +56,6 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
         </nav>
       </div>
       <nav
-        ref={mobileNav}
         aria-label="Health"
         data-testid="health-subnav-mobile"
         className="md:hidden flex gap-1 overflow-x-auto px-4 mt-[var(--mobile-header-h,0px)] border-b border-border-default bg-surface-1"
