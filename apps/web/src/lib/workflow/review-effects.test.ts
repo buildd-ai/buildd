@@ -16,6 +16,7 @@ let executeRows: unknown[] = [];
 const inserted: any[] = [];
 const notes: any[] = [];
 let existingTask: { id: string } | null = null;
+let missionRow: any = null;
 let ownerRow: any = { id: 'owner-1', title: 'Fix the thing', description: 'd', missionId: 'm1', pathManifest: ['a.ts'], backend: 'claude', context: {} };
 let reviewerResult: any = { structuredOutput: { verdict: 'request-changes', confidence: 0.9, summary: 's', feedback: 'check the caller task' } };
 let livePr: any = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
@@ -55,7 +56,7 @@ mock.module('@buildd/core/db', () => ({
       },
       workers: { findFirst: async (o: any) => { workerQueries.push(o); return ({ id: 'w1', branch: 'feat/x', prUrl: 'https://github.com/acme/w/pull/7', prBaseRef: 'dev', lastCommitSha: 'H1' }); } },
       workspaces: { findFirst: async () => ({ id: 'ws1', teamId: 'team1', gitConfig: null, releaseConfig: workspaceReleaseConfig }) },
-      missions: { findFirst: async () => null },
+      missions: { findFirst: async () => missionRow },
     },
     insert: (table: any) => ({
       values: (v: any) => {
@@ -110,7 +111,7 @@ beforeEach(() => {
   view = { delivery: D() as any, rounds: [round1], attempts: [] };
   executeRows = [];
   applied.length = 0; ingested.length = 0; executed.length = 0; inserted.length = 0; notes.length = 0;
-  existingTask = null; livePr = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
+  existingTask = null; missionRow = null; livePr = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
   roles = [{ slug: 'reviewer' }]; created = { id: 'reviewer-2' }; postResult = { posted: true };
   ghApi = (path) => { throw new Error(`no fake GitHub for ${path}`); }; workspaceReleaseConfig = null; ghCalls.length = 0;
   ownerRow = { id: 'owner-1', title: 'Fix the thing', description: 'd', missionId: 'm1', pathManifest: ['a.ts'], backend: 'claude', context: {} };
@@ -252,6 +253,68 @@ describe('dispatch_review', () => {
       expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'ok' });
       expect(ingested).toHaveLength(0);
       expect(mockCreateReviewer).toHaveBeenCalledTimes(1);
+    });
+
+    describe('a mission branch refresh PR (trunk merged into the integration branch)', () => {
+      const T = (m: Record<string, string>) => ({ truncated: false, tree: Object.entries(m).map(([path, sha]) => ({ path, mode: '100644', type: 'blob', sha })) });
+      /** Trunk's reviewed squash SQ1 (PR #11) and the agent's merge M, whose only decision is the specs index. */
+      const refreshPr = () => {
+        missionRow = { workingBranch: 'mission/x', integrationBranchEnabled: true };
+        const patch = (f: string) => ({ filename: f, status: 'modified', patch: `@@ -1 +1 @@\n-old\n+new ${f}` });
+        ghApi = (path) => {
+          if (path === '/repos/acme/w/pulls/7') return { head: { ref: 'buildd/abc-chore-mission-merge-dev', sha: 'H1' }, base: { ref: 'mission/x' } };
+          if (path.startsWith('/repos/acme/w/compare/mission%2Fx...H1')) return {
+            merge_base_commit: { sha: 'MS' }, base_commit: { sha: 'MS' }, total_commits: 2,
+            commits: [{ sha: 'SQ1', parents: [{ sha: 'B0' }], commit: { message: 'feat: one' } }, { sha: 'H1', parents: [{ sha: 'MS' }, { sha: 'SQ1' }], commit: { message: 'Merge dev' } }],
+            files: [{ filename: 'a.ts' }, { filename: 'docs/specs/INDEX.md' }],
+          };
+          if (path === '/repos/acme/w/commits/SQ1') return { files: [patch('a.ts')] };
+          if (path === '/repos/acme/w/commits/H1') return { files: [patch('a.ts'), patch('docs/specs/INDEX.md')] };
+          if (path === '/repos/acme/w/commits/SQ1/pulls') return [{ number: 11, merged_at: 't', base: { ref: 'dev' }, head: { sha: 'P11' } }];
+          if (path === '/repos/acme/w/compare/B0...P11') return { files: [patch('a.ts')] };
+          if (path === '/repos/acme/w/compare/SQ1...MS') return { status: 'diverged' };
+          if (path === '/repos/acme/w/compare/SQ1...dev') return { status: 'ahead' };
+          if (path === '/repos/acme/w/compare/MS...SQ1') return { merge_base_commit: { sha: 'B0' } };
+          const c = /\/git\/commits\/(\w+)$/.exec(path);
+          if (c) return { tree: { sha: `t-${c[1]}` } };
+          const idx = 'docs/specs/INDEX.md';
+          if (path === '/repos/acme/w/git/trees/t-B0?recursive=1') return T({ 'a.ts': 'b', [idx]: 'b' });
+          if (path === '/repos/acme/w/git/trees/t-MS?recursive=1') return T({ 'a.ts': 'b', [idx]: 'm' });
+          if (path === '/repos/acme/w/git/trees/t-SQ1?recursive=1') return T({ 'a.ts': 'd', [idx]: 'd' });
+          if (path === '/repos/acme/w/git/trees/t-H1?recursive=1') return T({ 'a.ts': 'd', [idx]: 'md' });
+          throw new Error(`unexpected ${path}`);
+        };
+      };
+      const withLedger = async (fn: () => Promise<void>) => {
+        const db = (await import('@buildd/core/db')).db as any;
+        const realExec = db.execute;
+        db.execute = async (q: any) => {
+          const text = JSON.stringify(q.queryChunks?.map((c: any) => c.value ?? '').flat());
+          if (text.includes('composition_constituents')) return { rows: [{ id: 'd11', pr_number: 11, approved_heads: ['P11'], rounds: [{ id: 'r11', head_sha: 'P11', status: 'decided', effective_verdict: 'approve' }] }] };
+          return realExec(q);
+        };
+        try { await fn(); } finally { db.execute = realExec; }
+      };
+
+      test('a resolution of generated files only is attested with no reviewer', async () => {
+        refreshPr();
+        ownerRow = { ...ownerRow, context: { requireMergeCommit: true, refreshTrunk: 'dev', refreshTrunkSha: 'SQ1' } };
+        view = { delivery: D({ state: 'AWAITING_REVIEW', baseRef: 'mission/x' }) as any, rounds: [{ ...round1, status: 'queued', verdict: null, effectiveVerdict: null, reviewerTaskId: null }], attempts: [] };
+        await withLedger(async () => {
+          expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'ok:composition_attested' });
+        });
+        expect(mockCreateReviewer).not.toHaveBeenCalled();
+        expect(ingested[0]).toMatchObject({ kind: 'composition_attested', attestation: { novelDelta: { result: 'none' } } });
+      });
+
+      test('the same PR without the refresh context is an ordinary task PR: full review, no composition read', async () => {
+        refreshPr();
+        view = { delivery: D({ state: 'AWAITING_REVIEW', baseRef: 'mission/x' }) as any, rounds: [{ ...round1, status: 'queued', verdict: null, effectiveVerdict: null, reviewerTaskId: null }], attempts: [] };
+        expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'ok' });
+        expect(ingested).toHaveLength(0);
+        expect(ghCalls.some((p) => p.includes('/compare/'))).toBe(false);
+        expect(mockCreateReviewer).toHaveBeenCalledTimes(1);
+      });
     });
 
     test('an ordinary PR is never checked for composition', async () => {
