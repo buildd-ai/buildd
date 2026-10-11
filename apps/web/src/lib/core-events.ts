@@ -83,6 +83,20 @@ export interface WorkerTaskOutcome {
   heldAnalytics?: HeldOutcomeAnalytics | null;
 }
 
+/** One START that overrode a HOLD (docs/specs/force-start.md §Recording). */
+export interface OverrideStart {
+  actor: 'human_force' | 'jev_start';
+  decisionId: string;
+  policyPrefix: string;
+  /** Primary lifted gate: `${policyPrefix}.${primary}`. */
+  primary: string;
+  task: { id: string; workspaceId: string; missionId: string | null; teamId: string };
+  workerId: string;
+  reasonsDigest: string;
+  candidateCount: number;
+  receipt: Record<string, unknown>;
+}
+
 type WorkerOutcomeType = 'task.completed' | 'task.failed' | 'task.retrying';
 /** One member per type, so `Extract<CoreEvent, { type: 'task.completed' }>` sees it. */
 type WorkerOutcomeEvent = { [T in WorkerOutcomeType]: { type: T } & WorkerTaskOutcome }[WorkerOutcomeType];
@@ -102,6 +116,13 @@ export type CoreEvent =
    * task drops it here (the surface audit's dependsOn).
    */
   | { type: 'task.left_mission'; taskId: string; missionId: string; workspaceId: string | null }
+  /**
+   * A claim STARTed a task a gate would have HELD, because someone overrode
+   * it: a person's Force start today (lib/force-start.ts), a later Jev START
+   * path tomorrow. Once per overriding claim. The decisions module records it
+   * as an `orchestration_decisions` row the outcome join grades.
+   */
+  | { type: 'task.override_started'; override: OverrideStart }
   /**
    * A worker reported completed/failed/error and the task row is written.
    * Fires for auto-retries and loop iterations too. `status` is what the
@@ -165,6 +186,16 @@ export type CoreEvent =
         apiAccount: { id: string; name?: string | null } | null;
         workerId: string | null;
       };
+    }
+  /**
+   * POST /api/workers/claim claimed these tasks and is about to answer. The
+   * claim awaits its subscribers, so each must be bounded and fail open: it
+   * may prepare what the worker starts from (a mission branch refresh), never
+   * refuse or fail the claim.
+   */
+  | {
+      type: 'tasks.claimed';
+      tasks: Array<{ id: string; workspaceId: string; missionId: string | null; context: unknown }>;
     }
   /** A team row and its owner membership are written. */
   | { type: 'team.created'; teamId: string }

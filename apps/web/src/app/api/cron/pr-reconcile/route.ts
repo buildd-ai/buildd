@@ -73,7 +73,7 @@
 // three sweeps stayed dead for months (PR #2125).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { reconcileStalePrWorkers, sweepMissionIntegrationPrs } from '@/lib/pr-reconcile';
+import { reconcileStalePrWorkers, sweepMissionIntegrationPrs, sweepManualMissionCompletions } from '@/lib/pr-reconcile';
 import { sweepDeadZonePrs } from '@/lib/dead-zone-sweep';
 import { sweepStrandedTasks } from '@/lib/stranded-tasks-sweep';
 import { sweepSpecDiscrepancyRechecks } from '@/lib/spec-recheck';
@@ -123,9 +123,19 @@ export async function GET(req: NextRequest) {
       // Isolated, unlike the other two: healing merge state is the time-critical
       // half of this route, and a mission-sweep failure must not throw away
       // reconcile work that already landed in the database.
-      sweepMissionIntegrationPrs().catch(err => ({
-        error: err instanceof Error ? err.message : String(err),
-      })),
+      sweepMissionIntegrationPrs()
+        .then(async res => {
+          // Manual direct missions the integration sweep never selects: a lost
+          // merge webhook leaves their criteria stale. Best effort, never fails
+          // the integration result.
+          const manualCompletion = await Promise.resolve()
+            .then(() => sweepManualMissionCompletions())
+            .catch(err => ({ error: err instanceof Error ? err.message : String(err) }));
+          return { ...res, manualCompletion };
+        })
+        .catch(err => ({
+          error: err instanceof Error ? err.message : String(err),
+        })),
       // The backstop half of keeping mission branches current with dev
       // (lib/mission-branch-refresh.ts) — covers a lost webhook delivery.
       // Hourly, like merge-state healing: a mission branch left stale for a
