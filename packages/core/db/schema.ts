@@ -6109,7 +6109,7 @@ export const orchestrationDecisions = pgTable('orchestration_decisions', {
   outputTokens: integer('output_tokens'),
   costUsd: real('cost_usd'),
   // Applying-cohort assignment, recorded at draw time (never reconstructed).
-  experimentArm: text('experiment_arm').notNull().$type<'apply' | 'observe'>(),
+  experimentArm: text('experiment_arm').notNull().$type<'apply' | 'observe' | 'human'>(),
   propensity: real('propensity').notNull(),
   applyingFraction: real('applying_fraction').notNull(),
   // The kit's content-free DecisionReceipt (model, usage, latency, attempts).

@@ -83,6 +83,10 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   'packages/core/model-tier-ceiling.ts',
   'packages/core/model-tier-ceiling-store.ts',
   'apps/web/src/lib/tier-ceiling-check.ts',
+  // Coordination holds (docs/specs/force-start.md): which tasks hold a pending
+  // task and why. The start gate and the claim probe decide on them, so they
+  // are core coordination, not the explain feature `explain` misfiles them as.
+  'apps/web/src/lib/explain-coordination.ts',
 ]);
 
 export function moduleOf(path: string): Owner {
