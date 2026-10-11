@@ -1846,6 +1846,7 @@ export async function POST(req: NextRequest) {
             title: task.title,
             taskClass: task.taskClass,
             pathManifest: (task.pathManifest as string[] | null) ?? null,
+            context: task.context,
           },
           targetWorkspace,
         });

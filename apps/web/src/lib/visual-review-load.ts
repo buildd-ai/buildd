@@ -154,7 +154,7 @@ export async function loadVisualReview(
     browserRunnerOnline: runnerOnline,
     requiredRoutesOf: t => auditRequiredRoutes(
       { context: t.context },
-      (t.dependsOn ?? []).map(d => (byId.get(d) as TaskRow | undefined)?.pathManifest ?? null),
+      (t.dependsOn ?? []).map(d => byId.get(d) as TaskRow | undefined),
     ),
     captureRef,
     missionIntegrationBranch,
