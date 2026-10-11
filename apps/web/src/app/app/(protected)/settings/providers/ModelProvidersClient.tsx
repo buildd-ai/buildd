@@ -113,10 +113,10 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
                 onToggle={(o) => setOpenRow(o ? key : null)}
                 signIn={!slots ? null : g.id === 'claude' ? slots.claude : g.id === 'openai' ? slots.openai : null}
                 form={rowScope === 'workspace'
-                  ? (g.id === 'custom-endpoint' ? <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces.filter((w) => w.id === workspaceId)} rev={gatewayRev} embedded /> : null)
+                  ? (g.id === 'custom-endpoint' ? <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces.filter((w) => w.id === workspaceId)} rev={gatewayRev} embedded scope={{ workspaceId: workspaceId! }} /> : null)
                   : rowScope !== 'team' ? null
                   : g.id === 'litellm' ? <GatewayCard teamId={teamId} canManage={canManageRouting} embedded onChanged={() => { setGatewayRev((r) => r + 1); void load(); }} />
-                  : g.id === 'custom-endpoint' ? <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces} rev={gatewayRev} embedded />
+                  : g.id === 'custom-endpoint' ? <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces} rev={gatewayRev} embedded scope="team" />
                   : null}
               />
             );

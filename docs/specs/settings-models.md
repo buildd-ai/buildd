@@ -185,5 +185,3 @@ Decisions.
 - AC-8 to AC-10 (personal key first for agent runs) are held by the resolver
   and claim tests listed in `team-permissions` and `provider-resolve`; the
   dashboard copy for a stored non-default policy is not screenshot-tested.
-- A custom endpoint's per-workspace scope can still be added from the team
-  row; the workspace page is the intended home for it.

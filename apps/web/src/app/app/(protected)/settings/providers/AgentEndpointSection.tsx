@@ -17,6 +17,10 @@ import { mappingSummary, prefillSource } from './endpoint-summary';
  * One team endpoint is the main card ("Applies to: N workspaces"); a
  * workspace's own row is a compact override under it. A mapping shows as one
  * summary line with the full table behind a disclosure.
+ *
+ * `scope` narrows it for the Models page: 'team' is the team endpoint only,
+ * naming the workspaces with their own and linking to them; a workspace id is
+ * that workspace's own endpoint only, set on its settings page.
  */
 
 type Kind = 'gateway' | 'openrouter' | 'anthropic-compatible' | 'cloudflare';
@@ -116,9 +120,11 @@ function health(e: MaskedAgentEndpointView): { tone: ChipTone; label: string; de
   return { tone: 'warning', label: 'Not confirmed', detail: e.lastVerificationError };
 }
 
-export default function AgentEndpointSection({ teamId, canManage, workspaces, rev = 0, embedded = false }: {
+export default function AgentEndpointSection({ teamId, canManage, workspaces, rev = 0, embedded = false, scope }: {
   /** Drawn inside the provider list's custom endpoint row, which already names it. */
   embedded?: boolean;
+  /** 'team': the team endpoint only. A workspace id: that workspace's endpoint only. Absent: both. */
+  scope?: 'team' | { workspaceId: string };
   teamId: string;
   canManage: boolean;
   workspaces: EndpointWorkspace[];
@@ -154,10 +160,14 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
 
   // Team-wide first, then workspaces by name (the server's order).
   const routes = endpoints ?? [];
-  const team = routes.find((e) => e.scope === 'team') ?? null;
-  const overrides = routes.filter((e) => e.scope === 'workspace' && e.workspaceId);
-  const copies: WorkspaceCopy[] = overrides.map((e) => ({ workspaceId: e.workspaceId!, matchesTeam: !!e.matchesTeam }));
-  const free = workspaces.filter((w) => !overrides.some((r) => r.workspaceId === w.id));
+  const teamRoute = routes.find((e) => e.scope === 'team') ?? null;
+  const allOverrides = routes.filter((e) => e.scope === 'workspace' && e.workspaceId);
+  const copies: WorkspaceCopy[] = allOverrides.map((e) => ({ workspaceId: e.workspaceId!, matchesTeam: !!e.matchesTeam }));
+  const only = typeof scope === 'object' ? scope.workspaceId : null;
+  const team = only ? null : teamRoute;
+  const overrides = scope === 'team' ? [] : only ? allOverrides.filter((e) => e.workspaceId === only) : allOverrides;
+  const elsewhere = scope === 'team' ? allOverrides : [];
+  const free = scope === 'team' ? [] : workspaces.filter((w) => !overrides.some((r) => r.workspaceId === w.id));
   const idle = canManage && editing === null;
 
   return (
@@ -165,8 +175,10 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
       {!embedded && <h2 id="agent-endpoint-h" className="section-label mb-3">Agent model endpoint</h2>}
       <div className={embedded ? 'space-y-3 text-xs' : 'card p-4 space-y-3 text-xs'}>
         {endpoints === undefined && <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Loading…</p>}
-        {endpoints !== undefined && routes.length === 0 && (
-          <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Anthropic (default)</p>
+        {endpoints !== undefined && (only ? overrides.length === 0 : routes.length === 0) && (
+          <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">
+            {only && teamRoute ? 'Uses the team endpoint.' : 'Anthropic (default)'}
+          </p>
         )}
         {team && (
           <TeamRoute endpoint={team} teamId={teamId} canManage={idle} workspaces={workspaces} copies={copies}
@@ -183,7 +195,18 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
             </ul>
           </div>
         )}
-        {routes.length > 0 && (!team || team.appliesTo) && (
+        {elsewhere.length > 0 && (
+          <p className="text-text-secondary" data-testid="agent-endpoint-elsewhere">
+            Own endpoint:{' '}
+            {elsewhere.map((e, i) => (
+              <span key={e.id}>
+                {i > 0 && ', '}
+                <a className="underline" href={`/app/settings/workspace/${e.workspaceId}#models`}>{e.workspaceName ?? 'a workspace'}</a>
+              </span>
+            ))}
+          </p>
+        )}
+        {!only && routes.length > 0 && (!team || team.appliesTo) && (
           <p className="text-text-secondary" data-testid="agent-endpoint-default">All other workspaces: Anthropic (default).</p>
         )}
         {routes.length > 0 && (
@@ -198,12 +221,14 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
         )}
         {idle && endpoints !== undefined && (!team || (routes.length > 0 && free.length > 0)) && (
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            {!team && (
+            {!team && !only && (
               <button className="btn" onClick={() => setEditing('')}>
                 {routes.length === 0 ? 'Set up an endpoint' : 'Set up a team endpoint'}
               </button>
             )}
-            {routes.length > 0 && free.length > 0 && (
+            {only ? overrides.length === 0 && (
+              <button className="btn" onClick={() => setEditing(only)}>Set up an endpoint for this workspace</button>
+            ) : routes.length > 0 && free.length > 0 && (
               <button className="btn btn-quiet" onClick={() => setEditing(free[0].id)}>Add a workspace override</button>
             )}
           </div>
