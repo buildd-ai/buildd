@@ -281,6 +281,38 @@ export async function readDecisionLedgerPage(f: DecisionLedgerFilters, limit = D
   return { rows: page, outcomes, truncated: rows.length > cap };
 }
 
+/** Newest rows read for a workspace's per-feature health; past it each readout covers the newest rows only. */
+export const DECISION_HEALTH_MAX_ROWS = 5_000;
+
+/**
+ * Every ledger row in a window, trimmed to what the per-feature health readout
+ * reads (decision-feature-health.ts), with the agent audit grades on them.
+ * Unlike a page, this covers every capability, so a quiet feature still shows.
+ */
+export async function readDecisionHealthRows(f: Pick<DecisionLedgerFilters, 'teamId' | 'workspaceId' | 'since' | 'until'>) {
+  const rows = await db.select({
+    id: decisionRecords.id, capability: decisionRecords.capability, status: decisionRecords.status, applied: decisionRecords.applied,
+    verdict: decisionRecords.verdict, reason: decisionRecords.reason, latencyMs: decisionRecords.latencyMs, costUsd: decisionRecords.costUsd,
+    overriddenAt: decisionRecords.overriddenAt,
+  }).from(decisionRecords)
+    .where(decisionLedgerWhere(f))
+    .orderBy(desc(decisionRecords.createdAt))
+    .limit(DECISION_HEALTH_MAX_ROWS + 1);
+  const page = rows.slice(0, DECISION_HEALTH_MAX_ROWS);
+  const outcomes = page.length
+    ? await db.select({ decisionRecordId: decisionOutcomes.decisionRecordId, source: decisionOutcomes.source, label: decisionOutcomes.label })
+      .from(decisionOutcomes)
+      .innerJoin(decisionRecords, eq(decisionRecords.id, decisionOutcomes.decisionRecordId))
+      .where(and(eq(decisionOutcomes.teamId, f.teamId), inArray(decisionOutcomes.source, ['agent_audit', 'agent_audit_rule']), decisionLedgerWhere(f)))
+      .orderBy(decisionOutcomes.recordedAt)
+    : [];
+  return {
+    rows: page.map(({ overriddenAt, ...r }) => ({ ...r, overridden: overriddenAt != null })),
+    outcomes,
+    truncated: rows.length > DECISION_HEALTH_MAX_ROWS,
+  };
+}
+
 type SummaryRow = Pick<typeof decisionRecords.$inferSelect, 'status' | 'verdict' | 'appliedAnswer' | 'reason' | 'humanOverride' | 'confidence'>;
 
 /**

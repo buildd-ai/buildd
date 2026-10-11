@@ -336,6 +336,8 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   post_note: { reason: 'worker-only', note: 'Posts to the calling worker\'s task feed.' },
   suggest_schedule_update: { reason: 'worker-only', note: 'A scheduled worker suggests changes to its own schedule.' },
   update_incident: { reason: 'not-yet', note: 'Acknowledging or resolving a sentinel incident is an MCP/API action for now; chat has no incident target or approval card.' },
+  get_decision: { reason: 'worker-only', note: 'The weekly decision audit reads one decision to grade it; people read the decision features readout instead.' },
+  label_decision: { reason: 'worker-only', note: 'The weekly decision audit grades decisions; a person corrects one with the override on the decision itself.' },
   list_workspaces: { reason: 'connection-only', note: 'Discovery for an MCP connection that reaches several workspaces; a chat conversation is already bound to its team and workspace.' },
 };
 
