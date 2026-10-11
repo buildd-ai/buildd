@@ -247,14 +247,16 @@ describe('listMcpTools — group tools', () => {
   // Raised from 5.1k / 4k when the listed actions' required params became
   // declared properties (task 6d3c3355): a schema-constrained model sends only
   // declared fields, so an undeclared params object reached buildd as {}.
-  it('keeps the whole groups surface under 5.6k tokens', () => {
+  // Raised from 5.6k / 4.5k for ask_human (task fd2e8396): an interactive
+  // session's one way to ask a person, listed under More: in the work group.
+  it('keeps the whole groups surface under 5.7k tokens', () => {
     const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(5600);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(5700);
   });
 
-  it('keeps a runner worker session (task token) under 4.5k tokens', () => {
+  it('keeps a runner worker session (task token) under 4.6k tokens', () => {
     const all = tools({ accountLevel: 'worker', isSensitive: false, surface: 'groups', principal: 'task_token' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(4500);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(4600);
   });
 
   it('names the rare actions on one More: line per group, and keeps them callable', () => {

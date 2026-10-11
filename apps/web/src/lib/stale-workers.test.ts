@@ -160,6 +160,22 @@ describe('cleanupStuckWaitingInput', () => {
     });
   });
 
+  // ask_human parks an interactive (runner = 'mcp') worker on a question. The
+  // runner rules skip those rows, so this sweep is their only expiry: it must
+  // not exclude them.
+  it('covers interactive workers parked on a question, not only runner ones', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    await cleanupStuckWaitingInput('account-1');
+    // drizzle-orm is stubbed in this file: predicates are plain objects.
+    const where = (mockWorkersFindMany.mock.calls[0] as any)[0].where;
+    const nodes: any[] = [];
+    const walk = (n: any) => { if (!n || typeof n !== 'object') return; nodes.push(n); (n.args ?? []).forEach(walk); };
+    walk(where);
+    expect(nodes.some(n => n.type === 'eq' && n.value === 'waiting_input')).toBe(true);
+    expect(nodes.some(n => n.type === 'ne' && n.value === 'mcp')).toBe(false);
+    expect(JSON.stringify(nodes.map(n => n.type))).not.toContain('sql');
+  });
+
   it('does nothing when no stuck waiting_input workers exist', async () => {
     mockWorkersFindMany.mockResolvedValue([]);
 

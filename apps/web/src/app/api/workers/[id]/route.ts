@@ -9,6 +9,7 @@ import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accou
 import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { keepsParkClock } from '@/lib/interactive-worker-liveness';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -1022,6 +1023,12 @@ export async function PATCH(
   const updates: Partial<typeof workers.$inferInsert> = {
     updatedAt: new Date(),
   };
+  // An interactive worker parked on a question (ask_human) expires on the
+  // waiting_input sweep's clock, measured from updated_at. The session's
+  // receive_messages polls while it waits must not keep pushing it forward.
+  // Rewriting the stored value (rather than dropping the key) keeps the SET
+  // non-empty for a PATCH that carries nothing else.
+  if (keepsParkClock(worker, { status, waitingFor })) updates.updatedAt = worker.updatedAt;
 
   // Record the runner's protocol capability so /instruct and /cmd know whether a
   // delivery can ever be confirmed for this worker.
