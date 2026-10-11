@@ -184,11 +184,13 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
   }
 
   // 3. A live worker: the work is in progress, whatever an earlier run said.
+  // The Now strip says what the agent is doing, so the row adds only the PR
+  // (a bare 'In progress' is dropped as equal to the label).
   if (input.live) {
     return {
       ...base,
       state: 'in_progress',
-      headline: pr ? `Working · PR #${pr.number} open` : 'Working',
+      headline: pr ? `PR #${pr.number} open` : 'In progress',
       cause: null,
       actions: [],
       causeKey: 'in_progress:worker',
