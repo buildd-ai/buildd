@@ -83,7 +83,7 @@ describe("a team admin's Failures", () => {
   it("reads only their own team's workspaces, whatever team the cookie names", async () => {
     const loaded = await loadHealth({ page: 'failures', userId: 'admin-a', teamIds: ['team-a'], searchParams: {} });
     expect(loaded.kind).toBe('ok');
-    expect(reads.map(r => r.source).sort()).toEqual(['agentAccess', 'failureAnalytics', 'incidents', 'traces', 'workers']);
+    expect(reads.map(r => r.source).sort()).toEqual(['agentAccess', 'failureAnalytics', 'traces', 'workers']);
     for (const r of reads.filter(r => r.source !== 'traces')) {
       expect(r.ids.length).toBeGreaterThan(0);
       for (const id of r.ids) expect(TEAM_A.has(id)).toBe(true);
@@ -101,6 +101,7 @@ describe("a team admin's Failures", () => {
   it('narrows to one of their own workspaces when asked', async () => {
     await loadHealth({ page: 'failures', userId: 'admin-a', teamIds: ['team-a'], searchParams: { workspace: 'ws-a2' } });
     expect(reads.find(r => r.source === 'failureAnalytics')?.ids).toEqual(['ws-a2']);
-    expect(reads.find(r => r.source === 'incidents')?.ids).toEqual(['ws-a2']);
+    // Incident state is the platform operator's; a team's Failures never reads it.
+    expect(reads.find(r => r.source === 'incidents')).toBeUndefined();
   });
 });
