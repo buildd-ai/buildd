@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import PrCard, { LineageChain, type PrOutcome } from './PrCard';
+import { buildLineage, diffStatsRecorded } from '@/app/app/(protected)/tasks/[id]/pr-lineage';
 
 const outcome = (attempts: PrOutcome['attempts']): PrOutcome => ({
   repoLabel: 'acme/web',
@@ -235,5 +236,32 @@ describe('PR outcome numbers', () => {
     expect(html).toContain('+7');
     expect(html).toContain('−0');
     expect(html).toMatch(/>Files</);
+  });
+});
+
+// Surface audit (task eed1b3d8): a merged PR whose worker never recorded its
+// counters read "+0 −0 · 0 Files · 0 Commits" and "0 commits, PR opened".
+describe('merged PR with unrecorded stats', () => {
+  it('shows neither zero numbers nor a zero commit count', () => {
+    const attempts = [{ runner: 'mcp', roleName: 'Builder', commits: 0, add: 0, rem: 0, files: 0, createdAt: 0, startedAt: 1_000, completedAt: 60_000, headSha: 'ccccccc3' }];
+    const lineage = buildLineage({ attempts, retries: [], pr: { lifecycle: 'merged', mergedAt: 90_000 } });
+    const html = render({
+      prLifecycleStatus: 'merged',
+      outcome: {
+        summary: 'Shipped.',
+        totals: { ...lineage.totals, measured: diffStatsRecorded(attempts) },
+        attempts: attempts.map(a => ({ add: a.add, rem: a.rem, files: a.files })),
+        lineage: lineage.steps,
+        commits: [],
+      },
+    });
+    expect(html).toContain('data-testid="pr-outcome"');
+    expect(html).toContain('data-testid="pr-lineage"');
+    expect(html).not.toMatch(/>\+0</);
+    expect(html).not.toMatch(/>Added</);
+    expect(html).not.toMatch(/>Files</);
+    expect(html).not.toMatch(/>Commits?</);
+    expect(html).not.toContain('0 commits');
+    expect(html).toContain('PR opened');
   });
 });

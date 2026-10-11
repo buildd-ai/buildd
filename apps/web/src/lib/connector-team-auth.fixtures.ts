@@ -5,7 +5,7 @@
  * team role (`null`/`undefined` = no membership, which holds nothing). An API
  * key holds a permission in its own team at the registry's key floor.
  *
- * The real `can` (membership rows, personal-team fallback, overrides) is
+ * The real `can` (membership rows, personal-team fallback) is
  * covered by connector-team-auth.test.ts.
  */
 import { keyLevelHas, roleHas, type Permission, type TeamScopeCaller } from './permission-registry';

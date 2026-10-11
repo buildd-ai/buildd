@@ -95,7 +95,6 @@ import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
-
 // --- Helpers ---
 
 

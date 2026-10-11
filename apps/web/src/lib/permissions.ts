@@ -34,7 +34,6 @@ import {
   holds,
   keyHolds,
   PERMISSIONS,
-  type ApiKeyLevel,
   type Permission,
   type TeamRole,
   type TeamScopeCaller,
@@ -54,7 +53,6 @@ export {
   type TeamRole,
   type TeamScopeCaller,
 } from './permission-registry';
-
 
 /**
  * Every team the user belongs to, with their role in it. The user's personal
@@ -79,37 +77,20 @@ export const getUserTeamRoles = cache(async (userId: string): Promise<Map<string
   return roles;
 });
 
-/** A role grant plus key floor, the shape every check below resolves to. */
-type Grant = {
-  roles: readonly TeamRole[];
-  minKeyLevel: ApiKeyLevel | null;
-};
-
-/**
- * Scoped tokens carry `scopes`, not a level. Callers map them to a level
- * before asking (e.g. an `admin` scope → 'admin'), as the memory review route
- * does today; `can` reads only `level`.
- */
-
-async function teamIdsGranted(caller: TeamScopeCaller, grant: Grant): Promise<string[]> {
-  if (caller.kind === 'account') {
-    return keyHolds(grant.minKeyLevel, caller.level) ? [caller.teamId] : [];
-  }
-  const roles = [...(await getUserTeamRoles(caller.userId))];
-  return roles.filter(([, role]) => holds(grant.roles, role)).map(([teamId]) => teamId);
-}
-
-function grantFor(permission: Permission): Grant {
-  return { roles: PERMISSIONS[permission].defaultRoles, minKeyLevel: PERMISSIONS[permission].minKeyLevel };
-}
-
 /**
  * The teams in which the caller holds `permission`: for a session, teams whose
  * role grants it; for an API key, the key's own team when its level does,
- * otherwise none.
+ * otherwise none. Scoped tokens carry `scopes`, not a level: callers map them
+ * to a level before asking (e.g. an `admin` scope → 'admin'), as the memory
+ * review route does; this reads only `level`.
  */
 export async function teamIdsWhere(caller: TeamScopeCaller, permission: Permission): Promise<string[]> {
-  return teamIdsGranted(caller, grantFor(permission));
+  const { defaultRoles, minKeyLevel } = PERMISSIONS[permission];
+  if (caller.kind === 'account') {
+    return keyHolds(minKeyLevel, caller.level) ? [caller.teamId] : [];
+  }
+  const roles = [...(await getUserTeamRoles(caller.userId))];
+  return roles.filter(([, role]) => holds(defaultRoles, role)).map(([teamId]) => teamId);
 }
 
 /** Whether the caller holds `permission` in `teamId`. Fails closed. */
