@@ -15,7 +15,7 @@ import { assertDbConfigured, q, seedWorkspace } from './harness';
 const { db } = await import('@buildd/core/db');
 const { artifacts, conversationMessages } = await import('@buildd/core/db/schema');
 const {
-  createChatUpload, finalizeChatUpload, cancelChatUpload, bindChatFiles, fileRefPart, fileRefOf,
+  createChatUpload, finalizeChatUpload, cancelChatUpload, bindChatFiles, checkChatFiles, fileRefPart, fileRefOf,
   conversationFiles, conversationFile, storeChatUploadBytes, chatUploadKey,
 } = await import('../../src/lib/artifact-chat-files');
 const { linkChatAttachments } = await import('../../src/lib/artifact-chat-attachments');
@@ -113,6 +113,23 @@ describe('an image and a PDF, sent and reloaded', () => {
     expect(first.ok && retry.ok && first.refs[0]!.artifactId === retry.refs[0]!.artifactId).toBe(true);
     const otherConv = await conversation(teamA, userA);
     expect(await bindChatFiles({ id: otherConv, teamId: teamA }, userA, d)).toMatchObject({ ok: false, status: 409, code: 'file_taken' });
+  });
+
+  test('the check a turn runs before spending returns the same references and ties nothing to the conversation', async () => {
+    const u = await upload(teamA, userA, 'check.png', 'image/png', PNG);
+    await finalizeChatUpload(u.artifactId, userA, [teamA], { storage });
+    const d = [{ kind: 'file' as const, id: u.artifactId, name: '', mediaType: '', sizeBytes: 0 }];
+    const checked = await checkChatFiles({ id: convA, teamId: teamA }, userA, d);
+    expect(checked.ok).toBe(true);
+    // Not bound: a refused message leaves the file free to send in another conversation.
+    const elsewhere = await conversation(teamA, userA);
+    const bound = await bindChatFiles({ id: elsewhere, teamId: teamA }, userA, d);
+    expect(bound.ok).toBe(true);
+    if (checked.ok && bound.ok) expect(checked.refs).toEqual(bound.refs);
+    // Once bound, the check refuses it for any other conversation, as the bind does.
+    expect(await checkChatFiles({ id: convA, teamId: teamA }, userA, d)).toMatchObject({ ok: false, status: 409, code: 'file_taken' });
+    // Another team's member is refused like the bind.
+    expect(await checkChatFiles({ id: convB, teamId: teamB }, userB, d)).toMatchObject({ ok: false, status: 409, code: 'file_not_found' });
   });
 
   test('no artifact route or workspace listing reaches a chat file', async () => {
