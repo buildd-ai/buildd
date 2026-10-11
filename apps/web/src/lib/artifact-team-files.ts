@@ -15,13 +15,13 @@
  * its object, and whatever a crash leaves behind the maintenance sweep takes.
  * If the team delete fails, the batch rolls back and nothing was detached.
  *
- * An object is removed only after its row is gone, and only when no other
- * artifact row still holds the same storage key.
+ * An object (and its upload staging copy) is removed only after its row is
+ * gone, and only when no other artifact row still holds the same storage key.
  */
 import { db } from '@buildd/core/db';
 import { artifacts, specs, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { defaultUploadStorage, type UploadStorage } from '@/lib/artifact-upload';
+import { defaultUploadStorage, removeUploadObjects, type UploadStorage } from '@/lib/artifact-upload';
 
 const detached = sql`(${artifacts.workspaceId} IS NULL AND ${artifacts.workerId} IS NULL AND ${artifacts.metadata} ? 'storageOrphan')`;
 
@@ -73,7 +73,7 @@ export async function removeDetachedTeamFiles(opts: { teamId?: string; limit?: n
     if (!key) continue;
     const shared = await db.select({ id: artifacts.id }).from(artifacts).where(eq(artifacts.storageKey, key)).limit(1);
     if (shared.length > 0) continue;
-    await storage.remove(key).then(() => { objectsRemoved++; }, (err) => {
+    await removeUploadObjects(storage, key).then(() => { objectsRemoved++; }, (err) => {
       console.error('[team-files] stored object not removed', err instanceof Error ? err.message : err);
     });
   }

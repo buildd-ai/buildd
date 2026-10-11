@@ -35,6 +35,7 @@ async function upload(cols: { workspaceId?: string; workerId?: string; visibilit
     shareToken: cols.visibility ? `tok-${rand()}` : null,
   }).returning({ id: artifacts.id });
   objects.add(key);
+  objects.add(`${key}.upload`); // a staging copy a late PUT to the old upload URL left
   return { id: a!.id, key };
 }
 
@@ -80,10 +81,12 @@ describe('a deleted team’s stored files', () => {
 
     expect(r).toEqual({ removed: 2, objectsRemoved: 2 });
     expect(objects.has(wsFile.key)).toBe(false);
+    expect(objects.has(`${wsFile.key}.upload`)).toBe(false);
     expect(objects.has(workerFile.key)).toBe(false);
     expect(await rowExists(wsFile.id)).toBe(false);
     expect(await rowExists(workerFile.id)).toBe(false);
     expect(objects.has(other.key)).toBe(true);
+    expect(objects.has(`${other.key}.upload`)).toBe(true);
     expect(await rowExists(other.id)).toBe(true);
   });
 
