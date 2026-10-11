@@ -19,7 +19,8 @@ const mockRetrigger = mock((_id: string, _reason: MissionWakeReason) =>
   Promise.resolve({ action: 'retriggered' as const }),
 );
 const mockIsBlocked = mock((_m: any) => Promise.resolve({ blocked: false }) as any);
-const deps = { retrigger: mockRetrigger as any, isMissionBlocked: mockIsBlocked as any };
+const mockComplete = mock((_id: string, _opts: any) => Promise.resolve({ completed: true }) as any);
+const deps = { retrigger: mockRetrigger as any, isMissionBlocked: mockIsBlocked as any, complete: mockComplete as any };
 
 function mission(overrides: Record<string, unknown> = {}) {
   return {
@@ -42,6 +43,8 @@ describe('wakeMission', () => {
     mockRetrigger.mockImplementation(() => Promise.resolve({ action: 'retriggered' as const }));
     mockIsBlocked.mockReset();
     mockIsBlocked.mockImplementation(() => Promise.resolve({ blocked: false }));
+    mockComplete.mockReset();
+    mockComplete.mockImplementation(() => Promise.resolve({ completed: true }));
   });
 
   const reasons: MissionWakeReason[] = ['dependency_met', 'resumed', 'budget_raised', 'pr_merged', 'owner_note', 'owner_answer'];
@@ -57,6 +60,35 @@ describe('wakeMission', () => {
     missionRow = mission({ orchestrationMode: 'manual' });
     expect(await wakeMission('m1', 'owner_note', deps)).toEqual({ woken: false, reason: 'manual' });
     expect(mockRetrigger).not.toHaveBeenCalled();
+  });
+
+  // A manual mission's PR that merges after its task already completed is the
+  // only event that can turn its criteria green; nothing else re-checks them.
+  // Completing is not starting work, so manual does not suppress it.
+  it.each(['pr_merged', 'pr_resolved'] as MissionWakeReason[])('still attempts completion for a manual mission on %s', async (reason) => {
+    missionRow = mission({ orchestrationMode: 'manual' });
+    expect(await wakeMission('m1', reason, deps)).toEqual({ woken: false, reason: 'manual' });
+    expect(mockRetrigger).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledTimes(1);
+    expect(mockComplete.mock.calls[0][0]).toBe('m1');
+    expect(mockComplete.mock.calls[0][1]).toMatchObject({ path: 'criteria_eval' });
+  });
+
+  it.each(['owner_note', 'owner_answer', 'resumed', 'budget_raised', 'dependency_met'] as MissionWakeReason[])('does not attempt completion for a manual mission on %s', async (reason) => {
+    missionRow = mission({ orchestrationMode: 'manual' });
+    await wakeMission('m1', reason, deps);
+    expect(mockComplete).not.toHaveBeenCalled();
+  });
+
+  it('an auto mission leaves completion to the retrigger', async () => {
+    await wakeMission('m1', 'pr_merged', deps);
+    expect(mockComplete).not.toHaveBeenCalled();
+  });
+
+  it('a failing completion attempt on a manual mission is reported, not raised', async () => {
+    missionRow = mission({ orchestrationMode: 'manual' });
+    mockComplete.mockImplementation(() => Promise.reject(new Error('boom')));
+    expect(await wakeMission('m1', 'pr_merged', deps)).toEqual({ woken: false, reason: 'error' });
   });
 
   it('is a no-op for a held mission', async () => {
