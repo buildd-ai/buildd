@@ -1,6 +1,6 @@
 import { expect, it, mock } from 'bun:test';
 const findMany = mock(async () => [
-  { id: 'worker', taskId: 'task', workspaceId: 'ws', status: 'completed', startedAt: new Date(1000), completedAt: new Date(2000), inputTokens: 100, outputTokens: 20, costUsd: '1.250000', costBasis: 'real', runner: 'mcp', task: { roleSlug: 'builder', tier: 'premium', routingContext: { resolvedTier: { tier: 'budget' }, routingReason: 'budget_downshift' } } },
+  { id: 'worker', taskId: 'task', workspaceId: 'ws', status: 'completed', startedAt: new Date(1000), completedAt: new Date(2000), inputTokens: 100, outputTokens: 20, costUsd: '1.250000', costBasis: 'real', runner: 'mcp', task: { roleSlug: 'builder', tier: 'premium', createdAt: new Date(500), dependencyCount: 2, ciRetryPrNumber: 7, routingContext: { resolvedTier: { tier: 'budget' }, routingReason: 'budget_downshift' } } },
   { id: 'alias', taskId: 'alias', workspaceId: 'ws', status: 'completed', startedAt: new Date(1000), task: { predictedModel: 'sonnet' } },
 ]);
 mock.module('@buildd/core/db', () => ({ db: { query: { workers: { findMany } } } }));
@@ -11,9 +11,12 @@ it('selects recorded worker usage and resolves the routed tier before the reques
   expect(rows[1].tier).toBe('standard');
   expect(rows[0]).toMatchObject({ costBasis: 'real', runner: 'mcp' });
   expect(rows[1]).toMatchObject({ costBasis: null, runner: null });
+  // What the time split needs: the queue start, whether it waited on other tasks, and fix tasks.
+  expect(rows[0]).toMatchObject({ taskCreatedAt: 500, taskHasDependencies: true, taskRetryKind: 'ci' });
+  expect(rows[1]).toMatchObject({ taskCreatedAt: null, taskHasDependencies: false, taskRetryKind: null });
   const options = findMany.mock.calls[0][0] as any;
   expect(options.columns).toMatchObject({ inputTokens: true, outputTokens: true, costUsd: true, costBasis: true, runner: true });
-  expect(options.with.task.columns).toMatchObject({ predictedModel: true });
+  expect(options.with.task.columns).toMatchObject({ predictedModel: true, createdAt: true, ciRetryPrNumber: true, conflictRetryPrNumber: true, reviewerRetryPrNumber: true });
   findMany.mockClear();
   expect(await fetchFlowWorkerRows([], new Date())).toEqual([]);
   expect(findMany).not.toHaveBeenCalled();
