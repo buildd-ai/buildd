@@ -323,9 +323,7 @@ export default function TaskActionZone({
         <div data-testid="task-blocked-waiting">
           <WaitingLine reasons={held.waitingReasons}>
             {waiting?.forceStart ? (
-              <p data-testid="task-force-pending" className="font-mono text-eyebrow text-text-secondary">
-                Force start requested. The next runner claim skips this wait.
-              </p>
+              <ForcePending />
             ) : held.canForce && (
               <button type="button" data-action="force_start_offer" onClick={() => start.present(held)} disabled={starting} className={QUIET_BTN}>
                 Force start…
@@ -357,9 +355,7 @@ export default function TaskActionZone({
           {held?.waitingReasons ? (
             <WaitingLine reasons={held.waitingReasons}>
               {waiting?.forceStart ? (
-                <p data-testid="task-force-pending" className="font-mono text-eyebrow text-text-secondary">
-                  Force start requested. The next runner claim skips this wait.
-                </p>
+                <ForcePending />
               ) : held.canForce && (
                 <button type="button" data-action="force_start_offer" onClick={() => start.present(held)} disabled={starting} className={QUIET_BTN}>
                   Force start…
@@ -520,6 +516,15 @@ export default function TaskActionZone({
         </div>
       )}
     </div>
+  );
+}
+
+/** An unexpired Force start awaiting its runner claim. */
+function ForcePending() {
+  return (
+    <p data-testid="task-force-pending" className="font-mono text-eyebrow text-text-secondary">
+      Force start requested. The next runner claim skips this wait.
+    </p>
   );
 }
 

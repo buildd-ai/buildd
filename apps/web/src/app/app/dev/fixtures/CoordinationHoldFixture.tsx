@@ -81,7 +81,7 @@ export default function CoordinationHoldFixture() {
     <div className="min-h-screen bg-surface-1 text-text-primary">
       <header className="border-b-2 border-border-strong px-4 py-4 md:px-8">
         <p className="section-label">Dev fixtures</p>
-        <h1 className="mt-1 font-mono text-[18px] font-semibold">Held by coordination</h1>
+        <h1 className="mt-1 font-mono text-title font-semibold">Held by coordination</h1>
       </header>
       <main className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-6 md:px-8">
         <Panel label="Queued, held by an open PR">

@@ -51,7 +51,7 @@ export default function WaitingLine({ reasons, children }: { reasons: WaitingRea
   return (
     <div data-testid="task-waiting-line" data-kind={head.kind} data-chip={chip} className="space-y-2 border border-border-default p-3">
       <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono text-meta">
-        <span className={`border px-1.5 py-0.5 text-chip font-semibold uppercase tracking-[1.4px] ${CHIP_TONE[chip]}`}>{CHIP_LABEL[chip]}</span>
+        <span className={`border px-1.5 py-0.5 text-chip font-semibold ${CHIP_TONE[chip]}`}>{CHIP_LABEL[chip]}</span>
         <span data-testid="task-waiting-headline" className="font-medium text-text-primary [overflow-wrap:anywhere]">
           {summarised ? summary.headline : <>Waiting on <BlockerLink r={head} /></>}
         </span>
