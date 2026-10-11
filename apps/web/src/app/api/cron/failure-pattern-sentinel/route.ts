@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     console.log(JSON.stringify({ event: 'failure_pattern_sentinel_backstop', ...counters }));
     report({
       processed: counters.workspacesEvaluated,
-      changed: counters.incidentsOpened + counters.incidentsUpdated,
+      changed: counters.incidentsOpened + counters.incidentsUpdated + counters.incidentsResolved,
       errors: counters.runFailures,
       result: { ...counters },
     });

@@ -904,3 +904,21 @@ describe('a turn\'s results: grouped by what produced them, after the answer', (
     expect(turn.querySelector('.kit-msg-head')?.textContent).toContain('buildd');
   });
 });
+
+describe('a message carrying a long paste (Living Specs C2)', () => {
+  it('shows a fixed card that opens a reader paging the text, never the whole paste in the feed', async () => {
+    const { messages } = fixtures.chatFixture('attachment');
+    await render(messages, 'attachment' as never);
+    const card = q('.kit-msg[data-role="user"] [data-testid="kit-attachment"]');
+    expect(card).not.toBeNull();
+    expect(card!.textContent).toContain('deploy-2026-10-10.log');
+    expect(card!.textContent).toContain('60,000 characters');
+    // The feed never holds the paste itself.
+    expect(container.textContent!.length).toBeLessThan(5_000);
+    await act(async () => { (q('[data-testid="kit-attachment-open"]') as HTMLButtonElement).click(); });
+    const text = () => document.querySelector('[data-testid="attachment-reader-text"]')?.textContent ?? '';
+    expect(text().length).toBe(20_000);
+    await act(async () => { (document.querySelector('[data-testid="attachment-reader-more"]') as HTMLButtonElement).click(); });
+    expect(text().length).toBe(40_000);
+  });
+});

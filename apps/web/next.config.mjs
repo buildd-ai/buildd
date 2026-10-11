@@ -30,10 +30,10 @@ export const SETTINGS_ROUTE_MOVES = [
   { source: '/app/team/:slug', destination: '/app/settings/roles/:slug' },
   { source: '/app/workspaces/:id/skills', destination: '/app/settings/roles' },
   // People: one Team page; another team opens there by id.
-  { source: '/app/teams/new', destination: '/app/settings/team/new' },
+  { source: '/app/teams/new', destination: '/app/settings/team?new=1' },
   { source: '/app/teams/:id', destination: '/app/settings/team?team=:id' },
   // Runners: configured in Settings, watched in Health.
-  { source: '/app/accounts/new', destination: '/app/settings/runners/tokens/new' },
+  { source: '/app/accounts/new', destination: '/app/settings/runners?new=1' },
   { source: '/app/workspaces/:id/runners', destination: '/app/health/runners?workspace=:id' },
   // Models: keys, routing, tiers and AI features on one page.
   { source: '/app/settings/providers', destination: '/app/settings/models' },
@@ -65,6 +65,19 @@ export const PAGE_MERGES = [
   { source: '/app/workers', destination: '/app/tasks' },
   { source: '/app/artifacts', destination: '/app/missions' },
   { source: '/app/insights', destination: '/app/health/insights' },
+  // Initiatives fold into Missions as a group filter (a mission's group is its initiative link).
+  { source: '/app/initiatives/new', destination: '/app/missions' },
+  { source: '/app/initiatives/:id', destination: '/app/missions?group=:id' },
+  { source: '/app/initiatives', destination: '/app/missions' },
+  // A job that ends in one action is a sheet on the page it starts from.
+  // The query passes through: a prefill or an alert's signed `?t=` survives.
+  { source: '/app/missions/new', destination: '/app/missions?new=1' },
+  { source: '/app/settings/team/new', destination: '/app/settings/team?new=1' },
+  { source: '/app/settings/runners/tokens/new', destination: '/app/settings/runners?new=1' },
+  // Notification and Pushover links: the reply opens on the task, the PR's
+  // actions in a sheet over Home.
+  { source: '/app/tasks/:id/respond', destination: '/app/tasks/:id?respond=1' },
+  { source: '/app/prs/:prNumber/act', destination: '/app/home?pr=:prNumber' },
 ];
 
 /** @type {import('next').NextConfig} */

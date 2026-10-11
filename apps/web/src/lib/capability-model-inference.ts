@@ -24,9 +24,10 @@
  * the call failed. Missing metadata never makes a call free.
  *
  * Fails closed by construction: the grant source and the ledger are seams
- * whose defaults refuse. The generic grant service (capability-grants.ts,
- * mission task 0bfbe2dc) supplies the first; a durable per-grant ledger the
- * second. Until both are wired, every request is refused with zero spend.
+ * whose null implementations (NO_GRANT_SERVICE, NO_LEDGER) refuse. Production
+ * wires the capability request service (capability-grants-store.ts) and the
+ * durable per-grant ledger (capability-model-inference-ledger.ts); a lookup or
+ * ledger that throws still refuses with zero spend.
  *
  * Spec: docs/specs/model-inference-agent-capability.md
  */
@@ -229,7 +230,12 @@ export type ModelInferenceRefusalCode =
 /** What the agent is shown about a call that ran. No key, URL or provider body. */
 export interface ModelInferenceReceipt {
   grantId: string;
+  /** The run the call was made for and charged to. */
+  taskId: string;
+  workerId: string;
   provider: ModelInferenceProvider;
+  /** The exact model id the grant allowed and the agent asked for. */
+  requestedModel: string;
   /** The versioned model that answered (or was asked, on failure). */
   model: string;
   operation: ModelInferenceOperation;
@@ -255,6 +261,8 @@ export interface ModelInferenceDeps {
   decide: <Q extends DecisionQuestions>(p: DecideParams<Q>) => Promise<DecideResult<Q>>;
   /** Fire-and-forget audit sink; never given credential material. */
   audit: (row: ModelInferenceAudit) => void;
+  /** Fire-and-forget spend receipt for a call that reached the provider (ai_usage). */
+  usage?: (row: ModelInferenceUsage) => void;
   now?: () => Date;
   newId?: () => string;
 }
@@ -265,6 +273,13 @@ export interface ModelInferenceAudit {
   grantId: string | null;
   expiresAt: Date | null;
   sideEffect: Record<string, unknown> | null;
+}
+
+export interface ModelInferenceUsage {
+  teamId: string;
+  accountId: string;
+  receipt: ModelInferenceReceipt;
+  outcome: 'ok' | 'error';
 }
 
 // ── Validation ───────────────────────────────────────────────────────────────
@@ -303,7 +318,8 @@ export function parseModelInferenceRequest(body: unknown): { ok: true; request: 
   };
 }
 
-function budgetIsSane(b: ModelInferenceBudget | null | undefined): b is ModelInferenceBudget {
+/** Every budget field positive, finite and inside MODEL_INFERENCE_LIMITS. The grant service validates requests with it too. */
+export function isSaneModelInferenceBudget(b: ModelInferenceBudget | null | undefined): b is ModelInferenceBudget {
   if (!b) return false;
   const L = MODEL_INFERENCE_LIMITS;
   const pos = (v: unknown, max: number) => typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= max;
@@ -335,7 +351,7 @@ export function checkGrant(
   if (!(grant.expiresAt instanceof Date) || Number.isNaN(grant.expiresAt.getTime()) || grant.expiresAt.getTime() <= now.getTime()) return 'grant_expired';
   if (!grant.operations.includes(request.operation)) return 'operation_not_allowed';
   if (!grant.models.includes(request.model)) return 'model_not_allowed';
-  if (!budgetIsSane(grant.budget)) return 'budget_invalid';
+  if (!isSaneModelInferenceBudget(grant.budget)) return 'budget_invalid';
   return null;
 }
 
@@ -478,7 +494,10 @@ export async function invokeModelInference(
 
   const receipt: ModelInferenceReceipt = {
     grantId: grant.grantId,
+    taskId: principal.taskId,
+    workerId: principal.workerId,
     provider: route.provider,
+    requestedModel: request.model,
     model: result.ok ? result.model : route.model,
     operation: request.operation,
     inputTokens: result.ok ? result.usage.inputTokens : 0,
@@ -496,6 +515,11 @@ export async function invokeModelInference(
     expiresAt: grant.expiresAt,
     sideEffect: { ...receipt, outcome },
   });
+  if (outcome !== 'not_sent') {
+    try {
+      deps.usage?.({ teamId: principal.teamId, accountId: principal.accountId, receipt, outcome });
+    } catch { /* a receipt never fails the call it records */ }
+  }
 
   if (result.ok) return { ok: true, answers: result.answers, receipt };
 
@@ -553,12 +577,54 @@ export const resolveTeamDecisionRoute: RouteResolver = async ({ teamId, workspac
   };
 };
 
+/** Live grants from the capability request service (capability-grants-store.ts). Lazy: server-only, and it imports this module. */
+export const capabilityGrantsGrantSource: ModelInferenceGrantSource = {
+  findLiveGrant: async (q) => (await import('./capability-grants-store')).capabilityGrantSource.findLiveGrant(q),
+};
+
+/** The durable per-grant ledger (capability-model-inference-ledger.ts). Lazy for the same reasons. */
+export const durableModelInferenceLedger: ModelInferenceLedger = {
+  reserve: async (r, b) => (await import('./capability-model-inference-ledger')).modelInferenceLedger.reserve(r, b),
+  settle: async (s) => (await import('./capability-model-inference-ledger')).modelInferenceLedger.settle(s),
+};
+
+/** An agent's call as an `ai_usage` row, so it shows in the team's usage beside every other decision. */
+export function modelInferenceUsageRow(u: ModelInferenceUsage) {
+  const r = u.receipt;
+  return {
+    teamId: u.teamId,
+    accountId: u.accountId,
+    planId: null,
+    tier: null,
+    surface: 'decision',
+    kind: MODEL_INFERENCE_CAPABILITY,
+    provider: r.provider,
+    model: r.model,
+    planSource: null,
+    inputTokens: r.inputTokens,
+    outputTokens: r.outputTokens,
+    // What the grant was charged: the provider's cost, or the reservation when it reported none.
+    costUsd: r.debitedUsd.toFixed(6),
+    costSource: r.costSource === 'provider' ? 'reported' as const : 'estimated' as const,
+    latencyMs: Math.max(0, Math.round(r.latencyMs)),
+    outcome: u.outcome,
+  };
+}
+
+const recordModelInferenceUsage = (u: ModelInferenceUsage): void => {
+  void (async () => {
+    const [{ db }, { aiUsage }] = await Promise.all([import('@buildd/core/db'), import('@buildd/core/db/schema')]);
+    await db.insert(aiUsage).values(modelInferenceUsageRow(u));
+  })().catch(() => {});
+};
+
 export function defaultModelInferenceDeps(audit: ModelInferenceDeps['audit']): ModelInferenceDeps {
   return {
-    grants: NO_GRANT_SERVICE,
-    ledger: NO_LEDGER,
+    grants: capabilityGrantsGrantSource,
+    ledger: durableModelInferenceLedger,
     resolveRoute: resolveTeamDecisionRoute,
     decide,
     audit,
+    usage: recordModelInferenceUsage,
   };
 }

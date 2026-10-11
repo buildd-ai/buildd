@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { UnifiedQuestion } from './question-hero';
 import { useKeyHints } from '@/components/KeyHints';
+import ClampText, { useClamp } from './ClampText';
 
 interface Props {
   question: UnifiedQuestion;
@@ -29,18 +30,24 @@ interface Props {
   density?: 'hero' | 'feed';
   /** Extra eyebrow content on the right (the task's scope, a link). */
   aside?: ReactNode;
+  /**
+   * Scroll the question to the top of the viewport, below the header, once
+   * when it first renders. Never again: a refresh must not pull the reader
+   * back from wherever they went.
+   */
+  landOnArrival?: boolean;
 }
 
 const DENSITY = {
   hero: {
-    section: 'px-5 py-5 md:px-10 md:py-9',
-    headline: 'mt-4 md:mt-5 text-[26px] md:text-[40px] font-bold leading-[1.15] tracking-[-0.5px]',
-    body: 'mt-3 md:mt-4 text-[14px] md:text-[16px]',
-    grid: 'mt-6 md:mt-8 gap-4 md:gap-6',
-    option: 'px-5 py-4 md:px-7 md:py-6',
-    optionLabel: 'mt-2 md:mt-3 text-[20px] md:text-[25px]',
-    optionDesc: 'mt-2 md:mt-3 text-[14px] md:text-[15px]',
-    form: 'mt-5 md:mt-6',
+    section: 'px-4 py-4 md:px-10 md:py-9',
+    headline: 'mt-2 md:mt-5 text-[24px] md:text-[40px] font-bold leading-[1.15] tracking-[-0.5px]',
+    body: 'mt-2 md:mt-4 text-[14px] md:text-[16px]',
+    grid: 'mt-3 md:mt-8 gap-2 md:gap-6',
+    option: 'px-3 py-2 md:px-7 md:py-6',
+    optionLabel: 'mt-0.5 md:mt-3 text-[20px] md:text-[25px]',
+    optionDesc: 'mt-1 md:mt-3 text-[13px] md:text-[15px]',
+    form: 'mt-3 md:mt-6',
     input: 'min-h-12 md:min-h-14 px-4 md:px-5',
     send: 'min-h-12 md:min-h-14 px-5 md:px-6',
   },
@@ -85,6 +92,7 @@ export default function QuestionHero({
   testId = 'task-question-hero',
   density = 'hero',
   aside,
+  landOnArrival = false,
 }: Props) {
   const d = DENSITY[density];
   const [freeText, setFreeText] = useState('');
@@ -93,6 +101,14 @@ export default function QuestionHero({
   // Number keys always answer; the keycaps and "Press 1 or 2" show only for
   // people who turned on keyboard hints (components/KeyHints.tsx).
   const hints = useKeyHints();
+  const sectionRef = useRef<HTMLElement>(null);
+  const landedRef = useRef(false);
+
+  useEffect(() => {
+    if (!landOnArrival || sent || landedRef.current) return;
+    landedRef.current = true;
+    sectionRef.current?.scrollIntoView({ block: 'start' });
+  }, [landOnArrival, sent]);
 
   useEffect(() => {
     if (!enableKeys || sent || options.length === 0) return;
@@ -109,9 +125,10 @@ export default function QuestionHero({
 
   return (
     <section
+      ref={sectionRef}
       data-testid={testId}
       data-density={density}
-      className={`bg-card border-2 border-accent shadow-[var(--accent-shadow)] ${d.section}`}
+      className={`scroll-mt-16 md:scroll-mt-4 bg-card border-2 border-accent shadow-[var(--accent-shadow)] ${d.section}`}
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px]">
         <span className="w-[9px] h-[9px] bg-accent shrink-0" aria-hidden="true" />
@@ -137,12 +154,11 @@ export default function QuestionHero({
         {question.headline}
       </h2>
       {question.context && (
-        <p
-          data-testid="question-brief-context"
+        <ClampText
+          testId="question-brief-context"
+          text={question.context}
           className={`${d.body} max-w-[64ch] leading-relaxed text-text-primary [overflow-wrap:anywhere]`}
-        >
-          {question.context}
-        </p>
+        />
       )}
       {question.body && (
         <p className={`${d.body} max-w-[64ch] leading-relaxed text-text-secondary [overflow-wrap:anywhere] whitespace-pre-line`}>
@@ -161,41 +177,18 @@ export default function QuestionHero({
           {options.length > 0 && (
             <div data-testid="worker-needs-input-options" className={`${d.grid} grid ${options.length === 2 ? 'md:grid-cols-2' : options.length > 2 ? 'md:grid-cols-2 xl:grid-cols-3' : ''}`}>
               {options.map((o, i) => (
-                <button
+                <OptionCard
                   key={`${o.label}-${i}`}
-                  type="button"
-                  data-testid="question-option"
-                  data-recommended={o.recommended ? 'true' : undefined}
-                  onClick={() => onAnswer(o.label)}
-                  disabled={busy}
-                  className={`relative flex flex-col items-stretch justify-start text-left ${d.option} border-2 transition-transform hover:-translate-y-px disabled:opacity-60 disabled:hover:translate-y-0 cursor-pointer ${
-                    o.recommended
-                      ? 'bg-accent text-[var(--on-accent)] border-[var(--on-accent)] shadow-[5px_5px_0_0_var(--on-accent)]'
-                      : 'bg-surface-2 text-text-primary border-border-strong'
-                  }`}
-                >
-                  {hints && enableKeys && options.length <= 9 && density === 'hero' && (
-                    <kbd
-                      aria-hidden="true"
-                      className={`hidden md:grid absolute top-4 right-4 w-8 h-8 place-items-center border-2 font-mono text-[13px] font-semibold ${
-                        o.recommended ? 'border-[var(--on-accent)]' : 'border-border-strong text-text-secondary'
-                      }`}
-                    >
-                      {i + 1}
-                    </kbd>
-                  )}
-                  <span className={`block font-mono text-[11px] font-semibold ${o.recommended ? '' : 'text-text-muted'}`}>
-                    {o.recommended ? <>Recommended<span className="hidden md:inline"> by the agent</span></> : 'Alternative'}
-                  </span>
-                  <span className={`block ${d.optionLabel} ${density === 'hero' && hints && enableKeys ? 'pr-0 md:pr-10' : ''} font-semibold leading-tight [overflow-wrap:anywhere]`}>
-                    {sending === o.label ? 'Sending…' : o.label}
-                  </span>
-                  {o.description && (
-                    <span className={`block ${d.optionDesc} leading-relaxed [overflow-wrap:anywhere] ${o.recommended ? '' : 'text-text-secondary'}`}>
-                      {o.description}
-                    </span>
-                  )}
-                </button>
+                  option={o}
+                  index={i}
+                  density={density}
+                  d={d}
+                  busy={busy}
+                  sending={sending}
+                  showKey={!!hints && enableKeys && options.length <= 9}
+                  showKeyPad={!!hints && enableKeys}
+                  onAnswer={onAnswer}
+                />
               ))}
             </div>
           )}
@@ -242,5 +235,87 @@ export default function QuestionHero({
         </>
       )}
     </section>
+  );
+}
+
+function OptionCard({
+  option: o,
+  index: i,
+  density,
+  d,
+  busy,
+  sending,
+  showKey,
+  showKeyPad,
+  onAnswer,
+}: {
+  option: UnifiedQuestion['options'][number];
+  index: number;
+  density: 'hero' | 'feed';
+  d: (typeof DENSITY)[keyof typeof DENSITY];
+  busy: boolean;
+  sending: string | null;
+  showKey: boolean;
+  showKeyPad: boolean;
+  onAnswer: (answer: string) => void;
+}) {
+  // A phone shows two lines of consequence (three for the recommendation);
+  // the toggle sits beside the answer button, not inside it.
+  const { ref, open, setOpen, overflows } = useClamp(o.description ?? '');
+  const clamp = o.recommended ? 'line-clamp-3' : 'line-clamp-2';
+  return (
+    <div
+      className={`relative flex flex-col border-2 transition-transform hover:-translate-y-px ${
+        o.recommended
+          ? 'bg-accent text-[var(--on-accent)] border-[var(--on-accent)] shadow-[5px_5px_0_0_var(--on-accent)]'
+          : 'bg-surface-2 text-text-primary border-border-strong'
+      }`}
+    >
+      <button
+        type="button"
+        data-testid="question-option"
+        data-recommended={o.recommended ? 'true' : undefined}
+        onClick={() => onAnswer(o.label)}
+        disabled={busy}
+        className={`flex flex-col items-stretch justify-start text-left ${d.option} disabled:opacity-60 cursor-pointer`}
+      >
+        {showKey && density === 'hero' && (
+          <kbd
+            aria-hidden="true"
+            className={`hidden md:grid absolute top-4 right-4 w-8 h-8 place-items-center border-2 font-mono text-[13px] font-semibold ${
+              o.recommended ? 'border-[var(--on-accent)]' : 'border-border-strong text-text-secondary'
+            }`}
+          >
+            {i + 1}
+          </kbd>
+        )}
+        <span className={`block font-mono text-chip font-semibold ${o.recommended ? '' : 'text-text-muted'}`}>
+          {o.recommended ? <>Recommended<span className="hidden md:inline"> by the agent</span></> : 'Alternative'}
+        </span>
+        <span className={`block ${d.optionLabel} ${density === 'hero' && showKeyPad ? 'pr-0 md:pr-10' : ''} font-semibold leading-tight [overflow-wrap:anywhere]`}>
+          {sending === o.label ? 'Sending…' : o.label}
+        </span>
+        {o.description && (
+          <span
+            ref={ref as React.RefObject<HTMLSpanElement>}
+            data-clamped={open ? 'false' : 'true'}
+            className={`block ${d.optionDesc} leading-snug md:leading-relaxed [overflow-wrap:anywhere] ${open ? '' : `${clamp} md:line-clamp-none`} ${o.recommended ? '' : 'text-text-secondary'}`}
+          >
+            {o.description}
+          </span>
+        )}
+      </button>
+      {overflows && (
+        <button
+          type="button"
+          data-testid="clamp-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+          className="md:hidden self-start px-3 pb-1 min-h-8 font-mono text-chip font-semibold underline"
+        >
+          {open ? 'less' : 'more'}
+        </button>
+      )}
+    </div>
   );
 }

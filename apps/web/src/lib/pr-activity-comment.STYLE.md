@@ -53,6 +53,9 @@ deciding whether to step in, so every rule below comes down to two things:
 For a kernel-owned PR the header is not the newest row: it is the delivery's
 canonical state (`DeliveryView.headline`, docs/specs/workflow-state-kernel.md
 §12.1 rule 4), and the whole body is regenerated from the transition log.
+"Repairing" is never the header of a base refresh (that reads "Updating
+branch"), and an approved PR reads "Approved · awaiting merge" until it merges
+(docs/specs/task-page.md, State mapping).
 
 Rules:
 

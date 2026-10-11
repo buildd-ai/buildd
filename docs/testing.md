@@ -147,16 +147,20 @@ QA_PORT=3217 QA_VIEWPORT=mobile DEV_USER_EMAIL=you@example.com \
 # → /tmp/qa/screenshots/*.png   (macOS: sips -Z 1800 to downscale)
 ```
 
-**Workers** (no DB): dispatch Visual QA on your pushed branch. It runs on a
-PII-scrubbed Neon clone and uploads a `qa-screenshots` artifact:
+**Workers** (no DB): dispatch Visual QA from trunk with your pushed branch as
+`capture_ref`. It runs on a PII-scrubbed Neon clone of current prod and uploads a
+`qa-screenshots` artifact. The harness (workflow, `scripts/qa/`) always comes from the
+dispatched ref, so never `--ref <branch>`: a branch's older scrub breaks on newer prod
+triggers and constraints. Only the app and its migrations come from `capture_ref`.
 
 ```bash
-gh workflow run visual-qa.yml --ref <branch> -f routes=/app/missions -f viewport=mobile
-gh run list --workflow visual-qa.yml --branch <branch> --limit 1   # get the run id
+gh workflow run visual-qa.yml --ref dev -f capture_ref=<branch> -f routes=/app/missions -f viewport=mobile
+gh run list --workflow visual-qa.yml --branch dev --limit 20 --json databaseId,displayTitle \
+  -q 'map(select(.displayTitle == "Visual QA · <branch>"))[0].databaseId'   # get the run id
 gh run watch <id> --exit-status && gh run download <id> -n qa-screenshots
 ```
 
-Inputs: `routes`, `viewport` (`mobile` | `WxH`, default desktop), `mission_id`,
+Inputs: `capture_ref`, `routes`, `viewport` (`mobile` | `WxH`, default desktop), `mission_id`,
 `task_id`, `judge` (default `false`). By default a dispatch only captures and
 uploads, and the agent reads the PNGs and judges them itself. `judge=true` (and the
 label-gated release-PR path) adds a CI verdict from `anthropics/claude-code-action`
@@ -188,7 +192,7 @@ run-detail view over six scenarios: a research task, a legacy worker whose perce
 attempts that share one timestamp. `&scenario=<key>` shows one. Its DOM assertions live in
 `RunActivityFixture.dom.test.tsx`; its 360px layout gate (no sideways scroll, tap targets ≥ 44px)
 is `scripts/qa/plans/run-activity.json`, dispatched with
-`gh workflow run visual-qa.yml --ref <branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=360x780`
+`gh workflow run visual-qa.yml --ref dev -f capture_ref=<branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=360x780`
 (and again with `-f viewport=desktop`). A layout-gated state exits 4 on a layout violation,
 a failed prerequisite step, or a measurement error. Screenshots and failure metadata are
 written before exit; `scripts/qa/capture.test.ts` guards that behavior without requiring

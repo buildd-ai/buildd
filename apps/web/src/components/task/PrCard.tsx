@@ -47,7 +47,11 @@ export interface PrCommitChecks {
 export interface PrOutcome {
   repoLabel?: string | null;
   summary?: string | null;
-  totals: { add: number; rem: number; files: number; commits: number; attempts: number; claimToMerge: string | null };
+  /**
+   * `measured: false`: no attempt has reported a commit or diff yet, so the
+   * numbers are unknown, not 0, and the card leaves them out. Absent = measured.
+   */
+  totals: { add: number; rem: number; files: number; commits: number; attempts: number; claimToMerge: string | null; measured?: boolean };
   /**
    * `actions`: what the attempt did that the diff cannot show (an edited PR
    * body, a re-run), from its recorded tool calls (tasks/[id]/attempt-actions.ts).
@@ -561,7 +565,7 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
         <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
           <div className="min-w-0 flex-1">
             <p className="font-mono text-[12px] md:text-[13px] text-text-muted [overflow-wrap:anywhere]">
-              <a href={prUrl} target="_blank" rel="noopener noreferrer" data-testid="pr-outcome-number" className="text-accent-text font-semibold hover:underline">#{prNumber}</a>
+              <a href={prUrl} target="_blank" rel="noopener noreferrer" data-testid="pr-outcome-number" className="text-accent-text font-semibold hover:underline max-md:inline-flex max-md:items-center max-md:min-h-11 max-md:-my-[14px] max-md:px-1.5 max-md:-mx-1.5">#{prNumber}</a>
               {outcome.repoLabel && <> · {outcome.repoLabel}</>}
               {lifecycle && <> · <span className={merged ? 'text-status-success' : ''}>{lifecycle.label.toLowerCase()}</span></>}
               {!merged && mergeable === false && <> · <span className="text-status-warning">{mergeableState === 'dirty' ? 'merge conflicts' : 'not mergeable'}</span></>}
@@ -583,18 +587,24 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
           )}
         </div>
 
-        <div className="mt-6 flex flex-wrap items-end gap-x-8 md:gap-x-12 gap-y-5">
-          <BigNumber value={`+${totals.add}`} label="Added" tone="add" />
-          <BigNumber value={`−${totals.rem}`} label="Removed" tone="rem" />
-          <BigNumber value={totals.files} label="Files" />
-          <BigNumber value={totals.commits} label={totals.commits === 1 ? 'Commit' : 'Commits'} />
-          {totals.attempts > 1 && <BigNumber value={totals.attempts} label="Attempts" />}
-          {totals.claimToMerge && (
-            <div className="ml-auto text-right">
-              <BigNumber value={totals.claimToMerge} label="Claim → merge" />
-            </div>
-          )}
-        </div>
+        {(totals.measured !== false || totals.attempts > 1 || totals.claimToMerge) && (
+          <div className="mt-6 flex flex-wrap items-end gap-x-8 md:gap-x-12 gap-y-5">
+            {totals.measured !== false && (
+              <>
+                <BigNumber value={`+${totals.add}`} label="Added" tone="add" />
+                <BigNumber value={`−${totals.rem}`} label="Removed" tone="rem" />
+                <BigNumber value={totals.files} label="Files" />
+                <BigNumber value={totals.commits} label={totals.commits === 1 ? 'Commit' : 'Commits'} />
+              </>
+            )}
+            {totals.attempts > 1 && <BigNumber value={totals.attempts} label="Attempts" />}
+            {totals.claimToMerge && (
+              <div className="ml-auto text-right">
+                <BigNumber value={totals.claimToMerge} label="Claim → merge" />
+              </div>
+            )}
+          </div>
+        )}
 
         {total > 0 && <DiffBar attempts={attempts} />}
       </section>

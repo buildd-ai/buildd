@@ -35,7 +35,7 @@ export function requiredTokenScope(pathname: string, method: string): TokenScope
   // The read_evidence action's capability: MCP calls these with the caller's own token.
   if (read && (/^\/api\/tasks\/[^/]+\/evidence$/.test(path) || path === '/api/evidence')) return 'analytics:read';
   if (/^\/api\/workers(\/|$)/.test(path)) return read ? 'tasks:read' : 'workers:write';
-  if (/^\/api\/(tasks|discrepancies|artifacts|attachments|prs)(\/|$)/.test(path)) return read ? 'tasks:read' : 'tasks:write';
+  if (/^\/api\/(tasks|discrepancies|artifacts|attachments|prs|specs)(\/|$)/.test(path)) return read ? 'tasks:read' : 'tasks:write';
   if (/^\/api\/github\/pr(\/|$)/.test(path) || path === '/api/webhooks/ingest') return 'tasks:write';
   if (path === '/api/accounts/me') return 'tasks:read';
   if (/^\/api\/(accounts|connectors|model-tiers|explain)(\/|$)/.test(path)) return 'admin';
@@ -96,7 +96,7 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     if (/^\/api\/(stats|health|decisions)(\/|$)/.test(url.pathname)) {
       const filters: Record<string, string[]> = {
         '/api/stats/actions': ['workspace'], '/api/stats/usage': ['workspace'],
-        '/api/stats/coordination': ['workspaceId', 'workspace'], '/api/health/failures': ['workspaceId'], '/api/health/dispatch': ['workspaceId'],
+        '/api/stats/coordination': ['workspaceId', 'workspace'], '/api/health/failures': ['workspaceId'], '/api/health/dispatch': ['workspaceId'], '/api/health/incidents': ['workspaceId'],
         '/api/decisions': ['workspaceId', 'workspace'], '/api/decisions/readout': ['workspaceId', 'workspace'],
       };
       if (!filters[url.pathname]?.some(name => url.searchParams.get(name))) return false;
@@ -106,7 +106,7 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     // Listing workspaces is filtered to the token's own (listReachableWorkspaceIds),
     // so name-to-id resolution works; creating one would escape the restriction.
     if (url.pathname === '/api/workspaces' && request.method !== 'GET' && request.method !== 'HEAD') return false;
-    const filteredCollections = ['/api/tasks', '/api/missions', '/api/initiatives', '/api/prs', '/api/releases'];
+    const filteredCollections = ['/api/tasks', '/api/missions', '/api/initiatives', '/api/prs', '/api/releases', '/api/specs'];
     if ((request.method === 'GET' || request.method === 'HEAD') && filteredCollections.includes(url.pathname) && !url.searchParams.get('workspaceId')) return false;
   }
   // A write grant has no scopes: its role level gates actions in-handler.

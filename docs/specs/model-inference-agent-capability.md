@@ -2,13 +2,13 @@
 title: Model Inference Agent Capability
 status: active
 owner: max
-last_verified: 2026-10-08
+last_verified: 2026-10-11
 summary: A running agent MUST get a brokered decision-model answer only under a live task-scoped model.inference grant and a reserved budget, never seeing a key or choosing an endpoint, and failing closed.
 domain: auth
-surfaces: [apps/web/src/lib/capability-model-inference.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.ts, apps/web/src/lib/agent-capabilities/principal.ts, packages/core/decision-client.ts]
+surfaces: [apps/web/src/lib/capability-model-inference.ts, apps/web/src/lib/capability-model-inference-ledger.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.ts, packages/core/decision-client.ts]
 related: [agent-capabilities, credential-isolation, decision-kinds]
 keywords: [model.inference, Jev, TypeSafe, OpenRouter, LiteLLM, brokered inference, agent eval, decide, grant, budget ledger]
-verified_by: [apps/web/src/lib/capability-model-inference.test.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.test.ts, apps/web/src/lib/task-token-routes.test.ts]
+verified_by: [apps/web/src/lib/capability-model-inference.test.ts, apps/web/tests/db/model-inference-ledger.test.ts, apps/web/tests/db/model-inference-e2e.test.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.test.ts, apps/web/src/lib/task-token-routes.test.ts]
 supersedes: []
 assertions:
   - id: "model-inference-route"
@@ -39,6 +39,16 @@ assertions:
   - id: "adapter-tests"
     type: "test_file"
     path: "apps/web/src/lib/capability-model-inference.test.ts"
+  - id: "durable-ledger"
+    type: "symbol"
+    name: "modelInferenceLedger"
+    path: "apps/web/src/lib/capability-model-inference-ledger.ts"
+  - id: "ledger-db-tests"
+    type: "test_file"
+    path: "apps/web/tests/db/model-inference-ledger.test.ts"
+  - id: "e2e-db-tests"
+    type: "test_file"
+    path: "apps/web/tests/db/model-inference-e2e.test.ts"
   - id: "route-tests"
     type: "test_file"
     path: "apps/web/src/app/api/agent-capabilities/model-inference/route.test.ts"
@@ -57,13 +67,16 @@ evaluation platform: the agent runs its own script and dataset on its own
 runner and stores what it learns as task artifacts, exactly as it stores any
 other output.
 
-**Status today: fails closed.** The generic grant service (mission task
-0bfbe2dc, planned at apps/web/src/lib/capability-grants.ts) and a durable
-per-grant budget ledger do not exist yet. The route is wired with
-`NO_GRANT_SERVICE` and `NO_LEDGER`, so every well-formed request is refused
-with `403 no_grant`, before any key is resolved or any provider is called.
-The capability is not live until both seams are implemented and an approved
-grant has made a verified call.
+**Status today: wired, not yet live.** Grants come from the capability
+request service ([capability-requests](capability-requests.md)): an agent asks
+with `request_capability` (`capability: model.inference`, provider, exact
+models, budget), a team admin approves, and the route reads it through
+`capabilityGrantSource`. Spend goes through the durable per-grant ledger
+(`modelInferenceLedger`); both are what `defaultModelInferenceDeps` wires.
+Request → approve → invoke is covered end to end on real Postgres with a fake
+provider (AC-12). The capability is not declared live until an approved,
+task-scoped grant has made one real, funded call: that needs a team admin to
+configure the team's own OpenRouter or LiteLLM key.
 
 **Invariants**:
 
@@ -86,8 +99,15 @@ grant has made a verified call.
 - No provider call happens unless the ledger first reserved the call's worst
   case (`maxUsdPerCall` dollars, the estimated tokens, one call, one in-flight
   slot) against the grant's budget. `reserveRefusal` is the rule every ledger
-  applies; a durable ledger MUST apply it atomically (one conditional UPDATE …
-  RETURNING), never read-then-write.
+  applies; the durable ledger applies it atomically in one statement (INSERT …
+  ON CONFLICT DO UPDATE … WHERE <headroom>, writing the reservation row in the
+  same statement), never read-then-write. A reserve also requires the grant
+  row to be granted, unrevoked and unexpired at that instant.
+- A reservation left open past `STALE_RESERVATION_MS` (the request died
+  between reserve and settle) is settled at its full reservation before the
+  grant's next reserve; a late settle after that changes nothing.
+- Every call that reached the provider is receipted in `ai_usage` (surface
+  `decision`, kind `model.inference`) at the amount the grant was charged.
 - Exactly one provider attempt per reservation (`maxAttempts: 1`), with a
   deadline no later than the grant's expiry.
 - Settlement debits the provider's reported cost; when the call reached the
@@ -104,17 +124,18 @@ grant has made a verified call.
 
 **Acceptance criteria**:
 
-- AC-1: WHEN a well-formed request arrives and no grant source is wired THEN the route returns 403 with code `no_grant` and no provider call is made.
+- AC-1: WHEN a well-formed request arrives and the grant source has no live grant for the worker THEN the route returns 403 with code `no_grant` and no provider call is made.
 - AC-2: GIVEN a grant whose workspace, task, worker or team differs from the principal THEN the request is refused with `grant_mismatch` and no key is resolved.
 - AC-3: GIVEN a grant that is revoked, or whose `expiresAt` is now or earlier THEN the request is refused with `grant_revoked` / `grant_expired` and no provider call is made.
 - AC-4: GIVEN a requested model not listed in the grant, or not the team's configured decision model THEN the request is refused with `model_not_allowed`.
-- AC-5: GIVEN no ledger (the default) THEN the request is refused with 503 `ledger_unavailable` and no provider call is made.
+- AC-5: GIVEN no ledger (`NO_LEDGER`) or a ledger that throws THEN the request is refused with 503 `ledger_unavailable` and no provider call is made.
 - AC-6: GIVEN a ledger with too little dollar, call, token or concurrency headroom THEN the request is refused with 429 and the matching code, and no provider call is made.
 - AC-7: GIVEN N concurrent requests against a grant whose dollar budget covers K reservations THEN at most K provider calls are made.
 - AC-8: GIVEN an allowed call whose provider reports a cost THEN the receipt carries the answering model version, token counts, `costUsd`, and `debitedUsd` equal to that cost.
 - AC-9: GIVEN an allowed call whose provider reports no cost, or which fails after being sent THEN `debitedUsd` equals the grant's `maxUsdPerCall`.
 - AC-10: WHEN a body names `baseURL`, `apiKey` or `endpoint` THEN the route returns 400 before resolving any grant.
 - AC-11: WHEN a per-task token names a worker on another task THEN the route returns 404.
+- AC-12: GIVEN an agent's `model.inference` request approved by a person WHEN the run calls through `defaultModelInferenceDeps` THEN it gets answers and a receipt naming the grant, task, worker, requested model, answering model version, token counts, `costUsd` and `debitedUsd`, and the grant's ledger row is debited; WHEN the request is pending, denied, expired, revoked, for an unlisted model, over budget, or made by another team's principal THEN zero provider calls are made.
 
 **Calling it from an agent script**
 
@@ -129,27 +150,35 @@ curl -sS -X POST "$BUILDD_SERVER/api/agent-capabilities/model-inference" \
        "questions":{"label":{"type":"choice","instructions":"Classify the row.","criteria":{"a":null,"b":null}}}}'
 ```
 
-A 200 returns `{ answers, receipt }`; the receipt's `debitedUsd` is what the
-grant was charged. Refusals return `{ error, code }` (and a `receipt` when the
+A 200 returns `{ answers, receipt }`. The receipt names the grant, task and
+worker, the requested model and the version that answered, token counts, the
+provider's `costUsd`, and `debitedUsd`, which is what the grant was charged. Refusals return `{ error, code }` (and a `receipt` when the
 provider was reached). The script aggregates its own results and saves them
 as a task artifact through the usual artifact tools; nothing here stores
 datasets or runs evaluations.
 
-**Integration contract for the grant service (task 0bfbe2dc)**
+**Grant service**
 
-Implement `ModelInferenceGrantSource` and pass it in place of
-`NO_GRANT_SERVICE` in `defaultModelInferenceDeps`. For capability
-`model.inference`, the stored grant is scoped to team, workspace, task and
-worker, names one provider (`openrouter` | `litellm`), exact model ids,
-operations (`decide`), `expiresAt`, `revokedAt`, and a
-`ModelInferenceBudget`. Return null for anything not live; this module
-re-checks every field regardless. A grant on a terminal task MUST read as not
-live. The ledger (`ModelInferenceLedger`) needs per-grant running totals;
-until a table exists, `NO_LEDGER` keeps refusing.
+`capabilityGrantSource` (apps/web/src/lib/capability-grants-store.ts)
+implements `ModelInferenceGrantSource` over `capability_grants`: a row with
+capability `model.inference`, bound to team, workspace, task and worker,
+naming one provider (`openrouter` | `litellm`), exact model ids, operations
+and a `ModelInferenceBudget` in `scope`. It returns null unless the grant is
+granted, unexpired, unrevoked, its task open, its worker live and its role
+unchanged; this module re-checks every field regardless.
+
+**Ledger**
+
+`modelInferenceLedger` (apps/web/src/lib/capability-model-inference-ledger.ts)
+implements `ModelInferenceLedger` over `capability_grant_usage` (running calls,
+tokens, micro-dollars and in-flight count per grant) and
+`capability_grant_reservations` (one row per reserved call). Reserve, settle
+and the stale sweep are each one SQL statement; no interactive transaction.
 
 **Code surface**:
 
 - Route: `apps/web/src/app/api/agent-capabilities/model-inference/route.ts` (`POST`)
+- Ledger: `apps/web/src/lib/capability-model-inference-ledger.ts` (`modelInferenceLedger`, `sweepStaleReservations`), tables `capabilityGrantUsage`, `capabilityGrantReservations`
 - Adapter, seams and rules: `apps/web/src/lib/capability-model-inference.ts` (`invokeModelInference`, `checkGrant`, `reserveRefusal`, `parseModelInferenceRequest`, `resolveTeamDecisionRoute`, `NO_GRANT_SERVICE`, `NO_LEDGER`)
 - Principal: `apps/web/src/lib/agent-capabilities/worker-principal.ts`, `apps/web/src/lib/agent-capabilities/principal.ts`
 - Audit: `apps/web/src/lib/agent-capabilities/audit.ts`, table `agentCapabilityDecisions` in `packages/core/db/schema.ts`
@@ -158,4 +187,4 @@ until a table exists, `NO_LEDGER` keeps refusing.
 
 **Out of scope**: generic `chat` or completion proxying, agent-supplied
 endpoints or keys, running evaluations or storing datasets, the grant
-request/approve UI and policy (task 0bfbe2dc), and the ledger table.
+request/approve UI and policy ([capability-requests](capability-requests.md)).

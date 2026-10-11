@@ -1,7 +1,9 @@
+import { ownLineage } from '@/lib/attempt-lineage';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse, after } from 'next/server';
+import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
@@ -98,6 +100,7 @@ import { attachQuestionGate } from './question-gate';
 import { attachRoleEnvSecrets, runRoleEnvPreFilter } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
 import {
+  attachArtifactReferences,
   attachExternalContextProviders,
   attachTaskAreaScope,
 } from './context-injection';
@@ -1879,7 +1882,11 @@ export async function POST(req: NextRequest) {
       const taskMission = (task as any).missionId ? missionClaimMap.get((task as any).missionId) : null;
       const trunk = workspaceTrunk(task.workspace?.gitConfig);
       const filterOpenPrTasks = partitionOpenPrsByLandingBase(
-        { base: candidateLandingBase({ task: task as any, mission: taskMission, trunk }), trunk, manifest: taskManifest },
+        {
+          base: candidateLandingBase({ task: task as any, mission: taskMission, trunk }), trunk, manifest: taskManifest,
+          repairsOpenPr: (task as any).taskClass === 'attempt'
+            && ((task as any).conflictRetryPrNumber ?? (task as any).ciRetryPrNumber ?? (task as any).reviewerRetryPrNumber) != null,
+        },
         splitOwnOpenPrs(task, openPrTasks).others,
       ).sameBase;
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
@@ -1937,8 +1944,11 @@ export async function POST(req: NextRequest) {
         const activeClaims = activePathClaimsByWorkspace.get(task.workspaceId);
         if (activeClaims) {
           let blockedByActiveClaim = false;
+          // A fix attempt's own ancestors never block it (§13.11 rule 4).
+          const lineageTaskIds = ownLineage(task as any).taskIds;
           for (const [claimingTaskId, claimedPaths] of activeClaims) {
             if (claimingTaskId === task.id) continue; // own claims never block self
+            if (lineageTaskIds.has(claimingTaskId)) continue;
             const concreteClaimed = claimedPaths.filter(p => p !== REPO_WIDE_SENTINEL);
             if (concreteClaimed.length === 0) continue; // advisory-only claim
             if (pathsOverlap(concreteManifest, concreteClaimed)) {
@@ -3319,6 +3329,18 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // The claimed set is final. Modules prepare what the workers start from: a
+  // mission task's integration branch is brought up to date with trunk before
+  // the worker cuts from it (docs/specs/mission-branch-refresh.md). Bounded and
+  // fail-open; nothing here refuses or fails the claim.
+  await emit({
+    type: 'tasks.claimed',
+    tasks: claimedWorkers.map(cw => {
+      const t = cw.task as { id: string; workspaceId: string; missionId?: string | null; context?: unknown };
+      return { id: t.id, workspaceId: t.workspaceId, missionId: t.missionId ?? null, context: t.context ?? null };
+    }),
+  });
+
   // Attach degradedConnectors to workers that claimed under advisory mode
   // and persist them to the DB for the audit trail on the task detail page.
   for (const cw of claimedWorkers) {
@@ -3445,10 +3467,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Prompt-context injection. ORDER IS THE CONTRACT: these six append to the
+  // Prompt-context injection. ORDER IS THE CONTRACT: these seven append to the
   // same resolvedContextProviders rail and the runner concatenates it in
   // order — external providers, mission handoff, knowledge, subject-prior-work,
-  // discrepancy, task-area scope. See ./context-injection and
+  // discrepancy, linked-artifact manifest, task-area scope. See ./context-injection and
   // ./prompt-context-pipeline for why the middle four run concurrently without
   // disturbing that order.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
@@ -3464,6 +3486,7 @@ export async function POST(req: NextRequest) {
         }
       : null,
   );
+  await attachArtifactReferences(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)

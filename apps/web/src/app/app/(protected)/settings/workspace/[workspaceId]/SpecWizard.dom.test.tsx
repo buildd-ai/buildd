@@ -89,7 +89,7 @@ describe('SpecWizard', () => {
     expect(calls[1].body.confirm).toBe(true);
     expect(calls[1].body.answers).toEqual(calls[0].body.answers);
     expect(q('spec-wizard-created')?.textContent).toContain('docs/specs/example.md');
-    expect(q('spec-wizard-mission-link')?.getAttribute('href')).toBe('/app/missions/new?workspace=ws-1');
+    expect(q('spec-wizard-mission-link')?.getAttribute('href')).toBe('/app/missions?new=1&workspace=ws-1');
   });
 
   it('keeps the form and lists the route issues when the answers are refused', async () => {

@@ -20,7 +20,7 @@
  */
 import type { PrDisplayState, PrSupersededBy } from '@/lib/pr-presentation';
 import { attemptView } from './reducer';
-import type { AttemptFamily, DeliverySnapshot, DeliveryState, KernelView } from './types';
+import type { AttemptFamily, AttemptSnapshot, DeliverySnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 
 export type { DeliverySnapshot } from './types';
 
@@ -138,6 +138,13 @@ export interface DeliveryView {
   supersededBy: PrSupersededBy | null;
   /** The newest `workflow_transitions` row: what moved the delivery here, and when. */
   lastTransition: TransitionRef | null;
+  /** Every review round, oldest first: the task page's checks list (docs/specs/task-page.md). */
+  rounds: RoundSnapshot[];
+  /** The attempt ledger (repairs and refreshes), as recorded: the checks list attaches each to its cause. */
+  ledger: AttemptSnapshot[];
+  /** The current head carries a standing approval (a verdict, or one carried across a content-equivalent refresh). */
+  approvedCurrentHead: boolean;
+  approvalBasis: DeliverySnapshot['approvalBasis'];
 }
 
 /**
@@ -308,18 +315,16 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     }
     case 'CHANGES_REQUESTED': headline = 'Changes requested · fix queued'; break;
     case 'FIXING': headline = 'Fixing review feedback'; break;
+    // "Repairing" is an agent changing code. A behind refresh is the platform
+    // updating the branch from its base (docs/specs/task-page.md). Parked in the
+    // landing lane, it says which PR is landing on that base first.
     case 'REPAIRING':
-      if (repairKind === 'behind') {
+      if (repairKind === 'behind' && input.laneWait) {
         const base = d.baseRef ?? 'its base';
-        if (input.laneWait) {
-          headline = 'Waiting its turn to update the branch';
-          detail = input.laneWait.behindPr != null ? `PR #${input.laneWait.behindPr} is landing on ${base} first` : `another PR is landing on ${base} first`;
-        } else {
-          headline = 'Updating the branch';
-          detail = `bringing ${pr} up to date with ${base}`;
-        }
+        headline = 'Waiting to update branch';
+        detail = input.laneWait.behindPr != null ? `PR #${input.laneWait.behindPr} is landing on ${base} first` : `another PR is landing on ${base} first`;
       } else {
-        headline = repairKind === 'ci' ? 'Fixing CI' : 'Repairing';
+        headline = repairKind === 'ci' ? 'Fixing CI' : repairKind === 'behind' ? 'Updating branch' : 'Repairing';
       }
       break;
     case 'BLOCKED_ON_TRUNK': headline = 'Blocked on a red base branch'; break;
@@ -334,7 +339,8 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
           ? `every other change was reviewed at its own head; this review covered only ${n} new ${n === 1 ? 'path' : 'paths'}`
           : 'every change in it was reviewed at its own head; nothing new was added';
       } else {
-        headline = d.approvalBasis === 'policy' ? 'Ready to land' : 'Approved';
+        // Approved is not merged: the header says what it waits on until the merge fact.
+        headline = d.approvalBasis === 'policy' ? 'Ready to land' : 'Approved · awaiting merge';
       }
       break;
     case 'LANDING': headline = 'Merging'; break;
@@ -405,6 +411,10 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       ? { prNumber: d.supersededByPr ?? null, url: d.supersededByUrl ?? null, reason: d.supersededReason ?? null }
       : null,
     lastTransition: input.lastTransition ?? null,
+    rounds: [...input.view.rounds].sort((a, b) => a.round - b.round),
+    ledger: input.view.attempts,
+    approvedCurrentHead: d.currentHeadSha != null && d.approvedHeads.includes(d.currentHeadSha),
+    approvalBasis: d.approvalBasis,
   };
 }
 

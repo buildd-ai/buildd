@@ -148,6 +148,9 @@ mock.module('@buildd/core/db', () => ({
       // No team blocks a catalog entry here; blocked_by_policy is covered in
       // connector-prefilter / connector-gate / mcp-connector-injection tests.
       connectorCatalogTeamPolicies: { findMany: async () => [] },
+      // Claim injection reads the team catalog to know which connectors are
+      // brokered by the connector gateway (built-in Axiom/Vercel entries).
+      connectorCatalogEntries: { findMany: async () => [] },
       missions: { findMany: mockMissionsFindMany, findFirst: mockMissionsFindFirst },
       oauthBudgetEpisodes: { findMany: mockOauthEpisodesFindMany },
     },
@@ -242,6 +245,7 @@ mock.module('@buildd/core/db/schema', () => ({
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId', grantedByAccountId: 'grantedByAccountId' },
   connectorCatalogTeamPolicies: { teamId: 'teamId', slug: 'slug', policy: 'policy' },
+  connectorCatalogEntries: { teamId: 'teamId', slug: 'slug' },
 }));
 
 // Agent model endpoint ranking (docs/design/agent-model-endpoint.md §2).
@@ -270,6 +274,9 @@ mock.module('@buildd/core/secrets', () => ({
 }));
 
 // Stub non-critical modules used by claim route
+const mockEmit = mock((_event: any) => Promise.resolve());
+mock.module('@/lib/core-emit', () => ({ emit: (event: any) => mockEmit(event) }));
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
 }));
@@ -5742,6 +5749,23 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers[0].taskId).toBe('task-1');
     });
 
+    it('tells the modules which tasks it claimed before answering, so a mission branch is refreshed first', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockEmit.mockClear();
+      mockTasksFindMany.mockResolvedValueOnce([{ ...missionTask('task-1', 'mission-A'), context: { baseBranch: 'mission/a-0a1b2c3d' } }]);
+      mockMissionsFindMany.mockResolvedValue([{
+        id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: new Date(),
+      }]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+
+      expect(res.status).toBe(200);
+      const claimed = mockEmit.mock.calls.map(([e]) => e).filter((e: any) => e.type === 'tasks.claimed');
+      expect(claimed).toHaveLength(1);
+      expect(claimed[0].tasks).toEqual([{ id: 'task-1', workspaceId: 'ws-1', missionId: 'mission-A', context: expect.objectContaining({ baseBranch: 'mission/a-0a1b2c3d' }) }]);
+    });
+
     it('skips task from paced mission when interval has not elapsed', async () => {
       mockAuthenticateApiKey.mockResolvedValue(apiAccount());
       setupClaimBase();
@@ -6756,6 +6780,32 @@ describe('path-overlap claim guard', () => {
       code: 'path_overlap',
       detail: 'Its files overlap an active claim held by task task-9 (apps/web/src/lib/mcp-oauth.ts). Wait for that task to finish, or rebase onto its work.',
     });
+  });
+
+  // Spec workflow-state-kernel §13.11 rule 4: "pending retry blocked by own lineage".
+  it('layer 2: a fix attempt is not deferred behind a claim its own parent still holds', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(
+      new Map([['task-parent', ['apps/web/src/lib/mcp-oauth.ts']]]),
+    );
+    mockTasksFindMany.mockResolvedValueOnce([{
+      ...taskWithManifest(['apps/web/src/lib/mcp-oauth.ts']),
+      taskClass: 'attempt',
+      parentTaskId: 'task-parent',
+      context: { rootTaskId: 'task-parent', lineagePrNumbers: [2700] },
+    }]);
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    }));
+    const data = await res.json();
+    expect(data.diagnostics?.taskExclusion?.code).not.toBe('path_overlap');
+    expect(data.diagnostics?.deferrals?.path_overlap ?? 0).toBe(0);
   });
 
   // ── Claim-time waiter registration ─────────────────────────────────────────
@@ -9111,6 +9161,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
   });
 
   it('a fix attempt with another open attempt in its retry family is cancelled at claim, not started beside it', async () => {
+    // Counts calls below: earlier attempt-shaped claims in this file also reach the guard.
+    mockGuardClaimedRetry.mockClear();
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', reviewerRetryPrNumber: 3431, parentTaskId: 'orig' })]);
     mockGuardClaimedRetry.mockResolvedValueOnce(true);

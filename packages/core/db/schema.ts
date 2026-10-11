@@ -158,6 +158,12 @@ export const teams = pgTable('teams', {
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
   // file suggested improvements as tasks. Removal: see chat-retro/REMOVAL.md.
   chatRetro: jsonb('chat_retro').$type<{ lessons?: boolean; proposals?: boolean } | null>(),
+  // Task estimates (experiment, packages/core/task-estimate.ts). Opt-in per
+  // team: NULL or a missing key = off. `enabled` writes a frozen estimate for
+  // every new task and shows estimate surfaces. Read only through
+  // packages/core/task-estimate-source.ts (taskEstimatesEnabled). Removal: see
+  // packages/core/TASK-ESTIMATES-REMOVAL.md.
+  taskEstimates: jsonb('task_estimates').$type<{ enabled?: boolean; setBy?: string; setAt?: string } | null>(),
   // Enforceable model-tier ceilings (most restrictive layer wins): the team's
   // cap, per-workspace caps, what an auto tier over the cap does, and an audit
   // tail. NULL = no ceiling, routing unchanged. Distinct from chatDefaultTier,
@@ -258,6 +264,24 @@ export const users = pgTable('users', {
   googleIdIdx: uniqueIndex('users_google_id_idx').on(t.googleId),
   githubIdIdx: uniqueIndex('users_github_id_idx').on(t.githubId),
   emailIdx: index('users_email_idx').on(t.email),
+}));
+
+/**
+ * One row per person per UTC day they used buildd: the dashboard (a signed-in
+ * session) or MCP over OAuth. API keys and task tokens are not people and are
+ * never recorded. Feeds signups/DAU/MAU on the platform-owner admin API
+ * (apps/web/src/lib/admin/growth.ts). Written at most once per person per day
+ * per instance, ON CONFLICT DO NOTHING.
+ */
+export const userActiveDays = pgTable('user_active_days', {
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  day: date('day', { mode: 'string' }).notNull(),
+  // The surface that first recorded the day.
+  firstSurface: text('first_surface').notNull().$type<'web' | 'mcp'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.userId, t.day] }),
+  dayIdx: index('user_active_days_day_idx').on(t.day),
 }));
 
 export const accounts = pgTable('accounts', {
@@ -1252,6 +1276,10 @@ export const missions = pgTable('missions', {
   // idempotency half of debouncing a burst of dev merges. Null means never
   // refreshed (or opted in after the column existed).
   branchRefreshHeadSha: text('branch_refresh_head_sha'),
+  // When the branch was last confirmed to contain trunk (a merge, a 204, or a
+  // fresh cut). The daily backstop reads it (docs/specs/mission-branch-refresh.md):
+  // a refresh otherwise only runs when a mission task starts. Null reads as stale.
+  branchRefreshedAt: timestamp('branch_refreshed_at', { withTimezone: true }),
   // Single-flight lease for the refresh itself: a claim sets this to now() +
   // the lease window, and a second caller racing the same mission (the
   // concurrency half of debouncing a burst) only proceeds once it is null or
@@ -1827,7 +1855,9 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   // §8: which way the gap runs. code_ahead/contradicted may be written by
   // Tier-2 CI; spec_ahead is written only by the Tier-3 cron (slice 7) after
   // its deeper search rules out a rename — CI never writes it directly.
-  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted'>(),
+  // `conflict` (Living Specs, D-5): two requirements of approved revisions
+  // disagree. Advisory only: it never blocks a merge or a completion.
+  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted' | 'conflict'>(),
   // §9: open -> accepted is a parked, not closed, state; -> resolved happens
   // only when a re-run's assertion result lands cleanly, never by self-report.
   status: text('status').notNull().default('open').$type<'open' | 'accepted' | 'resolved'>(),
@@ -1860,6 +1890,9 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   proposalRejectedReason: text('proposal_rejected_reason'),
   // The exact read that produced the current verdict — never a similarity score.
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  // A Living Spec finding names the exact approved revision it was judged
+  // against; NULL for a repo-spec (docs/specs) assertion.
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'set null' }),
 }, (t) => ({
   workspaceIdx: index('spec_discrepancies_workspace_idx').on(t.workspaceId),
   // THE identity constraint (§7): exactly one row per (workspace, spec, assertion).
@@ -2572,10 +2605,17 @@ export const artifacts = pgTable('artifacts', {
   // Who is writing this body ("user:<id>" / "account:<id>"), copied onto the
   // revision the trigger records. Optional: an unset author records the worker.
   contentAuthor: text('content_author'),
+  // An uploaded file's state (lib/artifact-upload.ts): 'pending' from the
+  // presigned URL until its bytes are verified (size, then sha256 onto the
+  // revision), then 'ready', or 'failed'. NULL = not an upload (inline body, or
+  // a row from before this column), treated as ready. Set by the server only:
+  // metadata is caller-writable, so a flag there could be forged.
+  uploadState: text('upload_state').$type<'pending' | 'ready' | 'failed'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workerIdx: index('artifacts_worker_idx').on(t.workerId),
+  uploadPendingIdx: index('artifacts_upload_pending_idx').on(t.createdAt).where(sql`upload_state = 'pending'`),
   shareTokenIdx: uniqueIndex('artifacts_share_token_idx').on(t.shareToken),
   workspaceIdx: index('artifacts_workspace_idx').on(t.workspaceId),
   workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
@@ -2609,6 +2649,150 @@ export const artifactRevisions = pgTable('artifact_revisions', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   artifactRevisionIdx: uniqueIndex('artifact_revisions_artifact_revision_idx').on(t.artifactId, t.revision),
+}));
+
+/**
+ * What an artifact read actually returned, one row per GET that hands back
+ * any of an artifact's body: which revision, which view (full, outline,
+ * section, range, grep) and how many characters. "Available to the agent" is
+ * not "read by the agent"; verification cites this. Content-free (ids,
+ * selectors, counts) and FK-free like memory_uses: the ledger must never make a
+ * read fail, and it outlives the rows it names. Written after the response.
+ */
+export const artifactReads = pgTable('artifact_reads', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').notNull(),
+  revision: integer('revision').notNull(),
+  workspaceId: uuid('workspace_id'),
+  accountId: uuid('account_id'),
+  userId: uuid('user_id'),
+  taskId: uuid('task_id'),
+  view: text('view').notNull().$type<'full' | 'meta' | 'outline' | 'section' | 'range' | 'grep'>(),
+  /** The view's own arguments: { section } | { offset, length } | { pattern }. */
+  selector: jsonb('selector').$type<Record<string, unknown>>(),
+  returnedChars: integer('returned_chars').notNull(),
+  totalChars: integer('total_chars').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  artifactIdx: index('artifact_reads_artifact_idx').on(t.artifactId, t.createdAt),
+  taskIdx: index('artifact_reads_task_idx').on(t.taskId),
+}));
+
+/**
+ * Typed links from an artifact to the things it informs: a chat message or
+ * conversation, a task, a mission, a plan, and later a spec revision or a
+ * verification. One payload row, many links; nothing is copied.
+ * Owned by Living Specs (docs/specs/execution-control-plane.md): only
+ * apps/web/src/lib/artifact-links.ts writes it; the kernel reads it by id.
+ *
+ * `relation` says what the artifact is to the subject. Only an approved spec
+ * revision confers authority (decision D-6), so `normative_reference` is legal
+ * only with a pinned `artifact_revision`, and no relation approves anything.
+ * `artifact_revision` NULL = floating (follows the current body).
+ */
+export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec_revision', 'verification'] as const;
+export const ARTIFACT_LINK_RELATIONS = ['context', 'requirement', 'normative_reference', 'design_reference', 'evidence', 'output'] as const;
+export type ArtifactLinkSubject = (typeof ARTIFACT_LINK_SUBJECTS)[number];
+export type ArtifactLinkRelation = (typeof ARTIFACT_LINK_RELATIONS)[number];
+
+export const artifactLinks = pgTable('artifact_links', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'cascade' }).notNull(),
+  artifactRevision: integer('artifact_revision'),
+  subjectKind: text('subject_kind').notNull().$type<ArtifactLinkSubject>(),
+  subjectId: uuid('subject_id').notNull(),
+  relation: text('relation').notNull().$type<ArtifactLinkRelation>(),
+  // The subject's team, resolved and checked at write; reads scope by it.
+  teamId: uuid('team_id').notNull(),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniqueLink: uniqueIndex('artifact_links_unique_idx').on(t.artifactId, t.subjectKind, t.subjectId, t.relation),
+  subjectIdx: index('artifact_links_subject_idx').on(t.subjectKind, t.subjectId),
+  normativeIsPinned: check('artifact_links_normative_is_pinned', sql`${t.relation} <> 'normative_reference' OR ${t.artifactRevision} IS NOT NULL`),
+}));
+
+/**
+ * Living Specs: governed intent with immutable revisions (Living Specs v2, G1).
+ * A spec is a stable identity; its body lives in one artifact (`body_artifact_id`)
+ * so storage, history, hashes, bounded reads and redaction are the artifact
+ * machinery's. Each spec revision pins exactly one artifact revision.
+ * Owned by Living Specs (docs/specs/execution-control-plane.md): only
+ * apps/web/src/lib/specs/ writes these tables.
+ *
+ * `version` is the compare-and-swap token for drafts: a revise names the
+ * version it read, so two writers can never silently overwrite each other.
+ * Approval (G2) is a person's act on one revision; nothing here approves.
+ */
+export const SPEC_SCOPES = ['product', 'domain', 'feature', 'mission'] as const;
+export const SPEC_STATUSES = ['draft', 'in_review', 'approved', 'superseded', 'retired'] as const;
+export type SpecScope = (typeof SPEC_SCOPES)[number];
+export type SpecStatus = (typeof SPEC_STATUSES)[number];
+
+export const specs = pgTable('specs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  title: text('title').notNull(),
+  scope: text('scope').notNull().$type<SpecScope>(),
+  parentSpecId: uuid('parent_spec_id'),
+  status: text('status').notNull().default('draft').$type<SpecStatus>(),
+  version: integer('version').notNull().default(1),
+  bodyArtifactId: uuid('body_artifact_id').references(() => artifacts.id, { onDelete: 'restrict' }).notNull(),
+  // The newest revision (the draft head) and the approved one, by spec revision number.
+  headRevision: integer('head_revision').notNull().default(1),
+  approvedRevision: integer('approved_revision'),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: index('specs_workspace_idx').on(t.workspaceId),
+  parentIdx: index('specs_parent_idx').on(t.parentSpecId),
+}));
+
+export const specRevisions = pgTable('spec_revisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  // The body: exactly this revision of the spec's body artifact, and its hash.
+  artifactRevision: integer('artifact_revision').notNull(),
+  contentHash: text('content_hash').notNull(),
+  authorKind: text('author_kind').notNull().$type<'user' | 'agent'>(),
+  authorId: text('author_id').notNull(),
+  changeSummary: text('change_summary'),
+  // Repo specs (docs/specs, Git-canonical per D-1) this revision cites, each
+  // pinned to the exact commit it was validated at on write. Immutable with
+  // the revision, so a moving branch never changes what it cites.
+  repoRefs: jsonb('repo_refs').$type<Array<{ path: string; commitSha: string }>>(),
+  // Set once by a person's approval (G2); never for an agent.
+  approvedBy: text('approved_by'),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/**
+ * One verdict on one acceptance criterion of an approved spec revision, for
+ * one task's outcome (Living Specs V1, D-5). Append-only: a re-check adds a
+ * row, and the outcome reads the newest row per criterion. A verdict is bound
+ * to the PR head it judged and the references it actually read, so a verdict
+ * on an older head never speaks for the current one. Distinct from task and PR
+ * state: a task can complete and its PR merge while its governed outcome
+ * reads fail.
+ */
+export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
+  headSha: text('head_sha'),
+  // The check's evidence refs and the artifact reads (F4 ledger ids) behind it.
+  evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskCriterionIdx: index('spec_outcome_verdicts_task_idx').on(t.taskId, t.specRevisionId, t.criterionId, t.createdAt),
 }));
 
 /**
@@ -5615,6 +5799,123 @@ export const agentCapabilityDecisions = pgTable('agent_capability_decisions', {
 
 export type AgentCapabilityDecision = typeof agentCapabilityDecisions.$inferSelect;
 
+/**
+ * A team admin's rule for what an agent run may get when it asks for a
+ * capability (apps/web/src/lib/capability-grants.ts). Matched by provider
+ * (catalog slug) and risk, optionally narrowed to a workspace, role,
+ * environment or resource; the most specific matching rule wins. No rule =
+ * the built-in default (read/query auto-grant, write/admin ask a human).
+ * `effect: 'auto_grant'` is refused for write/admin: writes always need a
+ * person. `scopeKey` is the canonical join of the match columns, so one
+ * scope holds one rule and a PUT is an upsert.
+ */
+export const capabilityPolicies = pgTable('capability_policies', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  provider: text('provider').notNull(),
+  risk: text('risk').notNull().$type<'read' | 'query' | 'write' | 'admin'>(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  roleSlug: text('role_slug'),
+  environment: text('environment'),
+  resource: text('resource'),
+  effect: text('effect').notNull().$type<'auto_grant' | 'ask_human' | 'forbidden'>(),
+  maxTtlSeconds: integer('max_ttl_seconds'),
+  scopeKey: text('scope_key').notNull(),
+  updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamScopeIdx: uniqueIndex('capability_policies_team_scope_idx').on(t.teamId, t.scopeKey),
+}));
+
+export type CapabilityPolicy = typeof capabilityPolicies.$inferSelect;
+
+/**
+ * One agent run's request for a capability and, once decided, its grant:
+ * pending → granted | denied; granted → revoked | expired. Bound to exactly
+ * one team, workspace, task, worker and role, one provider (and connector
+ * when the provider is a connector), one risk, and optionally one exact tool,
+ * resource and environment. A grant is checked on every use against the
+ * live task, worker, role, team policy, catalog policy and credential health
+ * (authorizeCapabilityUse), so revoking it stops the next call.
+ *
+ * `dedupeKey` is unique among open rows (pending/granted): the same worker
+ * asking twice gets the same row back. Never holds credential material;
+ * `scope` carries provider-specific bounds (model ids, budget) only.
+ */
+export const capabilityGrants = pgTable('capability_grants', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  requestedByAccountId: uuid('requested_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  roleSlug: text('role_slug'),
+  // Semantic need, `domain:verb` (observability:query) or a named capability (model.inference).
+  capability: text('capability').notNull(),
+  provider: text('provider').notNull(),
+  connectorId: uuid('connector_id').references(() => connectors.id, { onDelete: 'cascade' }),
+  risk: text('risk').notNull().$type<'read' | 'query' | 'write' | 'admin'>(),
+  tool: text('tool'),
+  resource: text('resource'),
+  environment: text('environment'),
+  scope: jsonb('scope').$type<Record<string, unknown>>(),
+  reason: text('reason'),
+  status: text('status').notNull().$type<'pending' | 'granted' | 'denied' | 'revoked' | 'expired'>(),
+  decidedBy: text('decided_by').$type<'policy' | 'human' | 'system'>(),
+  decidedByUserId: uuid('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  decisionReason: text('decision_reason'),
+  ttlSeconds: integer('ttl_seconds').notNull(),
+  dedupeKey: text('dedupe_key').notNull(),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, (t) => ({
+  openDedupeIdx: uniqueIndex('capability_grants_open_dedupe_idx').on(t.dedupeKey).where(sql`${t.status} IN ('pending', 'granted')`),
+  workerIdx: index('capability_grants_worker_idx').on(t.workerId, t.status),
+  teamStatusIdx: index('capability_grants_team_status_idx').on(t.teamId, t.status, t.requestedAt),
+}));
+
+export type CapabilityGrant = typeof capabilityGrants.$inferSelect;
+
+/**
+ * Running spend per model.inference grant (the ledger behind
+ * capability-model-inference-ledger.ts). Reservations count as spent until
+ * settled. Changed only by single conditional statements: a reserve is one
+ * INSERT … ON CONFLICT DO UPDATE … WHERE <headroom> that also writes the
+ * reservation row, so N concurrent callers can never overdraw a budget.
+ * Dollars are whole micro-dollars.
+ */
+export const capabilityGrantUsage = pgTable('capability_grant_usage', {
+  grantId: uuid('grant_id').primaryKey().references(() => capabilityGrants.id, { onDelete: 'cascade' }),
+  calls: integer('calls').notNull().default(0),
+  tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+  usdMicros: bigint('usd_micros', { mode: 'number' }).notNull().default(0),
+  inFlight: integer('in_flight').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+/**
+ * One reserved model.inference call. Open (settledAt NULL) while the call is
+ * in flight; settle swaps its reservation for the debit. One left open past
+ * the stale window (a crashed request) is settled at the full reservation.
+ */
+export const capabilityGrantReservations = pgTable('capability_grant_reservations', {
+  id: uuid('id').primaryKey(),
+  grantId: uuid('grant_id').references(() => capabilityGrants.id, { onDelete: 'cascade' }).notNull(),
+  usdMicros: bigint('usd_micros', { mode: 'number' }).notNull(),
+  tokens: bigint('tokens', { mode: 'number' }).notNull(),
+  reservedAt: timestamp('reserved_at', { withTimezone: true }).defaultNow().notNull(),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+  debitUsdMicros: bigint('debit_usd_micros', { mode: 'number' }),
+  debitTokens: bigint('debit_tokens', { mode: 'number' }),
+  costSource: text('cost_source').$type<'provider' | 'reservation' | 'none'>(),
+  outcome: text('outcome').$type<'ok' | 'error' | 'not_sent' | 'stale'>(),
+}, (t) => ({
+  openIdx: index('capability_grant_reservations_open_idx').on(t.grantId, t.reservedAt).where(sql`${t.settledAt} IS NULL`),
+}));
+
 export const gateEventsRelations = relations(gateEvents, ({ one }) => ({
   workspace: one(workspaces, { fields: [gateEvents.workspaceId], references: [workspaces.id] }),
   mission: one(missions, { fields: [gateEvents.missionId], references: [missions.id] }),
@@ -6159,6 +6460,80 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
 
 export type OrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferSelect;
 export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferInsert;
+
+/**
+ * How a task estimate was made (packages/core/task-estimate.ts). Content-free
+ * apart from `clusterLabel` (a directory prefix in this task's own workspace)
+ * and `summary` (one sentence built from numbers and that label). Never holds
+ * another workspace's paths, titles or text.
+ */
+export interface TaskEstimateExplanation {
+  sources: Array<{ source: 'neighbours' | 'clusters' | 'prior'; n: number; weight: number }>;
+  clusterLabel: string | null;
+  /** 0..1: how much the new-repo prior counted. Falls as local history grows. */
+  priorWeight: number;
+  summary: string;
+}
+
+/**
+ * Task estimates experiment: one frozen row per task per estimator version.
+ * Insert-only. A re-estimate is a new version, never an update, so accuracy is
+ * always scored against what was predicted before the work started. Its own
+ * table (docs/design/experiment-lifecycle.md: an experiment brings its own
+ * payload table); dropping it reverts the experiment without touching a task row.
+ */
+export const taskEstimates = pgTable('task_estimates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  estimatorVersion: text('estimator_version').notNull(),
+  p50Minutes: real('p50_minutes').notNull(),
+  p80Minutes: real('p80_minutes').notNull(),
+  p50Tokens: integer('p50_tokens').notNull(),
+  p80Tokens: integer('p80_tokens').notNull(),
+  expectedRepairs: real('expected_repairs').notNull().default(0),
+  explanation: jsonb('explanation').$type<TaskEstimateExplanation>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskVersionIdx: uniqueIndex('task_estimates_task_version_idx').on(t.taskId, t.estimatorVersion),
+  workspaceCreatedIdx: index('task_estimates_workspace_created_idx').on(t.workspaceId, t.createdAt),
+}));
+
+export type TaskEstimate = typeof taskEstimates.$inferSelect;
+export type NewTaskEstimate = typeof taskEstimates.$inferInsert;
+
+/**
+ * What a task estimated in `task_estimates` actually took, kept next to it
+ * (packages/core/task-estimate-actuals.ts). One row per task, rewritten as the
+ * task settles (a merge after the last session fills in wall time); the frozen
+ * estimate row is never touched. Work tasks only: attempt and bookkeeping
+ * tasks are other tasks' cost, counted as `repairs` on their parent.
+ */
+export const taskEstimateActuals = pgTable('task_estimate_actuals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  /** Sum of completed-session durations: the cost measure. */
+  agentMinutes: real('agent_minutes').notNull(),
+  /** Input + output tokens over the same sessions. */
+  tokens: integer('tokens').notNull(),
+  /** Retry (attempt) tasks that hang off this task. */
+  repairs: integer('repairs').notNull().default(0),
+  workerCount: integer('worker_count').notNull().default(0),
+  firstStartedAt: timestamp('first_started_at', { withTimezone: true }),
+  /** First start to merge; to the last session's end when nothing merged. Null with no start. */
+  wallMinutes: real('wall_minutes'),
+  wallBasis: text('wall_basis').$type<'merge' | 'last_session'>(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskIdx: uniqueIndex('task_estimate_actuals_task_idx').on(t.taskId),
+  teamIdx: index('task_estimate_actuals_team_idx').on(t.teamId),
+}));
+
+export type TaskEstimateActuals = typeof taskEstimateActuals.$inferSelect;
+export type NewTaskEstimateActuals = typeof taskEstimateActuals.$inferInsert;
 
 export type Artifact = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;

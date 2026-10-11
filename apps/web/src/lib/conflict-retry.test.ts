@@ -227,6 +227,27 @@ function makeInput(overrides?: Partial<ConflictRetryInput>): ConflictRetryInput 
 }
 
 describe('buildConflictRetryTask', () => {
+  // Spec workflow-state-kernel §13.11 rule 1: the attempt resumes on the PR's
+  // exact GitHub head, so the runner can tell it apart from a runaway prior
+  // attempt and never starts fresh from trunk.
+  describe('repair target (exact remote head)', () => {
+    it('resumes on the GitHub-reported head and stamps repairTarget', () => {
+      const result = buildConflictRetryTask(makeInput({
+        worker: { id: 'worker-xyz', branch: 'buildd/abc-old', prNumber: 42 },
+        targetRefs: { headRef: 'mission/x-1234abcd', baseRef: 'dev' },
+      }));
+      expect(result!.context.resumeBranch).toBe('mission/x-1234abcd');
+      expect(result!.context.baseBranch).toBe('mission/x-1234abcd');
+      expect(result!.context.repairTarget).toEqual({ prNumber: 42, headRef: 'mission/x-1234abcd', headSha: 'abc123def456', baseRef: 'dev' });
+    });
+
+    it('without a GitHub head keeps the worker branch and claims no target', () => {
+      const result = buildConflictRetryTask(makeInput());
+      expect(result!.context.resumeBranch).toBe('feat/dark-mode');
+      expect(result!.context).not.toHaveProperty('repairTarget');
+    });
+  });
+
   describe('context.prBase (the PR\'s real base, read by the runner\'s pre-merge)', () => {
     it('is stamped when the PR base is known', () => {
       const result = buildConflictRetryTask(makeInput({ prBase: 'dev' }));

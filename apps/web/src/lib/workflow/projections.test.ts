@@ -96,7 +96,26 @@ describe('release composition', () => {
   test('a composition head that is no longer current claims nothing', () => {
     const v = view({ view: V(D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['OLD'] })) });
     expect(v.compositionVerified).toBe(false);
-    expect(v.headline).toBe('Approved');
+    expect(v.headline).toBe('Approved · awaiting merge');
+  });
+});
+
+describe('task-page state vocabulary (docs/specs/task-page.md, State mapping)', () => {
+  test('AC-2: a mechanical base refresh reads Updating branch, never Repairing', () => {
+    const v = view({ view: V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', triggerReason: 'behind', taskId: null })]) });
+    expect(v.headline).toBe('Updating branch');
+    expect(v.headline).not.toContain('Repairing');
+  });
+
+  test('an approved PR reads Approved · awaiting merge until the merge fact', () => {
+    expect(view({ view: V(D({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] })) }).headline).toBe('Approved · awaiting merge');
+    expect(view({ view: V(D({ state: 'MERGED' })) }).headline).toBe('Merged');
+  });
+
+  test('the view carries the rounds and the attempt ledger for the checks list', () => {
+    const v = view({ view: V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R()], [A()]) });
+    expect(v.rounds.map(r => r.id)).toEqual(['r1']);
+    expect(v.ledger.map(a => a.id)).toEqual(['a1']);
   });
 });
 
@@ -283,12 +302,12 @@ describe('a behind refresh says what it is doing, and whom it waits for in the l
   const behind = (o: Partial<DeliveryViewInput> = {}) =>
     view({ view: V(D({ state: 'REPAIRING', stateReason: 'behind', baseRef: 'dev', prNumber: 12, boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'queued' })]), ...o });
 
-  test('refreshing: "Updating the branch", not a bare "Repairing"', () => {
-    expect(behind()).toMatchObject({ headline: 'Updating the branch', detail: 'bringing PR #12 up to date with dev', needsYou: false });
+  test('refreshing: "Updating branch", not a bare "Repairing"', () => {
+    expect(behind()).toMatchObject({ headline: 'Updating branch', needsYou: false });
   });
 
   test('parked in the lane: names the PR landing first', () => {
-    expect(behind({ laneWait: { behindPr: 7 } })).toMatchObject({ headline: 'Waiting its turn to update the branch', detail: 'PR #7 is landing on dev first', needsYou: false });
+    expect(behind({ laneWait: { behindPr: 7 } })).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #7 is landing on dev first', needsYou: false });
     expect(behind({ laneWait: { behindPr: null } }).detail).toBe('another PR is landing on dev first');
   });
 

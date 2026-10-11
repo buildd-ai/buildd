@@ -62,8 +62,8 @@ describe('rowToDeliveryView', () => {
       delivery: { ...row.delivery, state: 'REPAIRING', state_reason: 'behind', base_ref: 'dev' },
       lane_wait: 'parked:lane_busy:#41',
     };
-    expect(rowToDeliveryView(parked, NOW)).toMatchObject({ headline: 'Waiting its turn to update the branch', detail: 'PR #41 is landing on dev first' });
-    expect(rowToDeliveryView({ ...parked, lane_wait: null }, NOW)?.headline).toBe('Updating the branch');
+    expect(rowToDeliveryView(parked, NOW)).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #41 is landing on dev first' });
+    expect(rowToDeliveryView({ ...parked, lane_wait: null }, NOW)?.headline).toBe('Updating branch');
   });
   test('maps a row to a platform-owned view with its attempts', () => {
     const v = rowToDeliveryView(row, NOW)!;

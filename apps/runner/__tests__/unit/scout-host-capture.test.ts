@@ -31,6 +31,7 @@ const GH_REPO = 'acme/tool';
 let root: string;
 let repo: string;
 let headSha: string;
+const TRUNK_SHA = 'e'.repeat(40);
 
 async function sh(cmd: string, cwd = repo) {
   const r = await exec('bash', ['-c', cmd], { cwd });
@@ -146,9 +147,10 @@ function zipOf(name: string, text: string): Uint8Array {
 }
 
 /** GitHub's Actions API for one repo, as the capture port and the revoke call use it. */
-function fakeGitHub(opts: { headSha?: () => string } = {}) {
+function fakeGitHub(opts: { titleRef?: () => string } = {}) {
   const seen = { auth: new Set<string>(), dispatches: [] as Array<Record<string, string>>, revoked: 0, paths: [] as string[] };
-  const runs: Array<{ id: number; inputs: Record<string, string>; created_at: string; head_sha: string }> = [];
+  // Runs are on trunk; the title names the commit each one captures.
+  const runs: Array<{ id: number; inputs: Record<string, string>; created_at: string; head_sha: string; title_ref: string }> = [];
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const fetchImpl = (async (input: string | URL, init: RequestInit = {}) => {
     const url = new URL(String(input));
@@ -156,16 +158,18 @@ function fakeGitHub(opts: { headSha?: () => string } = {}) {
     seen.auth.add(auth);
     seen.paths.push(`${init.method ?? 'GET'} ${url.pathname}`);
     if (url.pathname === '/installation/token' && init.method === 'DELETE') { seen.revoked++; return new Response(null, { status: 204 }); }
+    // The harness is dispatched from the repo's default branch (trunk).
+    if (url.pathname === `/repos/${GH_REPO}`) return json({ default_branch: 'main' });
     const prefix = `/repos/${GH_REPO}/actions`;
     if (!url.pathname.startsWith(prefix)) return json({ message: 'Not Found' }, 404);
     const rest = url.pathname.slice(prefix.length);
     if (rest === '/workflows/visual-qa.yml/dispatches') {
       const body = JSON.parse(String(init.body));
       seen.dispatches.push(body.inputs);
-      runs.push({ id: 500 + runs.length, inputs: body.inputs, created_at: new Date().toISOString(), head_sha: opts.headSha?.() ?? headSha });
+      runs.push({ id: 500 + runs.length, inputs: body.inputs, created_at: new Date().toISOString(), head_sha: TRUNK_SHA, title_ref: opts.titleRef?.() ?? body.inputs.capture_ref });
       return new Response(null, { status: 204 });
     }
-    const toRaw = (r: (typeof runs)[number]) => ({ id: r.id, status: 'completed', conclusion: 'success', head_sha: r.head_sha, head_branch: 'main', created_at: r.created_at });
+    const toRaw = (r: (typeof runs)[number]) => ({ id: r.id, status: 'completed', conclusion: 'success', head_sha: r.head_sha, head_branch: 'main', display_title: `Visual QA · ${r.title_ref}`, created_at: r.created_at });
     if (rest === '/workflows/visual-qa.yml/runs') return json({ workflow_runs: runs.slice().reverse().map(toRaw) });
     let m = rest.match(/^\/runs\/(\d+)$/);
     if (m) return json(toRaw(runs.find((r) => r.id === Number(m![1]))!));
@@ -202,6 +206,8 @@ describe('hostClaimedScoutRun with a capture grant', () => {
     // One dispatch per viewport, capture only, with the run-scoped token and nothing else.
     expect(gh.seen.dispatches.map((d) => d.viewport)).toEqual(['mobile', 'desktop']);
     expect(gh.seen.dispatches.every((d) => d.judge === 'false')).toBe(true);
+    // From trunk, with the candidate commit as the app to capture.
+    expect(gh.seen.dispatches.every((d) => d.capture_ref === headSha)).toBe(true);
     expect([...gh.seen.auth]).toEqual([`Bearer ${TOKEN}`]);
     // Revoked once the run ended.
     expect(gh.seen.revoked).toBe(1);
@@ -210,7 +216,7 @@ describe('hostClaimedScoutRun with a capture grant', () => {
   });
 
   test('shots from a workflow run on another commit are never returned: inconclusive, not pass', async () => {
-    const gh = fakeGitHub({ headSha: () => 'd'.repeat(40) });
+    const gh = fakeGitHub({ titleRef: () => 'd'.repeat(40) });
     const { api, calls } = fakeApi();
     let t = Date.now();
     await hostClaimedScoutRun({

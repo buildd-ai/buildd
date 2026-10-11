@@ -23,9 +23,18 @@ describe('SpecSourceBlock', () => {
     ).toBe('');
     expect(
       renderToStaticMarkup(
-        // @ts-expect-error — deliberately missing planningTaskId to prove the guard holds
+        // A repo document without its planning task is not shown on its own.
         <SpecSourceBlock specSource={{ specPath: 'docs/design/spec-to-build-pattern.md' }} />
       )
     ).toBe('');
+  });
+
+  it('shows the Living Spec revision a task is pinned to, with its short hash', () => {
+    const html = renderToStaticMarkup(
+      <SpecSourceBlock specSource={{ specId: 's-1', revision: 3, contentHash: 'abcdef0123456789' }} />
+    );
+    expect(html).toContain('Pinned to revision 3');
+    expect(html).toContain('abcdef012345');
+    expect(html).not.toContain('Planning task');
   });
 });

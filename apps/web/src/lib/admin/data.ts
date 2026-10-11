@@ -13,11 +13,16 @@ import {
 } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import { runExperimentHealth } from '@buildd/core/experiment-health-source';
+import { runExperimentReadout } from '@buildd/core/experiment-readout-source';
+import { MODEL_ROUTING_EXPERIMENT_KIND, parseModelRoutingConfig } from '@buildd/core/model-routing-experiment';
+import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout-source';
+import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 import type { ExperimentHealthFinding } from '@buildd/core/experiment-health';
 import { normalizeDecisionShadows } from '@buildd/core/inference-policy';
 import { applyExperimentUpdate, findOtherRunning, type ExperimentRow } from '@/lib/experiments-store';
 import { fetchOrchestrationDecisionStats } from '@/lib/orchestration-decision-stats-query';
 import { computeUsageStats, describeScan, type GroupDimension } from '@/lib/usage-stats';
+import { rankTopTasks } from './usage-extras';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
 import { getDispatchHealth } from '@/lib/dispatch-health';
 import { getGateAnalytics, getGateReasonFamily } from '@/lib/gate-analytics-query';
@@ -189,12 +194,38 @@ export async function listChatRetros(opts: { teamId: string | null; since: Date;
 
 // ── Usage, dispatch, gates, failures ──────────────────────────────────────────
 
-/** The get_usage_stats backend over any set of workspaces. */
-export async function loadUsage(opts: { workspaceIds: string[]; since: Date; groupBy: GroupDimension }) {
-  const rows = opts.workspaceIds.length ? await fetchUsageRows({ workspaceIds: opts.workspaceIds, windowStart: opts.since }) : [];
+/**
+ * The get_usage_stats backend over any set of workspaces, plus what the admin
+ * app's Usage page needs beside it: the same-length window before this one
+ * (totals and groups, so "this week vs last" needs no second call) and the five
+ * most expensive tasks with their titles.
+ */
+export async function loadUsage(opts: { workspaceIds: string[]; since: Date; groupBy: GroupDimension; now?: Date }) {
+  const now = opts.now ?? new Date();
+  const span = now.getTime() - opts.since.getTime();
+  const previousStart = new Date(opts.since.getTime() - span);
+  const [rows, previousRows] = opts.workspaceIds.length
+    ? await Promise.all([
+        fetchUsageRows({ workspaceIds: opts.workspaceIds, windowStart: opts.since }),
+        fetchUsageRows({ workspaceIds: opts.workspaceIds, windowStart: previousStart, windowEnd: opts.since }),
+      ])
+    : [[], []];
+  const previous = computeUsageStats(previousRows, opts.groupBy);
+  const ranked = rankTopTasks(rows, 5);
+  const titles = ranked.length
+    ? await db.select({ id: tasks.id, title: tasks.title }).from(tasks).where(inArray(tasks.id, ranked.map(t => t.taskId)))
+    : [];
+  const titleOf = new Map(titles.map(t => [t.id, t.title]));
   return {
     scan: describeScan(rows, opts.since, USAGE_ROW_LIMIT),
     ...computeUsageStats(rows, opts.groupBy),
+    previous: {
+      since: previousStart.toISOString(),
+      scan: describeScan(previousRows, previousStart, USAGE_ROW_LIMIT),
+      totals: previous.totals,
+      groups: previous.groups.map(g => ({ key: g.key, costUsd: g.costUsd, tasks: g.tasks })),
+    },
+    topTasks: ranked.map(t => ({ ...t, title: titleOf.get(t.taskId) ?? null })),
   };
 }
 
@@ -313,4 +344,37 @@ export async function loadInsightsBand(opts: { workspaceIds: string[]; filter: I
 /** Health → Overview's agent access section, cross-tenant. */
 export async function loadAgentAccess(opts: { workspaceIds: string[]; windowHours: number }) {
   return loadAgentAccessReport(opts.workspaceIds, opts.windowHours);
+}
+
+// ── Names and readouts ────────────────────────────────────────────────────────
+
+/** Every team and its workspaces, by name: the admin app shows names, never ids. */
+export async function listTeamsWithWorkspaces(): Promise<{ id: string; name: string; workspaces: { id: string; name: string }[] }[]> {
+  const [teamRows, workspaceRows] = await Promise.all([
+    db.select({ id: teams.id, name: teams.name }).from(teams).orderBy(teams.name),
+    db.select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId }).from(workspaces).orderBy(workspaces.name),
+  ]);
+  return teamRows.map(t => ({
+    id: t.id,
+    name: t.name,
+    workspaces: workspaceRows.filter(w => w.teamId === t.id).map(w => ({ id: w.id, name: w.name })),
+  }));
+}
+
+/**
+ * One experiment's readout for its current policy version, dispatched by kind
+ * exactly as GET /api/experiments/[id]/readout does. A kind with no readout
+ * returns null.
+ */
+export async function loadExperimentReadout(row: ExperimentRow) {
+  const policyVersion = row.policyVersion;
+  const health = await runExperimentHealth(row).catch(() => null);
+  if (row.kind === HEARTBEAT_TRIAGE_EXPERIMENT_KIND) {
+    return { policyVersion, readout: await runHeartbeatTriageReadout({ id: row.id, policyVersion }, parseHeartbeatTriageConfig(row.config)), health };
+  }
+  if (row.kind === MODEL_ROUTING_EXPERIMENT_KIND) {
+    const { minSamplePerArm } = parseModelRoutingConfig(row.config);
+    return { policyVersion, readout: await runExperimentReadout({ id: row.id, policyVersion }, { minSamplePerArm }), health };
+  }
+  return { policyVersion, readout: null, health };
 }

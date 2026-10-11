@@ -131,7 +131,18 @@ mock.module('@/lib/task-manifest-prediction', () => ({
   scheduleCreationManifestShadow: mockScheduleCreationManifestShadow,
 }));
 
+// Task estimates experiment: the real hook (lib/task-estimate-hook.ts) runs;
+// only the core write is stubbed, so these tests see whether creation waits
+// on it or fails with it.
+const mockWriteTaskEstimate = mock(async (_taskId: string, _deps?: unknown): Promise<string> => 'skipped');
+mock.module('@buildd/core/task-estimate-source', () => ({ writeTaskEstimate: mockWriteTaskEstimate }));
+
 // Mock auth-helpers
+// Living Spec pinning (lib/specs/pin.ts): passes through unless a test sets an impl.
+let specPinImpl: ((ws: string, ctx: unknown) => Promise<unknown>) | null = null;
+mock.module('@/lib/specs/pin', () => ({
+  pinSpecSource: (ws: string, ctx: unknown) => (specPinImpl ? specPinImpl(ws, ctx) : Promise.resolve({ ok: true, context: ctx })),
+}));
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
@@ -571,6 +582,34 @@ describe('POST /api/tasks', () => {
     }));
     expect(response.status).toBe(200);
     expect((await response.json()).id).toBe('task-ci');
+  });
+
+  describe('a task naming a Living Spec', () => {
+    afterEach(() => { specPinImpl = null; });
+    const file = (context: Record<string, unknown>) => POST(createMockRequest({
+      method: 'POST', headers: { Authorization: 'Bearer bld_ci' }, body: { workspaceId: 'ws-1', title: 'Build checkout', context },
+    }));
+
+    it('is filed with the pin the server resolved, not the one the caller sent', async () => {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      specPinImpl = async (ws, ctx) => ({ ok: true, context: { ...(ctx as object), specSource: { specId: 's-1', specRevisionId: 'r-1', revision: 1, contentHash: 'h1' }, seenWs: ws } });
+      const values = mock((_v: Record<string, unknown>) => ({ returning: mock(() => [{ id: 'task-s', workspaceId: 'ws-1', title: 'Build checkout', status: 'pending' }]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      const response = await file({ specSource: { specId: 's-1', contentHash: 'forged' } });
+      expect(response.status).toBe(200);
+      expect((values.mock.calls[0][0] as { context: Record<string, unknown> }).context).toMatchObject({ specSource: { specRevisionId: 'r-1', contentHash: 'h1' }, seenWs: 'ws-1' });
+    });
+
+    it('is refused, before inserting, when the spec has no approved revision to pin', async () => {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      specPinImpl = async () => ({ ok: false, status: 409, error: 'This spec has no approved revision yet' });
+      const response = await file({ specSource: { specId: 's-1' } });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toContain('no approved revision');
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
   });
 
   describe('per-task token', () => {
@@ -5057,5 +5096,44 @@ describe('POST /api/tasks — a task filed without a role gets its kind\'s defau
     const { inserted } = await create({ title: '[friction] something broke', kind: 'engineering' }, [roleRow('builder')]);
     expect(inserted).toBeDefined();
     expect(inserted.roleSlug).toBeUndefined();
+  });
+});
+
+describe('POST /api/tasks — task estimate (experiment) never blocks or fails creation', () => {
+  beforeEach(() => {
+    resetPostMocks();
+    intakeOverride = null;
+    mockWriteTaskEstimate.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123', createdByWorkerId: null, creationSource: 'api', parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockTasksInsert.mockReturnValue({
+      values: mock((values: any) => ({ returning: mock(() => [{ ...values, id: 'task-e', status: 'pending' }]) })),
+    });
+  });
+
+  const post = () => POST(createMockRequest({
+    method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Add a thing' },
+  }));
+
+  it('creation returns while the estimate write is still pending (it is not awaited)', async () => {
+    let started = false;
+    mockWriteTaskEstimate.mockImplementation(() => { started = true; return new Promise<string>(() => {}); });
+    const response = await post();
+    expect(response.status).toBe(200);
+    await settleFireAndForget(() => started);
+    expect(mockWriteTaskEstimate.mock.calls[0][0]).toBe('task-e');
+  });
+
+  it('creation succeeds when the estimate write rejects', async () => {
+    mockWriteTaskEstimate.mockImplementation(async () => { throw new Error('db down'); });
+    const response = await post();
+    expect(response.status).toBe(200);
+    expect((await response.json()).id).toBe('task-e');
+    await settleFireAndForget(() => mockWriteTaskEstimate.mock.calls.length > 0);
+    expect(mockWriteTaskEstimate).toHaveBeenCalledTimes(1);
   });
 });

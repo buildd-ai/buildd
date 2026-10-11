@@ -27,6 +27,9 @@ const UPLOAD_CALLER_ALLOWLIST = new Set([
   'apps/web/src/lib/role-config.ts',
   'apps/web/src/app/api/artifacts/upload-url/route.ts',
   'apps/web/src/app/api/attachments/upload/route.ts',
+  // The chat upload relay: the key comes from buildChatUploadKey at upload start,
+  // the body must be exactly the size and type the upload was started with, at most 4 MB.
+  'apps/web/src/lib/artifact-chat-files.ts',
 ]);
 
 /** Routes that accept a storage key from the request body. */

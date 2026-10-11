@@ -198,6 +198,21 @@ collect bounded facts (worker failures, gate events, retry lineage, …)
   crossing an impact tier, or a resolved incident recurring. Anything else —
   including the same pattern simply accumulating more occurrences — updates
   the row's count/evidence without paging or filing again.
+- **Path-overlap stalls reconcile on current facts.** A `path_overlap_stall`
+  incident is detected only for a task that is still `pending` behind a blocker
+  that has not merged or closed (task status and PR state are read each sweep;
+  the kernel delivery decides a PR's state when one exists). After recording
+  candidates, every sweep re-reads the subjects of the open path-overlap
+  incidents and resolves each one whose blocker merged or closed, or whose
+  named tasks have all moved (claimed, finished, or started a worker). This
+  is the backstop for a missed merge event: nothing has to have been seen but
+  the sweep's own read. Unknown evidence (a task or PR the read cannot find)
+  never resolves. Resolution keeps the row, evidence and counts; a fresh
+  occurrence reopens it. These incidents are Buildd's below critical: a task
+  waiting on an overlapping PR is the claim loop's to wake, and a decision on
+  the blocking PR is that PR's own card, so Home's Needs You never lists one.
+  The full recovery assessment (per-blocker episodes, wakes, cycles, spurious
+  overlap) is the draft spec `failure-incident-recovery.md`, being built on its mission branch.
 - Noisy transient/infra and budget-exhaustion patterns (matched deterministically
   on the failure signature) stay ledger-only: no fix task is auto-filed for them
   unless a confident model answer names an actual platform defect.

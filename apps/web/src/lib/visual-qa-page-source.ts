@@ -38,6 +38,17 @@ export interface PageSourceResult {
    * `qa.ref` / `qa.refSource`.
    */
   captureRef: CaptureRefResolution;
+  /**
+   * The ref the sandbox workflow is dispatched from: trunk, always. The clone
+   * is current prod, so the harness (visual-qa.yml, scripts/qa) must be as new
+   * as prod; only the app and its migrations come from `captureRef.ref`, passed
+   * as the `capture_ref` input.
+   */
+  harnessRef: string | null;
+  /** The sandbox dispatch, ready to append `-f routes=… -f viewport=…` to. */
+  dispatch: string | null;
+  /** How far `captureRef.ref` is behind trunk; null when it is trunk. */
+  freshness: CaptureRefFreshness | null;
   sha: string | null;
   preview: PreviewResolution | null;
   decision: PageSourceDecision;
@@ -48,6 +59,48 @@ export interface PageSourceResult {
     previewAuthBypassEnv: string;
     signInPaths: string[];
   };
+}
+
+/**
+ * A capture ref against trunk. Its migrations run on a clone of prod, so trunk
+ * migrations it lacks are what can stop the capture before the app boots
+ * (a branch migration below prod's high-water mark, or partly-present DDL).
+ */
+export type CaptureRefFreshness =
+  | {
+      state: 'current' | 'behind';
+      /** Trunk commits the capture ref does not have. */
+      behindBy: number;
+      /** Trunk migration files the capture ref does not have. */
+      migrationsBehind: string[];
+      /** Merge trunk into the capture ref before relying on a capture of it. */
+      needsSync: boolean;
+    }
+  | { state: 'unreadable'; reason: string };
+
+const MIGRATION_FILE = /^packages\/core\/drizzle\/[^/]+\.sql$/;
+
+/** A ref as a compare-path segment: encoded, slashes kept. */
+const refSegment = (ref: string) => encodeURIComponent(ref).replace(/%2F/g, '/');
+
+async function captureRefFreshness(get: GitHubGet, repo: string, ref: string, trunk: string): Promise<CaptureRefFreshness> {
+  try {
+    const cmp = await get(`/repos/${repo}/compare/${refSegment(ref)}...${refSegment(trunk)}`) as {
+      ahead_by?: number; files?: Array<{ filename?: string }>;
+    };
+    const behindBy = typeof cmp?.ahead_by === 'number' ? cmp.ahead_by : 0;
+    const migrationsBehind = (cmp?.files ?? []).map(f => f.filename ?? '').filter(f => MIGRATION_FILE.test(f));
+    return { state: behindBy > 0 ? 'behind' : 'current', behindBy, migrationsBehind, needsSync: migrationsBehind.length > 0 };
+  } catch (err) {
+    return { state: 'unreadable', reason: errMessage(err) };
+  }
+}
+
+/** `gh workflow run` from trunk, with the capture ref as an input when it is not trunk. */
+export function visualQaDispatchCommand(harnessRef: string | null, captureRef: string | null): string | null {
+  if (!harnessRef) return null;
+  const base = `gh workflow run visual-qa.yml --ref ${harnessRef}`;
+  return captureRef && captureRef !== harnessRef ? `${base} -f capture_ref=${captureRef}` : base;
 }
 
 const HEX_SHA = /^[0-9a-f]{7,40}$/i;
@@ -122,10 +175,18 @@ export async function resolvePageSource(opts: {
 
   const get = opts.get;
   const repo = opts.repoFullName;
-  const captureRef = await resolveCaptureRef(get, repo, opts.mission, captureTrunk(opts.gitConfig, opts.repoDefaultBranch));
+  const trunk = captureTrunk(opts.gitConfig, opts.repoDefaultBranch);
+  const captureRef = await resolveCaptureRef(get, repo, opts.mission, trunk);
+  const harness = {
+    harnessRef: trunk,
+    dispatch: visualQaDispatchCommand(trunk, captureRef.ref),
+    freshness: get && repo && trunk && captureRef.ref && captureRef.ref !== trunk
+      ? await captureRefFreshness(get, repo, captureRef.ref, trunk)
+      : null,
+  };
 
   if (config.pageSource === 'sandbox') {
-    return { pageSource: 'sandbox', captureRef, sha: null, preview: null, decision: selectPageSource('sandbox', null), auth };
+    return { pageSource: 'sandbox', captureRef, ...harness, sha: null, preview: null, decision: selectPageSource('sandbox', null), auth };
   }
 
   let sha: string | null = null;
@@ -162,5 +223,5 @@ export async function resolvePageSource(opts: {
     }
   }
 
-  return { pageSource: config.pageSource, captureRef, sha, preview, decision: selectPageSource(config.pageSource, preview), auth };
+  return { pageSource: config.pageSource, captureRef, ...harness, sha, preview, decision: selectPageSource(config.pageSource, preview), auth };
 }

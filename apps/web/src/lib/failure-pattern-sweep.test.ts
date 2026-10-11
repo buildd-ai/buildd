@@ -12,7 +12,8 @@ import {
 } from './failure-pattern-sweep';
 import type { FixTaskPort, IncidentAlertSender } from './failure-incident-actions';
 import type { IncidentStorePort, StoredIncident } from './failure-incident-store';
-import type { SentinelFacts, WorkerFailureFact } from './failure-pattern-sentinel';
+import type { PathOverlapObservation, SentinelFacts, WorkerFailureFact } from './failure-pattern-sentinel';
+import type { FailureIncidentRule } from '@buildd/shared';
 
 const T0 = Date.parse('2026-10-04T12:00:00.000Z');
 const now = () => new Date(T0).toISOString();
@@ -36,6 +37,11 @@ function memoryIncidentPort(): IncidentStorePort & { rows: Map<string, StoredInc
       const stored: StoredIncident = { ...structuredClone(row), id: `inc-${++seq}`, version: 0 };
       rows.set(k, stored);
       return structuredClone(stored);
+    },
+    async listUnresolved(workspaceId: string, rule: FailureIncidentRule) {
+      return [...rows.values()]
+        .filter(r => r.workspaceId === workspaceId && r.rule === rule && r.status !== 'resolved')
+        .map(r => structuredClone(r));
     },
     async compareAndSwap(id, expectedVersion, next) {
       for (const [k, r] of rows) {
@@ -92,6 +98,7 @@ interface FakeOpts {
   incidentPort?: IncidentStorePort;
   fixTasks?: FixTaskPort | null;
   send?: IncidentAlertSender;
+  observe?: () => PathOverlapObservation;
 }
 
 function fakeDeps(workspaceIds: string[], opts: FakeOpts = {}) {
@@ -115,6 +122,7 @@ function fakeDeps(workspaceIds: string[], opts: FakeOpts = {}) {
     decide: null, // keep triage deterministic/DB-free in tests
     send: opts.send ?? sentSender,
     fixTasks: opts.fixTasks === undefined ? null : opts.fixTasks,
+    ...(opts.observe ? { observePathOverlapSubjects: async () => opts.observe!() } : {}),
     async reportOpsError(message, detail, severity) { opsErrors.push({ message, detail, severity }); },
     async recordSelfHealth(ok) {
       selfHealthConsecutive = ok ? 0 : selfHealthConsecutive + 1;
@@ -277,5 +285,93 @@ describe('runFailurePatternSweep', () => {
     const counters = await runFailurePatternSweep(deps, { now });
     expect(counters.runFailures).toBe(1);
     expect(opsErrors.length).toBe(1);
+  });
+});
+
+// ── path-overlap incidents reconcile against current facts ──────────────────
+
+describe('runFailurePatternSweep: path-overlap incidents resolve on current facts', () => {
+  const STALL = 120;
+  const minutesAgo = (m: number) => new Date(T0 - m * 60_000).toISOString();
+  const deferral = (over: Partial<NonNullable<SentinelFacts['pathOverlapDeferrals']>[number]> = {}) => ({
+    taskId: 'task-a', blockingPrNumber: 77, firstDeferredAt: minutesAgo(STALL + 60), lastDeferredAt: minutesAgo(5),
+    lastProgressAt: null, taskStatus: 'pending', blockerState: 'open' as const, ...over,
+  });
+  const observation = (taskStatus: string | null, pr: 'open' | 'merged' | 'closed' | 'unknown'): PathOverlapObservation => ({
+    tasks: new Map([['task-a', { status: taskStatus, lastWorkerAt: null }]]),
+    prs: new Map([[77, pr]]),
+  });
+
+  async function openIncident() {
+    const incidentPort = memoryIncidentPort();
+    let facts: SentinelFacts = { ...emptyFacts(WS1), pathOverlapDeferrals: [deferral()] };
+    let obs = observation('pending', 'open');
+    const factsMap = { get: () => facts } as unknown as Map<string, SentinelFacts>;
+    const { deps } = fakeDeps([WS1], { facts: factsMap, incidentPort, observe: () => obs });
+    const first = await runFailurePatternSweep(deps, { now });
+    expect(first.incidentsOpened).toBe(1);
+    return {
+      incidentPort,
+      deps,
+      row: () => [...incidentPort.rows.values()][0],
+      set(next: { facts?: SentinelFacts; obs?: PathOverlapObservation }) {
+        if (next.facts) facts = next.facts;
+        if (next.obs) obs = next.obs;
+      },
+    };
+  }
+
+  it('a stale incident is resolved by the sweep after its blocker merged, with no merge event seen', async () => {
+    const h = await openIncident();
+    const before = h.row();
+    // The merge webhook was missed: the only signal is the sweep's fresh read.
+    // The old deferral rows are still inside the 24h window.
+    h.set({
+      facts: { ...emptyFacts(WS1), pathOverlapDeferrals: [deferral({ blockerState: 'merged' })] },
+      obs: observation('pending', 'merged'),
+    });
+    const counters = await runFailurePatternSweep(h.deps, { now });
+    expect(counters.incidentsResolved).toBe(1);
+    expect(counters.incidentsOpened + counters.incidentsUpdated).toBe(0);
+    const after = h.row();
+    expect(after.status).toBe('resolved');
+    expect(after.resolvedAt).toBe(now());
+    // History is kept: the row, its evidence and its counts are untouched.
+    expect(after.evidenceRefs).toEqual(before.evidenceRefs);
+    expect(after.occurrenceCount).toBe(before.occurrenceCount);
+
+    const again = await runFailurePatternSweep(h.deps, { now });
+    expect(again.incidentsResolved).toBe(0);
+    expect(h.row().status).toBe('resolved');
+  });
+
+  it('resolves once the waiting task completed, even with the blocker still open', async () => {
+    const h = await openIncident();
+    h.set({ facts: emptyFacts(WS1), obs: observation('completed', 'open') });
+    const counters = await runFailurePatternSweep(h.deps, { now });
+    expect(counters.incidentsResolved).toBe(1);
+    expect(h.row().status).toBe('resolved');
+  });
+
+  it('a real remaining blocker keeps the incident open', async () => {
+    const h = await openIncident();
+    h.set({ facts: emptyFacts(WS1), obs: observation('pending', 'open') });
+    const counters = await runFailurePatternSweep(h.deps, { now });
+    expect(counters.incidentsResolved).toBe(0);
+    expect(h.row().status).toBe('open');
+  });
+
+  it('unknown evidence is not a resolution', async () => {
+    const h = await openIncident();
+    h.set({ facts: emptyFacts(WS1), obs: observation(null, 'unknown') });
+    expect((await runFailurePatternSweep(h.deps, { now })).incidentsResolved).toBe(0);
+    expect(h.row().status).toBe('open');
+  });
+
+  it('never resolves an incident its own rule still reports in this sweep', async () => {
+    const h = await openIncident();
+    h.set({ obs: observation('completed', 'merged') }); // facts still say stalled behind an open PR
+    expect((await runFailurePatternSweep(h.deps, { now })).incidentsResolved).toBe(0);
+    expect(h.row().status).toBe('open');
   });
 });

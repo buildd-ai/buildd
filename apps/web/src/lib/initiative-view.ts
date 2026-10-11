@@ -189,7 +189,7 @@ function missionRank(m: InitiativeMissionInput): number {
 
 export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number } = {}): InitiativeCardModel {
   const now = opts.now ?? Date.now();
-  const href = `/app/initiatives/${encodeURIComponent(input.id)}`;
+  const href = `/app/missions?group=${encodeURIComponent(input.id)}`;
   const missions = input.missions.filter((m) => m.status !== 'archived');
   const closed = input.status === 'completed' || input.status === 'archived';
 
@@ -270,7 +270,7 @@ export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number
     }
     if (missions.length === 0) {
       facts.push({ key: 'no_missions', text: 'No missions yet', href: null });
-      action = { kind: 'add_mission', label: 'Add mission', href: `/app/missions/new?initiative=${encodeURIComponent(input.id)}`, missionId: null };
+      action = { kind: 'add_mission', label: 'Add mission', href: `/app/missions?new=1&initiative=${encodeURIComponent(input.id)}`, missionId: null };
     }
     action ??= { kind: 'open', label: 'Open', href, missionId: null };
   }

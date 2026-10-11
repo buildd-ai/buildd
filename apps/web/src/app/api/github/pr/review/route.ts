@@ -455,7 +455,15 @@ export async function POST(req: NextRequest) {
     ...(deltaPriorVerdict ? { priorVerdict: deltaPriorVerdict } : {}),
   });
 
-  if (!reviewerTask?.id) return bad('Could not create the reviewer task', 500);
+  if (!reviewerTask?.id) {
+    // This may occur if a concurrent caller (e.g., create_pr's auto-review
+    // request and the explicit review request in the same milliseconds) both
+    // tried to create a reviewer task for the same PR. The first wins due to
+    // the DB constraint; if the winner was not found by the fallback lookup,
+    // escalate with context for diagnosis.
+    console.error(`[pr-review] Failed to create or find reviewer task for PR #${prNumber} in workspace ${workspace.id}`);
+    return bad('Could not create the reviewer task (or find concurrent writer; see logs)', 500);
+  }
 
   // A live reviewer task already owns this PR generation — return it rather than
   // putting a second agent on the same commit. Dispatch and the PR activity

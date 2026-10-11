@@ -41,7 +41,8 @@
  */
 import { memo, useMemo, useState } from 'react';
 import { ChatThread, ToolCallGroup, thinkingSteps, type ChatStatus, type ThreadMessageContext, type TurnFold, type TurnPhase } from '@builddai/ai-kit/chat/react';
-import type { ChatMessage as KitMessage, ChatTextPart, StepData } from '@builddai/ai-kit/chat/contract';
+import type { AttachmentData, ChatMessage as KitMessage, ChatTextPart, FileData, StepData } from '@builddai/ai-kit/chat/contract';
+import { AttachmentReader } from './AttachmentReader';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { CHAT_EVENT_PART_TYPE, isToolPart, messageMeta, type BuilddObjectRef, type ChatMessage, type ChatToolPart } from './chat-contract';
@@ -121,7 +122,8 @@ function EventSegments({ segs }: { segs: readonly FeedSegment[] }) {
 /**
  * The tiny tag under a message: where the reply went. Tapping it opens the
  * composer's scope. It carries its own ground chip: small text straight on the
- * sea's brightest pool would drop below AA.
+ * sea's brightest pool would drop below AA. Below md the button around the chip
+ * is 44px to touch, and its negative margins keep the gap under the message.
  */
 function IntentTag({ label }: { label: string }) {
   return (
@@ -129,9 +131,11 @@ function IntentTag({ label }: { label: string }) {
       type="button"
       data-testid="feed-intent-tag"
       onClick={() => (document.querySelector('[data-testid="composer-scope-chip"]') as HTMLElement | null)?.click()}
-      className="min-h-6 bg-[var(--chat-ground)] px-1.5 font-mono text-[11px] lg:text-[10px] tracking-[.08em] text-[var(--chat-muted)] hover:text-[var(--chat-text)]"
+      className="group/tag inline-flex items-center max-md:min-h-11 max-md:-my-[10px]"
     >
-      {label}
+      <span data-testid="feed-intent-chip" className="inline-flex min-h-6 items-center bg-[var(--chat-ground)] px-1.5 font-mono text-[11px] lg:text-[10px] tracking-[.08em] text-[var(--chat-muted)] group-hover/tag:text-[var(--chat-text)]">
+        {label}
+      </span>
     </button>
   );
 }
@@ -173,11 +177,15 @@ function turnSteps(m: KitMessage, streaming: boolean): StepData[] {
   return thinkingSteps(m.parts, streaming).map(s => (s.weight ? s : { ...s, weight: legacyStepWeight(s) }));
 }
 
+/** The original bytes of a file a message of this conversation carries. */
+export const fileDownloadUrl = (conversationId: string, artifactId: string): string => `/api/chat/${conversationId}/attachments/${artifactId}/download`;
+
 export default function ChatFeed({
   messages,
   agent,
   status = 'ready',
   error,
+  conversationId = null,
 }: {
   messages: readonly ChatMessage[];
   agent: ChatAgent;
@@ -188,7 +196,10 @@ export default function ChatFeed({
    */
   status?: ChatStatus;
   error?: string | null;
+  /** Where the reader reads a stored attachment from. Null: only a draft still in the browser can open. */
+  conversationId?: string | null;
 }) {
+  const [reading, setReading] = useState<AttachmentData | null>(null);
   const hidden = useMemo(() => eventRefsShownLater(messages), [messages]);
   // Finished turns the person unfolded. Held here, so a re-render never folds one back.
   const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(() => new Set());
@@ -269,6 +280,14 @@ export default function ChatFeed({
         error={error || undefined}
         label="Conversation"
         eventPartType={CHAT_EVENT_PART_TYPE}
+        onOpenAttachment={(data: AttachmentData) => setReading(data)}
+        // A stored image or file opens its original; its thumbnail is the original too.
+        fileImageUrl={(data: FileData) => (conversationId && 'artifactId' in data ? fileDownloadUrl(conversationId, data.artifactId) : undefined)}
+        {...(conversationId ? {
+          onOpenFile: (data: FileData) => {
+            if ('artifactId' in data) window.open(fileDownloadUrl(conversationId, data.artifactId), '_blank', 'noopener');
+          },
+        } : {})}
         renderText={(text: string, km: KitMessage, part: ChatTextPart) => {
           if (!text.trim()) return null;
           if (km.role === 'user') return <UserBubble text={text} />;
@@ -315,6 +334,7 @@ export default function ChatFeed({
         answer="replace"
         compose="turn"
       />
+      {reading && <AttachmentReader conversationId={conversationId} attachment={reading} onClose={() => setReading(null)} />}
     </div>
   );
 }

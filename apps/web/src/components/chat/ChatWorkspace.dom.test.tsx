@@ -215,9 +215,19 @@ describe('contrast over the sea (AA)', () => {
 
   it('the intent tag sits on its own ground chip in muted text, never dim text on the sea', async () => {
     await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
+    const chip = cls(q('[data-testid="feed-intent-chip"]'));
+    expect(chip).toContain('bg-[var(--chat-ground)]');
+    expect(chip).toContain('text-[var(--chat-muted)]');
+  });
+
+  // Regression (U1 visual audit, task 2ae639ce): the tag measured 162x24 at
+  // 320px. The button is the 44px box; only the chip inside carries the ground.
+  it('the intent tag is 44px to touch below md without a bigger chip', async () => {
+    await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
     const tag = cls(q('[data-testid="feed-intent-tag"]'));
-    expect(tag).toContain('bg-[var(--chat-ground)]');
-    expect(tag).toContain('text-[var(--chat-muted)]');
+    expect(tag).toContain('max-md:min-h-11');
+    expect(tag).toContain('max-md:-my-[10px]');
+    expect(tag).not.toContain('bg-[var(--chat-ground)]');
   });
 
   it('the composer top rule is the strong rule (copper only when something needs you), focused or not, on a phone', async () => {
@@ -961,5 +971,48 @@ describe('tablet (800px): the phone v3 layout, not the old split', () => {
     const chatCss = GLOBALS.slice(GLOBALS.indexOf('/* ── The empty canvas (ChatWorkspace)'), GLOBALS.indexOf('/* ── Steer on the kit'));
     expect(chatCss).not.toContain('@media (min-width: 768px)');
     expect(chatCss).not.toContain('@media (max-width: 767px)');
+  });
+});
+
+describe('a long paste (Living Specs C2)', () => {
+  const box = () => q('#chat-composer-input') as HTMLTextAreaElement;
+  const paste = async (text: string) => {
+    await act(async () => {
+      const ev = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, 'clipboardData', { value: { getData: () => text } });
+      box().dispatchEvent(ev);
+    });
+  };
+  const enter = async () => {
+    await act(async () => { box().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+  };
+
+  it('over 8,000 characters becomes a card in the composer, not text in the box', async () => {
+    await render();
+    await paste('x'.repeat(8_001));
+    expect(qa('[data-testid="kit-composer-attachments"] [data-testid="kit-attachment"]')).toHaveLength(1);
+    expect(box().value).toBe('');
+  });
+
+  it('a send refused before any reply puts the whole draft back, same attachment id', async () => {
+    let payload: { text: string; attachments: Array<{ id: string; text: string }> } | null = null;
+    const onSend = (text: string, attachments?: Array<{ id: string; text: string }>) => { payload = { text, attachments: attachments ?? [] }; };
+    await render({ onSend });
+    await paste('y'.repeat(9_000));
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box()), 'value')!.set!;
+      setter.call(box(), 'summarise this');
+      box().dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await enter();
+    expect(payload!.text).toBe('summarise this');
+    expect(payload!.attachments).toHaveLength(1);
+    expect(q('[data-testid="kit-attachment"]')).toBeNull();
+    // The server refused the turn: the person's message is last and the status is error.
+    await render({ onSend, status: 'error', error: 'refused', messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: 'summarise this' }] }] as never });
+    expect(box().value).toBe('summarise this');
+    expect(qa('[data-testid="kit-composer-attachments"] [data-testid="kit-attachment"]')).toHaveLength(1);
+    await enter();
+    expect(payload!.attachments[0].id).toBeTruthy();
   });
 });

@@ -37,11 +37,16 @@ import type {
 import {
   detectFailurePatterns,
   FAILURE_PATTERN_DETECTOR_VERSION,
+  pathOverlapIncidentCleared,
+  type BlockerPrState,
   type IncidentCandidate,
+  type PathOverlapObservation,
   type SentinelFacts,
 } from './failure-pattern-sentinel';
 import {
+  createDbIncidentPort,
   recordIncidentCandidates,
+  updateIncidentState,
   type IncidentStorePort,
   type UpsertIncidentResult,
 } from './failure-incident-store';
@@ -120,6 +125,11 @@ export interface SweepDeps {
   getWatermark(workspaceId: string): Promise<string | null>;
   setWatermark(workspaceId: string, at: string): Promise<void>;
   collectFacts(workspaceId: string, floors: SweepFloors, now: string): Promise<SentinelFacts>;
+  /**
+   * Fresh task and PR state for the subjects of open path-overlap incidents.
+   * Absent: those incidents are never auto-resolved.
+   */
+  observePathOverlapSubjects?(workspaceId: string, taskIds: string[], prNumbers: number[]): Promise<PathOverlapObservation>;
   /** Defaults (DB-backed) apply when omitted — see `recordIncidentCandidates` / `actOnIncidentResults`. */
   incidentPort?: IncidentStorePort;
   decide?: IncidentDecider | null;
@@ -142,6 +152,8 @@ export interface SweepRunCounters {
   candidates: number;
   incidentsOpened: number;
   incidentsUpdated: number;
+  /** Incidents whose resolve check passed on facts read this sweep. */
+  incidentsResolved: number;
   duplicatesSuppressed: number;
   alertsSent: number;
   fixTasksFiled: number;
@@ -157,6 +169,7 @@ function emptyCounters(): SweepRunCounters {
     candidates: 0,
     incidentsOpened: 0,
     incidentsUpdated: 0,
+    incidentsResolved: 0,
     duplicatesSuppressed: 0,
     alertsSent: 0,
     fixTasksFiled: 0,
@@ -291,11 +304,54 @@ async function sweepOneWorkspace(
     }
   }
 
+  await reconcilePathOverlapIncidents(deps, workspaceId, now, new Set(candidates.map(c => c.signature)), counters);
+
   // Advance the watermark even on a quiet sweep (no candidates): "nothing new"
   // is still progress, and the next run's floor should start from here.
   await deps.setWatermark(workspaceId, now);
   counters.workspacesEvaluated++;
   counters.windowsEvaluated++;
+}
+
+// ── Reconcile: resolve what current facts say is over ───────────────────────
+
+/**
+ * Resolve every open `path_overlap_stall` incident whose check passes on facts
+ * read now (`pathOverlapIncidentCleared`): its blocker merged or closed, or
+ * every task it names moved. This is the backstop for a missed merge event: no
+ * webhook or wake has to have been seen. An incident its own rule reported in
+ * this sweep is never resolved here. Resolve is the store's one lifecycle
+ * write, so the row, its evidence and counts stay as history, and a fresh
+ * occurrence reopens it (`mergeIncident`). Never throws.
+ */
+async function reconcilePathOverlapIncidents(
+  deps: SweepDeps,
+  workspaceId: string,
+  now: string,
+  liveSignatures: ReadonlySet<string>,
+  counters: SweepRunCounters,
+): Promise<void> {
+  if (!deps.observePathOverlapSubjects) return;
+  try {
+    const port = deps.incidentPort ?? (await createDbIncidentPort());
+    if (!port.listUnresolved) return;
+    const open = (await port.listUnresolved(workspaceId, 'path_overlap_stall')).filter(i => !liveSignatures.has(i.signature));
+    if (open.length === 0) return;
+    const taskIds = [...new Set(open.flatMap(i => i.affectedRefs.taskIds))];
+    const prNumbers = [...new Set(open.flatMap(i => i.affectedRefs.prNumbers))];
+    const obs = await deps.observePathOverlapSubjects(workspaceId, taskIds, prNumbers);
+    for (const incident of open) {
+      if (!pathOverlapIncidentCleared(incident, obs)) continue;
+      if (await updateIncidentState(port, incident.id, { type: 'resolve' }, { now })) counters.incidentsResolved++;
+    }
+  } catch (err) {
+    counters.runFailures++;
+    await deps.reportOpsError(
+      `Failure Pattern Sentinel: path-overlap reconcile failed for workspace ${workspaceId}`,
+      err instanceof Error ? err.message : String(err),
+      'error',
+    ).catch(() => {});
+  }
 }
 
 // ── The sweep ────────────────────────────────────────────────────────────────
@@ -493,22 +549,18 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
   const pathOverlapDeferrals: SentinelFacts['pathOverlapDeferrals'] = [];
   if (byTask.size > 0) {
     const taskIds = [...byTask.keys()];
-    const workerRows = await db.select({ taskId: workers.taskId, createdAt: workers.createdAt }).from(workers).where(inArray(workers.taskId, taskIds));
-    const latestWorkerByTask = new Map<string, string>();
-    for (const w of workerRows) {
-      if (!w.taskId) continue;
-      const iso = w.createdAt.toISOString();
-      const prev = latestWorkerByTask.get(w.taskId);
-      if (!prev || iso > prev) latestWorkerByTask.set(w.taskId, iso);
-    }
+    const blockers = [...new Set([...byTask.values()].map(d => d.blockingPrNumber).filter((n): n is number => n !== null))];
+    const obs = await dbObservePathOverlapSubjects(workspaceId, taskIds, blockers);
     for (const [taskId, d] of byTask) {
-      const workerAt = latestWorkerByTask.get(taskId) ?? null;
+      const workerAt = obs.tasks.get(taskId)?.lastWorkerAt ?? null;
       pathOverlapDeferrals.push({
         taskId,
         blockingPrNumber: d.blockingPrNumber,
         firstDeferredAt: d.firstDeferredAt,
         lastDeferredAt: d.lastDeferredAt,
         lastProgressAt: workerAt && workerAt > d.firstDeferredAt ? workerAt : null,
+        taskStatus: obs.tasks.get(taskId)?.status ?? null,
+        blockerState: d.blockingPrNumber === null ? 'unknown' : obs.prs.get(d.blockingPrNumber) ?? 'unknown',
       });
     }
   }
@@ -635,6 +687,58 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
   };
 }
 
+/**
+ * Current task status and newest worker per task, and each PR's state. The
+ * kernel delivery (`workflow_deliveries`) decides when one exists; the worker
+ * rows that carry the PR are the fallback for PRs the kernel never bound. A
+ * PR nothing names is unknown, which never counts as landed.
+ */
+async function dbObservePathOverlapSubjects(workspaceId: string, taskIds: string[], prNumbers: number[]): Promise<PathOverlapObservation> {
+  const { db } = await import('@buildd/core/db');
+  const { workers, tasks } = await import('@buildd/core/db/schema');
+  const { and, eq, inArray } = await import('drizzle-orm');
+
+  const taskState = new Map<string, { status: string | null; lastWorkerAt: string | null }>();
+  if (taskIds.length > 0) {
+    const taskRows = await db.select({ id: tasks.id, status: tasks.status }).from(tasks).where(inArray(tasks.id, taskIds));
+    for (const t of taskRows) taskState.set(t.id, { status: t.status, lastWorkerAt: null });
+    const workerRows = await db.select({ taskId: workers.taskId, createdAt: workers.createdAt }).from(workers).where(inArray(workers.taskId, taskIds));
+    for (const w of workerRows) {
+      if (!w.taskId) continue;
+      const s = taskState.get(w.taskId) ?? { status: null, lastWorkerAt: null };
+      const iso = w.createdAt.toISOString();
+      if (!s.lastWorkerAt || iso > s.lastWorkerAt) s.lastWorkerAt = iso;
+      taskState.set(w.taskId, s);
+    }
+  }
+
+  const prs = new Map<number, BlockerPrState>();
+  if (prNumbers.length > 0) {
+    const rank: Record<BlockerPrState, number> = { unknown: 0, open: 1, closed: 2, merged: 3 };
+    const note = (n: number, st: BlockerPrState) => {
+      if (rank[st] > rank[prs.get(n) ?? 'unknown']) prs.set(n, st);
+    };
+    const { deliveryPrStates } = await import('./workflow/delivery-view');
+    for (const d of await deliveryPrStates(workspaceId, prNumbers)) {
+      note(d.prNumber, d.mergedAt || d.state === 'MERGED' ? 'merged'
+        : d.state === 'SUPERSEDED' || d.state === 'ABANDONED' ? 'closed' : 'open');
+    }
+    const kernelBound = new Set(prs.keys());
+    const unbound = prNumbers.filter(n => !kernelBound.has(n));
+    const prWorkerRows = unbound.length === 0 ? [] : await db
+      .select({ prNumber: workers.prNumber, mergedAt: workers.mergedAt, prLifecycleStatus: workers.prLifecycleStatus })
+      .from(workers)
+      .where(and(eq(workers.workspaceId, workspaceId), inArray(workers.prNumber, unbound)));
+    for (const w of prWorkerRows) {
+      if (w.prNumber === null) continue;
+      note(w.prNumber, w.mergedAt || w.prLifecycleStatus === 'merged' ? 'merged'
+        : w.prLifecycleStatus === 'closed' ? 'closed'
+          : w.prLifecycleStatus === 'unresolvable' ? 'unknown' : 'open');
+    }
+  }
+  return { tasks: taskState, prs };
+}
+
 /** Lazily built, DB-backed `SweepDeps`. The only export here that touches Postgres. */
 export function productionSweepDeps(): SweepDeps {
   return {
@@ -669,6 +773,7 @@ export function productionSweepDeps(): SweepDeps {
         });
     },
     collectFacts: dbCollectFacts,
+    observePathOverlapSubjects: dbObservePathOverlapSubjects,
     async reportOpsError(message, detail, severity) {
       const { reportOps } = await import('@buildd/core/report-ops');
       await reportOps({ source: 'failure-pattern-sentinel', severity, message, detail });

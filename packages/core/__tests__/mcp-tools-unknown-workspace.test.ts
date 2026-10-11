@@ -33,6 +33,8 @@ const CASES: Array<[action: string, params: Record<string, unknown>]> = [
   ['update_skill', { slug: 's' }],
   ['delete_skill', { slug: 's' }],
   ['list_artifacts', {}],
+  ['manage_specs', { action: 'list' }],
+  ['manage_specs', { action: 'create_draft', title: 'T', body: 'B' }],
   ['explain', {}],
   ['get_error_traces', {}],
   ['read_evidence', { prNumber: 7 }],
