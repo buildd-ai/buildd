@@ -8,6 +8,7 @@ import {
 } from '@/lib/dep-gate-contract';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
 import { MIGRATION_PATH_RE } from '@buildd/core/path-overlap';
+import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 
 /**
  * Re-exported for callers already importing the contract from the gate module.
@@ -118,6 +119,39 @@ export function dependencySatisfied(depId: SQL): SQL {
       AND dr.revoked_at IS NULL
     )
     OR ${migrationEdgeOnOtherBase(depId)}
+    OR ${inferredEdgeOntoUnstartedHolder(depId)}
+  )`;
+}
+
+/**
+ * TRUE when `depId` is an overlap edge the creation route inferred
+ * (`pathDeclaration.inferredDependsOn`) and the dependency has not started:
+ * still pending, no live worker, and no worker holding an open PR. The edge
+ * stops two tasks editing a migration index or hard surface at once; a holder
+ * that has not started is editing nothing. Whichever of the two claims first
+ * takes the paths, and the claim route's live gates (path leases, open-PR
+ * overlap) hold the other until it lands. Without this, a small task queued
+ * behind a feature deferred for days, and behind that feature's own edges.
+ * Caller-declared edges never qualify.
+ */
+function inferredEdgeOntoUnstartedHolder(depId: SQL): SQL {
+  const liveStatuses = sql.join(LIVE_WORKER_STATUSES.map((s) => sql`${s}`), sql`, `);
+  return sql`(
+    ${isInferredEdge(depId)}
+    AND EXISTS (
+      SELECT 1 FROM ${tasks} t5
+      WHERE t5.id = ${depId}
+      AND t5.status = ${'pending'}
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM ${workers} w5
+      WHERE w5.task_id = ${depId}
+      AND (
+        w5.status IN (${liveStatuses})
+        OR (w5.pr_url IS NOT NULL AND w5.merged_at IS NULL
+          AND COALESCE(w5.pr_lifecycle_status, '') != ${DEP_UNBLOCKING_PR_LIFECYCLE})
+      )
+    )
   )`;
 }
 
@@ -140,6 +174,17 @@ export function depsGate(): SQL {
     bypassFlagCondition(tasks.context, BYPASS_DEPS_GATE_KEY),
     dependenciesSatisfied(),
   )!;
+}
+
+/**
+ * TRUE when the dependent's creation route inferred the `depId` edge, FALSE
+ * otherwise, never NULL. A row with no `inferredDependsOn` key makes the bare
+ * `?` NULL, and `dependenciesSatisfied()` reads `NOT (… OR NULL)` as NULL, which
+ * drops that dependency from its NOT EXISTS: the arm built on it would release
+ * a caller-declared edge whenever the rest of the arm held.
+ */
+function isInferredEdge(depId: SQL): SQL {
+  return sql`COALESCE(${tasks.pathDeclaration}->'inferredDependsOn' ? (${depId})::text, FALSE)`;
 }
 
 // Mirrors MISSION_BRANCH_PREFIX in @buildd/core/mission-integration (not imported:
@@ -168,7 +213,7 @@ function migrationEdgeOnOtherBase(depId: SQL): SQL {
     WHERE m.id = ${tasks.missionId} AND m.integration_branch_enabled IS TRUE
   )`;
   return sql`(
-    ${tasks.pathDeclaration}->'inferredDependsOn' ? (${depId})::text
+    ${isInferredEdge(depId)}
     AND EXISTS (
       SELECT 1 FROM ${tasks} t4
       WHERE t4.id = ${depId}

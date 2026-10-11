@@ -36,6 +36,10 @@ mock.module('drizzle-orm', () => ({
   inArray: (...args: any[]) => ({ type: 'inArray', args }),
 }));
 
+// Questions a failure incident's recovery has superseded (lib/incident-recovery-refs.ts).
+const mockSuperseded = mock(async (_ids: string[]) => new Set<string>());
+mock.module('@/lib/incident-recovery-load', () => ({ loadSupersededQuestionTaskIds: mockSuperseded }));
+
 // Import route handler after mocks
 const { GET } = await import('./route');
 
@@ -45,6 +49,22 @@ describe('GET /api/tasks/waiting-input', () => {
     mockGetUserWorkspaceIds.mockReset();
     mockWorkersFindMany.mockReset();
     mockTasksFindMany.mockReset();
+    mockSuperseded.mockImplementation(async () => new Set<string>());
+  });
+
+  it('leaves out a question recovery superseded: no banner and no Needs You row for it (failure-incident-recovery §17.2)', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'test@test.com' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockReturnValue([
+      { taskId: 'audit', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'How should I proceed?', disposition: 'ask' } },
+      { taskId: 'real', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Which billing plan?', disposition: 'ask' } },
+    ]);
+    mockSuperseded.mockImplementation(async () => new Set(['audit']));
+    mockTasksFindMany.mockImplementation(((q: { where: { args: [unknown, string[]] } }) =>
+      q.where.args[1].map(id => ({ id, title: id, status: 'in_progress', workspaceId: 'ws-1', missionId: null }))) as any);
+
+    const data = await (await GET()).json();
+    expect(data.tasks.map((t: { id: string }) => t.id)).toEqual(['real']);
   });
 
   it('returns 401 when not authenticated', async () => {
