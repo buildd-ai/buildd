@@ -8,6 +8,8 @@ import {
   MAX_EVIDENCE_REFS,
   MAX_AFFECTED_REFS,
   DEFAULT_SENTINEL_THRESHOLDS,
+  pathOverlapIncidentCleared,
+  type BlockerPrState,
   type SentinelFacts,
   type RetryChildFact,
   type WorkerFailureFact,
@@ -241,6 +243,70 @@ describe('path_overlap deferral with no progress', () => {
       ],
     }));
     expect(out.filter(c => c.rule === 'path_overlap_stall')).toHaveLength(0);
+  });
+
+  it('a task that left pending, or whose blocker landed, is not a stall on current facts', () => {
+    const stale = { firstDeferredAt: minutesAgo(T + 30), lastDeferredAt: minutesAgo(T), lastProgressAt: null };
+    const out = detectFailurePatterns(facts({
+      pathOverlapDeferrals: [
+        { taskId: 't1', blockingPrNumber: 77, ...stale, taskStatus: 'completed', blockerState: 'open' },
+        { taskId: 't2', blockingPrNumber: 78, ...stale, taskStatus: 'pending', blockerState: 'merged' },
+        { taskId: 't3', blockingPrNumber: 79, ...stale, taskStatus: 'pending', blockerState: 'closed' },
+      ],
+    }));
+    expect(out.filter(c => c.rule === 'path_overlap_stall')).toHaveLength(0);
+  });
+
+  it('a pending task behind an open blocker is still a stall', () => {
+    const out = detectFailurePatterns(facts({
+      pathOverlapDeferrals: [
+        { taskId: 't1', blockingPrNumber: 77, firstDeferredAt: minutesAgo(T + 30), lastDeferredAt: minutesAgo(1), lastProgressAt: null, taskStatus: 'pending', blockerState: 'open' },
+      ],
+    })).filter(c => c.rule === 'path_overlap_stall');
+    expect(out).toHaveLength(1);
+  });
+});
+
+describe('pathOverlapIncidentCleared: the resolve check, on facts read now', () => {
+  const inc = (over: { taskIds?: string[]; prNumbers?: number[]; stalledTasks?: number } = {}) => ({
+    firstSeenAt: minutesAgo(600),
+    affectedRefs: { taskIds: over.taskIds ?? ['t1'], workerIds: [], prNumbers: over.prNumbers ?? [77] },
+    impact: { stalledTasks: over.stalledTasks ?? (over.taskIds ?? ['t1']).length },
+  });
+  const obs = (
+    tasks: Record<string, { status: string | null; lastWorkerAt?: string | null }>,
+    prs: Record<number, BlockerPrState> = {},
+  ) => ({
+    tasks: new Map(Object.entries(tasks).map(([id, s]) => [id, { status: s.status, lastWorkerAt: s.lastWorkerAt ?? null }])),
+    prs: new Map(Object.entries(prs).map(([n, s]) => [Number(n), s])),
+  });
+
+  it('clears when the blocking PR merged, even with the subject still pending', () => {
+    expect(pathOverlapIncidentCleared(inc(), obs({ t1: { status: 'pending' } }, { 77: 'merged' }))).toBe(true);
+    expect(pathOverlapIncidentCleared(inc(), obs({ t1: { status: 'pending' } }, { 77: 'closed' }))).toBe(true);
+  });
+
+  it('clears when every subject finished or started a worker since', () => {
+    expect(pathOverlapIncidentCleared(
+      inc({ taskIds: ['t1', 't2'] }),
+      obs({ t1: { status: 'completed' }, t2: { status: 'pending', lastWorkerAt: minutesAgo(10) } }, { 77: 'open' }),
+    )).toBe(true);
+  });
+
+  it('a real remaining blocker keeps it open', () => {
+    expect(pathOverlapIncidentCleared(inc(), obs({ t1: { status: 'pending' } }, { 77: 'open' }))).toBe(false);
+    expect(pathOverlapIncidentCleared(
+      inc({ taskIds: ['t1', 't2'] }),
+      obs({ t1: { status: 'completed' }, t2: { status: 'pending' } }, { 77: 'open' }),
+    )).toBe(false);
+  });
+
+  it('unknown evidence never clears: an unread task, an unknown PR, or subjects beyond the stored refs', () => {
+    expect(pathOverlapIncidentCleared(inc(), obs({}, { 77: 'open' }))).toBe(false);
+    expect(pathOverlapIncidentCleared(inc(), obs({ t1: { status: null } }))).toBe(false);
+    expect(pathOverlapIncidentCleared(inc({ prNumbers: [] }), obs({ t1: { status: 'pending' } }))).toBe(false);
+    expect(pathOverlapIncidentCleared(inc({ stalledTasks: 30 }), obs({ t1: { status: 'completed' } }, { 77: 'open' }))).toBe(false);
+    expect(pathOverlapIncidentCleared(inc({ taskIds: [] }), obs({}, { 77: 'open' }))).toBe(false);
   });
 });
 
