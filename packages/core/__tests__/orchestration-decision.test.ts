@@ -133,6 +133,38 @@ describe('content-free helpers', () => {
   });
 });
 
+describe('runOrchestrationDecision replay', () => {
+  it('hands the state the model saw to the ledger, with the prompt identity', async () => {
+    const seen: any[] = [];
+    const h = harness({ record: async (row, replay) => { seen.push({ row, replay }); } });
+    await runOrchestrationDecision(base(h, LIVE));
+    expect(seen).toHaveLength(1);
+    expect(seen[0].replay).toEqual({
+      state: { holderLive: false, overlap: 'advisory' },
+      questionIds: Object.keys(QUESTIONS),
+      candidates: null,
+      promptRef: { id: LIVE.id, version: LIVE.version ?? null, contentHash: LIVE.fingerprint ?? null },
+    });
+  });
+
+  it('keeps the state on a provider failure too: that is the question another model should be asked', async () => {
+    const seen: any[] = [];
+    const h = harness({
+      record: async (row, replay) => { seen.push(replay); },
+      call: (async () => ({ ok: false, error: { kind: 'provider_error', status: 401 }, attempts: 1, latencyMs: 5 })) as any,
+    });
+    await runOrchestrationDecision(base(h, LIVE));
+    expect(seen[0]?.state).toEqual({ holderLive: false, overlap: 'advisory' });
+  });
+
+  it('keeps nothing when no state was built', async () => {
+    const seen: any[] = [];
+    const h = harness({ record: async (row, replay) => { seen.push(replay); } });
+    await runOrchestrationDecision(base(h, LIVE, { buildState: async () => null }));
+    expect(seen).toEqual([null]);
+  });
+});
+
 describe('runOrchestrationDecision', () => {
   it('a team that has not opted in: rule verdict, no retrieval, no call, no ledger row', async () => {
     const h = harness({ resolveAccess: async () => ({ ok: false, error: { kind: 'capability_disabled', capability: 'orchestration_claim' } }) as any });

@@ -50,6 +50,7 @@ import {
 import { isJevModel } from './decision-model';
 import type { DecisionAccess, DecisionResult, DecisionCallParams } from './decision-client';
 import type { InferenceCapability } from './inference-policy';
+import type { DecisionReplayCapture } from './decision-replay';
 
 /** Overall ceiling: access + retrieval + decision. */
 export const ORCHESTRATION_DECISION_DEADLINE_MS = 5_000;
@@ -178,7 +179,8 @@ export interface OrchestrationDecisionDeps {
   resolveAccess?: ResolveAccessFn;
   call?: CallFn;
   /** Persist the row. Awaited; a throw is swallowed. */
-  record?: (row: OrchestrationDecisionRow) => Promise<void>;
+  /** `replay` is the input the model saw (decision-replay.ts); null when no state was built. */
+  record?: (row: OrchestrationDecisionRow, replay?: DecisionReplayCapture | null) => Promise<void>;
   /** Forward the provider receipt (e.g. to `ai_usage`). Fire-and-forget. */
   onReceipt?: (receipt: DecisionReceipt) => void | Promise<void>;
   now?: () => number;
@@ -301,9 +303,9 @@ const defaultCall: CallFn = async (params) => {
   return decisionCall(params);
 };
 
-const defaultRecord = async (row: OrchestrationDecisionRow): Promise<void> => {
+const defaultRecord = async (row: OrchestrationDecisionRow, replay?: DecisionReplayCapture | null): Promise<void> => {
   const { recordOrchestrationDecision } = await import('./orchestration-ledger-source');
-  await recordOrchestrationDecision(row);
+  await recordOrchestrationDecision(row, replay);
 };
 
 // ── The adapter ──────────────────────────────────────────────────────────────
@@ -372,9 +374,11 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
     receipt: null,
   });
 
+  // Set once state exists: every row written after that point keeps a replayable copy.
+  let replay: DecisionReplayCapture | null = null;
   const record = async (row: OrchestrationDecisionRow) => {
     try {
-      await (deps.record ?? defaultRecord)(row);
+      await (deps.record ?? defaultRecord)(row, replay);
     } catch (err) {
       console.warn('[orchestration-decision] ledger write failed (non-fatal):', (err as Error)?.message ?? err);
     }
@@ -442,6 +446,12 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
     }
     if (state === null || state === undefined) return await fallback('no_candidates', { model: access.model });
     if (state === RULE_DECIDED) return await fallback('rule_decided', { model: access.model });
+    replay = {
+      state,
+      questionIds: Object.keys(decision.questions),
+      candidates: null,
+      promptRef: { id: decision.id, version: decision.version ?? null, contentHash: decision.fingerprint ?? null },
+    };
 
     // 3. The decision, with whatever budget is left.
     const budget = remaining();

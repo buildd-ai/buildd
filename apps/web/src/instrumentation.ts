@@ -10,6 +10,16 @@ export async function register() {
     // missing table or row leaves every prompt on its public default.
     const { startPrompts } = await import('@buildd/core/prompts-source');
     await Promise.all([startPolicyOverrides(), startPrompts()]);
+    // Replayable copies of decision inputs (@buildd/core/decision-replay), in the
+    // team's evidence backend. DECISION_REPLAY=off leaves capture unregistered.
+    if (process.env.DECISION_REPLAY !== 'off') {
+      try {
+        const { startDecisionReplayStore } = await import('./lib/decision-replay-store');
+        await startDecisionReplayStore();
+      } catch (err) {
+        console.warn('[instrumentation] decision replay store not started:', (err as Error)?.message ?? err);
+      }
+    }
   }
 
   // Only register OTel in deployed environments (Vercel) or when explicitly opted in.
