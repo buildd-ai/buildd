@@ -65,6 +65,10 @@ export const PAGE_MERGES = [
   { source: '/app/workers', destination: '/app/tasks' },
   { source: '/app/artifacts', destination: '/app/missions' },
   { source: '/app/insights', destination: '/app/health/insights' },
+  // Initiatives fold into Missions as a group filter (a mission's group is its initiative link).
+  { source: '/app/initiatives/new', destination: '/app/missions' },
+  { source: '/app/initiatives/:id', destination: '/app/missions?group=:id' },
+  { source: '/app/initiatives', destination: '/app/missions' },
 ];
 
 /** @type {import('next').NextConfig} */

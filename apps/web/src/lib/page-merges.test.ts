@@ -22,6 +22,9 @@ const EXPECTED: Array<[string, string]> = [
   ['/app/workers', '/app/tasks'],
   ['/app/artifacts', '/app/missions'],
   ['/app/insights', '/app/health/insights'],
+  ['/app/initiatives/new', '/app/missions'],
+  ['/app/initiatives/:id', '/app/missions?group=:id'],
+  ['/app/initiatives', '/app/missions'],
 ];
 
 describe('page merges', () => {
@@ -58,6 +61,12 @@ describe('page merges', () => {
   it('removes the old page so nothing renders the same concern twice', () => {
     for (const [source] of EXPECTED) {
       expect(`${source}: ${existsSync(pageFile(source))}`).toBe(`${source}: false`);
+    }
+  });
+
+  it('deletes the three Initiatives page files', () => {
+    for (const f of ['initiatives/page.tsx', 'initiatives/[id]/page.tsx', 'initiatives/new/page.tsx']) {
+      expect(`${f}: ${existsSync(resolve(PROTECTED, f))}`).toBe(`${f}: false`);
     }
   });
 

@@ -12,7 +12,7 @@ export type MissionBreadcrumb =
   | {
       type: 'initiative';
       links: [
-        { label: 'Initiatives'; href: '/app/initiatives' },
+        { label: 'Missions'; href: '/app/missions' },
         { label: string; href: string },
       ];
       currentLabel: string;
@@ -52,8 +52,8 @@ export function resolveMissionBreadcrumb({
     return {
       type: 'initiative',
       links: [
-        { label: 'Initiatives', href: '/app/initiatives' },
-        { label: initiativeName, href: `/app/initiatives/${initiativeId}` },
+        { label: 'Missions', href: '/app/missions' },
+        { label: initiativeName, href: `/app/missions?group=${initiativeId}` },
       ],
       currentLabel: missionTitle,
     };
@@ -63,8 +63,8 @@ export function resolveMissionBreadcrumb({
     return {
       type: 'initiative',
       links: [
-        { label: 'Initiatives', href: '/app/initiatives' },
-        { label: dbInitiativeName, href: `/app/initiatives/${dbInitiativeId}` },
+        { label: 'Missions', href: '/app/missions' },
+        { label: dbInitiativeName, href: `/app/missions?group=${dbInitiativeId}` },
       ],
       currentLabel: missionTitle,
     };
