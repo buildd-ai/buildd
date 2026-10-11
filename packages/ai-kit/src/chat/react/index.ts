@@ -17,7 +17,7 @@
 
 export { ChatThread, type ChatThreadProps, type ChatStatus, type ThreadMessageContext, type TurnFold } from './Thread';
 export { ChatComposer, DEFAULT_BUSY_PLACEHOLDER, type ChatComposerProps, type ChatComposerHandle } from './Composer';
-export { AttachmentCard, attachmentSizeLabel, type AttachmentCardProps } from './AttachmentCard';
+export { AttachmentCard, attachmentSizeLabel, FileCard, type AttachmentCardProps, type FileCardProps } from './AttachmentCard';
 export {
   ToolsMenu, ToolRows, ScopePicker, TierPicker,
   type ToolsMenuProps, type ScopePickerProps, type ScopeOption, type TierPickerProps, type TierOption,

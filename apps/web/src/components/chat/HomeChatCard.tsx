@@ -12,7 +12,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import type { ChatAttachmentDraft, CreateConversationResponse } from '@buildd/shared';
+import type { ChatDraftAttachment, CreateConversationResponse } from '@buildd/shared';
 import ChatComposer, { type ComposerWorkspace } from './ChatComposer';
 import { parkPending } from './pending-message';
 import { chatErrorLine } from './chat-errors';
@@ -37,9 +37,9 @@ export default function HomeChatCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Long pastes (Living Specs C2): held here so a failed create puts them back.
-  const [attachments, setAttachments] = useState<ChatAttachmentDraft[]>([]);
+  const [attachments, setAttachments] = useState<ChatDraftAttachment[]>([]);
 
-  async function send(text: string, sent: ChatAttachmentDraft[] = []) {
+  async function send(text: string, sent: ChatDraftAttachment[] = []) {
     setBusy(true);
     setError(null);
     try {
