@@ -2,13 +2,13 @@
 title: Living Specs
 status: draft
 owner: max
-last_verified: 2026-10-10
+last_verified: 2026-10-11
 summary: Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing]
-keywords: [living spec, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
+keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
 supersedes: []
 ---
 # Living Specs
@@ -85,13 +85,51 @@ whole or not at all.
   task token reaches only its own task's workspace. Another team reads,
   lists and revises nothing (404).
 
-## 5. Repo-owned specs (not built)
+## 5. Repo-owned specs, cited at a commit
 
-A Living Spec will reference a repo spec as `{path, commitSha}`. Deferred to
-task 496d5ef0: repo specs stay Git-canonical (D-1), so a reference is only
-honest with a reader that resolves the file at that commit through the GitHub
-App; storing a path and SHA with nothing to read them would claim a pin the
-platform cannot show. No column exists for it yet.
+**Capability statement**: A Living Spec revision MAY cite repo-owned specs,
+which stay Git-canonical (D-1), as `{ path, commitSha }`. A citation MUST keep
+reading the file as it was at that commit, whatever the branch does later.
+
+**Invariants**:
+- `repoRefs` live on the spec revision (`spec_revisions.repo_refs`), so they
+  are as immutable as the revision. A column, not a typed link: a link points
+  an artifact at a subject, and a repo file is neither an artifact nor a
+  Buildd subject, so a link would need a new subject kind plus a fake id for
+  the file. The column is the smaller change.
+- On write, every new reference is checked against the workspace's GitHub
+  repo, the one its `github_repos` link names (never the free-text
+  `workspaces.repo`): `commitSha` must be a full 40-character SHA that is a
+  commit in that repo (`git/commits/<sha>`), and `path` a repo-relative file
+  that exists at it. A branch name, a short SHA, an absolute path or one with
+  `..` is refused. Anything that does not resolve is a 400 and nothing is
+  written: no spec, no revision, no body change. At most 20 per revision.
+- A revise without `repoRefs` carries the head's references forward; `[]`
+  clears them. Changing only the references writes a new revision that pins
+  the same body revision.
+- Only a file the revision cites is readable, at the commit it cites, through
+  `GET /api/specs/[specId]/repo-ref` (MCP `manage_specs action=read_ref`), in
+  the bounded artifact views (`outline`, `section`, `range`, `grep`, `meta`,
+  `full`). It is not a general repo reader, and reach is the spec's workspace.
+
+**Acceptance criteria**:
+- AC-8: GIVEN a revision citing path P at commit C WHEN the branch moves on
+  THEN reading P still returns C's text, and a later revision citing a newer
+  commit leaves the earlier one reading C (`apps/web/tests/db/spec-repo-refs.test.ts`).
+- AC-9: GIVEN a path missing at C, or a commit the repo does not have, or a
+  branch name WHEN a draft or revise cites it THEN 400 and nothing is written.
+- AC-10: GIVEN a caller in another workspace WHEN it reads the reference THEN
+  404.
+
+**Code surface**:
+- `apps/web/src/lib/specs/repo-refs.ts` — `parseRepoRefs`, `normalizeRepoPath`, `normalizeCommitSha`
+- `apps/web/src/lib/specs/repo-source.ts` — `readRepoFileAtCommit`, `fetchFileAtCommit`
+- `apps/web/src/lib/specs/store.ts` — `readSpecRepoRef`
+- `apps/web/src/app/api/specs/[specId]/repo-ref/route.ts` — `GET`
+
+**Not yet**:
+- A repo-file read is not recorded in the artifact read ledger: that ledger
+  keys on an artifact, and a cited file is not one.
 
 ## 6. Approval and pinned work
 
