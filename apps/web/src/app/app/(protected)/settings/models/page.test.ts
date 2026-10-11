@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'bun:test';
 
 /**
- * Settings → Models is one page: Keys (sign-ins live in the provider
- * rows), Routing, Tiers, in that order, each with an anchor, and the old anchors from
+ * Settings → Models is one page: Providers (sign-ins, the gateway and the
+ * endpoint live in the provider rows), Used for, Tiers, in that order, each with an anchor, and the old anchors from
  * /app/settings/providers, /app/settings/ai and Runners still land.
  */
 const page = await Bun.file(new URL('./page.tsx', import.meta.url)).text();
 const client = await Bun.file(new URL('../providers/ModelProvidersClient.tsx', import.meta.url)).text();
 
 describe('Settings → Models page', () => {
-  it('orders the sections Keys, Routing, Tiers and has no sign-ins section', () => {
-    expect(client.indexOf('title="Keys"')).toBeLessThan(client.indexOf('title="Routing"'));
+  it('orders the sections Providers, Used for, Tiers and has no sign-ins or Routing section', () => {
+    expect(client.indexOf('title="Providers"')).toBeGreaterThan(-1);
+    expect(client.indexOf('title="Providers"')).toBeLessThan(client.indexOf('<UsedForSection'));
+    expect(client).not.toContain('title="Routing"');
     const at = (s: string) => page.indexOf(s);
     expect(page).not.toContain('title="Runner sign-ins"');
     expect(page).not.toContain('<AgentBackendsSection');
@@ -23,7 +25,7 @@ describe('Settings → Models page', () => {
     for (const id of ['tiers', 'features', 'inference-spending']) {
       expect(`${id}: ${page.includes(`id="${id}"`)}`).toBe(`${id}: true`);
     }
-    for (const id of ['keys', 'provider-keys', 'sign-ins', 'agent-backends', 'advanced']) {
+    for (const id of ['keys', 'providers', 'provider-keys', 'sign-ins', 'agent-backends', 'advanced', 'routing']) {
       expect(`${id}: ${client.includes(`id="${id}"`)}`).toBe(`${id}: true`);
     }
   });

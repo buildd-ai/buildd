@@ -29,12 +29,14 @@ const PASTED = 'sk-ant-api03-illustrative-not-a-real-key-0000';
 const WORKSPACES = [{ id: 'ws-a', name: 'Workspace A' }, { id: 'ws-b', name: 'Workspace B' }];
 
 let opts: FixtureOpts = {};
+let assigned: Record<string, unknown> = {};
 const calls: { url: string; method: string; body: Record<string, unknown> | null }[] = [];
 
 beforeEach(() => {
   search = new URLSearchParams();
   opts = {};
   calls.length = 0;
+  assigned = {};
   globalThis.fetch = mock(async (input: string, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost');
     const method = init?.method ?? 'GET';
@@ -46,6 +48,10 @@ beforeEach(() => {
         result: { resolved: true, provider: 'anthropic', shape: 'api_key', scope: 'team', source: { scope: 'team', secretId: 's', purpose: 'anthropic_api_key', label: null, legacy: true } },
         why: ['team anthropic: used'],
       });
+    }
+    if (url.pathname === '/api/providers/assignments') {
+      if (method === 'PATCH') assigned = { ...assigned, [String(body!.surface)]: body!.provider };
+      return Response.json({ assignments: assigned });
     }
     if (url.pathname === '/api/providers') {
       if (method === 'PATCH') {
@@ -184,11 +190,29 @@ describe('connect: one input, the format decides', () => {
     expect($('[data-testid="models-sign-ins"]')).toBeNull();
   });
 
-  it('gateways set up under Routing', async () => {
+  it('the gateway and the custom endpoint set up in their own rows; old Routing links still land', async () => {
     await mount();
-    expect($('a[href="#routing"]', cardOf('litellm'))!.textContent).toBe('Set up');
+    // One row open at a time: each form shows inside its own opened row.
+    for (const [id, form] of [['litellm', 'litellm-gateway'], ['custom-endpoint', 'agent-endpoint']]) {
+      await click(button(cardOf(id), 'Set up'));
+      expect($(`[data-testid="provider-detail"] [data-testid="${form}"]`, cardOf(id))).toBeTruthy();
+    }
+    expect(host.textContent).not.toContain('Edit under Routing');
     expect($('#routing')).toBeTruthy();
     expect($('#advanced')).toBeTruthy();
+  });
+
+  it('one provider: no Used for table, one line saying what it is used for', async () => {
+    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }] });
+    expect($('[data-testid="used-for"]')).toBeNull();
+    expect($('[data-testid="provider-lone"]')!.textContent).toMatch(/^OpenRouter is used for chat/);
+  });
+
+  it('two providers: a picker per surface, and a pick is saved for that surface only', async () => {
+    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] });
+    expect($('[data-testid="used-for"]')).toBeTruthy();
+    for (const s of ['chat', 'agent-claude', 'agent-codex', 'cloud-egress']) expect($(`[data-testid="used-for-${s}"]`)).toBeTruthy();
+    expect($('[data-testid="used-for-decisions"]')).toBeTruthy();
   });
 
   it('remove asks first, then deletes at the tab scope', async () => {
