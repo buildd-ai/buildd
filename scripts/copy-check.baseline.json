@@ -21,7 +21,7 @@
     "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1
   },
   "warning-instead-of-default": {
-    "apps/web/src/app/app/(protected)/settings/runners/tokens/new/page.tsx": 2,
+    "apps/web/src/app/app/(protected)/settings/runners/NewRunnerTokenSheet.tsx": 2,
     "apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx": 1
   },
   "duplicate-explanation": {

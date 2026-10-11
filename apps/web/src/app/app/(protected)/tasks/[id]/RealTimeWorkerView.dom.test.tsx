@@ -37,11 +37,11 @@ function worker(waitingFor: unknown) {
   };
 }
 
-async function mount(w: ReturnType<typeof worker>) {
+async function mount(w: ReturnType<typeof worker>, focusAnswer = false) {
   const el = document.createElement('div');
   document.body.appendChild(el);
   const root = createRoot(el);
-  await act(async () => { root.render(<RealTimeWorkerView initialWorker={w as any} taskId="task-1" nowMs={0} />); });
+  await act(async () => { root.render(<RealTimeWorkerView initialWorker={w as any} taskId="task-1" nowMs={0} focusAnswer={focusAnswer} />); });
   return async () => { await act(async () => root.unmount()); el.remove(); };
 }
 
@@ -56,6 +56,27 @@ describe('RealTimeWorkerView and the needs-input banner', () => {
   it('leaves the banner alone while the agent is just running', async () => {
     const unmount = await mount(worker(null));
     expect(hiddenNeedsInputSnapshot().has('task-1')).toBe(false);
+    await unmount();
+  });
+});
+
+// An answer link (`/app/tasks/:id?respond=1`, what the old /respond page now
+// redirects to) opens the reply in place: the question's first control has focus.
+describe('RealTimeWorkerView opened from an answer link', () => {
+  const ask = { type: 'question', prompt: 'Round per line, or only the total?', options: ['Per line', 'Total'] };
+
+  it('focuses the reply when focusAnswer is set', async () => {
+    const unmount = await mount(worker(ask), true);
+    const banner = document.querySelector('[data-testid="worker-needs-input-banner"]');
+    expect(banner).not.toBeNull();
+    expect(banner!.contains(document.activeElement)).toBe(true);
+    await unmount();
+  });
+
+  it('leaves focus alone on a plain visit', async () => {
+    const unmount = await mount(worker(ask));
+    const banner = document.querySelector('[data-testid="worker-needs-input-banner"]');
+    expect(banner!.contains(document.activeElement)).toBe(false);
     await unmount();
   });
 });

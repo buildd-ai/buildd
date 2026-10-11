@@ -330,7 +330,7 @@ export default function ArtifactViewer({
               </Link>
 
               <Link
-                href={`/app/missions/new?artifactId=${active.id}&artifactTitle=${encodeURIComponent(active.title || 'Untitled')}`}
+                href={`/app/missions?new=1&artifactId=${active.id}&artifactTitle=${encodeURIComponent(active.title || 'Untitled')}`}
                 className="ml-auto text-[11px] text-text-muted hover:text-accent-text underline underline-offset-2 transition-colors"
               >
                 New mission from this artifact

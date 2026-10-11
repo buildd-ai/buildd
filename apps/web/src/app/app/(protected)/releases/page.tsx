@@ -41,7 +41,7 @@ export default async function ReleasesPage({
       <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8">
         <ReleasesHeader />
         <p className="text-body text-text-secondary">
-          No team. <Link href="/app/settings/team/new" className="text-text-primary underline underline-offset-2">Create a team</Link> to track releases.
+          No team. <Link href="/app/settings/team?new=1" className="text-text-primary underline underline-offset-2">Create a team</Link> to track releases.
         </p>
       </div>
     );

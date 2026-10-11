@@ -1310,7 +1310,7 @@ export async function PATCH(
     void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
       title: note.title,
       message: note.message,
-      url: `${appBaseUrl}/app/tasks/${worker.taskId}/respond`,
+      url: `${appBaseUrl}/app/tasks/${worker.taskId}?respond=1`,
       urlTitle: 'Respond',
       priority: 0,
     });

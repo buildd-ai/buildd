@@ -50,6 +50,8 @@ import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers
 import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 import { surfaceAuditSubscribers } from '@/lib/surface-audit-subscribers';
 import { failurePatternSubscribers } from '@/lib/failure-pattern-subscribers';
+import { answerInChatHref } from '@/lib/chat/answer-link';
+import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -166,3 +168,16 @@ export const INCIDENT_VERDICTS = loadIncidentVerdicts;
  * teams where the viewer can decide them. A fixed rule; no model call.
  */
 export const ACCESS_NEEDS_YOU = loadAccessNeedsYou;
+
+/**
+ * The chat module's slot for the task page (lib/chat/answer-link.ts): where an
+ * answer link (`?respond=1`) goes when the question folds into the reader's own
+ * conversation. Null keeps them on the task page's reply box.
+ */
+export const ANSWER_IN_CHAT = answerInChatHref;
+
+/**
+ * The reviews module's slot for Home (lib/pr-landing-sheet.ts): what the PR
+ * action sheet (`?pr=<n>&t=<token>`, a landing alert's link) shows, as data.
+ */
+export const PR_ACTION_SHEET = loadPrActionSheet;
