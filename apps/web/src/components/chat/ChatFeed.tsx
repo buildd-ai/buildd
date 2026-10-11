@@ -122,7 +122,8 @@ function EventSegments({ segs }: { segs: readonly FeedSegment[] }) {
 /**
  * The tiny tag under a message: where the reply went. Tapping it opens the
  * composer's scope. It carries its own ground chip: small text straight on the
- * sea's brightest pool would drop below AA.
+ * sea's brightest pool would drop below AA. Below md the button around the chip
+ * is 44px to touch, and its negative margins keep the gap under the message.
  */
 function IntentTag({ label }: { label: string }) {
   return (
@@ -130,9 +131,11 @@ function IntentTag({ label }: { label: string }) {
       type="button"
       data-testid="feed-intent-tag"
       onClick={() => (document.querySelector('[data-testid="composer-scope-chip"]') as HTMLElement | null)?.click()}
-      className="min-h-6 bg-[var(--chat-ground)] px-1.5 font-mono text-[11px] lg:text-[10px] tracking-[.08em] text-[var(--chat-muted)] hover:text-[var(--chat-text)]"
+      className="group/tag inline-flex items-center max-md:min-h-11 max-md:-my-[10px]"
     >
-      {label}
+      <span data-testid="feed-intent-chip" className="inline-flex min-h-6 items-center bg-[var(--chat-ground)] px-1.5 font-mono text-[11px] lg:text-[10px] tracking-[.08em] text-[var(--chat-muted)] group-hover/tag:text-[var(--chat-text)]">
+        {label}
+      </span>
     </button>
   );
 }

@@ -274,6 +274,9 @@ mock.module('@buildd/core/secrets', () => ({
 }));
 
 // Stub non-critical modules used by claim route
+const mockEmit = mock((_event: any) => Promise.resolve());
+mock.module('@/lib/core-emit', () => ({ emit: (event: any) => mockEmit(event) }));
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
 }));
@@ -5744,6 +5747,23 @@ describe('POST /api/workers/claim', () => {
       expect(res.status).toBe(200);
       expect(data.workers.length).toBe(1);
       expect(data.workers[0].taskId).toBe('task-1');
+    });
+
+    it('tells the modules which tasks it claimed before answering, so a mission branch is refreshed first', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockEmit.mockClear();
+      mockTasksFindMany.mockResolvedValueOnce([{ ...missionTask('task-1', 'mission-A'), context: { baseBranch: 'mission/a-0a1b2c3d' } }]);
+      mockMissionsFindMany.mockResolvedValue([{
+        id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: new Date(),
+      }]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+
+      expect(res.status).toBe(200);
+      const claimed = mockEmit.mock.calls.map(([e]) => e).filter((e: any) => e.type === 'tasks.claimed');
+      expect(claimed).toHaveLength(1);
+      expect(claimed[0].tasks).toEqual([{ id: 'task-1', workspaceId: 'ws-1', missionId: 'mission-A', context: expect.objectContaining({ baseBranch: 'mission/a-0a1b2c3d' }) }]);
     });
 
     it('skips task from paced mission when interval has not elapsed', async () => {
