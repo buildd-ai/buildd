@@ -38,6 +38,8 @@ export function repairKindOf(action: RecoveryRepairAction): RepairKind {
   if (action === 'file_fix_task') return 'queue_fix';
   // Releasing a credential hold wakes the held task (§18.4).
   if (action === 'release_hold') return 'wake_subject';
+  // Re-queueing blocked audits for a fresh capture (§16.3).
+  if (action === 'retry_capture') return 'rerun_visual_audit';
   return action;
 }
 

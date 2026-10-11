@@ -67,6 +67,17 @@ assertions:
   - id: "worker-infra-tests"
     type: "test_file"
     path: "apps/web/src/lib/failure-incident-recovery-worker-infra.test.ts"
+  - id: "capture-policy"
+    type: "symbol"
+    name: "evaluateCaptureFailure"
+    path: "apps/web/src/lib/failure-incident-recovery-capture.ts"
+  - id: "infrastructure-family"
+    type: "symbol"
+    name: "createInfrastructureRecoveryFamily"
+    path: "apps/web/src/lib/failure-incident-recovery-infrastructure.ts"
+  - id: "capture-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/failure-incident-recovery-capture.test.ts"
 ---
 
 # Failure Incident Recovery
@@ -788,7 +799,12 @@ repair records as `wait_machine` with the assessment's own sentence.
 - `apps/web/src/lib/failure-incident-recovery-worker-infra.ts`: `evaluateWorkerInfra`, `dbObserveWorkerInfraRecovery`, `workerInfraRecoveryFamily` (§18.4)
 - `apps/web/src/lib/failure-pattern-sentinel.ts`: `WorkerInfraFact`, `workerInfraSignature` (§18.4); `apps/web/src/lib/failure-pattern-sweep.ts`: `countsTowardFailureRate` (§18.7)
 - `apps/web/src/lib/stale-workers.ts`: the interactive arm of `resolveStaleTask` (§18.3)
-- `apps/web/src/lib/credential-recovery.ts`: `requeueAuthFailedTasks` (releases holds, §18.3)
+- `apps/web/src/lib/credential-recovery.ts`: `requeueAuthFailedTasks` (releases holds, §18.3), `requeueFailedTasks` (the requeue writer, §16.4)
+- `apps/web/src/lib/failure-incident-recovery-capture.ts`: `evaluateCaptureFailure`, `freshCaptureSucceeded`, `runCaptureAdapters`, `dbObserveCaptureRecovery`, `dbCollectCaptureFailures`, `legacyRollout` (§16.3, §16.4)
+- `apps/web/src/lib/failure-incident-recovery-infrastructure.ts`: `createInfrastructureRecoveryFamily` (routes `infrastructure_failure` by component)
+- `apps/web/src/lib/failure-pattern-sentinel.ts`: `CaptureFailureFact`, `captureFailureSignature` (§16.3)
+- `apps/web/src/lib/stale-workers.ts`: `cleanupStuckWaitingInput` with reason `superseded_by_recovery` (§16.4)
+- `apps/web/src/lib/mission-surface-audit.ts`: `isLiveAudit` (the mission adapter, §16.4)
 - `apps/web/src/lib/task-cancellation.ts`: `parseCancellation`, `cancellationLine`; `apps/web/src/lib/explain-because.ts`: `taskRecoveryLink` (§18.5)
 - `apps/web/src/app/api/workers/claim/route.ts`: the `path_overlap` deferral `detail` (`blockingTaskId`, `paths`)
 - `apps/web/src/lib/path-claim-release.ts`: `releaseAndNotify`
@@ -814,9 +830,9 @@ repair records as `wait_machine` with the assessment's own sentence.
 
 *Owner scope amendment, 2026-10-11.* The contract above extends to failures in
 Buildd's own machinery that today reach a person as a generic question. Status:
-**NOT IMPLEMENTED** beyond the shared types (`cause.ownership`, owner
-`operator`, state `needs_operator`, `capabilityGap`, which `planRecovery`
-already handles). The delivery tasks are listed in §16.7.
+**IMPLEMENTED** (§16.7): typed capture failures (§16.5), and the
+`infrastructure_failure` capture family with its adapters and rollout
+(§16.3, §16.4) in `apps/web/src/lib/failure-incident-recovery-capture.ts`.
 
 ### 16.1 The case
 
@@ -918,6 +934,40 @@ Unknown ownership is explicit (`inconclusive`), never defaulted to `person`.
   legacy question with no such record stays as it is, marked unclassified, and
   is never auto-answered. Unknown stays explicit.
 
+**As built (task `1acc6048`).**
+
+- **One family per rule.** `assessIncident` picks a family by rule, so
+  `failure-incident-recovery-infrastructure.ts` routes each
+  `infrastructure_failure` incident by its `component=`: `visual_qa.*` to the
+  capture family, `worker.*` to §18.
+- **The adapter field** is `context.incidentRecovery` (§18.9), not
+  `recoveryRef`. It is written through the fix-task port's `touch`.
+- **Generations.** The incident's fix task is the generation's blocker. Filing
+  it starts a new generation, so `retry_capture` has the full budget of 3.
+- **The check (I-12).** A blocked audit passes when a `visual-qa.yml` run for
+  its own ref (the run title `Visual QA · <ref>`, or its head sha) succeeded
+  after both the repair finished and its own failure. An audit that completed
+  or was cancelled passes too. Runs that could not be read never pass.
+- **Superseding a question.** `cleanupStuckWaitingInput(accountId, { reason:
+  'superseded_by_recovery', workerIds })` fails the worker with that reason
+  and fails the task, so the incident can re-queue it. The question stays on
+  the row as history. No retry clone is created and no dependency is released.
+- **Resume and retry** both go through `requeueFailedTasks`
+  (`credential-recovery.ts`). This guarded `failed` → `pending` flip wakes
+  only the rows it moved, with `task.requeued`.
+- **Mission adapter.** A failed audit that carries `incidentRecovery` stays the
+  mission's live audit. "Run visual review" returns it instead of minting a
+  second audit. The completion gate still counts only a completed audit.
+- **Rollout.** Each sentinel sweep classifies at most 10 legacy questions per
+  workspace. The run is the newest `visual-qa.yml` failure inside the worker's
+  own window, and its first failed step is read from the Actions API. The
+  outcome is recorded once as `context.captureFailureRollout`:
+  - `adopted`: the step is a known component. The incident's signature then
+    uses that step, because the run's log text is not read.
+  - `unclassified`: anything else. The question is left as it is.
+- **Ops warning.** A `needs_operator` warning goes out once per generation,
+  not on every change of evidence (AC-15).
+
 ### 16.5 The capture path reports, it does not ask
 
 - **Capture path.** `scripts/qa/capture.ts` and the `visual-qa.yml` steps emit
@@ -960,8 +1010,9 @@ the auditor role and capture) is coordinated through those path claims.
    reports it on `complete_task` as `error: capture_failure: ...` (read back with
    `parseCaptureFailureError`, since a failed completion does not keep `structuredOutput`)
    and asks a person only about the two preview auth walls, with `CONFIG_ERROR_SETUP_ACTIONS`.
-3. Task `1acc6048`. The `infrastructure_failure` family on this contract, with the task and
-   mission adapters and rollout reconciliation: §16.3, §16.4, H3–H5.
+3. Task `1acc6048`, **built**. The `infrastructure_failure` family on this contract, with the task and
+   mission adapters and rollout reconciliation: §16.3, §16.4, H3–H5. AC-13..AC-17 are
+   `apps/web/src/lib/failure-incident-recovery-capture.test.ts`.
 
 ---
 

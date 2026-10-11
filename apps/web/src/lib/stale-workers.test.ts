@@ -168,6 +168,27 @@ describe('cleanupStuckWaitingInput', () => {
     expect(result.retriedTasks).toBe(0);
   });
 
+  it('superseded_by_recovery closes the named question now: worker and task failed, no clone, history kept (§16.4)', async () => {
+    const fresh = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes: far below any timeout
+    const question = { type: 'question', prompt: 'How should I proceed?' };
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w-audit', taskId: 'task-audit', accountId: 'account-1', status: 'waiting_input', updatedAt: fresh, waitingFor: question, task: { missionId: 'm-1' } },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-audit', workspaceId: 'ws-1', title: '[surface audit] x', description: '', context: {}, missionId: 'm-1' });
+    let workerSet: any = null;
+    mockWorkersUpdate.mockReturnValue({ set: mock((v: any) => { workerSet = v; return { where: mock(() => Promise.resolve()) }; }) });
+
+    const result = await cleanupStuckWaitingInput('account-1', { reason: 'superseded_by_recovery', workerIds: ['w-audit'] });
+
+    expect(result).toEqual({ failedWorkers: 1, retriedTasks: 0 });
+    expect(workerSet.status).toBe('failed');
+    expect(workerSet.error).toStartWith('superseded_by_recovery');
+    // The question stays on the row as history: never cleared.
+    expect('waitingFor' in workerSet).toBe(false);
+    expect(mockTasksUpdate).toHaveBeenCalledTimes(1);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+  });
+
   it('fails workers stuck in waiting_input for 24+ hours', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000); // 25 hours ago
     mockWorkersFindMany.mockResolvedValue([

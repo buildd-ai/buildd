@@ -21,6 +21,7 @@ import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { resolveVisualQaConfig } from '@buildd/core/visual-qa-page-source';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
 import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
+import { readIncidentRecoveryRef } from '@/lib/incident-recovery-refs';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 
 export interface EnsureSurfaceAuditParams {
@@ -191,6 +192,16 @@ export type RequestSurfaceAuditResult =
 
 const finishedWithoutLooking = (status: string) => status === 'failed' || status === 'cancelled';
 
+/**
+ * An audit that still answers for the mission: open or done, or failed but
+ * blocked by an incident's repair (`context.incidentRecovery`,
+ * failure-incident-recovery §16.4), which re-queues that same audit when its
+ * capture works again. Only a failed audit nothing is recovering is replaced.
+ */
+export function isLiveAudit(a: { status: string; context?: unknown }): boolean {
+  return !finishedWithoutLooking(a.status) || (a.status === 'failed' && readIncidentRecoveryRef(a.context) !== null);
+}
+
 type PlanMission = { id: string; title: string; status: string; workspaceId: string | null; autoSurfaceAudit: boolean | null; workingBranch: string | null; integrationBranchEnabled: boolean | null; executor: string | null };
 
 export type SurfaceAuditPlan =
@@ -227,10 +238,10 @@ export async function planMissionSurfaceAudit(missionId: string): Promise<Surfac
 
   const audits = await db.query.tasks.findMany({
     where: and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`)),
-    columns: { id: true, status: true },
+    columns: { id: true, status: true, context: true },
     orderBy: [desc(tasks.createdAt)],
   });
-  const live = audits.find(a => !finishedWithoutLooking(a.status));
+  const live = audits.find(isLiveAudit);
   if (live) return { ok: true, mission, live: { id: live.id, status: live.status } };
 
   const [targetWorkspace, missionTasks] = await Promise.all([
