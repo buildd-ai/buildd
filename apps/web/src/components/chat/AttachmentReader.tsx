@@ -14,6 +14,7 @@ import { attachmentSizeLabel } from '@builddai/ai-kit/chat/react';
 import Sheet from '@/components/ui/Sheet';
 
 export const READER_PAGE_CHARS = 20_000;
+const READ_FAILED = 'Attachment not read. Retry.';
 
 interface RangeRead { view: 'range'; chars: number; offset: number; length: number; text: string }
 
@@ -38,12 +39,12 @@ export function AttachmentReader({ conversationId, attachment, onClose }: {
         `/api/chat/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(stored.artifactId)}?view=range&offset=${offset}&length=${READER_PAGE_CHARS}`,
         { credentials: 'include', cache: 'no-store' },
       );
-      if (!res.ok) throw new Error(res.status === 404 ? 'This attachment is no longer available.' : 'The attachment could not be read. Try again.');
+      if (!res.ok) throw new Error(res.status === 404 ? 'Attachment no longer available.' : READ_FAILED);
       const { read } = (await res.json()) as { read: RangeRead };
       setText(prev => (offset === 0 ? read.text : prev + read.text));
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'The attachment could not be read. Try again.');
+      setError(e instanceof Error ? e.message : READ_FAILED);
     } finally {
       setLoading(false);
     }
