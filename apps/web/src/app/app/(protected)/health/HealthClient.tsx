@@ -1297,7 +1297,7 @@ function ConsumptionSection({
 
         {groups.length > 0 && (
           <div className="space-y-2 pt-3 border-t border-border-default">
-            <span className="text-xs text-text-secondary">By role</span>
+            <span className="text-xs text-text-secondary">By agent</span>
             {groups.slice(0, 5).map((g) => {
               const gIn = g.perTask.inputTokens;
               return (
@@ -1763,9 +1763,9 @@ function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: Fai
         <div className="flex items-baseline justify-between gap-2">
           <span
             className="text-sm text-text-secondary"
-            title="Tasks that ran with no role assigned. A routing-health signal. /app/team can't show it because its query filters roleSlug IS NOT NULL."
+            title="Tasks that ran with no agent assigned."
           >
-            {stats.unassigned} task{stats.unassigned === 1 ? '' : 's'} ran with no role ({window})
+            {stats.unassigned} task{stats.unassigned === 1 ? '' : 's'} ran with no agent ({window})
           </span>
         </div>
         <a
@@ -1773,7 +1773,7 @@ function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: Fai
           data-testid="per-role-link"
           className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-accent-text hover:underline"
         >
-          per role →
+          per agent →
         </a>
       </div>
     </div>
@@ -2182,7 +2182,7 @@ function FailureAnalyticsSection({
                 aria-expanded={showDetail}
                 className="text-xs text-text-muted hover:text-text-secondary transition-colors"
               >
-                {showDetail ? 'Hide breakdown' : 'Breakdown by role, workspace, repeat tasks'}
+                {showDetail ? 'Hide breakdown' : 'Breakdown by agent, workspace, repeat tasks'}
               </button>
 
               {showDetail && (
@@ -2190,7 +2190,7 @@ function FailureAnalyticsSection({
                   {byRole.length > 0 && (
                     <div className="space-y-1">
                       <span className="text-meta font-medium text-text-muted">
-                        By role
+                        By agent
                       </span>
                       {byRole.slice(0, 6).map((r) => (
                         <div key={r.roleSlug} className="flex items-center justify-between gap-2">

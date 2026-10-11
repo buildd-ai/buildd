@@ -152,18 +152,18 @@ export default function MissionPolicyDrawer({
         {tier === 'agent-review' && (
           <div className="space-y-3 p-3 bg-surface-2 rounded-lg border border-border-default">
             <div>
-              <label className="text-xs font-medium text-text-secondary">Reviewer role</label>
+              <label className="text-xs font-medium text-text-secondary">Reviewer agent</label>
               {roles.length > 0 ? (
                 <Select
-                  aria-label="Reviewer role"
+                  aria-label="Reviewer agent"
                   className="mt-1"
                   value={reviewerRole}
                   onChange={setReviewerRole}
-                  placeholder="Select a role"
+                  placeholder="Select an agent"
                   options={roles.map(r => ({ value: r.slug, label: r.name }))}
                 />
               ) : (
-                <p className="mt-1 text-xs text-text-muted">No roles found in this workspace.</p>
+                <p className="mt-1 text-xs text-text-muted">No agents in this workspace.</p>
               )}
             </div>
             <DetectedPathsNote />
