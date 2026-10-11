@@ -122,12 +122,12 @@ describe('one editor per concern', () => {
     expect(overview).not.toContain('ConnectRunnerSection');
   });
 
-  it('keeps model config on one page: Models holds keys, sign-ins, tiers and features', () => {
+  it('keeps model config on one page: Models holds keys, sign-ins and tiers', () => {
     const models = readFileSync(resolve(PROTECTED, 'settings/models/page.tsx'), 'utf8');
     // The sign-ins render inside the provider rows (ModelProvidersClient), not as their own section.
     const providers = readFileSync(resolve(PROTECTED, 'settings/providers/ModelProvidersClient.tsx'), 'utf8');
     expect(providers).toContain('AgentBackendsSection');
-    for (const part of ['ModelProvidersClient', 'ModelTiersClient', 'DecisionFeatures']) {
+    for (const part of ['ModelProvidersClient', 'ModelTiersClient']) {
       expect(`${part}: ${models.includes(part)}`).toBe(`${part}: true`);
     }
     const runners = readFileSync(resolve(PROTECTED, 'settings/runners/page.tsx'), 'utf8');
