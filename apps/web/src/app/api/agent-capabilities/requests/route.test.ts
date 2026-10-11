@@ -9,6 +9,7 @@ const mockAudit = mock((_row: any) => Promise.resolve());
 const mockRequest = mock((_p: any, _r: any) => Promise.resolve(null as any));
 const mockList = mock((_t: string, _o: any) => Promise.resolve([] as any[]));
 const mockUser = mock(() => Promise.resolve(null as any));
+const mockNotify = mock((_t: string, _g: any) => Promise.resolve());
 
 mock.module('@/lib/task-token-auth', () => ({
   authenticateTaskScopedCaller: mockAuth,
@@ -21,6 +22,8 @@ mock.module('@/lib/capability-grants-store', () => ({ requestCapability: mockReq
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockUser }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: async () => ['77777777-7777-4777-8777-777777777777'] }));
 mock.module('@/lib/permissions', () => ({ can: async () => false }));
+mock.module('@/lib/capability-grants-needs-you', () => ({ notifyAccessRequest: mockNotify }));
+mock.module('@/lib/capability-grants-context', () => ({ withRequestContext: async (rows: any[]) => rows }));
 
 import { GET, POST } from './route';
 
@@ -40,7 +43,7 @@ function post(body: unknown, key: string | null = 'bldt_x') {
 }
 
 beforeEach(() => {
-  mockAuth.mockReset(); mockResolvePrincipal.mockReset(); mockAudit.mockClear(); mockRequest.mockReset(); mockList.mockReset(); mockUser.mockReset();
+  mockAuth.mockReset(); mockResolvePrincipal.mockReset(); mockAudit.mockClear(); mockRequest.mockReset(); mockList.mockReset(); mockUser.mockReset(); mockNotify.mockClear();
   mockAuth.mockResolvedValue(TASK_TOKEN);
   mockList.mockResolvedValue([]);
   mockResolvePrincipal.mockResolvedValue({ ok: true, principal: PRINCIPAL, workspace: { id: WS } });
@@ -97,6 +100,23 @@ describe('POST /api/agent-capabilities/requests', () => {
     const res = await POST(post({ workerId: WORKER, capability: 'observability:query' }));
     expect(res.status).toBe(200);
     expect((await res.json()).deduped).toBe(true);
+    // The same row again is not a new ask: no second page.
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('a new pending request pages the team once; an auto-grant does not page', async () => {
+    await POST(post({ workerId: WORKER, capability: 'observability:query', provider: 'axiom' }));
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockNotify.mock.calls[0][0]).toBe('team-1');
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ id: 'g1', status: 'pending' });
+
+    mockNotify.mockClear();
+    mockRequest.mockResolvedValue({
+      ok: true, deduped: false, grant: { id: 'g2', status: 'granted', decidedBy: 'policy' },
+      resolution: { kind: 'auto_granted', reasonCode: 'policy_auto_grant', target: { provider: 'axiom', connectorId: 'c', connectorName: 'Axiom' }, policy: null, ttlSeconds: 3600, grantId: 'g2', nextSteps: [], alternatives: [] },
+    });
+    await POST(post({ workerId: WORKER, capability: 'observability:query', provider: 'axiom' }));
+    expect(mockNotify).not.toHaveBeenCalled();
   });
 });
 

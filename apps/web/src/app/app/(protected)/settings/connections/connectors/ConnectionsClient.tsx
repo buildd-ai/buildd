@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import AddConnectionModal from './AddConnectionModal';
+import { CONNECTORS_CHANGED_EVENT } from './CatalogSection';
 import { Select } from '@/components/ui/Select';
 import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 import { ConnectorIcon } from '@/components/ConnectorIcon';
@@ -116,6 +117,10 @@ export default function ConnectionsClient({
 
   useEffect(() => {
     loadConnectors();
+    // The catalog installs connectors too; reload when it does.
+    const reload = () => { void loadConnectors(); };
+    window.addEventListener(CONNECTORS_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(CONNECTORS_CHANGED_EVENT, reload);
   }, [loadConnectors]);
 
   // Teams the current user belongs to — feeds the share/transfer pickers.
