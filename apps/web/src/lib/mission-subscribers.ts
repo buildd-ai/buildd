@@ -29,6 +29,7 @@ import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { after } from 'next/server';
+import { refreshMissionBranchesBeforeStart } from '@/lib/mission-branch-refresh';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
@@ -39,7 +40,6 @@ import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
 import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
 import { handleCriteriaWorkerEvalOutcome, isCriteriaWorkerEvalTask } from '@/lib/mission-criteria-worker-eval';
-import { refreshMissionBranchesForTrunkMerge } from '@/lib/mission-branch-refresh';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 
 async function taskContext(taskId: string): Promise<unknown> {
@@ -52,25 +52,13 @@ async function taskContext(taskId: string): Promise<unknown> {
 }
 
 export const missionSubscribers: readonly AnySubscriber[] = [
-  // Keep every active mission's integration branch current with dev
-  // (docs/design/mission-delivery-arc.md P5, superseded): any PR merging into
-  // this workspace's trunk is the trigger. Scoped to trunk inside the helper,
-  // so a merge into some other branch of the same repo is a no-op. Best-effort,
-  // after the response: the hourly sweep (sweepMissionBranchRefresh) is the
-  // backstop for a lost delivery.
-  subscriber('missions', 'pr.merged', 'refresh-mission-branches-on-trunk-merge', async e => {
-    const baseRef = e.delivery?.baseRef;
-    if (!e.delivery?.installationId || !baseRef) return;
-    const repoFullName = e.repoFullName;
-    const refresh = () =>
-      refreshMissionBranchesForTrunkMerge({ repoFullName, baseRef }).catch(err =>
-        console.error(`[webhook] mission branch refresh failed for ${repoFullName}@${baseRef}:`, err),
-      );
-    try {
-      after(refresh);
-    } catch {
-      await refresh();
-    }
+  // A mission task is starting: bring its integration branch up to date with
+  // trunk first, so the work cuts from current trunk
+  // (docs/specs/mission-branch-refresh.md). Awaited by the claim, bounded by
+  // START_REFRESH_BUDGET_MS, and never throws. A trunk merge alone no longer
+  // refreshes anything.
+  subscriber('missions', 'tasks.claimed', 'refresh-mission-branches-before-start', async e => {
+    await refreshMissionBranchesBeforeStart(e.tasks);
   }),
   subscriber('missions', 'task.created', 'task-created-mission-feed', e => {
     if (!e.missionId) return;
