@@ -7,13 +7,26 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { checkConnectorRouting, findAlternativeRole, type ConnectorFailure } from '../../../workers/claim/connector-gate';
-import { checkMissionHeld, checkMissionLocal } from '../../../workers/claim/held-gate';
+import { checkMissionHeld } from '../../../workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '../../../workers/claim/mission-budget-gate';
 import { checkWorkspaceCap } from '../../../workers/claim/workspace-cap-gate';
 import { BYPASS_SUBJECT_GATE_KEY, isSubjectDead } from '@/lib/subject-gate-contract';
 import { BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY } from '@buildd/shared';
 import { checkManagedRunnerEntitlement } from '@/lib/entitlements/managed-runner';
+import { probeCoordination } from '@/lib/coordination-probe';
+import { buildForceStartIntent, recordForceStartRequest } from '@/lib/force-start';
+import {
+  FORCE_START_CONTEXT_KEY,
+  blockingReasons,
+  coordinationHoldBody,
+  forceDialog,
+  gateName,
+  isStartForceable,
+  type ForceStartIntent,
+  type WaitingKind,
+  type WaitingReason,
+} from '@buildd/core/waiting-reason';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 
 /**
@@ -26,6 +39,15 @@ import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
  *
  * Body:
  * - targetLocalUiUrl?: string - Specific runner to assign to (optional)
+ * - forceOverride?: boolean - lift the policy gates above (startAt, deps, holds, budget, subject)
+ * - capExempt?: boolean - run past the workspace cap this once
+ * - force?: { kinds: WaitingKind[], reasonsDigest, note? } - Force start past the
+ *   waits a 422 `coordination_hold` named (docs/specs/force-start.md). The digest
+ *   must be the one that refusal returned: a person never confirms a gate they
+ *   did not see (409 `reasons_changed` otherwise). Every kind must be one the
+ *   refusal listed as forceable. Persisted as `context.forceStart` and honoured
+ *   by the next runner's claim — never a claim made here (see lib/force-start.ts).
+ *   `forceCoordination: { reasonsDigest }` is the earlier name: every forceable kind.
  */
 export async function POST(
   req: NextRequest,
@@ -62,6 +84,16 @@ export async function POST(
   try {
     const body = await req.json().catch(() => ({}));
     const { targetLocalUiUrl, forceOverride, capExempt } = body;
+    const forceRaw = (body.force && typeof body.force === 'object' ? body.force
+      : body.forceCoordination && typeof body.forceCoordination === 'object' ? body.forceCoordination
+      : null) as { kinds?: unknown; reasonsDigest?: unknown; note?: unknown } | null;
+    const forceRequest = forceRaw
+      ? {
+          kinds: Array.isArray(forceRaw.kinds) ? forceRaw.kinds.filter((k): k is WaitingKind => typeof k === 'string') : null,
+          reasonsDigest: typeof forceRaw.reasonsDigest === 'string' ? forceRaw.reasonsDigest : null,
+          note: typeof forceRaw.note === 'string' ? forceRaw.note : null,
+        }
+      : null;
 
     // Get the task
     const task = await db.query.tasks.findFirst({
@@ -106,7 +138,10 @@ export async function POST(
 
     // Check the claim-route dep gate: if any dependency is completed but has an unmerged PR,
     // the claim route will silently skip this task. Surface that here before broadcasting.
-    const dependsOn = (task.dependsOn as string[] | null) || [];
+    // Declared edges only: an inferred (creation-time overlap) edge is a
+    // coordination hold the probe below reports, forceable on its own.
+    const inferredEdges = new Set(task.pathDeclaration?.inferredDependsOn ?? []);
+    const dependsOn = ((task.dependsOn as string[] | null) || []).filter(id => !inferredEdges.has(id));
     if (dependsOn.length > 0 && !forceOverride) {
       const openDepWorkers = await db.query.workers.findMany({
         where: and(
@@ -191,17 +226,10 @@ export async function POST(
     // never auto-claim its tasks, so Start would broadcast into the void. Force
     // start dispatches it to a runner anyway (bypassHeldGate, written below,
     // lifts the claim route's local gate too).
-    if (missionId && !isBypassHeld && !forceOverride) {
-      if (await checkMissionLocal(missionId)) {
-        return NextResponse.json({
-          error: 'This mission runs in a local session: runners do not pick up its tasks. Claim it from your session with claim_task, or use forceOverride to hand it to a runner.',
-          gateReason: 'mission_local',
-          blockClass: 'policy',
-          missionId,
-          canForce: true,
-        }, { status: 422 });
-      }
-    }
+    //
+    // Reported by the coordination probe below as a `mission_local` reason, so
+    // one Force start lifts it together with any coordination hold (one
+    // press, never two). `forceOverride` keeps lifting it on its own.
 
     // ── Mission budget gate ─────────────────────────────────────────────────
     // Mirrors mission gate #1 in the claim loop. `budget_exhausted` is a
@@ -328,6 +356,52 @@ export async function POST(
       }
     }
 
+    // ── Coordination gates ──────────────────────────────────────────────────
+    // The claim loop's in-loop gates: path overlap with an open PR or a live
+    // path claim, mission concurrency and pacing, one scope-undeclared task
+    // per mission, planner order. /start used to accept a task these held, so
+    // the page said "Queued at front · No runner has responded" while an idle
+    // runner deferred it on every poll. Same predicates as the claim route
+    // (claim/coordination-gates). A probe read failure (null) falls back to
+    // the old behaviour rather than blocking the start.
+    const now = new Date();
+    const waitingReasons: WaitingReason[] = (await probeCoordination(task as any, now, { skipMissionLocal: !!forceOverride || isBypassHeld })) ?? [];
+    const blocking = blockingReasons(waitingReasons);
+    let forceIntent: ForceStartIntent | null = null;
+    if (blocking.length > 0) {
+      const refusal = coordinationHoldBody(blocking);
+      if (!forceRequest) {
+        return NextResponse.json(refusal, { status: 422 });
+      }
+      if (forceRequest.reasonsDigest !== refusal.reasonsDigest) {
+        // §7.2 step 2: a person never confirms a gate they did not see.
+        return NextResponse.json({
+          ...refusal,
+          error: `What holds this task changed since you confirmed. ${refusal.error}`,
+          gateReason: 'reasons_changed',
+          reasonsChanged: true,
+        }, { status: 409 });
+      }
+      const requested = forceRequest.kinds ?? refusal.force?.kinds ?? [];
+      const listed = new Set(blocking.map(r => r.kind));
+      const rejected = requested.filter(k => !listed.has(k) || !isStartForceable(k));
+      if (!refusal.canForce || requested.length === 0 || rejected.length > 0) {
+        return NextResponse.json({
+          ...refusal,
+          ...(rejected.length > 0 ? { error: `Can't force: ${[...new Set(rejected.map(gateName))].join(', ')}. ${refusal.error}`, rejectedKinds: rejected } : {}),
+        }, { status: 422 });
+      }
+      const lifted = new Set(requested);
+      forceIntent = buildForceStartIntent({
+        reasons: blocking.filter(r => lifted.has(r.kind)),
+        digestOf: blocking,
+        userId,
+        accountId,
+        now,
+        note: forceRequest.note,
+      });
+    }
+
     // Always stamp manualStartAt so the task is durably prioritized on next claim cycle
     // even if the Pusher broadcast is missed. Also boost priority once to float it
     // above other same-priority tasks. Human-override bypass flags are written here too.
@@ -346,7 +420,6 @@ export async function POST(
     const hasMission = !!task.missionId;
     const existingContext = (task.context as Record<string, unknown>) || {};
     const alreadyManualStarted = !!existingContext.manualStartAt;
-    const now = new Date();
 
     await db
       .update(tasks)
@@ -359,6 +432,10 @@ export async function POST(
           ...(forceOverride && missionBudgetExhausted ? { [BYPASS_MISSION_BUDGET_KEY]: true } : {}),
           ...(forceOverride && subjectDead ? { [BYPASS_SUBJECT_GATE_KEY]: true } : {}),
           ...(capExempt ? { capExempt: true } : {}),
+          ...(forceIntent ? { [FORCE_START_CONTEXT_KEY]: forceIntent } : {}),
+          // A forced local-mission task is handed to runners the same way
+          // forceOverride hands it over (the claim's local prefilter).
+          ...(forceIntent?.prefilterLifts?.includes('local_mission') ? { [BYPASS_HELD_GATE_KEY]: true } : {}),
         },
         // Boost priority once on first manual start so task floats to top of claim queue.
         // Idempotent: re-poking ('Poke workers again') does not compound the boost.
@@ -376,17 +453,38 @@ export async function POST(
       targetLocalUiUrl: targetLocalUiUrl || null,
     }));
 
+    if (forceIntent) {
+      recordForceStartRequest({
+        intent: forceIntent,
+        task: { id: task.id, workspaceId: task.workspaceId, missionId: task.missionId ?? null },
+        callerOrigin: authType === 'session' ? 'dashboard' : 'api',
+      });
+    }
+
     // The wake re-evaluates; the claim route still applies every gate this
     // route did not override. Delivery sends the (targeted) TASK_ASSIGNED.
+    // A force start is honoured by THAT claim (a runner's), never by a claim
+    // made here: this route creates no worker.
     await wakeTask(task.id, 'manual.start', { targetLocalUiUrl: targetLocalUiUrl || null });
 
     return NextResponse.json({
       started: true,
       taskId: task.id,
       targetLocalUiUrl: targetLocalUiUrl || null,
+      // Soft reasons (planner order) only order the task; shown, never refused.
+      ...(waitingReasons.length > 0 && !forceIntent ? { waitingReasons } : {}),
+      ...(forceIntent ? {
+        forced: {
+          forceId: forceIntent.id,
+          gates: [...new Set(forceIntent.kinds.map(gateName))],
+          railsRemaining: forceDialog(blocking.filter(r => forceIntent!.kinds.includes(r.kind))).stillEnforced,
+          expiresAt: forceIntent.expiresAt,
+        },
+      } : {}),
     });
   } catch (error) {
     console.error('Start task error:', error);
     return NextResponse.json({ error: 'Failed to start task' }, { status: 500 });
   }
 }
+

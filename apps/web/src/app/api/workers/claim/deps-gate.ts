@@ -120,6 +120,27 @@ export function dependencySatisfied(depId: SQL): SQL {
     )
     OR ${migrationEdgeOnOtherBase(depId)}
     OR ${inferredEdgeOntoUnstartedHolder(depId)}
+    OR ${forceStartLiftsEdge(depId)}
+  )`;
+}
+
+/**
+ * TRUE when a person's unexpired dashboard Force start names `depId` in
+ * `context.forceStart.liftDependsOn` AND the edge is one the system inferred
+ * at creation (`pathDeclaration.inferredDependsOn`): incidental file-overlap
+ * ordering, which a force may lift for claim order (docs/specs/force-start.md).
+ * A declared edge never qualifies, even if named. The intent is single-use:
+ * the claim consumes it, and after `expiresAt` it no longer lifts anything.
+ * The edit-time path lease still serializes the shared files.
+ */
+function forceStartLiftsEdge(depId: SQL): SQL {
+  // The key is FORCE_START_CONTEXT_KEY, written as a literal so the gate's
+  // bound parameters stay the contract's (pinned by deps-gate.test.ts).
+  return sql`(
+    -- Two-valued: a missing key must be FALSE, never NULL, inside the NOT EXISTS.
+    COALESCE(${tasks.pathDeclaration}->'inferredDependsOn' ? (${depId})::text, FALSE)
+    AND COALESCE(${tasks.context}->'forceStart'->'liftDependsOn' ? (${depId})::text, FALSE)
+    AND COALESCE((${tasks.context}->'forceStart'->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), FALSE)
   )`;
 }
 
