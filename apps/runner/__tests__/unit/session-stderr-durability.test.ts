@@ -173,8 +173,15 @@ function stderrEntries() {
   return loggedEntries.filter(e => e.event === 'session_stderr');
 }
 
-function tracePatches() {
-  return mockUpdateWorker.mock.calls.filter((c: any[]) => Array.isArray(c[1]?.appendErrorTraces));
+/**
+ * Error-trace PATCHes, optionally scoped to one worker. Scope when asserting a
+ * count: a previous test's session can still be running its closing-turn query
+ * (the fake SDK reads the shared `mockStderrChunks` at call time), so its PATCHes
+ * can carry this test's stderr text under another worker id.
+ */
+function tracePatches(workerId?: string) {
+  return mockUpdateWorker.mock.calls.filter((c: any[]) =>
+    Array.isArray(c[1]?.appendErrorTraces) && (!workerId || c[0] === workerId));
 }
 
 /** Poll until `cond` holds (or timeout) — fixed sleeps race the session under CI load. */
@@ -266,14 +273,14 @@ describe('SDK stderr durability', () => {
 
     manager = new WorkerManager(makeConfig());
     await startSessionFor(manager, 'w-once', makeTask('task-once'), 'buildd/once');
-    const filed = () => tracePatches()
+    const filed = () => tracePatches('w-once')
       .flatMap((c: any[]) => c[1].appendErrorTraces)
       .filter((t: any) => t.excerpt.includes('single failure line'));
     await waitFor(() => filed().length > 0);
     // Short settle so a duplicate flush, if there were one, has a chance to land.
     await new Promise(r => setTimeout(r, 100));
 
-    const traces = tracePatches().flatMap((c: any[]) => c[1].appendErrorTraces);
+    const traces = tracePatches('w-once').flatMap((c: any[]) => c[1].appendErrorTraces);
     const matching = traces.filter((t: any) => t.excerpt.includes('single failure line'));
     expect(matching.length).toBe(1);
   });
