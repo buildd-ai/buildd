@@ -13,6 +13,7 @@ import {
   resolveScoutCapturePort,
   revokeInstallationToken,
   tokenVisualQaActions,
+  visualQaRunName,
   type ScoutCaptureCredential,
   type VisualQaActions,
   type VisualQaCaptureRecord,
@@ -20,6 +21,7 @@ import {
 } from '../quality-scout/visual-capture';
 
 const SHA = 'c'.repeat(40);
+const TRUNK_SHA = 'e'.repeat(40);
 const REPO = 'acme/web';
 const T0 = Date.parse('2026-10-05T10:00:00Z');
 
@@ -137,7 +139,8 @@ describe('captureRecordsToShots', () => {
 
 interface FakeOpts {
   exists?: boolean;
-  headSha?: string;
+  /** The commit the dispatched run's title names, when not the one asked for. */
+  titleRef?: string;
   records?: (viewport: string, routes: string[]) => VisualQaCaptureRecord[] | null;
   /** Polls before a dispatched run shows up / completes. */
   appearAfter?: number;
@@ -149,13 +152,15 @@ function fakeActions(opts: FakeOpts = {}) {
   const dispatches: Array<{ ref: string; inputs: Record<string, string> }> = [];
   const runs: Array<VisualQaRun & { polls: number; inputs: Record<string, string>; listed: number }> = [];
   // A stale run on the same ref, from before any dispatch: must never be picked up.
-  runs.push({ id: 1, status: 'completed', conclusion: 'success', headSha: SHA, headBranch: 'feature', createdAt: new Date(T0 - 3_600_000).toISOString(), polls: 0, inputs: {}, listed: 99 });
+  runs.push({ id: 1, status: 'completed', conclusion: 'success', headSha: TRUNK_SHA, headBranch: 'dev', displayTitle: visualQaRunName(SHA), createdAt: new Date(T0 - 3_600_000).toISOString(), polls: 0, inputs: {}, listed: 99 });
   const actions: VisualQaActions = {
     repoFullName: REPO,
     async workflowExists() { return opts.exists ?? true; },
+    async harnessRef() { return 'dev'; },
     async dispatch(ref, inputs) {
       dispatches.push({ ref, inputs });
-      runs.push({ id: 100 + dispatches.length, status: 'queued', conclusion: null, headSha: opts.headSha ?? SHA, headBranch: ref, createdAt: new Date(clock).toISOString(), polls: 0, inputs, listed: 0 });
+      // The run is on trunk; only its title names the commit it captures.
+      runs.push({ id: 100 + dispatches.length, status: 'queued', conclusion: null, headSha: TRUNK_SHA, headBranch: ref, displayTitle: visualQaRunName(opts.titleRef ?? inputs.capture_ref), createdAt: new Date(clock).toISOString(), polls: 0, inputs, listed: 0 });
     },
     async listDispatchRuns() {
       for (const r of runs) r.listed++;
@@ -182,20 +187,23 @@ function fakeActions(opts: FakeOpts = {}) {
 const req = { routes: ['/', '/settings'], viewports: ['phone', 'desktop'] as Array<'phone' | 'desktop'>, ref: 'feature', sha: SHA, pageSource: 'sandbox' };
 
 describe('createVisualQaCapturePort', () => {
-  it('dispatches the Visual QA workflow once per viewport, capture only, and reads its captures back', async () => {
+  it('dispatches from trunk once per viewport with the candidate commit as capture_ref, and reads its captures back', async () => {
     const f = fakeActions({ appearAfter: 1, completeAfter: 2 });
     const shots = await createVisualQaCapturePort(f.actions, f.portOpts).capture(req);
+    // The harness (workflow + scripts/qa) comes from trunk; the app from the pinned commit.
     expect(f.dispatches).toEqual([
-      { ref: 'feature', inputs: { routes: '/,/settings', viewport: 'mobile', judge: 'false' } },
-      { ref: 'feature', inputs: { routes: '/,/settings', viewport: 'desktop', judge: 'false' } },
+      { ref: 'dev', inputs: { capture_ref: SHA, routes: '/,/settings', viewport: 'mobile', judge: 'false' } },
+      { ref: 'dev', inputs: { capture_ref: SHA, routes: '/,/settings', viewport: 'desktop', judge: 'false' } },
     ]);
     expect(shots.map((s) => `${s.route}@${s.viewport}`)).toEqual(['/@phone', '/settings@phone', '/@desktop', '/settings@desktop']);
     // Never the stale pre-dispatch run.
     expect(shots.every((s) => !s.evidenceRef!.includes('/runs/1/'))).toBe(true);
+    // Shots record the ref under audit, never trunk.
+    expect(shots.every((s) => s.ref === 'feature')).toBe(true);
   });
 
-  it('a run on another commit (the branch moved) is never read: the capture throws', async () => {
-    const f = fakeActions({ headSha: 'd'.repeat(40) });
+  it('a run whose title names another commit is never read: the capture throws', async () => {
+    const f = fakeActions({ titleRef: 'd'.repeat(40) });
     await expect(createVisualQaCapturePort(f.actions, f.portOpts).capture(req)).rejects.toThrow('appeared');
   });
 
@@ -310,6 +318,13 @@ describe('tokenVisualQaActions', () => {
     const a = tokenVisualQaActions({ repoFullName: REPO, credential: () => cred(), fetchImpl: f, now: () => T0 });
     await a.listDispatchRuns('feature');
     expect(calls).toEqual([{ url: `https://api.github.com/repos/${REPO}/actions/workflows/visual-qa.yml/runs?event=workflow_dispatch&branch=feature&per_page=10`, method: 'GET', auth: 'Bearer ghs_runtoken' }]);
+  });
+
+  it('the harness ref is the repository\'s default branch (trunk)', async () => {
+    const { f, calls } = recordingFetch(200, { default_branch: 'dev' });
+    const a = tokenVisualQaActions({ repoFullName: REPO, credential: () => cred(), fetchImpl: f, now: () => T0 });
+    expect(await a.harnessRef()).toBe('dev');
+    expect(calls).toEqual([{ url: `https://api.github.com/repos/${REPO}`, method: 'GET', auth: 'Bearer ghs_runtoken' }]);
   });
 
   it('refuses to call once the credential is dropped, expired, or for another repository', async () => {
