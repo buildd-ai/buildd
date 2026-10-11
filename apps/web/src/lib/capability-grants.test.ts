@@ -315,6 +315,16 @@ describe('checkGrantUse', () => {
     expect(checkGrantUse(grant({ tool: 'queryApl' }), { ...USE, tool: 'listDatasets' }, useCtx())).toBe('tool_not_granted');
   });
 
+  it("the caller's risk (provider annotations) raises a tool's risk, never lowers it", () => {
+    // A read-named tool the provider says is a write is refused under a read grant.
+    expect(checkGrantUse(grant(), { ...USE, tool: 'listDatasets', risk: 'write' }, useCtx())).toBe('tool_risk_exceeds_grant');
+    // ...including under an exact-tool grant made at read risk.
+    expect(checkGrantUse(grant({ tool: 'listDatasets' }), { ...USE, tool: 'listDatasets', risk: 'admin' }, useCtx())).toBe('tool_risk_exceeds_grant');
+    // A write-named tool stays a write even if the caller says read.
+    expect(checkGrantUse(grant(), { ...USE, tool: 'createMonitor', risk: 'read' }, useCtx())).toBe('tool_risk_exceeds_grant');
+    expect(checkGrantUse(grant(), { ...USE, tool: 'listDatasets', risk: 'read' }, useCtx())).toBeNull();
+  });
+
   it('exact resource and environment', () => {
     const g = grant({ resource: 'traces', environment: 'production' });
     expect(checkGrantUse(g, { ...USE, resource: 'traces', environment: 'production' }, useCtx())).toBeNull();

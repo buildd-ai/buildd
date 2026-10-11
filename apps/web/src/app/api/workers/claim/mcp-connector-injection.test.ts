@@ -997,3 +997,89 @@ describe('attachMcpConnectors', () => {
     expect(mockRefresh).toHaveBeenCalledWith('cs-1');
   });
 });
+
+// --- connector gateway (docs/specs/capability-requests.md §Connector gateway) ---
+
+describe('resolveMcpConnectorsForTask — gateway providers are brokered', () => {
+  const AXIOM_URL = 'https://mcp.axiom.co/mcp';
+  function axiomCatalog() {
+    mockLoadTeamCatalog.mockImplementation(async () => [{ slug: 'axiom', name: 'Axiom', url: AXIOM_URL, policy: 'available' }]);
+  }
+  /** Honours both `inArray(id, …)` and `eq(teamId, …)` lookups. */
+  function stageTeamConnectors(rows: any[]) {
+    mockConnectorsFindMany.mockImplementation(async (args: any) => {
+      const w = args?.where;
+      if (w?.type === 'eq' && w.field === 'teamId') return rows.filter(r => r.teamId === w.value);
+      const ids: string[] = w?.values ?? [];
+      return rows.filter(r => ids.includes(r.id));
+    });
+  }
+  const axiom = (over: Record<string, any> = {}) => connector({ id: 'conn-axiom', name: 'axiom', authMode: 'oauth', url: AXIOM_URL, ...over });
+
+  it('returns a gateway path, never a credential, and never decrypts the token', async () => {
+    axiomCatalog();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-axiom'])]);
+    stageTeamConnectors([axiom()]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    stageSecrets({ credentials: [{ id: 'cs-ax', label: 'conn-axiom', tokenExpiresAt: new Date(NOW.getTime() - 1) }] });
+    const p = provider({ 'cs-ax': JSON.stringify({ access_token: 'provider-secret-token' }) });
+
+    const result = await resolve(task(), p);
+
+    expect(result).toEqual([{ id: 'conn-axiom', name: 'axiom', transport: 'http', gateway: true, gatewayPath: '/api/mcp/c/conn-axiom' }]);
+    expect(JSON.stringify(result)).not.toContain('provider-secret-token');
+    expect(p.get).not.toHaveBeenCalled();
+    expect(mockRefresh).not.toHaveBeenCalled();
+  });
+
+  it('mounts an owned gateway connector the role does not list (calls still need a grant)', async () => {
+    axiomCatalog();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role([])]);
+    stageTeamConnectors([axiom()]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    stageSecrets({ credentials: [{ id: 'cs-ax', label: 'conn-axiom', tokenExpiresAt: null }] });
+
+    const result = await resolve();
+    expect(result.map(c => [c.name, (c as any).gateway])).toEqual([['axiom', true]]);
+  });
+
+  it('does not mount an unlisted gateway connector disabled in the workspace, or one with no credential', async () => {
+    axiomCatalog();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role([])]);
+    stageTeamConnectors([axiom()]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([{ connectorId: 'conn-axiom', workspaceId: 'ws-1', enabled: false }]);
+    stageSecrets({ credentials: [{ id: 'cs-ax', label: 'conn-axiom', tokenExpiresAt: null }] });
+    expect(await resolve()).toEqual([]);
+
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    stageSecrets({ credentials: [] });
+    expect(await resolve()).toEqual([]);
+  });
+
+  it('keeps the direct mount for a non-gateway provider', async () => {
+    axiomCatalog();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-oauth'])]);
+    stageTeamConnectors([connector({ id: 'conn-oauth', name: 'linear', authMode: 'oauth', url: 'https://mcp.linear.app/mcp' })]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    stageSecrets({ credentials: [{ id: 'cs-1', label: 'conn-oauth', tokenExpiresAt: null }] });
+    const result = await resolve(task(), provider({ 'cs-1': JSON.stringify({ access_token: 'tok' }) }));
+    expect((result[0] as any).gateway).toBeUndefined();
+    expect(result[0].headers).toEqual({ Authorization: 'Bearer tok' });
+  });
+
+  it('BUILDD_CONNECTOR_GATEWAY=off restores the direct mount', async () => {
+    const prev = process.env.BUILDD_CONNECTOR_GATEWAY;
+    process.env.BUILDD_CONNECTOR_GATEWAY = 'off';
+    try {
+      axiomCatalog();
+      mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-axiom'])]);
+      stageTeamConnectors([axiom()]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+      stageSecrets({ credentials: [{ id: 'cs-ax', label: 'conn-axiom', tokenExpiresAt: null }] });
+      const result = await resolve(task(), provider({ 'cs-ax': JSON.stringify({ access_token: 'tok' }) }));
+      expect((result[0] as any).gateway).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.BUILDD_CONNECTOR_GATEWAY; else process.env.BUILDD_CONNECTOR_GATEWAY = prev;
+    }
+  });
+});
