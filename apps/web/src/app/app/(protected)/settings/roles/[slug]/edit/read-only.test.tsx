@@ -1,7 +1,6 @@
 /**
  * Editing a team role, its workspace overrides and the Platform Operator grants
- * is manage_agent_roles (the roles routes refuse anyone else, with the team's
- * overrides applied). The settings page passes `canEdit`; without it the role
+ * is manage_agent_roles (the roles routes refuse anyone else). The settings page passes `canEdit`; without it the role
  * stays readable and nothing on it can be saved, deleted or added.
  */
 import { describe, expect, it, mock } from 'bun:test';
