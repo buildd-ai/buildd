@@ -24,7 +24,7 @@
  * `task.requeued`). Recovery never passes, waives, cancels or deletes an
  * audit, a worker or a question (I-11).
  */
-import type { FailureRecoveryBlocker, FailureRecoveryDecision, FailureRecoveryRef } from '@buildd/shared';
+import { isTerminalTaskStatus, type FailureRecoveryBlocker, type FailureRecoveryDecision, type FailureRecoveryRef } from '@buildd/shared';
 import { CAPTURE_FAILURE_COMPONENTS, parseCaptureFailureError, type CaptureFailureComponent } from '@buildd/core/visual-qa-page-source';
 import { captureFailureReasonCode, type CaptureFailureFact } from './failure-pattern-sentinel';
 import { readRecovery, type RecoveryFamily, type RecoveryPolicyOutcome, type RecoveryVerdict } from './failure-incident-recovery';
@@ -103,7 +103,6 @@ const DISMISS_ONLY: FailureRecoveryDecision = {
   recommended: 'dismiss',
 };
 
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const isDone = (s: CaptureSubjectFacts) => s.status === 'completed' || s.status === 'cancelled';
 const isBlocked = (s: CaptureSubjectFacts) => s.status === 'failed' || s.openQuestionWorkerIds.length > 0;
 
@@ -130,7 +129,7 @@ export function evaluateCaptureFailure(incident: StoredIncident, facts: CaptureR
     ...missions.map(id => ({ kind: 'mission' as const, id })),
   ];
   const fix = facts.fixTask;
-  const fixDone = !!fix && TERMINAL.has(fix.status);
+  const fixDone = !!fix && isTerminalTaskStatus(fix.status);
   const lastRepairAt = fixDone ? fix!.finishedAt : null;
   const blockers: FailureRecoveryBlocker[] = fix ? [{ kind: 'task', id: fix.id, state: fix.status, observedAt: fix.finishedAt ?? incident.lastSeenAt }] : [];
   const failures = facts.subjects.map(s => s.failedAt).filter((x): x is string => !!x).sort();
@@ -320,7 +319,7 @@ export async function dbObserveCaptureRecovery(incident: StoredIncident): Promis
   }
   if (fixId) {
     const row = await db.query.tasks.findFirst({ where: eq(tasks.id, fixId), columns: { id: true, status: true, updatedAt: true } });
-    if (row) fixTask = { id: row.id, status: row.status, finishedAt: TERMINAL.has(row.status) ? row.updatedAt.toISOString() : null };
+    if (row) fixTask = { id: row.id, status: row.status, finishedAt: isTerminalTaskStatus(row.status) ? row.updatedAt.toISOString() : null };
   }
 
   // Runs are only worth reading once there is a floor to be fresh after.
