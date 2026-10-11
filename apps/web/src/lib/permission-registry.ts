@@ -26,7 +26,7 @@ export type TeamScopeCaller =
 
 export interface PermissionDef {
   description: string;
-  /** Team roles that hold this permission unless a team says otherwise. */
+  /** Team roles that hold this permission, the same in every team. */
   defaultRoles: readonly TeamRole[];
   /** Lowest API-key level that holds it; `null` = session only, no key may. */
   minKeyLevel: ApiKeyLevel | null;
@@ -222,17 +222,6 @@ export const PERMISSIONS = {
 } as const satisfies Record<string, PermissionDef>;
 
 export type Permission = keyof typeof PERMISSIONS;
-
-/** How the settings matrix groups permissions, in registry order. Every permission is in exactly one. */
-export const PERMISSION_GROUPS: ReadonlyArray<{ title: string; permissions: readonly Permission[] }> = [
-  { title: 'Team membership', permissions: ['manage_team_members', 'assign_team_owner', 'assign_team_roles'] },
-  { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'seed_team_timezone', 'manage_chat_retro', 'activate_chat_retro_dogfood', 'view_team_usage', 'manage_billing', 'manage_team_notifications'] },
-  { title: 'API keys and runners', permissions: ['manage_team_keys'] },
-  { title: 'Model access and spend', permissions: ['manage_team_model_keys', 'manage_team_credentials', 'manage_inference_providers', 'manage_model_tiers', 'manage_ai_budget', 'use_chat_admin_tools'] },
-  { title: 'Workspaces', permissions: ['create_workspace', 'manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory', 'delegate_schedule_access'] },
-  { title: 'Work in flight', permissions: ['steer_workers', 'force_reassign_task', 'manage_releases', 'approve_specs'] },
-  { title: 'Team infrastructure', permissions: ['manage_connectors', 'manage_evidence_backends', 'run_experiments', 'manage_agent_roles', 'create_personal_roles'] },
-];
 
 export function isTeamRole(value: unknown): value is TeamRole {
   return typeof value === 'string' && (TEAM_ROLES as readonly string[]).includes(value);

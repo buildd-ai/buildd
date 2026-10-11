@@ -156,7 +156,7 @@ describe('PATCH /api/teams/[id]/members/[userId] — change a role', () => {
     expect(updates).toHaveLength(0);
   });
 
-  it('403s a member whose team has not granted assign_team_roles', async () => {
+  it('403s a member: assign_team_roles is owner/admin only', async () => {
     memberships.caller = { role: 'member' };
     memberships.target = { role: 'member' };
     const res = await patch('target', { role: 'admin' });

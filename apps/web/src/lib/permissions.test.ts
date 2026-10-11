@@ -166,16 +166,30 @@ function boundValues(node: unknown, seen = new Set<unknown>()): string[] {
 describe('can: no per-team grants (AC-G1)', () => {
   const caller = { kind: 'user' as const, userId: 'u1' };
 
-  it('a role holds the same permissions in every team', async () => {
-    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'team-a', role: 'admin' }, { teamId: 'team-b', role: 'admin' }]);
-    for (const p of ALL) {
-      expect(await can(caller, p, 'team-a')).toBe(await can(caller, p, 'team-b'));
+  it('a role holds the same permissions in every team, whatever a team row stores', async () => {
+    // Legacy per-team grants on the rows: team-a widens, team-b narrows. The
+    // personal-team lookup (by slug) finds nothing.
+    mockTeamsFindFirst.mockImplementation(async (q: { where?: unknown }) => {
+      const values = boundValues(q?.where);
+      if (values.some(v => v.startsWith('personal-'))) return null;
+      const everyone = Object.fromEntries(ALL.map(p => [p, ['owner', 'admin', 'member']]));
+      const ownersOnly = Object.fromEntries(ALL.map(p => [p, ['owner']]));
+      return values.includes('team-a') ? { id: 'team-a', permissionOverrides: everyone } : { id: 'team-b', permissionOverrides: ownersOnly };
+    });
+    for (const role of ['admin', 'member'] as const) {
+      mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'team-a', role }, { teamId: 'team-b', role }]);
+      for (const p of ALL) {
+        const want = EXPECTED[p].roles.includes(role);
+        expect(await can(caller, p, 'team-a')).toBe(want);
+        expect(await can(caller, p, 'team-b')).toBe(want);
+      }
     }
   });
 
   it('reads the teams table only to find the personal team', async () => {
     mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'team-a', role: 'member' }]);
     for (const p of ALL) await can(caller, p, 'team-a');
+    expect(mockTeamsFindFirst).toHaveBeenCalled();
     for (const [q] of mockTeamsFindFirst.mock.calls as unknown as [{ where?: unknown }][]) {
       expect(boundValues(q?.where).every(v => v.startsWith('personal-'))).toBe(true);
     }

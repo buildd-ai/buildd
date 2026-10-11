@@ -90,7 +90,7 @@ export default async function RoleProfilePage({
 
   if (!role) notFound();
 
-  // Editing needs manage_agent_roles in the role's team (overrides applied);
+  // Editing needs manage_agent_roles in the role's team;
   // without it this page is the read-only view and the editor redirects here.
   const canEdit = await can({ kind: 'user', userId: user.id }, 'manage_agent_roles', role.teamId).catch(() => false);
 
