@@ -72,7 +72,7 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
-import { defaultLegacyRepairGateDeps, legacyRepairCompletionGate } from '@/lib/repair-completion';
+import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
 import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
@@ -1861,7 +1861,7 @@ export async function PATCH(
       const refusal = await legacyRepairCompletionGate({
         task: { workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
         localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
-      }, defaultLegacyRepairGateDeps()).catch((err) => {
+      }, legacyRepairGateDeps()).catch((err) => {
         console.error(`[repair-completion] gate check failed for worker ${worker.id} (allowing):`, err);
         return null;
       });
@@ -6036,4 +6036,27 @@ async function handleReviewerOutcomeIfNeeded(
       break;
     }
   }
+}
+
+/**
+ * Production reads for the legacy repair completion gate: the workspace repo,
+ * a live PR read, and the migration inspector, ignoring the PR's own recorded
+ * predecessors (spec workflow-state-kernel §13.11 rules 2 and 5).
+ */
+function legacyRepairGateDeps(): LegacyRepairGateDeps {
+  return {
+    repoFor: async (workspaceId) => (await import('@/lib/workflow/github-facts')).workspaceRepo(workspaceId),
+    readPr: async (installationId, repoFullName, prNumber) =>
+      (await import('@/lib/workflow/github-facts')).githubReader(installationId).readPr(repoFullName, prNumber),
+    collisionAt: async (p) => {
+      const { inspectPullRequestMigrations } = await import('@/lib/migration-inspector');
+      const { predecessorPrNumbers } = await import('@/lib/pr-predecessors');
+      const safety = await inspectPullRequestMigrations({
+        installationId: p.installationId, repoFullName: p.repoFullName, prNumber: p.prNumber, headSha: p.headSha, baseRef: p.baseRef,
+        files: [], ignorePrNumbers: await predecessorPrNumbers(p.workspaceId, p.prNumber),
+      });
+      if (safety.safe) return false;
+      return safety.collision ? true : null;
+    },
+  };
 }

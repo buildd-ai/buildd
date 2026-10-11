@@ -9141,6 +9141,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
   });
 
   it('a fix attempt with another open attempt in its retry family is cancelled at claim, not started beside it', async () => {
+    // Counts calls below: earlier attempt-shaped claims in this file also reach the guard.
+    mockGuardClaimedRetry.mockClear();
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', reviewerRetryPrNumber: 3431, parentTaskId: 'orig' })]);
     mockGuardClaimedRetry.mockResolvedValueOnce(true);

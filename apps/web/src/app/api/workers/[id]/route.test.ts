@@ -726,7 +726,6 @@ const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false)
 const mockLegacyRepairGate = mock(async (_p: any, _d: any): Promise<any> => null);
 mock.module('@/lib/repair-completion', () => ({
   legacyRepairCompletionGate: mockLegacyRepairGate,
-  defaultLegacyRepairGateDeps: () => ({}),
 }));
 const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({

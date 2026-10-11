@@ -11,7 +11,14 @@
  * repair task, and the kernel's `fixCompletionGate` calls the same verdict for
  * its `conflict_fix` attempts, so both paths decide alike.
  */
-import type { LivePr } from '@/lib/workflow/commands';
+/** The live PR read this verdict needs (structurally the kernel's `LivePr`). */
+export interface RepairLivePr {
+  state: 'open' | 'closed';
+  merged: boolean;
+  headSha: string;
+  baseRef?: string | null;
+  mergeableState?: string | null;
+}
 
 export type RepairKind = 'conflict' | 'migration';
 
@@ -36,7 +43,7 @@ export function repairCompletionVerdict(p: {
   kind: RepairKind;
   prNumber: number;
   boundHeadSha: string | null;
-  live: Pick<LivePr, 'state' | 'merged' | 'headSha' | 'mergeableState'> | null;
+  live: RepairLivePr | null;
   /** Migration only: does the collision still hold at the live head? null = not read. */
   collisionPresent?: boolean | null;
   localHeadSha?: string | null;
@@ -107,7 +114,7 @@ export function legacyRepairOf(task: {
 
 export interface LegacyRepairGateDeps {
   repoFor: (workspaceId: string) => Promise<{ installationId: number; repoFullName: string } | null>;
-  readPr: (installationId: number, repoFullName: string, prNumber: number) => Promise<LivePr | null>;
+  readPr: (installationId: number, repoFullName: string, prNumber: number) => Promise<RepairLivePr | null>;
   /** True when the PR's migration still collides at `headSha`; null when it could not be read. */
   collisionAt: (p: { workspaceId: string; installationId: number; repoFullName: string; prNumber: number; headSha: string; baseRef: string | null }) => Promise<boolean | null>;
 }
@@ -132,18 +139,3 @@ export async function legacyRepairCompletionGate(
   return verdict.ok ? null : verdict;
 }
 
-/** Production reads: the workspace's repo, a live PR read, the migration inspector. */
-export function defaultLegacyRepairGateDeps(): LegacyRepairGateDeps {
-  return {
-    repoFor: async (workspaceId) => (await import('@/lib/workflow/github-facts')).workspaceRepo(workspaceId),
-    readPr: async (installationId, repoFullName, prNumber) =>
-      (await import('@/lib/workflow/github-facts')).githubReader(installationId).readPr(repoFullName, prNumber),
-    collisionAt: async (p) => {
-      const { inspectPullRequestMigrations } = await import('@/lib/migration-inspector');
-      const { predecessorPrNumbers } = await import('@/lib/pr-predecessors');
-      const safety = await inspectPullRequestMigrations({ ...p, files: [], ignorePrNumbers: await predecessorPrNumbers(p.workspaceId, p.prNumber) });
-      if (safety.safe) return false;
-      return safety.collision ? true : null;
-    },
-  };
-}

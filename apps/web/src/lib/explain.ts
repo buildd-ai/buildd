@@ -749,6 +749,11 @@ export function kernelUnmergedPr(
  * lineage (a kernel fix is parented to the delivery owner), and the kernel or
  * legacy conflict fact. Stored facts only — explain never calls GitHub.
  */
+function headShaOf(detail: unknown): string | null {
+  const h = (detail as { headSha?: unknown } | null)?.headSha;
+  return typeof h === 'string' ? h : null;
+}
+
 async function loadLandingBlocker(
   task: { id: string },
   pr: { taskId: string; prNumber: number | null; prUrl: string | null },
@@ -782,7 +787,7 @@ async function loadLandingBlocker(
           occurredAt: new Date(row.occurredAt).toISOString(),
           outcome: row.outcome,
           reason: row.reason,
-          headSha: typeof (row.detail as { headSha?: unknown } | null)?.headSha === 'string' ? (row.detail as { headSha: string }).headSha : null,
+          headSha: headShaOf(row.detail),
         }
       : null,
   });
