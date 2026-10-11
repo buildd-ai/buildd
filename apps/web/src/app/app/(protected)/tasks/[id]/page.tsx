@@ -18,7 +18,6 @@ import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { isPlatformOperator } from '@/lib/platform-operator';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { parseCredentialBlock, CREDENTIAL_BLOCK_CONTEXT_KEY } from '@/lib/credential-block-copy';
 import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
@@ -94,7 +93,11 @@ import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
 import { HeaderStatusPill, FactSheet, SideDescription, type FactRow } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
-import { headerLifecycleState, taskHeading } from './task-header';
+import { headerLifecycle, taskHeading } from './task-header';
+import TaskChecks from './TaskChecks';
+import { deriveTaskChecks, taskSubjectOf } from '@/lib/task-checks';
+import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
+import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { displayTaskTitle } from '@/lib/task-title';
 import { linkQuestionNote } from './question-hero';
@@ -645,7 +648,27 @@ export default async function TaskDetailPage({
   // A kernel-owned delivery's header reads the kernel's DeliveryView, not the
   // raw task/worker columns below (workflow-state-kernel §17.5). Legacy-owned
   // or PR-less tasks get null and keep today's status.
-  const deliveryView = (await getDeliveryViewsForTasks([task.id])).get(task.id) ?? null;
+  // The same load carries the review rounds' findings and the deliverable's
+  // title for the page's checks list and attempt framing (docs/specs/task-page.md).
+  const deliveryContext = await loadTaskDeliveryContext(task.id);
+  const deliveryView = deliveryContext.view;
+  // Which run this page is: the deliverable, or a review / fix attempt of it.
+  const subject = taskSubjectOf({
+    taskId: task.id,
+    view: deliveryView,
+    context: task.context,
+    parentTaskId: task.parentTaskId,
+    retryOf: task.reviewerRetryPrNumber != null || task.ciRetryPrNumber != null || task.conflictRetryPrNumber != null,
+  });
+  const ownResult = (task.result ?? null) as { summary?: unknown; structuredOutput?: unknown; effectiveVerdict?: unknown } | null;
+  const reviewOutcome = subject.kind === 'review'
+    ? { verdict: normaliseReviewVerdict(ownResult?.effectiveVerdict) ?? readableTaskResult(ownResult?.summary, ownResult?.structuredOutput).verdict }
+    : null;
+  const deliverableLink = subject.kind === 'deliverable' ? null : {
+    taskId: subject.deliverableTaskId,
+    title: deliveryContext.deliverableTitle ?? (task.parentTask?.id === subject.deliverableTaskId ? task.parentTask.title : null),
+  };
+  const taskChecks = deliveryView ? deriveTaskChecks(deliveryView) : null;
   const deliveryPill: DeliveryPillState | null = deliveryView
     ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail, prState: deliveryView.prState, state: deliveryView.state }
     : null;
@@ -820,7 +843,7 @@ export default async function TaskDetailPage({
 
   // --- Side panel + outcome data ---
   const roleName = roleRow?.name ?? null;
-  const headerLifecycle = headerLifecycleState(deliveryView?.stage);
+  const headerTrack = headerLifecycle(deliveryView);
   const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, roleName);
   const questionNote = activeWorker?.waitingFor ? linkQuestionNote(openQuestionRows, activeWorker.id) : null;
 
@@ -888,7 +911,7 @@ export default async function TaskDetailPage({
   // reword it (and only for the same state and cause). Nothing here calls the
   // decision model: a page load never does.
   const storedVerdictDecision = parseStoredVerdictDecision((task as { verdictDecision?: unknown }).verdictDecision);
-  const rulesVerdict = deriveTaskVerdict(buildVerdictInput({
+  const rulesVerdict = deriveTaskVerdict({ ...buildVerdictInput({
     task: { status: task.status, mode: task.mode, result: task.result },
     workers: taskWorkers,
     ciAttempts: ciAttemptTasks,
@@ -897,7 +920,9 @@ export default async function TaskDetailPage({
     inRelease: !!shippedRelease,
     // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
     deliveryPrState: deliveryView?.prState ?? null,
-  }));
+  }), review: reviewOutcome,
+    // The platform updating the branch or merging: in progress, not "ready to merge".
+    deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null });
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
   // What each agent error means for the outcome. Every trace stays inspectable;
   // only the ones the record says still matter are counted or shown in red.
@@ -958,7 +983,9 @@ export default async function TaskDetailPage({
     childTasks.attempts,
     new Set(prOutcome ? ciAttemptTasks.filter(t => t.workers.length > 0).map(t => t.id) : []),
   );
-  const hasRelatedTasks = !!task.parentTask || childTasks.subtasks.length > 0 || relatedAttempts.length > 0;
+  // An attempt names its deliverable in the header; Related tasks does not repeat it.
+  const showParentRow = !!task.parentTask && subject.kind === 'deliverable';
+  const hasRelatedTasks = showParentRow || childTasks.subtasks.length > 0 || relatedAttempts.length > 0;
   // Every worker on this task's PR, the CI-fix attempts' included.
   const workerHistory = lineageWorkerHistory(taskWorkers, ciAttemptTasks);
   // Only with a frozen estimate, i.e. the team switch is on; off, the page is unchanged.
@@ -1104,6 +1131,10 @@ export default async function TaskDetailPage({
     record: parseTaskShippedRecord(shippedResult?.shipped),
     summary: shippedResult?.summary ?? null,
     summarySource: shippedResult?.summarySource ?? null,
+    structuredOutput: shippedResult?.structuredOutput ?? null,
+    subject: { kind: subject.kind, prNumber: deliveryView?.prNumber ?? (typeof task.context?.prNumber === 'number' ? task.context.prNumber : null) },
+    // "What shipped" only once it did: merged, or finished without a PR.
+    shipped: deliveryView ? deliveryView.state === 'MERGED' : !(prWorker && !(prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')),
     heroShots: pickHeroShots(undefined, buildHeroPool(toVisualShots(taskArtifacts))),
   });
   const hostedRunnerUsage = await hostedRunnerUsagePromise;
@@ -1440,7 +1471,8 @@ export default async function TaskDetailPage({
                 startAt={task.startAt?.toISOString() ?? null}
               />
             )}
-            <TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />
+            {/* Release controls belong to the deliverable, never to a review or fix run. */}
+            {subject.kind === 'deliverable' && <TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />}
             {workerWithPr && !prOutcome && (
               <a
                 href={workerWithPr.prUrl!}
@@ -1452,8 +1484,18 @@ export default async function TaskDetailPage({
               </a>
             )}
           </div>
-          {/* The one track. A live run's own view leads with it, so it is drawn here only between runs. */}
-          {headerLifecycle && !activeWorker && <Lifecycle state={headerLifecycle} className="mt-3" />}
+          {/* An attempt says what it is an attempt of, and links the deliverable. */}
+          {deliverableLink && (
+            <p data-testid="task-subject-link" className="mt-2 text-meta text-text-secondary [overflow-wrap:anywhere]">
+              {subject.kind === 'review' ? 'Review of' : 'Fix for'}{' '}
+              <Link href={taskPageHref({ taskId: deliverableLink.taskId, missionId: task.missionId })} className="inline-flex min-h-11 items-center text-accent-text hover:underline md:min-h-0">
+                {deliverableLink.title ? displayTaskTitle(deliverableLink.title) : 'the original task'} ›
+              </Link>
+            </p>
+          )}
+          {/* The one track, in the delivery's words (task-page State mapping). A
+              live run's own view leads with it, so it is drawn here only between runs. */}
+          {headerTrack && !activeWorker && <Lifecycle state={headerTrack.state} phrase={headerTrack.phrase} className="mt-3" />}
         </div>
 
         {/* Action first (W6): the phase's one decision, before anything to read.
@@ -1463,7 +1505,19 @@ export default async function TaskDetailPage({
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
         {verdict && (
-          <TaskVerdictBlock verdict={verdict} decision={storedVerdictDecision} displayStatus={displayStatus} showDecisionRows={isPlatformOperator(user)} />
+          <TaskVerdictBlock verdict={verdict} displayStatus={displayStatus} />
+        )}
+
+        {/* Checks on the delivery's current head, by round (task-page spec). */}
+        {taskChecks && deliveryView && (
+          <TaskChecks
+            checks={taskChecks}
+            prNumber={deliveryView.prNumber}
+            prUrl={prWorker?.prUrl ?? (deliveryView.repoFullName && deliveryView.prNumber != null ? `https://github.com/${deliveryView.repoFullName}/pull/${deliveryView.prNumber}` : null)}
+            headSha={deliveryView.headSha}
+            findings={deliveryContext.findings}
+            currentTaskId={task.id}
+          />
         )}
 
         {runnerReach && (
@@ -1671,7 +1725,7 @@ export default async function TaskDetailPage({
               Related Tasks
             </div>
             <div className="card p-4 space-y-3">
-              {task.parentTask && (
+              {task.parentTask && showParentRow && (
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span className="w-full md:w-auto text-meta text-text-muted">{isAttempt ? 'Attempt at:' : 'Parent:'}</span>
                   <Link
@@ -1844,7 +1898,6 @@ export default async function TaskDetailPage({
             <TaskShippedDetails
               view={shippedView}
               runDetails={runDetails}
-              structuredOutput={shippedResult?.structuredOutput ?? null}
             >
               {workerHistorySection}
               {evidenceFiles.length > 0 && evidenceFilesSection}

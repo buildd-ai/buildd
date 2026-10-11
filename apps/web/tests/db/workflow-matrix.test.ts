@@ -403,6 +403,8 @@ function updateBranch(outcome: { merged: string } | { conflict: true; thenMergea
     if (!/\/update-branch$/.test(path) || method !== 'PUT') return undefined;
     if ('merged' in outcome) {
       gh.ancestors[outcome.merged] = [gh.head];
+      // A clean merge of the base leaves the PR's own diff as it was: the compare reads it unchanged.
+      (gh.equivalent ??= []).push([gh.head, outcome.merged]);
       gh.head = outcome.merged; gh.mergeable = 'clean';
       return { message: 'Updating pull request branch.' };
     }

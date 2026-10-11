@@ -66,6 +66,12 @@ export type Command =
       /** §8.3 carry-forward evidence for an APPROVED/LANDING delivery. */
       carryForward?: 'content_equivalent' | 'own_refresh' | null;
       /**
+       * edc02148: the fact layer compared the PR's diff from the approved previous head to
+       * this one and it differs. A queued refresh is credited with any descending push, so
+       * this, not attribution, decides whether its approval may carry (T13).
+       */
+      diffChanged?: boolean;
+      /**
        * §6.9 provenance input from the compare API: does the live head descend
        * from the bound attempt's head? Combined with the attempt's own
        * reported_shas and its running status, never with a commit author.
