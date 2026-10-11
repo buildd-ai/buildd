@@ -102,7 +102,7 @@ import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { displayTaskTitle } from '@/lib/task-title';
 import { linkQuestionNote } from './question-hero';
-import { buildLineage } from './pr-lineage';
+import { buildLineage, diffStatsRecorded } from './pr-lineage';
 import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
 import type { PrOutcome } from '@/components/task/PrCard';
 import { buildHeroPool, pickHeroShots } from '@/lib/mission-shipped';
@@ -853,7 +853,7 @@ export default async function TaskDetailPage({
     const firstAttempt = {
       runner: runnerLabel(prWorker),
       roleName,
-      commits: prWorker.commitCount ?? 0,
+      commits: prWorker.commitCount ?? null,
       add: prWorker.linesAdded ?? 0,
       rem: prWorker.linesRemoved ?? 0,
       files: prWorker.filesChanged ?? 0,
@@ -869,7 +869,7 @@ export default async function TaskDetailPage({
       return {
         runner: runnerLabel(w),
         roleName,
-        commits: w.commitCount ?? 0,
+        commits: w.commitCount ?? null,
         add: w.linesAdded ?? 0,
         rem: w.linesRemoved ?? 0,
         files: w.filesChanged ?? 0,
@@ -893,8 +893,9 @@ export default async function TaskDetailPage({
     prOutcome = {
       repoLabel: task.workspace?.repo ? normalizeRepoFullName(task.workspace.repo) : null,
       summary: ((task.result as { summary?: string } | null)?.summary) ?? null,
-      // Nothing reported a commit or a diff yet: the numbers are unknown, not 0.
-      totals: { ...lineage.totals, measured: attempts.some(a => a.headSha != null || a.commits > 0 || a.add > 0 || a.rem > 0 || a.files > 0) },
+      // No attempt recorded its counters: the numbers are unknown, not 0 (a
+      // recorded head SHA alone does not count; see diffStatsRecorded).
+      totals: { ...lineage.totals, measured: diffStatsRecorded(attempts) },
       attempts: attempts.map((a, i) => ({ add: a.add, rem: a.rem, files: a.files, running: i > 0 && a.completedAt == null, actions: a.actions })),
       lineage: lineage.steps,
       // The retry's own summary is what it did about the failure.
