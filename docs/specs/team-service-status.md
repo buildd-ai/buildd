@@ -3,7 +3,7 @@ title: Team Service Status
 status: draft
 owner: max
 last_verified: 2026-10-11
-summary: A team MUST see one plain-language service status per root cause, scoped to what each viewer may act on, never the platform's incident machinery, and never as a Needs You count unless a named person has a concrete action.
+summary: A team MUST see one plain-language service status per root cause, scoped to what each viewer may act on, never the incident machinery, and never as a Needs You count unless a named person has a concrete action.
 domain: surfaces
 surfaces: [apps/web/src/lib/failure-incident-escalation.ts, apps/web/src/lib/home-attention.ts, apps/web/src/lib/incident-view.ts, apps/web/src/app/app/(protected)/health/member-scope.test.ts]
 related: [team-permissions, credential-refresh-lifecycle, auth-oauth-boundaries, runner-liveness, human-in-the-loop-protocol, surface-ia-home-missions-initiatives]

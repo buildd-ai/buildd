@@ -197,7 +197,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Settings Models Page](./settings-models.md) · @max — verified 2026-10-11
   Settings › Team › Models MUST show one provider list, use a lone provider for every surface it serves, offer per-surface choice only at two or more, and put a person's own key before the team's.
 - [Team Service Status](./team-service-status.md) · @max — verified 2026-10-11
-  A team MUST see one plain-language service status per root cause, scoped to what each viewer may act on, never the platform's incident machinery, and never as a Needs You count unless a named person has a concrete action.
+  A team MUST see one plain-language service status per root cause, scoped to what each viewer may act on, never the incident machinery, and never as a Needs You count unless a named person has a concrete action.
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-11
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 
