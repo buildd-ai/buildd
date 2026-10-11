@@ -188,8 +188,8 @@ fact it was granted under still holds; revoking it MUST stop the next call.
   dead; no rule now forbids it; and a policy-made grant still auto-grants
   under current policy. Each use is audited (`capability.use`).
 - The `model.inference` route reads its grant through `capabilityGrantSource`
-  under the same checks. Its budget ledger is still `NO_LEDGER`, so a granted
-  inference call is refused 503 `ledger_unavailable` until a ledger ships.
+  under the same checks, and spends through the durable per-grant ledger
+  ([model-inference-agent-capability](model-inference-agent-capability.md)).
 
 **Acceptance criteria**:
 - AC-6: GIVEN an approved grant WHEN an admin revokes it THEN the next `authorizeCapabilityUse` is refused.
@@ -230,8 +230,8 @@ for, what they hold and the policy, without being able to change any of it.
 - AC-11: GIVEN an approved request WHEN the admin approves again THEN the page says it is already approved, not an error.
 - AC-12: GIVEN a policy auto-grant THEN no card and no push; it is listed under Allowed now.
 
-**Out of scope**: the model-inference budget ledger. Provider tool calls go
-through the connector gateway below.
+**Out of scope**: the model-inference budget ledger (its own spec). Provider
+tool calls go through the connector gateway below.
 
 ## Connector gateway
 
