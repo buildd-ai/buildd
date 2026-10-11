@@ -266,6 +266,24 @@ export const users = pgTable('users', {
   emailIdx: index('users_email_idx').on(t.email),
 }));
 
+/**
+ * One row per person per UTC day they used buildd: the dashboard (a signed-in
+ * session) or MCP over OAuth. API keys and task tokens are not people and are
+ * never recorded. Feeds signups/DAU/MAU on the platform-owner admin API
+ * (apps/web/src/lib/admin/growth.ts). Written at most once per person per day
+ * per instance, ON CONFLICT DO NOTHING.
+ */
+export const userActiveDays = pgTable('user_active_days', {
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  day: date('day', { mode: 'string' }).notNull(),
+  // The surface that first recorded the day.
+  firstSurface: text('first_surface').notNull().$type<'web' | 'mcp'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.userId, t.day] }),
+  dayIdx: index('user_active_days_day_idx').on(t.day),
+}));
+
 export const accounts = pgTable('accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
   type: text('type').notNull().$type<'user' | 'service' | 'action'>(),
