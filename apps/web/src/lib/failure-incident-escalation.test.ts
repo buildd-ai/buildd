@@ -31,6 +31,15 @@ describe('incidentEscalationRule', () => {
   it('a high incident with no fix task has no next step: the owner', () => {
     expect(incidentEscalationRule(subject())).toMatchObject({ owner: 'person', rail: 'no_next_step' });
   });
+  it('a path-overlap stall is Buildd\'s, not a no-next-step page: the blocking PR\'s own card carries any decision', () => {
+    const v = incidentEscalationRule(subject({ rule: 'path_overlap_stall' }));
+    expect(v).toMatchObject({ owner: 'buildd', by: 'rule', action: 'hold' });
+    expect(v.reason).toMatch(/overlapping change/);
+    expect(v.reason).not.toMatch(/reviewer raised nothing/);
+  });
+  it('the critical floor still holds for any rule', () => {
+    expect(incidentEscalationRule(subject({ rule: 'path_overlap_stall', severity: 'critical' }))).toMatchObject({ owner: 'person', rail: 'critical_incident' });
+  });
   it('medium, low and resolved incidents never reach a person', () => {
     for (const s of [subject({ severity: 'medium' }), subject({ severity: 'low' }), subject({ status: 'resolved', severity: 'critical' })]) {
       expect(incidentEscalationRule(s)).toMatchObject({ owner: 'buildd', action: 'hold' });
@@ -182,6 +191,18 @@ describe('incidentNeedsYouItems: Home and the badge read the stored verdict', ()
       'https://x.test',
     );
     expect(items).toEqual([]);
+  });
+
+  it('a path-overlap stall with an old owner verdict is not a Needs You item, so the count only holds actionable incidents', () => {
+    const items = incidentNeedsYouItems(
+      [
+        row({ id: 'stale', rule: 'path_overlap_stall', title: '1 task(s) deferred on path overlap behind PR #77 with no progress' }),
+        row({ id: 'real', rule: 'retry_fork' }),
+      ],
+      new Map([['stale', person], ['real', person]]),
+      'https://x.test',
+    );
+    expect(items.map(i => i.incidentId)).toEqual(['real']);
   });
 });
 
