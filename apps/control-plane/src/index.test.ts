@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'bun:test';
-import worker, { executionMode, matchRoute, ROUTES, SERVED_BY } from './index';
+import worker from './index';
+import * as mainModule from './index';
+import { anonymousGithubProbe, executionMode, matchRoute, ROUTES, SERVED_BY } from './router';
 import { NextRequest, NextResponse, after } from './next-server-shim';
 import { runInRequest } from './request-context';
+
+describe('the main module', () => {
+  it('exports only the default handler: workerd treats every named export as an entrypoint and will not start on a non-handler one', () => {
+    expect(Object.keys(mainModule)).toEqual(['default']);
+  });
+});
 
 describe('the execution routes the control plane serves', () => {
   it('matches exactly the execution path, with path params', () => {
@@ -85,6 +93,35 @@ describe('outbound fetch', () => {
     await f('https://x.example', { headers: { 'User-Agent': 'mine' } });
     expect(seen).toEqual([CONTROL_PLANE_USER_AGENT, CONTROL_PLANE_USER_AGENT, 'mine']);
   });
+
+  it('GITHUB_API_ORIGIN sends GitHub API calls to a loopback fake (the web-down e2e), and nothing else moves', async () => {
+    const { withGithubApiOrigin } = await import('./outbound-fetch');
+    const seen: string[] = [];
+    const base = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const r = input instanceof Request ? input : new Request(String(input), init);
+      seen.push(`${r.method} ${r.url} ${r.headers.get('authorization') ?? ''}`);
+      return new Response('ok');
+    }) as typeof fetch;
+    const f = withGithubApiOrigin(base, () => 'http://127.0.0.1:8798');
+    await f('https://api.github.com/repos/o/r/pulls/1?x=1', { method: 'GET', headers: { Authorization: 'Bearer t' } });
+    await f(new Request('https://api.github.com/graphql', { method: 'POST', body: '{}' }));
+    await f('https://hooks.example/a');
+    expect(seen).toEqual([
+      'GET http://127.0.0.1:8798/repos/o/r/pulls/1?x=1 Bearer t',
+      'POST http://127.0.0.1:8798/graphql ',
+      'GET https://hooks.example/a ',
+    ]);
+  });
+
+  it('GITHUB_API_ORIGIN is ignored unless it is loopback, so a stray var cannot redirect production GitHub calls', async () => {
+    const { withGithubApiOrigin } = await import('./outbound-fetch');
+    const seen: string[] = [];
+    const base = (async (input: RequestInfo | URL) => { seen.push(String(input instanceof Request ? input.url : input)); return new Response('ok'); }) as typeof fetch;
+    for (const origin of [undefined, '', 'https://evil.example', 'http://10.0.0.1:80']) {
+      await withGithubApiOrigin(base, () => origin)('https://api.github.com/zen');
+    }
+    expect(seen).toEqual(Array(4).fill('https://api.github.com/zen'));
+  });
 });
 
 describe('pusher shim', () => {
@@ -140,6 +177,40 @@ describe('deep health', () => {
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+
+  /** Every probe healthy except what `zen` answers. */
+  async function deepWith(zen: Response) {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => {
+      const u = String(r instanceof Request ? r.url : r);
+      return u.endsWith('/zen') ? zen.clone() : new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    try {
+      const res = await worker.fetch(deep('Bearer s3cret'), { EXECUTION_MODE: 'own', CRON_SECRET: 's3cret' }, ctx);
+      return { status: res.status, body: await res.json() as Record<string, unknown> };
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  it("an anonymous GitHub budget spent on the Worker's shared IP reads rate_limited and fails nothing", async () => {
+    const limited = await deepWith(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }));
+    expect(limited.body.github).toBe('rate_limited');
+    const secondary = await deepWith(new Response('', { status: 429 }));
+    expect(secondary.body.github).toBe('rate_limited');
+    expect(anonymousGithubProbe(403, '0')).toEqual({ report: 'rate_limited', healthy: true });
+    expect(anonymousGithubProbe(429, null)).toEqual({ report: 'rate_limited', healthy: true });
+    expect(anonymousGithubProbe(200, '59')).toEqual({ report: 200, healthy: true });
+  });
+
+  it('regression: a 403 with budget left (the missing User-Agent of the cutover) still fails the probe', async () => {
+    const r = await deepWith(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '42' } }));
+    expect(r.body).toMatchObject({ ok: false, github: 403 });
+    expect(r.status).toBe(503);
+    expect(anonymousGithubProbe(403, '42')).toEqual({ report: 403, healthy: false });
+    expect(anonymousGithubProbe(403, null)).toEqual({ report: 403, healthy: false });
+    expect(anonymousGithubProbe(0, null)).toEqual({ report: 0, healthy: false });
   });
 
   it('shallow health stays public', async () => {

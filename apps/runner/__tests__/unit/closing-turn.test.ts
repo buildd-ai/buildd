@@ -308,6 +308,21 @@ describe('closing turn', () => {
     expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined');
   });
 
+  test('the completion payload logs "Task completed" exactly once', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Work finished.'), successResult('sess-1')],
+      [assistantText('Done.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-one-completed');
+
+    const call = completionCall();
+    expect(call).toBeDefined();
+    const completed = (call!.payload.milestones as Array<{ label?: string }>)
+      .filter(m => m.label === 'Task completed');
+    expect(completed).toHaveLength(1);
+  });
+
   test('agent-authored completion during the closing turn is recorded as authored, not fallback', async () => {
     scriptQueue = [
       [initMsg('sess-1'), assistantText('Opened the PR.'), successResult('sess-1')],
