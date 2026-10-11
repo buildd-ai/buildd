@@ -122,6 +122,10 @@ describe('Landed strip', () => {
 
   it('a cell click selects without navigating or fetching', async () => {
     await mount(missionTaskStripFixture('mid-open'));
+    // Arrival selects a pending task, whose drawer reads its waiting reasons
+    // (docs/specs/force-start.md). The click itself fetches nothing.
+    expect(fetches).toEqual([`/api/tasks/${stripFixtureId(9)}/waiting`]);
+    fetches = [];
     const href = window.location.href;
     await click(cells()[2]);
     expect(pressed()).toBe(2);
