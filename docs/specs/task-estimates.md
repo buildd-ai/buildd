@@ -9,6 +9,33 @@ surfaces: [packages/core/task-estimate-rollout.ts, packages/core/task-estimate-s
 related: [claim-ordering]
 keywords: [task_estimates, taskEstimates, estimates-backtest, blend-v1, p50, p80, new-repo prior, cold start, default on, opt-out, TASK_ESTIMATES_ROLLOUT]
 verified_by: [packages/core/__tests__/task-estimate-rollout.test.ts, packages/core/__tests__/task-estimate-source.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/app/api/teams/[id]/task-estimates/route.test.ts, apps/web/src/app/app/(protected)/settings/features/TaskEstimatesFeature.dom.test.tsx, apps/web/src/app/app/(protected)/health/estimates/EstimatesOff.test.tsx, apps/web/src/lib/task-time-row.test.ts]
+assertions:
+  - id: "pinned-rollout"
+    type: "symbol"
+    name: "TASK_ESTIMATES_ROLLOUT"
+    path: "packages/core/task-estimate-rollout.ts"
+  - id: "gate-evaluator"
+    type: "symbol"
+    name: "evaluateTaskEstimatesGate"
+    path: "packages/core/task-estimate-rollout.ts"
+  - id: "write-reads-team-state"
+    type: "symbol_reachable"
+    symbol: "taskEstimatesEnabled"
+    entry: "packages/core/task-estimate-source.ts"
+    as: "call"
+  - id: "features-page-reads-state"
+    type: "symbol_reachable"
+    symbol: "loadTaskEstimatesState"
+    entry: "apps/web/src/app/app/(protected)/settings/features/page.tsx"
+    as: "call"
+  - id: "health-page-reads-state"
+    type: "symbol_reachable"
+    symbol: "loadTaskEstimatesState"
+    entry: "apps/web/src/app/app/(protected)/health/estimates/page.tsx"
+    as: "call"
+  - id: "rollout-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/task-estimate-rollout.test.ts"
 ---
 
 ## Task Estimates (Rollout and Team Switch)
