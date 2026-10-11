@@ -9,7 +9,9 @@
  * Controlled (`value` + `onChange`) or uncontrolled. Enter sends, Shift+Enter
  * is a new line, and an IME composition never sends.
  */
-import { forwardRef, useId, useImperativeHandle, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { forwardRef, useId, useImperativeHandle, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { pasteTitle, type AttachmentDraft } from '@builddai/ai-kit/chat/contract';
+import { AttachmentCard } from './AttachmentCard';
 
 export interface ChatComposerHandle {
   focus(): void;
@@ -18,7 +20,8 @@ export interface ChatComposerHandle {
 }
 
 export interface ChatComposerProps {
-  onSend(text: string): void;
+  /** `attachments`: the long pastes in the draft (0.25.0), empty when there are none. */
+  onSend(text: string, attachments: AttachmentDraft[]): void;
   /** Stop the running turn. Without it, the Stop button is disabled. */
   onStop?(): void;
   /** A turn is streaming. */
@@ -71,6 +74,16 @@ export interface ChatComposerProps {
    * never lost to a refusal. No limit without it.
    */
   maxLength?: number;
+  /**
+   * A paste longer than this many characters becomes an attachment card above
+   * the message instead of text in the box (0.25.0; `PASTE_ATTACHMENT_CHARS`
+   * is the shared default). Without it every paste goes into the box.
+   * `maxLength` counts the text and the attachments together.
+   */
+  attachFrom?: number;
+  /** Controlled attachments (with `onAttachmentsChange`), e.g. to keep them across a refused send. */
+  attachments?: AttachmentDraft[];
+  onAttachmentsChange?(attachments: AttachmentDraft[]): void;
 }
 
 /** The count appears once a draft reaches this share of `maxLength`. */
@@ -78,17 +91,31 @@ export const COMPOSER_COUNT_FROM = 0.9;
 
 export const DEFAULT_BUSY_PLACEHOLDER = 'Steer while I think…';
 
+/** Fixed at paste: a retry sends the same id, so the server keeps one attachment per paste. */
+function newAttachmentId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
+  const h = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
+  return `${h()}${h()}-${h()}-4${h().slice(1)}-${(8 + Math.floor(Math.random() * 4)).toString(16)}${h().slice(1)}-${h()}${h()}${h()}`;
+}
+
 export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer({
   onSend, onStop, busy = false, disabled = false, value, defaultValue = '', onChange,
   placeholder = 'Ask anything…', onSteer, busyPlaceholder = DEFAULT_BUSY_PLACEHOLDER,
   scope, tools, tier, formFallbackHref, formFallback, formFallbackLabel = 'Fill in a form instead',
   showFormFallback = true, label = 'Message', autoFocus, className,
   leading, actions, edge, footer, mood = null, compact = false, inputId: inputIdProp, maxLength,
+  attachFrom, attachments: attachmentsProp, onAttachmentsChange,
 }, ref) {
   const [inner, setInner] = useState(defaultValue);
   const [steerSent, setSteerSent] = useState(false);
   const controlled = value !== undefined;
   const text = controlled ? value : inner;
+  const [innerAttachments, setInnerAttachments] = useState<AttachmentDraft[]>([]);
+  const attachments = attachmentsProp ?? innerAttachments;
+  const setAttachments = (a: AttachmentDraft[]) => {
+    if (attachmentsProp === undefined) setInnerAttachments(a);
+    onAttachmentsChange?.(a);
+  };
   const area = useRef<HTMLTextAreaElement>(null);
   const generatedId = useId();
   const inputId = inputIdProp ?? generatedId;
@@ -113,20 +140,31 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     },
   }));
 
-  const over = maxLength !== undefined && text.trim().length > maxLength;
+  const attachedChars = attachments.reduce((n, a) => n + a.text.length, 0);
+  const total = text.trim().length + attachedChars;
+  const over = maxLength !== undefined && total > maxLength;
   const submit = () => {
     const t = text.trim();
-    if (!t || disabled || over) return;
+    if ((!t && attachments.length === 0) || disabled || over) return;
     if (busy) {
-      if (!onSteer) return;
+      // Steering is a short instruction; an attachment waits for the next send.
+      if (!onSteer || !t || attachments.length > 0) return;
       onSteer(t);
       setSteerSent(true);
       set('');
       return;
     }
     setSteerSent(false);
-    onSend(t);
+    onSend(t, attachments);
     set('');
+    setAttachments([]);
+  };
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (attachFrom === undefined) return;
+    const pasted = e.clipboardData?.getData('text/plain') ?? '';
+    if (pasted.length <= attachFrom) return;
+    e.preventDefault();
+    setAttachments([...attachments, { id: newAttachmentId(), title: pasteTitle(pasted), text: pasted }]);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -136,8 +174,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   };
 
   const steering = busy && !!onSteer;
-  const empty = !text.trim();
-  const showCount = maxLength !== undefined && text.trim().length >= maxLength * COMPOSER_COUNT_FROM;
+  const empty = !text.trim() && attachments.length === 0;
+  const showCount = maxLength !== undefined && total >= maxLength * COMPOSER_COUNT_FROM;
   return (
     <div className={`kit-chat${className ? ` ${className}` : ''}`}>
       <form
@@ -150,6 +188,13 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       >
         {edge != null && edge !== false && <span className="kit-composer-edge" aria-hidden="true" data-testid="kit-composer-edge">{edge}</span>}
         {leading != null && leading !== false && <div className="kit-composer-leading" data-testid="kit-composer-leading">{leading}</div>}
+        {attachments.length > 0 && (
+          <div className="kit-composer-attachments" data-testid="kit-composer-attachments">
+            {attachments.map(a => (
+              <AttachmentCard key={a.id} attachment={a} onRemove={() => setAttachments(attachments.filter(x => x.id !== a.id))} />
+            ))}
+          </div>
+        )}
         <label htmlFor={inputId} className="kit-sr-only">{label}</label>
         <textarea
           id={inputId}
@@ -161,13 +206,14 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           autoFocus={autoFocus}
           onChange={e => set(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           placeholder={steering ? busyPlaceholder : placeholder}
           aria-describedby={[steering ? hintId : null, showCount ? countId : null].filter(Boolean).join(' ') || undefined}
           data-testid="kit-composer-input"
         />
         {showCount && (
           <p id={countId} className="kit-composer-count" data-over={over || undefined} aria-live="polite" data-testid="kit-composer-count">
-            {text.trim().length.toLocaleString('en-US')} / {maxLength!.toLocaleString('en-US')} characters{over ? '. Shorten it to send.' : ''}
+            {total.toLocaleString('en-US')} / {maxLength!.toLocaleString('en-US')} characters{over ? '. Shorten it to send.' : ''}
           </p>
         )}
         {steering && (
