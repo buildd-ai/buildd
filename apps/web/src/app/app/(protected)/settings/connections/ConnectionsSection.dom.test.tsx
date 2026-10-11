@@ -158,18 +158,22 @@ describe('ConnectionsSection', () => {
     expect(container.textContent).toContain('Hosted app is disconnected.');
   });
 
-  it('legacy per-workspace connections get the one-connection hint', async () => {
+  it('legacy per-workspace connections are folded under one quiet line, with no command to run', async () => {
     await mount({ legacy: [{ clientName: 'Old app', workspaceName: 'api', lastActiveAt: '2026-10-08T10:00:00Z' }] });
     const n = q('connections-legacy')!;
-    expect(n.textContent).toContain('One older connection reaches a single workspace');
+    expect(n.textContent).toContain('Older connections');
+    expect(n.textContent).not.toContain('Old app');
+    await click(n.querySelector('button[aria-expanded]'));
     expect(n.textContent).toContain('Old app');
-    expect(n.textContent).toContain('buildd install --oauth');
+    expect(n.textContent).toContain('Connecting the app again replaces them.');
+    expect(container.textContent).not.toContain('buildd install');
   });
 
   it('empty: plain text, no frame', async () => {
     await mount({ connections: [] });
     const e = q('connections-empty')!;
     expect(e.tagName).toBe('P');
-    expect(e.textContent).toContain('No apps are connected.');
+    expect(e.textContent).toContain('No apps.');
+    expect(e.textContent).not.toContain('buildd install');
   });
 });

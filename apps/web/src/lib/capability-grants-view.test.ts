@@ -7,7 +7,6 @@ import {
   formatLease,
   leaseChoices,
   policySummary,
-  providerState,
   type AccessRequestView,
 } from './capability-grants-view';
 
@@ -66,20 +65,3 @@ describe('decisionResultText', () => {
   });
 });
 
-describe('providerState', () => {
-  const axiom = { url: 'https://mcp.axiom.co/mcp', authMode: 'oauth' as const };
-  const vercel = { url: 'https://mcp.vercel.com', authMode: 'oauth' as const, clientSupport: { status: 'needs_approved_client' as const, detail: '', actionLabel: '', actionUrl: '' } };
-  it('matches the installed connector by host and reads its credential', () => {
-    expect(providerState(axiom, []).action?.kind).toBe('install');
-    expect(providerState(axiom, [{ id: 'c', url: 'https://mcp.axiom.co/sse', authMode: 'oauth', status: 'connected' }]).kind).toBe('connected');
-    expect(providerState(axiom, [{ id: 'c', url: 'https://mcp.axiom.co/mcp', authMode: 'oauth', status: 'expired' }]).action).toEqual({ kind: 'connect', label: 'Reconnect', connectorId: 'c' });
-    expect(providerState(axiom, [{ id: 'c', url: 'https://mcp.axiom.co/mcp', authMode: 'oauth', status: 'not_connected' }]).action?.label).toBe('Connect');
-  });
-  it('a provider that has not approved buildd offers no install or connect', () => {
-    expect(providerState(vercel, [])).toMatchObject({ kind: 'needs_client_approval', action: null });
-    expect(providerState(vercel, [{ id: 'c', url: 'https://mcp.vercel.com', authMode: 'oauth', status: 'not_connected' }]).action).toBeNull();
-  });
-  it('a shared-in connector offers no credential step: its owner team holds it', () => {
-    expect(providerState(axiom, [{ id: 'c', url: 'https://mcp.axiom.co/mcp', authMode: 'oauth', status: 'expired', shared: true }]).action).toBeNull();
-  });
-});
