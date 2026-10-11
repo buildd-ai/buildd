@@ -102,6 +102,8 @@ export interface ListProvidersResponse {
   policy: ProviderPolicySummary;
   /** Personal model keys stored by anyone in the team (a count, never whose). */
   personalKeyCount?: number;
+  /** Workspaces of the team with model keys of their own (ids, sorted). Empty for a task token. */
+  workspacesWithKeys?: string[];
   providers: ProviderListing[];
 }
 

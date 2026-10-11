@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, type ComponentProps } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { ListProvidersResponse, ProviderApiScope } from '@buildd/shared';
 import { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
-import { Select } from '@/components/ui/Select';
+import Link from 'next/link';
 import Section from '@/components/ui/Section';
 import Notice from '@/components/ui/Notice';
 import StoredPolicyNotice from './StoredPolicyNotice';
@@ -17,10 +17,12 @@ import UsedForSection from './UsedForSection';
 
 /**
  * The model keys, one scope per page. `scope="team"` is Settings › Team ›
- * Models: Providers (the team's) and Used for (only once two or more are
- * connected). `scope="mine"` is Settings › You › Keys: your own keys and
- * nothing of the team's to change, with the key rule as a line. No page mixes
- * the two.
+ * Models: Providers (the team's, plus one line naming the workspaces that
+ * use their own keys) and Used for (only once two or more are connected).
+ * `scope="workspace"` is that workspace's settings page: "Uses team settings"
+ * until an admin overrides, then the workspace's own rows. `scope="mine"` is
+ * Settings › You › Keys: your own keys and nothing of the team's to change,
+ * with the key rule as a line. No page mixes scopes.
  *
  * Every model provider in registry order, one row each (Claude and OpenAI each
  * group their key and subscription into one row). Whose key has no setting:
@@ -39,7 +41,7 @@ import UsedForSection from './UsedForSection';
  * forms open in the row. A gateway change reloads the rows and the decision
  * model, so all of it lives in one component.
  */
-export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [], signIns, scope = 'team' }: {
+export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [], signIns, scope = 'team', workspaceId: fixedWorkspaceId = null }: {
   teamId: string;
   /** Fallback for the Routing section until the list loads. */
   isAdmin: boolean;
@@ -47,11 +49,15 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
   workspaces?: EndpointWorkspace[];
   /** Props for the sign-ins folded into the Claude and OpenAI rows. Omitted: the rows hold keys only. */
   signIns?: Pick<ComponentProps<typeof AgentBackendsSection>, 'workspaces' | 'currentTeamId' | 'manageableTeamIds' | 'canManage' | 'canManageRouting'>;
-  /** Whose keys this page holds: the team's (Models) or yours (Keys). */
-  scope?: 'team' | 'mine';
+  /** Whose keys this page holds: the team's (Models), one workspace's (its settings page) or yours (Keys). */
+  scope?: 'team' | 'workspace' | 'mine';
+  /** With scope "workspace": the workspace whose own keys these are. */
+  workspaceId?: string | null;
 }) {
   const params = useSearchParams();
-  const [workspaceId, setWorkspaceId] = useState<string | null>(workspaces[0]?.id ?? null);
+  const workspaceId = scope === 'workspace' ? fixedWorkspaceId : null;
+  // A workspace with nothing of its own shows "Uses team settings" until an admin overrides.
+  const [overriding, setOverriding] = useState(false);
   const [data, setData] = useState<ListProvidersResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Bumped when the gateway changes: the sections that route through it reload.
@@ -62,7 +68,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
   const load = useCallback(async () => {
     try {
       const qs = new URLSearchParams({ teamId });
-      if (workspaceId && scope === 'team') qs.set('workspaceId', workspaceId);
+      if (workspaceId) qs.set('workspaceId', workspaceId);
       const res = await fetch(`/api/providers?${qs}`);
       if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? LOAD_ERROR);
       setData(await res.json() as ListProvidersResponse);
@@ -78,6 +84,13 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
   useEffect(() => {
     if (typeof window !== 'undefined' && window.location.hash === '#agent-key') setOpenRow(`${scope}:claude`);
   }, [scope]);
+
+  // Old #workspace-keys links: the section moved to each workspace's own settings.
+  useEffect(() => {
+    if (scope !== 'team' || !data || typeof window === 'undefined' || window.location.hash !== '#workspace-keys') return;
+    const first = data.workspacesWithKeys?.[0];
+    window.location.replace(first ? `/app/settings/workspace/${first}#models` : '/app/settings/workspaces');
+  }, [scope, data]);
 
   const flow = providerFlowMessage(params);
   const canManageRouting = data ? data.caller.can.manage_inference_providers : isAdmin;
@@ -99,7 +112,9 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
                 open={openRow === key}
                 onToggle={(o) => setOpenRow(o ? key : null)}
                 signIn={!slots ? null : g.id === 'claude' ? slots.claude : g.id === 'openai' ? slots.openai : null}
-                form={rowScope !== 'team' ? null
+                form={rowScope === 'workspace'
+                  ? (g.id === 'custom-endpoint' ? <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces.filter((w) => w.id === workspaceId)} rev={gatewayRev} embedded /> : null)
+                  : rowScope !== 'team' ? null
                   : g.id === 'litellm' ? <GatewayCard teamId={teamId} canManage={canManageRouting} embedded onChanged={() => { setGatewayRev((r) => r + 1); void load(); }} />
                   : g.id === 'custom-endpoint' ? <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces} rev={gatewayRev} embedded />
                   : null}
@@ -138,7 +153,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
     );
   }
 
-  const render = (slots: SignInSlots | null, workspaceSlots: SignInSlots | null) => (
+  const render = (slots: SignInSlots | null) => (
     <>
       <Section title="Providers" id="keys" className="scroll-mt-20">
         <span id="providers" aria-hidden="true" />
@@ -165,6 +180,8 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
           )}
 
           {list('team', slots, 'provider-list-team')}
+
+          {data && <WorkspacesWithKeys ids={data.workspacesWithKeys ?? []} workspaces={workspaces} />}
         </div>
       </Section>
 
@@ -178,43 +195,57 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
         />
       )}
 
-      {workspaces.length > 0 && (
-        <Section title="Workspace keys" id="workspace-keys" className="scroll-mt-20">
-          <div className="space-y-3">
-            <p className="text-meta text-text-muted">A workspace key is used for that workspace&apos;s work in place of the team key.</p>
-            <div className="min-w-0 w-full sm:w-64">
-              <Select
-                value={workspaceId ?? ''}
-                onChange={(v) => setWorkspaceId(v || null)}
-                options={workspaces.map((w) => ({ value: w.id, label: w.name }))}
-                aria-label="Workspace"
-                sheetTitle="Workspace"
-                testId="scope-workspace"
-              />
-            </div>
-            {list('workspace', workspaceSlots, 'provider-list-workspace')}
-          </div>
-        </Section>
-      )}
 
     </>
   );
 
-  if (!signIns || signIns.workspaces.length === 0) return render(null, null);
-  // Two sign-in sets: the team's for the Keys rows, the picked workspace's for
-  // Workspace keys. Only the team's notice and routing row are drawn.
+  if (scope === 'workspace') {
+    const own = !!data && data.providers.some((p) => (p.set.workspace ?? []).length > 0);
+    const canOverride = !!data && (data.caller.can.manage_team_credentials || data.caller.can.manage_team_model_keys);
+    const body = (slots: SignInSlots | null) => (
+      <Section title="Models" id="models" className="scroll-mt-20">
+        <div className="space-y-3">
+          {status}
+          {data && !own && !overriding && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="workspace-uses-team">
+              <p className="text-body text-text-secondary">Uses team settings.</p>
+              {canOverride && <button type="button" className="btn" onClick={() => setOverriding(true)}>Override</button>}
+            </div>
+          )}
+          {(own || overriding) && list('workspace', slots, 'provider-list-workspace')}
+        </div>
+      </Section>
+    );
+    if (!signIns || !workspaceId) return body(null);
+    return (
+      <AgentBackendsSection {...signIns} scope="workspace" workspaceId={workspaceId}>
+        {(wsSlots) => body(wsSlots)}
+      </AgentBackendsSection>
+    );
+  }
+
+  if (!signIns || signIns.workspaces.length === 0) return render(null);
   return (
     <AgentBackendsSection {...signIns} scope="team" workspaceId={null}>
-      {(teamSlots) => (
-        workspaceId
-          ? (
-            <AgentBackendsSection {...signIns} scope="workspace" workspaceId={workspaceId}>
-              {(wsSlots) => render(teamSlots, wsSlots)}
-            </AgentBackendsSection>
-          )
-          : render(teamSlots, null)
-      )}
+      {(teamSlots) => render(teamSlots)}
     </AgentBackendsSection>
+  );
+}
+
+/** "2 workspaces use their own keys: api, web." Each name links to that workspace's Models section. */
+function WorkspacesWithKeys({ ids, workspaces }: { ids: readonly string[]; workspaces: readonly EndpointWorkspace[] }) {
+  const named = ids.map((id) => workspaces.find((w) => w.id === id)).filter((w): w is EndpointWorkspace => !!w);
+  if (named.length === 0) return null;
+  return (
+    <p className="text-body text-text-secondary" data-testid="workspaces-with-keys">
+      {named.length === 1 ? '1 workspace uses its own keys: ' : `${named.length} workspaces use their own keys: `}
+      {named.map((w, i) => (
+        <span key={w.id}>
+          {i > 0 && ', '}
+          <Link href={`/app/settings/workspace/${w.id}#models`} className="underline text-text-primary hover:no-underline">{w.name}</Link>
+        </span>
+      ))}
+    </p>
   );
 }
 

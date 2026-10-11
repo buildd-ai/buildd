@@ -1,6 +1,6 @@
 ---
 title: Settings Models Page
-status: draft
+status: active
 owner: max
 last_verified: 2026-10-11
 summary: Settings › Team › Models MUST show one provider list, use a lone provider for every surface it serves, offer per-surface choice only at two or more, and put a person's own key before the team's.
@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/settings/models/page.tsx, apps/web/src/app/app/(protected)/settings/providers/ModelProvidersClient.tsx, packages/core/providers/policy.ts, packages/core/providers/resolve.ts]
 related: [model-routing-and-tiers, model-policy-cells, provider-failover, team-permissions, credential-isolation]
 keywords: [Models page, model providers, who pays, credential policy, personal_first, used for, provider routing, agent endpoint, LiteLLM gateway, decision model, workspace keys]
-verified_by: [packages/core/__tests__/provider-assignments.test.ts, packages/core/__tests__/provider-resolve.test.ts, apps/web/src/app/api/providers/assignments/route.test.ts, apps/web/src/app/app/(protected)/settings/providers/providers-view.test.ts, apps/web/src/app/app/(protected)/settings/providers/ModelProvidersClient.dom.test.tsx, apps/web/src/app/app/(protected)/settings/models/page.test.ts]
+verified_by: [packages/core/__tests__/provider-assignments.test.ts, packages/core/__tests__/provider-resolve.test.ts, apps/web/src/app/api/providers/assignments/route.test.ts, apps/web/src/app/app/(protected)/settings/providers/providers-view.test.ts, apps/web/src/app/app/(protected)/settings/providers/ModelProvidersClient.dom.test.tsx, apps/web/src/app/app/(protected)/settings/models/page.test.ts, apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page-groups.test.ts, apps/web/src/app/api/providers/route.test.ts]
 supersedes: []
 ---
 
@@ -156,5 +156,8 @@ Decisions.
 
 ## Verification gaps
 
-Draft until the slices that implement it land; each adds its tests to
-`supersedes: []` and the last one flips `status` to `active`.
+- AC-8 to AC-10 (personal key first for agent runs) are held by the resolver
+  and claim tests listed in `team-permissions` and `provider-resolve`; the
+  dashboard copy for a stored non-default policy is not screenshot-tested.
+- A custom endpoint's per-workspace scope can still be added from the team
+  row; the workspace page is the intended home for it.
