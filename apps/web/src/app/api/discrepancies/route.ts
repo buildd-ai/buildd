@@ -6,7 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
-const DIRECTIONS = ['spec_ahead', 'code_ahead', 'contradicted'] as const;
+const DIRECTIONS = ['spec_ahead', 'code_ahead', 'contradicted', 'conflict'] as const;
 const STATUSES = ['open', 'accepted', 'resolved'] as const;
 
 // GET /api/discrepancies?workspaceId=&direction=&status= — §13 list_discrepancies backing route.
