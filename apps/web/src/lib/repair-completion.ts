@@ -109,7 +109,7 @@ export interface LegacyRepairGateDeps {
   repoFor: (workspaceId: string) => Promise<{ installationId: number; repoFullName: string } | null>;
   readPr: (installationId: number, repoFullName: string, prNumber: number) => Promise<LivePr | null>;
   /** True when the PR's migration still collides at `headSha`; null when it could not be read. */
-  collisionAt: (p: { installationId: number; repoFullName: string; prNumber: number; headSha: string; baseRef: string | null }) => Promise<boolean | null>;
+  collisionAt: (p: { workspaceId: string; installationId: number; repoFullName: string; prNumber: number; headSha: string; baseRef: string | null }) => Promise<boolean | null>;
 }
 
 /** Refusal for a legacy conflict/migration retry, or null to allow completion. */
@@ -126,7 +126,7 @@ export async function legacyRepairCompletionGate(
   if (!repo) return null;
   const live = await deps.readPr(repo.installationId, repo.repoFullName, repair.prNumber);
   const collisionPresent = repair.kind === 'migration' && live && live.state === 'open' && !live.merged
-    ? await deps.collisionAt({ ...repo, prNumber: repair.prNumber, headSha: live.headSha, baseRef: live.baseRef ?? null })
+    ? await deps.collisionAt({ workspaceId: p.task.workspaceId, installationId: repo.installationId, repoFullName: repo.repoFullName, prNumber: repair.prNumber, headSha: live.headSha, baseRef: live.baseRef ?? null })
     : null;
   const verdict = repairCompletionVerdict({ ...repair, live, collisionPresent, localHeadSha: p.localHeadSha });
   return verdict.ok ? null : verdict;
@@ -140,7 +140,8 @@ export function defaultLegacyRepairGateDeps(): LegacyRepairGateDeps {
       (await import('@/lib/workflow/github-facts')).githubReader(installationId).readPr(repoFullName, prNumber),
     collisionAt: async (p) => {
       const { inspectPullRequestMigrations } = await import('@/lib/migration-inspector');
-      const safety = await inspectPullRequestMigrations({ ...p, files: [] });
+      const { predecessorPrNumbers } = await import('@/lib/pr-predecessors');
+      const safety = await inspectPullRequestMigrations({ ...p, files: [], ignorePrNumbers: await predecessorPrNumbers(p.workspaceId, p.prNumber) });
       if (safety.safe) return false;
       return safety.collision ? true : null;
     },

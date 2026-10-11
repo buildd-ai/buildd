@@ -351,7 +351,9 @@ async function agentIsOwed(b: Bound, repairKind: string): Promise<{ owed: boolea
   }
   if (repairKind === 'migration') {
     const inspect = deps.inspect ?? (await import('@/lib/migration-inspector')).inspectPullRequestMigrations;
-    const safety = await inspect({ installationId: b.repo.installationId, repoFullName: b.d.repoFullName!, prNumber: b.d.prNumber!, headSha: b.attempt.boundHeadSha!, files: [], baseRef: b.live.baseRef });
+    // A predecessor this PR replaces does not hold its slot (§13.11 rule 5).
+    const ignorePrNumbers = deps.inspect ? [] : await (await import('@/lib/pr-predecessors')).predecessorPrNumbers(b.d.workspaceId, b.d.prNumber!);
+    const safety = await inspect({ installationId: b.repo.installationId, repoFullName: b.d.repoFullName!, prNumber: b.d.prNumber!, headSha: b.attempt.boundHeadSha!, files: [], baseRef: b.live.baseRef, ignorePrNumbers });
     if (safety.safe) return { owed: false, reason: 'collision_resolved' };
     return { owed: true };
   }
