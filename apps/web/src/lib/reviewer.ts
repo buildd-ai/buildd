@@ -599,6 +599,11 @@ async function loadCopyReviewSection(params: {
   }
 }
 
+// Retry delays for the duplicate-producer race recovery: 50ms, then 100ms.
+// The first producer's insert blocks, so retries use increasing delays to let
+// the winner's transaction complete and become visible to subsequent reads.
+const CONCURRENT_INSERT_RETRY_DELAY_MS = 50;
+
 export async function createReviewerTask(
   params: CreateReviewerTaskParams,
 ): Promise<{ id: string; deduplicated?: true } | null> {
@@ -816,12 +821,20 @@ export async function createReviewerTask(
   // concurrent-producer race into a null (the route's 500).
   const dedupeSha = subjectAnchor?.headSha || headSha;
   if (!reviewerTask && dedupeSha) {
-    const winner = await findLiveReviewerTaskForHead(workspaceId, prNumber, dedupeSha);
-    if (winner) {
-      console.log(
-        `[reviewer] PR #${prNumber} at ${dedupeSha.slice(0, 7)}: a concurrent producer filed reviewer task ${winner.id} first — not dispatching a second`,
-      );
-      return { id: winner.id, deduplicated: true };
+    // A concurrent producer may have won the race. Retry with a small delay
+    // to allow the other insert to be visible in subsequent reads.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const winner = await findLiveReviewerTaskForHead(workspaceId, prNumber, dedupeSha);
+      if (winner) {
+        console.log(
+          `[reviewer] PR #${prNumber} at ${dedupeSha.slice(0, 7)}: a concurrent producer filed reviewer task ${winner.id} first — not dispatching a second`,
+        );
+        return { id: winner.id, deduplicated: true };
+      }
+      // If this is not the last attempt, wait a bit before retrying
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, CONCURRENT_INSERT_RETRY_DELAY_MS * (attempt + 1)));
+      }
     }
   }
 
