@@ -148,6 +148,25 @@ describe('export', () => {
     expect(fullIsoBeforeCreation).not.toBe(fullIsoOnCreationDay);
   });
 
+  test('sanitized: date-only shift does not depend on time of day of createdAt', async () => {
+    const { Pseudonymizer } = await import('../../src/lib/workflow/testing/sanitize');
+    const p = new Pseudonymizer();
+    const startOfDay = Date.UTC(2026, 9, 11, 0, 0, 0);
+    const endOfDay = Date.UTC(2026, 9, 11, 23, 59, 0);
+
+    const early = p.value('2026-10-11', startOfDay);
+    const late = p.value('2026-10-11', endOfDay);
+    const lateNext = p.value('2026-10-12', endOfDay);
+
+    // Shifted away from 2026, and distinct per input date, at 23:59 as well.
+    expect(late).not.toMatch(/\b2026-/);
+    expect(lateNext).not.toMatch(/\b2026-/);
+    expect(late).not.toBe(lateNext);
+    // Same input date + same createdAt day => same output at 00:00 and 23:59.
+    expect(late).toBe(early);
+    expect(p.value('2026-10-12', startOfDay)).toBe(lateNext);
+  });
+
   test('--limit, --since and --errors-first', async () => {
     const limited = join(dir, 'limited.jsonl');
     expect((await exportCorpus({ query: query(), out: limited, workspaceId, limit: 2 })).written).toBe(2);
