@@ -12,6 +12,34 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.25.0 — 2026-10-11
+
+Minor: a long paste becomes an attachment.
+
+- `ChatComposer` takes `attachFrom` (characters): a paste longer than that
+  becomes an `AttachmentCard` above the message instead of text in the box,
+  with Remove. `onSend(text, attachments)` now passes the drafts, `[]` when
+  there are none; an attachment alone can be sent. `maxLength` counts the text
+  and the attachments together. `attachments` + `onAttachmentsChange` make
+  them controlled, so an app can put a refused draft back with the same ids.
+  A draft holding an attachment never steers a running turn.
+- Each draft gets its id when the paste happens (a UUID) and keeps it through
+  retries, so a server can keep one attachment per paste.
+- New contract: `ATTACHMENT_PART_TYPE` (`data-attachment`),
+  `PASTE_ATTACHMENT_CHARS` (8,000), `AttachmentDraft` (`{ id, title, text }`,
+  what the composer sends), `AttachmentRef` (`{ artifactId, revision, sha256,
+  chars, title }`, what a stored message keeps), `isAttachmentPart`,
+  `isAttachmentDraft`, `attachmentChars`, `attachmentId`, `pasteTitle`.
+- `useKitChat().send(text, attachments?)` sends them as `data-attachment`
+  parts after the text.
+- `ChatThread` draws a message's `data-attachment` parts as a fixed-height
+  `AttachmentCard` (56px; the message never changes size while the reply
+  streams). `onOpenAttachment` makes the card a button for the app's reader;
+  `renderAttachment` replaces it.
+- The kit's own server turn does not store attachments: an app that turns
+  `attachFrom` on handles the part in its own turn (buildd stores the text as
+  an artifact and quotes it to the model).
+
 ## 0.24.0 — 2026-10-10
 
 Minor: the history budget counts tokens, not characters.
