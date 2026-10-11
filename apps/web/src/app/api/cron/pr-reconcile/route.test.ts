@@ -12,6 +12,7 @@ const mockDeadZone = mock(() => Promise.resolve({ total: 0, sparked: 0, exhauste
 mock.module('@/lib/pr-reconcile', () => ({
   reconcileStalePrWorkers: mockReconcile,
   sweepMissionIntegrationPrs: mockMissionPrSweep,
+  sweepManualMissionCompletions: mock(() => Promise.resolve({ total: 0, attempted: 0, errors: 0 })),
 }));
 
 mock.module('@/lib/dead-zone-sweep', () => ({
