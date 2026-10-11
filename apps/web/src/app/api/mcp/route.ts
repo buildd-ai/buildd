@@ -27,7 +27,7 @@ import { resolveLinkedDocsWorkspaces } from "@/lib/linked-knowledge";
 import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateTaskScopedCaller, isOrchestrationTaskToken } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
-import { scheduleActiveDay } from "@/lib/admin/growth";
+import { scheduleActiveDay } from "@/lib/active-days";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
 import { ensureTeamSessionAccount } from "@/lib/oauth/ensure-session-account";
 import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from "@/lib/self-origin";
@@ -1044,7 +1044,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     level: account.level,
   });
   // A person's OAuth session (an API key or task token has no session user)
-  // counts toward DAU; see lib/admin/growth.ts.
+  // counts toward DAU; see lib/active-days.ts.
   scheduleActiveDay((account as { sessionUserId?: string }).sessionUserId ?? null, 'mcp');
 
   // Create per-request API wrapper, server, and transport

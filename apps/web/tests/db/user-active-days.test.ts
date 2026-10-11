@@ -1,5 +1,6 @@
 /**
- * Signups, DAU and MAU against real Postgres (lib/admin/growth.ts).
+ * Signups, DAU and MAU against real Postgres (lib/active-days.ts writes,
+ * lib/admin/growth.ts reads).
  *
  * The unit suite stubs db.execute, so neither the ON CONFLICT nor the UTC day
  * arithmetic nor the distinct counting is observable there. This seeds people
@@ -8,7 +9,8 @@
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
-import { loadGrowth, recordActiveDay, resetActiveDayCache } from '@/lib/admin/growth';
+import { recordActiveDay, resetActiveDayCache } from '@/lib/active-days';
+import { loadGrowth } from '@/lib/admin/growth';
 import { assertDbConfigured, q } from './harness';
 
 const NOW = new Date('2031-03-15T12:00:00Z');

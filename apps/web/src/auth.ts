@@ -10,7 +10,7 @@ import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { emit } from '@/lib/core-emit';
 import { checkSeatForNewMember } from '@/lib/billing/seats';
-import { recordActiveDay, utcDay } from '@/lib/admin/growth';
+import { recordActiveDay, utcDay } from '@/lib/active-days';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 

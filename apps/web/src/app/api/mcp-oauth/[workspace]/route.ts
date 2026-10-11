@@ -52,7 +52,7 @@ import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { MCP_SESSION_ID_HEADER, mintMcpSessionId, verifyMcpSessionId } from '@/lib/interactive-session';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { scheduleInteractiveTouch } from '@/lib/interactive-worker-liveness';
-import { scheduleActiveDay } from '@/lib/admin/growth';
+import { scheduleActiveDay } from '@/lib/active-days';
 import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/interactive-session';
 import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from '@/lib/self-origin';
 import { getIssuer } from '@/lib/oauth/config';
