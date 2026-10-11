@@ -97,7 +97,7 @@ describe('Loop chip and history agree (surface fix 415f718a)', () => {
   // A task satisfied on its 2nd evaluation stores loopIteration=2 (evaluations
   // completed). The chip used to add one for "the attempt in progress" even
   // when nothing was in progress, so it read 3/3 over a 2-row history.
-  const uuid = '1efb308d-9ef3-4811-b874-4eff0f34e342';
+  const uuid = '00000000-0000-4000-8000-000000000001';
   const ciEntry = (iteration: number, satisfied: boolean): LoopHistoryEntry => ({
     iteration,
     workerId: uuid,
