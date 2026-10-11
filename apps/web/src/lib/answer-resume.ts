@@ -23,6 +23,7 @@ import {
   INTERACTIVE_WORKER_IDLE_TTL_MS,
   INTERACTIVE_WORKER_RUNNER,
   isTerminalWorkerStatus,
+  LIVE_WORKER_STATUSES,
 } from '@buildd/shared';
 
 /**
@@ -152,7 +153,7 @@ function toEpoch(value: Date | number | null | undefined): number | null {
  * Statuses in which an interactive session can still take an answer: the park
  * itself (`waiting_input`) and the statuses its MCP calls keep alive.
  */
-export const INTERACTIVE_ANSWER_LIVE_STATUSES: readonly string[] = ['waiting_input', 'running', 'idle', 'starting'];
+export const INTERACTIVE_ANSWER_LIVE_STATUSES: readonly string[] = LIVE_WORKER_STATUSES;
 
 /**
  * The interactive gate, on its own: null for a runner-managed worker (the
