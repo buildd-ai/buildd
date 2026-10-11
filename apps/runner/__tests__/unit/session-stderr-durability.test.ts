@@ -281,6 +281,8 @@ describe('SDK stderr durability', () => {
 
     manager = new WorkerManager(makeConfig());
     await startSessionFor(manager, 'w-once', makeTask('task-once'), 'buildd/once');
+    await waitFor(() => tracePatches().length > 0);
+    // Settle briefly so a duplicate flush would also have landed.
     await new Promise(r => setTimeout(r, 250));
 
     const traces = tracePatches().flatMap((c: any[]) => c[1].appendErrorTraces);
