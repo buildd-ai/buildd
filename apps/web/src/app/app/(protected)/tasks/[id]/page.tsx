@@ -893,7 +893,8 @@ export default async function TaskDetailPage({
     prOutcome = {
       repoLabel: task.workspace?.repo ? normalizeRepoFullName(task.workspace.repo) : null,
       summary: ((task.result as { summary?: string } | null)?.summary) ?? null,
-      totals: lineage.totals,
+      // Nothing reported a commit or a diff yet: the numbers are unknown, not 0.
+      totals: { ...lineage.totals, measured: attempts.some(a => a.headSha != null || a.commits > 0 || a.add > 0 || a.rem > 0 || a.files > 0) },
       attempts: attempts.map((a, i) => ({ add: a.add, rem: a.rem, files: a.files, running: i > 0 && a.completedAt == null, actions: a.actions })),
       lineage: lineage.steps,
       // The retry's own summary is what it did about the failure.
