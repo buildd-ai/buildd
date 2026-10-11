@@ -109,6 +109,9 @@ scripts/run-unit-tests-shard.test.ts
 # Workflow kernel write-site guard: no module outside apps/web/src/lib/workflow/
 # touches the kernel tables. The offending file is never this test's neighbour.
 packages/core/__tests__/workflow-write-sites.test.ts
+# Living Specs ownership guard: the kernel never writes spec/artifact tables, and
+# writers outside Living Specs are a shrink-only list. Enumerates the repo.
+packages/core/__tests__/state-ownership.test.ts
 # PR fact-cache write-site guard: only recordPrFact writes
 # workers.pr_lifecycle_status / merged_at. Enumerates the repo.
 packages/core/__tests__/pr-fact-write-sites.test.ts
