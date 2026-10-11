@@ -74,7 +74,7 @@
     "apps/web/src/app/app/(protected)/tasks/[id]/ModelUsagePanel.tsx": 5,
     "apps/web/src/app/app/(protected)/tasks/[id]/PlanChainView.tsx": 16,
     "apps/web/src/app/app/(protected)/tasks/[id]/PlanReviewPanel.tsx": 12,
-    "apps/web/src/app/app/(protected)/tasks/[id]/QuestionHero.tsx": 24,
+    "apps/web/src/app/app/(protected)/tasks/[id]/QuestionHero.tsx": 23,
     "apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx": 6,
     "apps/web/src/app/app/(protected)/tasks/[id]/StatRow.tsx": 3,
     "apps/web/src/app/app/(protected)/tasks/[id]/TaskEvidenceCard.tsx": 2,
