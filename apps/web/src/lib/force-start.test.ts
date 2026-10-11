@@ -13,7 +13,7 @@ import { makeWaitingReason, FORCE_START_TTL_MS } from '@buildd/core/waiting-reas
 
 const prReason = makeWaitingReason('pr_overlap_ended', {
   because: 'both edit packages/core/db/schema.ts',
-  blocker: { type: 'pr', id: '3818', label: 'PR #3818', live: false },
+  blocker: { type: 'pr', id: '1234', label: 'PR #1234', live: false },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared' },
   provenance: { source: 'probe', derivedFrom: 't' },
 });
@@ -28,7 +28,7 @@ describe('force-start', () => {
     expect(intent.loopKeys).toEqual(['path_overlap']);
     expect(Date.parse(intent.expiresAt) - now.getTime()).toBe(FORCE_START_TTL_MS);
     expect(intent.blockers).toEqual([{
-      kind: 'pr_overlap_ended', type: 'pr', id: '3818', label: 'PR #3818', live: false,
+      kind: 'pr_overlap_ended', type: 'pr', id: '1234', label: 'PR #1234', live: false,
       pathCount: 1, areas: [{ area: 'core/db', count: 1 }], basis: 'declared', sharedPaths: ['packages/core/db/schema.ts'],
     }]);
     expect(intent.liftDependsOn).toBeUndefined();

@@ -1445,8 +1445,8 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
   };
   const snapshot = (over: Partial<CoordinationSnapshot> = {}): CoordinationSnapshot => ({
     openPrTasks: [{
-      taskId: 'task-pr', pathManifest: ['packages/core/db/schema.ts'], prNumber: 3818,
-      prUrl: 'https://github.com/o/r/pull/3818', workerStatus: 'completed', prLifecycle: 'open', branch: 'b', prBaseRef: 'dev',
+      taskId: 'task-pr', pathManifest: ['packages/core/db/schema.ts'], prNumber: 1234,
+      prUrl: 'https://github.com/o/r/pull/1234', workerStatus: 'completed', prLifecycle: 'open', branch: 'b', prBaseRef: 'dev',
     }],
     activeClaims: null,
     mission: null,
@@ -1484,10 +1484,10 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     const body = await res.json();
     expect(body.gateReason).toBe('coordination_hold');
     expect(body.waitingReasons[0].kind).toBe('pr_overlap_ended');
-    expect(body.waitingReasons[0].blocker).toMatchObject({ type: 'pr', label: 'PR #3818' });
+    expect(body.waitingReasons[0].blocker).toMatchObject({ type: 'pr', label: 'PR #1234' });
     expect(body.waitingReasons[0].because).toBe('both edit packages/core/db/schema.ts');
     expect(body.waitingReasons[0].overlap.areas).toEqual([{ area: 'core/db', count: 1 }]);
-    expect(body.error).toContain('Waiting on PR #3818');
+    expect(body.error).toContain('Waiting on PR #1234');
     expect(body.error).not.toMatch(/runner/i);
     expect(body.canForce).toBe(true);
     expect(body.force.gates).toEqual(['Open-PR file overlap']);
@@ -1526,7 +1526,7 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
       loopKeys: ['path_overlap'],
       reasonsDigest: first.reasonsDigest,
     });
-    expect(ctx.forceStart.blockers[0]).toMatchObject({ kind: 'pr_overlap_ended', type: 'pr', id: '3818' });
+    expect(ctx.forceStart.blockers[0]).toMatchObject({ kind: 'pr_overlap_ended', type: 'pr', id: '1234' });
     expect(Date.parse(ctx.forceStart.expiresAt)).toBeGreaterThan(Date.now());
     // Not the MCP claim path: no forceClaim audit, no worker row, no claim.
     expect(ctx.forceClaim).toBeUndefined();
@@ -1541,7 +1541,7 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
   it('409 when the blocker changed between the refusal and the confirmation', async () => {
     probeWith(snapshot());
     const first = await (await callHandler(createMockRequest(), 'task-123')).json();
-    // PR #3818 merged; a live claim now holds the schema file instead.
+    // PR #1234 merged; a live claim now holds the schema file instead.
     probeWith(snapshot({ openPrTasks: [], activeClaims: new Map([['task-holder', ['packages/core/db/schema.ts']]]), liveTaskIds: new Set(['task-holder']) }));
 
     const res = await callHandler(createMockRequest({

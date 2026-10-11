@@ -13,7 +13,7 @@ const snap = (over: Partial<CoordinationSnapshot> = {}): CoordinationSnapshot =>
   ...over,
 });
 const pr = (over: Record<string, unknown> = {}) => ({
-  taskId: 'pr-task', pathManifest: ['packages/core/db/schema.ts'], prNumber: 3818, prUrl: 'https://github.com/o/r/pull/3818',
+  taskId: 'pr-task', pathManifest: ['packages/core/db/schema.ts'], prNumber: 1234, prUrl: 'https://github.com/o/r/pull/1234',
   workerStatus: 'running', prLifecycle: 'open', branch: 'b', prBaseRef: 'dev', ...over,
 });
 const task = (over: Record<string, unknown> = {}) => ({ id: 't1', workspaceId: 'ws', missionId: null, pathManifest: ['packages/core/db/schema.ts'], context: {}, ...over });
@@ -22,7 +22,7 @@ describe('evaluateCoordinationGates', () => {
   it('open PR with a live writer → pr_overlap_live naming the PR and the file', () => {
     const [r] = evaluateCoordinationGates(task(), snap({ openPrTasks: [pr()] }));
     expect(r.kind).toBe('pr_overlap_live');
-    expect(r.blocker).toMatchObject({ type: 'pr', id: '3818', label: 'PR #3818', live: true });
+    expect(r.blocker).toMatchObject({ type: 'pr', id: '1234', label: 'PR #1234', live: true });
     expect(r.because).toBe('both edit packages/core/db/schema.ts');
     expect(r.overlap?.areas).toEqual([{ area: 'core/db', count: 1 }]);
     expect(r.action.force?.lifts).toBe('pr_overlap_live');

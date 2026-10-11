@@ -95,9 +95,9 @@ describe('waiting-reason', () => {
   });
 
   it('digest is order-insensitive and changes with the blocker', () => {
-    const a = waitingReasonsDigest([r('pr_overlap_live', '3818'), r('mission_concurrent', 'm')]);
-    expect(waitingReasonsDigest([r('mission_concurrent', 'm'), r('pr_overlap_live', '3818')])).toBe(a);
-    expect(waitingReasonsDigest([r('pr_overlap_live', '3900'), r('mission_concurrent', 'm')])).not.toBe(a);
+    const a = waitingReasonsDigest([r('pr_overlap_live', '1234'), r('mission_concurrent', 'm')]);
+    expect(waitingReasonsDigest([r('mission_concurrent', 'm'), r('pr_overlap_live', '1234')])).toBe(a);
+    expect(waitingReasonsDigest([r('pr_overlap_live', '1240'), r('mission_concurrent', 'm')])).not.toBe(a);
   });
 
   it('chip: held for coordination, ready for no runner, can\'t run for capability', () => {

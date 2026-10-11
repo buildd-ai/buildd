@@ -13,7 +13,7 @@ import { blockingReasons, coordinationHoldBody, readForceStart } from '@buildd/c
  *
  * Why a pending task is not running, in the canonical `WaitingReason` shape:
  * the same probe `/start` refuses on, so the task sheet, the full page and the
- * mission drawer can say "Waiting on PR #3818 · both edit …" instead of
+ * mission drawer can say "Waiting on PR #1234 · both edit …" instead of
  * runner-liveness copy. Read-only. A non-pending task has no reasons.
  *
  * Body: { waitingReasons, reasonsDigest?, canForce?, force?, notForceable?,

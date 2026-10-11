@@ -19,7 +19,7 @@ import { makeWaitingReason } from '@buildd/core/waiting-reason';
 const call = () => GET(new NextRequest('http://localhost/api/tasks/t1/waiting'), { params: Promise.resolve({ id: 't1' }) });
 const prHold = makeWaitingReason('pr_overlap_live', {
   because: 'both edit packages/core/db/schema.ts',
-  blocker: { type: 'pr', id: '3818', label: 'PR #3818' },
+  blocker: { type: 'pr', id: '1234', label: 'PR #1234' },
   provenance: { source: 'probe', derivedFrom: 't' },
 });
 

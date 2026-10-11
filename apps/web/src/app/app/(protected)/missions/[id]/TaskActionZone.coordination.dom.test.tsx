@@ -1,16 +1,19 @@
 /**
  * A queued task a coordination gate holds, mounted (happy-dom). The live bug
- * (task 1fd75933): an idle runner, a task overlapping open PR #3818 on
+ * (task 1fd75933): an idle runner, a task overlapping open PR #1234 on
  * packages/core/db/schema.ts — the sheet said "Queued at front · No runner
  * has responded" and Force start could not get past the overlap.
  *
- * - the queued task names the blocker ("Waiting on PR #3818 … because both
+ * - the queued task names the blocker ("Waiting on PR #1234 … because both
  *   edit …"), never runner-liveness copy;
  * - Run now's refusal is the same waiting line plus a Force start
  *   confirmation naming the gate it skips and the rails that remain;
- * - Force start posts the refusal's reasons digest (`forceCoordination`) —
- *   not `forceOverride`, not a claim — and then says what it skipped;
- * - a wait no force lifts offers no Force start.
+ * - Force start posts the ticked kinds and the refusal's reasons digest
+ *   (`force`) — not `forceOverride`, not a claim — and then says what it skipped;
+ * - a wait no force lifts offers no Force start;
+ * - a task blocked only by creation-time migration-overlap edges (and a local
+ *   mission) says "Waiting on migration slot · N tasks also editing …", never
+ *   "waiting on N dependencies", and one Force start lifts all of it.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/missions/m1' });
@@ -31,14 +34,24 @@ type Props = import('./TaskActionZone').TaskActionZoneProps;
 
 const prHold = makeWaitingReason('pr_overlap_ended', {
   because: 'both edit packages/core/db/schema.ts',
-  blocker: { type: 'pr', id: '3818', label: 'PR #3818', href: 'https://github.com/o/r/pull/3818', live: false },
+  blocker: { type: 'pr', id: '1234', label: 'PR #1234', href: 'https://github.com/o/r/pull/1234', live: false },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared' },
   provenance: { source: 'probe', derivedFrom: 'claim layer 1' },
 });
-const mutexHold = makeWaitingReason('scope_undeclared_mutex', {
-  because: 'neither task declares the files it edits, so the mission runs one at a time',
-  blocker: { type: 'task', id: 'peer', label: '“peer task”', href: '/app/tasks/peer', live: true },
-  provenance: { source: 'probe', derivedFrom: 'advisory_manifest' },
+const roleHold = makeWaitingReason('role_unavailable', {
+  because: 'no online runner offers the builder role',
+  provenance: { source: 'runner_fleet', derivedFrom: 'fleet skills' },
+});
+const migrationEdge = (id: string) => makeWaitingReason('dep_inferred', {
+  because: 'both add a migration packages/core/db/schema.ts',
+  blocker: { type: 'task', id, label: `“holder ${id}”`, href: `/app/tasks/${id}`, live: true },
+  overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
+  provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
+});
+const localHold = makeWaitingReason('mission_local', {
+  because: "its mission runs in a person's own session, so runners do not pick up its tasks",
+  blocker: { type: 'mission', id: 'm1', label: 'a local-session mission', href: '/app/missions/m1' },
+  provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
 });
 
 let container: HTMLDivElement;
@@ -59,7 +72,7 @@ beforeEach(() => {
     if (String(url).endsWith('/start')) {
       if (hold.length === 0) return json(200, { started: true, taskId: 't1' });
       const refusal = coordinationHoldBody(hold);
-      if (body?.forceCoordination?.reasonsDigest === refusal.reasonsDigest && refusal.canForce) {
+      if (body?.force?.reasonsDigest === refusal.reasonsDigest && refusal.canForce) {
         return json(200, { started: true, taskId: 't1', forced: { forceId: 'f1', gates: refusal.force!.gates, railsRemaining: refusal.force!.railsRemaining, expiresAt: new Date(Date.now() + 9e5).toISOString() } });
       }
       return json(422, refusal);
@@ -96,20 +109,22 @@ describe('TaskActionZone: coordination holds', () => {
     const line = q('[data-testid="task-waiting-line"]');
     expect(line?.dataset.kind).toBe('pr_overlap_ended');
     expect(line?.dataset.chip).toBe('held');
-    expect(line?.textContent).toContain('Waiting on PR #3818');
+    expect(line?.textContent).toContain('Waiting on PR #1234');
     expect(line?.textContent).toContain('because both edit packages/core/db/schema.ts');
     expect(container.textContent).not.toContain('Waiting for a runner');
     expect(container.textContent).not.toMatch(/no runner has responded/i);
   });
 
   it('Run now refuses with the blocker and a Force start confirmation naming the gate and the rails', async () => {
-    await render();
+    await render({ taskTitle: 'Fix schema' });
     await click('[data-action="run_now"]');
     const refusal = q('[data-testid="task-start-refusal"]');
     expect(refusal?.dataset.gate).toBe('coordination_hold');
-    expect(refusal?.textContent).toContain('Waiting on PR #3818');
+    expect(refusal?.textContent).toContain('Waiting on PR #1234');
     const confirm = q('[data-testid="task-force-confirm"]')!;
-    expect(confirm.textContent).toContain('Force start skips: Open-PR file overlap');
+    expect(confirm.textContent).toContain('Force start “Fix schema”?');
+    expect(confirm.textContent).toContain('Skips: Open-PR file overlap: PR #1234: both edit packages/core/db/schema.ts');
+    expect(confirm.textContent).toContain('Risk: core/db overlap · declared files');
     expect(confirm.textContent).toContain('Still enforced:');
     expect(confirm.textContent).toContain('Files another agent is editing stay locked');
     expect(container.textContent).not.toMatch(/runners? online|no runner has responded/i);
@@ -120,7 +135,7 @@ describe('TaskActionZone: coordination holds', () => {
     await click('[data-action="run_now"]');
     await click('[data-action="force_start"]');
     const post = calls.filter(c => c.url.endsWith('/start')).at(-1)!;
-    expect(post.body.forceCoordination.reasonsDigest).toBe(coordinationHoldBody([prHold]).reasonsDigest);
+    expect(post.body.force).toEqual({ kinds: ['pr_overlap_ended'], reasonsDigest: coordinationHoldBody([prHold]).reasonsDigest });
     expect(post.body.forceOverride).toBeUndefined();
     expect(calls.some(c => c.url.includes('/api/workers/claim'))).toBe(false);
     const status = q('[data-testid="task-start-status"]');
@@ -134,13 +149,55 @@ describe('TaskActionZone: coordination holds', () => {
     expect(q('[data-testid="task-force-confirm"]')).not.toBeNull();
   });
 
-  it('a wait no force can lift offers no Force start', async () => {
-    hold = [mutexHold];
+  it('a wait no force can lift (a capability gap) offers no Force start', async () => {
+    hold = [prHold, roleHold];
     await render();
     expect(q('[data-action="force_start_offer"]')).toBeNull();
     await click('[data-action="run_now"]');
     expect(q('[data-action="force_start"]')).toBeNull();
-    expect(container.textContent).toContain("Can't be forced: One scope-undeclared task per mission");
+    expect(container.textContent).toContain("Can't be forced: No runner for this role");
+  });
+
+  it('blocked only by inferred migration edges: the migration slot, not "N dependencies", and one Force start', async () => {
+    hold = ['h1', 'h2', 'h3', 'h4', 'h5'].map(migrationEdge);
+    await render({ isBlocked: true, blockedByCount: 5 });
+    const panel = q('[data-testid="task-blocked-waiting"]')!;
+    expect(panel.textContent).toContain('Waiting on migration slot · 5 tasks also editing core/db');
+    expect(container.textContent).not.toMatch(/waiting on 5 dependencies/i);
+    // Paths are drilldown only: the compact line names the area.
+    expect(q('[data-testid="task-waiting-headline"]')!.textContent).not.toContain('schema.ts');
+
+    await click('[data-action="force_start_offer"]');
+    expect(container.querySelectorAll('[data-testid="task-force-skip"]')).toHaveLength(5);
+    expect(q('[data-testid="task-force-red-line"]')!.textContent).toContain('Migration numbering stays serialized');
+    await click('[data-action="force_start"]');
+    const post = calls.filter(c => c.url.endsWith('/start')).at(-1)!;
+    expect(post.body.force.kinds).toEqual(['dep_inferred']);
+  });
+
+  it('a local mission held by coordination too: one press lifts both', async () => {
+    hold = [localHold, migrationEdge('h1')];
+    await render({ missionExecutor: 'local' });
+    await click('[data-action="force_start_offer"]');
+    expect(container.querySelectorAll('[data-testid="task-force-skip"]')).toHaveLength(2);
+    await click('[data-action="force_start"]');
+    const posts = calls.filter(c => c.url.endsWith('/start'));
+    expect(posts).toHaveLength(1);
+    expect([...posts[0].body.force.kinds].sort()).toEqual(['dep_inferred', 'mission_local']);
+  });
+
+  it('a declared dependency stays: blocked panel says so and offers no Force start', async () => {
+    hold = [migrationEdge('h1'), makeWaitingReason('dep_declared', {
+      because: 'it was declared as a dependency',
+      blocker: { type: 'task', id: 'd1', label: '“design first”', href: '/app/tasks/d1' },
+      provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
+    })];
+    await render({ isBlocked: true, blockedByCount: 2 });
+    const text = q('[data-testid="task-blocked-waiting"]')!.textContent!;
+    // The declared dependency is the headline; the overlap edge is named as ordering, not a dependency.
+    expect(text).toContain('Waiting on “design first”');
+    expect(text).toContain('Also: file-overlap ordering');
+    expect(q('[data-action="force_start_offer"]')).toBeNull();
   });
 
   it('nothing holding it: the plain queued copy, no waiting line', async () => {

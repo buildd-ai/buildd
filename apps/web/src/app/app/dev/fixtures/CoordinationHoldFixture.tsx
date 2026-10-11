@@ -4,9 +4,11 @@
  * `?state=coordination-hold`: a queued task a coordination gate holds, in the
  * shapes the task sheet / task page / mission drawer render (all through
  * `TaskActionZone`): the waiting line with its "Why" drilldown, Run now's
- * refusal with the Force start confirmation, a wait no force lifts, and
- * after a Force start. Reaching these live needs an open PR overlapping a
- * pending task, so a route screenshot never does.
+ * refusal with the Force start confirmation, a wait no force lifts, a task
+ * blocked only by creation-time migration-overlap edges (the "migration slot"
+ * headline, with its red line), and a local mission held by coordination too
+ * (one press lifts both). Reaching these live needs an open PR or in-flight
+ * task overlapping a pending one, so a route screenshot never does.
  */
 import type { ReactNode } from 'react';
 import WaitingLine from '@/components/tasks/WaitingLine';
@@ -16,7 +18,7 @@ import type { GateRefusal } from '@/lib/task-actions';
 
 const PR_HOLD = makeWaitingReason('pr_overlap_ended', {
   because: 'both edit packages/core/db/schema.ts',
-  blocker: { type: 'pr', id: '3818', label: 'PR #3818', href: 'https://github.com/buildd-ai/buildd/pull/3818', live: false },
+  blocker: { type: 'pr', id: '1234', label: 'PR #1234', href: 'https://github.com/example/repo/pull/1234', live: false },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared' },
   provenance: { source: 'probe', derivedFrom: 'claim layer 1' },
 });
@@ -40,10 +42,26 @@ const MISSION_CAP = makeWaitingReason('mission_concurrent', {
   blocker: { type: 'mission', id: 'm', label: 'the mission limit', href: '#' },
   provenance: { source: 'probe', derivedFrom: 'missions.maxConcurrentTasks' },
 });
-const MUTEX = makeWaitingReason('scope_undeclared_mutex', {
-  because: 'neither task declares the files it edits, so the mission runs one at a time',
-  blocker: { type: 'task', id: 'peer', label: '“investigate flaky deploy”', href: '#', live: true },
-  provenance: { source: 'probe', derivedFrom: 'advisory_manifest' },
+const ROLE_GAP = makeWaitingReason('role_unavailable', {
+  because: 'no online runner offers the builder role',
+  provenance: { source: 'runner_fleet', derivedFrom: 'fleet skills' },
+});
+const DECLARED = makeWaitingReason('dep_declared', {
+  because: 'it was declared as a dependency',
+  blocker: { type: 'task', id: 'd1', label: '“design the API first”', href: '#' },
+  provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
+});
+const migrationEdge = (n: number) => makeWaitingReason('dep_inferred', {
+  because: 'both add a migration packages/core/db/schema.ts',
+  blocker: { type: 'task', id: `h${n}`, label: `“unrelated schema task ${n}”`, href: '#', live: n === 1 },
+  overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
+  provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
+});
+const EDGES = [1, 2, 3, 4, 5].map(migrationEdge);
+const LOCAL = makeWaitingReason('mission_local', {
+  because: "its mission runs in a person's own session, so runners do not pick up its tasks",
+  blocker: { type: 'mission', id: 'm', label: 'a local-session mission', href: '#' },
+  provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
 });
 
 const refusalOf = (reasons: typeof PR_HOLD[]): GateRefusal => coordinationHoldBody(reasons) as GateRefusal;
@@ -72,13 +90,24 @@ export default function CoordinationHoldFixture() {
           </WaitingLine>
         </Panel>
         <Panel label="Run now refused: Force start confirmation">
-          <CoordinationRefusal refusal={refusalOf([PR_HOLD])} pending={null} onForce={noop} onCancel={noop} />
+          <CoordinationRefusal refusal={refusalOf([PR_HOLD])} pending={null} onForce={noop} onCancel={noop} taskTitle="PR scope verification" />
         </Panel>
         <Panel label="Two holds, many files">
           <CoordinationRefusal refusal={refusalOf([LEASE_HOLD, MISSION_CAP])} pending={null} onForce={noop} onCancel={noop} />
         </Panel>
-        <Panel label="Can't be forced">
-          <CoordinationRefusal refusal={refusalOf([MUTEX])} pending={null} onForce={noop} onCancel={noop} />
+        <Panel label="Blocked only by migration-overlap ordering (not dependencies)">
+          <WaitingLine reasons={EDGES}>
+            <button type="button" className="inline-flex min-h-11 items-center px-3 font-mono text-meta text-text-secondary">Force start…</button>
+          </WaitingLine>
+        </Panel>
+        <Panel label="Local mission + migration ordering: one Force start lifts both">
+          <CoordinationRefusal refusal={refusalOf([LOCAL, ...EDGES.slice(0, 3)])} pending={null} onForce={noop} onCancel={noop} taskTitle="Add the run evidence table" />
+        </Panel>
+        <Panel label="A declared dependency stays (no Force start)">
+          <WaitingLine reasons={[DECLARED, ...EDGES.slice(0, 2)]} />
+        </Panel>
+        <Panel label="Can't be forced: fix the capability instead">
+          <CoordinationRefusal refusal={refusalOf([PR_HOLD, ROLE_GAP])} pending={null} onForce={noop} onCancel={noop} />
         </Panel>
         <Panel label="Changed under the confirmation (409)">
           <CoordinationRefusal refusal={{ ...refusalOf([LEASE_HOLD]), reasonsChanged: true }} pending={null} onForce={noop} onCancel={noop} />

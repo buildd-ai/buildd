@@ -306,7 +306,7 @@ export function waitingChip(reasons: readonly WaitingReason[]): WaitingChip {
   return 'held';
 }
 
-/** "Waiting on PR #3818" — the compact headline a phone shows. */
+/** "Waiting on PR #1234" — the compact headline a phone shows. */
 export function waitingHeadline(r: WaitingReason): string {
   return r.blocker ? `Waiting on ${r.blocker.label}` : `Waiting: ${WAITING_KIND_SPEC[r.kind].gateName.toLowerCase()}`;
 }
@@ -393,6 +393,24 @@ export function waitingSummary(reasons: readonly WaitingReason[]): { headline: s
   }
   if (declared > 0 && head.kind !== 'dep_declared') headline += ` · ${declared} declared ${declared === 1 ? 'dependency' : 'dependencies'}`;
   return { headline, declared, coordination: coord.length };
+}
+
+/**
+ * The dependency banner's count, split the same way: declared dependencies
+ * are named as such, creation-time overlap edges as file-overlap ordering.
+ */
+export function blockedHeadline(declared: number, overlap: number): string {
+  if (declared === 0) return `Waiting on file-overlap ordering · ${overlap} ${overlap === 1 ? 'task' : 'tasks'} also editing the same files`;
+  const head = `Blocked by ${declared} declared ${declared === 1 ? 'dependency' : 'dependencies'}`;
+  return overlap > 0 ? `${head} · ${overlap} file-overlap ${overlap === 1 ? 'hold' : 'holds'}` : head;
+}
+
+/** The newest consumed force start (`context.forceStartHistory`), for the "forced by X at T" line. */
+export function lastForceStart(context: Record<string, unknown> | null | undefined): (ForceStartIntent & { claimedAt?: string; bypassed?: string[] }) | null {
+  const h = context?.[FORCE_START_HISTORY_KEY];
+  if (!Array.isArray(h) || h.length === 0) return null;
+  const last = h[h.length - 1] as ForceStartIntent & { claimedAt?: string; bypassed?: string[] };
+  return last && typeof last === 'object' && typeof last.at === 'string' && Array.isArray(last.kinds) ? last : null;
 }
 
 /**

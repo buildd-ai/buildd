@@ -103,14 +103,16 @@ describe('requests', () => {
     expect(!failed.ok && failed.error).toBe('boom');
   });
 
-  it('a Force start past a coordination hold posts the confirmed digest; a 409 re-renders as a refusal', async () => {
+  it('a Force start past a coordination hold posts the ticked kinds and the digest; a 409 re-renders as a refusal', async () => {
     stub(200, { started: true, forced: { forceId: 'f', gates: ['Open-PR file overlap'], railsRemaining: [], expiresAt: 'x' } });
-    const ok = await requestTaskStart('t1', { forceCoordination: { reasonsDigest: 'abcd' } });
-    expect(calls.at(-1)!.body).toEqual({ forceCoordination: { reasonsDigest: 'abcd' } });
+    const ok = await requestTaskStart('t1', { force: { kinds: ['pr_overlap_ended'], reasonsDigest: 'abcd' } });
+    expect(calls.at(-1)!.body).toEqual({ force: { kinds: ['pr_overlap_ended'], reasonsDigest: 'abcd' } });
     expect(ok.ok && ok.forced?.gates).toEqual(['Open-PR file overlap']);
-    stub(409, { gateReason: 'coordination_hold', reasonsChanged: true, canForce: true, error: 'changed' });
-    const changed = await requestTaskStart('t1', { forceCoordination: { reasonsDigest: 'abcd' } });
+    stub(409, { gateReason: 'reasons_changed', reasonsChanged: true, canForce: true, error: 'changed' });
+    const changed = await requestTaskStart('t1', { force: { kinds: ['pr_overlap_ended'], reasonsDigest: 'abcd' } });
     expect(!changed.ok && changed.refusal?.reasonsChanged).toBe(true);
+    // Rendered by the same coordination refusal UI, with the fresh reasons.
+    expect(!changed.ok && changed.refusal?.gateReason).toBe('coordination_hold');
   });
 
   it('requestTaskRetry forces the reassign and sends a backend only when switching', async () => {

@@ -9862,14 +9862,14 @@ describe('explicit taskId claims (organizer workflow)', () => {
     const intent = (over: Record<string, unknown> = {}) => ({
       id: 'force-1', at: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
       userId: 'user-9', accountId: null, kinds: ['pr_overlap_ended'], loopKeys: ['path_overlap'], reasonsDigest: 'abcd1234',
-      blockers: [{ kind: 'pr_overlap_ended', type: 'pr', id: '3818', label: 'PR #3818' }],
+      blockers: [{ kind: 'pr_overlap_ended', type: 'pr', id: '1234', label: 'PR #1234' }],
       ...over,
     });
-    /** Idle runner, one pending task whose manifest overlaps open PR #3818 on the schema file. */
+    /** Idle runner, one pending task whose manifest overlaps open PR #1234 on the schema file. */
     function openPrOverlap(context: Record<string, unknown>, extra: Record<string, unknown> = {}) {
       mockWorkersFindMany
         .mockResolvedValueOnce([]) // the runner is idle: no active workers
-        .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 3818, prUrl: 'https://github.com/o/r/pull/3818', status: 'completed', prLifecycleStatus: 'open' }]);
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 1234, prUrl: 'https://github.com/o/r/pull/1234', status: 'completed', prLifecycleStatus: 'open' }]);
       mockTasksFindMany
         .mockResolvedValueOnce([task({ pathManifest: ['packages/core/db/schema.ts'], context, ...extra })])
         .mockResolvedValueOnce([{ id: 'pr-task', pathManifest: ['packages/core/db/schema.ts'] }]);
@@ -9925,9 +9925,22 @@ describe('explicit taskId claims (organizer workflow)', () => {
       expect(data.diagnostics.taskExclusion.code).toBe('path_overlap');
     });
 
-    it('never lifts scope-undeclared serialization, even if the context names it', async () => {
+    // §7.2: scope-undeclared serialization is liftable by a HUMAN force only.
+    // The admin claim_task force keeps not lifting it (force-claim tests above).
+    it('lifts scope-undeclared serialization when the person confirmed it', async () => {
       mockAuthenticateApiKey.mockResolvedValue(account('worker'));
       mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: null, context: { forceStart: intent({ kinds: ['scope_undeclared_mutex'], loopKeys: ['advisory_manifest'] }) } })]);
+      mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+      mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
+      const ctx = claimedContext();
+      const data = await (await claim({ runner: 'runner-7' })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(ctx().forceStartHistory).toEqual([expect.objectContaining({ bypassed: ['advisory_manifest'] })]);
+    });
+
+    it('does not lift scope-undeclared serialization the person did not confirm', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+      mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: null, context: { forceStart: intent({ kinds: ['mission_concurrent'], loopKeys: ['mission_concurrent'] }) } })]);
       mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
       mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
       const data = await (await claim({ runner: 'runner-7' })).json();
