@@ -268,8 +268,11 @@ agent's prompt, argv, env, logs, artifacts or disk.
   anything else, unannotated included, is write. An admin's
   `discoveredMetadata.toolPolicy` (`readOnlyTools`, `denyTools`; exact names)
   corrects it; only a signed-in person may change it (any bearer gets 403
-  `session_required`). An uncached tool is classified from a fresh provider
-  `tools/list`; if that fails it is a write (fail closed).
+  `session_required`). Only the provider's annotations are cached (per
+  instance, 10 minutes); the class, overrides included, is recomputed on every
+  call, so a new deny or a removed read-only mark applies to the next call. An
+  uncached tool's annotations come from a fresh provider `tools/list`; if that
+  fails it is a write (fail closed).
 - `tools/call`: a read or query on a role-mounted connector is allowed; any
   write or admin call, and any call on a connector the role does not list,
   needs a live grant covering the exact tool, the annotation risk (never

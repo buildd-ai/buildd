@@ -324,6 +324,24 @@ describe('changes before and during a task', () => {
     expect((await toolError(await POST(req(call('createMonitor')), ctx()))).code).toBe('role_ceiling');
     expect((await (await POST(req(call('queryApl')), ctx())).json()).result.content[0].text).toBe('ok');
   });
+
+  it('an admin denies a tool after tools/list: the next call is refused, nothing sent', async () => {
+    await POST(req({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), ctx());
+    const sentBefore = upstreamCalls.length;
+    currentLoaded = loaded({ connector: { discoveredMetadata: { toolPolicy: { denyTools: ['queryApl'] } } } });
+    expect((await toolError(await POST(req(call('queryApl')), ctx()))).code).toBe('tool_denied_by_admin');
+    expect(upstreamCalls.length).toBe(sentBefore);
+  });
+
+  it('an admin un-marks a read-only override after tools/list: the tool is a write again', async () => {
+    currentLoaded = loaded({ run: { roleCeiling: 'read' }, connector: { discoveredMetadata: { toolPolicy: { readOnlyTools: ['createMonitor'] } } } });
+    const list = await (await POST(req({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), ctx())).json();
+    expect(list.result.tools.map((t: any) => t.name)).toContain('createMonitor');
+    const sentBefore = upstreamCalls.length;
+    currentLoaded = loaded({ run: { roleCeiling: 'read' } });
+    expect(['capability_not_granted', 'role_ceiling']).toContain((await toolError(await POST(req(call('createMonitor')), ctx()))).code);
+    expect(upstreamCalls.length).toBe(sentBefore);
+  });
 });
 
 describe('provider credential lifecycle', () => {

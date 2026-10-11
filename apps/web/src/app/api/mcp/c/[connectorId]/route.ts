@@ -44,6 +44,7 @@ import {
   toolResource,
   upstreamToolError,
   type CallRefusal,
+  type ToolAnnotations,
   type ToolClass,
 } from '@/lib/connector-gateway';
 import {
@@ -71,27 +72,31 @@ const FORWARD_REQUEST_HEADERS = ['content-type', 'accept', 'mcp-session-id', 'mc
 /** Response headers returned. Never WWW-Authenticate (the agent must not start an OAuth dance) or Set-Cookie. */
 const FORWARD_RESPONSE_HEADERS = ['content-type', 'mcp-session-id', 'mcp-protocol-version'];
 
-// ── Tool classes seen in tools/list, per connector (per instance, short-lived) ─
+// ── Provider annotations seen in tools/list, per connector (per instance, short-lived) ─
+// Only the provider's own facts are cached. Admin overrides (`toolPolicy`) are
+// re-read from the connector row on every call, so a deny or an un-marked
+// read-only tool takes effect on the next call, not after the TTL.
 
-const CLASS_TTL_MS = 10 * 60 * 1000;
-const classCache = new Map<string, { at: number; classes: Map<string, ToolClass> }>();
+const ANNOTATION_TTL_MS = 10 * 60 * 1000;
+type Annotations = ToolAnnotations | null;
+const annotationCache = new Map<string, { at: number; tools: Map<string, Annotations> }>();
 
-function cachedClass(connectorId: string, tool: string, now: number): ToolClass | undefined {
-  const e = classCache.get(connectorId);
-  if (!e || now - e.at > CLASS_TTL_MS) return undefined;
-  return e.classes.get(tool);
+function cachedAnnotations(connectorId: string, tool: string, now: number): { annotations: Annotations } | undefined {
+  const e = annotationCache.get(connectorId);
+  if (!e || now - e.at > ANNOTATION_TTL_MS || !e.tools.has(tool)) return undefined;
+  return { annotations: e.tools.get(tool)! };
 }
 
-function rememberClasses(connectorId: string, classes: Map<string, ToolClass>, now: number, merge: boolean) {
-  const prev = merge ? classCache.get(connectorId) : undefined;
-  const merged = prev && now - prev.at <= CLASS_TTL_MS ? new Map([...prev.classes, ...classes]) : classes;
-  classCache.delete(connectorId);
-  classCache.set(connectorId, { at: now, classes: merged });
-  if (classCache.size > 500) classCache.delete(classCache.keys().next().value!);
+function rememberAnnotations(connectorId: string, tools: Map<string, Annotations>, now: number, merge: boolean) {
+  const prev = merge ? annotationCache.get(connectorId) : undefined;
+  const merged = prev && now - prev.at <= ANNOTATION_TTL_MS ? new Map([...prev.tools, ...tools]) : tools;
+  annotationCache.delete(connectorId);
+  annotationCache.set(connectorId, { at: now, tools: merged });
+  if (annotationCache.size > 500) annotationCache.delete(annotationCache.keys().next().value!);
 }
 
 /** Test-only. */
-export function __resetGatewayCache() { classCache.clear(); }
+export function __resetGatewayCache() { annotationCache.clear(); }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -226,12 +231,11 @@ function respond(up: { res: Response; body: string }, body: string = up.body) {
   return new NextResponse(body, { status: up.res.status, headers });
 }
 
-/** Classify a tool the cache has not seen by asking the provider for its list (fail closed on any error). */
-async function classifyFromProvider(g: LoadedGateway, reqHeaders: Headers, tool: string): Promise<ToolClass> {
-  const overrides = readToolOverrides(g.connector.discoveredMetadata);
+/** Annotations for a tool the cache has not seen, from the provider's list (null — a write — on any error). */
+async function annotationsFromProvider(g: LoadedGateway, reqHeaders: Headers, tool: string): Promise<Annotations> {
   const now = Date.now();
   let cursor: string | undefined;
-  const seen = new Map<string, ToolClass>();
+  const seen = new Map<string, Annotations>();
   for (let page = 0; page < 5; page++) {
     const id = `buildd-gw-${randomUUID()}`;
     const up = await sendUpstream(g, 'POST', reqHeaders, JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/list', ...(cursor ? { params: { cursor } } : {}) }));
@@ -239,12 +243,12 @@ async function classifyFromProvider(g: LoadedGateway, reqHeaders: Headers, tool:
     const parsed = parseRpcBody(up.res.headers.get('content-type') ?? '', up.body);
     const msg = parsed?.messages.find(m => (m as { id?: unknown })?.id === id) as { result?: { tools?: unknown; nextCursor?: unknown } } | undefined;
     const tools = Array.isArray(msg?.result?.tools) ? msg!.result!.tools as { name?: unknown; annotations?: unknown }[] : [];
-    for (const t of tools) if (typeof t?.name === 'string') seen.set(t.name, classifyNativeTool(t.name, t.annotations as never, overrides));
+    for (const t of tools) if (typeof t?.name === 'string') seen.set(t.name, (t.annotations as Annotations | undefined) ?? null);
     if (seen.has(tool) || typeof msg?.result?.nextCursor !== 'string') break;
     cursor = msg.result.nextCursor;
   }
-  if (seen.size) rememberClasses(g.connector.id, seen, now, true);
-  return seen.get(tool) ?? classifyNativeTool(tool, null, overrides);
+  if (seen.size) rememberAnnotations(g.connector.id, seen, now, true);
+  return seen.get(tool) ?? null;
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -300,15 +304,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ con
     const parsed = parseRpcBody(up.res.headers.get('content-type') ?? '', up.body);
     if (!parsed) return rpcError(msg.id, -32603, 'Provider answered tools/list with something that is not JSON-RPC', { code: 'provider_bad_response' }, 502);
     const overrides = readToolOverrides(g.connector.discoveredMetadata);
-    const seen = new Map<string, ToolClass>();
+    const seen = new Map<string, Annotations>();
     const filtered = parsed.messages.map(m => {
       const mm = m as { id?: unknown; result?: unknown } | undefined;
       if (!mm || mm.id !== msg.id || !mm.result) return m;
       const f = filterToolsList(mm.result, g!.run, overrides);
-      for (const [k, v] of f.classes) seen.set(k, v);
+      for (const [k, v] of f.annotations) seen.set(k, v);
       return { ...mm, result: f.result };
     });
-    rememberClasses(g.connector.id, seen, Date.now(), !!(msg.params as { cursor?: unknown } | undefined)?.cursor);
+    rememberAnnotations(g.connector.id, seen, Date.now(), !!(msg.params as { cursor?: unknown } | undefined)?.cursor);
     return respond(up, parsed.serialize(filtered));
   }
   return respond(up);
@@ -336,7 +340,13 @@ async function toolsCall(
   try {
     const limit = g.run.unattended ? RATE_LIMITS.unattended : RATE_LIMITS.attended;
     if (!connectorRefusal(g.run) && await recentCallCount(principal.workerId, g.connector.id) >= limit) return refuse('rate_limited', null);
-    cls = connectorRefusal(g.run) ? classifyNativeTool(tool, null) : cachedClass(g.connector.id, tool, Date.now()) ?? await classifyFromProvider(g, req.headers, tool);
+    if (connectorRefusal(g.run)) {
+      cls = classifyNativeTool(tool, null);
+    } else {
+      const hit = cachedAnnotations(g.connector.id, tool, Date.now());
+      const annotations = hit ? hit.annotations : await annotationsFromProvider(g, req.headers, tool);
+      cls = classifyNativeTool(tool, annotations, readToolOverrides(g.connector.discoveredMetadata));
+    }
     const scope = callScope(args);
     decision = await decideToolCall(cls, g.run, () => authorizeConnectorToolUse(principal, {
       provider: g.run.connector.provider, connectorId: g.connector.id, tool,

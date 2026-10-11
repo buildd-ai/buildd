@@ -350,19 +350,26 @@ export interface NativeTool { name: string; annotations?: ToolAnnotations; [k: s
 
 /**
  * Filter a `tools/list` result in place of nothing else: the kept entries are
- * the provider's own objects, untouched. Returns the filtered result and the
- * class of every tool seen (for the call-time cache).
+ * the provider's own objects, untouched. Returns the filtered result, the
+ * class of every tool seen, and its provider annotations (the call-time cache
+ * holds only these, so admin overrides are re-applied on every call).
  */
-export function filterToolsList(result: unknown, run: GatewayRun, overrides: ToolOverrides): { result: unknown; classes: Map<string, ToolClass> } {
+export function filterToolsList(result: unknown, run: GatewayRun, overrides: ToolOverrides): {
+  result: unknown;
+  classes: Map<string, ToolClass>;
+  annotations: Map<string, ToolAnnotations | null>;
+} {
   const classes = new Map<string, ToolClass>();
+  const annotations = new Map<string, ToolAnnotations | null>();
   const r = result as { tools?: unknown } | null;
-  if (!r || typeof r !== 'object' || !Array.isArray(r.tools)) return { result, classes };
+  if (!r || typeof r !== 'object' || !Array.isArray(r.tools)) return { result, classes, annotations };
   const kept: unknown[] = [];
   for (const t of r.tools as NativeTool[]) {
     if (!t || typeof t.name !== 'string') continue;
     const cls = classifyNativeTool(t.name, t.annotations, overrides);
     classes.set(t.name, cls);
+    annotations.set(t.name, t.annotations ?? null);
     if (toolVisible(cls, run)) kept.push(t);
   }
-  return { result: { ...r, tools: kept }, classes };
+  return { result: { ...r, tools: kept }, classes, annotations };
 }
