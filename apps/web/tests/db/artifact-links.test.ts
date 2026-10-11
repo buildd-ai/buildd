@@ -212,3 +212,21 @@ describe('the claim-time reference manifest', () => {
     expect(cw.resolvedContextProviders).toBeUndefined();
   });
 });
+
+describe('an upload is linkable only once its bytes are verified', () => {
+  test('a pending or failed upload is refused with 409 naming its state; ready and legacy rows link', async () => {
+    const mk = async (uploadState: 'pending' | 'failed' | 'ready' | null) => {
+      const [a] = await db.insert(artifacts).values({ workspaceId: wsA, type: 'file', title: `upload ${rand()}`, storageKey: `artifacts/${rand()}.png`, uploadState }).returning();
+      return a.id;
+    };
+    for (const state of ['pending', 'failed'] as const) {
+      const r = await linkArtifact(A(), await mk(state), { subjectKind: 'task', subjectId: taskA, relation: 'context' });
+      expect(r.ok).toBe(false);
+      if (!r.ok) { expect(r.status).toBe(409); expect(r.error).toContain(state); }
+    }
+    for (const state of ['ready', null] as const) {
+      const r = await linkArtifact(A(), await mk(state), { subjectKind: 'task', subjectId: taskA, relation: 'context' });
+      expect(r.ok).toBe(true);
+    }
+  });
+});

@@ -85,7 +85,8 @@ export async function GET(
     }
   }
 
-  // An upload is served only once its bytes are verified; a reader finalizes it.
+  // An upload is served only once its bytes are verified: a pending one is
+  // finalized by this read; a failed one stays failed and reports why.
   if (artifact.uploadState === 'pending' || artifact.uploadState === 'failed') {
     const upload = await finalizeArtifactUpload(artifact.id);
     if (upload.state !== 'ready') {

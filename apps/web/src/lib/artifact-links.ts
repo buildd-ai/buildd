@@ -8,6 +8,8 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { resolveWorkspaceAccess, type WorkspaceAccessCaller } from '@/lib/workspace-access';
 import { getUserTeamIds } from '@/lib/team-access';
+import { isStorageConfigured } from '@/lib/storage';
+import { finalizeArtifactUpload } from '@/lib/artifact-upload';
 
 /**
  * Typed artifact links (schema: artifact_links). One artifact, many subjects,
@@ -86,14 +88,14 @@ async function canReachSubject(caller: LinkCaller, s: Subject): Promise<boolean>
   return caller.kind === 'user' ? (await getUserTeamIds(caller.userId)).includes(s.teamId) : caller.account.teamId === s.teamId;
 }
 
-interface ArtifactRow { id: string; workspaceId: string | null; currentRevision: number; hasBody: boolean; teamId: string | null }
+interface ArtifactRow { id: string; workspaceId: string | null; currentRevision: number; hasBody: boolean; teamId: string | null; uploadState: 'pending' | 'ready' | 'failed' | null }
 
 async function loadArtifact(id: string): Promise<ArtifactRow | null> {
   const [a] = await db
     .select({
       id: artifacts.id, workspaceId: artifacts.workspaceId, currentRevision: artifacts.currentRevision,
       hasBody: sql<boolean>`(${artifacts.content} IS NOT NULL OR ${artifacts.storageKey} IS NOT NULL)`,
-      teamId: workspaces.teamId,
+      teamId: workspaces.teamId, uploadState: artifacts.uploadState,
     })
     .from(artifacts)
     .leftJoin(workspaces, eq(workspaces.id, artifacts.workspaceId))
@@ -130,6 +132,15 @@ export async function linkArtifact(caller: LinkCaller, artifactId: string, input
   const subject = await loadSubject(subjectKind as ArtifactLinkSubject, subjectId);
   if (!subject || !(await canReachSubject(caller, subject))) return fail(404, `${subjectKind} not found`);
   if (subject.teamId !== a.teamId) return fail(403, 'An artifact can be linked only to a subject of its own team');
+  // An upload is linkable only once its bytes are verified; a pending one gets
+  // the same lazy finalize a read gives it (lib/artifact-upload.ts).
+  let uploadState = a.uploadState;
+  if (uploadState === 'pending' && isStorageConfigured()) {
+    const finalized = (await finalizeArtifactUpload(a.id)).state;
+    if (finalized === 'ready' || finalized === 'failed') uploadState = finalized;
+  }
+  if (uploadState === 'pending') return fail(409, 'Artifact upload is still pending: finalize it once its bytes have arrived, then link it');
+  if (uploadState === 'failed') return fail(409, 'Artifact upload failed verification and cannot be linked');
 
   let pinned: number | null = (revision as number | undefined) ?? null;
   if (pinned === null && relation === 'normative_reference') pinned = a.currentRevision > 0 ? a.currentRevision : (a.hasBody ? 1 : null);

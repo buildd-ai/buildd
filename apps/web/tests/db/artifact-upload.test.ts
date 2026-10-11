@@ -7,26 +7,28 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { eq, sql } from 'drizzle-orm';
-import { assertDbConfigured, q, seedWorkspace } from './harness';
+import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 
 const { db } = await import('@buildd/core/db');
-const { artifacts } = await import('@buildd/core/db/schema');
+const { artifacts, artifactLinks, specs } = await import('@buildd/core/db/schema');
 const { finalizeArtifactUpload, sweepStaleUploads, STALE_UPLOAD_MS } = await import('../../src/lib/artifact-upload');
 
 const objects = new Map<string, Buffer>();
 const removed: string[] = [];
+const storedTypes = new Map<string, string>();
 const storage = {
-  head: async (k: string) => (objects.has(k) ? { sizeBytes: objects.get(k)!.byteLength, contentType: 'application/pdf' } : null),
+  head: async (k: string) => (objects.has(k) ? { sizeBytes: objects.get(k)!.byteLength, contentType: storedTypes.get(k) ?? 'application/pdf' } : null),
   sha256: async (k: string) => ({ sha256: createHash('sha256').update(objects.get(k)!).digest('hex'), sizeBytes: objects.get(k)!.byteLength }),
   remove: async (k: string) => { removed.push(k); objects.delete(k); },
 };
 
 let workspaceId: string;
+let teamId: string;
 let seq = 0;
-async function pendingUpload(bytes: number, opts: { ageMs?: number } = {}) {
+async function pendingUpload(bytes: number, opts: { ageMs?: number; mimeType?: string } = {}) {
   const key = `artifacts/${workspaceId}/${++seq}-${Date.now()}/file.pdf`;
   const [a] = await db.insert(artifacts).values({
-    workspaceId, type: 'file', title: 'f', storageKey: key, uploadState: 'pending', metadata: { sizeBytes: bytes, filename: 'file.pdf' },
+    workspaceId, type: 'file', title: 'f', storageKey: key, uploadState: 'pending', metadata: { sizeBytes: bytes, filename: 'file.pdf', ...(opts.mimeType ? { mimeType: opts.mimeType } : {}) },
     ...(opts.ageMs ? { createdAt: new Date(Date.now() - opts.ageMs) } : {}),
   }).returning();
   return { id: a.id, key };
@@ -37,7 +39,7 @@ const revHash = async (id: string) => (await q<{ content_hash: string | null; si
 
 beforeAll(async () => {
   assertDbConfigured();
-  ({ workspaceId } = await seedWorkspace());
+  ({ workspaceId, teamId } = await seedWorkspace());
 });
 
 describe('finalizeArtifactUpload', () => {
@@ -74,6 +76,21 @@ describe('finalizeArtifactUpload', () => {
     expect((await revHash(u.id)).content_hash).toBeNull();
   });
 
+  test('a content type other than the URL was signed for fails; case and parameters do not count', async () => {
+    const bad = await pendingUpload(4, { mimeType: 'image/png' });
+    objects.set(bad.key, Buffer.from('data'));
+    storedTypes.set(bad.key, 'text/html');
+    const r = await finalizeArtifactUpload(bad.id, { storage });
+    expect(r.state).toBe('failed');
+    if (r.state === 'failed') expect(r.reason).toContain('content_type_mismatch');
+    expect(await state(bad.id)).toBe('failed');
+
+    const ok = await pendingUpload(4, { mimeType: 'Text/Plain' });
+    objects.set(ok.key, Buffer.from('data'));
+    storedTypes.set(ok.key, 'text/plain; charset=utf-8');
+    expect((await finalizeArtifactUpload(ok.id, { storage })).state).toBe('ready');
+  });
+
   test('an inline artifact is simply ready', async () => {
     const [a] = await db.insert(artifacts).values({ workspaceId, type: 'content', title: 't', content: 'x' }).returning();
     expect((await finalizeArtifactUpload(a.id, { storage })).state).toBe('ready');
@@ -97,5 +114,28 @@ describe('sweepStaleUploads', () => {
     expect(await state(bad.id)).toBe('gone');
     expect(removed).toEqual(expect.arrayContaining([never.key, bad.key]));
     expect(removed).not.toContain(arrived.key);
+  });
+});
+
+describe('sweepStaleUploads never deletes what something refers to', () => {
+  test('a linked stale upload and a spec body survive with their objects; an unreferenced one is still swept', async () => {
+    const stale = STALE_UPLOAD_MS + 60_000;
+    const linked = await pendingUpload(4, { ageMs: stale });
+    const body = await pendingUpload(4, { ageMs: stale });
+    const failedLinked = await pendingUpload(4, { ageMs: stale });
+    await db.update(artifacts).set({ uploadState: 'failed' }).where(eq(artifacts.id, failedLinked.id));
+    for (const u of [linked, body, failedLinked]) objects.set(u.key, Buffer.from('nope!')); // wrong size: fails, would be removed
+    const loose = await pendingUpload(4, { ageMs: stale });
+    const taskId = await seedTask(workspaceId);
+    await db.insert(artifactLinks).values([linked, failedLinked].map(u => ({ artifactId: u.id, subjectKind: 'task' as const, subjectId: taskId, relation: 'context' as const, teamId })));
+    await db.insert(specs).values({ workspaceId, title: 'spec', scope: 'feature', bodyArtifactId: body.id });
+
+    const r = await sweepStaleUploads(new Date(), storage, 1_000);
+    expect(r.removed).toBeGreaterThanOrEqual(1);
+    expect(await state(loose.id)).toBe('gone');
+    for (const u of [linked, body, failedLinked]) {
+      expect(await state(u.id)).not.toBe('gone');
+      expect(removed).not.toContain(u.key);
+    }
   });
 });

@@ -496,15 +496,21 @@ signed for, and an upload that never arrives MUST NOT linger.
 - `POST /api/artifacts/upload-url` creates the row with `upload_state =
   'pending'`. `upload_state` is set by the server only; metadata is
   caller-writable and cannot mark an upload ready.
-- Finalize (`POST /api/artifacts/[id]/finalize`, the uploading worker only, or
-  lazily on the first read) HEADs the object, refuses a size other than the
-  signed one, streams a sha256 (refusing a mismatch with one the uploader
+- Finalize (`POST /api/artifacts/[id]/finalize` or MCP `upload_artifact
+  { artifactId, sha256? }`, the uploading worker only, or lazily on the first
+  read) HEADs the object, refuses a size other than the signed one, refuses a
+  content type other than the signed `mimeType` (compared case-insensitively
+  without parameters: the URL signs only content-length, so the PUT does not
+  pin the type), streams a sha256 (refusing a mismatch with one the uploader
   sent), fills it onto the revision, and sets `ready`; a mismatch sets
   `failed` with `metadata.uploadError`.
 - A `pending` or `failed` upload gets no download URL: GET reports
-  `uploadState`, and the download route answers 409.
+  `uploadState`, and the download route answers 409. Linking one is refused
+  with 409 naming its state (a pending one is finalized first).
 - The maintenance cron finalizes uploads whose bytes arrived and, after 24
-  hours, deletes the row and object of one that never arrived or failed.
+  hours, deletes the row and object of one that never arrived or failed. It
+  never deletes a row a typed link or a spec body refers to: that row and its
+  object are skipped, checked again in the DELETE itself.
 
 **Code surface**:
 - `apps/web/src/lib/artifact-upload.ts` — `finalizeArtifactUpload`, `sweepStaleUploads`

@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { artifactRevisions, artifacts } from '@buildd/core/db/schema';
+import { artifactLinks, artifactRevisions, artifacts, specs } from '@buildd/core/db/schema';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { deleteObject, headObject, sha256Object } from '@/lib/storage';
 
@@ -8,8 +8,9 @@ import { deleteObject, headObject, sha256Object } from '@/lib/storage';
  * URL (POST /api/artifacts/upload-url) creates the row as `pending`; finalize
  * checks the stored object's size against the size the URL was signed for,
  * hashes it, writes the hash onto its revision (the one change the revision
- * immutability trigger allows), and marks it `ready`. A size or hash mismatch
- * marks it `failed`.
+ * immutability trigger allows), and marks it `ready`. A size, content-type
+ * or hash mismatch marks it `failed`. The URL signs only content-length, so
+ * the content type is checked here rather than at the PUT.
  *
  * Callers that never finalize (an agent that PUT with curl, the runner's
  * screenshot upload) still work: a read finalizes lazily, and the sweep
@@ -33,6 +34,13 @@ export type FinalizeResult =
 export const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000;
 /** The sweep leaves an upload this young to its uploader. */
 export const SWEEP_GRACE_MS = 60 * 1000;
+
+/** `Text/Plain; charset=utf-8` -> `text/plain`: storage may normalize case and parameters. */
+function mediaType(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.split(';')[0]!.trim().toLowerCase();
+  return t || null;
+}
 
 async function markFailed(id: string, reason: string): Promise<FinalizeResult> {
   await db.update(artifacts)
@@ -70,6 +78,11 @@ export async function finalizeArtifactUpload(
   if (Number.isFinite(signedFor) && head.sizeBytes !== signedFor) {
     return markFailed(row.id, `size_mismatch: signed for ${signedFor} bytes, stored ${head.sizeBytes}`);
   }
+  const signedType = mediaType((row.metadata as { mimeType?: unknown } | null)?.mimeType);
+  const storedType = mediaType(head.contentType);
+  if (signedType && storedType && signedType !== storedType) {
+    return markFailed(row.id, `content_type_mismatch: signed for ${signedType}, stored ${storedType}`);
+  }
   const { sha256, sizeBytes } = await storage.sha256(row.storageKey);
   if (opts.expectedSha256 && opts.expectedSha256.toLowerCase() !== sha256) {
     return markFailed(row.id, 'sha256_mismatch: the stored bytes do not match the hash the uploader sent');
@@ -88,14 +101,22 @@ export async function finalizeArtifactUpload(
  * Finalize uploads their uploader never finalized, and remove what never
  * arrived: a pending row past STALE_UPLOAD_MS whose object is missing, or any
  * failed row past it (and its object). An uploaded, matching object is kept.
+ * A row something still refers to (a typed link, or a spec whose body it is)
+ * is never deleted: it is skipped, and its object stays.
  */
 export async function sweepStaleUploads(now: Date = new Date(), storage: UploadStorage = defaultUploadStorage, limit = 100): Promise<{ finalized: number; removed: number; waiting: number }> {
+  // Checked again in the DELETE itself: a link made after selection still saves the row.
+  const unreferenced = and(
+    sql`NOT EXISTS (SELECT 1 FROM ${artifactLinks} WHERE ${artifactLinks.artifactId} = ${artifacts.id})`,
+    sql`NOT EXISTS (SELECT 1 FROM ${specs} WHERE ${specs.bodyArtifactId} = ${artifacts.id})`,
+  );
   const rows = await db
     .select({ id: artifacts.id, storageKey: artifacts.storageKey, uploadState: artifacts.uploadState, createdAt: artifacts.createdAt })
     .from(artifacts)
     .where(and(
       sql`${artifacts.uploadState} in ('pending', 'failed')`,
       lt(artifacts.createdAt, new Date(now.getTime() - SWEEP_GRACE_MS)),
+      unreferenced,
     ))
     .limit(limit);
   let finalized = 0, removed = 0, waiting = 0;
@@ -103,8 +124,11 @@ export async function sweepStaleUploads(now: Date = new Date(), storage: UploadS
     const result = r.uploadState === 'pending' ? await finalizeArtifactUpload(r.id, { storage }) : { state: 'failed' as const };
     if (result.state === 'ready') { finalized++; continue; }
     if (now.getTime() - r.createdAt.getTime() < STALE_UPLOAD_MS) { waiting++; continue; }
+    const gone = await db.delete(artifacts)
+      .where(and(eq(artifacts.id, r.id), sql`${artifacts.uploadState} in ('pending', 'failed')`, unreferenced))
+      .returning({ id: artifacts.id });
+    if (gone.length === 0) continue;
     if (r.storageKey) await storage.remove(r.storageKey).catch(() => {});
-    await db.delete(artifacts).where(and(eq(artifacts.id, r.id), sql`${artifacts.uploadState} in ('pending', 'failed')`));
     removed++;
   }
   return { finalized, removed, waiting };
