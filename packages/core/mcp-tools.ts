@@ -486,7 +486,28 @@ function formatTaskScheduling(task: any): string[] {
     const planning = typeof src.planningTaskId === 'string' ? ` (planning task ${src.planningTaskId})` : '';
     out.push(`**Spec source:** ${typeof src.specPath === 'string' ? src.specPath : JSON.stringify(src)}${planning}`);
   }
+  const estimate = formatTaskEstimateLine(task.estimate);
+  if (estimate) out.push(estimate);
   return out;
+}
+
+/**
+ * Task estimates experiment (packages/core/task-estimate-source.ts): the
+ * frozen estimate as one line, e.g.
+ * "**Estimate (blend-v1):** 40-70m · 120k-220k tokens · <summary>".
+ * No estimate (team not opted in, not written yet) renders nothing.
+ */
+export function formatTaskEstimateLine(estimate: unknown): string | null {
+  if (!estimate || typeof estimate !== 'object') return null;
+  const e = estimate as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+  const p50m = num(e.p50Minutes), p80m = num(e.p80Minutes), p50t = num(e.p50Tokens), p80t = num(e.p80Tokens);
+  if (p50m === null || p80m === null || p50t === null || p80t === null) return null;
+  const mins = (m: number) => Math.max(1, Math.round(m));
+  const k = (t: number) => `${Math.max(1, Math.round(t / 1000))}k`;
+  const version = typeof e.estimatorVersion === 'string' ? e.estimatorVersion : 'unknown';
+  const summary = typeof e.summary === 'string' && e.summary.trim() ? ` · ${truncate(e.summary.trim(), 300)}` : '';
+  return `**Estimate (${version}):** ${mins(p50m)}-${mins(Math.max(p80m, p50m))}m · ${k(p50t)}-${k(Math.max(p80t, p50t))} tokens${summary}`;
 }
 
 function requireFullUuid(id: unknown, paramName: string): string {
@@ -705,6 +726,7 @@ export const adminActions = [
   'release_status',
   'send_agent_message',
   'correct_task_result',
+  'update_incident',
   'consolidate_knowledge',
   'memory_delete',
 ] as const;
@@ -944,7 +966,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_workspaces: '{ offset?, limit? (default 20, max 50) } — the workspaces this connection can act in, grouped by team: id, name, repo, the level you act at there and your access (read or read-write). On an account-level connection it lists exactly the workspaces you granted it that you are still a member of, nothing else. Name one of them (id, owner/repo or name) on any other action. Read-only; nextOffset pages.',
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
-    get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch"|"milestones", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error; "milestones" adds each shown worker\'s milestones, one line each (ISO time, type, label), the newest 25 plus every `Pre-merge:`/`Merge:` line, which record what the runner\'s merge drivers and mergiraf did), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
+    get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch"|"milestones", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource, and the task\'s frozen estimate when its team opted into task estimates; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error; "milestones" adds each shown worker\'s milestones, one line each (ISO time, type, label), the newest 25 plus every `Pre-merge:`/`Merge:` line, which record what the runner\'s merge drivers and mergiraf did), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped. From your own Claude Code session the claim runs on your seat, so the account\'s Claude session wall and the team\'s recorded provider rate-limit walls are skipped too; a runner that names a task is still held by them, and tenant work is still held by its tenant budget. A held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason (a budget_exhausted refusal names the wall that held it and when it lifts), plus the specific gate that excluded taskId when one was given.',
     receive_messages: '{ workerId? } — collect the messages sent to you: human steering (send_agent_message / the task page), replies to your post_note questions, mission guidance and worker→worker messages. Each is returned once and acknowledged as read. On a runner-managed worker the runner already delivers these into your session at the next turn boundary, so this returns nothing there; in an interactive or local-plugin session call it when a hook says messages are waiting. workerId auto-resolved from context if omitted.',
     update_progress: '{ workerId?, progress? (legacy self-report; never displayed), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown"), lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats. costBasis says how that usage was charged: "real" (per token, e.g. an API key) or "virtual" (a subscription plan, valued at list price); omit it when you do not know and it records as unknown.',
@@ -1012,6 +1034,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. evidenceId also reads a runner-hosted Quality Scout run command log (cited in a probe result as evidence:<id>). With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
     dispatch_health: '{ workspaceId? } — read-only Dispatch transport health for the caller\'s team (or one of its workspaces). Leads with a one-line verdict (healthy, or what is wrong), then the outbox counts (pending, due, overdue, delivering, stuck, handed off, unacked, unacked past the in-app fallback, orphaned, failed in 24h), deliveries in 24h by route (delivered_via), delivery latency p50/p95 (delivered_at minus not_before), whether the Dispatch Worker answers /health, the last hourly floor run\'s reconcile counts (platform-wide; any repair there is a bug signal), and workspaces not on the dispatch transport (the kill switch). Counts come from Postgres, which receipts keep in step with the Worker; the only Worker call is the /health probe. For one task\'s wakes use get_task include:["dispatch"]; for why a pending task has not started use explain.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target, plus full knowledge-ingest jobs no runner has taken. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    update_incident: '{ incidentId (required, full UUID from list_incidents), action (required: acknowledge|resolve) } — move one Failure Pattern Sentinel incident through its lifecycle (compare-and-swap; acknowledgedAt/resolvedAt are stamped on the ledger row). Resolving a pattern that is still live is not final: the next sweep that sees it reopens the incident. [admin]',
     list_incidents: '{ workspaceId?, status? (CSV open|acknowledged|resolved, or "all"; default open,acknowledged), severity? (CSV low|medium|high|critical), rule? (CSV of rule names), signature? (exact), limit? (default 50, max 200) } — read-only: the Failure Pattern Sentinel\'s incident ledger. Each incident has severity, rule, first/last seen, counts, alert state and any linked fix task. Check it before filing a `[friction]` task: a systemic pattern may already be tracked. counts.total ignores limit.',
     get_page_source: '{ workerId?, sha? (commit to audit; default the head of captureRef.ref), prNumber? (use this PR\'s head commit instead, e.g. when that branch deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto), and which branch to capture: captureRef { ref, source, integrationBase } is the mission\'s integration branch on a mission-branch mission, else trunk — dispatch the sandbox capture with --ref captureRef.ref and record it on every shot as qa.ref / qa.refSource. Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
     deploy: '{ workerId?, provider (required: cloudflare), project (required), environment (required), credentialRef (required — the stored credential\'s reference: its label, or the provider name when unlabelled), operation (required: status|put_secret|upload_worker|ensure_bucket), params? } — Platform Operator deployment, run server-side with a stored credential you never see. Allowed only when this task\'s role is the Platform Operator AND this workspace\'s Operator grant covers the operation\'s capabilities (deployments:read or deployments:write, plus deployment_secrets:use) for exactly this provider, project, environment and credential ref; anything else is refused with a reason (not_enabled, capability_not_granted, project_not_allowed, ...). The Cloudflare Worker is the project in production and <project>-<environment> elsewhere. params by operation — status: none (latest deployment id/versions, secret NAMES, workers.dev URL); put_secret: { name, value } (value is sent to the Worker and never echoed); upload_worker: { modules: [{ name, content }], mainModule?, compatibilityDate (YYYY-MM-DD), compatibilityFlags?, vars? } (a built module bundle, e.g. `wrangler deploy --dry-run --outdir dist`, which needs no credential; existing secrets are kept; 3 MB cap); ensure_bucket: { bucket? (default <script>-snapshots; must start with <script>-), lifecycle?: [{ id, prefix, expireDays }] }. Every call, allowed or refused, is written to the deployment audit trail with the credential reference only. Returns { auditId, target, operation, result } and never a credential.',
@@ -2515,9 +2538,11 @@ export async function handleBuilddAction(
       if (unknownIncludes.length > 0) {
         throw new Error(`get_task include must be drawn from: ${GET_TASK_INCLUDES.join(', ')} — unsupported: ${unknownIncludes.join(', ')}.`);
       }
-      // `scheduling` is rendered from the task row the route already returns;
-      // only workers/artifacts need a server-side expansion.
-      const serverIncludes = includes.filter(i => i !== 'scheduling');
+      // `scheduling` is rendered from the task row the route already returns,
+      // plus the frozen estimate (task-estimates experiment), which the route
+      // reads only on `include=estimate`. workers/artifacts/dispatch expand
+      // server-side under their own names.
+      const serverIncludes = includes.map(i => (i === 'scheduling' ? 'estimate' : i));
       const qs = serverIncludes.length > 0 ? `?include=${encodeURIComponent(serverIncludes.join(','))}` : '';
 
       const task = await api(`/api/tasks/${encodeURIComponent(taskId)}${qs}`).catch((e: unknown) => {
@@ -5657,6 +5682,19 @@ export async function handleBuilddAction(
       }
       const data = await api(`/api/connectors/mounted?workspaceId=${encodeURIComponent(wsId)}`);
       return text(JSON.stringify({ connectors: data.connectors ?? [] }));
+    }
+
+    case 'update_incident': {
+      requireFullUuid(params.incidentId, 'incidentId');
+      if (params.action !== 'acknowledge' && params.action !== 'resolve') {
+        throw new Error('action must be "acknowledge" or "resolve"');
+      }
+      const data = await api(`/api/health/incidents/${params.incidentId}`, {
+        method: 'POST',
+        body: JSON.stringify({ action: params.action }),
+      });
+      const inc = data.incident as FailureIncident;
+      return text(`Incident ${inc.id} (${inc.rule}, ${inc.severity}) is now ${inc.status}: ${inc.title}`);
     }
 
     case 'list_incidents': {

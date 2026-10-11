@@ -7,6 +7,7 @@ let sweepResult: Record<string, unknown> = {
   candidates: 0,
   incidentsOpened: 0,
   incidentsUpdated: 0,
+  incidentsResolved: 0,
   duplicatesSuppressed: 0,
   alertsSent: 0,
   fixTasksFiled: 0,

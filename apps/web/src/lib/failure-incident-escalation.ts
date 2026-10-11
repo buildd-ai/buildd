@@ -9,6 +9,10 @@
  *  - a critical platform incident is the owner's, by rule, even with a fix
  *    task running: they are told once;
  *  - any other incident whose fix task is still open is Buildd's: no ping;
+ *  - a path-overlap stall is Buildd's: the task waits for an overlapping PR,
+ *    the claim loop wakes it when the paths free up and the sweep resolves the
+ *    incident once it moves. A decision on the blocking PR is that PR's own
+ *    card, so this one never asks the owner for nothing;
  *  - a high incident nothing is fixing has no next step of its own: the owner,
  *    unless the optional `judge` (Jev) hands it to Buildd;
  *  - medium, low and resolved incidents are Buildd's and never page.
@@ -40,7 +44,7 @@ import {
   type EscalationVerdict,
 } from '@buildd/core/escalation-gate';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
-import type { FailureIncidentSeverity, FailureIncidentStatus } from '@buildd/shared';
+import type { FailureIncidentRule, FailureIncidentSeverity, FailureIncidentStatus } from '@buildd/shared';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import type { WaitingOnYouRawItem } from './action-queue';
 import {
@@ -61,6 +65,8 @@ export interface IncidentSubject {
   workspaceId: string | null;
   severity: FailureIncidentSeverity;
   status: FailureIncidentStatus;
+  /** The sentinel rule that opened it. Not part of the fingerprint. */
+  rule?: FailureIncidentRule;
   /** The linked fix task; `running` is true while it is not finished. */
   fixTask: { id: string; running: boolean } | null;
   recurrenceCount: number;
@@ -70,12 +76,22 @@ export interface IncidentSubject {
 
 export const incidentSubjectKey = (incidentId: string) => `${INCIDENT_SUBJECT_TYPE}:${incidentId}`;
 
+/**
+ * Rules whose incidents below critical are Buildd's whatever is linked: the
+ * platform owns the recovery and the human decision, if any, has its own card.
+ */
+const BUILDD_RECOVERS: ReadonlySet<FailureIncidentRule> = new Set(['path_overlap_stall']);
+
+const PATH_OVERLAP_WAIT =
+  'A task is waiting for an overlapping change to land. Buildd wakes it when the paths free up and resolves this once it moves; a decision on the blocking PR shows on that PR.';
+
 /** Pure. The deterministic verdict for an incident. */
 export function incidentEscalationRule(s: IncidentSubject): EscalationVerdict {
   if (s.status === 'resolved') return { owner: 'buildd', by: 'rule', action: 'hold', reason: 'Resolved, nothing to do.' };
   if (s.severity === 'critical') {
     return { owner: 'person', by: 'rule', rail: 'critical_incident', reason: 'A critical platform incident: the owner is told once, whatever else is running.' };
   }
+  if (s.rule && BUILDD_RECOVERS.has(s.rule)) return { owner: 'buildd', by: 'rule', action: 'hold', reason: PATH_OVERLAP_WAIT };
   if (s.fixTask?.running) {
     return { owner: 'buildd', by: 'rule', action: 'wait_machine', reason: `Buildd is fixing it (task ${s.fixTask.id.slice(0, 8)}).` };
   }
@@ -116,7 +132,7 @@ async function subjectFor(a: IncidentAlert, teamId: string, deps: IncidentGateDe
   }
   return {
     key: incidentSubjectKey(inc.id), incidentId: inc.id, teamId, workspaceId: inc.workspaceId,
-    severity: a.severity, status: inc.status, fixTask, recurrenceCount: inc.recurrenceCount, scope: impactScope(inc),
+    severity: a.severity, status: inc.status, rule: inc.rule, fixTask, recurrenceCount: inc.recurrenceCount, scope: impactScope(inc),
   };
 }
 
@@ -170,13 +186,17 @@ export interface IncidentNeedsYouRow {
   title: string;
   severity: FailureIncidentSeverity;
   status: FailureIncidentStatus;
+  rule?: FailureIncidentRule;
   lastSeenAt: Date;
 }
 
 /**
  * Pure. The Needs You items for unresolved incidents whose newest stored
  * verdict is the owner's. No stored verdict, a Buildd verdict, or a resolved
- * incident: not listed. `baseUrl` '' gives in-app links.
+ * incident: not listed. Nor is a non-critical incident of a rule Buildd
+ * recovers on its own: a verdict stored before that rule changed is stale,
+ * and the rule, not the stored row, is the current answer. `baseUrl` '' gives
+ * in-app links.
  */
 export function incidentNeedsYouItems(
   rows: readonly IncidentNeedsYouRow[],
@@ -187,6 +207,7 @@ export function incidentNeedsYouItems(
   const items: WaitingOnYouRawItem[] = [];
   for (const r of rows) {
     if (r.status === 'resolved') continue;
+    if (r.rule && BUILDD_RECOVERS.has(r.rule) && r.severity !== 'critical') continue;
     const v = verdicts.get(r.id);
     if (!v || v.owner !== 'person') continue;
     items.push({
@@ -222,7 +243,8 @@ export async function loadIncidentNeedsYou(workspaceIds: readonly string[]): Pro
     const rows = await db
       .select({
         id: failureIncidents.id, workspaceId: failureIncidents.workspaceId, title: failureIncidents.title,
-        severity: failureIncidents.severity, status: failureIncidents.status, lastSeenAt: failureIncidents.lastSeenAt,
+        severity: failureIncidents.severity, status: failureIncidents.status, rule: failureIncidents.rule,
+        lastSeenAt: failureIncidents.lastSeenAt,
       })
       .from(failureIncidents)
       .where(and(
