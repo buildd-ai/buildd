@@ -204,8 +204,8 @@ export async function handleRequest(
     dispatchRequest.runnerSize = size === runnerSize.size ? runnerSize : { size, source: 'pinned', reason: null };
     // Container reuse keys on the workspace buildd named (container-lease.ts), never the body's.
     // The platform's switches decide the mode; buildd's answer can only lower it (workspace opt-out).
-    const warmHandover = effectiveWarmHandover(env, runnerSize.warmHandover);
-    if (warmHandover !== 'off') dispatchRequest.warmHandover = warmHandover;
+    // Always sent, 'off' too: a resume with no mode would carry on under the parked run's.
+    dispatchRequest.warmHandover = effectiveWarmHandover(env, runnerSize.warmHandover);
     if (!dispatchRequest.resumeWorkerId && runnerSize.workspaceId) dispatchRequest.workspaceId = runnerSize.workspaceId;
     const result = await agent.dispatch(dispatchRequest);
     // 202 for a duplicate too: buildd treats a non-2xx as "webhook failed" and

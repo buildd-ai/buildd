@@ -21,7 +21,6 @@ mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => user }));
 mock.module('@/lib/team-access', () => ({ getUserTeamRole: async () => role }));
 mock.module('@/lib/permissions', () => ({
   roleHas: (r: string) => r === 'admin' || r === 'owner',
-  getTeamPermissionOverrides: async () => null,
 }));
 mock.module('@buildd/core/tier-pool-admin', () => ({
   findTeamPool: async (...a: any[]) => { log('findTeamPool')(...a); return found; },

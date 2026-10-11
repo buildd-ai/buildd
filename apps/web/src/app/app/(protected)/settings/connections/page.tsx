@@ -21,8 +21,7 @@ export const dynamic = 'force-dynamic';
  * workspaces get each one, the catalog with each provider's real state, and
  * Agent access: what agents asked for, what they hold, and the team policy
  * that answers (`?request=<id>` focuses one request). Each control follows
- * manage_connectors in the team it acts on, with that team's overrides: the
- * API refuses the same writes. next.config redirects /app/connections and the
+ * manage_connectors in the team it acts on: the API refuses the same writes. next.config redirects /app/connections and the
  * old /app/settings/connectors here with their query, so the OAuth callback's
  * `?connected=` and the banner's `?reconnect=` still arrive.
  */
