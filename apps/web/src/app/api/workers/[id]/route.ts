@@ -259,6 +259,32 @@ async function workerConflictResponse(id: string, extra?: Record<string, unknown
  *  - The write is a compare-and-swap on the status that was read, so a row
  *    moving underneath it yields a retryable conflict rather than a stale write.
  */
+/** Serve each message id once; drop blocked-on-you prompts whose sender has no live worker. */
+async function dropUnanswerableMessages<T extends { id?: string; type?: string; fromTaskId?: string }>(
+  messages: T[],
+): Promise<T[]> {
+  const seen = new Set<string>();
+  const unique = messages.filter(m => {
+    if (!m?.id) return true;
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+  const senderIds = [...new Set(unique.filter(m => m?.type === 'path_blocked_on_you' && m.fromTaskId).map(m => m.fromTaskId!))];
+  if (senderIds.length === 0) return unique;
+  try {
+    const live = await db
+      .select({ taskId: workers.taskId })
+      .from(workers)
+      .where(and(inArray(workers.taskId, senderIds), not(inArray(workers.status, [...TERMINAL_WORKER_STATUSES]))));
+    const liveIds = new Set(live.map(r => r.taskId));
+    return unique.filter(m => !(m?.type === 'path_blocked_on_you' && m.fromTaskId && !liveIds.has(m.fromTaskId)));
+  } catch (err) {
+    console.error('[worker-messages] sender liveness check failed:', err);
+    return unique;
+  }
+}
+
 /**
  * Does this report carry usage? Only then does it say anything about the
  * worker's cost basis (docs/specs/real-and-virtual-cost.md).
@@ -4656,9 +4682,13 @@ export async function PATCH(
   // removal itself runs in SQL against the live column (clearWorkerMessages), so
   // an ack for an id that is not queued writes nothing and a message that
   // arrived after this snapshot is never dropped.
-  const retainedWorkerMessages = deliveredMessageIds.length > 0
+  const unackedWorkerMessages = deliveredMessageIds.length > 0
     ? pendingWorkerMessages.filter(m => !deliveredMessageIds.includes(m?.id ?? ''))
     : pendingWorkerMessages;
+  // Serve each message id once, and not a blocked-on-you prompt whose sender is
+  // already terminal: the recipient's reply to it bounces (recipient_terminal),
+  // so it only costs an interruption nobody can receive.
+  const retainedWorkerMessages = await dropUnanswerableMessages(unackedWorkerMessages);
 
   // §6d-derived lease: the observed touch is also a claim.
   //
@@ -4839,7 +4869,11 @@ export async function PATCH(
           : [];
       const newNotifications: Array<{ path: string; siblingTaskId: string }> = [];
 
-      for (const sibling of siblings) {
+      // A reviewer is read-only: its touches are reads of the PR it reviews, not
+      // edits, so it never blocks anyone and the PR's author must not be asked
+      // to answer for it.
+      const senderIsReviewer = Boolean(taskContext?.reviewerFor);
+      for (const sibling of senderIsReviewer ? [] : siblings) {
         if (!sibling.taskId) continue;
         const siblingTouches = Array.isArray(sibling.observedTouches) ? sibling.observedTouches as string[] : [];
         if (siblingTouches.length === 0) continue;
@@ -4903,7 +4937,11 @@ export async function PATCH(
         const deliver = async (message: WorkerMessage) => {
           await enqueueWorkerMessage(sibling.taskId!, message);
           if (sibling.runner !== INTERACTIVE_WORKER_RUNNER) {
-            await queueSystemInstruction(sibling.id, formatWorkerMessages([message]))
+            // Marker: one uncollected notice per (type, sender) — a re-detection
+            // before the runner's next check-in must not stack a copy.
+            await queueSystemInstruction(sibling.id, formatWorkerMessages([message]), {
+              marker: `(${message.type}, from task ${message.fromTaskId}`,
+            })
               .catch(err => console.error(`[Worker ${id}] overlap instruction to ${sibling.id} failed:`, err));
           }
         };
