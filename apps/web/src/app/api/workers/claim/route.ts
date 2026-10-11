@@ -1881,7 +1881,11 @@ export async function POST(req: NextRequest) {
       const taskMission = (task as any).missionId ? missionClaimMap.get((task as any).missionId) : null;
       const trunk = workspaceTrunk(task.workspace?.gitConfig);
       const filterOpenPrTasks = partitionOpenPrsByLandingBase(
-        { base: candidateLandingBase({ task: task as any, mission: taskMission, trunk }), trunk, manifest: taskManifest },
+        {
+          base: candidateLandingBase({ task: task as any, mission: taskMission, trunk }), trunk, manifest: taskManifest,
+          repairsOpenPr: (task as any).taskClass === 'attempt'
+            && ((task as any).conflictRetryPrNumber ?? (task as any).ciRetryPrNumber ?? (task as any).reviewerRetryPrNumber) != null,
+        },
         splitOwnOpenPrs(task, openPrTasks).others,
       ).sameBase;
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
