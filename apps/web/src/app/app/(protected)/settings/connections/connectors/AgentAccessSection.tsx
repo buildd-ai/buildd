@@ -347,13 +347,13 @@ function PolicySection({ rules, canManage, providers, workspaces, teamQuery, onC
 
       {(narrower.length > 0 || canManage) && (
         <div className="mt-4">
-          <h3 className="section-label mb-1">For one workspace or role</h3>
+          <h3 className="section-label mb-1">For one workspace or agent</h3>
           {narrower.length === 0 ? (
             <p className="py-2 text-sm text-text-muted">No narrower rules. The team rules above apply everywhere.</p>
           ) : (
             <ul className="divide-y divide-border-default border-y border-border-default" data-testid="access-policy-narrower">
               {narrower.map(r => {
-                const where = [wsName(r.workspaceId), r.roleSlug ? `role ${r.roleSlug}` : null, r.environment, r.resource].filter(Boolean).join(' · ');
+                const where = [wsName(r.workspaceId), r.roleSlug ? `agent ${r.roleSlug}` : null, r.environment, r.resource].filter(Boolean).join(' · ');
                 return (
                   <li key={r.id} className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-center sm:justify-between">
                     <span className="min-w-0 text-sm text-text-primary [overflow-wrap:anywhere]">
@@ -369,7 +369,7 @@ function PolicySection({ rules, canManage, providers, workspaces, teamQuery, onC
             </ul>
           )}
           {canManage && (
-            <Disclosure summary={<span className="text-sm">Add a rule for one workspace or role</span>} className="mt-2">
+            <Disclosure summary={<span className="text-sm">Add a rule for one workspace or agent</span>} className="mt-2">
               <NarrowRuleForm providers={rows.filter(p => p.policy !== 'blocked')} workspaces={workspaces} saving={saving === 'narrow'} onSubmit={body => put(body, 'narrow')} />
             </Disclosure>
           )}
@@ -415,11 +415,11 @@ function NarrowRuleForm({ providers, workspaces, saving, onSubmit }: {
       <div><span className="field-label">Provider</span><Select aria-label="Provider" value={provider} onChange={setProvider} options={providers.map(p => ({ value: p.slug, label: p.name }))} /></div>
       <div><span className="field-label">Access</span><Select aria-label="Access" value={risk} onChange={v => setRisk(v as AccessRisk)} options={RISKS.map(r => ({ value: r, label: RISK_LABEL[r] }))} /></div>
       <div><span className="field-label">Workspace</span><Select aria-label="Workspace" value={workspaceId} onChange={setWorkspaceId} placeholder="Any workspace" options={[{ value: '', label: 'Any workspace' }, ...workspaces.map(w => ({ value: w.id, label: w.name }))]} /></div>
-      <div><span className="field-label">Role</span><Select aria-label="Role" value={roleSlug} onChange={setRoleSlug} placeholder="Any role" options={[{ value: '', label: 'Any role' }, ...roles.map(r => ({ value: r.slug, label: r.name }))]} /></div>
+      <div><span className="field-label">Agent</span><Select aria-label="Agent" value={roleSlug} onChange={setRoleSlug} placeholder="Any agent" options={[{ value: '', label: 'Any agent' }, ...roles.map(r => ({ value: r.slug, label: r.name }))]} /></div>
       <div><span className="field-label">Then</span><Select aria-label="Then" value={effect} onChange={v => setEffect(v as AccessEffect)} options={effectsFor(risk).map(e => ({ value: e, label: EFFECT_LABEL[e] }))} /></div>
       <div><span className="field-label">Longest lease</span><Select aria-label="Longest lease" value={cap} onChange={setCap} placeholder="Team default" options={[{ value: '', label: 'Team default' }, ...LEASE_CAPS.map(s => ({ value: String(s), label: formatLease(s) }))]} /></div>
       <div className="flex items-center justify-between gap-3 sm:col-span-2">
-        <span className="text-xs text-text-muted">{ready ? '' : 'Pick a workspace or a role.'}</span>
+        <span className="text-xs text-text-muted">{ready ? '' : 'Pick a workspace or an agent.'}</span>
         <button type="submit" className="btn btn-primary" disabled={saving || !ready}>{saving ? 'Saving…' : 'Add rule'}</button>
       </div>
     </form>

@@ -271,7 +271,7 @@ const createTask: Builder = async (input, env) => {
   if (desc) changes.push({ label: 'Brief', before: null, after: desc });
   if (depLabels.length) changes.push({ label: 'After', before: null, after: depLabels.join(', ') });
   if (str(input.baseBranch)) changes.push({ label: 'Branch', before: null, after: str(input.baseBranch)! });
-  if (str(input.roleSlug)) changes.push({ label: 'Role', before: null, after: str(input.roleSlug)! });
+  if (str(input.roleSlug)) changes.push({ label: 'Agent', before: null, after: str(input.roleSlug)! });
   const paths = listOf(input.pathManifest).filter((p): p is string => typeof p === 'string');
   if (paths.length) changes.push({ label: 'Paths', before: null, after: clip(paths.join(', '), 200)! });
   if (standalone) changes.push({ label: 'Mission', before: null, after: 'none' });

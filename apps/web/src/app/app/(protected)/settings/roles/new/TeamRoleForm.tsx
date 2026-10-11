@@ -37,7 +37,7 @@ interface Props {
 
 const KIND_LABEL: Record<NewRoleKind, string> = {
   personal: 'Just for me',
-  team: 'Team role',
+  team: 'Team agent',
 };
 
 const KIND_NOTE: Record<NewRoleKind, string> = {
@@ -143,13 +143,13 @@ export function TeamRoleForm({ teamId, workspaces, kinds = ['team'], initialKind
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(responseErrorMessage(data, 'Failed to create role'));
+        throw new Error(responseErrorMessage(data, 'Failed to create agent'));
       }
 
       router.push('/app/settings/roles');
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create role');
+      setError(err instanceof Error ? err.message : 'Failed to create agent');
     } finally {
       setSaving(false);
     }
@@ -197,7 +197,7 @@ export function TeamRoleForm({ teamId, workspaces, kinds = ['team'], initialKind
 
             {scope === 'team' && (
               <p className="text-sm text-text-muted">
-                Every workspace in your team gets this role by default. A workspace can add an override.
+                Every workspace in your team gets this agent by default. A workspace can add an override.
               </p>
             )}
 
@@ -209,14 +209,14 @@ export function TeamRoleForm({ teamId, workspaces, kinds = ['team'], initialKind
                   options={workspaces.map(w => ({ value: w.id, label: w.name }))}
                   size="sm"
                 />
-                <p className="text-sm text-text-muted">Only the selected workspace gets this role.</p>
+                <p className="text-sm text-text-muted">Only the selected workspace gets this agent.</p>
               </>
             )}
           </div>
         </Section>
       )}
 
-      <Section title="Role">
+      <Section title="Agent">
         <div className="space-y-5">
           <div>
             <label htmlFor="new-role-name" className={label}>Name</label>
@@ -345,7 +345,7 @@ export function TeamRoleForm({ teamId, workspaces, kinds = ['team'], initialKind
 
       <div className="flex flex-wrap items-center gap-3">
         <PrimaryAction type="submit" pending={saving}>
-          {saving ? 'Creating…' : 'Create role'}
+          {saving ? 'Creating…' : 'Create agent'}
         </PrimaryAction>
         <Link href="/app/settings/roles" className="btn btn-lg h-11 md:h-10">Cancel</Link>
       </div>

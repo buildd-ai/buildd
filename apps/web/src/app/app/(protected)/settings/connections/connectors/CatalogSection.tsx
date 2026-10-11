@@ -219,7 +219,7 @@ export default function CatalogSection({ teamId = null }: { teamId?: string | nu
                   {entry.description && <div className="text-xs text-text-secondary mt-0.5">{entry.description}</div>}
                   {entry.policy === 'preinstalled' && (
                     <div className="text-xs text-text-secondary mt-1">
-                      In every workspace. Agents get it only through a role that uses it, or a request team policy allows.
+                      In every workspace. Agents get it only through an agent that uses it, or a request team policy allows.
                     </div>
                   )}
                   {entry.policy === 'blocked' && (
