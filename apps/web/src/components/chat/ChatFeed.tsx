@@ -41,7 +41,8 @@
  */
 import { memo, useMemo, useState } from 'react';
 import { ChatThread, ToolCallGroup, thinkingSteps, type ChatStatus, type ThreadMessageContext, type TurnFold, type TurnPhase } from '@builddai/ai-kit/chat/react';
-import type { ChatMessage as KitMessage, ChatTextPart, StepData } from '@builddai/ai-kit/chat/contract';
+import type { AttachmentData, ChatMessage as KitMessage, ChatTextPart, StepData } from '@builddai/ai-kit/chat/contract';
+import { AttachmentReader } from './AttachmentReader';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { CHAT_EVENT_PART_TYPE, isToolPart, messageMeta, type BuilddObjectRef, type ChatMessage, type ChatToolPart } from './chat-contract';
@@ -178,6 +179,7 @@ export default function ChatFeed({
   agent,
   status = 'ready',
   error,
+  conversationId = null,
 }: {
   messages: readonly ChatMessage[];
   agent: ChatAgent;
@@ -188,7 +190,10 @@ export default function ChatFeed({
    */
   status?: ChatStatus;
   error?: string | null;
+  /** Where the reader reads a stored attachment from. Null: only a draft still in the browser can open. */
+  conversationId?: string | null;
 }) {
+  const [reading, setReading] = useState<AttachmentData | null>(null);
   const hidden = useMemo(() => eventRefsShownLater(messages), [messages]);
   // Finished turns the person unfolded. Held here, so a re-render never folds one back.
   const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(() => new Set());
@@ -269,6 +274,7 @@ export default function ChatFeed({
         error={error || undefined}
         label="Conversation"
         eventPartType={CHAT_EVENT_PART_TYPE}
+        onOpenAttachment={(data: AttachmentData) => setReading(data)}
         renderText={(text: string, km: KitMessage, part: ChatTextPart) => {
           if (!text.trim()) return null;
           if (km.role === 'user') return <UserBubble text={text} />;
@@ -315,6 +321,7 @@ export default function ChatFeed({
         answer="replace"
         compose="turn"
       />
+      {reading && <AttachmentReader conversationId={conversationId} attachment={reading} onClose={() => setReading(null)} />}
     </div>
   );
 }

@@ -17,9 +17,11 @@ import {
   isHandoffPart,
   isSteerPart,
   isTextPart,
+  isAttachmentPart,
   isToolPart,
   isTurnErrorPart,
   latestHandoffs,
+  type AttachmentData,
   type ChatMessage,
   type ChatPart,
   type ChatTextPart,
@@ -32,6 +34,7 @@ import {
 import { ApprovalCard, ApprovalRowsCard, HandoffCard, ThinkingPanel } from './cards';
 import { THINKING_TAIL_ID, approvalRowGroup, composeTurn, isApprovalPart, thinkingSteps, toolRowLabel, toolRowState, toolSummary, type TurnPhase } from './model';
 import { ToolCallGroup } from './ToolCalls';
+import { AttachmentCard } from './AttachmentCard';
 import type { ToolCallOptions } from './tool-calls';
 
 export type ChatStatus = 'ready' | 'submitted' | 'streaming' | 'error';
@@ -91,6 +94,12 @@ export interface ChatThreadProps {
    */
   eventPartType?: string;
   renderHandoff?(data: HandoffData): ReactNode;
+  /**
+   * A long paste the message carries (`data-attachment`, 0.25.0). Default: an
+   * `AttachmentCard`, a button to `onOpenAttachment` when that is set.
+   */
+  renderAttachment?(data: AttachmentData, message: ChatMessage): ReactNode;
+  onOpenAttachment?(data: AttachmentData, message: ChatMessage): void;
   /** Above a message's parts, e.g. the author, avatar and time (0.9.0). Null: nothing. */
   renderMessageHeader?(message: ChatMessage, ctx: ThreadMessageContext): ReactNode;
   /** After a message's parts, e.g. feedback thumbs (0.9.0). Null: nothing. */
@@ -192,7 +201,7 @@ function eventOf(m: ChatMessage, type: string): EventData | null {
 
 export function ChatThread({
   messages, status = 'ready', onApprovalResponse, onEditApproval, renderText = defaultText, renderObject,
-  renderTool, renderToolGroup: appToolGroup, toolRows = 'line', toolCallOptions, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff,
+  renderTool, renderToolGroup: appToolGroup, toolRows = 'line', toolCallOptions, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff, renderAttachment, onOpenAttachment,
   renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingName, renderPinnedStep, turnFold, answer = 'append',
   compose = 'parts', renderPhaseResults: appPhaseResults, viewerName = null, empty, error, label = 'Conversation', className,
 }: ChatThreadProps) {
@@ -329,6 +338,18 @@ export function ChatThread({
       if (isTurnErrorPart(p)) {
         flush();
         out.push(<div key={key} className="kit-error" role="alert" data-turn-error={p.data.code}>{p.data.message}</div>);
+        return;
+      }
+      if (isAttachmentPart(p)) {
+        flush();
+        const data = p.data;
+        out.push(
+          <div key={key} className="kit-msg-attachment">
+            {renderAttachment
+              ? renderAttachment(data, m)
+              : <AttachmentCard attachment={data} {...(onOpenAttachment ? { onOpen: () => onOpenAttachment(data, m) } : {})} />}
+          </div>,
+        );
         return;
       }
       if (isSteerPart(p)) {
