@@ -162,6 +162,7 @@ const SAFE: Record<string, string[]> = {
   teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'enabled_decision_shadows', 'decision_model',
     'chat_default_tier', // a chat tier name (CHAT_TIER_NAMES) or null
     'chat_retro', // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)
+    'task_estimates', // { enabled: boolean, setBy: a row id, setAt: ISO time } (packages/core/task-estimate-source.ts)
     'permission_overrides', // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
     'plan', 'billing_status', // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
     'managed_runner_plan', // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)

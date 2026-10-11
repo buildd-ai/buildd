@@ -86,6 +86,7 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/chat')).toBe('Chat');
     expect(mobilePageTitle('/app/chat/abc')).toBeNull();
     expect(mobilePageTitle('/app/missions')).toBe('Missions');
+    expect(mobilePageTitle('/app/missions/plan')).toBe('Plan');
     expect(mobilePageTitle('/app/releases')).toBe('Releases');
     expect(mobilePageTitle('/app/tasks')).toBe('Activity');
     expect(mobilePageTitle('/app/team')).toBe('Team');
