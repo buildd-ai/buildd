@@ -133,6 +133,61 @@ export interface PathOverlapDeferralFact {
   lastDeferredAt: string;
   /** Last sign the task or its blocker moved (claim, blocker merge/close…); null for none. */
   lastProgressAt: string | null;
+  /** `tasks.status` as read this sweep; null or absent when not read. */
+  taskStatus?: string | null;
+  /** The blocking PR as read this sweep; absent when not read. */
+  blockerState?: BlockerPrState;
+}
+
+/** A blocking PR, as the sweep reads it now. `unknown` never counts as landed. */
+export type BlockerPrState = 'open' | 'merged' | 'closed' | 'unknown';
+
+/** One deferred task, as the sweep reads it now. */
+export interface PathOverlapSubjectState {
+  /** `tasks.status`; null when the read found no row, which is unknown, never cleared. */
+  status: string | null;
+  /** Newest worker `createdAt` for the task; null for none. */
+  lastWorkerAt: string | null;
+}
+
+/** Fresh facts about the subjects and blockers of open path-overlap incidents. */
+export interface PathOverlapObservation {
+  tasks: ReadonlyMap<string, PathOverlapSubjectState>;
+  prs: ReadonlyMap<number, BlockerPrState>;
+}
+
+/**
+ * Pure. Is this task still stuck behind its blocker on facts read now? Not
+ * when the blocker merged or closed, the task left `pending` (claimed,
+ * finished, cancelled), or a worker started for it after `since`. A task the
+ * read did not find stays stuck: unknown is not cleared.
+ */
+export function pathOverlapSubjectStuck(subject: PathOverlapSubjectState, blocker: BlockerPrState, since: string): boolean {
+  if (blocker === 'merged' || blocker === 'closed') return false;
+  if (subject.status !== null && subject.status !== 'pending') return false;
+  return subject.lastWorkerAt === null || subject.lastWorkerAt < since;
+}
+
+/**
+ * Pure. The resolve check for a `path_overlap_stall` incident: its blocking PR
+ * landed or closed, or every task it names is no longer stuck. Decided from
+ * facts read now, never from "no new occurrence lately". An incident with no
+ * known blocker, no named task, or more stalled tasks than it kept refs for
+ * (`MAX_AFFECTED_REFS`) clears only through its blocker.
+ */
+export function pathOverlapIncidentCleared(
+  incident: { firstSeenAt: string; affectedRefs: FailureIncidentAffectedRefs; impact: Record<string, number> },
+  obs: PathOverlapObservation,
+): boolean {
+  const blocker = incident.affectedRefs.prNumbers[0];
+  const blockerState = blocker === undefined ? 'unknown' : obs.prs.get(blocker) ?? 'unknown';
+  if (blockerState === 'merged' || blockerState === 'closed') return true;
+  const ids = incident.affectedRefs.taskIds;
+  if (ids.length === 0 || (incident.impact.stalledTasks ?? 0) > ids.length) return false;
+  return ids.every(id => {
+    const s = obs.tasks.get(id);
+    return !!s && s.status !== null && !pathOverlapSubjectStuck(s, blockerState, incident.firstSeenAt);
+  });
 }
 
 /** A failure or provider wall, and who it was charged to. */
@@ -453,7 +508,13 @@ function rulePathOverlapStall(facts: SentinelFacts, t: SentinelThresholds): Inci
   const stalled = (facts.pathOverlapDeferrals ?? [])
     .filter(d =>
       minutesBetween(d.firstDeferredAt, d.lastDeferredAt) >= t.pathOverlapStallMinutes &&
-      (d.lastProgressAt === null || d.lastProgressAt < d.firstDeferredAt),
+      // The same check the sweep resolves on, so a task that moved or a
+      // blocker that landed never reopens what the sweep just resolved.
+      pathOverlapSubjectStuck(
+        { status: d.taskStatus ?? null, lastWorkerAt: d.lastProgressAt },
+        d.blockerState ?? 'unknown',
+        d.firstDeferredAt,
+      ),
     )
     // The occurrence instant is when the deferral crossed the threshold — a
     // fixed point per deferral episode, so a re-sweep does not recount it.
