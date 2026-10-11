@@ -6,13 +6,18 @@
  * /api/specs/[id]/submit|approve) are a person's act (G2, decision D-4): the
  * route refuses an agent run or API key with a 403, which this passes through
  * as is. No other sub-action takes a status.
+ *
+ * outcome, verdict and conflict are Living Specs verification (V1, D-5) over
+ * /api/specs/outcomes/[taskId] and /api/specs/[id]/conflicts: a task's governed
+ * outcome against its pinned revision, one verdict on one criterion, and an
+ * advisory conflict between two criteria. None of them blocks anything.
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
 
-export const SPEC_OPS = ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve'] as const;
+export const SPEC_OPS = ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict'] as const;
 export type SpecOp = (typeof SPEC_OPS)[number];
 
 /** A body longer than this is not inlined by `get`: read it in parts with get_artifact. */
@@ -39,6 +44,15 @@ type SpecRow = { id: string; title: string; scope: string; status: string; versi
 
 const line = (s: SpecRow) =>
   `- ${s.title} (${s.scope}, ${s.status}) · version ${s.version}, revision ${s.headRevision}${s.approvedRevision ? `, approved revision ${s.approvedRevision}` : ''}${s.parentSpecId ? ` · parent ${s.parentSpecId}` : ''}\n  id: ${s.id}`;
+
+type Outcome = { outcome: string; reason: string; revision: number; currentHeadSha: string | null; criteria: Array<{ criterionId: string; verdict: string | null; headSha: string | null; stale: boolean }> };
+
+/** The governed outcome in words: the verdict first, then one line per criterion. */
+export function outcomeText(o: Outcome): string {
+  const head = o.currentHeadSha ? o.currentHeadSha.slice(0, 12) : 'no PR head yet';
+  const rows = o.criteria.map((c) => `  ${c.criterionId}: ${c.verdict ?? 'no verdict'}${c.verdict && c.stale ? ` (on ${String(c.headSha).slice(0, 12)}, not the current head)` : ''}`);
+  return [`Governed outcome: ${o.outcome.toUpperCase()} against spec revision ${o.revision}, head ${head}. ${o.reason}.`, ...rows].join('\n');
+}
 
 export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null): Promise<ToolResult> {
   const op = params.action as SpecOp;
@@ -115,6 +129,40 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         const e = apiError(err);
         if (e?.status === 403) return errorResult(String(e.body?.error ?? 'Only a person decides on a spec.'));
         if (e?.status === 409) return errorResult(`${String(e.body?.error ?? 'Conflict.')}${typeof e.body?.currentVersion === 'number' ? `\ncurrentVersion: ${e.body.currentVersion}` : ''}`);
+        throw err;
+      }
+    }
+
+    case 'outcome':
+    case 'verdict': {
+      const taskId = need(params.taskId, 'taskId');
+      const path = `/api/specs/outcomes/${encodeURIComponent(taskId)}`;
+      try {
+        const r = op === 'outcome'
+          ? await api(path)
+          : await api(path, { method: 'POST', body: JSON.stringify({
+            criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), headSha: need(params.headSha, 'headSha'),
+            ...(params.evidenceRefs !== undefined ? { evidenceRefs: params.evidenceRefs } : {}),
+            ...(params.readIds !== undefined ? { readIds: params.readIds } : {}),
+            ...(params.observed !== undefined ? { observed: params.observed } : {}),
+          }) });
+        return text(`${op === 'verdict' ? `Recorded ${params.verdict} on ${params.criterionId}.
+` : ''}${outcomeText(r.outcome)}`);
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 403, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'conflict': {
+      const specId = need(params.specId, 'specId');
+      try {
+        const r = await api(`/api/specs/${encodeURIComponent(specId)}/conflicts`, { method: 'POST', body: JSON.stringify({ revision: params.revision, criterionIds: params.criterionIds, ...(params.note !== undefined ? { note: params.note } : {}) }) });
+        return text(`Conflict recorded as an advisory discrepancy (${r.discrepancyId}). It blocks nothing; a person accepts or resolves it.`);
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }
