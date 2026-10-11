@@ -13,9 +13,11 @@ import {
   type VisualQaActions,
   type VisualQaCaptureRecord,
   type VisualQaRun,
+  visualQaRunName,
 } from './quality-scout-visual-adapter';
 
 const SHA = 'c'.repeat(40);
+const TRUNK_SHA = 'e'.repeat(40);
 const REPO = 'acme/web';
 const T0 = Date.parse('2026-10-05T10:00:00Z');
 
@@ -133,7 +135,8 @@ describe('captureRecordsToShots', () => {
 
 interface FakeOpts {
   exists?: boolean;
-  headSha?: string;
+  /** The commit the dispatched run's title names, when not the one asked for. */
+  titleRef?: string;
   records?: (viewport: string, routes: string[]) => VisualQaCaptureRecord[] | null;
   /** Polls before a dispatched run shows up / completes. */
   appearAfter?: number;
@@ -145,13 +148,14 @@ function fakeActions(opts: FakeOpts = {}) {
   const dispatches: Array<{ ref: string; inputs: Record<string, string> }> = [];
   const runs: Array<VisualQaRun & { polls: number; inputs: Record<string, string>; listed: number }> = [];
   // A stale run on the same ref, from before any dispatch: must never be picked up.
-  runs.push({ id: 1, status: 'completed', conclusion: 'success', headSha: SHA, headBranch: 'feature', createdAt: new Date(T0 - 3_600_000).toISOString(), polls: 0, inputs: {}, listed: 99 });
+  runs.push({ id: 1, status: 'completed', conclusion: 'success', headSha: TRUNK_SHA, headBranch: 'dev', displayTitle: visualQaRunName(SHA), createdAt: new Date(T0 - 3_600_000).toISOString(), polls: 0, inputs: {}, listed: 99 });
   const actions: VisualQaActions = {
     repoFullName: REPO,
     async workflowExists() { return opts.exists ?? true; },
+    async harnessRef() { return 'dev'; },
     async dispatch(ref, inputs) {
       dispatches.push({ ref, inputs });
-      runs.push({ id: 100 + dispatches.length, status: 'queued', conclusion: null, headSha: opts.headSha ?? SHA, headBranch: ref, createdAt: new Date(clock).toISOString(), polls: 0, inputs, listed: 0 });
+      runs.push({ id: 100 + dispatches.length, status: 'queued', conclusion: null, headSha: TRUNK_SHA, headBranch: ref, displayTitle: visualQaRunName(opts.titleRef ?? inputs.capture_ref), createdAt: new Date(clock).toISOString(), polls: 0, inputs, listed: 0 });
     },
     async listDispatchRuns() {
       for (const r of runs) r.listed++;
@@ -182,8 +186,8 @@ describe('createVisualQaCapturePort', () => {
     const f = fakeActions({ appearAfter: 1, completeAfter: 2 });
     const shots = await createVisualQaCapturePort(f.actions, f.portOpts).capture(req);
     expect(f.dispatches).toEqual([
-      { ref: 'feature', inputs: { routes: '/,/settings', viewport: 'mobile', judge: 'false' } },
-      { ref: 'feature', inputs: { routes: '/,/settings', viewport: 'desktop', judge: 'false' } },
+      { ref: 'dev', inputs: { capture_ref: SHA, routes: '/,/settings', viewport: 'mobile', judge: 'false' } },
+      { ref: 'dev', inputs: { capture_ref: SHA, routes: '/,/settings', viewport: 'desktop', judge: 'false' } },
     ]);
     expect(shots.map((s) => `${s.route}@${s.viewport}`)).toEqual(['/@phone', '/settings@phone', '/@desktop', '/settings@desktop']);
     // Never the stale pre-dispatch run.
@@ -191,7 +195,7 @@ describe('createVisualQaCapturePort', () => {
   });
 
   it('a run on another commit (the branch moved) is never read: the capture throws', async () => {
-    const f = fakeActions({ headSha: 'd'.repeat(40) });
+    const f = fakeActions({ titleRef: 'd'.repeat(40) });
     await expect(createVisualQaCapturePort(f.actions, f.portOpts).capture(req)).rejects.toThrow('appeared');
   });
 

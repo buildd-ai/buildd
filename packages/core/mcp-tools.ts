@@ -1036,7 +1036,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target, plus full knowledge-ingest jobs no runner has taken. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     update_incident: '{ incidentId (required, full UUID from list_incidents), action (required: acknowledge|resolve) } — move one Failure Pattern Sentinel incident through its lifecycle (compare-and-swap; acknowledgedAt/resolvedAt are stamped on the ledger row). Resolving a pattern that is still live is not final: the next sweep that sees it reopens the incident. [admin]',
     list_incidents: '{ workspaceId?, status? (CSV open|acknowledged|resolved, or "all"; default open,acknowledged), severity? (CSV low|medium|high|critical), rule? (CSV of rule names), signature? (exact), limit? (default 50, max 200) } — read-only: the Failure Pattern Sentinel\'s incident ledger. Each incident has severity, rule, first/last seen, counts, alert state and any linked fix task. Check it before filing a `[friction]` task: a systemic pattern may already be tracked. counts.total ignores limit.',
-    get_page_source: '{ workerId?, sha? (commit to audit; default the head of captureRef.ref), prNumber? (use this PR\'s head commit instead, e.g. when that branch deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto), and which branch to capture: captureRef { ref, source, integrationBase } is the mission\'s integration branch on a mission-branch mission, else trunk — dispatch the sandbox capture with --ref captureRef.ref and record it on every shot as qa.ref / qa.refSource. Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
+    get_page_source: '{ workerId?, sha? (commit to audit; default the head of captureRef.ref), prNumber? (use this PR\'s head commit instead, e.g. when that branch deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto), and which branch to capture: captureRef { ref, source, integrationBase } is the mission\'s integration branch on a mission-branch mission, else trunk — record it on every shot as qa.ref / qa.refSource. Dispatch the sandbox capture from trunk with captureRef.ref as the capture_ref input, never --ref captureRef.ref (the harness must match the prod clone): `dispatch` is the exact command, `harnessRef` the trunk, `freshness` how far captureRef.ref is behind trunk (needsSync: it lacks trunk\'s migrations, so it needs a trunk merge). Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
     deploy: '{ workerId?, provider (required: cloudflare), project (required), environment (required), credentialRef (required — the stored credential\'s reference: its label, or the provider name when unlabelled), operation (required: status|put_secret|upload_worker|ensure_bucket), params? } — Platform Operator deployment, run server-side with a stored credential you never see. Allowed only when this task\'s role is the Platform Operator AND this workspace\'s Operator grant covers the operation\'s capabilities (deployments:read or deployments:write, plus deployment_secrets:use) for exactly this provider, project, environment and credential ref; anything else is refused with a reason (not_enabled, capability_not_granted, project_not_allowed, ...). The Cloudflare Worker is the project in production and <project>-<environment> elsewhere. params by operation — status: none (latest deployment id/versions, secret NAMES, workers.dev URL); put_secret: { name, value } (value is sent to the Worker and never echoed); upload_worker: { modules: [{ name, content }], mainModule?, compatibilityDate (YYYY-MM-DD), compatibilityFlags?, vars? } (a built module bundle, e.g. `wrangler deploy --dry-run --outdir dist`, which needs no credential; existing secrets are kept; 3 MB cap); ensure_bucket: { bucket? (default <script>-snapshots; must start with <script>-), lifecycle?: [{ id, prefix, expireDays }] }. Every call, allowed or refused, is written to the deployment audit trail with the credential reference only. Returns { auditId, target, operation, result } and never a credential.',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. Cloud runs (one container per task) are one elastic group per dispatcher, "N running", with each run nested. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
@@ -1955,6 +1955,29 @@ async function resolveWorkspaceId(
   if (match) return match.id;
   if (explicit) throw new Error(unknownWorkspaceMessage(explicit, workspaces));
   return null;
+}
+
+/**
+ * Run a prNumber-addressed PR call in the connection's bound workspace first.
+ * Low PR numbers collide across workspaces whose repos share the number, so an
+ * unqualified lookup on a workspace-bound connection can come back 409
+ * "exists in multiple workspaces" for a PR the caller plainly means in its own
+ * workspace. An explicit workspaceId always wins and is never retried. If the
+ * bound workspace has no such PR, fall back to the cross-workspace search the
+ * call did before.
+ */
+async function withBoundPrWorkspace<T>(
+  params: Record<string, any>,
+  ctx: ActionContext,
+  call: (workspaceId: unknown) => Promise<T>,
+): Promise<T> {
+  if (params.workspaceId != null || !params.prNumber || !ctx.workspaceId) return call(params.workspaceId);
+  try {
+    return await call(ctx.workspaceId);
+  } catch (err) {
+    if (err instanceof Error && /^API error: 404\b[\s\S]*PR not found/.test(err.message)) return call(undefined);
+    throw err;
+  }
 }
 
 /** One audit line for a schedule's delegation, or '' when it has none. */
@@ -3248,14 +3271,14 @@ export async function handleBuilddAction(
       const workerId = String(params.workerId ?? '') || ctx.workerId || null;
       if (!params.prNumber) throw new Error('prNumber is required');
 
-      const data = await api('/api/github/pr', {
+      const data = await withBoundPrWorkspace(params, ctx, (workspaceId) => api('/api/github/pr', {
         method: 'PATCH',
         body: JSON.stringify({
           workerId,
           prNumber: params.prNumber,
-          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          ...(workspaceId != null ? { workspaceId } : {}),
         }),
-      });
+      }));
 
       const titlePart = data.pr.title ? ` — ${data.pr.title}` : '';
       return text(`Pull request #${data.pr.number} closed${titlePart}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
@@ -3304,16 +3327,16 @@ export async function handleBuilddAction(
         return text(`PR #${params.prNumber} merged successfully.${res.message ? `\n**Message:** ${res.message}` : ''}`);
       }
 
-      const data = await api('/api/github/pr', {
+      const data = await withBoundPrWorkspace(params, ctx, (workspaceId) => api('/api/github/pr', {
         method: 'PUT',
         body: JSON.stringify({
           workerId,
           prNumber: params.prNumber,
           mergeMethod,
-          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          ...(workspaceId != null ? { workspaceId } : {}),
           ...overrideFields,
         }),
-      });
+      }));
 
       if (!data.merged) {
         const hint = data.hint ? `\n\n**Action required:** ${data.hint}` : '';
@@ -3347,11 +3370,13 @@ export async function handleBuilddAction(
       const parts: string[] = [];
       if (workerId) parts.push(`workerId=${encodeURIComponent(workerId)}`);
       if (params.prNumber) parts.push(`prNumber=${encodeURIComponent(String(params.prNumber))}`);
-      if (params.workspaceId) parts.push(`workspaceId=${encodeURIComponent(String(params.workspaceId))}`);
       if (includeComments) parts.push('includeComments=true');
       if (includeCiFailures) parts.push('includeCiFailures=true');
 
-      const data = await api(`/api/github/pr${parts.length ? '?' + parts.join('&') : ''}`);
+      const data = await withBoundPrWorkspace(params, ctx, (workspaceId) => {
+        const q = workspaceId ? [...parts, `workspaceId=${encodeURIComponent(String(workspaceId))}`] : parts;
+        return api(`/api/github/pr${q.length ? '?' + q.join('&') : ''}`);
+      });
 
       const pr = data.pr;
       const checks = data.checks;
@@ -3556,17 +3581,17 @@ export async function handleBuilddAction(
       if (params.supersedingPrNumber == null) throw new Error('supersedingPrNumber is required');
       if (!params.reason || !String(params.reason).trim()) throw new Error('reason is required');
 
-      const data = await api('/api/github/pr/supersede', {
+      const data = await withBoundPrWorkspace(params, ctx, (workspaceId) => api('/api/github/pr/supersede', {
         method: 'POST',
         body: JSON.stringify({
           ...(workerId ? { workerId } : {}),
           ...(params.prNumber != null ? { prNumber: Number(params.prNumber) } : {}),
-          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          ...(workspaceId != null ? { workspaceId } : {}),
           supersedingPrNumber: Number(params.supersedingPrNumber),
           ...(params.supersedingRepo ? { supersedingRepo: String(params.supersedingRepo) } : {}),
           reason: String(params.reason),
         }),
-      });
+      }));
 
       return text(
         `PR #${data.supersededPrNumber} recorded as superseded by ${data.supersedingRepo && params.supersedingRepo ? `${data.supersedingRepo}#` : 'PR #'}${data.supersedingPrNumber}.\n`

@@ -1,7 +1,8 @@
 /**
  * The server's half of Quality Scout's UI/surface capture port: the
  * `VisualQaActions` over the workspace's GitHub App installation. The port
- * itself (dispatch `visual-qa.yml`, tie the run to the candidate commit, read
+ * itself (dispatch `visual-qa.yml` from trunk with the candidate commit as
+ * `capture_ref`, tie the run to that commit, read
  * `captures.json`) lives in @buildd/core/quality-scout/visual-capture, shared
  * with the runner host, which builds its actions over a run-scoped token
  * instead. Re-exported here so existing callers keep their import.
@@ -30,6 +31,7 @@ export {
   type VisualQaCapturePortOptions,
   type VisualQaCaptureRecord,
   type VisualQaRun,
+  visualQaRunName,
 } from '@buildd/core/quality-scout/visual-capture';
 
 /** `VisualQaActions` over the workspace's GitHub App installation. */
@@ -46,6 +48,11 @@ export function githubVisualQaActions(installationId: number, repoFullName: stri
         if (/GitHub API error: 404\b/.test(err instanceof Error ? err.message : String(err))) return false;
         throw err;
       }
+    },
+    async harnessRef() {
+      const data = await githubApi(installationId, repo) as { default_branch?: unknown } | null;
+      if (typeof data?.default_branch !== 'string' || !data.default_branch) throw new Error('repository has no default branch');
+      return data.default_branch;
     },
     async dispatch(ref, inputs) {
       await githubApi(installationId, `${workflow}/dispatches`, {

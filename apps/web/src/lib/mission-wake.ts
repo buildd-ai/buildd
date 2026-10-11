@@ -42,6 +42,19 @@ export interface MissionWakeDeps {
     reason: MissionWakeReason,
   ) => Promise<{ action: LoopAction }>;
   isMissionBlocked?: typeof isMissionBlocked;
+  complete?: (missionId: string, opts: { path: 'criteria_eval'; predicate: string }) => Promise<unknown>;
+}
+
+/**
+ * Events that can be the last thing a mission was waiting on: a PR landing, or
+ * a closed PR being settled. For a manual mission nothing else re-checks its
+ * criteria once its tasks have completed, so these still attempt completion.
+ */
+const COMPLETION_REASONS: ReadonlySet<MissionWakeReason> = new Set(['pr_merged', 'pr_resolved']);
+
+async function defaultComplete(missionId: string, opts: { path: 'criteria_eval'; predicate: string }) {
+  const { completeMissionIfVerified } = await import('@/lib/mission-completion');
+  return completeMissionIfVerified(missionId, opts);
 }
 
 async function defaultRetrigger(missionId: string, reason: MissionWakeReason) {
@@ -51,7 +64,8 @@ async function defaultRetrigger(missionId: string, reason: MissionWakeReason) {
 
 /**
  * Re-plan an auto mission now. A no-op unless the mission is active, in `auto`
- * orchestration, not held, and not dependency-blocked. Never throws.
+ * orchestration, not held, and not dependency-blocked — except that a manual
+ * mission still gets a completion attempt on a merge or a settled PR. Never throws.
  */
 export async function wakeMission(
   missionId: string,
@@ -74,7 +88,14 @@ export async function wakeMission(
     if (!mission) return { woken: false, reason: 'not_found' };
     if (mission.status !== 'active') return { woken: false, reason: 'not_active' };
     // Manual means the owner starts things: nothing wakes it on their behalf.
-    if (mission.orchestrationMode === 'manual') return { woken: false, reason: 'manual' };
+    // Completing is not starting work, though: an auto mission reaches
+    // completion through the retrigger below, a manual one only through here.
+    if (mission.orchestrationMode === 'manual') {
+      if (COMPLETION_REASONS.has(reason)) {
+        await (deps?.complete ?? defaultComplete)(missionId, { path: 'criteria_eval', predicate: `wake:${reason}` });
+      }
+      return { woken: false, reason: 'manual' };
+    }
     // Held is a pure pause and wins over everything else.
     if (mission.isHeld) return { woken: false, reason: 'held' };
 
