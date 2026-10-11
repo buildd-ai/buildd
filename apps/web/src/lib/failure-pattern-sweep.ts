@@ -695,7 +695,7 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
  */
 async function dbObservePathOverlapSubjects(workspaceId: string, taskIds: string[], prNumbers: number[]): Promise<PathOverlapObservation> {
   const { db } = await import('@buildd/core/db');
-  const { workers, tasks, workflowDeliveries } = await import('@buildd/core/db/schema');
+  const { workers, tasks } = await import('@buildd/core/db/schema');
   const { and, eq, inArray } = await import('drizzle-orm');
 
   const taskState = new Map<string, { status: string | null; lastWorkerAt: string | null }>();
@@ -718,12 +718,8 @@ async function dbObservePathOverlapSubjects(workspaceId: string, taskIds: string
     const note = (n: number, st: BlockerPrState) => {
       if (rank[st] > rank[prs.get(n) ?? 'unknown']) prs.set(n, st);
     };
-    const deliveryRows = await db
-      .select({ prNumber: workflowDeliveries.prNumber, state: workflowDeliveries.state, mergedAt: workflowDeliveries.mergedAt })
-      .from(workflowDeliveries)
-      .where(and(eq(workflowDeliveries.workspaceId, workspaceId), inArray(workflowDeliveries.prNumber, prNumbers)));
-    for (const d of deliveryRows) {
-      if (d.prNumber === null) continue;
+    const { deliveryPrStates } = await import('./workflow/delivery-view');
+    for (const d of await deliveryPrStates(workspaceId, prNumbers)) {
       note(d.prNumber, d.mergedAt || d.state === 'MERGED' ? 'merged'
         : d.state === 'SUPERSEDED' || d.state === 'ABANDONED' ? 'closed' : 'open');
     }
