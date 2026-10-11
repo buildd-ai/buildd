@@ -5675,17 +5675,6 @@ export async function handleBuilddAction(
       return text(JSON.stringify(data, null, 2));
     }
 
-    case 'request_capability': {
-      const workerId = resolveWorkerId(params.workerId, ctx);
-      if (typeof params.capability !== 'string' || !params.capability.trim()) throw new Error('capability is required (e.g. observability:query)');
-      const { workerId: _w, ...ask } = params as Record<string, unknown>;
-      const data = await api('/api/agent-capabilities/requests', {
-        method: 'POST',
-        body: JSON.stringify({ ...ask, workerId }),
-      });
-      return text(JSON.stringify(data, null, 2));
-    }
-
     case 'list_connectors': {
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) {
