@@ -537,6 +537,8 @@ FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM artifacts) s WHERE a.
 DELETE FROM artifact_revisions;
 -- The read ledger's selectors hold search text agents typed.
 DELETE FROM artifact_reads;
+-- Links carry ids only; who made one is an account or user id.
+UPDATE artifact_links SET created_by = NULL;
 -- Living Specs: titles and summaries are prose; who wrote or approved a
 -- revision is an account or user id. Bodies are artifacts, scrubbed above.
 UPDATE specs SET title = 'Spec ' || left(md5(id::text), 8), created_by = NULL;

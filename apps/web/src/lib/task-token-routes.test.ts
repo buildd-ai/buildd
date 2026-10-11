@@ -29,9 +29,12 @@ const OPTED_IN = [
   'apps/web/src/app/api/agent-capabilities/model-inference/route.ts',
   // Finalize an upload: only the token's own worker's artifact (taskScopeAllowsWorkspace + taskScopeAllowsWorker).
   'apps/web/src/app/api/artifacts/[artifactId]/finalize/route.ts',
+  // Typed links: the route passes the token taskScope to the link caller, and lib/artifact-links.ts confines every artifact and subject to that workspace.
+  'apps/web/src/app/api/artifacts/[artifactId]/links/route.ts',
   // POST only: its own worker (taskScopeAllowsWorker + taskScopeAllowsWorkspace) asks for a capability; deciding is session-only.
   'apps/web/src/app/api/agent-capabilities/requests/route.ts',
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
+  'apps/web/src/app/api/artifacts/linked/route.ts',
   'apps/web/src/app/api/artifacts/upload-url/route.ts',
   'apps/web/src/app/api/connectors/capabilities/route.ts',
   'apps/web/src/app/api/connectors/mounted/route.ts',
