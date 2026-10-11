@@ -205,11 +205,13 @@ describe('TaskCard — PR link edge cases', () => {
     for (const density of ['row', 'full', 'inline'] as const) {
       const html = renderToStaticMarkup(<TaskCard {...baseProps({ density, ...pr })} />);
       const cls = html.match(new RegExp(`href="${pr.prUrl}"[^>]*class="([^"]*)"`))?.[1].split(/\s+/) ?? [];
-      const afterClasses = cls.filter(c => c.includes('after:'));
-      expect(afterClasses.length).toBeGreaterThan(0);
-      expect(afterClasses.every(c => c.startsWith('max-md:after:'))).toBe(true);
+      // The hit area grows by a pseudo-element (inline) or by the link's own
+      // box (row, full); either way only below md.
+      const hitClasses = cls.filter(c => /after:|min-h-|-m[xyt]-|-mb-|^max-md:p[xb]-/.test(c));
+      expect(hitClasses.length).toBeGreaterThan(0);
+      expect(hitClasses.every(c => c.startsWith('max-md:'))).toBe(true);
       // Never the old 14px vertical spill.
-      expect(afterClasses.some(c => c.includes('inset-y-3.5'))).toBe(false);
+      expect(hitClasses.some(c => c.includes('inset-y-3.5'))).toBe(false);
     }
   });
 });

@@ -10,6 +10,7 @@ import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { emit } from '@/lib/core-emit';
 import { checkSeatForNewMember } from '@/lib/billing/seats';
+import { recordActiveDay, utcDay } from '@/lib/active-days';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 
@@ -239,6 +240,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         } catch (error) {
           console.error('Error looking up user in JWT callback:', error);
         }
+      }
+      // A person was active today (signups/DAU on the admin API). Once per UTC
+      // day per token, fire-and-forget: recordActiveDay never throws, and the
+      // in-process cache covers server components, which cannot rewrite the
+      // cookie.
+      const activeUserId = typeof token.userId === 'string' ? token.userId : null;
+      const today = utcDay();
+      if (activeUserId && token.activeDay !== today) {
+        void recordActiveDay(activeUserId, 'web');
+        token.activeDay = today;
       }
       return token;
     },

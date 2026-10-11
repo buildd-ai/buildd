@@ -181,7 +181,10 @@ never described as released.
   completion never makes the track read Land or Merged.
 - The Lifecycle track reads "repair" only for `FIXING` or an agent-mode
   `REPAIRING`; `REPAIRING(behind)` reads "updating branch".
-- `DeliveryView.headline` for `REPAIRING(behind)` is "Updating branch" and for a
+- `DeliveryView.headline` for `REPAIRING(behind)` is "Updating branch", or
+  "Waiting to update branch" while its refresh is parked in the landing lane,
+  with the detail naming the PR landing on that base first
+  (workflow-state-kernel §13.7). For a
   plain `APPROVED` delivery is "Approved · awaiting merge"; the GitHub comment
   header is that headline (workflow-state-kernel §12.1 rule 4).
 - A structured result is never rendered as serialized JSON outside the Raw

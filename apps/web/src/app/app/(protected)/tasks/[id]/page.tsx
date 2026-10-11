@@ -39,6 +39,7 @@ import TaskModelCell from './TaskModelCell';
 import { getModelDisplayName, primaryModelFromUsage, compareAssignedActual } from '@buildd/core/model-display';
 import TaskAutoRefresh from './TaskAutoRefresh';
 import { DisplayTimezoneProvider, ZonedTime } from '@/components/DisplayTimezone';
+import { blockedHeadline, gateName, lastForceStart } from '@buildd/core/waiting-reason';
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
 import TaskQuestionFeed from './TaskQuestionFeed';
@@ -1542,6 +1543,7 @@ export default async function TaskDetailPage({
               worker={null}
               roleSlug={task.roleSlug}
               missionExecutor={missionExecutorOf(missionContextRow)}
+              taskTitle={task.title}
               entitlementBlock={task.status === 'pending' ? parseEntitlementBlock((task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]) : null}
               credentialBlock={task.status === 'pending' ? parseCredentialBlock((task.context as Record<string, unknown> | null)?.[CREDENTIAL_BLOCK_CONTEXT_KEY]) : null}
               runnerPicker
@@ -1604,6 +1606,19 @@ export default async function TaskDetailPage({
           );
         })()}
 
+        {/* Forced by X at T (docs/specs/force-start.md §Recording): the last dashboard Force start this task was claimed under. */}
+        {(() => {
+          const forced = lastForceStart(task.context as Record<string, unknown> | null);
+          if (!forced) return null;
+          return (
+            <p data-testid="task-forced-start" className="mb-6 font-mono text-meta text-text-secondary [overflow-wrap:anywhere]">
+              Force-started by {forced.userId && forced.userId === user.id ? 'you' : 'a teammate'} at{' '}
+              <ZonedTime value={forced.at} format="datetime" fallback={forced.at.slice(0, 16).replace('T', ' ')} />
+              {' '}· skipped: {[...new Set(forced.kinds.map(gateName))].join(', ').toLowerCase()}
+            </p>
+          );
+        })()}
+
         {/* Blocked Banner — shown when task has unresolved dependencies */}
         {isBlocked && (() => {
           // Same predicate as the gate: the worker holding the PR open, which
@@ -1620,7 +1635,12 @@ export default async function TaskDetailPage({
                 <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                Blocked by {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'}
+                {(() => {
+                  // Creation-time overlap edges are ordering, not dependencies a person declared.
+                  const inferred = new Set(task.pathDeclaration?.inferredDependsOn ?? []);
+                  const overlap = unresolvedDeps.filter(d => inferred.has(d.id)).length;
+                  return blockedHeadline(unresolvedDeps.length - overlap, overlap);
+                })()}
               </div>
               <div className="space-y-1.5 ml-6">
                 {prBlockers.map(({ dep, w }) => {

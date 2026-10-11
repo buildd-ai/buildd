@@ -15,6 +15,7 @@ import {
   SIBLING_PROBE_DUE_QUEUE,
   applySiblingProbeResult,
   readSiblingProbeResults,
+  holdsPathClaim,
   takeSiblingProbeRequests,
   type ProbeRowFull,
   type ProbeWorker,
@@ -33,7 +34,7 @@ const workerColumns = {
 type WorkerRow = {
   id: string; taskId: string | null; workspaceId: string; branch: string; startedAt: Date | null; prNumber: number | null;
   observedTouches: unknown;
-  task: { title: string | null; missionId: string | null; deliveryRole?: string | null } | null;
+  task: { title: string | null; missionId: string | null; deliveryRole?: string | null; kind?: string | null; roleSlug?: string | null; pathManifest?: string[] | null } | null;
   workspace: { gitConfig: unknown; dataClass: string | null } | null;
 };
 
@@ -87,11 +88,12 @@ function toProbeWorker(r: WorkerRow): ProbeWorker {
     sensitive: r.workspace?.dataClass === 'sensitive',
     generatedGlobs: derivedGlobs(gitConfig),
     deliveryRole: r.task?.deliveryRole ?? null,
+    ...(r.task && !holdsPathClaim(r.task) ? { readOnly: true } : {}),
   };
 }
 
 const withTaskAndWorkspace = {
-  task: { columns: { title: true, missionId: true, deliveryRole: true } },
+  task: { columns: { title: true, missionId: true, deliveryRole: true, kind: true, roleSlug: true, pathManifest: true } },
   workspace: { columns: { gitConfig: true, dataClass: true } },
 } as const;
 

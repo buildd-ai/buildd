@@ -266,6 +266,24 @@ export const users = pgTable('users', {
   emailIdx: index('users_email_idx').on(t.email),
 }));
 
+/**
+ * One row per person per UTC day they used buildd: the dashboard (a signed-in
+ * session) or MCP over OAuth. API keys and task tokens are not people and are
+ * never recorded. Feeds signups/DAU/MAU on the platform-owner admin API
+ * (apps/web/src/lib/admin/growth.ts). Written at most once per person per day
+ * per instance, ON CONFLICT DO NOTHING.
+ */
+export const userActiveDays = pgTable('user_active_days', {
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  day: date('day', { mode: 'string' }).notNull(),
+  // The surface that first recorded the day.
+  firstSurface: text('first_surface').notNull().$type<'web' | 'mcp'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.userId, t.day] }),
+  dayIdx: index('user_active_days_day_idx').on(t.day),
+}));
+
 export const accounts = pgTable('accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
   type: text('type').notNull().$type<'user' | 'service' | 'action'>(),
@@ -1258,6 +1276,10 @@ export const missions = pgTable('missions', {
   // idempotency half of debouncing a burst of dev merges. Null means never
   // refreshed (or opted in after the column existed).
   branchRefreshHeadSha: text('branch_refresh_head_sha'),
+  // When the branch was last confirmed to contain trunk (a merge, a 204, or a
+  // fresh cut). The daily backstop reads it (docs/specs/mission-branch-refresh.md):
+  // a refresh otherwise only runs when a mission task starts. Null reads as stale.
+  branchRefreshedAt: timestamp('branch_refreshed_at', { withTimezone: true }),
   // Single-flight lease for the refresh itself: a claim sets this to now() +
   // the lease window, and a second caller racing the same mission (the
   // concurrency half of debouncing a burst) only proceeds once it is null or
@@ -6094,7 +6116,7 @@ export const orchestrationDecisions = pgTable('orchestration_decisions', {
   outputTokens: integer('output_tokens'),
   costUsd: real('cost_usd'),
   // Applying-cohort assignment, recorded at draw time (never reconstructed).
-  experimentArm: text('experiment_arm').notNull().$type<'apply' | 'observe'>(),
+  experimentArm: text('experiment_arm').notNull().$type<'apply' | 'observe' | 'human'>(),
   propensity: real('propensity').notNull(),
   applyingFraction: real('applying_fraction').notNull(),
   // The kit's content-free DecisionReceipt (model, usage, latency, attempts).

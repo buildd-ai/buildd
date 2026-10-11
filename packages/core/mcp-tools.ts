@@ -4781,12 +4781,15 @@ export async function handleBuilddAction(
         throw new Error(`Invalid type. Must be one of: ${NOTE_TYPES.join(', ')}`);
       }
 
-      const workerId = resolveWorkerId(params.workerId, ctx);
-      const workerData = await api(`/api/workers/${workerId}`);
+      // A mission-level note needs no worker: an interactive session with an
+      // explicit missionId posts straight to the mission feed.
+      let missionId = params.missionId as string | undefined;
+      const explicitWorker = (params.workerId as string | undefined) || ctx.workerId;
+      const workerId = missionId && !explicitWorker ? undefined : resolveWorkerId(params.workerId, ctx);
+      const workerData = workerId ? await api(`/api/workers/${workerId}`) : {};
       const taskId = workerData.taskId || workerData.task?.id;
 
       // Resolve missionId from task context if not provided.
-      let missionId = params.missionId as string | undefined;
       if (!missionId) {
         missionId = workerData.task?.missionId;
       }

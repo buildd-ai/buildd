@@ -1,5 +1,5 @@
 {
-  "id": "1a0397ad-910f-4875-b7b0-c9621f1f9375",
+  "id": "fde4f92d-a0ec-4c77-868e-4cc29a0a0c87",
   "prevId": "af06a517-ea48-47a6-8b90-83eb6360a422",
   "version": "7",
   "dialect": "postgresql",
@@ -9555,12 +9555,6 @@
         "end_reason": {
           "name": "end_reason",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "busy_since": {
-          "name": "busy_since",
-          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -22394,6 +22388,82 @@
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.user_active_days": {
+      "name": "user_active_days",
+      "schema": "",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "day": {
+          "name": "day",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "first_surface": {
+          "name": "first_surface",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "user_active_days_day_idx": {
+          "name": "user_active_days_day_idx",
+          "columns": [
+            {
+              "expression": "day",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "user_active_days_user_id_users_id_fk": {
+          "name": "user_active_days_user_id_users_id_fk",
+          "tableFrom": "user_active_days",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "user_active_days_user_id_day_pk": {
+          "name": "user_active_days_user_id_day_pk",
+          "columns": [
+            "user_id",
+            "day"
+          ]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},

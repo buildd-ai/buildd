@@ -407,8 +407,9 @@ function buildConflictDescription(
    git fetch origin
    git merge origin/dev   # or origin/main — use the PR's actual base branch
    \`\`\`
-3. Resolve all conflicts on the merits — keep both intents, do NOT use blanket \`--ours\` or \`--theirs\`.
-   A conflict in a Drizzle \`meta/_journal.json\` or snapshot is a migration-index collision, not text to merge: resolve the rest, then regenerate this branch's migration at the next free index — \`bun run migrations:renumber --base=origin/<the PR base branch>\` where the repo defines it, otherwise take the base's journal and snapshots, delete this branch's migration and re-run \`drizzle-kit generate\`.
+3. Where the repo defines it, run \`bun run conflicts:generated\` first: it regenerates the conflicted files a script writes (a specs index, the Drizzle journal, snapshots and migrations, a lint baseline) instead of merging their text, and lists every conflict left.
+   Resolve those on their merits — keep both intents, do NOT use blanket \`--ours\` or \`--theirs\` — then run it again to finish the generated files it was waiting on.
+   Without it: a conflict in a Drizzle \`meta/_journal.json\` or snapshot is a migration-index collision, not text to merge: resolve the rest, then regenerate this branch's migration at the next free index — \`bun run migrations:renumber --base=origin/<the PR base branch>\` where the repo defines it, otherwise take the base's journal and snapshots, delete this branch's migration and re-run \`drizzle-kit generate\`.
 4. Run the test suite and verify correctness before pushing.
 5. ${pushStep}
 

@@ -114,6 +114,9 @@
     "apps/web/src/app/api/runner/credential-refresh/route.ts": {
       "apps/web/src/lib/notify.ts": "notifications"
     },
+    "apps/web/src/app/api/tasks/[id]/closed-pr/route.ts": {
+      "apps/web/src/lib/pr-supersession.ts": "reviews-merge"
+    },
     "apps/web/src/app/api/tasks/[id]/route.ts": {
       "apps/web/src/lib/evidence-inline.ts": "knowledge",
       "apps/web/src/lib/mission-feed.ts": "missions",
