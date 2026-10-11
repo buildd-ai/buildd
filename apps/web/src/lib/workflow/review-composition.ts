@@ -20,7 +20,7 @@
  */
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { isCiVerifiedGeneratedPath } from '@buildd/core/generated-artifacts';
+import { isCiVerifiedGeneratedPath, isMigrationSqlPath } from '@buildd/core/generated-artifacts';
 import { isReleaseBranchPr } from '@buildd/core/release-strategy';
 import type { Exec } from './kernel';
 import type { CompositionAttestation, CompositionConstituent, ConstituentEvidence, NovelDelta, RoundStatus, Verdict } from './types';
@@ -197,6 +197,32 @@ export function classifyRefreshMerge(t: RefreshMergeTrees): string[] {
   return novel.sort();
 }
 
+/**
+ * Migrations the merge only moved: a mission-side `.sql` the merge no longer
+ * has, paired with a new `.sql` in the merge (on neither side) holding the
+ * same blob. That is the generated-conflict resolver renumbering this
+ * branch's migration past trunk's (scripts/resolve-generated-conflicts.ts),
+ * already reviewed on the mission side at its old index. Matched one to one;
+ * anything else under drizzle/ that the merge decided stays novel, since a
+ * hand-written step there is invisible to CI.
+ */
+export function renumberedMigrations(t: RefreshMergeTrees): Set<string> {
+  const left = Object.keys(t.ours).filter((p) => isMigrationSqlPath(p) && t.merged[p] === undefined);
+  const arrived = Object.keys(t.merged)
+    .filter((p) => isMigrationSqlPath(p) && t.ours[p] === undefined && t.theirs[p] === undefined)
+    .sort();
+  const out = new Set<string>();
+  const used = new Set<string>();
+  for (const p of arrived) {
+    const q = left.find((c) => !used.has(c) && t.ours[c] === t.merged[p]);
+    if (!q) continue;
+    used.add(q);
+    out.add(p);
+    out.add(q);
+  }
+  return out;
+}
+
 export interface ConstituentDelivery {
   deliveryId: string;
   approvedHeads: string[];
@@ -277,7 +303,8 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
     c.files.forEach((f) => covered.add(f));
     if (c.parents.length > 1 && input.refresh && !c.mergeParentsInBase && c.refreshMerge !== undefined) {
       if (!c.refreshMerge) { unverifiable = unverifiable ?? `refresh_merge_unreadable:${c.sha.slice(0, 12)}`; continue; }
-      const paths = classifyRefreshMerge(c.refreshMerge).filter((f) => !isCiVerifiedGeneratedPath(f));
+      const moved = renumberedMigrations(c.refreshMerge);
+      const paths = classifyRefreshMerge(c.refreshMerge).filter((f) => !isCiVerifiedGeneratedPath(f) && !moved.has(f));
       paths.forEach((f) => resolutionPaths.add(f));
       if (paths.length) novel.push({ sha: c.sha, reason: 'refresh_merge_resolution', paths });
       continue;

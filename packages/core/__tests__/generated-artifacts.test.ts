@@ -2,10 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import { isCiVerifiedGeneratedPath, isGeneratedArtifactPath } from '../generated-artifacts';
 
 describe('generated artifacts', () => {
-  test('CI regenerates and compares the specs index and every drizzle file', () => {
+  test('CI regenerates and compares the specs index and the drizzle journal and snapshots', () => {
     expect(isCiVerifiedGeneratedPath('docs/specs/INDEX.md')).toBe(true);
     expect(isCiVerifiedGeneratedPath('packages/core/drizzle/meta/_journal.json')).toBe(true);
-    expect(isCiVerifiedGeneratedPath('packages/core/drizzle/0290_fat_hemingway.sql')).toBe(true);
+    expect(isCiVerifiedGeneratedPath('packages/core/drizzle/meta/0290_snapshot.json')).toBe(true);
+  });
+  test('a migration .sql is generated but not CI-verified: a hand-written step passes the up-to-date check', () => {
+    expect(isGeneratedArtifactPath('packages/core/drizzle/0290_fat_hemingway.sql')).toBe(true);
+    expect(isCiVerifiedGeneratedPath('packages/core/drizzle/0290_fat_hemingway.sql')).toBe(false);
   });
   test('the design-check baseline is generated but only ratcheted, so not CI-verified', () => {
     expect(isGeneratedArtifactPath('scripts/design-check.baseline.json')).toBe(true);
