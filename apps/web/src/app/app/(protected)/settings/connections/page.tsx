@@ -6,6 +6,7 @@ import { teamIdsHolding } from '../_lib/settings-permissions';
 import ConnectionsSection from './ConnectionsSection';
 import ConnectionsClient from './connectors/ConnectionsClient';
 import CatalogSection from './connectors/CatalogSection';
+import AgentAccessSection from './connectors/AgentAccessSection';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +18,9 @@ export const dynamic = 'force-dynamic';
  * on, so it is read for the signed-in user only.
  *
  * The team's: MCP connectors agents can call (add, share, delete), which
- * workspaces get each one, and the catalog. Each control follows
+ * workspaces get each one, the catalog with each provider's real state, and
+ * Agent access: what agents asked for, what they hold, and the team policy
+ * that answers (`?request=<id>` focuses one request). Each control follows
  * manage_connectors in the team it acts on, with that team's overrides: the
  * API refuses the same writes. next.config redirects /app/connections and the
  * old /app/settings/connectors here with their query, so the OAuth callback's
@@ -26,9 +29,9 @@ export const dynamic = 'force-dynamic';
 export default async function ConnectionsSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ connected?: string; error?: string }>;
+  searchParams: Promise<{ connected?: string; error?: string; request?: string }>;
 }) {
-  const [{ user, teams, currentTeamId, workspaces, perms, permsByTeam }, { connected, error }] = await Promise.all([
+  const [{ user, teams, currentTeamId, workspaces, perms, permsByTeam }, { connected, error, request }] = await Promise.all([
     loadSettingsContext(),
     searchParams,
   ]);
@@ -55,7 +58,12 @@ export default async function ConnectionsSettingsPage({
         currentTeamId={currentTeamId}
         manageableTeamIds={teamIdsHolding(permsByTeam, 'manage_connectors')}
       />
-      <CatalogSection />
+      <CatalogSection teamId={currentTeamId} />
+      <AgentAccessSection
+        teamId={currentTeamId}
+        workspaces={workspaces.filter((ws) => ws.teamId === currentTeamId).map((ws) => ({ id: ws.id, name: ws.name }))}
+        focusRequestId={request ?? null}
+      />
     </SettingsPage>
   );
 }

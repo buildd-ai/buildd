@@ -334,6 +334,40 @@ async function checkUse(principal: AgentPrincipal, grants: GrantRecord[], use: C
 }
 
 /**
+ * May this run call this native tool on this connector under a grant, now?
+ * The connector gateway's grant source. A tool call does not name a
+ * capability, so every live grant on the connector is tried, each under its
+ * own capability with the same fresh checks as `authorizeCapabilityUse`
+ * (task, worker, role, exact tool, risk, resource, environment, connector
+ * state, policy). The gateway writes the audit row; this does not.
+ */
+export async function authorizeConnectorToolUse(
+  principal: AgentPrincipal,
+  use: Omit<CapabilityUse, 'capability'> & { connectorId: string },
+  now: Date = new Date(),
+): Promise<UseOutcome> {
+  const rows = await db.query.capabilityGrants.findMany({
+    where: and(
+      eq(capabilityGrants.workerId, principal.workerId),
+      eq(capabilityGrants.status, 'granted'),
+      eq(capabilityGrants.connectorId, use.connectorId),
+    ),
+  });
+  if (rows.length === 0 || !principal.teamId) return { allowed: false, reasonCode: 'no_grant' };
+  const run = await loadRunState(principal.taskId, principal.workerId);
+  const rules = await loadPolicyRules(principal.teamId);
+  const rp: RequestPrincipal = { teamId: principal.teamId, workspaceId: principal.workspaceId, taskId: principal.taskId, workerId: principal.workerId, roleSlug: run.roleSlug };
+  let last: UseRefusal | 'no_grant' = 'no_grant';
+  for (const g of rows.map(toGrantRecord)) {
+    const candidate = await liveCandidate(g, run.roleSlug, now);
+    const refusal = checkGrantUse(g, { ...use, capability: g.capability }, { principal: rp, taskStatus: run.taskStatus, workerStatus: run.workerStatus, rules, candidate, now });
+    if (!refusal) return { allowed: true, grantId: g.id, expiresAt: g.expiresAt! };
+    last = refusal;
+  }
+  return { allowed: false, reasonCode: last };
+}
+
+/**
  * The model.inference grant source the inference route was waiting on. Same
  * live checks as any use (task, worker, role, policy), then hands the adapter
  * its grant shape; the adapter re-checks every field again.

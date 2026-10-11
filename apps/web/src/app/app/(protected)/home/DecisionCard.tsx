@@ -32,6 +32,7 @@ export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone
   const q = item.queue;
   const merge = q?.chip === 'MERGE' && q.prNumber != null && !!q.workspaceId;
   const ci = item.label === 'tests failing' && q?.prNumber != null && !!q.workspaceId;
+  const access = q?.chip === 'ACCESS' && !!q.accessRequestId;
   const blocked = merge ? q?.missionMergeBlockedReason : item.strand?.blockedReason;
   const recordStrand = (label: string) => {
     if (!item.strand) return;
@@ -68,8 +69,23 @@ export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone
     } catch (e) { if (merge) setRetrySafe(false); setError(e instanceof Error ? e.message : 'Could not reach the server.'); }
     finally { setBusy(false); }
   }
+  // An access request is decided in place: the lease is the one the agent asked
+  // for (approval can only narrow it; Settings offers shorter ones). The server
+  // decides; a repeat click or a decision someone else made reads as such.
+  async function decideAccess(decision: 'approve' | 'deny') {
+    if (busy || !q?.accessRequestId) return;
+    setBusy(true); setError(null);
+    try {
+      const res = await fetch(`/api/agent-capabilities/requests/${encodeURIComponent(q.accessRequestId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) });
+      const data = await res.json().catch(() => ({})) as { error?: string; message?: string; grant?: { status?: string } };
+      if (res.ok) { onDone(item.key, decision === 'approve' ? 'approved' : 'denied'); router.refresh(); }
+      else setError(res.status === 409 && data.grant?.status ? `Someone already decided: this request is ${data.grant.status}.` : data.message || data.error || 'Could not save the decision.');
+    } catch { setError('Could not reach the server.'); }
+    finally { setBusy(false); }
+  }
   let actions: ReactNode;
-  if (merge) actions = <><button className={primary} disabled={busy || !!blocked || !retrySafe} onClick={() => confirm ? void act(`/api/prs/${q.prNumber}/merge`, { workspaceId: q.workspaceId }, 'merged') : setConfirm(true)}>{busy ? 'Merging…' : confirm ? 'Confirm merge' : 'Merge'}</button>{confirm ? <button className={secondary} onClick={() => setConfirm(false)}>Cancel</button> : <Link href={q.prUrl ?? item.href} className={secondary}>{q.docFixTaskId ? 'Claims' : 'Review PR'}</Link>}</>;
+  if (access) actions = <><button className={primary} disabled={busy} onClick={() => void decideAccess('approve')}>{busy ? 'Saving…' : q!.accessApproveLabel ?? 'Approve'}</button><button className={secondary} disabled={busy} onClick={() => void decideAccess('deny')}>Deny</button><Link className={secondary} href={item.primary?.href ?? item.href}>Details</Link></>;
+  else if (merge) actions = <><button className={primary} disabled={busy || !!blocked || !retrySafe} onClick={() => confirm ? void act(`/api/prs/${q.prNumber}/merge`, { workspaceId: q.workspaceId }, 'merged') : setConfirm(true)}>{busy ? 'Merging…' : confirm ? 'Confirm merge' : 'Merge'}</button>{confirm ? <button className={secondary} onClick={() => setConfirm(false)}>Cancel</button> : <Link href={q.prUrl ?? item.href} className={secondary}>{q.docFixTaskId ? 'Claims' : 'Review PR'}</Link>}</>;
   else if (q?.humanReview && q.prUrl) actions = <><Link className={primary} href={`${q.prUrl}/files`}>{q.humanReview.label}</Link>{item.details && <Link className={secondary} href={item.details.href}>{item.details.label}</Link>}</>;
   else if (ci) actions = <><button className={primary} disabled={busy} onClick={() => void act(`/api/prs/${q!.prNumber}/retry-ci`, { workspaceId: q!.workspaceId }, 'fix started')}>{busy ? 'Starting…' : 'Start fix'}</button><Link className={secondary} href={q?.prUrl ? `${q.prUrl}/checks` : item.href}>Logs</Link></>;
   else if (item.strand) actions = <><button className={primary} disabled={busy || !!blocked} onClick={() => { recordStrand('continue-on-runner'); void act(`/api/missions/${encodeURIComponent(item.strand!.missionId)}`, { executor: 'runner' }, 'moved to runner', 'PATCH'); }}>{busy ? 'Moving…' : 'Move to runner'}</button><button className={secondary} disabled={busy} onClick={() => { recordStrand('wait-for-local'); onDone(item.key, 'kept local'); }}>Keep local</button></>;

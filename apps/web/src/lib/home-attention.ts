@@ -5,7 +5,7 @@ import type { StrandCta } from './mission-list-card';
 import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 import { unifyWorkerQuestion, type UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
-export type AttentionActionType = 'merge' | 'review' | 'answer' | 'decide' | 'approve' | 'reconnect' | 'resolve' | 'fix' | 'check' | 'view' | 'stranded' | 'start' | 'incident';
+export type AttentionActionType = 'merge' | 'review' | 'answer' | 'decide' | 'approve' | 'reconnect' | 'resolve' | 'fix' | 'check' | 'view' | 'stranded' | 'start' | 'incident' | 'access';
 export interface AttentionLink { label: string; href: string }
 
 export interface HomeAttentionItem {
@@ -188,6 +188,10 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
     case 'INCIDENT':
       // The stored escalation-gate verdict (lib/failure-incident-escalation.ts) put it here; its reason is the sentence.
       return make({ label: 'incident', tone: 'error', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'Open incident', href: text(i.fixHref) ?? '' } });
+    case 'ACCESS':
+      // A pending capability request (lib/capability-grants-needs-you.ts): what was asked is the title,
+      // who asked and why is the sentence. The card approves or denies in place; the link is the fallback.
+      return make({ label: 'access request', tone: 'warning', title: text(i.accessAsk), sentence: text(i.failureMessage), actionType: 'access', primary: { label: text(i.fixLabel) ?? 'Review', href: text(i.fixHref) ?? '' }, details: taskHref ? { label: 'View task', href: taskHref } : null });
     case 'FAILED':
       return make({ label: 'failed', tone: 'error', title: subject, sentence: text(i.failureMessage), actionType: 'view', primary: { label: 'View task', href: taskHref ?? subjectHref ?? '' } });
     default:
@@ -295,6 +299,7 @@ const ACTION_NOUN: Record<AttentionActionType, [string, string]> = {
   approve: ['approval', 'approvals'], reconnect: ['reconnect', 'reconnects'], resolve: ['blocker', 'blockers'], fix: ['failing PR', 'failing PRs'],
   check: ['check', 'checks'], view: ['failed task', 'failed tasks'], stranded: ['stranded mission', 'stranded missions'], start: ['mission to start', 'missions to start'],
   incident: ['incident', 'incidents'],
+  access: ['access request', 'access requests'],
 };
 
 /** "review" / "reviews", the same nouns the headline sub-line uses. */
