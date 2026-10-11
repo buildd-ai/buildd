@@ -561,7 +561,7 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
         <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
           <div className="min-w-0 flex-1">
             <p className="font-mono text-[12px] md:text-[13px] text-text-muted [overflow-wrap:anywhere]">
-              <a href={prUrl} target="_blank" rel="noopener noreferrer" data-testid="pr-outcome-number" className="text-accent-text font-semibold hover:underline max-md:inline-flex max-md:items-center max-md:min-h-11 max-md:-my-[14px] max-md:px-1 max-md:-mx-1">#{prNumber}</a>
+              <a href={prUrl} target="_blank" rel="noopener noreferrer" data-testid="pr-outcome-number" className="text-accent-text font-semibold hover:underline max-md:inline-flex max-md:items-center max-md:min-h-11 max-md:-my-[14px] max-md:px-1.5 max-md:-mx-1.5">#{prNumber}</a>
               {outcome.repoLabel && <> · {outcome.repoLabel}</>}
               {lifecycle && <> · <span className={merged ? 'text-status-success' : ''}>{lifecycle.label.toLowerCase()}</span></>}
               {!merged && mergeable === false && <> · <span className="text-status-warning">{mergeableState === 'dirty' ? 'merge conflicts' : 'not mergeable'}</span></>}
