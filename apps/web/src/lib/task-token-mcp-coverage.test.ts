@@ -179,6 +179,7 @@ const REFUSED_ADMIN_ACTIONS: Record<string, string> = {
   trigger_release: 'a release ships the whole workspace, not one mission',
   release_status: 'reads the release gate through the admin release routes; not one mission',
   correct_task_result: "overrides a completed task's verdict, an owner's judgement",
+  update_incident: 'acknowledges or resolves a team-wide sentinel incident, not one mission',
   consolidate_knowledge: "maintains the team's knowledge store; archives entries",
   memory_delete: "permanently deletes from the team's memory",
 };

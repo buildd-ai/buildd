@@ -78,7 +78,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   create_artifact: 'tasks:write', upload_artifact: 'tasks:write', update_artifact: 'tasks:write', link_artifact: 'tasks:write', list_artifact_links: 'tasks:read',
   manage_specs: 'tasks:write',
   list_schedules: 'tasks:read', trace_schedule: 'tasks:read', create_schedule: 'schedules:write', update_schedule: 'schedules:write', pause_schedules: 'schedules:write', delete_schedule: 'schedules:write',
-  explain: 'analytics:read', get_error_traces: 'analytics:read', get_failure_analytics: 'analytics:read', list_incidents: 'analytics:read', dispatch_health: 'analytics:read', read_evidence: 'analytics:read',
+  explain: 'analytics:read', get_error_traces: 'analytics:read', get_failure_analytics: 'analytics:read', list_incidents: 'analytics:read', update_incident: 'admin', dispatch_health: 'analytics:read', read_evidence: 'analytics:read',
   get_budget_forecast: 'analytics:read', get_usage_stats: 'analytics:read', get_manifest_coverage: 'analytics:read', get_path_claim_stats: 'analytics:read', get_decision_stats: 'analytics:read', list_runners: 'analytics:read', list_connectors: 'analytics:read',
   resolve_capability: 'analytics:read',
   request_capability: 'tasks:write',
