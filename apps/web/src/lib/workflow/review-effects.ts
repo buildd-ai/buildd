@@ -392,8 +392,9 @@ const dispatchFix: EffectHandler = async (e) => {
 
 /**
  * The GitHub review body. A composition delta round (§5.9, S33) reviewed only
- * the release-only paths, so its approval says so: it is not a reviewer
- * verdict on the whole release.
+ * the paths new to the composed PR (a release's own changes, or what a mission
+ * branch refresh's merge resolved), so its approval says so: it is not a
+ * reviewer verdict on the whole PR.
  */
 export function postReviewBody(
   event: 'APPROVE' | 'REQUEST_CHANGES',
@@ -405,8 +406,8 @@ export function postReviewBody(
   if (sc?.compositionDelta === true) {
     const paths = Array.isArray(sc.paths) ? sc.paths.map(String) : [];
     const list = paths.length ? `\n\n${paths.map((p) => `- \`${p}\``).join('\n')}` : '';
-    const text = `Release-only changes approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}). `
-      + `This review covers only the ${paths.length} new ${paths.length === 1 ? 'path' : 'paths'} the release adds; `
+    const text = `New changes approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}). `
+      + `This review covers only the ${paths.length} ${paths.length === 1 ? 'path' : 'paths'} new to this PR; `
       + `every other change was reviewed at its own head and is not re-reviewed here.${list}\n\n${out.summary ?? ''}`;
     return text.trimEnd();
   }

@@ -490,8 +490,8 @@ export interface CreateReviewerTaskParams {
    */
   workflowRound?: { deliveryId: string; roundId: string; round: number };
   /**
-   * Set by the kernel for the delta round of a composed PR (release or mission
-   * integration PR, docs/specs/workflow-state-kernel.md §5.9): every other
+   * Set by the kernel for the delta round of a composed PR (release, mission
+   * integration or mission branch refresh PR, docs/specs/workflow-state-kernel.md §5.9): every other
    * change in it was already reviewed at its own head and mechanically
    * attested, so this review covers ONLY these novel paths.
    */
@@ -510,6 +510,9 @@ export function compositionScopeSection(scope: { novelDeltaPaths: string[] }): s
     'review covers, under the normal policy (escalate or request changes on them exactly as you would on any PR):',
     '',
     ...scope.novelDeltaPaths.map((p) => `- \`${p}\``),
+    '',
+    'If this PR merges its base branch in (a mission branch refresh), these are the paths the merge decided:',
+    'check that each one keeps both sides\' changes, and that nothing either side added was dropped.',
     '',
   ].join('\n');
 }
