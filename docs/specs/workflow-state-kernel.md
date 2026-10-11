@@ -1013,7 +1013,10 @@ Contract:
    Entries recorded after a terminal state appear in the history below the headline
    only. "Approved" cannot head a delivery whose current head has red CI, because that
    delivery is `REPAIRING`, not `APPROVED`. A stuck "Reviewing" is impossible once
-   the round it names is decided or superseded.
+   the round it names is decided or superseded. "Repairing" heads only an agent
+   repair: `REPAIRING(behind)` (a mechanical base refresh) reads "Updating branch",
+   and a plain `APPROVED` reads "Approved · awaiting merge" until the merge fact.
+   The task page's track uses the same mapping (docs/specs/task-page.md, State mapping).
 5. **Exactly one comment.** The effect finds comments by marker; if more than one exists
    it keeps the oldest, updates it, and minimises or deletes the rest.
 6. **Always created.** `PrBound` enqueues a render regardless of who opened the PR
