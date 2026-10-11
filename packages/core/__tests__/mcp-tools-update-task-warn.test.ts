@@ -347,8 +347,8 @@ describe('create_task — status line reflects actual task state', () => {
       ctx,
     );
 
-    expect(result.content[0].text).toContain('Queued');
-    expect(result.content[0].text).not.toContain('Assigned');
+    expect(result.content[0].text).toContain('Created and queued');
+    expect(result.content[0].text).not.toContain('Claimed');
   });
 
   it('shows Assigned when status is assigned', async () => {
@@ -362,8 +362,8 @@ describe('create_task — status line reflects actual task state', () => {
       ctx,
     );
 
-    expect(result.content[0].text).toContain('Assigned');
-    expect(result.content[0].text).not.toContain('Queued');
+    expect(result.content[0].text).toContain('Claimed');
+    expect(result.content[0].text).not.toContain('queued');
   });
 
   it('still shows Deferred when startAt is set, regardless of status', async () => {
@@ -385,8 +385,8 @@ describe('create_task — status line reflects actual task state', () => {
     );
 
     expect(result.content[0].text).toContain('Deferred');
-    expect(result.content[0].text).not.toContain('Queued');
-    expect(result.content[0].text).not.toContain('Assigned');
+    expect(result.content[0].text).not.toContain('Created and queued');
+    expect(result.content[0].text).not.toContain('Claimed');
   });
 });
 
