@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-10-11
 summary: A running agent MUST get a brokered decision-model answer only under a live task-scoped model.inference grant and a reserved budget, never seeing a key or choosing an endpoint, and failing closed.
 domain: auth
-surfaces: [apps/web/src/lib/capability-model-inference.ts, apps/web/src/lib/capability-model-inference-ledger.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.ts, apps/web/src/lib/agent-capabilities/principal.ts, packages/core/decision-client.ts]
+surfaces: [apps/web/src/lib/capability-model-inference.ts, apps/web/src/lib/capability-model-inference-ledger.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.ts, packages/core/decision-client.ts]
 related: [agent-capabilities, credential-isolation, decision-kinds]
 keywords: [model.inference, Jev, TypeSafe, OpenRouter, LiteLLM, brokered inference, agent eval, decide, grant, budget ledger]
 verified_by: [apps/web/src/lib/capability-model-inference.test.ts, apps/web/tests/db/model-inference-ledger.test.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.test.ts, apps/web/src/lib/task-token-routes.test.ts]
