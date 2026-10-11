@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ActivityTape, visibleAxisLabels } from './WorkerActivityTimeline';
+import { ActivityTape, visibleAxisLabels, visibleFlagLabels } from './WorkerActivityTimeline';
 
 // Regression (demo capture, live task): the tape's axis had no time at its right
 // edge, so it read as ending at the last progress flag (3:41) while ELAPSED said
@@ -58,5 +58,15 @@ describe('visibleAxisLabels', () => {
 
   it('shows every label on a wide strip', () => {
     expect(visibleAxisLabels(1000, axis, '0:56', true)).toEqual([true, true, true, true]);
+  });
+});
+
+describe('visibleFlagLabels', () => {
+  it('hides a label that would print over its neighbour', () => {
+    expect(visibleFlagLabels(1000, [{ pos: 0.01, at: '0:05' }, { pos: 0.02, at: '0:09' }, { pos: 0.5, at: '1:40' }])).toEqual([false, true, true]);
+  });
+  it('keeps all when spaced, and when unmeasured', () => {
+    expect(visibleFlagLabels(1000, [{ pos: 0.1, at: '0:05' }, { pos: 0.5, at: '1:40' }])).toEqual([true, true]);
+    expect(visibleFlagLabels(null, [{ pos: 0, at: 'a' }, { pos: 0, at: 'b' }])).toEqual([true, true]);
   });
 });
