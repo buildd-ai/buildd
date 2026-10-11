@@ -58,7 +58,7 @@ describe('failureProblemLine', () => {
    const html = renderToStaticMarkup(<FailureGroupsSection groups={data([
      w('a', "You've hit your session limit"), w('b', "You've hit your session limit"),
      w('c', 'TypeError: x is undefined'), w('d', 'TypeError: x is undefined'),
-     w('e', 'Unique failure'),
+     w('e', 'Unique failure', 'reassigned'),
    ])} headline={null} windowLabel="7d" now={NOW} />);
    expect(html).toContain('data-testid="failure-kind-platform"');
    expect(html).toContain('data-testid="failure-kind-work"');
@@ -66,3 +66,44 @@ describe('failureProblemLine', () => {
    expect(html.match(/data-testid="failure-group"/g)?.length).toBe(2);
    expect(html).not.toContain('Unique failure');
  });
+
+describe('Failures for an outside reader', () => {
+  it('keeps work that already landed out of the list, with one quiet line', () => {
+    const html = renderToStaticMarkup(<FailureGroupsSection groups={data([
+      w('a', 'Superseded — review cancelled · already merged', 'condition_unmet'),
+      w('b', 'Superseded — fix cancelled · already merged', 'condition_unmet'),
+      w('c', 'TypeError: x is undefined'),
+    ])} headline={{ failureRatePct: 3, failed: 1, terminal: 30 }} windowLabel="7d" now={NOW} />);
+    expect(html).not.toContain('Superseded');
+    expect(html).toContain('2 stopped because the work already landed');
+    expect(html.match(/data-testid="failure-group"/g)?.length ?? 0).toBe(0);
+  });
+
+  it("shows a platform cause's incident state as a link, with no button to report it", () => {
+    const groups = { ...buildFailureGroups({
+      failures: [w('a', 'Stale worker expired (no update for 30+ minutes)', 'infra_failure'), w('b', 'Stale worker expired (no update for 30+ minutes)', 'infra_failure')],
+      traces: [],
+      incidents: [{ id: 'inc-1', line: 'buildd is fixing this', resolved: false, workerIds: ['a'], taskIds: [], lastSeenAt: at(1) }],
+    }), truncated: false };
+    const html = renderToStaticMarkup(<FailureGroupsSection groups={groups} headline={null} windowLabel="7d" now={NOW} />);
+    expect(html).toContain('href="/app/incidents/inc-1"');
+    expect(html).toContain('buildd is fixing this');
+    expect(html).not.toContain('<button type="button" data-testid="file');
+    expect(html).not.toMatch(/file with buildd|report to buildd/i);
+  });
+
+  it("gives a task cause its one line on what to do, in the row", () => {
+    const html = renderToStaticMarkup(<FailureGroupsSection groups={data([w('a', 'x', 'output_unmet'), w('b', 'y', 'output_unmet')])} headline={null} windowLabel="7d" now={NOW} />);
+    expect(html).toContain('data-testid="failure-group-todo"');
+    expect(html).toContain('The task needed a PR or an artifact');
+  });
+
+  it('never shows a raw error string as a row heading', () => {
+    const html = renderToStaticMarkup(<FailureGroupsSection groups={data([
+      w('a', 'Credential lookup failed for secret 0b5e9a12 while refreshing the token for this team'),
+      w('b', 'Credential lookup failed for secret 77aa1234 while refreshing the token for this team'),
+    ])} headline={null} windowLabel="7d" now={NOW} />);
+    expect(html).not.toContain('Credential lookup');
+    expect(html).not.toContain('…');
+  });
+});

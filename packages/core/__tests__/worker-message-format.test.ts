@@ -162,3 +162,37 @@ describe('duplicate deliveries', () => {
     expect(out.match(/AGENT MESSAGE/g)?.length).toBe(1);
   });
 });
+
+// /respond's interactive path: a person answering the session's own ask_human
+// question. It must not read as another agent's message.
+describe('human answer rendering', () => {
+  const answer = (body: Record<string, unknown>): WorkerMessage => ({
+    id: 'msg-a',
+    type: 'answer',
+    fromTaskId: 'task-self',
+    toTaskId: 'task-self',
+    fromWorkerId: null,
+    sentAt: '2026-09-05T00:00:00.000Z',
+    hopCount: 0,
+    body,
+  });
+
+  it('names it a human answer to your question, with the question and the answer', () => {
+    const out = formatWorkerMessages([answer({ source: 'human', text: 'Use JWT', question: 'Which auth?' })]);
+    expect(out).toContain('HUMAN ANSWER');
+    expect(out).toContain('Which auth?');
+    expect(out).toContain('Use JWT');
+    expect(out).not.toContain('AGENT MESSAGE');
+  });
+
+  it('renders without the question when it was withheld', () => {
+    const out = formatWorkerMessages([answer({ source: 'human', text: 'Use JWT' })]);
+    expect(out).toContain('HUMAN ANSWER');
+    expect(out).toContain('Use JWT');
+  });
+
+  it('an agent answer still renders as an agent message', () => {
+    const out = formatWorkerMessages([answer({ text: 'I land it in 5m' })]);
+    expect(out).toContain('AGENT MESSAGE');
+  });
+});

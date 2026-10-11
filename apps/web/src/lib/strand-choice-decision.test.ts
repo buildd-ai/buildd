@@ -182,6 +182,29 @@ describe('decision ledger recording', () => {
       });
     });
   }
+  it('a team model with a stored measurement acts at its measured threshold; without one it falls back', async () => {
+    const clef = async () => ({ ...await okDecide('wait-for-local', 0.7)(), model: 'clef' });
+    const measured = (fingerprint: string) => async () => [{
+      kind: 'mission_strand_choice', model: 'clef', threshold: 0.6, precisionLower: 0.95, coverage: 0.3, n: 50, evalRunId: null,
+      measuredFingerprint: fingerprint, status: 'active' as const, setByAccountId: null, setAt: new Date(), reason: null,
+    }];
+    const run = async (measurements: () => Promise<any[]>) => {
+      const rows: any[] = [];
+      const result = await adviseStrandChoice(facts, {
+        resolveAccess: allowed as any, decide: clef as any, measurements,
+        cache: new Map(), log: () => {}, recordDecision: async row => { rows.push(row); return null; },
+      });
+      return { result, row: rows[0] };
+    };
+    const acts = await run(measured('ms1'));
+    expect(acts.row).toMatchObject({ model: 'clef', applied: true, status: 'applied', minConfidence: 0.6, appliedAnswer: 'wait-for-local' });
+    for (const m of [measured('ms0'), async () => []]) {
+      const { result, row } = await run(m);
+      expect(result).toBeNull();
+      expect(row).toMatchObject({ applied: false, status: 'fallback' });
+    }
+  });
+
   for (const reason of ['missing_key', 'timeout', 'sensitive', 'non_jev', 'throw']) {
     it(`records fallback for ${reason}`, async () => {
       const rows: any[] = [];

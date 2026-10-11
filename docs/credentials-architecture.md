@@ -95,7 +95,7 @@ credential at once. `POST /api/secrets` still writes the purpose it is given.
 
 Writing or deleting a team-wide, workspace-wide or account-wide credential
 requires a named team permission (`docs/specs/team-permissions.md`), resolved
-through `can()` so a team's permission overrides apply:
+through `can()`:
 
 - `manage_team_model_keys` — `inference_key`, `decision_key`, `cloudflare_token`.
 - `manage_team_credentials` — every other purpose `/api/secrets` stores, and the
@@ -144,16 +144,17 @@ four characters and health, never plaintext.
 #### Personal keys on agent runs (`teams.credential_policy`)
 
 A personal Anthropic or OpenAI key (the `inference_key` rows above) can also
-pay for agent runs, only for tasks the person started, and only when the team
-has explicitly set `credential_policy`. The host claim decides per task in
+pay for agent runs, only for tasks the person started. That is the default: a
+team that never chose a policy (`credential_policy` NULL) gets `personal_first`.
+The host claim decides per task in
 `apps/web/src/app/api/workers/claim/personal-credential-injection.ts`, through
 `resolveProviderCredential` (`@buildd/core/providers/resolve`), with the
 requester from `resolveTaskRequesterUserId`:
 
 | `credential_policy` | Agent run |
 |---|---|
-| NULL | Team credentials exactly as above; nothing personal is read and the claim gains no field. |
-| `team` | The same, plus a non-secret `credentialDecision` marker. |
+| NULL | As `personal_first`. The legacy `inference_key_policy` counts only as `team_or_own` or `own`; its default `team` is no choice. |
+| `team` | Team credentials exactly as above, nothing personal is read, plus a non-secret `credentialDecision` marker. |
 | `personal_first` | The requester's own key (Anthropic for Claude tasks, OpenAI for Codex) is the only model credential; without one, team credentials. |
 | `personal_only` | The requester's own key, or the task is not claimed (deferral `no_personal_credential`, with the reason: no requester, no key, old runner). |
 

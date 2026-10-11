@@ -30,7 +30,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  teams: { id: 'teams.id', slug: 'teams.slug', permissionOverrides: 'teams.permission_overrides' },
+  teams: { id: 'teams.id', slug: 'teams.slug' },
   teamMembers: { teamId: 'teamMembers.teamId', userId: 'teamMembers.userId', role: 'teamMembers.role' },
 }));
 

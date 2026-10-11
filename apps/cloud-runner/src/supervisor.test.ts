@@ -849,6 +849,26 @@ describe('resumable runs: park and resume', () => {
     expect(h.state.report!.workerId).toBe('worker-p1');
   });
 
+  test("a resume runs under the mode its dispatch carries: an explicit off beats the parked run's", async () => {
+    // Parked under 'deps' (an earlier decision); the workspace opted out since,
+    // so the resume webhook carries 'off'. The resumed container must not get
+    // the parked run's mode back.
+    const h = harness({ config: { resumableRuns: true } });
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-p1', 'BUILDD_PARKED=worker-p1']);
+    h.sup.dispatch({ warmHandover: 'deps' });
+    await h.until(() => h.state.workerId === 'worker-p1');
+    h.fc.exits[0]!.resolve(4);
+    await h.settle();
+    expect(h.state.warmHandover).toBe('deps');
+    h.fc.setStdout([]);
+    expect(h.sup.dispatch({ resumeWorkerId: 'worker-p1', warmHandover: 'off' }).accepted).toBe(true);
+    await h.until(() => h.fc.starts.length === 2);
+    expect(h.state.warmHandover).toBe('off');
+    expect(h.fc.starts[1]!.env.BUILDD_WARM_HANDOVER).toBe('off');
+    h.fc.exits[1]!.resolve(0);
+    await h.settle();
+  });
+
   test('duplicate task.resume: exactly one run', async () => {
     const h = await parkedHarness();
     const a = h.sup.dispatch({ resumeWorkerId: 'worker-p1' });

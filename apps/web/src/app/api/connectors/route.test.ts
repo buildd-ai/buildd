@@ -72,7 +72,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (a: any, b: any) => ({ a, b, op: 'inArray' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   connectors: { teamId: 'teamId', id: 'id', name: 'name' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },

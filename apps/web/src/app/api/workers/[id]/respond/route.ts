@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, missionNotes } from '@buildd/core/db/schema';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { callerOwnsWorker } from '@/lib/worker-owner';
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -15,9 +16,12 @@ import {
   appendInstructionHistory,
   enqueuePendingInstruction,
 } from '@/lib/worker-instructions';
+import { buildWorkerMessage, enqueueWorkerMessage } from '@buildd/core/worker-messages';
+import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import {
   isParked,
   evaluateAnswerPath,
+  evaluateInteractiveAnswerPath,
   describeAnswerPath,
   buildAnswerDeliveryRecord,
   buildContinuationTaskValues,
@@ -39,6 +43,11 @@ import { preflightBackendCredential } from '@/lib/answer-credential-preflight';
 //  - RESUME  — the parked worker's own session is resumed with the answer, in
 //              the worktree it left (unpushed commits and all), keeping the
 //              same task, the same worker row and the same conversation.
+//  - INTERACTIVE — the worker is a person's own MCP session (claim_task,
+//              runner = 'mcp', parked by ask_human). No runner holds it, so the
+//              answer is queued as an `answer` worker message that the
+//              session's receive_messages returns, and the worker goes back to
+//              running. Same task, same worker, no continuation.
 //  - COLD    — the pre-existing behaviour: supersede the worker and insert a
 //              `Continue:` task. Correct when the session is genuinely gone,
 //              and never silent — the reason is recorded and shown.
@@ -74,9 +83,15 @@ export async function POST(
   }
 
   // Verify access: a bearer caller must be the principal that claimed the worker
-  // (lib/worker-owner.ts); the dashboard session path checks workspace membership
+  // (lib/worker-owner.ts), or an admin-level token of the worker's own team —
+  // the same authority as /instruct, so an interactive operator session (the
+  // MCP answer_question action) can unblock a parked worker it did not claim.
+  // The dashboard session path checks workspace membership.
   if (account) {
-    if (!callerOwnsWorker(account, worker)) {
+    const teamAdmin = hasTokenRouteAdminAccess(account, req, 'workers:admin')
+      && !!account.teamId
+      && account.teamId === (worker as any).workspace?.teamId;
+    if (!teamAdmin && !callerOwnsWorker(account, worker)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
   } else if (user) {
@@ -97,6 +112,7 @@ export async function POST(
       workerStatus: worker.status,
       continuationTaskId: (worker as { continuationTaskId?: string | null }).continuationTaskId ?? null,
       answerQueued: isAnswerQueued(worker),
+      interactive: (worker as { runner?: string | null }).runner === INTERACTIVE_WORKER_RUNNER,
     });
     return NextResponse.json(
       {
@@ -127,10 +143,39 @@ export async function POST(
   const isSensitive = (worker as any).workspace?.dataClass === 'sensitive';
   // Sensitive-dataClass workspaces strip milestone labels, leaving { type, ts }.
   const milestones = (worker.milestones as unknown as Array<{ type?: string; label?: string; timestamp: number }>) || [];
-  const waitingFor = worker.waitingFor as { type?: string; prompt: string };
+  const waitingFor = worker.waitingFor as { type?: string; prompt: string; sessionSeenAt?: string };
   const question = waitingFor.prompt;
 
   // ── The decision ──────────────────────────────────────────────────────────
+  //
+  // An interactive session is decided first, before the credential preflight:
+  // it runs on the person's own seat, never on the workspace's managed agent
+  // credential, so that credential's health says nothing about it and a
+  // revoked one must not bounce the answer. A GONE interactive session falls
+  // through: its cold continuation runs on a runner, which the preflight is for.
+  const interactiveDecision = evaluateInteractiveAnswerPath({
+    workerRunner: (worker as { runner?: string | null }).runner ?? null,
+    workerStatus: worker.status,
+    workerUpdatedAt: worker.updatedAt,
+    // The parked session's poll heartbeat (await_answer / receive_messages).
+    sessionSeenAt: waitingFor.sessionSeenAt ?? null,
+  });
+  if (interactiveDecision?.path === 'interactive') {
+    return respondToInteractiveSession({
+      workerId: id,
+      worker,
+      task,
+      message,
+      question,
+      isSensitive,
+      decision: interactiveDecision,
+      deliveryRecord: buildAnswerDeliveryRecord({
+        decision: interactiveDecision,
+        workerId: worker.id,
+        question: isSensitive ? null : question,
+      }),
+    });
+  }
   //
   // Credential health is checked BEFORE choosing a path, not after resuming
   // into an auth failure: a parked question can sit for hours, and the runner
@@ -173,6 +218,8 @@ export async function POST(
     credentialPreflight: preflight.state,
     waitingForType: waitingFor.type ?? null,
     parkedUntil: (worker as { parkedUntil?: Date | null }).parkedUntil ?? null,
+    workerRunner: (worker as { runner?: string | null }).runner ?? null,
+    sessionSeenAt: waitingFor.sessionSeenAt ?? null,
   });
 
   const deliveryRecord = buildAnswerDeliveryRecord({
@@ -302,6 +349,141 @@ async function respondByResume(args: {
     // Same task — the resumed worker continues under it. Callers navigate here.
     taskId: task?.id ?? null,
     workerId,
+    message: describeAnswerPath(decision),
+  });
+}
+
+/**
+ * Interactive path: the worker is a person's own MCP session, parked by
+ * ask_human. The answer is queued as an `answer` worker message on the
+ * worker's own task — the queue `receive_messages` (and update_progress)
+ * serve to an interactive worker and settle by id — and the worker goes back
+ * to `running` at once: unlike a runner resume, no session start is pending,
+ * the session is alive and simply has not read its inbox yet.
+ *
+ * The instruction-history entry shares the message's id, so the session's ack
+ * (`workerMessagesDelivered`) marks it read, and until then a duplicate tap is
+ * recognised as already answered (`isAnswerQueued`).
+ */
+async function respondToInteractiveSession(args: {
+  workerId: string;
+  worker: any;
+  task: any;
+  message: string;
+  question: string;
+  isSensitive: boolean;
+  decision: AnswerPathDecision;
+  deliveryRecord: DeliveryRecord;
+}) {
+  const { workerId, worker, task, message, question, isSensitive, decision, deliveryRecord } = args;
+  const taskId: string | null = task?.id ?? worker.taskId ?? null;
+  if (!taskId) {
+    return NextResponse.json({ error: 'Failed to record response' }, { status: 500 });
+  }
+
+  const answerMessage = buildWorkerMessage({
+    type: 'answer',
+    fromTaskId: taskId,
+    toTaskId: taskId,
+    fromWorkerId: null,
+    body: {
+      // A human answering the session's own question, not another agent.
+      source: 'human',
+      text: message,
+      ...(!isSensitive && question ? { question } : {}),
+      workerId,
+    },
+  });
+
+  // Claim the answer first, atomically, exactly like the other two paths: the
+  // CAS on waitingFor is what stops a double tap from answering twice.
+  const [claimed] = await db
+    .update(workers)
+    .set({
+      status: 'running',
+      waitingFor: null,
+      instructionHistory: appendInstructionHistory(worker.instructionHistory, {
+        id: answerMessage.id,
+        message,
+        isSensitive,
+        deliveryState: 'pending',
+      }),
+      currentAction: 'Answer received — waiting for the session to read it',
+      updatedAt: new Date(),
+    })
+    .where(and(eq(workers.id, workerId), isNotNull(workers.waitingFor)))
+    .returning();
+
+  if (!claimed) return alreadyAnsweredReply(workerId);
+
+  let queued = false;
+  try {
+    queued = await enqueueWorkerMessage(taskId, answerMessage);
+  } catch (err) {
+    console.error(`[Worker ${workerId}] Interactive answer enqueue failed:`, err);
+  }
+  if (!queued) {
+    // No transactions on neon-http: put the question back so the answer can be
+    // given again, rather than leave a running worker with nothing to read.
+    await db
+      .update(workers)
+      .set({
+        status: worker.status,
+        waitingFor: worker.waitingFor,
+        instructionHistory: worker.instructionHistory ?? [],
+        currentAction: worker.currentAction ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(workers.id, workerId));
+    return NextResponse.json({ error: 'Failed to record response' }, { status: 500 });
+  }
+
+  if (task?.id) {
+    // Merged into the LIVE context in SQL: enqueueWorkerMessage just appended
+    // the answer to that same column, and spreading the context read before
+    // it (recordAnswerDelivery) would delete the answer from the queue. The
+    // record names the message so await_answer can find the answer by it even
+    // after the capped queue has evicted it.
+    const record = { ...deliveryRecord, messageId: answerMessage.id };
+    await db
+      .update(tasks)
+      .set({
+        context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('answerDelivery', ${JSON.stringify(record)}::jsonb)` as any,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, task.id))
+      .catch((err: unknown) => {
+        console.error(`[Task ${task.id}] Failed to record answerDelivery:`, err);
+      });
+  }
+
+  // The status changed outside PATCH /api/workers/[id], which normally emits
+  // it: tell every open view the question is gone and the worker is running.
+  const runningEvent = {
+    workerId,
+    taskId,
+    status: 'running',
+    updatedAt: claimed.updatedAt ?? new Date().toISOString(),
+  };
+  await Promise.all([
+    triggerEvent(channels.worker(workerId), events.WORKER_PROGRESS, runningEvent),
+    triggerEvent(channels.task(taskId), events.WORKER_PROGRESS, runningEvent),
+  ]).catch(() => { /* a missed push only leaves a stale card, which /respond explains */ });
+
+  await postAnswerNote({
+    task,
+    workerId,
+    type: 'update',
+    title: 'Answer sent back to the interactive session',
+    body: describeAnswerPath(decision),
+  });
+
+  return NextResponse.json({
+    path: 'interactive',
+    reasonCode: decision.reasonCode,
+    taskId,
+    workerId,
+    messageId: answerMessage.id,
     message: describeAnswerPath(decision),
   });
 }

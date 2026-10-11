@@ -15,7 +15,7 @@ interface Props {
   workspaces: Workspace[];
   currentTeamId: string | null;
   /**
-   * Holds `manage_team_notifications` in the team (overrides applied). False:
+   * Holds `manage_team_notifications` in the team. False:
    * which channels are set and which events fire, read-only. Defaults to true.
    */
   canManage?: boolean;

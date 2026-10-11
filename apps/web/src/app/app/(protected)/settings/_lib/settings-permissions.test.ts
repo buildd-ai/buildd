@@ -6,43 +6,27 @@ const ALL = Object.keys(PERMISSIONS) as Permission[];
 const team = (role: string, slug = 'acme') => ({ role, slug });
 
 describe('settingsPermissions: one flag per permission, the server rule', () => {
-  it('matches roleHas for every permission, role and override set', () => {
-    const overrides = { manage_connectors: ['owner', 'admin', 'member'] as const, manage_workspace_settings: ['owner'] as const };
+  it('matches roleHas for every permission and role', () => {
     for (const role of ['owner', 'admin', 'member', 'nonsense']) {
-      for (const o of [null, {}, overrides]) {
-        const flags = settingsPermissions(team(role), 'user-1', o);
-        for (const p of ALL) expect([role, p, flags[p]]).toEqual([role, p, roleHas(role, p, o)]);
-      }
+      const flags = settingsPermissions(team(role), 'user-1');
+      for (const p of ALL) expect([role, p, flags[p]]).toEqual([role, p, roleHas(role, p)]);
     }
   });
 
-  it('member: only personal roles by default, plus exactly what an override grants', () => {
-    const base = settingsPermissions(team('member'), 'user-1', {});
-    expect(ALL.filter((p) => base[p])).toEqual(['create_personal_roles']);
-    const granted = settingsPermissions(team('member'), 'user-1', { create_workspace: ['owner', 'admin', 'member'] });
-    expect(ALL.filter((p) => granted[p]).sort()).toEqual(['create_personal_roles', 'create_workspace']);
-  });
-
-  it('admin: loses a permission an override narrows to owners', () => {
-    const flags = settingsPermissions(team('admin'), 'user-1', { manage_team_credentials: ['owner'] });
-    expect(flags.manage_team_credentials).toBe(false);
-    expect(flags.manage_inference_providers).toBe(true);
-  });
-
-  it('a locked permission ignores overrides', () => {
-    const flags = settingsPermissions(team('member'), 'user-1', { manage_billing: ['owner', 'admin', 'member'] } as never);
+  it('a member does not manage billing', () => {
+    const flags = settingsPermissions(team('member'), 'user-1');
     expect(flags.manage_billing).toBe(false);
   });
 
   it('a personal team counts as owned, whatever the membership row says', () => {
-    const flags = settingsPermissions(team('member', 'personal-user-1'), 'user-1', {});
+    const flags = settingsPermissions(team('member', 'personal-user-1'), 'user-1');
     expect(ALL.every((p) => flags[p])).toBe(true);
     // Someone else's personal team is not yours.
-    expect(settingsPermissions(team('member', 'personal-user-2'), 'user-1', {}).create_workspace).toBe(false);
+    expect(settingsPermissions(team('member', 'personal-user-2'), 'user-1').create_workspace).toBe(false);
   });
 
   it('no team holds nothing', () => {
-    expect(settingsPermissions(null, 'user-1', {})).toBe(NO_PERMISSIONS);
+    expect(settingsPermissions(null, 'user-1')).toBe(NO_PERMISSIONS);
     expect(ALL.some((p) => NO_PERMISSIONS[p])).toBe(false);
   });
 });
@@ -50,19 +34,19 @@ describe('settingsPermissions: one flag per permission, the server rule', () => 
 describe('teamIdsHolding', () => {
   it('lists the teams whose flags hold the permission', () => {
     const byTeam = {
-      a: settingsPermissions(team('admin'), 'u', {}),
-      b: settingsPermissions(team('member'), 'u', {}),
-      c: settingsPermissions(team('member'), 'u', { manage_connectors: ['owner', 'admin', 'member'] }),
+      a: settingsPermissions(team('admin'), 'u'),
+      b: settingsPermissions(team('member'), 'u'),
+      c: settingsPermissions(team('owner'), 'u'),
     };
     expect(teamIdsHolding(byTeam, 'manage_connectors')).toEqual(['a', 'c']);
-    expect(teamIdsHolding(byTeam, 'create_workspace')).toEqual(['a']);
+    expect(teamIdsHolding(byTeam, 'create_personal_roles')).toEqual(['a', 'b', 'c']);
   });
 });
 
 describe('permsInAnyTeam', () => {
   it('holds a permission held in any one team, and nothing with no teams', () => {
-    const member = settingsPermissions({ role: 'member', slug: 'a' }, 'u', {});
-    const admin = settingsPermissions({ role: 'admin', slug: 'b' }, 'u', {});
+    const member = settingsPermissions({ role: 'member', slug: 'a' }, 'u');
+    const admin = settingsPermissions({ role: 'admin', slug: 'b' }, 'u');
     expect(permsInAnyTeam({ a: member, b: admin }).create_workspace).toBe(true);
     expect(permsInAnyTeam({ a: member }).create_workspace).toBe(false);
     expect(permsInAnyTeam({ a: member }).create_personal_roles).toBe(true);

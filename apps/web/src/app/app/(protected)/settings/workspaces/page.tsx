@@ -9,7 +9,7 @@ import { settingsReadOnly } from '@/lib/settings-nav';
 import WorkspacesTable from './WorkspacesTable';
 import { buildWorkspaceRows, WORKSPACE_DEFAULTS } from './rows';
 import { loadWorkspaceActivity } from '@/lib/workspace-activity';
-import { getTeamsPermissionOverrides } from '@/lib/permissions';
+
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +39,6 @@ export default async function WorkspacesSettingsPage() {
   const { rows, moveTeams } = buildWorkspaceRows({
     userId: user.id,
     teams,
-    overrides: await getTeamsPermissionOverrides(teams.map((t) => t.id)),
     workspaces: workspaces.map((ws) => ({
       ...ws,
       gitConfig: (config.get(ws.id)?.gitConfig as WorkspaceGitConfig | null) ?? null,
