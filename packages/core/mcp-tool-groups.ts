@@ -116,6 +116,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   update_progress: 'work',
   receive_messages: 'work',
   ask_human: 'work',
+  await_answer: 'work',
   complete_task: 'work',
   create_pr: 'work',
   emit_event: 'work',
@@ -242,10 +243,11 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   close_pr: 'listed', // runner PR-mutation prompt
   manage_secrets: 'listed', // visual-review skill (preview bypass secret)
   get_visual_review: 'listed', // the mission visual-QA phase is read only here
+  ask_human: 'listed', // buildd-mcp-consumer / buildd-workflow skills: an interactive session's hard block
+  await_answer: 'listed', // same skills: the wait loop after ask_human
   // rare: named on the More: line
   get_task_messages: 'more',
   receive_messages: 'more',
-  ask_human: 'more',
   get_decision_stats: 'more',
   list_schedules: 'more',
   read_evidence: 'more',
@@ -333,7 +335,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
     parts: [
       { text: 'claim', actions: ['claim_task'] },
       { text: 'report progress', actions: ['update_progress'] },
-      { text: 'messages, ask a person', actions: ['receive_messages', 'ask_human'] },
+      { text: 'messages, ask a person', actions: ['receive_messages', 'ask_human', 'await_answer'] },
       { text: 'post notes', actions: ['post_note'] },
       { text: 'record events', actions: ['emit_event', 'query_events'] },
       { text: 'write artifacts', actions: ['create_artifact', 'upload_artifact'] },
@@ -484,6 +486,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   update_progress: 'report progress',
   receive_messages: 'your inbox',
   ask_human: 'park on a question for a person',
+  await_answer: 'wait for that answer',
   complete_task: 'finish your task (error marks it failed)',
   create_pr: 'open the PR for your branch',
   emit_event: 'record a milestone event',

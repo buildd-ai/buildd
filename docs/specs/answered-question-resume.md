@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-11
 summary: Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 domain: runners
-surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts]
+surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts]
 related: [human-in-the-loop-protocol, runner-liveness, codex-backend-spec, credential-refresh-lifecycle]
-keywords: [resume, sessionId, codexThreadId, waiting_input, Continue task, superseded, pendingInstructions, answerDelivery, cold continuation, AskUserQuestion, transcript]
-verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
+keywords: [await_answer, ask_human, sessionSeenAt, resume, sessionId, codexThreadId, waiting_input, Continue task, superseded, pendingInstructions, answerDelivery, cold continuation, AskUserQuestion, transcript]
+verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -20,6 +20,11 @@ assertions:
   - id: "answer-path-decision"
     type: "test_file"
     path: "apps/web/src/lib/answer-resume.test.ts"
+  - id: "await-answer"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/[id]/answer"
+    file: "apps/web/src/app/api/workers/[id]/answer/route.ts"
 ---
 # Answered-Question Resume
 
@@ -349,6 +354,11 @@ local work to a runner. So it gets its own path.
   `idle` or `starting` with `updatedAt` within `INTERACTIVE_WORKER_IDLE_TTL_MS`;
   otherwise `cold_continuation` / `interactive_session_gone`. A gone
   interactive session MUST NOT be resumed on a runner.
+- The one exception to "parked is live" is the poll heartbeat (below): a
+  parked worker whose `waitingFor.sessionSeenAt` is older than
+  `INTERACTIVE_SESSION_POLL_STALE_MS` (5 min) goes `cold_continuation` /
+  `interactive_session_stopped_polling`. A parked worker with no heartbeat at
+  all stays live: never having polled is not evidence the session is gone.
 - A parked interactive worker's `updatedAt` is frozen at the ask, so the
   waiting_input sweep measures the park from it. That sweep, not the idle TTL,
   owns a parked session's expiry: once it fails the worker, G0 sends the answer
@@ -373,7 +383,78 @@ local work to a runner. So it gets its own path.
 - When the message cannot be queued, the question, status and history are
   restored and the call fails 500, so the answer can be given again.
 - `answerDelivery` carries no `ackDeadlineAt`: the unacknowledged-resume sweep
-  only degrades `resume`.
+  only degrades `resume`. It does carry `messageId`, the id of the `answer`
+  message and its history entry, and is merged into the live `tasks.context`
+  in SQL — never written as a spread of the context read before the enqueue,
+  which deleted the just-queued answer.
+
+### Waiting for the answer: `await_answer`
+
+**Invariants**:
+- `await_answer { workerId?, waitSeconds? }` (MCP, worker level,
+  `workers:write`) calls `POST /api/workers/[id]/answer`, which long-polls
+  server-side for at most 45 s (default 40; a longer or malformed wait is
+  clamped, never rejected), the same shape as `get_pr_review`'s `waitSeconds`.
+  Only the worker's owner (or a per-task token for its task) may call it.
+- The answer is read from the durable record (`readInteractiveAnswer`):
+  `answerDelivery` with `path: 'interactive'`, this `workerId` and a
+  `messageId`, whose instruction-history entry is not yet `acknowledged`. The
+  text comes from that entry, or from the queued message when the entry kept
+  none (sensitive workspace). An answer still queued without a delivery
+  record is found too. The capped queue is never the only source.
+- The route does not ack. The tool acks by id with
+  `workerMessagesDelivered: [messageId]` — the ack `receive_messages` sends —
+  so the answer is returned once, whichever of the two reads it first. A
+  failed ack leaves it unread and it is returned again.
+- A timeout returns `{ timedOut: true, stillWaiting: true }`; the session
+  calls again. A worker no longer waiting returns `stillWaiting: false` with a
+  `reasonCode`: `session_ended` (terminal; `continuationTaskId` when the
+  answer went cold) or `no_question`. A runner-managed worker is refused
+  (`not_interactive`).
+
+### The poll heartbeat
+
+**Invariants**:
+- Every `await_answer` call and every `consumer: 'agent'` PATCH
+  (`receive_messages`) on a parked interactive worker stamps
+  `waitingFor.sessionSeenAt` (`recordInteractiveSessionSeen`). It is its own
+  `UPDATE … SET waiting_for = jsonb_set(…)` gated on `runner = 'mcp'`,
+  `status = 'waiting_input'` and `waiting_for IS NOT NULL`: it does not touch
+  `updated_at` (the park clock) and cannot resurrect a question an answer has
+  just cleared. No schema change: `waitingFor` is jsonb.
+- `INTERACTIVE_SESSION_POLL_STALE_MS` is 5 min: over 6x the 45 s wait (a slow
+  turn, a dropped call and a retry fit), above the ~3 min `update_progress`
+  cadence the skills ask for, and far below the 2 h idle TTL.
+
+### Expiry of an unanswered interactive question
+
+**Invariants**:
+- The waiting_input sweep (`cleanupStuckWaitingInput`) still owns expiry
+  (24 h, 4 h in a mission) and still fails the worker (`exitCause:
+  'needs_input'`) and the task.
+- For an interactive worker it files NO retry task, unless the task's mission
+  is `executor = 'local'`. A person chose to run that work in their own
+  session; a retry on a runner mission is claimable by a background runner,
+  which would rebuild the work behind them. A local mission's retry is only
+  claimable by a person's session, the arrangement the original claim had.
+  The worker's error says it was not retried and how to pick it up again.
+
+**Acceptance criteria**:
+- AC-AQR-I6: GIVEN `/respond` answered an interactive worker and the queue
+  then evicted the message WHEN `await_answer` THEN it returns the answer
+  text, and its ack marks the history entry `acknowledged`; a second call
+  returns `stillWaiting: false`.
+- AC-AQR-I7: GIVEN no answer WHEN `await_answer { waitSeconds: 300 }` THEN
+  the server waits at most 45 s and returns `timedOut: true, stillWaiting: true`.
+- AC-AQR-I8: GIVEN a parked interactive worker whose `sessionSeenAt` is older
+  than 5 min WHEN `POST /respond` THEN `path: 'cold_continuation'`,
+  `reasonCode: 'interactive_session_stopped_polling'`. With no
+  `sessionSeenAt`, or a recent one, THEN `path: 'interactive'`.
+- AC-AQR-I9: GIVEN a parked interactive worker WHEN `receive_messages` THEN
+  `waitingFor.sessionSeenAt` is stamped and `updated_at` is unchanged.
+- AC-AQR-I10: GIVEN an interactive worker's question past the sweep's
+  threshold THEN the worker and task fail and no retry task is inserted;
+  on an `executor = 'local'` mission the retry is inserted.
 
 **Acceptance criteria**:
 - AC-AQR-I1: GIVEN an interactive worker in `waiting_input` checked in within
@@ -642,17 +723,16 @@ them.
    A credential that is unexpired and `healthy` can still be rejected by the
    provider. Only a live verification call would prove it, and that is a
    per-answer round trip this path does not take.
-6. **An interactive answer can be crowded out of the worker-message queue.**
-   That queue keeps the newest `WORKER_MESSAGE_CAP` messages per task; three
-   later agent messages arriving before the session reads its inbox drop the
-   answer while its history entry stays `pending`. Nothing re-queues it.
-7. **An interactive answer has no acknowledgement deadline.** If the session
-   dies after the answer is queued and before it reads it, the answer waits on
-   the task until a later worker on the same task reads the queue, or the
-   reaper frees the claim; it is not converted to a cold continuation.
-8. **A terminal closed mid-wait still reads as a live interactive session.**
-   A parked interactive worker is judged live on status alone, because its
-   `updatedAt` is frozen at the ask. If the person closes the session while it
-   waits, an answer is still queued to it until the waiting_input sweep fails
-   the worker. Detecting that needs a poll heartbeat from the waiting session,
-   which this path does not have.
+6. **An interactive answer has no acknowledgement deadline.** The poll
+   heartbeat covers a session that dies while it waits: its answer goes cold.
+   A session that dies in the moment between the answer landing and its next
+   poll is not covered — the worker is already `running`, so the answer waits
+   on the task until a later worker on the same task reads it, or the reaper
+   frees the claim; it is not converted to a cold continuation.
+7. **The heartbeat proves the session polled, not that it will read.** A
+   session that keeps calling `await_answer` but whose model never acts on the
+   result looks live forever. Nothing here can tell those apart.
+8. **A session that never polls is judged live.** An older client that parks
+   with ask_human and never calls `await_answer` or `receive_messages` stamps
+   no heartbeat, so its answer is still queued to it until the waiting_input
+   sweep fails the worker — the behaviour before the heartbeat existed.

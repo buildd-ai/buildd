@@ -326,6 +326,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   update_progress: { reason: 'worker-only', note: 'A running worker reports its own progress.' },
   receive_messages: { reason: 'worker-only', note: 'A running worker collects the messages sent to it.' },
   ask_human: { reason: 'worker-only', note: 'An interactive session parks its own worker on a question; a person in chat answers instead.' },
+  await_answer: { reason: 'worker-only', note: 'An interactive session waits for the answer to its own question; a person in chat answers instead.' },
   complete_task: { reason: 'worker-only', note: 'A worker completes its own task.' },
   create_pr: { reason: 'worker-only', note: 'PRs are opened by the worker that wrote the branch.' },
   emit_event: { reason: 'worker-only', note: 'Worker milestone events.' },

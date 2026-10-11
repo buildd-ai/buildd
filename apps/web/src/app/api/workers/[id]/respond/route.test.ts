@@ -82,7 +82,22 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
+
+/**
+ * The interactive path merges its answerDelivery record into the LIVE
+ * tasks.context in SQL (the answer message was just appended to that same
+ * column). Returns the record, parsed out of the SQL fragment.
+ */
+function mergedAnswerDelivery(update: any): any {
+  const ctx = update?.context;
+  if (!ctx || ctx.type !== 'sql') return undefined;
+  for (const v of ctx.values) {
+    if (typeof v === 'string' && v.includes('"path"')) return JSON.parse(v);
+  }
+  return undefined;
+}
 
 mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'workers.id', status: 'workers.status', waitingFor: 'workers.waitingFor' },
@@ -1513,9 +1528,51 @@ describe('POST /api/workers/[id]/respond', () => {
       const where = mockWorkersUpdateWhere.mock.calls[0]![0] as any;
       expect(where.conditions.some((c: any) => c.type === 'isNotNull' && c.field === 'workers.waitingFor')).toBe(true);
 
-      // Recorded like every other path.
-      expect(tasksUpdated.at(-1)?.context?.answerDelivery).toMatchObject({ path: 'interactive', reasonCode: 'interactive_session', workerId: WORKER_ID });
+      // Recorded like every other path, naming the message so await_answer
+      // can find the answer after the capped queue has evicted it.
+      expect(mergedAnswerDelivery(tasksUpdated.at(-1))).toMatchObject({ path: 'interactive', reasonCode: 'interactive_session', workerId: WORKER_ID, messageId: message.id });
       expect(notesInserted.at(-1)?.body).toContain('session that asked');
+    });
+
+    // Regression: the record used to be written as { ...context read before
+    // the enqueue, answerDelivery }, which overwrote the pendingWorkerMessages
+    // the enqueue had just appended — deleting the answer from the queue.
+    it('merges its delivery record into the live context instead of overwriting the queued answer', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+      await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+      const write = tasksUpdated.at(-1);
+      expect(write.context.type).toBe('sql');
+      expect(write.context.strings.join('?')).toContain('||');
+    });
+
+    // await_answer / receive_messages stamp waitingFor.sessionSeenAt while the
+    // session polls. A session that stopped polling is gone: its answer goes
+    // cold rather than sitting in a queue nobody reads.
+    it('a session whose poll heartbeat went stale goes cold with its own reason', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker({
+        waitingFor: { type: 'question', prompt: 'Which authentication method should we use?', sessionSeenAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() },
+      }));
+      mockWorkersUpdateReturning.mockReturnValue([{ id: WORKER_ID, status: 'superseded' }] as any);
+
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.path).toBe('cold_continuation');
+      expect(data.reasonCode).toBe('interactive_session_stopped_polling');
+      expect(mockInsertValues).toHaveBeenCalledTimes(1);
+      expect(mockEnqueueWorkerMessage).not.toHaveBeenCalled();
+    });
+
+    it('a session that polled a moment ago is answered in place', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker({
+        waitingFor: { type: 'question', prompt: 'Which authentication method should we use?', sessionSeenAt: new Date(Date.now() - 20_000).toISOString() },
+      }));
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+      expect((await res.json()).path).toBe('interactive');
     });
 
     it('tells open views the worker is running again', async () => {

@@ -9,7 +9,7 @@ import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accou
 import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { keepsParkClock } from '@/lib/interactive-worker-liveness';
+import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -1028,7 +1028,13 @@ export async function PATCH(
   // receive_messages polls while it waits must not keep pushing it forward.
   // Rewriting the stored value (rather than dropping the key) keeps the SET
   // non-empty for a PATCH that carries nothing else.
-  if (keepsParkClock(worker, { status, waitingFor })) updates.updatedAt = worker.updatedAt;
+  if (keepsParkClock(worker, { status, waitingFor })) {
+    updates.updatedAt = worker.updatedAt;
+    // The same poll is the session's heartbeat: /respond sends the answer
+    // cold once it goes stale (the terminal closed mid-wait). Its own write,
+    // so neither the park clock nor a just-cleared question is touched.
+    if (declaredConsumer === 'agent') await recordInteractiveSessionSeen(id);
+  }
 
   // Record the runner's protocol capability so /instruct and /cmd know whether a
   // delivery can ever be confirmed for this worker.
