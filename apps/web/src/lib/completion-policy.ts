@@ -60,12 +60,15 @@ export interface LoopProgress { iteration: number; history: LoopHistoryEntry[] }
  * `pass`: the exit condition holds; completion continues.
  * `hold`: condition unmet with attempts left: the task goes back to pending
  *   with `retryContext` as its context, not before `startAt` when set.
+ *   For webhook-based conditions (pr_merged, pr_checks_green), `until: 'webhook'`
+ *   means the task waits for a webhook event rather than being requeued.
  * `fail`: attempts exhausted; the task fails with `reason`.
  */
 export type LoopVerdict =
   | null
   | { kind: 'pass'; progress: LoopProgress }
   | { kind: 'hold'; until: 'requeue'; progress: LoopProgress; startAt: Date | null; retryContext: Record<string, unknown> }
+  | { kind: 'hold'; until: 'webhook'; progress: LoopProgress; waitExpiryMinutes?: number }
   | { kind: 'fail'; reason: string; progress: LoopProgress };
 
 // ── release ────────────────────────────────────────────────────────────────

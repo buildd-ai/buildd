@@ -40,3 +40,40 @@ describe('loopPolicy with alreadyShippedIn', () => {
     expect(v?.kind).toBe('pass');
   });
 });
+
+describe('loopPolicy pr_checks_green webhook wait', () => {
+  it('returns webhook wait when pr_checks_green and checks are ci_running', async () => {
+    mock.module('@buildd/core/db', () => ({
+      db: {
+        select: () => ({ from: () => ({ where: () => ({ limit: async () => [taskRow] }) }) }),
+        query: { workers: { findFirst: async () => ({ prLifecycleStatus: 'ci_running', prNumber: 42, mergedAt: null }) } },
+      },
+    }));
+    const v = await loopPolicy({ ...input, workerBranch: 'buildd/feat' });
+    expect(v?.kind).toBe('hold');
+    expect(v?.until).toBe('webhook');
+  });
+
+  it('returns webhook wait when pr_checks_green and prLifecycleStatus is null (unknown)', async () => {
+    mock.module('@buildd/core/db', () => ({
+      db: {
+        select: () => ({ from: () => ({ where: () => ({ limit: async () => [taskRow] }) }) }),
+        query: { workers: { findFirst: async () => ({ prLifecycleStatus: null, prNumber: 42, mergedAt: null }) } },
+      },
+    }));
+    const v = await loopPolicy({ ...input, workerBranch: 'buildd/feat' });
+    expect(v?.kind).toBe('hold');
+    expect(v?.until).toBe('webhook');
+  });
+
+  it('preserves loopIteration on webhook wait (no increment)', async () => {
+    mock.module('@buildd/core/db', () => ({
+      db: {
+        select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ ...taskRow, loopIteration: 0 }] }) }) }),
+        query: { workers: { findFirst: async () => ({ prLifecycleStatus: 'ci_running', prNumber: 42, mergedAt: null }) } },
+      },
+    }));
+    const v = await loopPolicy({ ...input, workerBranch: 'buildd/feat' });
+    expect(v?.progress.iteration).toBe(1); // Iterator incremented in loopHistory but task iteration stays same
+  });
+});

@@ -3330,10 +3330,20 @@ export async function PATCH(
           updates.exitCause = 'condition_unmet';
         }
 
-        // Requeue: piggyback on the shouldAutoRetry machinery to reset to pending.
+        // Loop holds: task goes back to pending, either for requeue or webhook wait.
         if (loop?.kind === 'hold') {
           shouldAutoRetry = true;
-          taskCtxForRetry = loop.retryContext;
+          if (loop.until === 'requeue') {
+            // Requeue: use the retry context from the loop verdict
+            taskCtxForRetry = loop.retryContext;
+          } else if (loop.until === 'webhook') {
+            // Webhook wait: task stays pending but with unchanged context.
+            // Webhook handlers will advance the loop when the event fires.
+            taskCtxForRetry = (await db.query.tasks.findFirst({
+              where: eq(tasks.id, worker.taskId),
+              columns: { context: true },
+            }))?.context ?? {};
+          }
         }
       }
       // ────────────────────────────────────────────────────────────────────────
