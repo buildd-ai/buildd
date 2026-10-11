@@ -28,7 +28,8 @@ import { TOKEN_PRESETS, hasTokenScope, type TokenScope } from '@buildd/core/toke
  * evidence); its usage and coordination stats and spec discrepancies (narrowed
  * to that one workspace, never team-wide); and listing or reading team-visible
  * experiments (no readouts, no changes); and brokered model calls for its own
- * worker, only under a live `model.inference` grant. It may also post notes, always as an
+ * worker, only under a live `model.inference` grant; and asking for a capability
+ * grant for its own worker (never approving one: deciding is a signed-in person's act). It may also post notes, always as an
  * agent, on its own task or its own task's mission; read task messages and
  * artifacts in its own workspace; upload artifacts for its own worker; update
  * its own task's artifacts and its mission's mission-level ones; and create
