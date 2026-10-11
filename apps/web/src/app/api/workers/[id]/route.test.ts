@@ -814,6 +814,11 @@ mock.module('@/lib/mission-completion', () => ({
     if (missionCompletionError) throw missionCompletionError;
   }),
 }));
+/** Calls the route made to the late runner evidence path (lib/late-runner-evidence.ts). */
+const lateRunnerEvidenceCalls: unknown[] = [];
+mock.module('@/lib/late-runner-evidence', () => ({
+  recordLateRunnerEvidence: mock(async (input: unknown) => { lateRunnerEvidenceCalls.push(input); return { handled: true }; }),
+}));
 mock.module('@/lib/mission-criteria-verify', () => ({
   ...realCriteriaVerify,
   isCriteriaVerificationTask: () => criteriaKinds.verification,
@@ -13736,7 +13741,101 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(workerSetCalls.some((u: any) => JSON.stringify(u.verificationEvidence) === JSON.stringify(evidence))).toBe(true);
+      expect(workerSetCalls.some((u: any) => JSON.stringify(u.verificationEvidence) === JSON.stringify({ ...evidence, reportedVia: 'runner' }))).toBe(true);
+    });
+
+    // The agent session holds a per-task token and may PATCH its own worker.
+    // Its evidence is stamped as such, whatever it claims, and never replaces
+    // the runner's (lib/verification-provenance.ts).
+    describe('who reported the evidence', () => {
+      const asTaskToken = () => mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', level: 'worker', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+      });
+      const ok = { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' };
+      const failed = { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' };
+
+      it('stamps a task-token copy as the agent, even when it claims to be the runner', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker()]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker());
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { verificationEvidence: { ...ok, reportedVia: 'runner' } },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'task_token' });
+      });
+
+      it('never lets a task-token copy replace the evidence the runner recorded', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker()]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ verificationEvidence: { ...failed, reportedVia: 'runner' } }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls.some((u: any) => 'verificationEvidence' in u)).toBe(false);
+      });
+
+      it('decides a task-token completion on the runner copy, not the agent one in the body', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ verificationEvidence: { ...failed, reportedVia: 'runner' } }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls[workerSetCalls.length - 1].exitCause).toBe('condition_unmet');
+      });
+
+      it('hands the runner report on an already-terminal worker to the late evidence path, and still refuses the write', async () => {
+        lateRunnerEvidenceCalls.length = 0;
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed' }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: failed },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(409);
+        expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
+      });
+
+      it('ignores a late task-token report on a terminal worker', async () => {
+        asTaskToken();
+        lateRunnerEvidenceCalls.length = 0;
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed' }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(409);
+        expect(lateRunnerEvidenceCalls).toEqual([]);
+      });
     });
 
     it('does not set loop fields when task has no loopConfig', async () => {
@@ -17072,7 +17171,7 @@ describe('PATCH /api/workers/[id] — completion fan-out (characterization)', ()
       'scheduleMemoryUseLabels',
     ]);
     expect(call('persistTaskEvidence')).toEqual(['persistTaskEvidence', 'task-1', WORKER_ID, { isSensitive: false }]);
-    expect(call('handleCriteriaVerificationOutcome')).toEqual(['handleCriteriaVerificationOutcome', 'task-1', VERIFICATION]);
+    expect(call('handleCriteriaVerificationOutcome')).toEqual(['handleCriteriaVerificationOutcome', 'task-1', { ...VERIFICATION, reportedVia: 'runner' }]);
     expect(call('handleProseEvalOutcome')).toEqual(['handleProseEvalOutcome', 'task-1', STRUCTURED]);
     expect(call('handleCriteriaWorkerEvalOutcome')).toEqual(['handleCriteriaWorkerEvalOutcome', 'task-1', STRUCTURED]);
     expect(call('completeMissionIfVerified')).toEqual(['completeMissionIfVerified', 'mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]);

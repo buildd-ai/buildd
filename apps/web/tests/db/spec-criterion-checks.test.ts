@@ -16,6 +16,7 @@ const { pinSpecSource } = await import('../../src/lib/specs/pin');
 const { readGovernedOutcome, recordSpecVerdict } = await import('../../src/lib/specs/outcome');
 const { dispatchCriterionChecks, handleCriterionCheckOutcome } = await import('../../src/lib/specs/criterion-checks');
 const { checkCommandAt } = await import('../../src/lib/specs/check-lines');
+const { recordLateRunnerEvidence } = await import('../../src/lib/late-runner-evidence');
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 const HEAD1 = '1'.repeat(40);
@@ -182,5 +183,62 @@ describe('the task never authors its own verdict', () => {
     expect(await handleCriterionCheckOutcome(v.id, { outcome: 'ok', exitCode: 0, command: 'true' })).toMatchObject({ recorded: false });
     const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM spec_outcome_verdicts WHERE task_id IN (${g.taskId}::uuid, ${g2.taskId}::uuid)`);
     expect(n).toBe(0);
+  });
+});
+
+describe('only the runner run decides, never the agent in the check run', () => {
+  async function checkRun() {
+    const g = await governedTask();
+    await dispatchCriterionChecks({ taskId: g.taskId, headSha: HEAD1, headBranch: 'b' }, fakeWake().deps);
+    const [v] = await checksFor(g.taskId);
+    await finish(v.id);
+    return { g, v };
+  }
+  const verdictsOf = (taskId: string) => q<{ verdict: string }>(sql`SELECT verdict FROM spec_outcome_verdicts WHERE task_id = ${taskId}::uuid`);
+
+  test('a pass the agent reported on its task token records no verdict', async () => {
+    const { g, v } = await checkRun();
+    const r = await handleCriterionCheckOutcome(v.id, { command: checkCommandAt(CHECK, HEAD1), outcome: 'ok', exitCode: 0, reportedVia: 'task_token' });
+    expect(r).toMatchObject({ recorded: false });
+    expect(r.reason).toContain('not by the runner');
+    expect(await verdictsOf(g.taskId)).toEqual([]);
+  });
+
+  test('loop history written from agent evidence records no verdict either', async () => {
+    const { g, v } = await checkRun();
+    const history = [{ iteration: 0, satisfied: true, summary: 'Command exited 0', evidence: { command: checkCommandAt(CHECK, HEAD1), outcome: 'ok', exitCode: 0, reportedVia: 'task_token' } }];
+    await q(sql`UPDATE tasks SET result = ${JSON.stringify({ loopHistory: history })}::jsonb WHERE id = ${v.id}::uuid`);
+    expect(await handleCriterionCheckOutcome(v.id)).toMatchObject({ recorded: false });
+    expect(await verdictsOf(g.taskId)).toEqual([]);
+  });
+
+  test('after the agent completed the run itself, the runner report that arrives late still records the real verdict', async () => {
+    const { g, v } = await checkRun();
+    const [w] = await q<{ id: string }>(sql`
+      INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, verification_evidence)
+      VALUES (${wsA}::uuid, ${v.id}::uuid, 'check', 'host', 'b', 'completed',
+        ${JSON.stringify({ command: checkCommandAt(CHECK, HEAD1), outcome: 'ok', exitCode: 0, reportedVia: 'task_token' })}::jsonb)
+      RETURNING id`);
+    // The agent's forged terminal write was decided first: nothing recorded.
+    expect(await handleCriterionCheckOutcome(v.id, { command: checkCommandAt(CHECK, HEAD1), outcome: 'ok', exitCode: 0, reportedVia: 'task_token' })).toMatchObject({ recorded: false });
+
+    const late = await recordLateRunnerEvidence({ workerId: w.id, taskId: v.id, evidence: { command: checkCommandAt(CHECK, HEAD1), outcome: 'failed', exitCode: 1 } });
+    expect(late).toMatchObject({ handled: true });
+    expect((await verdictsOf(g.taskId)).map((r) => r.verdict)).toEqual(['fail']);
+    const [row] = await q<{ verification_evidence: any }>(sql`SELECT verification_evidence FROM workers WHERE id = ${w.id}::uuid`);
+    expect(row.verification_evidence).toMatchObject({ outcome: 'failed', reportedVia: 'runner' });
+
+    // Runner evidence already on the row is never replaced by another late report.
+    expect(await recordLateRunnerEvidence({ workerId: w.id, taskId: v.id, evidence: { command: checkCommandAt(CHECK, HEAD1), outcome: 'ok', exitCode: 0 } })).toMatchObject({ handled: false });
+    expect((await verdictsOf(g.taskId)).map((r) => r.verdict)).toEqual(['fail']);
+  });
+
+  test('a late report for a task that is not a verification run does nothing', async () => {
+    const g = await governedTask();
+    const [w] = await q<{ id: string }>(sql`
+      INSERT INTO workers (workspace_id, task_id, name, runner, branch, status) VALUES (${wsA}::uuid, ${g.taskId}::uuid, 'build', 'host', 'b', 'completed') RETURNING id`);
+    expect(await recordLateRunnerEvidence({ workerId: w.id, taskId: g.taskId, evidence: { outcome: 'ok', exitCode: 0 } })).toMatchObject({ handled: false });
+    const [row] = await q<{ verification_evidence: any }>(sql`SELECT verification_evidence FROM workers WHERE id = ${w.id}::uuid`);
+    expect(row.verification_evidence).toBeNull();
   });
 });

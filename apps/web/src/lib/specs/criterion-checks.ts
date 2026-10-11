@@ -3,6 +3,7 @@ import { specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from './check-lines';
+import { isRunnerReported } from '@/lib/verification-provenance';
 import { recordCheckVerdict } from './outcome';
 import { readPinnedSpecRevision } from './pin';
 
@@ -186,6 +187,9 @@ export async function handleCriterionCheckOutcome(
   const history = (asRecord(task.result)?.loopHistory as Array<Record<string, unknown>> | undefined) ?? [];
   const ev = asRecord(evidence) ?? asRecord(history[history.length - 1]?.evidence);
   if (!ev) return { recorded: false, reason: 'no command evidence' };
+  // The agent in the check run holds a task token and may PATCH its own
+  // worker; what it reports that way is its word, not the runner's run.
+  if (!isRunnerReported(ev)) return { recorded: false, reason: 'the evidence was reported by the agent in the run, not by the runner' };
   if (ev.command !== undefined && ev.command !== expected) return { recorded: false, reason: 'the evidence is for a different command' };
   const verdict = checkVerdict(ev);
   if (!verdict) return { recorded: false, reason: 'the evidence has no outcome' };

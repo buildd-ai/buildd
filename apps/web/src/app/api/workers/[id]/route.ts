@@ -12,6 +12,8 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { evidenceForCompletion, keepStoredEvidence, stampEvidence } from '@/lib/verification-provenance';
+import { recordLateRunnerEvidence } from '@/lib/late-runner-evidence';
 import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
@@ -784,6 +786,13 @@ export async function PATCH(
   // the lost-update tolerance below must not apply to a resurrection.
   let reactivatingTerminalWorker = false;
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
+    // The runner's own verification report for a verification run still counts
+    // when the agent made the terminal write first (lib/late-runner-evidence.ts).
+    // A task token is never the runner here, so its late copy is ignored.
+    if (body.verificationEvidence && !account.taskScope) {
+      await recordLateRunnerEvidence({ workerId: worker.id, taskId: worker.taskId, evidence: body.verificationEvidence })
+        .catch((err) => console.error(`[workers] late runner evidence for worker ${worker.id} failed:`, err));
+    }
     // Reactivation must be requested EXPLICITLY. The runner's deliberate resume
     // (sendMessage follow-up) sets `reactivate: true`; its periodic 10s keepalive
     // sync does not, and the two payloads are otherwise identical.
@@ -915,7 +924,7 @@ export async function PATCH(
     prUrl: selfReportedPrUrl,
     prNumber: selfReportedPrNumber,
     // Loop verification evidence (spec §2). Included when loopConfig.exitCondition.type='command'.
-    verificationEvidence,
+    verificationEvidence: rawVerificationEvidence,
     // Subagent spans — persisted at terminal status only (completed/failed/error).
     // Runners only send these on terminal transitions; the server writes them through
     // unconditionally (no guard needed — hot-path updates never include them).
@@ -955,6 +964,9 @@ export async function PATCH(
     siblingProbeResults,
     siblingProbe: supportsSiblingProbe,
   } = body;
+  // Stamped by the server with how it arrived (lib/verification-provenance.ts):
+  // on a host runner a task token is the agent's credential, not the runner's.
+  const verificationEvidence = stampEvidence(rawVerificationEvidence, { viaTaskToken: !!account.taskScope }) ?? undefined;
   let status = reportedStatus;
   let error = reportedError;
 
@@ -1222,9 +1234,10 @@ export async function PATCH(
   // Loop verification evidence: persisted from any PATCH that carries it. The
   // one that matters is the runner's pre-complete_task write (a non-terminal
   // PATCH) — the agent's complete_task that follows carries none, and the
-  // loop dispatch below falls back to what is stored here.
-  if (verificationEvidence && typeof verificationEvidence === 'object' && !Array.isArray(verificationEvidence)) {
-    updates.verificationEvidence = verificationEvidence as Record<string, unknown>;
+  // loop dispatch below falls back to what is stored here. An agent's
+  // task-token copy never replaces the runner's.
+  if (verificationEvidence && !keepStoredEvidence(verificationEvidence, worker.verificationEvidence)) {
+    updates.verificationEvidence = verificationEvidence;
   }
   // Set when the incoming question carries a `hold` tag; null = an ordinary ask.
   let hold: HoldResolution | null = null;
@@ -3321,7 +3334,7 @@ export async function PATCH(
           // The runner's own completion carries evidence in the body; the
           // agent's complete_task does not, so use what the runner recorded
           // on the row before that call (see the verificationEvidence column).
-          verificationEvidence: verificationEvidence ?? worker.verificationEvidence ?? undefined,
+          verificationEvidence: evidenceForCompletion(verificationEvidence, worker.verificationEvidence as Record<string, unknown> | null) ?? undefined,
           structuredOutput: body.structuredOutput,
         });
 
@@ -4210,7 +4223,9 @@ export async function PATCH(
         finalStatus: shouldAutoRetry || releaseHeld ? null : effectiveOutcome === 'completed' ? 'completed' : 'failed',
         releaseHeld,
         structuredOutput: body.structuredOutput,
-        verificationEvidence,
+        verificationEvidence: verificationEvidence
+          ? evidenceForCompletion(verificationEvidence, worker.verificationEvidence as Record<string, unknown> | null) ?? undefined
+          : undefined,
       }, { isolate: runStep });
 
       // Dead-PR shutdown on retry completion: if this worker's PR was merged,
