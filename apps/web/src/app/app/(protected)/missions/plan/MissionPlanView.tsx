@@ -45,7 +45,7 @@ export function PlanReady({ inputs, plans, now }: { inputs: readonly PlanMission
   const visibleCuts = cuts.filter(c => c <= axis.to);
   return (
     <>
-      <p data-testid="plan-lede" className="font-voice text-[22px] leading-snug text-text-primary max-w-prose">{lede.headline}</p>
+      <p data-testid="plan-lede" className="font-voice text-heading leading-snug text-text-primary max-w-prose">{lede.headline}</p>
       {lede.detail && <p data-testid="plan-detail" className="mt-1 text-body text-text-secondary max-w-prose">{lede.detail}</p>}
       <div className="mt-6">
         {rows.length === 0 ? null : <MissionPlanChart rows={rows} axis={axis} cuts={visibleCuts} now={now} />}
