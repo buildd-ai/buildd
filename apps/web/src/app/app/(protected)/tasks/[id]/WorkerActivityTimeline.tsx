@@ -108,6 +108,28 @@ export function visibleAxisLabels(widthPx: number | null, axis: string[], end: s
   return shown;
 }
 
+/**
+ * Which flag time labels fit above the strip. Flags are placed by time, so two
+ * close in time sit a few pixels apart and their labels print over each other at
+ * any viewport. Walks from the latest flag back, keeping a label only when it
+ * clears the one kept after it; the marker squares always stay.
+ */
+export function visibleFlagLabels(widthPx: number | null, flags: { pos: number; at: string }[]): boolean[] {
+  const shown = flags.map(() => true);
+  if (!widthPx) return shown;
+  let limit = Infinity;
+  for (let i = flags.length - 1; i >= 0; i--) {
+    const w = flags[i].at.length * AXIS_CHAR_PX;
+    const x = flags[i].pos * widthPx;
+    const flip = flags[i].pos > 0.6;
+    const l = flip ? x - w : x;
+    const r = flip ? x : x + w;
+    if (r + AXIS_MIN_GAP_PX <= limit) limit = l;
+    else shown[i] = false;
+  }
+  return shown;
+}
+
 export function ActivityTape({
   milestones,
   startMs,
@@ -134,6 +156,7 @@ export function ActivityTape({
   }, [hasTape]);
   const axisShown = visibleAxisLabels(axisWidth, tape.axis, tape.end, live);
   if (tape.ticks.length === 0 && tape.flags.length === 0) return null;
+  const flagShown = visibleFlagLabels(axisWidth, tape.flags);
   const lastFlag = tape.flags[tape.flags.length - 1];
   return (
     <div data-testid="worker-activity-tape" className="@container relative pt-12">
@@ -154,7 +177,7 @@ export function ActivityTape({
             <div className={`flex ${flip ? 'justify-end' : ''}`}>
               <span aria-hidden="true" className={`w-2 h-2 ${isLast ? 'bg-accent' : 'bg-text-primary'}`} />
             </div>
-            <div className={`text-text-muted tabular-nums ${flip ? 'text-right' : ''}`}>{f.at}</div>
+            <div className={`text-text-muted tabular-nums ${flip ? 'text-right' : ''} ${flagShown[i] ? '' : 'invisible'}`}>{f.at}</div>
           </div>
         );
       })}

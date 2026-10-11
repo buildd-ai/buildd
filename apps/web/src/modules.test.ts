@@ -33,6 +33,7 @@ describe('composition root', () => {
       'notifications:ledger-task-completed',
       'notifications:push-task-completed',
       'health-quality:release-outcome-analytics-completed',
+      'experiments:task-estimate-actuals-completed',
     ]);
   });
 
@@ -67,7 +68,7 @@ describe('composition root', () => {
     // The mission wakes and dependents unblock before the release trigger.
     expect(byEvent('task.pr_merged')).toEqual([
       'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'releases:release-path-b-trigger',
-      'jev-decisions:verdict-on-merge',
+      'experiments:task-estimate-actuals-merged', 'jev-decisions:verdict-on-merge',
     ]);
     // The verdict is measured before the reviewer is superseded.
     expect(byEvent('pr.closed')).toEqual([

@@ -2,6 +2,7 @@ import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
+import { pinSpecSource } from '@/lib/specs/pin';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, missionNotes } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, not, gt, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
@@ -25,6 +26,7 @@ import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { kindDefaultCandidates, kindDefaultRole, kindDefaultStamp, scheduleTaskRoleRouting } from '@/lib/task-role-apply';
 import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
+import { scheduleTaskEstimate } from '@/lib/task-estimate-hook';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
@@ -468,7 +470,7 @@ export async function POST(req: NextRequest) {
     // The keys that make a task a dispatched review are the review system's to write (verdict-provenance.ts).
     // context.prReach is the server's to write (lib/pr-reach-grant.ts): a caller's value is dropped
     // here and the link this filing earns is stamped just before the insert.
-    const incomingContext = withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context)) as typeof rawIncomingContext;
+    let incomingContext = withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context)) as typeof rawIncomingContext;
 
     // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
     // Never opens `mode` itself as a public parameter (that would let any task,
@@ -669,6 +671,13 @@ export async function POST(req: NextRequest) {
       });
       return NextResponse.json({ error, frictionSignature }, { status: 400 });
     }
+
+    // A task naming a Living Spec is pinned to its approved revision as it is
+    // filed, from the database, so a later revision never moves it or its
+    // review (lib/specs/pin.ts). A task naming no spec passes through as is.
+    const specPin = await pinSpecSource(workspaceId, incomingContext as Record<string, unknown> | null | undefined);
+    if (!specPin.ok) return NextResponse.json({ error: specPin.error }, { status: specPin.status });
+    incomingContext = specPin.context as typeof rawIncomingContext;
 
     // Dedup gate for friction tasks.
     // When an agent provides context.frictionSignature (the error-pattern slug from
@@ -1804,6 +1813,17 @@ export async function POST(req: NextRequest) {
         }, after);
       } catch (err) {
         console.error('[task-create] manifest shadow scheduling failed (non-fatal):', err);
+      }
+    }
+
+    // Task estimates experiment (lib/task-estimate-hook.ts): one frozen
+    // estimate per new work task on an opted-in team. After the response,
+    // never awaited, never fails creation.
+    if (intake.outcome.action !== 'attached') {
+      try {
+        scheduleTaskEstimate(task, after);
+      } catch (err) {
+        console.error('[task-create] estimate scheduling failed (non-fatal):', err);
       }
     }
 

@@ -37,7 +37,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
-import { ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
+import { ACCESS_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -47,6 +47,9 @@ import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentat
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { crossedMilestone } from '@buildd/core/mission-helpers';
 import HomeAutoRefresh from './HomeAutoRefresh';
+import { Suspense } from 'react';
+import PrActionSheet from './PrActionSheet';
+import { parsePrParam, prSheetSignInHref } from './pr-sheet';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
 import type { BlockingTask } from '@/lib/mission-card-view';
@@ -104,12 +107,16 @@ import { getTeamPermissionOverrides } from '@/lib/permissions';
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams?: Promise<{ workspace?: string; initiative?: string }>;
+  searchParams?: Promise<{ workspace?: string; initiative?: string; pr?: string; t?: string }>;
 }) {
-  const { workspace: wsFilter, initiative: initFilter } = (await searchParams) ?? {};
+  const { workspace: wsFilter, initiative: initFilter, pr: prParam, t: prToken } = (await searchParams) ?? {};
   const user = await getCurrentUser();
+  // `?pr=<n>&t=<token>`: a landing alert's action sheet (the old /app/prs/:n/act).
+  // Signing in must not drop the single-use token, so it comes back here.
+  const sheetPr = parsePrParam(prParam);
 
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
+  if (sheetPr && !user && !isDev) redirect(prSheetSignInHref(sheetPr, prToken));
 
   let activeItems: {
     id: string;
@@ -1828,6 +1835,12 @@ export default async function HomePage({
           waitingOnYou.push(...await INCIDENT_NEEDS_YOU(wsIds));
         }
 
+        // 8. Agent access requests team policy leaves to a person, for teams
+        // where this viewer can decide them (lib/capability-grants-needs-you.ts).
+        if (wsIds.length > 0) {
+          waitingOnYou.push(...await ACCESS_NEEDS_YOU(user?.id, wsIds));
+        }
+
         // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d
         // on a MERGE/REVIEW card) — re-checked against `now` here, not trusted
         // as a standing flag, per the freshness invariant at the top of
@@ -2048,6 +2061,11 @@ export default async function HomePage({
   return (
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <HomeAutoRefresh workspaceIds={refreshWorkspaceIds} />
+      {sheetPr && user && (
+        <Suspense fallback={null}>
+          <PrActionSheet prNumber={sheetPr} token={prToken} userId={user.id} />
+        </Suspense>
+      )}
       {hostedRunnerBanner && (
         <div className="mx-auto max-w-[1320px]">
           <HostedRunnerBanner level={hostedRunnerBanner.level} text={hostedRunnerBanner.text} />

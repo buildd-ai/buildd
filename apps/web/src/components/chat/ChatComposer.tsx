@@ -14,7 +14,8 @@
  */
 import { forwardRef, useImperativeHandle, useRef, type ReactNode } from 'react';
 import { ChatComposer as KitComposer, type ChatComposerHandle as KitComposerHandle } from '@builddai/ai-kit/chat/react';
-import { CHAT_MAX_MESSAGE_CHARS, type ChatTierName } from '@buildd/shared';
+import { CHAT_MAX_MESSAGE_CHARS, CHAT_PASTE_ATTACHMENT_CHARS, type ChatDraftAttachment, type ChatTierName } from '@buildd/shared';
+import { discardChatUpload, uploadChatFile } from './upload-file';
 import ToolsMenu from './ToolsMenu';
 import TierSwitch from './TierSwitch';
 import { WorkspaceSwitcher } from '@/components/WorkspaceSwitcher';
@@ -28,7 +29,14 @@ export interface ChatComposerHandle { focus(): void }
 interface Props {
   value: string;
   onChange(value: string): void;
-  onSend(text: string): void;
+  /**
+   * `attachments`: long pastes (Living Specs C2) and uploaded images and files
+   * (C3), shown as cards above the message. A file is here only once ready.
+   */
+  onSend(text: string, attachments: ChatDraftAttachment[]): void;
+  /** The draft's attachments, held by the caller so a refused send can put them back. */
+  attachments?: ChatDraftAttachment[];
+  onAttachmentsChange?(attachments: ChatDraftAttachment[]): void;
   onStop?: () => void;
   /** A turn is streaming: Enter doesn't send, the button stops. */
   busy?: boolean;
@@ -66,7 +74,7 @@ interface Props {
 export const BUSY_PLACEHOLDER = 'Steer while I think…';
 
 const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer({
-  value, onChange, onSend, onStop, busy = false, disabled = false, placeholder = 'Ask about your fleet, or describe the work…',
+  value, onChange, onSend, attachments, onAttachmentsChange, onStop, busy = false, disabled = false, placeholder = 'Ask about your fleet, or describe the work…',
   workspaces, workspaceId, onWorkspaceChange, routedWorkspace = null, teamName = null, tier, compact = false,
   teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, mood = null, scopeLock,
 }, ref) {
@@ -115,6 +123,13 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
         onChange={onChange}
         onSend={onSend}
         maxLength={CHAT_MAX_MESSAGE_CHARS}
+        attachFrom={CHAT_PASTE_ATTACHMENT_CHARS}
+        // Images and files need a team to upload under; the dev fixtures have none.
+        {...(teamId ? {
+          onUploadFile: (file: File, signal: AbortSignal) => uploadChatFile(file, signal, teamId),
+          onDiscardFile: (f: { id: string }) => { void discardChatUpload(f.id); },
+        } : {})}
+        {...(attachments ? { attachments, onAttachmentsChange } : {})}
         onStop={onStop}
         busy={busy}
         disabled={disabled}

@@ -306,7 +306,7 @@ describe('writeLedgerFromEvaluations', () => {
     ];
 
     const summary = await writeLedgerFromEvaluations('ws-1', evaluations, now);
-    expect(summary.byDirection).toEqual({ spec_ahead: 0, code_ahead: 1, contradicted: 1 });
+    expect(summary.byDirection).toEqual({ spec_ahead: 0, code_ahead: 1, contradicted: 1, conflict: 0 });
 
     const rows = [...store.values()];
     const codeAheadRow = rows.find((r) => r.specPath === 'docs/design/shipped-not-promoted.md');
@@ -557,6 +557,14 @@ describe('writeLedgerFromEvaluations — rows a doc fix moved out of the classif
     expect(summary.unasserted).toBe(2);
     expect(store.get('ws-1::docs/design/renamed.md::old-id').status).toBe('resolved');
     expect(store.get('ws-1::docs/design/deleted.md::gone').evidence.outcome).toBe('not_asserted');
+  });
+
+  test('resolveUnasserted leaves a Living Spec finding alone: it names a spec revision, not a repo-doc assertion', async () => {
+    openRow('living-spec:s-1', 'conflict:AC-1+R-1');
+    store.set('ws-1::living-spec:s-1::conflict:AC-1+R-1', { ...store.get('ws-1::living-spec:s-1::conflict:AC-1+R-1'), direction: 'conflict', specRevisionId: 'rev-1' });
+    const summary = await writeLedgerFromEvaluations('ws-1', [], run, { resolveUnasserted: true });
+    expect(summary.unasserted).toBe(0);
+    expect(store.get('ws-1::living-spec:s-1::conflict:AC-1+R-1').status).toBe('open');
   });
 
   test('without resolveUnasserted (a partial run) unseen rows are left alone', async () => {

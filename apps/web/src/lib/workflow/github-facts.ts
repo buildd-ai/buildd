@@ -21,7 +21,7 @@ interface GithubPull {
   updated_at?: string | null;
   mergeable_state?: string | null;
   draft?: boolean;
-  head?: { sha?: string; repo?: { full_name?: string } | null };
+  head?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
   base?: { ref?: string };
 }
 
@@ -33,6 +33,7 @@ export function toLivePr(pr: GithubPull | null | undefined): LivePr | null {
     merged: pr.merged === true || !!pr.merged_at,
     headSha,
     headRepoFullName: pr.head?.repo?.full_name ?? null,
+    ...(pr.head?.ref ? { headRef: pr.head.ref } : {}),
     baseRef: pr.base?.ref ?? null,
     mergedAt: pr.merged_at ?? null,
     mergeCommitSha: pr.merge_commit_sha ?? null,

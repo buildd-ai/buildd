@@ -17,6 +17,7 @@ interface Props {
   currentInitiativeName: string | null;
   initiatives: InitiativeOption[];
   readonly?: boolean;
+  teamId?: string | null;
 }
 
 export default function MissionInitiativeSelector({
@@ -25,6 +26,7 @@ export default function MissionInitiativeSelector({
   currentInitiativeName,
   initiatives,
   readonly = false,
+  teamId = null,
 }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -65,6 +67,26 @@ export default function MissionInitiativeSelector({
     i.title.toLowerCase().includes(query.toLowerCase())
   );
 
+  const typed = query.trim();
+  const exists = initiatives.some(i => i.title.toLowerCase() === typed.toLowerCase());
+
+  // Creating a group is just naming it here: the initiative is made, then linked.
+  async function create() {
+    try {
+      const res = await fetch('/api/initiatives', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: typed, ...(teamId ? { teamId } : {}) }),
+      });
+      if (!res.ok) return;
+      const made = await res.json();
+      const id = made.id ?? made.initiative?.id;
+      if (id) await assign(id);
+    } catch {
+      // non-fatal
+    }
+  }
+
   async function assign(initiativeId: string | null) {
     setOpen(false);
     setQuery('');
@@ -84,9 +106,9 @@ export default function MissionInitiativeSelector({
     if (!currentInitiativeId || !currentInitiativeName) return null;
     return (
       <div className="flex items-center gap-1.5 text-[12px] text-text-muted">
-        <span className="text-text-muted">Initiative:</span>
+        <span className="text-text-muted">Group:</span>
         <Link
-          href={`/app/initiatives/${currentInitiativeId}`}
+          href={`/app/missions?group=${currentInitiativeId}`}
           className="text-text-primary underline underline-offset-4"
         >
           {currentInitiativeName}
@@ -97,11 +119,11 @@ export default function MissionInitiativeSelector({
 
   return (
     <div className="relative flex items-center gap-1.5 text-[12px] text-text-muted" ref={popoverRef}>
-      <span className="shrink-0">Initiative:</span>
+      <span className="shrink-0">Group:</span>
       {currentInitiativeId && currentInitiativeName ? (
         <span className="flex items-center gap-1">
           <Link
-            href={`/app/initiatives/${currentInitiativeId}`}
+            href={`/app/missions?group=${currentInitiativeId}`}
             className="text-text-primary underline underline-offset-4"
             onClick={e => e.stopPropagation()}
           >
@@ -111,7 +133,7 @@ export default function MissionInitiativeSelector({
             onClick={() => setOpen(o => !o)}
             disabled={isPending}
             className="text-text-muted hover:text-text-secondary transition-colors p-0.5"
-            title="Change initiative"
+            title="Change group"
           >
             <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
@@ -122,7 +144,7 @@ export default function MissionInitiativeSelector({
             onClick={() => assign(null)}
             disabled={isPending}
             className="text-text-muted hover:text-status-error transition-colors p-0.5"
-            title="Remove from initiative"
+            title="Remove from group"
           >
             <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="18" y1="6" x2="6" y2="18" />
@@ -136,7 +158,7 @@ export default function MissionInitiativeSelector({
           disabled={isPending}
           className="text-text-muted hover:text-text-secondary transition-colors flex items-center gap-1"
         >
-          <span className="italic">No initiative</span>
+          <span className="italic">No group</span>
           <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
@@ -150,18 +172,25 @@ export default function MissionInitiativeSelector({
             <input
               ref={inputRef}
               type="text"
-              placeholder="Filter initiatives…"
+              placeholder="Find or name a group"
               value={query}
               onChange={e => setQuery(e.target.value)}
               className="w-full bg-surface-3 text-text-primary text-[12px] px-2 py-1.5 rounded border border-border-default focus:outline-none focus:border-border-strong placeholder:text-text-muted"
             />
           </div>
           <div className="max-h-48 overflow-y-auto">
-            {filtered.length === 0 ? (
-              <p className="text-[12px] text-text-muted px-3 py-3 text-center">
-                {initiatives.length === 0 ? 'No initiatives in this team' : 'No matches'}
-              </p>
-            ) : (
+            {typed && !exists && (
+              <button
+                data-testid="group-create"
+                onClick={create}
+                className="w-full text-left px-3 py-2 text-[12px] text-text-primary hover:bg-surface-3 transition-colors"
+              >
+                Create &ldquo;{typed}&rdquo;
+              </button>
+            )}
+            {filtered.length === 0 ? (typed ? null : (
+              <p className="text-[12px] text-text-muted px-3 py-3 text-center">No groups</p>
+            )) : (
               filtered.map(initiative => (
                 <button
                   key={initiative.id}

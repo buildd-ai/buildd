@@ -4,7 +4,7 @@
  * recommended default. A question without a brief still renders.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/tasks/t1/respond' });
+GlobalRegistrator.register({ url: 'http://localhost/app/tasks/t1?respond=1' });
 
 import { describe, expect, it } from 'bun:test';
 const { act } = await import('react');

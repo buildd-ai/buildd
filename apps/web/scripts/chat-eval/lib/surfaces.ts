@@ -111,6 +111,8 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   update_pr: 'write',
   request_pr_review: 'write',
   update_artifact: 'write',
+  link_artifact: 'write',
+  list_artifact_links: 'read',
   manage_specs: 'write',
   manage_model_tiers: 'write',
   manage_secrets: 'write',
@@ -126,6 +128,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   deploy: 'write',
   record_pr_supersession: 'write',
   post_note: 'write',
+  update_incident: 'write',
   suggest_schedule_update: 'write',
 };
 

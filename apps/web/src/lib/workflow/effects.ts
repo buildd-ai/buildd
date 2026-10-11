@@ -44,6 +44,7 @@ const BACKOFF_CAP_MS = 30 * 60_000;
  */
 export const CRITICAL_EFFECTS: ReadonlySet<EffectKind> = new Set([
   'merge_call', 'verify_merge', 'push_recovery', 'post_review', 'dispatch_fix', 'dispatch_review',
+  'refresh_branch', 'renumber_migration',
 ]);
 
 /**

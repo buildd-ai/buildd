@@ -29,7 +29,6 @@ const API = 'apps/web/src/app/';
 const REFUSED_ACTIONS: Record<string, string> = {
   get_budget_forecast: 'team-wide by nature (team spend, seat pressure across accounts); cannot be narrowed to one workspace',
   suggest_schedule_update: 'writes a pending change to a workspace schedule, not to its own task or worker',
-  list_incidents: 'failure incidents are a team-wide ledger; the route authenticates API keys only, so a per-task token is refused rather than narrowed to its workspace',
 };
 
 /**
@@ -55,8 +54,11 @@ function trackedRoutes(): string[] {
 
 function optedIn(): Set<string> {
   const src = readFileSync(join(REPO, 'apps/web/src/lib/task-token-routes.test.ts'), 'utf8');
-  const list = /const OPTED_IN = \[([\s\S]*?)\];/.exec(src)?.[1] ?? '';
-  return new Set([...list.matchAll(/'([^']+)'/g)].map(m => m[1]!));
+  // Comments go first: an apostrophe in one would pair with the next quote.
+  const list = (/const OPTED_IN = \[([\s\S]*?)\];/.exec(src)?.[1] ?? '').replace(/\/\/.*$/gm, '');
+  const routes = [...list.matchAll(/'([^']+)'/g)].map(m => m[1]!);
+  if (routes.some(r => !r.startsWith('apps/'))) throw new Error(`OPTED_IN parse produced a non-path entry: ${routes.find(r => !r.startsWith('apps/'))}`);
+  return new Set(routes);
 }
 
 /** The source of `case '<action>':` up to the next top-level case. */
@@ -177,6 +179,7 @@ const REFUSED_ADMIN_ACTIONS: Record<string, string> = {
   trigger_release: 'a release ships the whole workspace, not one mission',
   release_status: 'reads the release gate through the admin release routes; not one mission',
   correct_task_result: "overrides a completed task's verdict, an owner's judgement",
+  update_incident: 'acknowledges or resolves a team-wide sentinel incident, not one mission',
   consolidate_knowledge: "maintains the team's knowledge store; archives entries",
   memory_delete: "permanently deletes from the team's memory",
 };

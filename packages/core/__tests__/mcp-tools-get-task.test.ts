@@ -311,7 +311,7 @@ describe('get_task', () => {
     );
 
     const text = result.content[0].text;
-    expect(text).toContain(`https://buildd.dev/app/tasks/${TASK_ID}/respond`);
+    expect(text).toContain(`https://buildd.dev/app/tasks/${TASK_ID}?respond=1`);
     expect(text).toContain('Which approach?');
   });
 
@@ -563,8 +563,31 @@ describe('get_task — include validation and scheduling view', () => {
     expect(text).toContain('**Tier:** premium');
     expect(text).toContain('**Verification command:** `bun run test`');
     expect(text).toContain('**Spec source:** docs/specs/x.md (planning task cccccccc-cccc-cccc-cccc-cccccccccccc)');
-    // Scheduling is rendered from the task row; the server only expands workers/artifacts.
-    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}`);
+    // Scheduling is rendered from the task row; the server only adds the frozen estimate.
+    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}?include=estimate`);
+    // No estimate on the row: nothing about one is said.
+    expect(text).not.toContain('Estimate');
+  });
+
+  it('renders the frozen estimate (task-estimates experiment) in the scheduling block', async () => {
+    const a = api({
+      estimate: {
+        estimatorVersion: 'blend-v1', p50Minutes: 41.6, p80Minutes: 70.2, p50Tokens: 120_400, p80Tokens: 219_600,
+        expectedRepairs: 0.4, summary: '40m (25-70m), 120k tokens, from 6 similar tasks, plus typical engineering tasks.',
+      },
+    });
+    const out = await handleBuilddAction(a, 'get_task', { taskId: TASK_ID, include: ['workers', 'scheduling'] }, ctx());
+    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}?include=${encodeURIComponent('workers,estimate')}`);
+    expect(out.content[0].text).toContain(
+      '**Estimate (blend-v1):** 42-70m · 120k-220k tokens · 40m (25-70m), 120k tokens, from 6 similar tasks, plus typical engineering tasks.',
+    );
+  });
+
+  it('the estimate is never asked for or shown without include scheduling', async () => {
+    const a = api({ estimate: { estimatorVersion: 'blend-v1', p50Minutes: 40, p80Minutes: 70, p50Tokens: 1, p80Tokens: 2, summary: 's' } });
+    const out = await handleBuilddAction(a, 'get_task', { taskId: TASK_ID, include: ['workers'] }, ctx());
+    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}?include=workers`);
+    expect(out.content[0].text).not.toContain('Estimate');
   });
 
   it('states absent scheduling facts explicitly rather than omitting them', async () => {
@@ -599,5 +622,25 @@ describe('get_task backend line', () => {
   it('prints nothing about the backend when it is the unpinned default', async () => {
     const text = await read({ backend: 'claude', context: {} });
     expect(text).not.toContain('**Backend:**');
+  });
+});
+
+describe('get_task — governed outcome (Living Specs V1)', () => {
+  const SPEC = '00000000-0000-4000-8000-000000000051';
+  it('a task pinned to a Living Spec shows its governed outcome beside, not instead of, its status', async () => {
+    const a = mock(async (path: string) => path.startsWith('/api/specs/outcomes/')
+      ? { outcome: { outcome: 'fail', reason: 'R-1 failed', revision: 1, currentHeadSha: 'c'.repeat(40), criteria: [] } }
+      : { id: TASK_ID, title: 'Build step', status: 'completed', context: { specSource: { specId: SPEC, specRevisionId: SPEC, revision: 1 } } }) as unknown as ApiFn;
+    const text = (await handleBuilddAction(a, 'get_task', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).toContain('**Status:** completed');
+    expect(text).toContain('**Governed outcome:** FAIL vs spec revision 1: R-1 failed');
+    expect((a as any).mock.calls.map((c: unknown[]) => c[0])).toContain(`/api/specs/outcomes/${TASK_ID}`);
+  });
+
+  it('a task with no Living Spec makes no outcome call', async () => {
+    const a = mock(async () => ({ id: TASK_ID, title: 'Build step', status: 'pending', context: { specSource: { specPath: 'docs/specs/x.md' } } })) as unknown as ApiFn;
+    const text = (await handleBuilddAction(a, 'get_task', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).not.toContain('Governed outcome');
+    expect((a as any).mock.calls.some((c: unknown[]) => String(c[0]).includes('/outcomes/'))).toBe(false);
   });
 });

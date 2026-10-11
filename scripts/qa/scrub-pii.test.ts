@@ -162,6 +162,7 @@ const SAFE: Record<string, string[]> = {
   teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'enabled_decision_shadows', 'decision_model',
     'chat_default_tier', // a chat tier name (CHAT_TIER_NAMES) or null
     'chat_retro', // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)
+    'task_estimates', // { enabled: boolean, setBy: a row id, setAt: ISO time } (packages/core/task-estimate-source.ts)
     'permission_overrides', // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
     'plan', 'billing_status', // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
     'managed_runner_plan', // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
@@ -209,9 +210,13 @@ const SAFE: Record<string, string[]> = {
   // each write); evidence is refs, counts and labels. Cascades with conversations.
   chat_retros: ['status', 'skip_reason', 'intent', 'satisfied', 'primary_cause', 'fix_class', 'tool_name', 'signature', 'version', 'error', 'evidence'],
   artifacts: ['type'],
+  // Closed vocabularies (ARTIFACT_LINK_SUBJECTS / ARTIFACT_LINK_RELATIONS in the schema).
+  artifact_links: ['subject_kind', 'relation'],
   // Closed vocabularies (SPEC_SCOPES / SPEC_STATUSES) and a sha256 of a body scrubbed elsewhere.
   specs: ['scope', 'status'],
-  spec_revisions: ['content_hash'],
+  spec_revisions: ['content_hash', 'repo_refs'], // repo paths pinned to commit SHAs
+  // A criterion id from the spec body (R-1, AC-2) and a git SHA.
+  spec_outcome_verdicts: ['criterion_id', 'head_sha'],
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
   // github_repos.default_branch.

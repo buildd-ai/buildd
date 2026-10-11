@@ -158,6 +158,12 @@ export const teams = pgTable('teams', {
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
   // file suggested improvements as tasks. Removal: see chat-retro/REMOVAL.md.
   chatRetro: jsonb('chat_retro').$type<{ lessons?: boolean; proposals?: boolean } | null>(),
+  // Task estimates (experiment, packages/core/task-estimate.ts). Opt-in per
+  // team: NULL or a missing key = off. `enabled` writes a frozen estimate for
+  // every new task and shows estimate surfaces. Read only through
+  // packages/core/task-estimate-source.ts (taskEstimatesEnabled). Removal: see
+  // packages/core/TASK-ESTIMATES-REMOVAL.md.
+  taskEstimates: jsonb('task_estimates').$type<{ enabled?: boolean; setBy?: string; setAt?: string } | null>(),
   // Enforceable model-tier ceilings (most restrictive layer wins): the team's
   // cap, per-workspace caps, what an auto tier over the cap does, and an audit
   // tail. NULL = no ceiling, routing unchanged. Distinct from chatDefaultTier,
@@ -1827,7 +1833,9 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   // §8: which way the gap runs. code_ahead/contradicted may be written by
   // Tier-2 CI; spec_ahead is written only by the Tier-3 cron (slice 7) after
   // its deeper search rules out a rename — CI never writes it directly.
-  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted'>(),
+  // `conflict` (Living Specs, D-5): two requirements of approved revisions
+  // disagree. Advisory only: it never blocks a merge or a completion.
+  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted' | 'conflict'>(),
   // §9: open -> accepted is a parked, not closed, state; -> resolved happens
   // only when a re-run's assertion result lands cleanly, never by self-report.
   status: text('status').notNull().default('open').$type<'open' | 'accepted' | 'resolved'>(),
@@ -1860,6 +1868,9 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   proposalRejectedReason: text('proposal_rejected_reason'),
   // The exact read that produced the current verdict — never a similarity score.
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  // A Living Spec finding names the exact approved revision it was judged
+  // against; NULL for a repo-spec (docs/specs) assertion.
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'set null' }),
 }, (t) => ({
   workspaceIdx: index('spec_discrepancies_workspace_idx').on(t.workspaceId),
   // THE identity constraint (§7): exactly one row per (workspace, spec, assertion).
@@ -2572,10 +2583,17 @@ export const artifacts = pgTable('artifacts', {
   // Who is writing this body ("user:<id>" / "account:<id>"), copied onto the
   // revision the trigger records. Optional: an unset author records the worker.
   contentAuthor: text('content_author'),
+  // An uploaded file's state (lib/artifact-upload.ts): 'pending' from the
+  // presigned URL until its bytes are verified (size, then sha256 onto the
+  // revision), then 'ready', or 'failed'. NULL = not an upload (inline body, or
+  // a row from before this column), treated as ready. Set by the server only:
+  // metadata is caller-writable, so a flag there could be forged.
+  uploadState: text('upload_state').$type<'pending' | 'ready' | 'failed'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workerIdx: index('artifacts_worker_idx').on(t.workerId),
+  uploadPendingIdx: index('artifacts_upload_pending_idx').on(t.createdAt).where(sql`upload_state = 'pending'`),
   shareTokenIdx: uniqueIndex('artifacts_share_token_idx').on(t.shareToken),
   workspaceIdx: index('artifacts_workspace_idx').on(t.workspaceId),
   workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
@@ -2639,6 +2657,40 @@ export const artifactReads = pgTable('artifact_reads', {
 }));
 
 /**
+ * Typed links from an artifact to the things it informs: a chat message or
+ * conversation, a task, a mission, a plan, and later a spec revision or a
+ * verification. One payload row, many links; nothing is copied.
+ * Owned by Living Specs (docs/specs/execution-control-plane.md): only
+ * apps/web/src/lib/artifact-links.ts writes it; the kernel reads it by id.
+ *
+ * `relation` says what the artifact is to the subject. Only an approved spec
+ * revision confers authority (decision D-6), so `normative_reference` is legal
+ * only with a pinned `artifact_revision`, and no relation approves anything.
+ * `artifact_revision` NULL = floating (follows the current body).
+ */
+export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec_revision', 'verification'] as const;
+export const ARTIFACT_LINK_RELATIONS = ['context', 'requirement', 'normative_reference', 'design_reference', 'evidence', 'output'] as const;
+export type ArtifactLinkSubject = (typeof ARTIFACT_LINK_SUBJECTS)[number];
+export type ArtifactLinkRelation = (typeof ARTIFACT_LINK_RELATIONS)[number];
+
+export const artifactLinks = pgTable('artifact_links', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'cascade' }).notNull(),
+  artifactRevision: integer('artifact_revision'),
+  subjectKind: text('subject_kind').notNull().$type<ArtifactLinkSubject>(),
+  subjectId: uuid('subject_id').notNull(),
+  relation: text('relation').notNull().$type<ArtifactLinkRelation>(),
+  // The subject's team, resolved and checked at write; reads scope by it.
+  teamId: uuid('team_id').notNull(),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniqueLink: uniqueIndex('artifact_links_unique_idx').on(t.artifactId, t.subjectKind, t.subjectId, t.relation),
+  subjectIdx: index('artifact_links_subject_idx').on(t.subjectKind, t.subjectId),
+  normativeIsPinned: check('artifact_links_normative_is_pinned', sql`${t.relation} <> 'normative_reference' OR ${t.artifactRevision} IS NOT NULL`),
+}));
+
+/**
  * Living Specs: governed intent with immutable revisions (Living Specs v2, G1).
  * A spec is a stable identity; its body lives in one artifact (`body_artifact_id`)
  * so storage, history, hashes, bounded reads and redaction are the artifact
@@ -2685,12 +2737,40 @@ export const specRevisions = pgTable('spec_revisions', {
   authorKind: text('author_kind').notNull().$type<'user' | 'agent'>(),
   authorId: text('author_id').notNull(),
   changeSummary: text('change_summary'),
+  // Repo specs (docs/specs, Git-canonical per D-1) this revision cites, each
+  // pinned to the exact commit it was validated at on write. Immutable with
+  // the revision, so a moving branch never changes what it cites.
+  repoRefs: jsonb('repo_refs').$type<Array<{ path: string; commitSha: string }>>(),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/**
+ * One verdict on one acceptance criterion of an approved spec revision, for
+ * one task's outcome (Living Specs V1, D-5). Append-only: a re-check adds a
+ * row, and the outcome reads the newest row per criterion. A verdict is bound
+ * to the PR head it judged and the references it actually read, so a verdict
+ * on an older head never speaks for the current one. Distinct from task and PR
+ * state: a task can complete and its PR merge while its governed outcome
+ * reads fail.
+ */
+export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
+  headSha: text('head_sha'),
+  // The check's evidence refs and the artifact reads (F4 ledger ids) behind it.
+  evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskCriterionIdx: index('spec_outcome_verdicts_task_idx').on(t.taskId, t.specRevisionId, t.criterionId, t.createdAt),
 }));
 
 /**
@@ -5777,6 +5857,43 @@ export const capabilityGrants = pgTable('capability_grants', {
 
 export type CapabilityGrant = typeof capabilityGrants.$inferSelect;
 
+/**
+ * Running spend per model.inference grant (the ledger behind
+ * capability-model-inference-ledger.ts). Reservations count as spent until
+ * settled. Changed only by single conditional statements: a reserve is one
+ * INSERT … ON CONFLICT DO UPDATE … WHERE <headroom> that also writes the
+ * reservation row, so N concurrent callers can never overdraw a budget.
+ * Dollars are whole micro-dollars.
+ */
+export const capabilityGrantUsage = pgTable('capability_grant_usage', {
+  grantId: uuid('grant_id').primaryKey().references(() => capabilityGrants.id, { onDelete: 'cascade' }),
+  calls: integer('calls').notNull().default(0),
+  tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+  usdMicros: bigint('usd_micros', { mode: 'number' }).notNull().default(0),
+  inFlight: integer('in_flight').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+/**
+ * One reserved model.inference call. Open (settledAt NULL) while the call is
+ * in flight; settle swaps its reservation for the debit. One left open past
+ * the stale window (a crashed request) is settled at the full reservation.
+ */
+export const capabilityGrantReservations = pgTable('capability_grant_reservations', {
+  id: uuid('id').primaryKey(),
+  grantId: uuid('grant_id').references(() => capabilityGrants.id, { onDelete: 'cascade' }).notNull(),
+  usdMicros: bigint('usd_micros', { mode: 'number' }).notNull(),
+  tokens: bigint('tokens', { mode: 'number' }).notNull(),
+  reservedAt: timestamp('reserved_at', { withTimezone: true }).defaultNow().notNull(),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+  debitUsdMicros: bigint('debit_usd_micros', { mode: 'number' }),
+  debitTokens: bigint('debit_tokens', { mode: 'number' }),
+  costSource: text('cost_source').$type<'provider' | 'reservation' | 'none'>(),
+  outcome: text('outcome').$type<'ok' | 'error' | 'not_sent' | 'stale'>(),
+}, (t) => ({
+  openIdx: index('capability_grant_reservations_open_idx').on(t.grantId, t.reservedAt).where(sql`${t.settledAt} IS NULL`),
+}));
+
 export const gateEventsRelations = relations(gateEvents, ({ one }) => ({
   workspace: one(workspaces, { fields: [gateEvents.workspaceId], references: [workspaces.id] }),
   mission: one(missions, { fields: [gateEvents.missionId], references: [missions.id] }),
@@ -6321,6 +6438,80 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
 
 export type OrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferSelect;
 export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferInsert;
+
+/**
+ * How a task estimate was made (packages/core/task-estimate.ts). Content-free
+ * apart from `clusterLabel` (a directory prefix in this task's own workspace)
+ * and `summary` (one sentence built from numbers and that label). Never holds
+ * another workspace's paths, titles or text.
+ */
+export interface TaskEstimateExplanation {
+  sources: Array<{ source: 'neighbours' | 'clusters' | 'prior'; n: number; weight: number }>;
+  clusterLabel: string | null;
+  /** 0..1: how much the new-repo prior counted. Falls as local history grows. */
+  priorWeight: number;
+  summary: string;
+}
+
+/**
+ * Task estimates experiment: one frozen row per task per estimator version.
+ * Insert-only. A re-estimate is a new version, never an update, so accuracy is
+ * always scored against what was predicted before the work started. Its own
+ * table (docs/design/experiment-lifecycle.md: an experiment brings its own
+ * payload table); dropping it reverts the experiment without touching a task row.
+ */
+export const taskEstimates = pgTable('task_estimates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  estimatorVersion: text('estimator_version').notNull(),
+  p50Minutes: real('p50_minutes').notNull(),
+  p80Minutes: real('p80_minutes').notNull(),
+  p50Tokens: integer('p50_tokens').notNull(),
+  p80Tokens: integer('p80_tokens').notNull(),
+  expectedRepairs: real('expected_repairs').notNull().default(0),
+  explanation: jsonb('explanation').$type<TaskEstimateExplanation>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskVersionIdx: uniqueIndex('task_estimates_task_version_idx').on(t.taskId, t.estimatorVersion),
+  workspaceCreatedIdx: index('task_estimates_workspace_created_idx').on(t.workspaceId, t.createdAt),
+}));
+
+export type TaskEstimate = typeof taskEstimates.$inferSelect;
+export type NewTaskEstimate = typeof taskEstimates.$inferInsert;
+
+/**
+ * What a task estimated in `task_estimates` actually took, kept next to it
+ * (packages/core/task-estimate-actuals.ts). One row per task, rewritten as the
+ * task settles (a merge after the last session fills in wall time); the frozen
+ * estimate row is never touched. Work tasks only: attempt and bookkeeping
+ * tasks are other tasks' cost, counted as `repairs` on their parent.
+ */
+export const taskEstimateActuals = pgTable('task_estimate_actuals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  /** Sum of completed-session durations: the cost measure. */
+  agentMinutes: real('agent_minutes').notNull(),
+  /** Input + output tokens over the same sessions. */
+  tokens: integer('tokens').notNull(),
+  /** Retry (attempt) tasks that hang off this task. */
+  repairs: integer('repairs').notNull().default(0),
+  workerCount: integer('worker_count').notNull().default(0),
+  firstStartedAt: timestamp('first_started_at', { withTimezone: true }),
+  /** First start to merge; to the last session's end when nothing merged. Null with no start. */
+  wallMinutes: real('wall_minutes'),
+  wallBasis: text('wall_basis').$type<'merge' | 'last_session'>(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskIdx: uniqueIndex('task_estimate_actuals_task_idx').on(t.taskId),
+  teamIdx: index('task_estimate_actuals_team_idx').on(t.teamId),
+}));
+
+export type TaskEstimateActuals = typeof taskEstimateActuals.$inferSelect;
+export type NewTaskEstimateActuals = typeof taskEstimateActuals.$inferInsert;
 
 export type Artifact = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;

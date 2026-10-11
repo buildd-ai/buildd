@@ -10,7 +10,9 @@ import nextConfig, { PAGE_MERGES } from '../../next.config.mjs';
  */
 
 const PROTECTED = resolve(import.meta.dir, '../app/app/(protected)');
-const pageFile = (path: string) => resolve(PROTECTED, path.split(/[?#]/)[0].replace(/^\/app\//, ''), 'page.tsx');
+/** `/app/tasks/:id/respond` → `tasks/[id]/respond/page.tsx` (a `:param` maps to its bracket dir). */
+const pageFile = (path: string) =>
+  resolve(PROTECTED, path.split(/[?#]/)[0].replace(/^\/app\//, '').replace(/:(\w+)/g, '[$1]'), 'page.tsx');
 
 // old path → new path (pages merged into another, and redirect-only pages)
 const EXPECTED: Array<[string, string]> = [
@@ -22,6 +24,17 @@ const EXPECTED: Array<[string, string]> = [
   ['/app/workers', '/app/tasks'],
   ['/app/artifacts', '/app/missions'],
   ['/app/insights', '/app/health/insights'],
+  ['/app/initiatives/new', '/app/missions'],
+  ['/app/initiatives/:id', '/app/missions?group=:id'],
+  ['/app/initiatives', '/app/missions'],
+  // One-action pages become a sheet on the page they start from. Next passes
+  // the old query through (`/app/prs/7/act?t=…` → `/app/home?pr=7&t=…`), so a
+  // prefill (`?workspace=`) or an alert's signed token survives the move.
+  ['/app/missions/new', '/app/missions?new=1'],
+  ['/app/settings/team/new', '/app/settings/team?new=1'],
+  ['/app/settings/runners/tokens/new', '/app/settings/runners?new=1'],
+  ['/app/tasks/:id/respond', '/app/tasks/:id?respond=1'],
+  ['/app/prs/:prNumber/act', '/app/home?pr=:prNumber'],
 ];
 
 describe('page merges', () => {
@@ -59,6 +72,19 @@ describe('page merges', () => {
     for (const [source] of EXPECTED) {
       expect(`${source}: ${existsSync(pageFile(source))}`).toBe(`${source}: false`);
     }
+  });
+
+  it('deletes the three Initiatives page files', () => {
+    for (const f of ['initiatives/page.tsx', 'initiatives/[id]/page.tsx', 'initiatives/new/page.tsx']) {
+      expect(`${f}: ${existsSync(resolve(PROTECTED, f))}`).toBe(`${f}: false`);
+    }
+  });
+
+  it('sends notification links straight to the sheet, not through a second redirect', async () => {
+    const redirects = await nextConfig.redirects!();
+    const to = (source: string) => redirects.find((r) => r.source === source)?.destination;
+    expect(to('/app/teams/new')).toBe('/app/settings/team?new=1');
+    expect(to('/app/accounts/new')).toBe('/app/settings/runners?new=1');
   });
 
   it('lists only rules this file checks', () => {
