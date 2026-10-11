@@ -136,6 +136,27 @@ mock.module('@/lib/task-dispatch-delivery', () => ({
   WEBHOOK_DISPATCH_TIMEOUT_MS: 10_000,
 }));
 
+// The interactive path queues the answer as a worker message on the task.
+const enqueuedMessages: Array<{ taskId: string; message: any }> = [];
+const mockEnqueueWorkerMessage = mock(async (taskId: string, message: any) => {
+  enqueuedMessages.push({ taskId, message });
+  return true;
+});
+mock.module('@buildd/core/worker-messages', () => ({
+  enqueueWorkerMessage: mockEnqueueWorkerMessage,
+  clearWorkerMessages: mock(async () => true),
+  buildWorkerMessage: (input: any) => ({
+    id: 'msg-1',
+    sentAt: new Date(0).toISOString(),
+    hopCount: input.hopCount ?? 0,
+    ...input,
+  }),
+  formatWorkerMessages: () => '',
+  buildEnqueueContextSql: () => ({}),
+  buildClearContextSql: () => ({}),
+  WORKER_MESSAGE_CAP: 3,
+}));
+
 import { POST } from './route';
 
 function createMockRequest(body?: any): NextRequest {
@@ -1416,6 +1437,202 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(data.path).toBe('resume');
       expect(mockInsertValues).not.toHaveBeenCalled();
       expect((mockWorkersUpdateSet.mock.calls[0][0] as any).status).toBeUndefined();
+    });
+  });
+
+  // An interactive worker (claim_task from a person's own session) is parked
+  // by ask_human. No runner holds it, so RESUME would queue an answer nobody
+  // drains, and COLD would hand live local work to a runner.
+  describe('an interactive session', () => {
+    function interactiveWorker(overrides: Record<string, unknown> = {}) {
+      return {
+        ...baseWorker,
+        runner: 'mcp',
+        status: 'waiting_input',
+        updatedAt: new Date(Date.now() - 5 * 60 * 1000),
+        turns: 3,
+        supportsInstructionAck: false,
+        pendingInstructions: null,
+        instructionHistory: [],
+        account: { teamId: 'team-1' },
+        ...overrides,
+      };
+    }
+
+    function authorize() {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    }
+
+    beforeEach(() => {
+      enqueuedMessages.length = 0;
+      mockEnqueueWorkerMessage.mockClear();
+      mockEnqueueWorkerMessage.mockImplementation(async (taskId: string, message: any) => {
+        enqueuedMessages.push({ taskId, message });
+        return true;
+      });
+      mockWorkersUpdateReturning.mockReturnValue([{ id: WORKER_ID, status: 'running', updatedAt: new Date() }] as any);
+    });
+
+    it('queues the answer for that session, flips it to running and creates no continuation', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.path).toBe('interactive');
+      expect(data.reasonCode).toBe('interactive_session');
+      expect(data.taskId).toBe('task-1');
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+      expect(mockReleaseAndNotify).not.toHaveBeenCalled();
+
+      // The answer is an `answer` worker message on the worker's own task.
+      expect(enqueuedMessages).toHaveLength(1);
+      const { taskId, message } = enqueuedMessages[0]!;
+      expect(taskId).toBe('task-1');
+      expect(message.type).toBe('answer');
+      expect(message.toTaskId).toBe('task-1');
+      expect(message.body).toMatchObject({
+        source: 'human',
+        text: 'Use JWT tokens',
+        question: 'Which authentication method should we use?',
+      });
+
+      // One CAS write: question closed, worker running, answer in history
+      // under the message id so the session's ack settles it.
+      const set = mockWorkersUpdateSet.mock.calls[0]![0] as any;
+      expect(set.status).toBe('running');
+      expect(set.waitingFor).toBeNull();
+      expect(set.pendingInstructions).toBeUndefined();
+      const entry = set.instructionHistory.at(-1);
+      expect(entry).toMatchObject({ type: 'instruction', message: 'Use JWT tokens', deliveryState: 'pending', id: message.id });
+      const where = mockWorkersUpdateWhere.mock.calls[0]![0] as any;
+      expect(where.conditions.some((c: any) => c.type === 'isNotNull' && c.field === 'workers.waitingFor')).toBe(true);
+
+      // Recorded like every other path.
+      expect(tasksUpdated.at(-1)?.context?.answerDelivery).toMatchObject({ path: 'interactive', reasonCode: 'interactive_session', workerId: WORKER_ID });
+      expect(notesInserted.at(-1)?.body).toContain('session that asked');
+    });
+
+    it('tells open views the worker is running again', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+      await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      const calls = mockTriggerEvent.mock.calls as any[];
+      const toWorker = calls.find(([ch, ev]) => ch === `worker-${WORKER_ID}` && ev === 'worker:progress');
+      const toTask = calls.find(([ch, ev]) => ch === 'task-task-1' && ev === 'worker:progress');
+      expect(toWorker?.[2]).toMatchObject({ workerId: WORKER_ID, status: 'running' });
+      expect(toTask?.[2]).toMatchObject({ status: 'running' });
+    });
+
+    // The session runs on the person's own seat, not the workspace's managed
+    // credential, so that credential's state is irrelevant to it.
+    it('is not refused by a revoked managed credential, and never preflights it', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+      mockPreflight.mockImplementation(async () => ({ state: 'unhealthy' as const, revoked: true, detail: 'revoked' }) as any);
+
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).path).toBe('interactive');
+      expect(mockPreflight).not.toHaveBeenCalled();
+    });
+
+    it('withholds the answer text from history in a sensitive workspace but still delivers it', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker({ workspace: { teamId: 'team-1', dataClass: 'sensitive' } }));
+
+      await POST(createMockRequest({ message: 'secret answer' }), { params: mockParams });
+
+      const set = mockWorkersUpdateSet.mock.calls[0]![0] as any;
+      expect(set.instructionHistory.at(-1).message).toBeUndefined();
+      expect(enqueuedMessages[0]!.message.body.text).toBe('secret answer');
+      expect(enqueuedMessages[0]!.message.body.question).toBeUndefined();
+    });
+
+    it('a second tap that loses the race queues nothing', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+      mockWorkersUpdateReturning.mockReturnValue([] as any);
+
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).reasonCode).toBe('already_answered');
+      expect(mockEnqueueWorkerMessage).not.toHaveBeenCalled();
+    });
+
+    it('a duplicate tap after the answer reads as already answered, not moved on', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker({
+        status: 'running',
+        waitingFor: null,
+        instructionHistory: [{ id: 'msg-1', type: 'instruction', message: 'JWT', timestamp: 1, deliveryState: 'pending' }],
+      }));
+
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.reasonCode).toBe('already_answered');
+      expect(data.recordedAnswer).toBe('JWT');
+    });
+
+    it('restores the question when the answer cannot be queued', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+      mockEnqueueWorkerMessage.mockImplementation(async () => false);
+
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      expect(res.status).toBe(500);
+      const restore = mockWorkersUpdateSet.mock.calls.at(-1)![0] as any;
+      expect(restore.status).toBe('waiting_input');
+      expect(restore.waitingFor).toMatchObject({ type: 'question' });
+      expect(restore.instructionHistory).toEqual([]);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    // Regression: updatedAt is frozen at the ask while parked, so an answer
+    // given hours later must still reach the session that is polling for it.
+    it('answers a session parked 3h ago in place, not via a runner continuation', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker({ updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000) }));
+
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).path).toBe('interactive');
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockEnqueueWorkerMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['running but past the interactive idle window', { status: 'running', updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000) }],
+      ['failed', { status: 'failed' }],
+      ['errored', { status: 'error' }],
+    ])('a session that is gone (%s) goes cold with its reason recorded', async (_label, overrides) => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker(overrides));
+      mockWorkersUpdateReturning.mockReturnValue([{ id: WORKER_ID, status: 'superseded' }] as any);
+
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.path).toBe('cold_continuation');
+      expect(data.reasonCode).toBe('interactive_session_gone');
+      expect(mockInsertValues).toHaveBeenCalledTimes(1);
+      expect(mockEnqueueWorkerMessage).not.toHaveBeenCalled();
+      expect(data.message).toContain('interactive session that asked');
+      // The continuation runs on a runner, so its credential is preflighted.
+      expect(mockPreflight).toHaveBeenCalled();
     });
   });
 

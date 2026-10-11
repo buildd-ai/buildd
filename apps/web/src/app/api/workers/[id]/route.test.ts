@@ -16846,6 +16846,33 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     expect(sets.every(v => v.turns === undefined)).toBe(true);
   });
 
+  // /respond's interactive path queues a human answer as an `answer` worker
+  // message and records it in instructionHistory under the same id. The
+  // session acks it as a worker message; that ack is also the read receipt.
+  it('a worker-message ack settles the instruction-history entry sharing its id', async () => {
+    setup({
+      ...idWorker,
+      runner: 'mcp',
+      pendingInstructions: null,
+      instructionHistory: [
+        { id: 'i-1', type: 'instruction', message: 'other', timestamp: 1, deliveryState: 'pending' },
+        { id: 'msg-answer', type: 'instruction', message: 'Use JWT', timestamp: 2, deliveryState: 'pending' },
+      ],
+    });
+    const res = await patch({ workerMessagesDelivered: ['msg-answer'] });
+    expect(res.status).toBe(200);
+    const marked = sets.find(v => v.instructionHistory).instructionHistory;
+    expect(marked[0].deliveryState).toBe('pending');
+    expect(marked[1].deliveryState).toBe('acknowledged');
+    expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('a worker-message ack naming no history entry leaves instructionHistory unwritten', async () => {
+    setup({ ...idWorker, runner: 'mcp', pendingInstructions: null });
+    await patch({ workerMessagesDelivered: ['msg-from-another-agent'] });
+    expect(sets.some(v => 'instructionHistory' in v)).toBe(false);
+  });
+
   it('delivered and acknowledged in one PATCH (an MCP consumer reads the text in the same turn)', async () => {
     setup({ ...idWorker, runner: 'mcp' });
     await patch({ instructionsDelivered: 'Switch to the other auth flow', instructionIdsDelivered: ['i-1'], instructionsAcknowledged: ['i-1'] });
