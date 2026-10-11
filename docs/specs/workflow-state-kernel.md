@@ -493,7 +493,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | `APPROVED` | `duplicate` | T13 carry-forward, else round `r+1`; **this replaces today's "re-review only when a merge is attempted"** |
 | `LANDING` | `duplicate` | abort landing; as `APPROVED` |
 | `BLOCKED_ON_TRUNK` | `duplicate` | record head; stay blocked (T26 re-enters). With `resume_state = APPROVED`: T13 carry-forward evidence keeps the approval (the head joins `approved_heads`); without it `resume_state` becomes `AWAITING_REVIEW`, so recovery reviews the new head instead of landing it (47be5f6c) |
-| `ESCALATED` | `duplicate` | `review_*` escalations at an older head: round `r+1`; `push_undeliverable`: as `AWAITING_PUSH` — if proof (§9) holds against the escalated `L`, `AWAITING_REVIEW`, new round (the escalation's cause is gone: the work arrived), else record only (no new `push_recovery`: a person owns it now); other reasons: record only |
+| `ESCALATED` | `duplicate` | `review_*` escalations at an older head: round `r+1`; `push_undeliverable`: as `AWAITING_PUSH` — if proof (§9) holds against the escalated `L`, `AWAITING_REVIEW`, new round (the escalation's cause is gone: the work arrived), else record only (no new `push_recovery`: a person owns it now); `conflict_exhausted`: a head whose live `mergeable_state` is not `dirty` is `AWAITING_REVIEW`, new round (the spent budget only asked a person to resolve the conflict, and a repaired head answers that whoever pushed it; earlier no-progress conflict attempts never hold a repaired head back from review and landing), a `dirty` one is recorded only; other reasons: record only |
 | terminal | ignored (recorded) | ignored (recorded) |
 
 ### 6.5 `AttemptEnded` by outcome
