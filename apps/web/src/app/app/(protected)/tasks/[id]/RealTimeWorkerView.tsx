@@ -179,7 +179,6 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
     const el = questionRef.current;
     if (!focusAnswer || focusedAnswerRef.current || !el) return;
     focusedAnswerRef.current = true;
-    el.scrollIntoView({ block: 'start' });
     el.querySelector<HTMLElement>('textarea, input, button:not([disabled])')?.focus({ preventScroll: true });
   });
   const lastStatusRef = useRef(initialWorker.status);
@@ -429,6 +428,7 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
         <div data-testid="worker-needs-input-banner" ref={questionRef} className="scroll-mt-16">
           <QuestionHero
             testId="worker-question-hero"
+            landOnArrival
             question={question}
             askerLabel={asker}
             askedAgo={askedTs != null ? `${ageLabel(nowMs - askedTs)} ago` : null}
