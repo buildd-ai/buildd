@@ -27,6 +27,12 @@
  */
 
 import {
+  POST_SESSION_OUTCOME_SOURCE,
+  POST_SESSION_RUN_SUBJECT,
+  POST_SESSION_TRIAGE_KIND,
+} from '@buildd/core/decision-kind-post-session-triage';
+import { labelDecisionOutcome } from '@buildd/core/decision-outcomes';
+import {
   aggregateFindingOccurrence,
   buildCorrectionProposal,
   buildFollowUpTask,
@@ -63,6 +69,8 @@ export interface FindingRunRow {
   workerId: string;
   taskId: string | null;
   workspaceId: string;
+  /** The workspace's team; null when it has none, and then there is no decision to label. */
+  teamId: string | null;
   missionId: string | null;
   policyVersion: string;
   /** The mode recorded on the run — a later mode change does not reinterpret it. */
@@ -150,6 +158,8 @@ export type RecordPostSessionFindingsResult =
 export interface RecordDeps {
   store?: PostSessionFindingStore;
   now?: Date;
+  /** Attaches the analysis outcome to the triage decision. Default: `labelDecisionOutcome`. */
+  labelOutcome?: typeof labelDecisionOutcome;
 }
 
 const MAX_ERROR_CHARS = 500;
@@ -268,6 +278,32 @@ async function act(
 }
 
 /**
+ * Tell the triage decision whether analysing the run found anything, so the
+ * skip/analyse routing has a precision signal. Bookkeeping: a failed or
+ * missing label never changes the recorded findings.
+ */
+async function labelTriageDecision(
+  run: FindingRunRow,
+  analysis: PostSessionAnalysis,
+  label: typeof labelDecisionOutcome,
+  now: Date,
+): Promise<void> {
+  if (!run.teamId) return;
+  try {
+    await label({
+      teamId: run.teamId,
+      capability: POST_SESSION_TRIAGE_KIND,
+      subject: { type: POST_SESSION_RUN_SUBJECT, id: run.id },
+      source: POST_SESSION_OUTCOME_SOURCE,
+      label: analysis.findings.some(f => f.class !== 'no_action') ? 'actionable' : 'not_actionable',
+      observedAt: now,
+    });
+  } catch {
+    // The analysis is already recorded.
+  }
+}
+
+/**
  * Persist one run's analysis into the ledger and apply the action policy.
  * Never throws. Idempotent per run: a second call for the same run (crash
  * replay, racing sweep) counts nothing again and files nothing again.
@@ -297,6 +333,7 @@ export async function recordPostSessionFindings(
       return { status: 'action_failed', runId, error };
     }
     await store.markRunAnalysed(runId, analysis.coverage, now);
+    await labelTriageDecision(run, analysis, deps.labelOutcome ?? labelDecisionOutcome, now);
     return { status: 'recorded', runId, findings: recorded };
   } catch (err) {
     return { status: 'error', error: errorText(err) };

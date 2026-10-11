@@ -5,6 +5,7 @@ import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 
 // POST /api/workers/[id]/activity - Report tool usage from Claude Code hooks
 // This allows MCP workers to get automatic visibility via hooks
@@ -36,9 +37,9 @@ export async function POST(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  // Activity is written by the account running the worker (its runner's key),
-  // or by an admin-level account of the worker's workspace team.
-  const isOwnRunner = worker.accountId === account.id;
+  // Activity is written by the principal that claimed the worker (lib/worker-owner.ts),
+  // or, as the named admin path, by an admin-level account of the worker's workspace team.
+  const isOwnRunner = callerOwnsWorker(account, worker);
   const isTeamAdmin = hasTokenRouteAdminAccess(account, req, 'workers:admin') && account.teamId === worker.workspace?.teamId;
   if (!isOwnRunner && !isTeamAdmin) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });

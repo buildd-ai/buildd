@@ -2,6 +2,7 @@
  * Base environment for a runner-spawned agent: an allowlist of the runner's
  * own env, never the whole thing (the runner holds coordination secrets).
  */
+import { applyBrowserProviderAgentEnv } from './browser-provider';
 import { applyAgentPlaywrightEnv, type BrowserDetection } from './browser-capability';
 
 export const RUNNER_ENV_PASSTHROUGH: ReadonlySet<string> = new Set([
@@ -90,7 +91,7 @@ export function buildAgentBaseEnv(
     const val = source[key];
     if (val !== undefined) env[key] = val;
   }
-  return browser === undefined ? applyAgentPlaywrightEnv(env) : applyAgentPlaywrightEnv(env, browser);
+  return applyBrowserProviderAgentEnv(browser === undefined ? applyAgentPlaywrightEnv(env) : applyAgentPlaywrightEnv(env, browser));
 }
 
 /**

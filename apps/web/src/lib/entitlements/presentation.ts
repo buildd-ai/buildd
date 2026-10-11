@@ -15,11 +15,17 @@ export interface EntitlementCopy {
   body: string;
   /** Primary action label. */
   upgradeLabel: string;
+  /** Label of the quiet "keep it queued" action. */
+  waitLabel: string;
+  /** A second way out besides raising the limit, when there is one. */
+  alternative?: { label: string; href: string };
   /** One fact the reader may confuse this with. */
   footnote: string;
 }
 
 const SELF_HOSTED_NOTE = 'Your own runners are not limited by your plan.';
+/** Where a person connects a runner of their own. */
+export const OWN_RUNNER_HREF = '/app/settings/runners';
 
 function hours(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(1);
@@ -39,6 +45,7 @@ export function describeEntitlementBlock(
         title: `${block.active} managed ${block.active === 1 ? 'run' : 'runs'} already active`,
         body: `Your plan includes up to ${block.limit} at once${shared}. This task will start automatically when one finishes.`,
         upgradeLabel: 'Upgrade parallel capacity',
+        waitLabel: 'Leave queued',
         footnote: SELF_HOSTED_NOTE,
       };
     }
@@ -48,7 +55,18 @@ export function describeEntitlementBlock(
         title: `Monthly runner-hours used: ${hours(block.used)} of ${hours(block.limit)}`,
         body: `Managed runs are paused for this month. This task will start automatically when hours refill on ${formatDate(block.resetsAt)}, or as soon as you add more.`,
         upgradeLabel: 'Add runner-hours',
+        waitLabel: 'Leave queued',
         footnote: SELF_HOSTED_NOTE,
+      };
+    case 'hosted_runner':
+      return {
+        state: 'Queued',
+        title: 'Hosted runner allowance used',
+        body: `${hours(block.used)} of ${hours(block.limit)} hours this month. New cloud runs wait until hours refill on ${formatDate(block.resetsAt)}. Running tasks are not stopped.`,
+        upgradeLabel: 'Add hours',
+        waitLabel: 'Wait for the reset',
+        alternative: { label: 'Run on your own runner', href: OWN_RUNNER_HREF },
+        footnote: 'Large runs count 2×.',
       };
   }
 }

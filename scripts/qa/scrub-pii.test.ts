@@ -162,26 +162,39 @@ const SAFE: Record<string, string[]> = {
   teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'enabled_decision_shadows', 'decision_model',
     'chat_default_tier', // a chat tier name (CHAT_TIER_NAMES) or null
     'chat_retro', // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)
+    'task_estimates', // { enabled: boolean, setBy: a row id, setAt: ISO time } (packages/core/task-estimate-source.ts)
     'permission_overrides', // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
     'plan', 'billing_status', // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
-    'managed_runner_plan'], // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
+    'managed_runner_plan', // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
+    'model_upgrade_policy', // { mode: fixed vocabulary, soakHours, ISO times, setBy: a row id } (packages/core/model-upgrade-policy.ts)
+    'model_tier_ceilings', // tier names keyed by fixed surfaces and workspace ids, a fixed overCapAuto, audit of ISO times + user/account ids (@buildd/shared model-tier-ceiling.ts)
+    'coding_policy'], // backend ids and payment sources from fixed sets, keyed by workspace id, one boolean (packages/core/coding-policy.ts)
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
-    'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
+    'chat_composer_prefs', // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
+    'model_tier_ceilings', // { admin, self }: tier names by fixed surface, audit of ISO times + user ids (same shape family as teams.model_tier_ceilings)
+    'coding_policy'], // { allowedBackends, allowedSources } from fixed sets (packages/core/coding-policy.ts)
   users: ['timezone'],
+  workspaces: ['model_upgrade_policy', // same shape as teams.model_upgrade_policy
+    'new_starts_paused_by'], // a users.id (who paused new starts), never free text (lib/workspace-pause.ts)
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
   accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)
-    'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
+    'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint',
+    'branch_refresh_head_sha'], // a git SHA, same class as last_notified_sha
   initiatives: ['context_artifact_ids'],
   tasks: [
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',
     'conflict_retry_head_sha', 'reviewer_retry_head_sha', 'depends_on', 'predicted_model',
     'loop_state', 'subject_head_sha',
     'category_decision', // { v, source, keyword, jev, confidence, skipped?, at }: labels, numbers, a version, a timestamp
+    // StoredVerdictDecision (lib/task-verdict.ts): fixed-vocabulary labels, a
+    // hash, row ids, a model id, a timestamp, and a cause key naming CI checks.
+    'verdict_decision',
   ],
   task_subject_reports: ['origin'],
   task_subject_claims: ['key_type', 'key_hash'],
-  workers: ['status', 'pr_opened_base_sha', 'last_commit_sha'],
+  workers: ['status', 'pr_opened_base_sha', 'last_commit_sha',
+    'cost_basis'], // fixed vocabulary (packages/core/cost-basis.ts COST_BASES)
   worker_action_events: ['action'],
   worker_prompt_composition_events: ['policy_version', 'backend', 'sections'],
   // Memory use ledger: ids of a memory / its chunk, plus two fixed vocabularies
@@ -197,6 +210,13 @@ const SAFE: Record<string, string[]> = {
   // each write); evidence is refs, counts and labels. Cascades with conversations.
   chat_retros: ['status', 'skip_reason', 'intent', 'satisfied', 'primary_cause', 'fix_class', 'tool_name', 'signature', 'version', 'error', 'evidence'],
   artifacts: ['type'],
+  // Closed vocabularies (ARTIFACT_LINK_SUBJECTS / ARTIFACT_LINK_RELATIONS in the schema).
+  artifact_links: ['subject_kind', 'relation'],
+  // Closed vocabularies (SPEC_SCOPES / SPEC_STATUSES) and a sha256 of a body scrubbed elsewhere.
+  specs: ['scope', 'status'],
+  spec_revisions: ['content_hash', 'repo_refs'], // repo paths pinned to commit SHAs
+  // A criterion id from the spec body (R-1, AC-2) and a git SHA.
+  spec_outcome_verdicts: ['criterion_id', 'head_sha'],
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
   // github_repos.default_branch.
@@ -234,6 +254,7 @@ const SAFE: Record<string, string[]> = {
   surface_reservations: ['head_sha', 'base_sha'],
   dark_check_alerts: ['check_name'],
   releases: ['head_sha', 'previous_sha', 'version'],
+  dependency_releases: ['reason_code'], // stable machine code naming the matched rule
   release_tasks: ['commit_sha'],
   // exit_cause is NOT safe: normalizeErrorSignature() keeps words from the
   // error text, and the scrub guard caught identifying text surviving there.
@@ -287,7 +308,7 @@ describe('scrub-pii.sql covers the schema', () => {
       workspaces: ['name', 'repo', 'local_path', 'memory', 'projects'],
       github_repos: ['full_name', 'name', 'owner', 'html_url', 'description'],
       github_installations: ['account_login'],
-      missions: ['title', 'description', 'working_branch', 'primary_pr_url', 'goal_criteria'],
+      missions: ['title', 'description', 'working_branch', 'primary_pr_url', 'goal_criteria', 'branch_refresh_lease_token'],
       initiatives: ['title', 'description', 'kpis'],
       tasks: ['title', 'description', 'context', 'result', 'external_url', 'subject_branch'],
       workers: ['branch', 'pr_url', 'current_action', 'waiting_for', 'error', 'milestones', 'result_meta', 'runner'],

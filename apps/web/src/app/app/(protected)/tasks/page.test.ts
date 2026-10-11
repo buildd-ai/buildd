@@ -66,34 +66,12 @@ const cardSource = await Bun.file(
   new URL('../../../../components/TaskCard.tsx', import.meta.url),
 ).text();
 
-describe('mission-budget plumbing — tasks/page.tsx', () => {
-  it('selects missions.status so the flag is not silently undefined', () => {
-    const missionQuery = pageSource.slice(
-      pageSource.indexOf('const misns = await db.query.missions.findMany'),
-      pageSource.indexOf('// Query active workers'),
-    );
-    expect(missionQuery.length).toBeGreaterThan(0);
-    expect(missionQuery).toContain('status: true');
-  });
-
-  it('computes missionBudgetExhausted on every grid row', () => {
-    expect(pageSource).toContain('missionBudgetExhausted:');
-  });
-
-  it('declares missionBudgetExhausted on the gridTasks row type', () => {
-    const rowType = pageSource.slice(
-      pageSource.indexOf('let gridTasks: Array<{'),
-      pageSource.indexOf('}> = [];'),
-    );
-    expect(rowType).toContain('missionBudgetExhausted');
-  });
-
-  it('honours the operator bypass so a force-started task is not re-flagged', () => {
-    // /start writes context.bypassMissionBudget on forceOverride; the claim loop
-    // then claims the task. Rendering it as BUDGET EXHAUSTED would contradict
-    // the gate that is actually in force.
-    expect(pageSource).toContain('BYPASS_MISSION_BUDGET_KEY');
-    expect(pageSource).toContain('hasBypassFlag');
+describe('Activity page', () => {
+  it('uses Activity for all list views without the retired ids branch', () => {
+    expect(pageSource).not.toContain('TaskGrid');
+    expect(pageSource).not.toContain('parseTaskListSelection');
+    expect(pageSource).toContain('gte(tasks.updatedAt, thirtyDaysAgo)');
+    expect(pageSource).toContain('activity = await loadActivity');
   });
 });
 
@@ -130,13 +108,34 @@ describe('mission-budget plumbing — TaskGrid.tsx', () => {
 });
 
 describe('mission-budget plumbing — TaskCard.tsx', () => {
-  it('accepts the prop and feeds it to deriveStage', () => {
+  it('accepts the prop and feeds it to deriveStageReading', () => {
     expect(cardSource).toContain('missionBudgetExhausted?: boolean;');
     const stageCall = cardSource.slice(
-      cardSource.indexOf('const stage = stageOverride ?? deriveStage({'),
+      cardSource.indexOf('const derived = deriveStageReading({'),
       cardSource.indexOf('const timestampLabel'),
     );
     expect(stageCall).toContain('isSubjectDead: subjectDead');
     expect(stageCall).toContain('isMissionBudgetExhausted: missionBudgetExhausted');
+  });
+});
+
+describe('empty state header — TaskGrid.tsx', () => {
+  it('renders eyebrow/heading block in the empty state', () => {
+    const emptyState = gridSource.slice(
+      gridSource.indexOf('if (rootTasks.length === 0 && !missionFilter)'),
+      gridSource.indexOf('if (rootTasks.length === 0 && !missionFilter)') + 1500,
+    );
+    expect(emptyState).toContain('section-label');
+    expect(emptyState).toContain('Activity');
+    expect(emptyState).toContain('No activity');
+    expect(emptyState).toContain('teamName');
+  });
+
+  it('includes teamName prop in TaskGridProps interface', () => {
+    const interfaceSection = gridSource.slice(
+      gridSource.indexOf('interface TaskGridProps'),
+      gridSource.indexOf('export default function TaskGrid'),
+    );
+    expect(interfaceSection).toContain('teamName');
   });
 });

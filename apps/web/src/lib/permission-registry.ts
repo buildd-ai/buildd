@@ -34,6 +34,7 @@ export interface PermissionDef {
 
 export const OWNER_ADMIN = ['owner', 'admin'] as const satisfies readonly TeamRole[];
 const OWNER_ONLY = ['owner'] as const satisfies readonly TeamRole[];
+const EVERY_ROLE = ['owner', 'admin', 'member'] as const satisfies readonly TeamRole[];
 
 /**
  * Each entry reproduces the rule its call sites apply today — see the
@@ -48,8 +49,13 @@ export const PERMISSIONS = {
     minKeyLevel: null,
   },
   assign_team_owner: {
-    description: "Change a member's role, or add a member as owner.",
+    description: 'Make someone an owner, demote or remove an owner, or transfer ownership.',
     defaultRoles: OWNER_ONLY,
+    minKeyLevel: null,
+  },
+  assign_team_roles: {
+    description: 'Move a member between member and admin (never to or from owner).',
+    defaultRoles: OWNER_ADMIN,
     minKeyLevel: null,
   },
   // ── Team settings ────────────────────────────────────────────────────────
@@ -93,6 +99,11 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: null,
   },
+  manage_team_notifications: {
+    description: "Change the team's notification settings (Pushover, notify webhook).",
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: 'admin',
+  },
   // ── API keys and runners ─────────────────────────────────────────────────
   manage_team_keys: {
     description: 'Regenerate API keys, flag host-runner keys, and mint or approve admin-level keys and admin scopes.',
@@ -102,6 +113,11 @@ export const PERMISSIONS = {
   // ── Model access and spend ───────────────────────────────────────────────
   manage_team_model_keys: {
     description: 'Manage the team model key in secrets.',
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: 'admin',
+  },
+  manage_team_credentials: {
+    description: 'Write or delete a team-wide or workspace-wide agent credential (any other secret, and workspace Claude/Codex credentials).',
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
   },
@@ -126,6 +142,11 @@ export const PERMISSIONS = {
     minKeyLevel: null,
   },
   // ── Workspaces ───────────────────────────────────────────────────────────
+  create_workspace: {
+    description: 'Create a workspace in the team.',
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: 'admin',
+  },
   manage_workspace_settings: {
     description: 'Edit workspace config, git/merge policy, access mode, data class, connector gate and webhook.',
     defaultRoles: OWNER_ADMIN,
@@ -151,6 +172,11 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
   },
+  delegate_schedule_access: {
+    description: "Set or clear a schedule's delegation: which other workspaces of the team its tasks may read analytics from or file tasks in.",
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: 'admin',
+  },
   // ── Work in flight ───────────────────────────────────────────────────────
   steer_workers: {
     description: 'Send instructions to a running worker.',
@@ -166,6 +192,11 @@ export const PERMISSIONS = {
     description: 'Read release preflight and trigger a release.',
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
+  },
+  approve_specs: {
+    description: 'Submit a Living Spec revision for review and approve it (a person only; a workspace can also name delegated approvers).',
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: null,
   },
   // ── Team infrastructure ──────────────────────────────────────────────────
   manage_connectors: {
@@ -183,19 +214,29 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
   },
+  manage_agent_roles: {
+    description: 'Create, edit and delete agent roles and their workspace overrides, including operator grants, MCP servers, required env vars and connectors.',
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: 'admin',
+  },
+  create_personal_roles: {
+    description: 'Create agent roles for yourself, edit and delete your own, and share them with the team.',
+    defaultRoles: EVERY_ROLE,
+    minKeyLevel: 'worker',
+  },
 } as const satisfies Record<string, PermissionDef>;
 
 export type Permission = keyof typeof PERMISSIONS;
 
 /** How the settings matrix groups permissions, in registry order. Every permission is in exactly one. */
 export const PERMISSION_GROUPS: ReadonlyArray<{ title: string; permissions: readonly Permission[] }> = [
-  { title: 'Team membership', permissions: ['manage_team_members', 'assign_team_owner'] },
-  { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_chat_retro', 'activate_chat_retro_dogfood', 'view_team_usage', 'manage_billing'] },
+  { title: 'Team membership', permissions: ['manage_team_members', 'assign_team_owner', 'assign_team_roles'] },
+  { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_chat_retro', 'activate_chat_retro_dogfood', 'view_team_usage', 'manage_billing', 'manage_team_notifications'] },
   { title: 'API keys and runners', permissions: ['manage_team_keys'] },
-  { title: 'Model access and spend', permissions: ['manage_team_model_keys', 'manage_inference_providers', 'manage_model_tiers', 'manage_ai_budget', 'use_chat_admin_tools'] },
-  { title: 'Workspaces', permissions: ['manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory'] },
-  { title: 'Work in flight', permissions: ['steer_workers', 'force_reassign_task', 'manage_releases'] },
-  { title: 'Team infrastructure', permissions: ['manage_connectors', 'manage_evidence_backends', 'run_experiments'] },
+  { title: 'Model access and spend', permissions: ['manage_team_model_keys', 'manage_team_credentials', 'manage_inference_providers', 'manage_model_tiers', 'manage_ai_budget', 'use_chat_admin_tools'] },
+  { title: 'Workspaces', permissions: ['create_workspace', 'manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory', 'delegate_schedule_access'] },
+  { title: 'Work in flight', permissions: ['steer_workers', 'force_reassign_task', 'manage_releases', 'approve_specs'] },
+  { title: 'Team infrastructure', permissions: ['manage_connectors', 'manage_evidence_backends', 'run_experiments', 'manage_agent_roles', 'create_personal_roles'] },
 ];
 
 export function isTeamRole(value: unknown): value is TeamRole {
@@ -317,4 +358,88 @@ export function roleHas(
 /** Whether an API key of `level` holds `permission`. Unknown levels hold nothing. */
 export function keyLevelHas(level: string | null | undefined, permission: Permission): boolean {
   return keyHolds(PERMISSIONS[permission].minKeyLevel, level);
+}
+
+// ── Agent capabilities ────────────────────────────────────────────────────────
+//
+// The team permissions above say what a HUMAN team role may do. Agent
+// capabilities say what a task running under an agent ROLE (a workspaceSkills
+// row with isRole) may do on the platform's behalf. Same idiom: a named
+// registry, the roles that hold each by default, a set nothing grants
+// implicitly, and pure checks. Kept apart from PERMISSIONS on purpose: an
+// agent role is not a team role, and neither may ever stand in for the other.
+//
+// Deployment authority is split in two tiers. `standard` is what a normal
+// Platform Operator gets: read deployments, deploy, and USE an approved
+// credential server-side without seeing it. `elevated` is changing or reading
+// the credential itself; no role holds it by default, and only an explicit
+// workspace grant confers it (operator-capability.ts).
+
+export type AgentCapabilityTier = 'standard' | 'elevated';
+
+export interface AgentCapabilityDef {
+  description: string;
+  tier: AgentCapabilityTier;
+}
+
+export const AGENT_CAPABILITIES = {
+  'deployments:read': {
+    description: 'Read deployment state, history and redacted logs for an allowed target.',
+    tier: 'standard',
+  },
+  'deployments:write': {
+    description: 'Run a deploy, secret-put or config update against an allowed provider/project/environment.',
+    tier: 'standard',
+  },
+  'deployment_secrets:use': {
+    description: 'Have the server use an approved credential reference for an allowed deploy. The agent never receives the plaintext.',
+    tier: 'standard',
+  },
+  'deployment_secrets:manage': {
+    description: 'Create, rotate or delete a deployment credential.',
+    tier: 'elevated',
+  },
+  'secrets:reveal': {
+    description: 'Read a stored credential in plaintext.',
+    tier: 'elevated',
+  },
+} as const satisfies Record<string, AgentCapabilityDef>;
+
+export type AgentCapability = keyof typeof AGENT_CAPABILITIES;
+
+export const AGENT_CAPABILITY_NAMES = Object.keys(AGENT_CAPABILITIES) as AgentCapability[];
+
+/** Capabilities no role holds by default and no team default can grant: only an explicit workspace grant. */
+export const ELEVATED_AGENT_CAPABILITIES: ReadonlySet<AgentCapability> = new Set(
+  AGENT_CAPABILITY_NAMES.filter(c => AGENT_CAPABILITIES[c].tier === 'elevated'),
+);
+
+/** The built-in Platform Operator role slug. */
+export const OPERATOR_ROLE_SLUG = 'operator';
+
+/**
+ * Role slug -> the capabilities it may hold. A role absent here holds none,
+ * whatever its row's metadata says, so builder, reviewer and every team's own
+ * roles gain nothing from this registry. Listing a capability here is a
+ * ceiling, not a grant: the workspace must still enable the role
+ * (operator-capability.ts). Elevated capabilities are listed only so an
+ * explicit workspace grant can reach them; they are never on by default.
+ */
+export const ROLE_CAPABILITY_CEILINGS: Readonly<Record<string, readonly AgentCapability[]>> = {
+  [OPERATOR_ROLE_SLUG]: AGENT_CAPABILITY_NAMES,
+};
+
+/** The capabilities a role holds once enabled, before any narrowing: its ceiling minus the elevated ones. */
+export function defaultRoleCapabilities(roleSlug: string | null | undefined): AgentCapability[] {
+  const ceiling = roleSlug ? ROLE_CAPABILITY_CEILINGS[roleSlug] ?? [] : [];
+  return ceiling.filter(c => !ELEVATED_AGENT_CAPABILITIES.has(c));
+}
+
+export function isAgentCapability(value: unknown): value is AgentCapability {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(AGENT_CAPABILITIES, value);
+}
+
+/** Whether `roleSlug` may ever hold `capability` (its ceiling). Unknown roles may hold nothing. */
+export function roleMayHold(roleSlug: string | null | undefined, capability: AgentCapability): boolean {
+  return !!roleSlug && (ROLE_CAPABILITY_CEILINGS[roleSlug] ?? []).includes(capability);
 }

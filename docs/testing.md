@@ -127,9 +127,10 @@ shells out to `zstd` to compress/restore the cloud runner's cache tarball, and i
 the real binary (no mock) to exercise that path, so a sandbox without it fails only those
 assertions while the rest of the file passes. `apps/runner/install.sh` now provisions `zstd`
 on fresh installs the same best-effort way it provisions other tooling (`apt-get`/`brew`, never
-fatal to the rest of the install) — an older sandbox that predates that change, or one on a
+fatal to the rest of the install; without root or passwordless escalation it unpacks the `.deb` into `~/.local/bin` using a user-owned apt state dir) — install.sh only runs at install time, so an older sandbox that predates that change, or one on a
 platform neither package manager covers, can still be missing it. Confirm with `command -v zstd`;
-if it's absent, this is a known sandbox-provisioning gap, not a product bug — production code
+if it's absent, run `bash apps/runner/install.sh --repair` (idempotent; zstd only, no runner reinstall;
+put `~/.local/bin` on PATH) — this is a known sandbox-provisioning gap, not a product bug — production code
 (`zstdAvailable()` in `warm-repo.ts`) already falls back to a plain, uncompressed tarball when
 the binary is missing, so don't change `warm-repo.ts` to work around it.
 
@@ -180,6 +181,18 @@ Available states:
 
 ### How It Works
 The fixtures page (`apps/web/src/app/app/dev/fixtures/page.tsx`) renders the `RealTimeWorkerView` component with hardcoded mock data for each state.
+
+`?state=run-activity` (`RunActivityFixture.tsx`, data in `run-activity-fixtures.ts`) renders the
+run-detail view over six scenarios: a research task, a legacy worker whose percent stream goes
+40 → 70 → 30 → 90, waiting for input, a failed run, steering messages in each delivery state, and
+attempts that share one timestamp. `&scenario=<key>` shows one. Its DOM assertions live in
+`RunActivityFixture.dom.test.tsx`; its 360px layout gate (no sideways scroll, tap targets ≥ 44px)
+is `scripts/qa/plans/run-activity.json`, dispatched with
+`gh workflow run visual-qa.yml --ref <branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=360x780`
+(and again with `-f viewport=desktop`). A layout-gated state exits 4 on a layout violation,
+a failed prerequisite step, or a measurement error. Screenshots and failure metadata are
+written before exit; `scripts/qa/capture.test.ts` guards that behavior without requiring
+a browser installation in the unit-test job.
 
 ## data-testid Conventions
 
@@ -362,7 +375,7 @@ run tells you nothing until you re-run that file alone.
 
 Prefer not stubbing a module that has its own unit test — inject the dependency
 instead (pass it in, or accept an override in an options bag, as
-`reconcileWorkerPrState` does with `opts.githubApi`).
+`importWorkerPrFacts` does with `opts.githubApi`).
 
 When you must stub, return the module's **whole** surface so the stub is harmless
 if it ever does leak:

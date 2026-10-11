@@ -17,7 +17,7 @@ export default function TaskModelCell({ summary }: { summary: TaskModelSummary }
 
   return (
     <div>
-      <dt className="text-text-muted text-[11px] uppercase tracking-wider">Model</dt>
+      <dt className="text-text-muted text-[11px]">Model</dt>
       <dd className="text-text-primary">
         {summary.tierLabel ?? summary.modelLabel}
         {summary.source && <span className="text-text-muted"> &middot; {summary.source}</span>}

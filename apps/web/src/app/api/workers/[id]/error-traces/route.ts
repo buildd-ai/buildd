@@ -4,6 +4,7 @@ import { db } from '@buildd/core/db';
 import { workers, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, desc, gt } from 'drizzle-orm';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 
@@ -37,19 +38,21 @@ export async function GET(
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    columns: { id: true, accountId: true, workspaceId: true },
+    columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true },
   });
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  // Access check: API key must own the worker; session user must have access
-  // to the worker's workspace.
+  // Access check: a bearer caller must be the principal that claimed the worker
+  // (lib/worker-owner.ts); a dashboard session user must have access to the
+  // worker's workspace. A per-task token is scoped by workspace above, not by
+  // task, so its scope is not re-applied as the owner check's task rule.
   if (apiAccount && !user) {
     if (!taskScopeAllowsWorkspace(apiAccount, worker.workspaceId)) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
-    if (worker.accountId !== apiAccount.id) {
+    if (!callerOwnsWorker({ ...apiAccount, taskScope: undefined }, { ...worker, taskId: null })) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
   } else if (user) {

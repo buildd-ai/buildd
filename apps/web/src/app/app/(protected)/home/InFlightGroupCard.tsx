@@ -7,6 +7,7 @@
 import Link from 'next/link';
 import { actionCardTaskLink } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
+import { displayTaskTitle } from '@/lib/task-title';
 import { IN_FLIGHT_GROUP_COPY, type InFlightKind } from './home-view';
 
 function entry(item: ActionQueueItem): { text: string; href: string | null } {
@@ -14,7 +15,7 @@ function entry(item: ActionQueueItem): { text: string; href: string | null } {
     return { text: item.specPath ?? item.taskTitle ?? 'spec', href: (item.docFixTaskId ?? item.mergedDocFixTaskId)
       ? `/app/tasks/${item.docFixTaskId ?? item.mergedDocFixTaskId}` : null };
   }
-  const text = item.taskTitle ?? (item.prNumber ? `PR #${item.prNumber}` : 'task');
+  const text = (item.taskTitle && displayTaskTitle(item.taskTitle)) || (item.prNumber ? `PR #${item.prNumber}` : 'task');
   return { text, href: item.taskId ? actionCardTaskLink(item) : item.prUrl ?? null };
 }
 

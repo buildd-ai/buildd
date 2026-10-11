@@ -153,7 +153,7 @@ export default function TaskQuestionFeed({ taskId, taskStatus, initialNotes = []
 
       {answered.length > 0 && (
         <details className="group" data-testid="task-answered-questions">
-          <summary className="cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-2 min-h-11 border-b border-border-default font-mono text-[11px] uppercase tracking-[2px] text-text-muted hover:text-text-secondary">
+          <summary className="cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-2 min-h-11 border-b border-border-default font-mono text-[11px] text-text-muted hover:text-text-secondary">
             <span className="group-open:rotate-90 transition-transform" aria-hidden="true">▸</span>
             Past questions · {answered.length}
           </summary>
@@ -163,13 +163,13 @@ export default function TaskQuestionFeed({ taskId, taskStatus, initialNotes = []
               return (
                 <div key={note.id} className="px-4 py-3 border-b border-border-default last:border-b-0">
                   <div className="flex items-baseline gap-2">
-                    <span className="font-mono text-[11px] uppercase tracking-[1.5px] text-text-muted">Q</span>
+                    <span className="font-mono text-[11px] text-text-muted">Q</span>
                     <p className="flex-1 min-w-0 text-[13px] text-text-secondary [overflow-wrap:anywhere]">{note.title}</p>
                     <span className="font-mono text-[11px] text-text-muted tabular-nums shrink-0">{timeAgo(note.createdAt)}</span>
                   </div>
                   {reply ? (
                     <div className="mt-1.5 flex items-baseline gap-2">
-                      <span className="font-mono text-[11px] uppercase tracking-[1.5px] text-accent-text">A</span>
+                      <span className="font-mono text-[11px] text-accent-text">A</span>
                       <p className="flex-1 min-w-0 text-[13px] text-text-primary [overflow-wrap:anywhere]">{reply.body || reply.title}</p>
                     </div>
                   ) : <p className="mt-1.5 text-meta text-text-muted">Not answered</p>}

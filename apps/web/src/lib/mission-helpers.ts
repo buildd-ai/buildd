@@ -2,6 +2,7 @@ import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES }
 import { isDeliverableTask, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import { STATUS_TONE_CHIP, missionStateTone } from './status-tone';
 import { isGateSatisfied } from './task-presentation';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 
 /**
  * `deriveMissionHealth`'s answer to "is work moving" — a lifecycle read, not a
@@ -179,10 +180,18 @@ export function missingDependencyRow(id: string): DependencyRow {
  * deduplicated. A caller loads these by id (`loadDependencyRows`) and passes
  * them as `dependencies` so an out-of-mission dependency is judged, not guessed.
  */
-export function foreignDependencyIds(rows: ReadonlyArray<{ id?: string; dependsOn?: string[] | null }>): string[] {
+export function foreignDependencyIds(
+  rows: ReadonlyArray<{ id?: string; dependsOn?: string[] | null; title?: string | null }>,
+): string[] {
   const own = new Set(rows.map(r => r.id).filter((id): id is string => !!id));
   const out = new Set<string>();
-  for (const r of rows) for (const id of Array.isArray(r.dependsOn) ? r.dependsOn : []) if (!own.has(id)) out.add(id);
+  for (const r of rows) {
+    // `rows` are one mission's tasks, and that mission's surface audit is held
+    // by them only (dependencyHoldsTask): its out-of-mission ids stay
+    // unloaded, so no surface counts an unlinked task as something it waits on.
+    if (isSurfaceAuditTask(r.title ?? '')) continue;
+    for (const id of Array.isArray(r.dependsOn) ? r.dependsOn : []) if (!own.has(id)) out.add(id);
+  }
   return [...out];
 }
 

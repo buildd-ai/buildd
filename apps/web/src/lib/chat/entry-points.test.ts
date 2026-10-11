@@ -13,14 +13,14 @@ describe('newWorkHref — create buttons open chat when it is available', () => 
   });
 
   it('chat unavailable: the same buttons open the forms, as before', () => {
-    expect(newWorkHref('mission', false)).toBe('/app/missions/new');
-    expect(newWorkHref('task', false)).toBe('/app/tasks/new');
-    expect(newWorkHref('task', false, WS)).toBe(`/app/tasks/new?workspaceId=${WS}`);
+    expect(newWorkHref('mission', false)).toBe('/app/missions?new=1');
+    expect(newWorkHref('task', false)).toBe('/app/missions?new=1');
+    expect(newWorkHref('task', false, WS)).toBe('/app/missions?new=1');
   });
 
   it('formHref is the fallback link chat offers', () => {
-    expect(formHref('mission', WS)).toBe('/app/missions/new');
-    expect(formHref('task', WS)).toBe(`/app/tasks/new?workspaceId=${WS}`);
+    expect(formHref('mission', WS)).toBe('/app/missions?new=1');
+    expect(formHref('task', WS)).toBe('/app/missions?new=1');
   });
 });
 

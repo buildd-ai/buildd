@@ -18,7 +18,7 @@ async function authenticate(
   if (apiKey) {
     const account = await authenticateApiKey(apiKey, req);
     if (account) {
-      const ok = await verifyAccountWorkspaceAccess(account.id, workspaceId, permission);
+      const ok = await verifyAccountWorkspaceAccess(account, workspaceId, permission);
       return { ok };
     }
   }

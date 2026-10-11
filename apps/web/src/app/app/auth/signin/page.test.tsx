@@ -23,6 +23,7 @@ describe('sign-in page', () => {
 
   it('uses the brand surface, not glass', () => {
     expect(html).toContain('class="card');
-    expect(html).not.toMatch(/backdrop-blur|blur-sm|rounded-2xl|bg-white\/10|#2a2d3a/);
+    expect(html).not.toMatch(/(?:bg|text|border)-\[#[0-9a-f]{6}\]/i);
+    expect(html).not.toMatch(/backdrop-blur|blur-sm|rounded-2xl|bg-white\/10/);
   });
 });

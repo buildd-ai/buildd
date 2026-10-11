@@ -5,7 +5,7 @@
 
 import * as cp from 'child_process';
 import * as fs from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import {
   resolveWorktreeBase,
   clearResumeContext,
@@ -20,13 +20,15 @@ import {
   type WorktreeOwnershipRecord,
 } from './worktree-utils';
 import { sessionLog as realSessionLog } from './session-logger';
+import { archiveWorktreeWork, archiveWorktreeWorkSync, type ArchiveResult } from './worktree-archive';
 import { isGeneratedPath } from '@buildd/shared';
 import { detectInstallPlans, resolveManifest, MANIFEST_PATH } from './env-verify';
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
+import { readRepairTarget } from '@buildd/core/repair-target';
 import { describePrimaryCloneDrift } from './worktree-confinement';
 import { diagnoseRegistryAuth, type RegistryAuthDiagnosis } from './install-diagnosis';
-import { emitPhase } from './phase-lines';
-import { branchOfRemoteRef, ensureRemoteBranch, type GitCwdRun, type RemoteBranchResult } from './git-clone';
+import { emitPhase, emitWorktreeMode } from './phase-lines';
+import { branchOfRemoteRef, ensureRemoteBranch, isCloudExecutor, type GitCwdRun, type RemoteBranchResult } from './git-clone';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -50,6 +52,11 @@ let readdirSync = fs.readdirSync;
 // exercising the removal guard.
 let sessionLog: typeof realSessionLog = realSessionLog;
 // Optional spy for cleanupWorktree — set via __setGitOpsDeps to avoid mock.module pollution
+// Archive-before-remove. Real by default; __setGitOpsDeps swaps in no-ops unless
+// the test supplies its own (it is mocking fs/git already, so a real archive
+// would probe paths that only exist in the mock).
+let archiveAsync: typeof archiveWorktreeWork = archiveWorktreeWork;
+let archiveSync: typeof archiveWorktreeWorkSync = archiveWorktreeWorkSync;
 let _cleanupSpy: ((repoPath: string, worktreePath: string, workerId: string) => Promise<void>) | null = null;
 
 export interface GitOpsDeps {
@@ -65,6 +72,9 @@ export interface GitOpsDeps {
   /** Optional: keep session-log writes out of the host log dir in tests. */
   sessionLog?: typeof realSessionLog;
   // Optional spy that intercepts cleanupWorktree calls (used by eviction tests)
+  /** Optional: replace the archive step (default in tests: no-op). */
+  archive?: typeof archiveWorktreeWork;
+  archiveSync?: typeof archiveWorktreeWorkSync;
   cleanupSpy?: ((repoPath: string, worktreePath: string, workerId: string) => Promise<void>) | null;
 }
 
@@ -79,6 +89,8 @@ export function __setGitOpsDeps(mocks: GitOpsDeps): void {
   rmSync = mocks.rmSync;
   readdirSync = mocks.readdirSync ?? fs.readdirSync;
   sessionLog = mocks.sessionLog ?? realSessionLog;
+  archiveAsync = mocks.archive ?? (async () => ({ archived: false }));
+  archiveSync = mocks.archiveSync ?? (() => ({ archived: false }));
   if (mocks.cleanupSpy !== undefined) _cleanupSpy = mocks.cleanupSpy;
 }
 
@@ -93,6 +105,8 @@ export function __resetGitOpsDeps(): void {
   rmSync = fs.rmSync;
   readdirSync = fs.readdirSync;
   sessionLog = realSessionLog;
+  archiveAsync = archiveWorktreeWork;
+  archiveSync = archiveWorktreeWorkSync;
   _cleanupSpy = null;
 }
 
@@ -124,7 +138,7 @@ export type InstallFailureClass =
 /** The outcome of the runner's own dependency install for a worktree. */
 export type InstallOutcome =
   | { status: 'ok'; dirs: string[]; unfrozen?: boolean }
-  | { status: 'skipped'; reason: 'no-manifest' | 'non-bun-toolchain' | 'declared-manifest' }
+  | { status: 'skipped'; reason: 'no-manifest' | 'non-bun-toolchain' | 'declared-manifest' | 'deferred' }
   | { status: 'failed'; dir: string; failure: InstallFailureClass; message: string; registry?: RegistryAuthDiagnosis };
 
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -139,6 +153,8 @@ const errMessage = (err: unknown): string => (err instanceof Error ? err.message
  */
 export function classifyInstallFailure(err: unknown): InstallFailureClass {
   const text = errMessage(err).toLowerCase();
+  // Before the auth check: yarn 2+'s drift message says "explicitly forbidden".
+  if (/lockfile would have been modified/.test(text)) return 'lockfile-drift';
   if (/\b(401|403)\b|unauthorized|forbidden|authentication|incorrect or missing password/.test(text)) {
     return 'registry-auth';
   }
@@ -151,10 +167,62 @@ export function classifyInstallFailure(err: unknown): InstallFailureClass {
   // classifies *anything* as drift — which is the same misattribution the old
   // "lockfile may have drifted" warning made, one layer down. Only a message
   // that says the lockfile itself was rejected counts.
-  if (/lockfile had changes|lockfile is frozen|lockfile is outdated|outdated_lockfile|lockfile needs to be updated|lockfile would be (modified|updated)/.test(text)) {
+  // pnpm: ERR_PNPM_OUTDATED_LOCKFILE / "pnpm-lock.yaml is not up to date with
+  // package.json"; npm ci: "can only install packages when your package.json
+  // and package-lock.json ... are in sync"; yarn 2+: "The lockfile would have
+  // been modified by this install".
+  if (/lockfile had changes|lockfile is frozen|lockfile is outdated|outdated_lockfile|lockfile needs to be updated|lockfile would (be|have been) (modified|updated)|is not up to date with|can only install packages when your package\.json/.test(text)) {
     return 'lockfile-drift';
   }
   return 'unknown';
+}
+
+/**
+ * How one toolchain installs: the frozen/ci form first, the unfrozen form only
+ * when the frozen one rejected the lockfile (classifyInstallFailure). Scripts
+ * stay on: measured on a pnpm repo, `--ignore-scripts` saved nothing and broke
+ * `--offline` on a git dependency. Null for a toolchain the runner does not
+ * install (python, cargo, go: a declared `.buildd/env.yaml` covers those).
+ */
+export interface InstallCommand {
+  bin: string;
+  frozen: string[];
+  unfrozen: string[];
+}
+
+export function installCommandFor(runtime: string, opts: { yarnBerry?: boolean } = {}): InstallCommand | null {
+  switch (runtime) {
+    case 'bun': return { bin: 'bun', frozen: ['install', '--frozen-lockfile'], unfrozen: ['install'] };
+    case 'pnpm': return { bin: 'pnpm', frozen: ['install', '--frozen-lockfile'], unfrozen: ['install', '--no-frozen-lockfile'] };
+    // Yarn 2+ (a `.yarnrc.yml` next to the lockfile) renamed the flag.
+    case 'yarn': return opts.yarnBerry
+      ? { bin: 'yarn', frozen: ['install', '--immutable'], unfrozen: ['install'] }
+      : { bin: 'yarn', frozen: ['install', '--frozen-lockfile'], unfrozen: ['install'] };
+    // package-lock.json: LOCKFILE_RULES calls its runtime `node`.
+    case 'node': return { bin: 'npm', frozen: ['ci'], unfrozen: ['install'] };
+    default: return null;
+  }
+}
+
+/** Host runners: one bun install, bounded so a stuck registry cannot hold worktree setup. */
+const HOST_INSTALL_TIMEOUT_MS = 120_000;
+/**
+ * Cloud: the install runs behind the agent session (deps-gate.ts), so it can
+ * take as long as a cold pnpm install on a slow disk does (92-103 s typical
+ * on standard-3, after a 30-180 s cache restore) without blocking anything.
+ */
+export const CLOUD_INSTALL_TIMEOUT_MS = 600_000;
+
+export interface InstallOptions {
+  /**
+   * Install every Node lockfile toolchain (pnpm, npm, yarn, bun), not only
+   * bun. Cloud executor only: a cloud container runs one task in a clone
+   * nobody else uses, and without it a pnpm repo got no install and the agent
+   * improvised one.
+   */
+  allToolchains?: boolean;
+  frozenOnly?: boolean;
+  timeoutMs?: number;
 }
 
 /**
@@ -173,12 +241,13 @@ export function classifyInstallFailure(err: unknown): InstallFailureClass {
  * every time with "Bun could not find a package.json file to install from" —
  * and, because the return type was `void`, nobody found out.
  *
- * Stays BUN-ONLY for the auto-detected path: it exists to create bun's nested
- * workspace symlinks. Having worktree setup start running `npm ci`/`cargo
- * fetch`/`go mod download` for every clone is a different feature with a
- * different risk profile. A non-bun lockfile yields
- * `{status:'skipped', reason:'non-bun-toolchain'}` — honest, and recorded. Repos
- * that need it declare `.buildd/env.yaml` and the provision gate owns it.
+ * On a host runner it stays BUN-ONLY for the auto-detected path: it exists to
+ * create bun's nested workspace symlinks, and a shared host clone running `npm
+ * ci` for every worktree is a different risk profile. A non-bun lockfile there
+ * yields `{status:'skipped', reason:'non-bun-toolchain'}` — honest, and
+ * recorded. In a cloud container (`allToolchains`) every Node lockfile
+ * toolchain installs (installCommandFor). Repos that need anything else
+ * declare `.buildd/env.yaml` and the provision gate owns it.
  *
  * `installEnv` is the worker's resolved secret env (role env today), overlaid
  * on the runner's own env. Without it a repo whose `.npmrc` reads
@@ -186,10 +255,11 @@ export function classifyInstallFailure(err: unknown): InstallFailureClass {
  * container, because this runs before the agent env exists. Values are never
  * logged — only the key count.
  */
-async function installWorkspaceDeps(
+export async function installWorkspaceDeps(
   worktreePath: string,
   workerId: string,
   installEnv?: Record<string, string>,
+  opts: InstallOptions = {},
 ): Promise<InstallOutcome> {
   const plans = detectInstallPlans(worktreePath, {
     exists: (rel) => existsSync(join(worktreePath, rel)),
@@ -212,8 +282,13 @@ async function installWorkspaceDeps(
     return { status: 'skipped', reason: 'no-manifest' };
   }
 
-  const bunPlans = plans.filter(p => p.runtime === 'bun');
-  if (bunPlans.length === 0) {
+  const runnable = plans.flatMap((plan) => {
+    if (!opts.allToolchains && plan.runtime !== 'bun') return [];
+    const dir = plan.dir === '.' ? worktreePath : join(worktreePath, plan.dir);
+    const command = installCommandFor(plan.runtime, { yarnBerry: existsSync(join(dir, '.yarnrc.yml')) });
+    return command ? [{ plan, command }] : [];
+  });
+  if (runnable.length === 0) {
     console.log(
       `[Worker ${workerId}] Worktree uses a non-bun toolchain (${plans.map(p => p.runtime).join(', ')}) ` +
       `— skipping install; declare ${MANIFEST_PATH} to have the provision gate run it`,
@@ -222,21 +297,23 @@ async function installWorkspaceDeps(
   }
 
   // Phase markers for the cloud runner's run report (phase-lines.ts; printed
-  // only in a cloud container). Only the runner's own bun install is timed:
-  // a declared manifest's install runs in the provision gate instead.
+  // only in a cloud container). Only the runner's own install is timed: a
+  // declared manifest's install runs in the provision gate instead.
   emitPhase('install_start');
   try {
-    return await runBunInstalls(worktreePath, workerId, bunPlans, installEnv);
+    return await runInstalls(worktreePath, workerId, runnable, installEnv, opts.timeoutMs ?? HOST_INSTALL_TIMEOUT_MS, opts.frozenOnly);
   } finally {
     emitPhase('install_end');
   }
 }
 
-async function runBunInstalls(
+async function runInstalls(
   worktreePath: string,
   workerId: string,
-  bunPlans: ReturnType<typeof detectInstallPlans>,
-  installEnv?: Record<string, string>,
+  runnable: Array<{ plan: ReturnType<typeof detectInstallPlans>[number]; command: InstallCommand }>,
+  installEnv: Record<string, string> | undefined,
+  timeoutMs: number,
+  frozenOnly = false,
 ): Promise<InstallOutcome> {
   const dirs: string[] = [];
   let usedUnfrozen = false;
@@ -261,47 +338,48 @@ async function runBunInstalls(
     return { status: 'failed', dir, failure, message, registry };
   };
 
-  for (const plan of bunPlans) {
+  for (const { plan, command } of runnable) {
     const cwd = plan.dir === '.' ? worktreePath : join(worktreePath, plan.dir);
-    const opts = { cwd, timeout: 120_000, encoding: 'utf-8' as const, ...(env ? { env } : {}) };
+    const opts = { cwd, timeout: timeoutMs, encoding: 'utf-8' as const, ...(env ? { env } : {}) };
     // new Promise + execFile directly rather than util.promisify, so mock
     // injection via __setGitOpsDeps works consistently across bun versions.
     const run = (args: string[]) => new Promise<void>((resolve, reject) => {
-      execFile('bun', args, opts, (err) => { if (err) reject(err); else resolve(); });
+      execFile(command.bin, args, opts, (err) => { if (err) reject(err); else resolve(); });
     });
+    const label = `${command.bin} ${command.frozen.join(' ')}`;
 
-    console.log(`[Worker ${workerId}] Running bun install in ${plan.dir} (frozen lockfile)...`);
+    console.log(`[Worker ${workerId}] Running ${label} in ${plan.dir}...`);
     try {
-      await run(['install', '--frozen-lockfile']);
+      await run(command.frozen);
       dirs.push(plan.dir);
       continue;
     } catch (err) {
       const failure = classifyInstallFailure(err);
-      if (failure !== 'lockfile-drift') {
+      if (failure !== 'lockfile-drift' || frozenOnly) {
         console.warn(
-          `[Worker ${workerId}] bun install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
+          `[Worker ${workerId}] ${command.bin} install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
         );
         return failed(plan.dir, failure, errMessage(err));
       }
       console.warn(
-        `[Worker ${workerId}] Frozen bun install in ${plan.dir} rejected the lockfile, retrying unfrozen: ${errMessage(err)}`,
+        `[Worker ${workerId}] ${label} in ${plan.dir} rejected the lockfile, retrying unfrozen: ${errMessage(err)}`,
       );
     }
 
     try {
-      await run(['install']);
+      await run(command.unfrozen);
       dirs.push(plan.dir);
       usedUnfrozen = true;
     } catch (err) {
       const failure = classifyInstallFailure(err);
       console.warn(
-        `[Worker ${workerId}] Unfrozen bun install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
+        `[Worker ${workerId}] Unfrozen ${command.bin} install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
       );
       return failed(plan.dir, failure, errMessage(err));
     }
   }
 
-  console.log(`[Worker ${workerId}] Workspace packages linked in: ${dirs.join(', ')}`);
+  console.log(`[Worker ${workerId}] Dependencies installed in: ${dirs.join(', ')}`);
   return { status: 'ok', dirs, ...(usedUnfrozen ? { unfrozen: true } : {}) };
 }
 
@@ -405,6 +483,12 @@ export interface SetupWorktreeResult {
    * in workers.ts next to the `fallback` handling.
    */
   install: InstallOutcome;
+  /**
+   * Set only with `deferInstall` (and no declared manifest): the install,
+   * not yet started. `install` then reads `skipped: deferred`; the caller owns
+   * running this and surfacing its outcome.
+   */
+  deferredInstall?: () => Promise<InstallOutcome>;
   /** Set when resume candidate was requested but not usable (missing/diverged),
    *  causing a fresh start from the default branch.  Callers should surface
    *  this as a visible warning rather than silently degrading. */
@@ -420,6 +504,14 @@ export interface SetupWorktreeResult {
     reason: 'default_branch' | 'checked_out' | 'mission_branch';
     holder?: string;
   };
+  /**
+   * Set when `base` is more than 10 commits behind `origin/<defaultBranch>` at
+   * setup time. Previously `console.warn`-only (a line nobody but someone
+   * tailing runner logs would ever see) — returned now so the caller can
+   * surface it the same way it already surfaces `fallback`: an appended error
+   * trace on the worker, visible on the dashboard and to `get_error_traces`.
+   */
+  staleBase?: { ref: string; defaultBranch: string; commitsBehind: number };
 }
 
 /**
@@ -553,7 +645,15 @@ export async function setupWorktree(
    * non-resumable — its tree is detached under it.
    */
   resumeLineage?: ResumeLineage & { onHolderReleased?: (holderWorkerId: string) => void },
+  /**
+   * `deferInstall` (cloud executor only): do not run the tolerant install
+   * here. The result carries `deferredInstall` instead, and the caller runs it
+   * behind the agent session (deps-gate.ts). A declared manifest is untouched:
+   * the provision gate still owns that install.
+   */
+  setupOpts: { deferInstall?: boolean } = {},
 ): Promise<SetupWorktreeResult | null> {
+  const cloud = isCloudExecutor(process.env);
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
   // Worktrees live in .buildd-worktrees/ inside the repo
@@ -565,25 +665,25 @@ export async function setupWorktree(
   // branches. Recomputed from the RESOLVED branch after the candidate ladder
   // below, which is what closes that collision at the source; also reassigned
   // when this path turns out to be occupied.
-  let worktreePath = join(worktreeBase, safeBranch);
+  let worktreePath = cloud ? repoPath : join(worktreeBase, safeBranch);
 
   try {
     // Ensure worktree base directory exists
-    mkdirSync(worktreeBase, { recursive: true });
+    if (!cloud) mkdirSync(worktreeBase, { recursive: true });
 
     // Add .buildd-worktrees to .git/info/exclude if not already there
     const excludePath = join(repoPath, '.git', 'info', 'exclude');
-    if (existsSync(excludePath)) {
+    if (!cloud && existsSync(excludePath)) {
       const excludeContent = readFileSync(excludePath, 'utf-8');
       if (!excludeContent.includes('.buildd-worktrees')) {
         appendFileSync(excludePath, '\n.buildd-worktrees\n');
       }
     }
 
-    // Fetch latest from remote
-    console.log(`[Worker ${workerId}] Fetching latest from remote...`);
+    // Cloud acquisition already fetched the default; candidate refs are fetched by name.
+    if (!cloud) console.log(`[Worker ${workerId}] Fetching latest from remote...`);
     try {
-      execSync('git fetch origin', execOpts);
+      if (!cloud) execSync('git fetch origin', execOpts);
     } catch (err) {
       console.warn(`[Worker ${workerId}] git fetch failed (continuing with local state):`, err instanceof Error ? err.message : err);
     }
@@ -591,7 +691,7 @@ export async function setupWorktree(
     // The primary clone should be a pristine base that nobody works in. If it
     // is dirty or off its branch, something has been working in the shared
     // checkout — say so loudly. Never reset it: it may hold unpushed work.
-    warnOnPrimaryCloneDrift(repoPath, defaultBranch, workerId);
+    if (!cloud) warnOnPrimaryCloneDrift(repoPath, defaultBranch, workerId);
 
     // Clean up stale worktree at this path if it exists.
     //
@@ -647,7 +747,7 @@ export async function setupWorktree(
       return candidate;
     };
 
-    worktreePath = reclaimOrDivert(worktreePath);
+    if (!cloud) worktreePath = reclaimOrDivert(worktreePath);
 
     // Determine if there is a resume candidate from prior attempt context —
     // i.e. a branch to check out and push to DIRECTLY, as opposed to a base to
@@ -667,7 +767,7 @@ export async function setupWorktree(
     // conflict-retry.ts, workers/[id]/route.ts's request-changes retry,
     // respond/route.ts, stale-workers.ts) — this fallback is no longer needed
     // for them and is actively wrong for mission-branch tasks.
-    const resumeCandidate =
+    const explicitResumeCandidate =
       typeof taskContext?.resumeBranch === 'string' && taskContext.resumeBranch.length > 0
         ? taskContext.resumeBranch as string
         : undefined;
@@ -764,6 +864,25 @@ export async function setupWorktree(
       }
     };
 
+    // A task branch already on origin with commits beyond the default branch is
+    // an earlier attempt's work (a usage-limit checkpoint, a pushed WIP), even
+    // when the brief carries no `resumeBranch`. Cutting fresh from the default
+    // branch would make the first push non-fast-forward, so treat it as the
+    // resume candidate. Mission integration branches are never resumed this way.
+    const resumeCandidate =
+      explicitResumeCandidate ??
+      (branch !== defaultBranch &&
+      !looksLikeMissionIntegrationBranch(branch) &&
+      (await fetchBranch(branch)) === 'ok' &&
+      countCommitsAheadOfDefault(`origin/${branch}`) > 0
+        ? branch
+        : undefined);
+    if (resumeCandidate && !explicitResumeCandidate) {
+      console.log(
+        `[Worker ${workerId}] origin/${branch} already carries work for this task and no resumeBranch was given — resuming from it.`,
+      );
+    }
+
     let fallback: SetupWorktreeResult['fallback'];
     let base: string;
     // A prior attempt on this task branch committed but was killed before
@@ -792,7 +911,7 @@ export async function setupWorktree(
     } else {
       base = await resolveWorktreeBase({
         defaultBranch,
-        context: taskContext,
+        context: explicitResumeCandidate ? taskContext : resumeCandidate ? { ...taskContext, resumeBranch: resumeCandidate } : taskContext,
         fetchBranch,
         log: (msg) => console.log(`[Worker ${workerId}] ${msg}`),
         // The resume branch is gone/diverged and we fell back to the default base —
@@ -819,6 +938,7 @@ export async function setupWorktree(
     // Non-blocking and advisory, deliberately: it never changes the base, never
     // fails setup, and the log line names the ref it measured so a wrong-tree
     // measurement is visible next time instead of inferred.
+    let staleBase: SetupWorktreeResult['staleBase'];
     try {
       const behindStr = execSync(
         `git rev-list --count "${base}..origin/${defaultBranch}"`,
@@ -832,6 +952,7 @@ export async function setupWorktree(
           `Consider running: git fetch origin && git rebase origin/${defaultBranch} before pushing. ` +
           `Past CI retry chains were caused by this kind of staleness.`,
         );
+        staleBase = { ref: base, defaultBranch, commitsBehind };
       }
     } catch {
       // Non-fatal: git rev-list can fail for repos with no remote or when the
@@ -850,6 +971,10 @@ export async function setupWorktree(
     // AFTER the stale-worktree cleanup above so a path we just reclaimed isn't
     // counted as a holder.
     const branchOwners = listBranchOwners(execOpts);
+    // The single-task cloud clone is our session, not another branch holder.
+    if (cloud) for (const [name, path] of branchOwners) {
+      if (resolve(path) === resolve(repoPath)) branchOwners.delete(name);
+    }
 
     // Mission-integration guard: a task must NEVER work directly on the mission
     // integration branch. When context.baseBranch is a mission integration branch
@@ -902,16 +1027,24 @@ export async function setupWorktree(
     // `mission/<slug>-<id8>` (generateMissionBranchName), never `buildd/...`.
     // Checked independently of `branchEqualsBase` so it also catches a stale
     // resume value regardless of what the task's own `branch` parameter is.
+    // The one exception to that guard: a repair attempt filed against the PR
+    // whose head IS the integration branch (a mission PR conflicting with
+    // trunk). Its whole job is to push there; diverting it to a task branch
+    // produced attempts that never touched the PR (spec workflow-state-kernel
+    // §13.11 rule 1). Only a GitHub-stamped `repairTarget` grants it.
+    const repairTargetHead = isDirectResumeTarget ? readRepairTarget(taskContext)?.headRef ?? null : null;
     /** Why a branch cannot be the checkout target of a new worktree, if it cannot. */
     const unusable = (candidate: string): 'default_branch' | 'checked_out' | 'mission_branch' | null =>
       candidate === defaultBranch
         ? 'default_branch'
         : branchOwners.has(candidate)
           ? 'checked_out'
-          : (branchEqualsBase && candidate === baseWithoutPrefix && !(isDirectResumeTarget && candidate === resumeCandidate)) ||
-              looksLikeMissionIntegrationBranch(candidate)
-            ? 'mission_branch'
-            : null;
+          : candidate === repairTargetHead
+            ? null
+            : (branchEqualsBase && candidate === baseWithoutPrefix && !(isDirectResumeTarget && candidate === resumeCandidate)) ||
+                looksLikeMissionIntegrationBranch(candidate)
+              ? 'mission_branch'
+              : null;
 
     // M1 — lineage-held resume branch. The branch we mean to resume is still
     // checked out in another worktree; usually the prior attempt's, retained
@@ -1033,7 +1166,7 @@ export async function setupWorktree(
     // across the attempts that resume it, so keying the directory on it would
     // reintroduce the same collision from the other side. `uniqueBranch` embeds
     // the worker id, so it is unique per attempt by construction.
-    if (actualBranch === uniqueBranch && uniqueBranch !== branch) {
+    if (!cloud && actualBranch === uniqueBranch && uniqueBranch !== branch) {
       const divertedPath = join(worktreeBase, safeWorktreeDirName(actualBranch));
       if (divertedPath !== worktreePath) {
         // Through the same guard as the first reclaim — a recompute must not
@@ -1109,9 +1242,12 @@ export async function setupWorktree(
           `origin/${defaultBranch} or origin/${candidate}, so it carries commits pushed nowhere else.`;
         console.warn(`[Worker ${workerId}] ${detail}`);
         sessionLog(workerId, 'warn', 'stale_branch_preserved_unpushed', detail);
-      } catch {
-        // Rename failed (e.g. the branch vanished between the checks above and
-        // here) — nothing left to preserve.
+      } catch (err) {
+        // Host -b fails if the ref remains. Cloud -B would overwrite it: fail
+        // closed when the target still holds work we could not preserve.
+        if (cloud && candidate === actualBranch && localBranchExists(candidate)) {
+          throw new Error(`Cannot preserve unpushed branch "${candidate}" before checkout: ${errMessage(err)}`);
+        }
       }
     }
 
@@ -1120,11 +1256,28 @@ export async function setupWorktree(
     // emits right after this call on every successful worker start. The
     // failure branch below still gets full stderr text via err.message —
     // piping only stops it from also going to the real log stream.
+    emitPhase('worktree_start');
+    emitWorktreeMode(cloud ? 'clone' : 'worktree');
     try {
-      if (checkoutExistingBranch) {
+      if (cloud) {
+        execSync(checkoutExistingBranch
+          ? `git checkout "${actualBranch}"`
+          : `git checkout -B "${actualBranch}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+      } else if (checkoutExistingBranch) {
         execSync(`git worktree add "${worktreePath}" "${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
       } else {
         execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        // `worktree add -b <new> <path> origin/<base>` makes git track the BASE
+        // (branch.autoSetupMerge), so a plain `git push` fails with "upstream
+        // branch name differs" — the push target must be the task's own branch.
+        // Point the upstream at origin/<actualBranch> (it need not exist yet; a
+        // push creates it), matching what `git push -u origin HEAD` would set.
+        try {
+          execSync(`git config "branch.${actualBranch}.remote" origin`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+          execSync(`git config "branch.${actualBranch}.merge" "refs/heads/${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        } catch {
+          // Best-effort: `git push origin HEAD` still works without it.
+        }
       }
     } catch (err) {
       // Make the failure legible: name the branch and, when the branch namespace
@@ -1135,8 +1288,10 @@ export async function setupWorktree(
         ? `branch "${actualBranch}" is already checked out in worktree ${holder}`
         : `branch "${actualBranch}" could not be created at ${worktreePath}`;
       throw new Error(
-        `git worktree add failed: ${detail} (base ${base}): ${err instanceof Error ? err.message : String(err)}`,
+        `${cloud ? 'git checkout' : 'git worktree add'} failed: ${detail} (base ${base}): ${err instanceof Error ? err.message : String(err)}`,
       );
+    } finally {
+      emitPhase('worktree_end');
     }
 
     // Register the repo's shared git hooks in this worktree. The package.json
@@ -1168,10 +1323,17 @@ export async function setupWorktree(
       exists: (rel) => existsSync(join(worktreePath, rel)),
       read: (rel) => String(readFileSync(join(worktreePath, rel), 'utf-8')),
     });
-    const install: InstallOutcome =
-      declared.source === 'manifest' && declared.manifest?.install?.command
-        ? { status: 'skipped', reason: 'declared-manifest' }
-        : await installWorkspaceDeps(worktreePath, workerId, installEnv);
+    const isDeclared = declared.source === 'manifest' && !!declared.manifest?.install?.command;
+    // A cloud container installs every Node lockfile toolchain; a host runner, bun only.
+    const installOpts: InstallOptions = cloud ? { allToolchains: true, timeoutMs: CLOUD_INSTALL_TIMEOUT_MS, frozenOnly: process.env.BUILDD_WARM_HANDOVER === 'deps' } : {};
+    const deferredInstall = !isDeclared && setupOpts.deferInstall
+      ? () => installWorkspaceDeps(worktreePath, workerId, installEnv, installOpts)
+      : undefined;
+    const install: InstallOutcome = isDeclared
+      ? { status: 'skipped', reason: 'declared-manifest' }
+      : deferredInstall
+        ? { status: 'skipped', reason: 'deferred' }
+        : await installWorkspaceDeps(worktreePath, workerId, installEnv, installOpts);
 
     console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
     return {
@@ -1179,15 +1341,17 @@ export async function setupWorktree(
       branch: actualBranch,
       base,
       install,
+      ...(deferredInstall ? { deferredInstall } : {}),
       ...(fallback ? { fallback } : {}),
       ...(sharedBranch ? { sharedBranch } : {}),
+      ...(staleBase ? { staleBase } : {}),
     };
   } catch (err) {
     console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
     setupWorktreeErrors.set(workerId, (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 400));
     // Clean up partial worktree
     try {
-      if (existsSync(worktreePath)) {
+      if (!cloud && existsSync(worktreePath)) {
         rmSync(worktreePath, { recursive: true, force: true });
       }
       execSync('git worktree prune', { ...execOpts, timeout: 5000 });
@@ -1201,6 +1365,7 @@ export async function setupWorktree(
  * Removes the worktree directory and prunes git worktree metadata.
  */
 export async function cleanupWorktree(repoPath: string, worktreePath: string, workerId: string) {
+  if (resolve(repoPath) === resolve(worktreePath)) return;
   if (_cleanupSpy) return _cleanupSpy(repoPath, worktreePath, workerId);
   const execOpts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const };
 
@@ -1219,7 +1384,7 @@ export async function cleanupWorktree(repoPath: string, worktreePath: string, wo
 /** Why a worktree removal was refused, when it was. */
 export type WorktreeRemovalOutcome =
   | { removed: true }
-  | { removed: false; reason: 'owned_by_live_worker' | 'unpushed_commits' };
+  | { removed: false; reason: 'owned_by_live_worker' | 'unpushed_commits' | 'primary_clone' | 'archive_failed' };
 
 export interface RemoveWorktreeOptions {
   repoPath: string;
@@ -1231,6 +1396,8 @@ export interface RemoveWorktreeOptions {
   branch?: string;
   /** Default false. When true, also refuse a tree holding commits not on origin. */
   protectUnpushed?: boolean;
+  /** Where dirty/unpushed work is written before the tree goes. Default `~/.buildd/archive`. */
+  archiveDir?: string;
 }
 
 /**
@@ -1258,6 +1425,7 @@ function hasUnpushedCommits(repoPath: string, branch: string | undefined): boole
 /** Shared gate for both the async and sync removal entry points. */
 function removalRefusal(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome | null {
   const { repoPath, worktreePath, workerId, workers } = opts;
+  if (resolve(repoPath) === resolve(worktreePath)) return { removed: false, reason: 'primary_clone' };
   if (isWorktreePathOwnedByOtherLiveWorker(workers, worktreePath, workerId)) {
     const msg = `Refused to remove worktree ${worktreePath}: owned by another live worker`;
     sessionLog(workerId, 'warn', 'worktree_removal_skipped_owned', msg);
@@ -1271,6 +1439,24 @@ function removalRefusal(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome | n
     return { removed: false, reason: 'unpushed_commits' };
   }
   return null;
+}
+
+function noteArchived(workerId: string, worktreePath: string, a: ArchiveResult): void {
+  const where = [a.bundle, a.patch].filter(Boolean).join(', ');
+  sessionLog(workerId, 'info', 'worktree_work_archived', `Archived work from ${worktreePath} before removal: ${where}`);
+}
+
+/**
+ * Archive failed: the tree may hold work that exists nowhere else, so it stays.
+ * Loud on purpose — a tree that cannot be archived is a leak the reaper retries,
+ * and the alternative is the quiet loss this gate exists to prevent.
+ */
+function archiveRefusal(opts: RemoveWorktreeOptions, err: unknown): WorktreeRemovalOutcome {
+  const why = err instanceof Error ? err.message.split('\n')[0] : String(err);
+  const msg = `Kept worktree ${opts.worktreePath}: could not archive its work before removal (${why})`;
+  sessionLog(opts.workerId, 'warn', 'worktree_removal_skipped_archive_failed', msg);
+  console.warn(`[Worker ${opts.workerId}] ${msg}`);
+  return { removed: false, reason: 'archive_failed' };
 }
 
 /**
@@ -1288,6 +1474,14 @@ export async function removeWorktreeIfUnowned(
 ): Promise<WorktreeRemovalOutcome> {
   const refusal = removalRefusal(opts);
   if (refusal) return refusal;
+  if (existsSync(opts.worktreePath)) {
+    try {
+      const a = await archiveAsync(opts.worktreePath, opts.workerId, opts.archiveDir);
+      if (a.archived) noteArchived(opts.workerId, opts.worktreePath, a);
+    } catch (err) {
+      return archiveRefusal(opts, err);
+    }
+  }
   await cleanupWorktree(opts.repoPath, opts.worktreePath, opts.workerId);
   return { removed: true };
 }
@@ -1303,6 +1497,14 @@ export function removeWorktreeIfUnownedSync(
   const refusal = removalRefusal(opts);
   if (refusal) return refusal;
   const { repoPath, worktreePath, workerId } = opts;
+  if (existsSync(worktreePath)) {
+    try {
+      const a = archiveSync(worktreePath, workerId, opts.archiveDir);
+      if (a.archived) noteArchived(workerId, worktreePath, a);
+    } catch (err) {
+      return archiveRefusal(opts, err);
+    }
+  }
   try {
     console.log(`[Worker ${workerId}] Removing worktree: ${worktreePath}`);
     execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath, timeout: 5000 });

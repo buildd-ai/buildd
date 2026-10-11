@@ -5,26 +5,21 @@
  * the loading and gone states. The bodies are the objects' own components.
  */
 import type { ReactNode } from 'react';
+import StatePill from '@/components/ui/StatePill';
+import type { StateKey } from '@/components/ui/states';
 import type { BuilddObjectRef } from '../chat-contract';
 
 export type Tone = 'live' | 'neutral' | 'attention' | 'ok' | 'bad' | 'idle';
 
-const TONE_CLS: Record<Tone, string> = {
-  live: 'border-accent text-accent-text',
-  neutral: 'border-border-strong text-text-primary',
-  attention: 'border-status-warning text-status-warning',
-  ok: 'border-status-success text-status-success',
-  bad: 'border-status-error text-status-error',
-  idle: 'border-border-default text-text-muted',
+/** The shared state each chat tone speaks as, so a chip reads like every other pill in the app. */
+const TONE_STATE: Record<Tone, StateKey> = {
+  live: 'running', neutral: 'running', attention: 'needs_you', ok: 'landed', bad: 'failed', idle: 'ready',
 };
+export const toneState = (tone: Tone): StateKey => TONE_STATE[tone];
 
+/** A chat object's state: the app's StatePill (glyph + word), never a chat-only chip. */
 export function StateChip({ label, tone, pulse = false }: { label: string; tone: Tone; pulse?: boolean }) {
-  return (
-    <span data-testid="object-state-chip" className={`inline-flex h-[22px] shrink-0 items-center gap-1.5 border-[1.5px] px-2 font-mono text-[11px] font-bold uppercase tracking-[1.2px] ${TONE_CLS[tone]}`}>
-      {pulse && <span aria-hidden="true" className="h-2 w-2 animate-status-pulse bg-current" />}
-      {label}
-    </span>
-  );
+  return <StatePill state={TONE_STATE[tone]} label={label} className={pulse ? 'animate-status-pulse' : ''} data-testid="object-state-chip" />;
 }
 
 /** A mission's chip label → its tone. */
@@ -63,7 +58,7 @@ export function ObjectPlaceholder({ objRef, error }: { objRef: BuilddObjectRef; 
       data-kind={objRef.kind}
       data-state={error ? 'gone' : 'loading'}
       data-reserve={reserve ? '' : undefined}
-      className={`border-2 border-border-default bg-card px-4 py-3 font-mono text-[12.5px] text-text-secondary ${reserve ?? ''}`}
+      className={`rounded-[var(--radius-card)] border border-border-default bg-card px-4 py-3 font-mono text-[12.5px] text-text-secondary ${reserve ?? ''}`}
     >
       <Eyebrow className="text-text-muted">{objRef.kind}</Eyebrow>
       <p className="mt-1 [overflow-wrap:anywhere]">{objRef.fallbackText}</p>

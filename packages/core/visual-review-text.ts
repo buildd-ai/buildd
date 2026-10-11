@@ -62,7 +62,9 @@ export function describeVisualPhase(
         return { label: 'Question', detail: prompt ? `The visual audit has a question for you: ${prompt}` : 'The visual audit has a question for you.' };
       }
       if (reason === 'unsure' && n > 0) {
-        return { label: `${n} to review`, detail: `${plural(n, 'screen')} the agent was unsure about ${n === 1 ? 'needs' : 'need'} a decision.` };
+        // The label is the deck's count (every screen waiting on a person,
+        // a fix check included); the detail names the unsure ones.
+        return { label: `${s.toReview ?? n} to review`, detail: `${plural(n, 'screen')} the agent was unsure about ${n === 1 ? 'needs' : 'need'} a decision.` };
       }
       return { label: 'Your call', detail: `Issues remain after ${plural(s.rounds, 'round')} of fixes. Decide whether to fix or waive them.` };
     }

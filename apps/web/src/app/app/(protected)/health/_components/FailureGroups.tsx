@@ -4,12 +4,13 @@
  * What is failing, one row per cause (lib/health-failure-groups.ts).
  *
  * `FailureGroupsSection` is the Failures page body: the headline rate, then
- * every group with its drill-down. `TopFailureGroups` is the short version for
- * Overview: the top few groups and a link to Failures.
+ * every group with its drill-down. `failureProblemLine` is Overview's one row:
+ * how many causes, the biggest, and a link to Failures.
  */
 import Link from 'next/link';
 import { useState } from 'react';
-import Chip from '@/components/ui/Chip';
+import Disclosure from '@/components/ui/Disclosure';
+import { displayTaskTitle } from '@/lib/task-title';
 import type { FailureGroup, FailureGroupsView } from '@/lib/health-failure-groups';
 import { observedAgo } from '@/lib/health-metric-grammar';
 
@@ -21,12 +22,6 @@ export interface FailureHeadline {
   failed: number;
   terminal: number;
 }
-
-const KIND_CHIP: Record<FailureGroup['kind'], { tone: 'warning' | 'error' | 'muted'; label: string }> = {
-  platform: { tone: 'warning', label: 'Platform' },
-  work: { tone: 'error', label: 'Task' },
-  stopped: { tone: 'muted', label: 'Stopped' },
-};
 
 /** Same thresholds the old Worker failures tile used. */
 function rateClass(pct: number): string {
@@ -49,7 +44,6 @@ function GroupMeta({ g, now }: { g: FailureGroup; now: number }) {
 }
 
 function GroupRow({ g, now, expanded, onToggle }: { g: FailureGroup; now: number; expanded: boolean; onToggle: () => void }) {
-  const chip = KIND_CHIP[g.kind];
   return (
     <li data-testid="failure-group" data-group-key={g.key}>
       <button
@@ -62,7 +56,6 @@ function GroupRow({ g, now, expanded, onToggle }: { g: FailureGroup; now: number
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2 flex-wrap">
             <span className="text-body text-text-primary break-words">{g.label}</span>
-            <Chip tone={chip.tone} dot={false}>{chip.label}</Chip>
           </span>
           <GroupMeta g={g} now={now} />
         </span>
@@ -77,7 +70,7 @@ function GroupRow({ g, now, expanded, onToggle }: { g: FailureGroup; now: number
               <ul className="space-y-1">
                 {g.tasks.map(t => (
                   <li key={t.taskId} className="flex items-baseline justify-between gap-3">
-                    <Link href={`/app/tasks/${t.taskId}`} className="truncate text-text-primary hover:underline">{t.title}</Link>
+                    <Link href={`/app/tasks/${t.taskId}`} className="truncate text-text-primary hover:underline">{displayTaskTitle(t.title)}</Link>
                     {t.failedWorkers > 1 && <span className="text-meta text-text-muted shrink-0 tabular-nums">{t.failedWorkers}×</span>}
                   </li>
                 ))}
@@ -128,7 +121,7 @@ export function FailureGroupsSection({
   return (
     <section data-testid="health-section-failure-groups" className="space-y-4">
       {headline && headline.terminal > 0 && (
-        <div className="card px-4 py-3" data-testid="failure-groups-headline">
+        <div className="border-y border-border-default px-4 py-3" data-testid="failure-groups-headline">
           <p className="section-label">Failure rate · {windowLabel}</p>
           <p className={`text-heading font-bold tabular-nums ${rateClass(headline.failureRatePct)}`} data-testid="failure-groups-rate">{headline.failureRatePct}%</p>
           <p className="text-meta text-text-muted">
@@ -140,15 +133,30 @@ export function FailureGroupsSection({
       )}
 
       {groups.groups.length === 0 ? (
-        <div className="card px-4 py-3">
+        <div className="border-y border-border-default px-4 py-3">
           <p className="text-body text-text-muted">Nothing failed in this window.</p>
         </div>
       ) : (
-        <ul className="card divide-y divide-border-default" data-testid="failure-groups">
-          {groups.groups.map(g => (
-            <GroupRow key={g.key} g={g} now={now} expanded={open === g.key} onToggle={() => setOpen(open === g.key ? null : g.key)} />
-          ))}
-        </ul>
+        <div data-testid="failure-groups" className="space-y-5">
+          {(['platform', 'work', 'stopped'] as const).map(kind => {
+            const causes = groups.groups.filter(g => g.kind === kind);
+            if (!causes.length) return null;
+            const recurring = causes.filter(g => g.count > 1);
+            const once = causes.filter(g => g.count === 1);
+            const rows = (list: FailureGroup[]) => <ul className="divide-y divide-border-default">
+              {list.map(g => <GroupRow key={g.key} g={g} now={now} expanded={open === g.key} onToggle={() => setOpen(open === g.key ? null : g.key)} />)}
+            </ul>;
+            return <section key={kind} data-testid={`failure-kind-${kind}`}>
+              <h2 className="section-label mb-2">{kind === 'platform' ? 'Platform causes' : kind === 'work' ? 'Task causes' : 'Stopped by a person'}</h2>
+              <div className="border-y border-border-default">
+                {rows(recurring)}
+                {once.length > 0 && <Disclosure summary={`${once.length} one-off ${kind === 'stopped' ? (once.length === 1 ? 'stop' : 'stops') : (once.length === 1 ? 'failure' : 'failures')}`}>
+                  {rows(once)}
+                </Disclosure>}
+              </div>
+            </section>;
+          })}
+        </div>
       )}
       {groups.truncated && (
         <p className="text-meta text-text-muted">Showing the most recent failures only; older ones in this window aren&apos;t counted.</p>
@@ -157,35 +165,19 @@ export function FailureGroupsSection({
   );
 }
 
-/** Overview: the top few groups and a link to Failures. */
-export function TopFailureGroups({
-  groups, limit = 4, now, href = '/app/health/failures',
-}: {
-  groups: GroupsData | null;
-  /** How many groups to show (3-5 reads best). */
-  limit?: number;
-  now: number;
-  href?: string;
-}) {
-  if (!groups || groups.groups.length === 0) return null;
-  const top = groups.groups.slice(0, limit);
-  const rest = groups.groups.length - top.length;
-  return (
-    <div data-testid="top-failure-groups">
-      <ul className="card divide-y divide-border-default">
-        {top.map(g => (
-          <li key={g.key} className="px-4 py-3 flex items-start gap-3" data-testid="top-failure-group">
-            <span className="text-title font-semibold tabular-nums text-text-primary w-8 shrink-0">{g.count}</span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-body text-text-primary break-words">{g.label}</span>
-              <GroupMeta g={g} now={now} />
-            </span>
-          </li>
-        ))}
-      </ul>
-      <Link href={href} className="inline-block mt-2 text-meta text-accent-text hover:underline">
-        {rest > 0 ? `See all failures (${rest} more) →` : 'See all failures →'}
-      </Link>
-    </div>
-  );
+const WINDOW_PHRASE: Record<string, string> = { '24h': 'in the last day', '7d': 'this week', '30d': 'in the last 30 days' };
+
+/**
+ * Overview's one Problems row for failures: how many causes, and the biggest
+ * one. "Failures: 4 causes this week, mostly usage limit reached".
+ */
+export function failureProblemLine(groups: Pick<GroupsData, 'groups'>, window: string): string {
+  const n = groups.groups.length;
+  const when = WINDOW_PHRASE[window] ?? 'in this window';
+  const top = groups.groups[0];
+  const head = `Failures: ${n === 1 ? '1 cause' : `${n} causes`} ${when}`;
+  if (!top || n === 1) return top ? `${head}: ${lower(top.label)}` : head;
+  return `${head}, mostly ${lower(top.label)}`;
 }
+const lower = (s: string) => (/^[A-Z][a-z]/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s);
+

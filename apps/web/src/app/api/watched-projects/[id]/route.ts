@@ -23,7 +23,7 @@ async function loadAndAuthorize(req: NextRequest, projectId: string): Promise<
   if (apiKey) {
     const account = await authenticateApiKey(apiKey, req);
     if (account) {
-      const ok = await verifyAccountWorkspaceAccess(account.id, row.workspaceId, 'canCreate');
+      const ok = await verifyAccountWorkspaceAccess(account, row.workspaceId, 'canCreate');
       if (!ok) return { ok: false, status: 401, error: 'Unauthorized' };
       return { ok: true, row };
     }

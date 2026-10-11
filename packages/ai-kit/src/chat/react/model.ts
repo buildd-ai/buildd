@@ -4,6 +4,8 @@
  */
 
 import {
+  answerPartIndex,
+  isSteerPart,
   isStepPart,
   isSystemDenied,
   isTextPart,
@@ -138,6 +140,84 @@ export function approvalRowGroup(
   const rows = approvals.filter(p => !isSystemDenied(p) && !alone(p));
   if (rows.length < 2) return null;
   return { rows, held: approvals.filter(isSystemDenied) };
+}
+
+/**
+ * One phase of an assistant turn (0.22.0, `ChatThread compose="turn"`): the
+ * parts `[from, to)`, answered by one text part (`answerAt`, -1 with none
+ * yet). A turn starts in one phase; a run of approvals or a steer closes it,
+ * and the next phase opens with the first visible part after it, so the reply
+ * to a decision is a new answer below the card, not the earlier answer moved.
+ */
+export interface TurnPhase {
+  /** Stable while parts stream: `answer`, then `answer@<index of the boundary that opened it>`. */
+  key: string;
+  from: number;
+  to: number;
+  answerAt: number;
+  /** What opened it: the last part of an approval run, or a steer. Null for the first phase. */
+  opener: { kind: 'approval' | 'steer'; at: number } | null;
+  /** What closed it: the approval run (its part indices) or a steer. Null while it is the last phase. */
+  closer: { kind: 'approval'; at: number[] } | { kind: 'steer'; at: number } | null;
+  /** Nothing more will land in it: it is closed, or the turn is no longer streaming. */
+  settled: boolean;
+}
+
+export interface TurnComposition {
+  phases: TurnPhase[];
+}
+
+/** A steer the agent took into this turn (not one deferred to the next). */
+function opensPhase(p: ChatPart): boolean {
+  return isSteerPart(p) && p.data.state !== 'deferred';
+}
+
+/**
+ * Where an assistant turn's parts go (0.22.0): its phases, in order. Pure and
+ * append-stable: a part arriving never changes an earlier phase's range,
+ * answer or key, so what a phase drew stays where it is.
+ */
+export function composeTurn(parts: readonly ChatPart[], opts: { streaming?: boolean } = {}): TurnComposition {
+  const phases: TurnPhase[] = [];
+  let from = 0;
+  let opener: TurnPhase['opener'] = null;
+  let run: number[] = [];
+  const close = (to: number, closer: TurnPhase['closer']) => {
+    phases.push({ key: opener ? `answer@${opener.at}` : 'answer', from, to, answerAt: -1, opener, closer, settled: true });
+  };
+  parts.forEach((p, i) => {
+    if (isToolPart(p) && isApprovalPart(p)) {
+      run.push(i);
+      return;
+    }
+    if (opensPhase(p)) {
+      close(i, run.length > 0 ? { kind: 'approval', at: run } : { kind: 'steer', at: i });
+      // An approval run then a steer: the steer still opens the next phase.
+      from = i;
+      opener = { kind: 'steer', at: i };
+      run = [];
+      return;
+    }
+    const visible = isToolPart(p) || (isTextPart(p) && !!p.text.trim());
+    if (run.length > 0 && visible) {
+      const last = run[run.length - 1];
+      close(last + 1, { kind: 'approval', at: run });
+      from = last + 1;
+      opener = { kind: 'approval', at: last };
+      run = [];
+    }
+  });
+  phases.push({
+    key: opener ? `answer@${(opener as { at: number }).at}` : 'answer',
+    from, to: parts.length, answerAt: -1, opener,
+    closer: run.length > 0 ? { kind: 'approval', at: run } : null,
+    settled: run.length > 0 || !opts.streaming,
+  });
+  for (const ph of phases) {
+    const i = answerPartIndex(parts.slice(ph.from, ph.to));
+    ph.answerAt = i === -1 ? -1 : ph.from + i;
+  }
+  return { phases };
 }
 
 export type ToolRowState = 'running' | 'done' | 'failed' | 'awaiting' | 'denied';

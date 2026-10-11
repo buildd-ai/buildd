@@ -7,6 +7,7 @@ import {
   parseBearerChallenge,
   discoverOAuthMetadata,
   registerClient,
+  ClientRegistrationRejectedError,
   buildAuthorizationUrl,
   exchangeCodeForToken,
   validateTokenAudience,
@@ -673,5 +674,42 @@ describe('registerClient', () => {
     await expect(
       registerClient('https://auth.example.com/register', 'https://cb'),
     ).rejects.toThrow('DCR failed (400)');
+  });
+
+  // Without refresh_token in the registration, an AS that honours registered
+  // grant types (Axiom does) refuses the refresh grant and the connection
+  // silently dies at the first access-token expiry.
+  it('registers the refresh_token grant when the AS supports it', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ client_id: 'c' }), { status: 201 }),
+    );
+    await registerClient('https://auth.example.com/register', 'https://cb', {
+      grantTypesSupported: ['authorization_code', 'refresh_token'],
+    });
+    const body = JSON.parse((fetchSpy.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(body.grant_types).toEqual(['authorization_code', 'refresh_token']);
+  });
+
+  // Recorded from https://api.vercel.com/login/oauth/register for buildd's
+  // callback: Vercel only admits MCP clients it has reviewed.
+  it('reports an approved-clients-only refusal as needsApprovedClient', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: 'invalid_redirect_uri',
+      error_description: 'The provided redirect URIs are not approved for use by this authorization server.',
+    }), { status: 400 }));
+
+    const err = await registerClient('https://api.vercel.com/login/oauth/register', 'https://buildd.dev/api/connectors/callback')
+      .catch(e => e);
+    expect(err).toBeInstanceOf(ClientRegistrationRejectedError);
+    expect(err.needsApprovedClient).toBe(true);
+    expect(err.oauthError).toBe('invalid_redirect_uri');
+    expect(err.message).toContain('DCR failed (400)');
+  });
+
+  it('does not call a server outage an approval problem', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response('upstream down', { status: 503 }));
+    const err = await registerClient('https://as/reg', 'https://cb').catch(e => e);
+    expect(err).toBeInstanceOf(ClientRegistrationRejectedError);
+    expect(err.needsApprovedClient).toBe(false);
   });
 });

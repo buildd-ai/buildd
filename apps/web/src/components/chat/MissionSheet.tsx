@@ -8,17 +8,8 @@
 import type { BuilddObjectRef } from './chat-contract';
 import type { CanvasSuggestion } from './canvas-empty';
 import { useObjectEntry } from './objects/ObjectStoreProvider';
-import { missionTone, type Tone } from './objects/parts';
+import { StateChip, missionTone } from './objects/parts';
 import { missionAskRows, missionInsight, missionScopeLabel, missionSheetState, segments } from './mission-sheet';
-
-const BADGE: Record<Tone, string> = {
-  ok: 'border-status-success text-status-success',
-  attention: 'border-status-warning text-status-warning',
-  bad: 'border-status-error text-status-error',
-  neutral: 'border-border-strong text-text-primary',
-  live: 'border-[var(--chat-rule-strong)] text-[var(--chat-text)]',
-  idle: 'border-[var(--chat-rule)] text-[var(--chat-muted)]',
-};
 
 function Meter({ label, done, total, testId, unchecked }: { label: string; done: number; total: number; testId: string; unchecked: string }) {
   const segs = segments(done, total);
@@ -48,15 +39,13 @@ export function MissionContextCard({ objRef }: { objRef: BuilddObjectRef }) {
     <section
       data-testid="mission-context-card"
       data-disagrees={insight?.disagrees ? 'true' : undefined}
-      className="border border-[var(--chat-rule-strong)] bg-[var(--chat-surface)] shadow-[4px_4px_0_0_var(--chat-rule-strong)]"
+      className="overflow-hidden rounded-[var(--radius-card)] border border-[var(--chat-rule)] bg-[var(--chat-surface)]"
     >
       <div className="px-3 pb-3 pt-2.5">
         <div className="flex items-center justify-between gap-3">
           <span className="font-mono text-[11px] md:text-[10.5px] uppercase tracking-[.16em] text-[var(--chat-muted)]">Mission</span>
           {mission && tone && (
-            <span data-testid="mission-context-status" className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[11px] md:text-[10.5px] uppercase tracking-[.12em] ${BADGE[tone]}`}>
-              {mission.stateLabel}
-            </span>
+            <span data-testid="mission-context-status" className="shrink-0"><StateChip label={mission.stateLabel} tone={tone} /></span>
           )}
         </div>
         <h2 data-testid="mission-context-title" className="mt-1.5 font-voice text-[22px] leading-[1.15] text-[var(--chat-text)] [overflow-wrap:anywhere]">{title}</h2>
@@ -82,7 +71,7 @@ export function MissionAskAbout({ objRef, onPick }: { objRef: BuilddObjectRef; o
   const mission = view?.kind === 'mission' ? view : null;
   const rows = missionAskRows(mission ? missionSheetState(mission) : null);
   return (
-    <section data-testid="canvas-suggestions" aria-label="Ask about" className="mt-6 border border-[var(--chat-rule)] bg-[var(--chat-ground)]">
+    <section data-testid="canvas-suggestions" aria-label="Ask about" className="mt-6 overflow-hidden rounded-[var(--radius-card)] border border-[var(--chat-rule)] bg-[var(--chat-ground)]">
       <div className="flex h-[30px] items-center border-b border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
         Ask about
       </div>

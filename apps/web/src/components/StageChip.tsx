@@ -32,6 +32,8 @@ const STAGE_CONFIG: Record<Stage, ChipConfig> = {
   RUNNING:      { label: 'Running',     variant: 'filled', colorCls: 'bg-status-running text-white', pulse: true },
   WAITING_INPUT:{ label: 'Needs Input', variant: 'filled', colorCls: 'bg-status-warning text-white' },
   REVIEWING:    { label: 'Reviewing',   variant: 'soft',   colorCls: 'bg-status-info/10 text-status-info', pulse: true },
+  FIXING:       { label: 'Fixing',      variant: 'soft',   colorCls: 'bg-status-info/10 text-status-info', pulse: true },
+  STALLED:      { label: 'Stalled',     variant: 'soft',   colorCls: 'bg-status-warning/10 text-status-warning' },
   OPEN:         { label: 'Open',        variant: 'soft',   colorCls: 'bg-accent/10 text-accent-text' },
   CI:           { label: 'CI',          variant: 'soft',   colorCls: 'bg-status-info/10 text-status-info' },
   CI_FAILING:   { label: 'CI Failing',  variant: 'soft',   colorCls: 'bg-status-error/10 text-status-error' },
@@ -53,6 +55,12 @@ export interface StageChipProps {
   loopMaxLoops?: number | null;
   /** Exit condition type from loopConfig — used to show 'WAITING · MERGE' for pr_merged waits. */
   loopExitConditionType?: string | null;
+  /**
+   * The chip's words when a kernel-owned delivery decided the stage: the
+   * delivery's canonical label (`deriveStageReading`), so the chip says what
+   * Home, the mission and chat say. The stage still picks the style.
+   */
+  label?: string | null;
 }
 
 /**
@@ -73,7 +81,7 @@ export function stageChipShowsPrNumber({ stage, prNumber, loopMaxLoops, loopStat
   return STAGE_CONFIG[stage].variant === 'soft';
 }
 
-export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, loopMaxLoops, loopExitConditionType }: StageChipProps) {
+export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, loopMaxLoops, loopExitConditionType, label }: StageChipProps) {
   // Loop chip overrides stage chip when the loop is in flight
   if (loopMaxLoops && loopChipOverrides(loopMaxLoops, loopState)) {
     return (
@@ -96,7 +104,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
     );
   }
 
-  const cfg = STAGE_CONFIG[stage];
+  const cfg = label ? { ...STAGE_CONFIG[stage], label } : STAGE_CONFIG[stage];
 
   if (cfg.variant === 'filled') {
     return (

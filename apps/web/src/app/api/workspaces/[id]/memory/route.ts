@@ -45,7 +45,7 @@ async function verifyAccess(auth: NonNullable<Awaited<ReturnType<typeof authenti
     return !!(await verifyWorkspaceAccess(auth.user.id, workspaceId));
   } else if (auth.type === 'api') {
     if (!taskScopeAllowsWorkspace(auth.account, workspaceId)) return false;
-    return !!(await verifyAccountWorkspaceAccess(auth.account.id, workspaceId));
+    return !!(await verifyAccountWorkspaceAccess(auth.account, workspaceId));
   }
   return true; // dev mode
 }

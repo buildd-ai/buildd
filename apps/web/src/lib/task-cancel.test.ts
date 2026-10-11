@@ -5,9 +5,12 @@ const mockTriggerEvent = mock(() => Promise.resolve());
 const mockReleaseAndNotify = mock(() => Promise.resolve());
 const mockResolveCompletedTask = mock(() => Promise.resolve());
 
+const mockTasksFindFirst = mock(() => Promise.resolve(null as any));
 mock.module('@buildd/core/db', () => ({
-  db: { query: { workers: { findFirst: mockWorkersFindFirst } } },
+  db: { query: { workers: { findFirst: mockWorkersFindFirst }, tasks: { findFirst: mockTasksFindFirst } } },
 }));
+const mockAttemptEnded = mock(async (_p: any) => ({ handled: true }));
+mock.module('@/lib/workflow/seam', () => ({ attemptEnded: mockAttemptEnded }));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: {
@@ -51,12 +54,34 @@ describe('applyTaskCancelSideEffects', () => {
   beforeEach(() => {
     mockWorkersFindFirst.mockReset();
     mockWorkersFindFirst.mockResolvedValue(null);
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockAttemptEnded.mockClear();
     mockTriggerEvent.mockReset();
     mockTriggerEvent.mockResolvedValue(undefined);
     mockReleaseAndNotify.mockReset();
     mockReleaseAndNotify.mockResolvedValue(undefined);
     mockResolveCompletedTask.mockReset();
     mockResolveCompletedTask.mockResolvedValue(undefined);
+  });
+
+  it('tells the kernel a cancelled fix attempt ended (lost), even with no live worker', async () => {
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', deliveryId: 'd1', deliveryRole: 'fix', context: { workflowAttemptId: 'a1' } });
+
+    await applyTaskCancelSideEffects(TASK);
+
+    expect(mockAttemptEnded).toHaveBeenCalledTimes(1);
+    expect(mockAttemptEnded.mock.calls[0][0]).toMatchObject({
+      task: { id: 'task-1', workspaceId: 'ws-1', deliveryId: 'd1', deliveryRole: 'fix' },
+      status: 'lost',
+      source: 'cancel',
+    });
+  });
+
+  it('does not touch the kernel for a task with no delivery', async () => {
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', deliveryId: null, deliveryRole: null, context: {} });
+    await applyTaskCancelSideEffects(TASK);
+    expect(mockAttemptEnded).not.toHaveBeenCalled();
   });
 
   it('aborts an active worker, releases claims, resolves and emits TASK_UPDATED', async () => {

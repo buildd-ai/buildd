@@ -8,7 +8,7 @@
 
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 
-const DEFAULT_RETURN = '/app/workspaces';
+const DEFAULT_RETURN = '/app/settings/workspaces';
 /** How long an install flow may take between /install and /callback. */
 export const INSTALL_STATE_TTL_MS = 60 * 60 * 1000;
 

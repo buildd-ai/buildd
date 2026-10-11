@@ -12,6 +12,141 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.26.0 — 2026-10-11
+
+Minor: images and files attach to a message.
+
+- `ChatComposer` takes `onUploadFile(file, signal)`: paste, drop and an Attach
+  button send each image or file through it. A file shows as a `FileCard` with
+  its state; it joins `attachments` (as a `FileDraft`) only once the promise
+  resolves with the verified upload. While any file is uploading or has failed,
+  Send waits, so nothing unready is sent and nothing is silently left out. A
+  failure shows its reason and Retry; Remove while uploading aborts `signal`;
+  Remove of a ready, unsent file calls `onDiscardFile`. `fileTypes` and
+  `maxFileBytes` refuse a file before any upload. Without `onUploadFile` the
+  composer takes no files, as before.
+- `onSend(text, attachments)` and `attachments` are now `DraftAttachment[]`:
+  pastes (`AttachmentDraft`) and files (`FileDraft`). `maxLength` counts paste
+  text only.
+- New contract: `FILE_PART_TYPE` (`data-file`), `FILE_MEDIA_TYPES`,
+  `MAX_FILE_BYTES` (20 MB), `FileDraft` (`{ kind: 'file', id, name, mediaType,
+  sizeBytes, previewUrl? }`), `FileRef` (`{ artifactId, revision, sha256, name,
+  mediaType, sizeBytes }`), `DraftAttachment`, `isFilePart`, `isFileDraft`,
+  `fileId`, `fileMediaType`, `isImageMediaType`, `fileSizeLabel`,
+  `fileKindLabel`.
+- `useKitChat().send` sends files as `data-file` parts; the browser-local
+  `previewUrl` never leaves the client.
+- `ChatThread` draws `data-file` parts as a fixed-height `FileCard`;
+  `onOpenFile` makes it a button, `fileImageUrl` gives an image its thumbnail,
+  `renderFile` replaces it. A long name truncates inside the card.
+- The kit's own server turn does not store files: an app that sets
+  `onUploadFile` handles the part in its own turn (buildd verifies the upload
+  and links it to the message; see its artifacts-and-sharing spec section 11).
+
+## 0.25.0 — 2026-10-11
+
+Minor: a long paste becomes an attachment.
+
+- `ChatComposer` takes `attachFrom` (characters): a paste longer than that
+  becomes an `AttachmentCard` above the message instead of text in the box,
+  with Remove. `onSend(text, attachments)` now passes the drafts, `[]` when
+  there are none; an attachment alone can be sent. `maxLength` counts the text
+  and the attachments together. `attachments` + `onAttachmentsChange` make
+  them controlled, so an app can put a refused draft back with the same ids.
+  A draft holding an attachment never steers a running turn.
+- Each draft gets its id when the paste happens (a UUID) and keeps it through
+  retries, so a server can keep one attachment per paste.
+- New contract: `ATTACHMENT_PART_TYPE` (`data-attachment`),
+  `PASTE_ATTACHMENT_CHARS` (8,000), `AttachmentDraft` (`{ id, title, text }`,
+  what the composer sends), `AttachmentRef` (`{ artifactId, revision, sha256,
+  chars, title }`, what a stored message keeps), `isAttachmentPart`,
+  `isAttachmentDraft`, `attachmentChars`, `attachmentId`, `pasteTitle`.
+- `useKitChat().send(text, attachments?)` sends them as `data-attachment`
+  parts after the text.
+- `ChatThread` draws a message's `data-attachment` parts as a fixed-height
+  `AttachmentCard` (56px; the message never changes size while the reply
+  streams). `onOpenAttachment` makes the card a button for the app's reader;
+  `renderAttachment` replaces it.
+- The kit's own server turn does not store attachments: an app that turns
+  `attachFrom` on handles the part in its own turn (buildd stores the text as
+  an artifact and quotes it to the model).
+
+## 0.24.0 — 2026-10-10
+
+Minor: the history budget counts tokens, not characters.
+
+- `limits.historyChars` is replaced by `limits.historyTokens` (default 100,000
+  estimated tokens). A character count let 200,000 CJK characters, about
+  200,000 tokens, through whole. `estimateTokens` counts ASCII at four
+  characters a token and anything else at one, and tool inputs and outputs now
+  count toward the budget.
+- A single message estimated over the budget is a 400
+  `code: 'message_too_long_for_model'`, with `tokens` and `limitTokens`, refused
+  before any spend. An app should send such a paste as an attachment.
+- After dropping old messages the history starts with a user message, and on an
+  approval continuation the user message being answered is never replaced.
+- New exports: `estimateTokens`, `messageTokens`, `messageFitsModel`, `modelTooBig`.
+
+## 0.23.0 — 2026-10-10
+
+Minor: long messages are accepted, and the model's view of a long conversation stays bounded.
+
+- `DEFAULT_TURN_LIMITS.maxUserText` is 200,000 characters (was 8,000). A
+  message over it is a 400 with `code: 'message_too_long'`, `limit` and `chars`;
+  an empty one is `code: 'message_empty'`. Both are refused before any spend.
+- New `limits.historyChars` (default 400,000) and `fitHistoryToBudget`: the
+  history sent to the model replaces earlier long user text with a short note,
+  oldest first, then drops the oldest messages if still over. Stored messages
+  are never trimmed, and the newest message is always sent whole.
+- `userTextOf(message, max)` is exported for apps that run their own turn.
+- `ChatComposer maxLength`: a count shows near the limit; past it Send does
+  nothing and the draft stays in the box.
+
+## 0.22.0 — 2026-10-10
+
+Minor: a turn laid out in fixed regions, so streaming never moves what is on screen.
+
+- `ChatThread compose="turn"` (default `parts`, unchanged): an assistant turn
+  draws its work line, its tool rows under it, then each phase in a keyed
+  `.kit-phase` frame: the answer slot (latest prose of the phase), hand-offs
+  and custom rows, the approval card that closed the phase, and its results.
+  The reply to a decision is the next phase's answer, a new node below the
+  card; the rationale above the card stays the same node in the same place.
+  Turn errors draw after the last phase.
+- `renderPhaseResults(message, phase, ctx)`: what a phase produced, drawn
+  only once the phase is settled (closed, or the turn done), so a card never
+  mounts above prose still streaming. With `toolRows="rich"` and
+  `renderObject` the default draws the phase's calls' objects here instead of
+  under their rows.
+- `composeTurn(parts, { streaming })` and `TurnPhase`, `TurnComposition`: the
+  pure plan behind it. Append-stable: a new part never changes an earlier
+  phase's range, answer or key.
+- `ThinkingPanel holdLine`: keep the live line ("Writing the answer") while
+  the answer streams instead of dropping it, and drop the pinned step then.
+  `compose="turn"` sets it for a turn with steps, so the folded line lands in
+  a slot that was already filled.
+
+## 0.21.0 — 2026-10-09
+
+Minor: Cloudflare's Clef decision models, and decisions through Cloudflare AI Gateway.
+
+- `decide` endpoint `{ kind: 'workers-ai', baseURL }`: Clef (`clef`,
+  `clef-flash`) on Workers AI, directly or through an AI Gateway's `workers-ai`
+  path. Same questions and answers as Jev; the key is a Cloudflare API token;
+  the REST envelope is unwrapped. Default model `CLEF_MODEL`.
+- Every endpoint takes `headers`, sent with each request (an authenticated
+  gateway's `cf-aig-authorization`). Jev through a gateway is `systemone` with
+  the gateway's `openrouter` root as `baseURL`.
+- `CLEF_MODEL`, `CLEF_FLASH_MODEL`, `isClefModel`, `clefModelIds`,
+  `defaultDecisionModel(kind)`.
+- `DecisionProvider` gains `cloudflare` (Clef receipts). `ModelsUsageInput`
+  keeps the three `/models` providers (`ModelsProvider`), and `toModelsUsage`
+  throws on a `cloudflare` receipt because `/models` cannot price it.
+- `/models`: `cloudflareGatewayURL(ref, 'openrouter' | 'workers-ai')`,
+  `cloudflareWorkersAiURL(ref)`, `CLOUDFLARE_AI_GATEWAY_ROOT`, `CLOUDFLARE_API_ROOT`.
+- Fingerprints and versions of existing `systemone` and `chat` decisions are
+  unchanged; a `workers-ai` decision fingerprints apart from Jev.
+
 ## 0.20.0 — 2026-10-05
 
 Minor: `openai-codex` is a policy provider.

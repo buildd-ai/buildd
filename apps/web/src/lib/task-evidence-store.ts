@@ -105,7 +105,7 @@ export async function persistTaskEvidence(
       }
     }
 
-    const failureContext = (ctx.failureContext ?? null) as { summary?: unknown; errorType?: unknown } | null;
+    const failureContext = (ctx.failureContext ?? null) as { summary?: unknown; errorType?: unknown; job?: unknown } | null;
     const ciDigest = !opts.isSensitive && failureContext?.errorType === 'ci_failure' && typeof failureContext.summary === 'string'
       ? failureContext.summary
       : null;
@@ -134,6 +134,7 @@ export async function persistTaskEvidence(
       ciDigest,
       ciChecks,
       links,
+      fixCheck: failureContext?.errorType === 'ci_failure' && typeof failureContext.job === 'string' ? failureContext.job : null,
     });
     if (!built.evidence && built.mismatch.length === 0) return built;
 

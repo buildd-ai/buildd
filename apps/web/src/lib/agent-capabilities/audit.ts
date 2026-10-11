@@ -19,12 +19,22 @@ export type CapabilityName =
   | 'github.repo_grant'
   | 'github.scout_capture_grant'
   | 'model.endpoint'
+  | 'model.inference'
+  | 'capability.request'
+  | 'capability.approve'
+  | 'capability.deny'
+  | 'capability.revoke'
+  | 'capability.use'
+  // Written by the connector gateway (connector-gateway-store.ts), awaited for writes.
+  | 'connector.tool_call'
+  | 'connector.tool_result'
   | 'task_token.mint'
   | 'runner.size'
   | 'pr.create'
   | 'pr.adopt'
   | 'pr.close'
   | 'pr.update_body'
+  | 'pr.mark_ready'
   | 'pr.merge';
 
 export interface CapabilityDecisionRecord {

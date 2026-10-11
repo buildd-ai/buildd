@@ -19,7 +19,7 @@
  */
 import { useState } from 'react';
 import type { VisualReviewCell, VisualReviewMarker, VisualReviewModel } from '@buildd/shared';
-import { awaitingCapture, describeVisualPhase } from '@/lib/visual-review-model';
+import { awaitingCapture, describeVisualPhase, screensToReview } from '@/lib/visual-review-model';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL, viewportAspect } from './ShotImage';
 import VisualReviewLine from './VisualReviewLine';
 import { AnswerRow, type OnAnswer } from './VisualReviewAsk';
@@ -164,10 +164,9 @@ function EmptyPhase({ model, actions }: { model: VisualReviewModel; actions?: Vi
 
 export default function VisualReviewTray({ model, onReview, actions, hideLine = false, hideReviewButton = false, columns = 'auto', className = '' }: VisualReviewTrayProps) {
   const groups = groupCells(model.cells);
-  const s = model.summary;
-  // One count across the Line, the Ask and this button: unsure screens awaiting you.
-  // Fix checks wait in the deck's queue, not here (they never put the audit in needs_you).
-  const awaiting = s.awaitingHuman;
+  // One count across the Line, the Ask, the deck and this button: every screen
+  // waiting on you, a fix check included (screensToReview).
+  const awaiting = screensToReview(model);
   const reviewButton = onReview && !hideReviewButton && model.cells.length > 0 ? (
     <button
       type="button"

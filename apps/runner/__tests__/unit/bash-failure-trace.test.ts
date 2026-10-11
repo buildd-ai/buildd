@@ -97,9 +97,15 @@ describe('bash trace excerpt format', () => {
     expect(parseBashTraceExcerpt(e)).toEqual({ command: 'tsc --noEmit', exitCode: 2, output: 'a.ts(1,1): error TS1' });
   });
 
-  it('flattens a multi-line command to its first line', () => {
+  it('keeps every line of a multi-line command on the one header line', () => {
     const e = formatBashTraceExcerpt({ command: 'echo a\necho b', exitCode: 1, output: 'x' });
-    expect(e.split('\n')[0]).toBe('$ echo a … [exit 1]');
+    expect(e.split('\n')[0]).toBe('$ echo a ⏎ echo b [exit 1]');
+    expect(parseBashTraceExcerpt(e)?.command).toBe('echo a ⏎ echo b');
+  });
+
+  it('keeps a long command whole (well past the old 200-char clip)', () => {
+    const command = `grep -rn ${'x'.repeat(600)} apps/web`;
+    expect(parseBashTraceExcerpt(formatBashTraceExcerpt({ command, exitCode: 2, output: '' }))?.command).toBe(command);
   });
 
   it('classifies verify commands', () => {

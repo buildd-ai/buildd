@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 export interface BackendOption {
@@ -12,6 +13,8 @@ export interface BackendOption {
   pausedUntil?: string | null;
   /** Why it can't take the task — rendered when `available` is false. */
   blockedReason?: string;
+  /** Set when the provider has no key: the block is shown as a link to add one. */
+  addKeyHref?: string;
 }
 
 /**
@@ -71,11 +74,15 @@ export default function SwitchBackendButton({
           {pending === o.backend ? 'Switching…' : `Run on ${o.label}`}
         </button>
       ))}
-      {usable.length === 0 && blocked.map(o => (
+      {usable.length === 0 && blocked.map(o => (o.addKeyHref ? (
+        <Link key={o.backend} href={o.addKeyHref} className="text-xs underline text-text-secondary hover:text-text-primary">
+          Add a {o.label} key
+        </Link>
+      ) : (
         <span key={o.backend} className="text-xs text-text-muted">
           {o.label} unavailable: {o.blockedReason}
         </span>
-      ))}
+      )))}
       {error && <span className="text-xs text-status-error">{error}</span>}
     </div>
   );

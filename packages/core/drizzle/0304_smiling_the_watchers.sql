@@ -1,0 +1,1 @@
+ALTER TABLE "spec_revisions" ADD COLUMN "repo_refs" jsonb;

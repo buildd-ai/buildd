@@ -6,7 +6,9 @@
  * task completes. This test ensures that the warning reaches the actual prompt
  * sent to Claude.
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import { join } from 'path';
 import type { LocalUIConfig } from '../../src/types';
 
@@ -58,13 +60,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -106,7 +108,7 @@ mock.module('../../src/roles', () => ({
 
 mock.module('../../src/git-operations', () => ({
   ...realGitOps,
-  setupWorktree: async (_repo: string, branch: string) => ({ path: '/tmp/test-workspace', branch, base: 'origin/main' }),
+  setupWorktree: async (_repo: string, branch: string) => ({ path: getTestWorkspace(), branch, base: 'origin/main' }),
 }));
 
 mock.module('../../src/worker-store', () => ({
@@ -163,7 +165,7 @@ async function runTask(
   mockClaimTask.mockImplementation(async () => ({ workers: [{
     id: workerId,
     branch: `buildd/${workerId}`,
-    worktreePath: '/tmp/test-workspace',
+    worktreePath: getTestWorkspace(),
     task,
     ...claimExtra,
   }] }));
@@ -175,7 +177,19 @@ async function runTask(
 describe('assembled system prompt: tool parameter policy', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     lastQueryOpts = null;
     claudeMdInCwd = null;
     mockUpdateWorker.mockClear();
@@ -224,5 +238,15 @@ describe('assembled system prompt: tool parameter policy', () => {
     expect(toolChannelIndex).toBeGreaterThanOrEqual(0);
     expect(toolParameterIndex).toBeGreaterThanOrEqual(0);
     expect(toolChannelIndex).toBeLessThan(toolParameterIndex);
+  });
+
+  test('tells the agent not to narrate imminent tool calls', async () => {
+    const append = await runTask(manager, {}, 'w-tool-param-6');
+
+    expect(append).toContain('## Narration Policy');
+    expect(append).toContain('Call tools directly');
+    expect(append).toContain('Let me…');
+    // Findings, decisions, warnings and results are still worth writing.
+    expect(append).toContain('finding, a decision, a warning or a result');
   });
 });

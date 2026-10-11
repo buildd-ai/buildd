@@ -11,6 +11,8 @@
  * the create_pr result the server echoes back.
  */
 
+import { isBuilddActionTool } from '@buildd/shared';
+
 /** GitHub PR URL as echoed by a successful create_pr (`**URL:** …/pull/123`). */
 const PR_URL_RE = /https?:\/\/github\.com\/[^\s"'`)]+\/pull\/\d+/i;
 
@@ -27,8 +29,9 @@ export function extractPrUrl(text: string): string | null {
 export function isCreatePrCall(toolName: string | undefined, input: unknown): boolean {
   if (!toolName) return false;
   if (toolName === 'create_pr') return true;
-  // The buildd MCP multiplexes many actions through a single `buildd` tool.
-  if (toolName === 'mcp__buildd__buildd') {
+  // The buildd MCP multiplexes actions through its tools: `create_pr` is
+  // `buildd_work` on the group surface, `buildd` on the legacy one.
+  if (isBuilddActionTool(toolName)) {
     const action = (input as { action?: unknown } | null | undefined)?.action;
     return action === 'create_pr';
   }

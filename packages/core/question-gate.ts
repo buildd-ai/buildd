@@ -162,8 +162,15 @@ export type QuestionDisposition = 'decide' | 'hold' | 'ask';
  *    spend-shaped words). This is a deliberately conservative heuristic, not a
  *    lookup: it can miss a real spending question dressed in different words,
  *    but a false positive only costs one extra `ask`.
+ *  - `irreversible`: not part of `detectHardRail` (it needs the option Jev
+ *    would pick, which only exists after the decide call): see
+ *    `detectIrreversibleAction`. Covers merge, release/ship to prod, deploy,
+ *    delete/drop, force push, close PR, cancel task/mission, rollback, revoke,
+ *    rotate a secret. The disposition is forced to `ask` (not `hold`: a held
+ *    question sits unseen for up to `HOLD_RESURFACE_MS`, and the action it
+ *    names cannot be taken back), with reason `rail_blocked:irreversible`.
  */
-export type HardRailKind = 'migration' | 'auth_secrets' | 'ci_deploy' | 'protected_path' | 'spending';
+export type HardRailKind = 'migration' | 'auth_secrets' | 'ci_deploy' | 'protected_path' | 'spending' | 'irreversible';
 
 const DEFAULT_SCHEMA_PATHS = ['packages/core/db/schema.ts', 'packages/core/drizzle/'];
 const DEFAULT_AUTH_SECRETS_PATHS = ['apps/web/src/app/api/secrets/', 'packages/core/secrets/'];
@@ -200,6 +207,40 @@ export function detectHardRail(input: HardRailInput): HardRailKind | null {
   }
   if (input.questionText && SPENDING_TEXT_PATTERN.test(input.questionText)) return 'spending';
   return null;
+}
+
+const OBJ = String.raw`(?:the\s+|this\s+|that\s+|my\s+|our\s+|all\s+|a\s+)?`;
+const IRREVERSIBLE_PATTERNS: ReadonlyArray<RegExp> = [
+  // merge: needs a PR/branch-shaped object, so "merge the two lists" passes.
+  new RegExp(String.raw`\bmerg(?:e|ing)\s+(?:it\b|this\b|that\b|now\b|#\d+|(?:in)?to\s+(?:main|dev|master|prod\w*)\b|${OBJ}(?:pr|prs|pull\s+requests?|branch(?:es)?|release|mission)\b)`, 'i'),
+  // release / ship to production
+  new RegExp(String.raw`\b(?:cut|trigger|do|run|make)\s+${OBJ}release\b|\brelease\s+(?:it\b|now\b|v?\d)|\bship\s+(?:it\b|now\b|to\s+prod\w*)|\b(?:promote|push|publish)\s+\w+(?:\s+\w+)?\s+to\s+prod\w*`, 'i'),
+  // deploy
+  new RegExp(String.raw`\bdeploy(?:ing)?\s+(?:it\b|now\b|this\b|to\b|${OBJ}(?:app|build|release|changes?|fix|service|site|branch)\b)`, 'i'),
+  // delete / drop
+  new RegExp(String.raw`\b(?:delet(?:e|ing)|drop(?:ping)?|destroy|wipe)\s+${OBJ}(?:remote\s+|production\s+|prod\s+)?(?:branch(?:es)?|tables?|databases?|db|columns?|rows?|data|files?|repo|repository|buckets?|worktrees?|secrets?|keys?|accounts?|workspaces?|schema|indexes|migrations?|users?)\b`, 'i'),
+  // force push
+  /\bforce[-\s]push\w*|\bpush\b[^.\n]{0,20}--force\b|--force-with-lease/i,
+  // close a PR
+  new RegExp(String.raw`\bclos(?:e|ing)\s+${OBJ}(?:prs?|pull\s+requests?|#\d+)\b`, 'i'),
+  // cancel a task / mission / run
+  new RegExp(String.raw`\bcancel(?:l?ing)?\s+${OBJ}(?:tasks?|missions?|workers?|runs?|release|deploy\w*)\b`, 'i'),
+  // rollback
+  /\broll(?:ed|ing)?[-\s]?back\b/i,
+  // revoke
+  new RegExp(String.raw`\brevok(?:e|ing)\s+${OBJ}(?:\w+\s+)?(?:access|tokens?|keys?|secrets?|credentials?|permissions?|sessions?|invites?)\b`, 'i'),
+  // rotate a secret
+  new RegExp(String.raw`\brotat(?:e|ing)\s+${OBJ}(?:\w+\s+)?(?:secrets?|keys?|tokens?|credentials?|passwords?)\b`, 'i'),
+];
+
+/**
+ * Whether any of the given texts names an irreversible or external action
+ * (the `irreversible` rail above). Pure. Callers pass the question's prompt
+ * and the option Jev would pick — not every option's label, so a question
+ * that merely lists "merge" among its choices is only blocked if Jev picks it.
+ */
+export function detectIrreversibleAction(texts: ReadonlyArray<string | null | undefined>): boolean {
+  return texts.some(t => !!t && IRREVERSIBLE_PATTERNS.some(re => re.test(t)));
 }
 
 /**
@@ -348,13 +389,16 @@ export function parseQuestionGateRequest(body: unknown): { ok: true; value: Ques
  *  - `off`: the workspace's kill switch (`jevQuestionGate: false`) is set; sent, nothing else runs.
  *  - `error`: a decision call failed (no key, timeout, transport) at either stage; sent (fail open).
  *  - `hard_rail`: a hard rail applies; sent (`reply.rail` names which one).
+ *  - `recovered`: the question describes a recoverable platform blocker (./human-attention.ts
+ *    `classifyRecoverableBlocker`); NOT sent — a repair task was filed or reused (`reply.repairTaskId`)
+ *    and the agent gets `reason` as the tool result. Deterministic, no model call.
  *  - `decided`: Jev picked an option; NOT sent — the agent gets the answer as the tool result.
  *  - `held`: Jev held the question; sent (parked), tagged `disposition: 'hold'`.
  *  - `asked`: Jev said ask, or decide/hold fell back to ask; sent (parked), unchanged from before.
  */
 export type QuestionGateOutcome =
   | 'actionable' | 'pushback' | 'max_pushbacks' | 'sensitive' | 'off' | 'error'
-  | 'hard_rail' | 'decided' | 'held' | 'asked';
+  | 'hard_rail' | 'decided' | 'held' | 'asked' | 'recovered';
 
 export interface QuestionGateDecision {
   optionIndex: number;
@@ -376,6 +420,8 @@ export interface QuestionGateReply {
   holdReason?: string;
   /** ISO timestamp; see `HOLD_RESURFACE_MS`. */
   resurfaceAt?: string;
+  /** Set only when `outcome === 'recovered'`: the repair task filed or reused. */
+  repairTaskId?: string;
   error?: string;
   version: string | null;
   latencyMs: number;

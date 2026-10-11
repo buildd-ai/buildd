@@ -88,7 +88,7 @@ export default function TeamPermissionsSection({ teamId }: { teamId: string }) {
       ) : (
         <div className="space-y-5">
           {/* Column legend, once: the rows below carry the switches. */}
-          <div className="flex justify-end gap-4 pr-1 text-chip font-semibold uppercase tracking-[0.5px] text-text-muted" aria-hidden="true">
+          <div className="flex justify-end gap-4 pr-1 text-chip font-medium text-text-muted" aria-hidden="true">
             <span className="w-16 text-center">Admin</span>
             <span className="w-16 text-center">Member</span>
           </div>

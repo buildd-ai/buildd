@@ -95,7 +95,7 @@ function ClosedPrRow({ missionId, item }: { missionId: string; item: ClosedPrIte
               data-testid="closed-pr-confirm"
               onClick={() => send('confirm')}
               disabled={disabled}
-              className="inline-flex min-h-11 md:min-h-0 md:py-1.5 items-center justify-center px-3.5 bg-accent text-white font-mono text-[12px] font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
+              className="btn btn-primary h-11 md:h-8"
             >
               Confirm #{s.prNumber}
             </button>

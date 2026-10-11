@@ -13,6 +13,8 @@
  */
 
 import { describe, test, expect, beforeAll, beforeEach, mock, afterAll, afterEach } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 import { WAITING_WORKTREE_TTL_MS } from '../../src/worktree-utils';
 import { __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
@@ -60,13 +62,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -197,12 +199,24 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     mockUnpushedCount = '0';
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     mockCleanupWorktree.mockClear();
     mockExistsSync = (p: string) => p === sharedPath;
   });
 
-  test('does not delete the worktree when a newer active worker on the same task shares the path', () => {
+  test('does not delete the worktree when a newer active worker on the same task shares the path', async () => {
     // Retry scenario: a failed worker (w-old) and its replacement (w-new) both
     // compute the same branch-keyed worktree path. w-old's retention window
     // elapses while w-new is actively working out of that same directory.
@@ -224,6 +238,7 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     inject(manager, newWorker);
 
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
 
     expect(mockCleanupWorktree).not.toHaveBeenCalled();
 
@@ -233,7 +248,7 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     expect(workers.get('w-new')!.worktreePath).toBe(sharedPath); // untouched
   });
 
-  test('deletes the worktree on eviction when no other worker owns the path', () => {
+  test('deletes the worktree on eviction when no other worker owns the path', async () => {
     manager = new WorkerManager(makeConfig());
 
     const worker = makeWorker({
@@ -245,13 +260,14 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     inject(manager, worker);
 
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
 
     expect(mockCleanupWorktree).toHaveBeenCalledTimes(1);
     const workers = (manager as any).workers as Map<string, LocalWorker>;
     expect(workers.has('w-solo')).toBe(false);
   });
 
-  test('still deletes the worktree when the other worker sharing the path is itself terminal', () => {
+  test('still deletes the worktree when the other worker sharing the path is itself terminal', async () => {
     // Two failed workers on the same task, both evicted in the same sweep —
     // ownership only matters when the other worker is actually still alive.
     manager = new WorkerManager(makeConfig());
@@ -272,6 +288,7 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     inject(manager, workerB);
 
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
 
     // Both terminal workers are evicted in the same sweep, and each
     // independently attempts cleanup of the (now-removed) shared path — the
@@ -282,7 +299,7 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     expect(workers.has('w-b')).toBe(false);
   });
 
-  test('waiting-worker TTL reclaim skips cleanup when a newer active worker owns the path', () => {
+  test('waiting-worker TTL reclaim skips cleanup when a newer active worker owns the path', async () => {
     manager = new WorkerManager(makeConfig());
 
     const abandonedWaiting = makeWorker({
@@ -301,6 +318,7 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     inject(manager, activeReplacement);
 
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
 
     expect(mockCleanupWorktree).not.toHaveBeenCalled();
     const workers = (manager as any).workers as Map<string, LocalWorker>;
@@ -311,7 +329,7 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     expect(workers.get('w-replacement')!.worktreePath).toBe(sharedPath);
   });
 
-  test('waiting-worker TTL reclaim still cleans up when no other worker owns the path', () => {
+  test('waiting-worker TTL reclaim still cleans up when no other worker owns the path', async () => {
     manager = new WorkerManager(makeConfig());
 
     const abandonedWaiting = makeWorker({
@@ -323,6 +341,7 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     inject(manager, abandonedWaiting);
 
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
 
     expect(mockCleanupWorktree).toHaveBeenCalledTimes(1);
     const workers = (manager as any).workers as Map<string, LocalWorker>;
@@ -345,6 +364,7 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     }));
 
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
     await new Promise(r => setTimeout(r, 0));
 
     expect(mockCleanupWorktree).not.toHaveBeenCalled();
@@ -362,6 +382,7 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     }));
 
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
     await new Promise(r => setTimeout(r, 0));
 
     expect(mockCleanupWorktree).not.toHaveBeenCalled();

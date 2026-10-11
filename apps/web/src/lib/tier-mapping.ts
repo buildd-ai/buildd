@@ -10,20 +10,15 @@
  */
 import { TIER_PRICE_BANDS } from '@buildd/core/model-catalog';
 import type { Tier, TierEntry, TierProvider } from '@buildd/core/model-tier-defaults';
+import { TIER_PROVIDER_OPTIONS } from '@buildd/core/providers';
 
-export interface TierProviderOption {
-  id: TierProvider;
-  label: string;
-  note?: string;
-}
-
-/** Providers `POST /api/model-tiers` accepts, in display order. */
-export const TIER_PROVIDER_OPTIONS: readonly TierProviderOption[] = [
-  { id: 'anthropic', label: 'Anthropic' },
-  { id: 'openrouter', label: 'OpenRouter' },
-  { id: 'openai', label: 'OpenAI', note: 'API key. Server-side calls such as chat; runners cannot use it.' },
-  { id: 'openai-codex', label: 'OpenAI Codex', note: 'Runner only. Uses a Codex seat, so chat cannot use it.' },
-];
+/**
+ * Providers `POST /api/model-tiers` accepts, in display order, and which
+ * surfaces each can run: both come from the provider registry, so this screen
+ * says what the claim path and chat actually do.
+ */
+export { TIER_PROVIDER_OPTIONS, tierUsedBy } from '@buildd/core/providers';
+export type { TierProviderOption } from '@buildd/core/providers';
 
 export function providerForModel(provider: string): TierProvider {
   return TIER_PROVIDER_OPTIONS.some((p) => p.id === provider) ? (provider as TierProvider) : 'anthropic';
@@ -106,17 +101,6 @@ export function tierSuggestions(
     for (const u of audit.unknown) out.push({ tier: u.tier, kind: 'missing', model: u.model });
   }
   return out;
-}
-
-/**
- * Which surfaces can run a tier. The registry is shared: agent runs and chat
- * both ask for a tier, but a Codex seat only signs in a runner and an OpenAI
- * API key only serves server-side calls.
- */
-export function tierUsedBy(provider: string): 'agent runs, chat' | 'agent runs only' | 'chat only' {
-  if (provider === 'openai-codex') return 'agent runs only';
-  if (provider === 'openai') return 'chat only';
-  return 'agent runs, chat';
 }
 
 /** The one catalog note to show on a tier's row: a newer release wins over a missing id. */

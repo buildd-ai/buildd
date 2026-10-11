@@ -180,4 +180,44 @@ describe('POST /api/workers/[id]/evidence/[evidenceId]/confirm', () => {
     mockConfirm.mockRejectedValue(new Error('boom'));
     expect((await POST(req(), params())).status).toBe(424);
   });
+
+  // Invariant: an OAuth session acts as an account its whole team shares, so
+  // only the session user that claimed the worker may confirm its evidence
+  // (lib/worker-owner.ts). A teammate on the same account, an admin-level
+  // session that did not claim, and a session with no team id are refused
+  // before the evidence row is read or the bucket checked.
+  describe('POST /api/workers/[id]/evidence/[evidenceId]/confirm — OAuth session owner check', () => {
+    const session = (over: Record<string, unknown> = {}) =>
+      ({ id: ACCOUNT, teamId: TEAM, sessionUserId: 'user-a', level: 'worker', ...over });
+
+    beforeEach(() => {
+      mockWorkersFindFirst.mockResolvedValue(worker({ claimedByUserId: 'user-a' }));
+    });
+
+    it('lets the session that claimed the worker confirm', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session());
+      expect((await POST(req(), params())).status).toBe(200);
+      expect(mockConfirm).toHaveBeenCalledTimes(1);
+    });
+
+    it('403s a same-team member on the shared account and confirms nothing', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session({ sessionUserId: 'user-b' }));
+      expect((await POST(req(), params())).status).toBe(403);
+      expect(mockEvidenceFindFirst).not.toHaveBeenCalled();
+      expect(mockConfirm).not.toHaveBeenCalled();
+    });
+
+    it('403s an admin-level session that did not claim the worker', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session({ sessionUserId: 'user-b', level: 'admin' }));
+      expect((await POST(req(), params())).status).toBe(403);
+      expect(mockConfirm).not.toHaveBeenCalled();
+    });
+
+    it('403s a session with no team id, even as the claimer', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session({ teamId: null }));
+      expect((await POST(req(), params())).status).toBe(403);
+      expect(mockEvidenceFindFirst).not.toHaveBeenCalled();
+      expect(mockConfirm).not.toHaveBeenCalled();
+    });
+  });
 });

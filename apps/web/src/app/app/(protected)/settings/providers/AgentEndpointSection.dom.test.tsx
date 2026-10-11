@@ -11,11 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: AgentEndpointSection, parseAliasLines, aliasLines } = await import('./AgentEndpointSection');
+const { default: AgentEndpointSection, parseAliasLines, aliasLines, teamOpenRouterKeyLast4 } = await import('./AgentEndpointSection');
+const { describeControls } = await import('../_lib/form-controls');
 
 const KEY = 'sk-agent-example-1234';
 let endpoints: unknown[] = [];
 let gateway: unknown = null;
+/** `GET /api/inference-keys` reply; null = the default (no keys). */
+let inferenceKeys: unknown = null;
 const writes: Array<{ url: string; method: string; body: unknown }> = [];
 const previews: unknown[] = [];
 const suggests: unknown[] = [];
@@ -38,6 +41,7 @@ beforeEach(() => {
   suggests.length = 0;
   endpoints = [];
   gateway = null;
+  inferenceKeys = null;
   modelsReply = { available: false, listed: [], rows: [] };
   suggestReply = { status: 200, body: { suggestions: [] } };
   globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
@@ -47,6 +51,7 @@ beforeEach(() => {
     if (url.endsWith('/agent-endpoint/models/suggest')) { suggests.push(body); return new Response(JSON.stringify(suggestReply.body), { status: suggestReply.status }); }
     if (method !== 'GET') { writes.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : null }); return new Response('{}', { status: 200 }); }
     if (url.endsWith('/litellm-gateway')) return new Response(JSON.stringify({ gateway }), { status: 200 });
+    if (url.startsWith('/api/inference-keys')) return new Response(JSON.stringify(inferenceKeys ?? { providers: [] }), { status: 200 });
     return new Response(JSON.stringify({ endpoints }), { status: 200 });
   }) as unknown as typeof fetch;
 });
@@ -116,8 +121,7 @@ describe('AgentEndpointSection', () => {
     expect(text('agent-endpoint-mapping-summary')).toBe('1 model sent as is, 1 → claude-haiku-4-5');
     expect(host.querySelector('[data-testid="endpoint-mapping-row"]')).toBeNull();
     await click(host.querySelector('[data-testid="agent-endpoint-mapping-summary"]')!.closest('button'));
-    expect(text('agent-endpoint-metered')).toMatch(/metered/);
-    expect(text('agent-endpoint-metered')).toMatch(/not a Claude seat/);
+    expect(text('agent-endpoint-metered')).toBe("Billed to the endpoint's key. The per-task dollar cap applies.");
     expect(host.querySelector('[data-testid="agent-endpoint-metered"]')!.className).not.toMatch(/notice/);
     const mapped = [...host.querySelectorAll<HTMLElement>('[data-testid="endpoint-mapping-row"]')];
     expect(mapped.map((r) => r.dataset.model)).toEqual(['claude-sonnet-5', 'claude-haiku-4-5-20251001']);
@@ -173,6 +177,32 @@ describe('AgentEndpointSection', () => {
     expect(host.querySelector('#agent-endpoint-key')).toBeNull();
   });
 
+  it('Cloudflare: picks the upstream, sends a typed gateway token, and no URL or key', async () => {
+    await mount();
+    await click(button('Set up an endpoint'));
+    await click(kindRadio(4));
+    expect(host.querySelector('#agent-endpoint-key')).toBeNull();
+    expect(host.querySelector('#agent-endpoint-url')).toBeNull();
+    await click(host.querySelectorAll('input[name="agent-endpoint-upstream"]')[1]);
+    await setValue(host.querySelector('#agent-endpoint-gateway-token') as HTMLInputElement, 'cf-gateway-run-token-example');
+    await click(button('Save'));
+    expect(writes[0]).toEqual({
+      url: '/api/teams/t/agent-endpoint', method: 'PUT',
+      body: { kind: 'cloudflare', upstream: 'openrouter', gatewayToken: 'cf-gateway-run-token-example' },
+    });
+    expect(host.querySelector('#agent-endpoint-gateway-token')).toBeNull();
+  });
+
+  it('a saved Cloudflare endpoint says where it goes, that a token is saved, and what is missing', async () => {
+    endpoints = [{ ...teamEndpoint, kind: 'cloudflare', upstream: 'anthropic', gatewayTokenSet: true, last4: '9876', mapping: [], gatewayMissing: false, storedKeyMissing: false }];
+    await mount();
+    expect(text('agent-endpoint-detail')).toContain("Cloudflare AI Gateway to Anthropic, with the Anthropic key in Team keys (…9876). Gateway token saved.");
+    act(() => root.unmount()); host.remove();
+    endpoints = [{ ...teamEndpoint, kind: 'cloudflare', upstream: 'anthropic', mapping: [], gatewayMissing: true }];
+    await mount();
+    expect(text('agent-endpoint-cf-missing')).toContain('no AI Gateway ID');
+  });
+
   it('the gateway option is disabled without a gateway, and sends only the kind with one', async () => {
     await mount();
     await click(button('Set up an endpoint'));
@@ -184,6 +214,44 @@ describe('AgentEndpointSection', () => {
     await click(kindRadio(1));
     await click(button('Save'));
     expect(writes[0]).toEqual({ url: '/api/teams/t/agent-endpoint', method: 'PUT', body: { kind: 'gateway' } });
+  });
+
+  it('tool search: off by default for the gateway, labelled for ToolSearch support; turning it on sends it', async () => {
+    gateway = { baseURL: 'https://litellm.example.com/v1', last4: 'abcd' };
+    await mount();
+    await click(button('Set up an endpoint'));
+    await click(kindRadio(1));
+    const toggle = () => host.querySelector<HTMLInputElement>('[data-testid="agent-endpoint-tool-search-toggle"]')!;
+    expect(toggle().checked).toBe(false);
+    const field = text('agent-endpoint-tool-search-field');
+    expect(field).toContain('deferred MCP/tool loading');
+    expect(field).toContain('ToolSearch / tool_reference');
+    await click(toggle());
+    await click(button('Save'));
+    expect(writes[0].body).toEqual({ kind: 'gateway', capabilities: { toolSearch: true } });
+  });
+
+  it('tool search: on by default for OpenRouter, sent only when turned off', async () => {
+    await mount();
+    await click(button('Set up an endpoint'));
+    await click(kindRadio(2));
+    const toggle = host.querySelector<HTMLInputElement>('[data-testid="agent-endpoint-tool-search-toggle"]')!;
+    expect(toggle.checked).toBe(true);
+    await setValue(host.querySelector('#agent-endpoint-key') as HTMLInputElement, KEY);
+    await click(toggle);
+    await click(button('Save'));
+    expect(writes[0].body).toEqual({ kind: 'openrouter', apiKey: KEY, capabilities: { toolSearch: false } });
+  });
+
+  it('tool search: the saved state shows on the card and an untouched re-save leaves it alone', async () => {
+    gateway = { baseURL: 'https://litellm.example.com/v1', last4: 'abcd' };
+    endpoints = [{ ...teamEndpoint, kind: 'gateway', toolSearch: true, toolSearchExplicit: true }];
+    await mount();
+    expect(text('agent-endpoint-tool-search')).toBe('Deferred tool loading: on');
+    await click(button('Edit'));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="agent-endpoint-tool-search-toggle"]')!.checked).toBe(true);
+    await click(button('Save'));
+    expect(writes.find((w) => w.method === 'PUT')!.body).not.toHaveProperty('capabilities');
   });
 
   it('a gateway endpoint names the gateway instead of repeating its URL and key', async () => {
@@ -304,6 +372,49 @@ describe('AgentEndpointSection', () => {
     expect((button('Save') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('OpenRouter with a key in Team keys: no key field, says which key, and saves no key', async () => {
+    inferenceKeys = { providers: [{ provider: 'openrouter', team: { last4: '7777' }, mine: null }] };
+    await mount();
+    await click(button('Set up an endpoint'));
+    await click(kindRadio(2));
+    expect(host.querySelector('#agent-endpoint-key')).toBeNull();
+    expect(text('agent-endpoint-stored-key')).toContain('OpenRouter key in Team keys (…7777)');
+    expect((button('Save') as HTMLButtonElement).disabled).toBe(false);
+    await click(button('Save'));
+    expect(writes[0].body).toEqual({ kind: 'openrouter' });
+  });
+
+  it('OpenRouter with nothing in Team keys still asks for a key', async () => {
+    inferenceKeys = { providers: [{ provider: 'anthropic', team: { last4: '1111' }, mine: null }] };
+    await mount();
+    await click(button('Set up an endpoint'));
+    await click(kindRadio(2));
+    expect(host.querySelector('#agent-endpoint-key')).not.toBeNull();
+    expect(host.querySelector('[data-testid="agent-endpoint-stored-key"]')).toBeNull();
+    expect((button('Save') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('a saved OpenRouter reference names Team keys; a missing key and two different keys say so', async () => {
+    const or = { ...teamEndpoint, kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', models: {}, mapping: [], last4: '7777' };
+    endpoints = [{ ...or, keySource: 'stored' }];
+    await mount();
+    expect(text('agent-endpoint-detail')).toBe('With the OpenRouter key in Team keys (…7777)');
+    act(() => root.unmount()); host.remove();
+    endpoints = [{ ...or, keySource: 'stored', storedKeyMissing: true, last4: '' }];
+    await mount();
+    expect(host.textContent).toContain('Key missing');
+    act(() => root.unmount()); host.remove();
+    endpoints = [{ ...or, keySource: 'inline', legacyInlineKey: true, last4: '8888' }];
+    await mount();
+    expect(text('agent-endpoint-two-keys')).toContain('Two different OpenRouter keys');
+  });
+
+  it('teamOpenRouterKeyLast4 reads only the team-wide OpenRouter key', () => {
+    expect(teamOpenRouterKeyLast4(null)).toBeNull();
+    expect(teamOpenRouterKeyLast4({ providers: [{ provider: 'openrouter', team: null, mine: { last4: '1' } }] })).toBeNull();
+    expect(teamOpenRouterKeyLast4({ providers: [{ provider: 'openrouter', team: { last4: 'abcd' } }] })).toBe('abcd');
+  });
+
   it('is read-only for a member', async () => {
     endpoints = [teamEndpoint];
     await mount(false);
@@ -311,6 +422,22 @@ describe('AgentEndpointSection', () => {
     expect(button('Set up an endpoint')).toBeUndefined();
     expect(button('Verify')).toBeUndefined();
     expect(button('Remove')).toBeUndefined();
+  });
+
+  it('a member reads the endpoint as text: no control beyond the mapping disclosure, no admin line', async () => {
+    endpoints = [teamEndpoint, { ...teamEndpoint, id: 'c-2', scope: 'workspace', workspaceId: 'ws-1', workspaceName: 'Widgets', matchesTeam: true }];
+    await mount(false);
+    expect(host.querySelector('[data-testid="agent-endpoint-heading"]')).not.toBeNull();
+    expect(host.textContent).toContain('Applies to:');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this|can change the agent endpoint/);
+  });
+
+  it('a member with nothing set reads the default', async () => {
+    await mount(false);
+    expect(host.querySelector('[data-testid="agent-endpoint-status"]')!.textContent).toBe('Anthropic (default)');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toContain('Only a team owner');
   });
 });
 

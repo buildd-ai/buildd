@@ -81,3 +81,34 @@ test('invalid worker identifiers never query or read', async () => {
   expect((await GET(request(), { params: Promise.resolve({ id: 'invalid' }) })).status).toBe(404);
   expect(lookup).not.toHaveBeenCalled();
 });
+// An OAuth session acts as an account its whole team shares; the admin level
+// and the account id do not say which member claimed (lib/worker-owner.ts).
+const sessionWorker = { ...worker, workspace: { teamId: 'team-1', dataClass: 'standard' }, taskId: 'task-1', claimedByUserId: 'user-a' };
+const sessionAccount = (over: Record<string, unknown> = {}) => ({ id: 'account-test', teamId: 'team-1', level: 'admin', sessionUserId: 'user-a', ...over });
+test('the OAuth session that claimed the worker reads its transcript', async () => {
+  auth.mockResolvedValue(sessionAccount());
+  lookup.mockResolvedValue(sessionWorker);
+  expect((await run()).status).toBe(200);
+  expect(reader).toHaveBeenCalledTimes(1);
+});
+test('another admin-level member of the same team on the shared account is refused', async () => {
+  auth.mockResolvedValue(sessionAccount({ sessionUserId: 'user-b' }));
+  lookup.mockResolvedValue(sessionWorker);
+  expect((await run()).status).toBe(403);
+  expect(reader).not.toHaveBeenCalled();
+});
+test('the claiming session without a team id is refused', async () => {
+  auth.mockResolvedValue(sessionAccount({ teamId: null }));
+  lookup.mockResolvedValue(sessionWorker);
+  expect((await run()).status).toBe(403);
+  expect(reader).not.toHaveBeenCalled();
+});
+test('a key-claimed worker is not readable by a session on the same account, nor a session-claimed one by the key', async () => {
+  auth.mockResolvedValue(sessionAccount());
+  lookup.mockResolvedValue({ ...sessionWorker, claimedByUserId: null });
+  expect((await run()).status).toBe(403);
+  auth.mockResolvedValue({ id: 'account-test', teamId: 'team-1', level: 'admin' });
+  lookup.mockResolvedValue(sessionWorker);
+  expect((await run()).status).toBe(403);
+  expect(reader).not.toHaveBeenCalled();
+});

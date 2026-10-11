@@ -18,7 +18,7 @@ mock.module('@/lib/connector-team-auth', () => ({
   forbidden: () => NextResponse.json({ error: 'Forbidden' }, { status: 403 }),
 }));
 mock.module('@/lib/mcp-oauth', () => ({ discoverOAuthMetadata: async () => ({ authMode: 'oauth' }) }));
-mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => 'https://icon/new.png' }));
+mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => 'https://icon/new.png', resolveConnectorIconData: async () => null }));
 mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ op: 'eq', a, b }), and: (...args: any[]) => ({ op: 'and', args }) }));
 mock.module('@buildd/core/db/schema', () => ({ connectorCatalogEntries: { id: 'id', teamId: 'teamId' } }));
 mock.module('@buildd/core/db', () => ({

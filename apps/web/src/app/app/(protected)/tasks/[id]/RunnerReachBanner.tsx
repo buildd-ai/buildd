@@ -75,7 +75,7 @@ export default function RunnerReachBanner({
         </Link>
       </div>
       {!canFix && diagnosis.fixAccountIds.length > 0 && (
-        <p className="font-mono text-[11px] text-text-muted">A team owner or admin can link it.</p>
+        <p className="font-mono text-meta text-text-muted">A team owner or admin can link it.</p>
       )}
       {error && <p className="font-mono text-meta text-status-error">{error}</p>}
     </div>

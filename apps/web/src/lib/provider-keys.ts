@@ -13,7 +13,7 @@ import { secrets, teams } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { decrypt, getSecretsProvider } from '@buildd/core/secrets';
 import { maskKeyLast4, verifyProviderKey } from '@buildd/core/inference-keys';
-import { isInferenceKeyPolicy, policyAllowsOwnKey, type InferenceKeyPolicy } from '@buildd/core/inference-key-policy';
+import { effectiveKeyPolicy, policyAllowsOwnKey, type InferenceKeyPolicy } from '@buildd/core/inference-key-policy';
 import {
   type ChatProvider,
   type ListProviderKeysResponse,
@@ -99,9 +99,9 @@ export async function loadTeamKeySettings(teamId: string): Promise<{ keyPolicy: 
   try {
     const row = await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
-      columns: { inferenceKeyPolicy: true },
+      columns: { inferenceKeyPolicy: true, credentialPolicy: true },
     });
-    return { keyPolicy: isInferenceKeyPolicy(row?.inferenceKeyPolicy) ? row.inferenceKeyPolicy : 'team_or_own' };
+    return { keyPolicy: effectiveKeyPolicy(row) ?? 'team_or_own' };
   } catch {
     return { keyPolicy: 'team_or_own' };
   }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { refuseWithoutTeamCredentialAccess } from '@/lib/team-credential-access';
 import {
   storeCodexCredential,
   getCodexStatus,
@@ -48,6 +49,8 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
 
   const access = await verifyWorkspaceAccess(user.id, id);
   if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  const refused = await refuseWithoutTeamCredentialAccess(user.id, access.teamId);
+  if (refused) return refused;
 
   const body = await req.json();
   if (!body.authJson || typeof body.authJson !== 'string') {
@@ -88,6 +91,8 @@ export async function DELETE(req: NextRequest, { params }: RouteContext) {
 
   const access = await verifyWorkspaceAccess(user.id, id);
   if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  const refused = await refuseWithoutTeamCredentialAccess(user.id, access.teamId);
+  if (refused) return refused;
 
   const scope = buildScope(access.teamId, id, req.nextUrl.searchParams.get('scope'));
   await deleteCodexCredential(scope);

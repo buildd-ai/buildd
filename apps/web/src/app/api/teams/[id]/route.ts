@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeDecisionShadows, normalizeFeatureModes } from '@buildd/core/inference-policy';
-import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
+import { isInferenceKeyPolicy, isCredentialPolicy, policyColumns, effectiveKeyPolicy, toCredentialPolicy } from '@buildd/core/inference-key-policy';
+import { normalizeTeamCodingPolicy, parseCodingPolicyLayer, resolveCodingPolicy, describeEffectiveCodingPolicy } from '@buildd/core/coding-policy';
 import { normalizeDecisionModel } from '@buildd/core/decision-model';
 import { db } from '@buildd/core/db';
-import { teams, teamMembers, users } from '@buildd/core/db/schema';
+import { teams, teamMembers, users, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { isUuid } from '@/lib/uuid';
+import { isWarmHandover } from '@buildd/shared';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, sanitizeOverrides, type Permission, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
 const MAX_CHAT_BUDGET_USD = 100_000;
@@ -88,15 +91,19 @@ export async function GET(
         monthlyCostMonth: true,
         budgetAlertsSent: true,
         enabledBackends: true,
+        codingPolicy: true,
         inferenceFeatureModes: true,
         enabledDecisionShadows: true,
         decisionModel: true,
         chatDailyBudgetUsd: true,
         chatUserDailyBudgetUsd: true,
         inferenceKeyPolicy: true,
+        credentialPolicy: true,
         chatDefaultTier: true,
         chatCapNewSessionTier: true,
+        taskEstimates: true,
         timezone: true,
+        warmHandover: true,
         permissionOverrides: true,
       },
     });
@@ -124,7 +131,10 @@ export async function GET(
 
     return NextResponse.json({
       // Sanitized, so a client's roleHas() answers what the server will enforce.
-      team: { ...team, permissionOverrides: sanitizeOverrides(team.permissionOverrides) },
+      team: { ...team, permissionOverrides: sanitizeOverrides(team.permissionOverrides), inferenceKeyPolicy: effectiveKeyPolicy(team) ?? 'team', credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? 'team'),
+        // What the team layer allows for Coding, for the Models page. Workspace
+        // and personal layers narrow it further per task at claim time.
+        effectiveCodingPolicy: describeEffectiveCodingPolicy(resolveCodingPolicy({ team: parseCodingPolicyLayer(team.codingPolicy?.team) })) },
       members: memberList,
       currentUserRole,
     });
@@ -158,12 +168,16 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, chatDefaultTier, chatCapNewSessionTier } = body;
+    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier, taskEstimates, codingPolicy } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
     };
 
+    if ('warmHandover' in body) {
+      if (!isWarmHandover(body.warmHandover)) return NextResponse.json({ error: "warmHandover must be 'off', 'repo' or 'deps'" }, { status: 400 });
+      updates.warmHandover = body.warmHandover;
+    }
     if (name !== undefined) updates.name = name;
     if (enabledBackends !== undefined) {
       // Provider-enablement toggle. Must be a non-empty subset of the known
@@ -180,6 +194,14 @@ export async function PATCH(
         );
       }
       updates.enabledBackends = [...new Set(enabledBackends as string[])];
+    }
+    if (codingPolicy !== undefined) {
+      // Enforceable Coding provider / payment-source restriction (a refusal, not
+      // a redirect like enabledBackends). Strictly validated; null clears it.
+      const owned = new Set((await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.teamId, id))).map(w => w.id));
+      const normalized = normalizeTeamCodingPolicy(codingPolicy, owned);
+      if ('error' in normalized) return NextResponse.json({ error: normalized.error }, { status: 400 });
+      updates.codingPolicy = normalized.value;
     }
     if (inferenceFeatureModes !== undefined) {
       // Per-feature overrides for server-side features ({ feature: 'server' |
@@ -236,11 +258,24 @@ export async function PATCH(
       updates[field] = value.toFixed(2);
     }
     // Whose key a person's chat turn spends; enforced by resolveInferenceKey.
-    if (inferenceKeyPolicy !== undefined) {
+    // credentialPolicy is the new name, and setting it is how a team opts its
+    // agent runs in (they follow it only once it is non-NULL). The legacy
+    // inferenceKeyPolicy name governs chat only: it never opts a team in, and
+    // keeps credentialPolicy in step only for a team that already opted in.
+    if (credentialPolicy !== undefined) {
+      if (!isCredentialPolicy(credentialPolicy)) {
+        return NextResponse.json({ error: 'credentialPolicy must be "team", "personal_first" or "personal_only"' }, { status: 400 });
+      }
+      Object.assign(updates, policyColumns(credentialPolicy));
+    } else if (inferenceKeyPolicy !== undefined) {
       if (!isInferenceKeyPolicy(inferenceKeyPolicy)) {
         return NextResponse.json({ error: 'inferenceKeyPolicy must be "team", "team_or_own" or "own"' }, { status: 400 });
       }
       updates.inferenceKeyPolicy = inferenceKeyPolicy;
+      const current = await db.query.teams.findFirst({ where: eq(teams.id, id), columns: { credentialPolicy: true } });
+      if (isCredentialPolicy(current?.credentialPolicy)) {
+        updates.credentialPolicy = toCredentialPolicy(inferenceKeyPolicy);
+      }
     }
     // The tier a new chat caps at, and whether the cap is on
     // (apps/web/src/lib/chat/composer-prefs.ts). `null` default = auto: no cap.
@@ -255,6 +290,19 @@ export async function PATCH(
         return NextResponse.json({ error: 'chatCapNewSessionTier must be a boolean' }, { status: 400 });
       }
       updates.chatCapNewSessionTier = chatCapNewSessionTier;
+    }
+    // Task estimates experiment (packages/core/task-estimate-source.ts; removal
+    // in packages/core/TASK-ESTIMATES-REMOVAL.md): { enabled: boolean }, stamped
+    // with who set it and when. Gated like every field here: a session user
+    // holding manage_team_settings (owner/admin by default; no API key).
+    if (taskEstimates !== undefined) {
+      if (
+        !taskEstimates || typeof taskEstimates !== 'object' || Array.isArray(taskEstimates) ||
+        Object.keys(taskEstimates).some(k => k !== 'enabled') || typeof taskEstimates.enabled !== 'boolean'
+      ) {
+        return NextResponse.json({ error: 'taskEstimates must be { enabled: boolean }' }, { status: 400 });
+      }
+      updates.taskEstimates = { enabled: taskEstimates.enabled, setBy: user.id, setAt: new Date().toISOString() };
     }
     // Chat is always on: there is no switch. A `chatDisabled` field (the old
     // kill switch; teams.chat_disabled is deprecated) is ignored.
@@ -316,6 +364,9 @@ export async function DELETE(
     }
 
     await db.delete(teams).where(eq(teams.id, id));
+    // Its conversations went with it (cascade); their chat attachments do not
+    // cascade, so remove them now. Whatever is left, the maintenance sweep takes.
+    await removeTeamChatAttachments(id);
 
     return NextResponse.json({ success: true });
   } catch (error) {

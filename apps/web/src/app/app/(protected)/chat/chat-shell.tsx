@@ -68,7 +68,7 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
   };
 }
 
-export function ChatUnavailable({ reason, canManage, policy, teamId = null, formHref = '/app/missions/new' }: { reason: 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; teamId?: string | null; formHref?: string }) {
+export function ChatUnavailable({ reason, canManage, policy, teamId = null, formHref = '/app/missions?new=1' }: { reason: 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; teamId?: string | null; formHref?: string }) {
   return (
     <div data-testid="chat-unavailable" className="mx-auto grid max-w-xl gap-4 px-4 py-8 md:py-14">
       {/* Everyone brings their own key and this person has none: the connect
@@ -77,7 +77,7 @@ export function ChatUnavailable({ reason, canManage, policy, teamId = null, form
         ? <ConnectOwnKeyCard teamId={teamId} returnTo="/app/chat" />
         : <ChatSetupCard reason={reason} canManage={canManage} policy={policy} />}
       <Link href={formHref} className="inline-flex min-h-11 items-center justify-center border-2 border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
-        {formHref.startsWith('/app/tasks/new') ? 'File a task instead →' : 'File a mission instead →'}
+        File a mission instead →
       </Link>
     </div>
   );

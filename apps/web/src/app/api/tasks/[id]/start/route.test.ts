@@ -85,6 +85,8 @@ mock.module('@buildd/core/db', () => ({
       connectors: { findMany: mockConnectorsFindMany },
       connectorShares: { findMany: mockConnectorSharesFindMany },
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
+      // No team blocks a catalog entry here (blocked_by_policy: connector-gate.test.ts).
+      connectorCatalogTeamPolicies: { findMany: async () => [] },
     },
     update: mock(() => mockDbUpdate),
   },
@@ -110,6 +112,7 @@ mock.module('@buildd/core/db/schema', () => ({
   connectors: { id: 'id', teamId: 'teamId', name: 'name' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
+  connectorCatalogTeamPolicies: { teamId: 'teamId', policy: 'policy' },
   accountWorkspaces: {},
   workspaces: {},
 }));
@@ -117,6 +120,10 @@ mock.module('@buildd/core/db/schema', () => ({
 const mockCheckEntitlement = mock(async (_teamId: string) => null as any);
 mock.module('@/lib/entitlements/managed-runner', () => ({
   checkManagedRunnerEntitlement: mockCheckEntitlement,
+}));
+const mockCheckHosted = mock(async (_teamId: string) => null as any);
+mock.module('@/lib/hosted-runner-usage-store', () => ({
+  checkHostedRunnerAllowance: mockCheckHosted,
 }));
 
 // The coordination probe is stubbed per test with the claim route's REAL
@@ -545,7 +552,7 @@ describe('POST /api/tasks/[id]/start', () => {
     mockTasksFindFirst.mockResolvedValue(mockTask);
     // Role declares a connector ref
     mockWorkspaceSkillsFindMany.mockResolvedValue([
-      { slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] },
+      { slug: 'email-agent', workspaceId: null, teamId: 'team-1', connectorRefs: ['connector-1'] },
     ]);
     // Connector is not visible in this team (not found)
     mockConnectorsFindMany.mockResolvedValue([]);
@@ -576,7 +583,7 @@ describe('POST /api/tasks/[id]/start', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue(mockTask);
     mockWorkspaceSkillsFindMany.mockResolvedValue([
-      { slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] },
+      { slug: 'email-agent', workspaceId: null, teamId: 'team-1', connectorRefs: ['connector-1'] },
     ]);
     // Connector exists but owned by a different team
     mockConnectorsFindMany.mockResolvedValue([
@@ -612,9 +619,9 @@ describe('POST /api/tasks/[id]/start', () => {
     mockTasksFindFirst.mockResolvedValue(mockTask);
     // checkConnectorRouting: finds email-agent role with connector ref
     mockWorkspaceSkillsFindMany
-      .mockResolvedValueOnce([{ slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] }])
+      .mockResolvedValueOnce([{ slug: 'email-agent', workspaceId: null, teamId: 'team-1', connectorRefs: ['connector-1'] }])
       // findAlternativeRole: finds builder role with no connectorRefs
-      .mockResolvedValueOnce([{ slug: 'builder', workspaceId: null, connectorRefs: [] }]);
+      .mockResolvedValueOnce([{ slug: 'builder', workspaceId: null, teamId: 'team-1', connectorRefs: [] }]);
     // Connector not found → never_mounted
     mockConnectorsFindMany.mockResolvedValue([]);
     mockConnectorSharesFindMany.mockResolvedValue([]);
@@ -645,7 +652,7 @@ describe('POST /api/tasks/[id]/start', () => {
     mockTasksFindFirst.mockResolvedValue(mockTask);
     // checkConnectorRouting: email-agent has a failing connector
     mockWorkspaceSkillsFindMany
-      .mockResolvedValueOnce([{ slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] }])
+      .mockResolvedValueOnce([{ slug: 'email-agent', workspaceId: null, teamId: 'team-1', connectorRefs: ['connector-1'] }])
       // findAlternativeRole: no sibling roles
       .mockResolvedValueOnce([]);
     mockConnectorsFindMany.mockResolvedValue([]);
@@ -677,11 +684,11 @@ describe('POST /api/tasks/[id]/start', () => {
     mockTasksFindFirst.mockResolvedValue(mockTask);
     // checkConnectorRouting for email-agent: connector-1 fails
     mockWorkspaceSkillsFindMany
-      .mockResolvedValueOnce([{ slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] }])
+      .mockResolvedValueOnce([{ slug: 'email-agent', workspaceId: null, teamId: 'team-1', connectorRefs: ['connector-1'] }])
       // findAlternativeRole: researcher sibling has its own connector ref
-      .mockResolvedValueOnce([{ slug: 'researcher', workspaceId: null, connectorRefs: ['connector-2'] }])
+      .mockResolvedValueOnce([{ slug: 'researcher', workspaceId: null, teamId: 'team-1', connectorRefs: ['connector-2'] }])
       // checkConnectorRouting for researcher (inside findAlternativeRole): researcher role lookup
-      .mockResolvedValueOnce([{ slug: 'researcher', workspaceId: null, connectorRefs: ['connector-2'] }]);
+      .mockResolvedValueOnce([{ slug: 'researcher', workspaceId: null, teamId: 'team-1', connectorRefs: ['connector-2'] }]);
     // connector-1 and connector-2 both not found → never_mounted for both
     mockConnectorsFindMany.mockResolvedValue([]);
     mockConnectorSharesFindMany.mockResolvedValue([]);
@@ -714,7 +721,7 @@ describe('POST /api/tasks/[id]/start', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue(mockTask);
     mockWorkspaceSkillsFindMany.mockResolvedValue([
-      { slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] },
+      { slug: 'email-agent', workspaceId: null, teamId: 'team-1', connectorRefs: ['connector-1'] },
     ]);
     // Connector owned by same team
     mockConnectorsFindMany.mockResolvedValue([
@@ -945,6 +952,23 @@ describe('POST /api/tasks/[id]/start', () => {
       const response = await callHandler(createMockRequest(), 'task-123');
       expect(response.status).toBe(200);
       expect(mockWakeTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('a hosted runner hold is re-checked against the hosted allowance, and refused while it is used', async () => {
+      const hosted = { kind: 'hosted_runner', key: 'hosted_runner.hours', unit: 'counted_runner_hours', used: 50, limit: 50, resetsAt: '2026-11-01T00:00:00.000Z' };
+      mockTasksFindFirst.mockResolvedValue(blockedTask({ entitlementBlock: hosted }));
+      mockCheckHosted.mockReset();
+      mockCheckHosted.mockResolvedValue(hosted);
+
+      const response = await callHandler(createMockRequest(), 'task-123');
+      expect(response.status).toBe(422);
+      const data = await response.json();
+      expect(data.gateReason).toBe('entitlement_blocked');
+      expect(data.entitlement).toMatchObject({ kind: 'hosted_runner', used: 50, limit: 50 });
+      expect(data.error).toContain('hosted runner allowance used');
+      expect(mockCheckHosted).toHaveBeenCalledWith('team-1');
+      expect(mockCheckEntitlement).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     it('never consults the entitlement for a task no managed runner deferred (self-hosted)', async () => {

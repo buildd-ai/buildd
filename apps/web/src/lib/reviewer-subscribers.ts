@@ -28,6 +28,7 @@ import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
 import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
+import { effectiveDeltaFiles, refreshDeltaBase } from '@/lib/integration-refresh';
 import { tryDispatchMigrationCollisionRetry } from '@/lib/migration-collision-retry';
 import { conformanceManifest } from '@/lib/path-declaration';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -35,6 +36,9 @@ import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request'
 import { pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { observeHead, openKernelDelivery, policyFindingFor } from '@/lib/workflow/seam';
+import { releaseKernelDeliveryForPr } from '@/lib/workflow/authority';
+import { agentReviewsDataMigrations } from '@buildd/shared';
 
 /** The webhook payload shape the dispatch functions read. */
 type WebhookPr = { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null };
@@ -129,6 +133,14 @@ async function maybeDispatchReviewer(
     } catch (err) {
       console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
     }
+    // An integration-refresh PR is reviewed on what it adds on top of trunk —
+    // the mission's own changes and the conflict resolution — not on the
+    // already-reviewed trunk history its stale fork point lists (integration-refresh.ts).
+    const deltaBase = refreshDeltaBase(task.context, workspace.gitConfig);
+    if (deltaBase) {
+      const delta = await effectiveDeltaFiles(installationId, repoFullName, deltaBase, pr.head.sha);
+      if (delta) prFiles = delta;
+    }
 
     // Classify migrations first: the schema risk class keys off the verdict
     // (EXPAND passes), not off the mere presence of a schema/migration path.
@@ -139,6 +151,7 @@ async function maybeDispatchReviewer(
       headSha: pr.head.sha,
       files: prFiles,
       baseRef: pr.base?.ref ?? null,
+      ...(deltaBase ? { deltaBase } : {}),
     });
 
     // A migration-number collision this PR owns (see `classifyPullRequestMigrations`)
@@ -181,6 +194,26 @@ async function maybeDispatchReviewer(
     if (shouldEscalateToHuman) {
       const reason = preflight.shouldEscalate ? preflight.reason : `workspace policy requires human review`;
       console.log(`[reviewer] Pre-flight escalation for PR #${pr.number}: ${reason}`);
+      // The kernel decides who owns the PR (§6.3 T28): the finding becomes head-bound policy
+      // evidence, and the delivery's own state — ESCALATED(policy_human), or an agent repair for
+      // a safe EXPAND/CONTRACT split — is what Home, Pushover and the PR comment all read. No
+      // separate note or notification is written from here.
+      const kernel = await openKernelDelivery({
+        workspaceId: openWorker.workspaceId,
+        ownerTaskId: task.id,
+        repoFullName,
+        prNumber: pr.number,
+        installationId,
+        source: 'webhook:opened',
+        policy: policyFindingFor({ reason, migrationSafety }),
+      }).catch((err) => {
+        console.error(`[reviewer] workflow kernel could not take PR #${pr.number} for its pre-flight finding; legacy escalation:`, err);
+        return { owned: false };
+      });
+      if (kernel.owned) return true;
+      // Legacy authority (kernel off or declined): a human owns this PR now. Hand any delivery
+      // to legacy so no round is queued behind the human escalation.
+      await releaseKernelDeliveryForPr(openWorker.workspaceId, repoFullName, pr.number, `pre-flight escalation: ${reason}`);
       if (task.missionId) {
         await db.insert(missionNotes).values({
           missionId: task.missionId,
@@ -202,7 +235,7 @@ async function maybeDispatchReviewer(
           message: `${task.title} — ${reason}`,
         });
       }
-      void notifyTeamOf({ workspaceId: workspace.id }, 'needsAttention', {
+      void notifyTeamOf({ workspaceId: workspace.id, prNumber: pr.number }, 'needsAttention', {
         title: `PR #${pr.number} escalated`,
         message: reason,
         url: pr.html_url,
@@ -234,6 +267,23 @@ async function maybeDispatchReviewer(
       return true;
     }
 
+    // The workflow kernel takes the PR here, at the exact point the legacy path
+    // would dispatch its first review (after pre-flight, with a reviewer role).
+    // Its first round is queued when the owner attempt ends; nothing is
+    // dispatched now.
+    const kernel = await openKernelDelivery({
+      workspaceId: openWorker.workspaceId,
+      ownerTaskId: task.id,
+      repoFullName,
+      prNumber: pr.number,
+      installationId,
+      source: 'webhook:opened',
+    }).catch((err) => {
+      console.error(`[reviewer] workflow kernel could not open a delivery for PR #${pr.number}; legacy review dispatch:`, err);
+      return { owned: false };
+    });
+    if (kernel.owned) return true; // handled — skip auto-merge
+
     // iteration/maxIterations are stored in task.context JSONB (not columns)
     const taskCtx = (task.context ?? {}) as Record<string, unknown>;
     const originalTask = {
@@ -261,6 +311,7 @@ async function maybeDispatchReviewer(
       repoFullName,
       policyConfig: policyConfig ?? undefined,
       migrationSafety,
+      agentDecidesDataMigrations: agentReviewsDataMigrations(policy),
       // Already fetched above for the policy override and the pre-flight
       // check — passing it through saves a second identical GitHub call.
       prFiles,
@@ -513,7 +564,25 @@ export const reviewerSubscribers: readonly AnySubscriber[] = [
   // reviewer against the new head. Without this the review loop never
   // closes; see maybeReDispatchReviewer's doc comment.
   subscriber('reviews', 'pr.synchronized', 'reviewer-redispatch-on-push', async e => {
-    if (e.pr.draft || !e.worker.taskId) return;
+    // A kernel-owned PR: the push is a HeadObserved fact (T3), draft or not — a
+    // draft's head is still the PR's head, and skipping it left the delivery bound
+    // to a stale one (task ddcbe113). The kernel
+    // decides re-review, carry-forward (T13, from its own approved heads, never
+    // the newest reviewer row) and fix supersession; the legacy re-dispatch
+    // below must not run beside it.
+    const kernelHandled = await observeHead({
+      workspaceId: e.worker.workspaceId,
+      repoFullName: e.repoFullName,
+      prNumber: e.pr.number,
+      installationId: e.installationId,
+      hintedHeadSha: e.pr.headSha,
+      source: 'webhook:synchronize',
+    }).catch((err) => {
+      // Ownership could not even be read: behave as before the kernel.
+      console.error(`[reviewer] workflow kernel ownership check failed for PR #${e.pr.number}:`, err);
+      return false;
+    });
+    if (kernelHandled || e.pr.draft || !e.worker.taskId) return;
     await maybeReDispatchReviewer(e.installationId, e.repoFullName, webhookPr(e.pr), { ...e.worker, taskId: e.worker.taskId });
   }),
   // CI went red: hand the PR to retryCiFailureForPr, which files a bounded

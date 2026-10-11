@@ -41,12 +41,19 @@ export interface AccessItem {
 const LABEL: Record<string, string> = {
   'github.repo_grant': 'GitHub repo access',
   'model.endpoint': 'Model endpoint',
+  'model.inference': 'Model call',
+  'capability.request': 'Capability request',
+  'capability.approve': 'Capability approved',
+  'capability.deny': 'Capability denied',
+  'capability.revoke': 'Capability revoked',
+  'capability.use': 'Capability use',
   'task_token.mint': 'buildd token',
   'runner.size': 'Runner size',
   'pr.create': 'Open PR',
   'pr.adopt': 'Record PR',
   'pr.close': 'Close PR',
   'pr.update_body': 'Update PR body',
+  'pr.mark_ready': 'Mark PR ready',
   'pr.merge': 'Merge PR',
 };
 

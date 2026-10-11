@@ -64,7 +64,7 @@ async function verifyAccess(auth: NonNullable<Awaited<ReturnType<typeof authenti
   if (auth.type === 'session') {
     return !!(await verifyWorkspaceAccess(auth.user.id, workspaceId));
   } else if (auth.type === 'api') {
-    return !!(await verifyAccountWorkspaceAccess(auth.account.id, workspaceId));
+    return !!(await verifyAccountWorkspaceAccess(auth.account, workspaceId));
   }
   return true; // dev mode
 }

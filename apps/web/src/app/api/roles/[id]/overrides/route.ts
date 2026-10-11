@@ -9,6 +9,10 @@ import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { normalizeBackend } from '@/lib/normalize-backend';
 import { isUuid } from '@/lib/uuid';
+import { parseOperatorGrantInput, withOperatorGrantMetadata, type OperatorGrantConfig } from '@/lib/operator-capability';
+import { AGENT_CAPABILITY_NAMES, roleMayHold } from '@/lib/permission-registry';
+import { can } from '@/lib/permissions';
+import { canSeeRole, isPersonalRole } from '@/lib/personal-roles';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -66,11 +70,45 @@ export async function POST(
       );
     }
 
+    // Personal roles have no workspace overrides; another member's private
+    // role is not even visible.
+    if (isPersonalRole(teamDefault)) {
+      if (!canSeeRole(teamDefault, user.id)) {
+        return NextResponse.json({ error: 'Team-level role not found or not accessible' }, { status: 404 });
+      }
+      return NextResponse.json(
+        { error: 'Personal roles have no workspace overrides; edit the role itself with PATCH /api/roles/[id]' },
+        { status: 400 }
+      );
+    }
+
     // Verify user has access to the target workspace
     if (!wsIds.includes(workspaceId)) {
       const hasAccess = await verifyWorkspaceAccess(user.id, workspaceId);
       if (!hasAccess) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+      }
+    }
+
+    // manage_agent_roles in the role's team (a plain skill stays member-writable).
+    if (teamDefault.isRole && !(await can({ kind: 'user', userId: user.id }, 'manage_agent_roles', teamDefault.teamId))) {
+      return NextResponse.json({ error: 'Managing agent roles requires team admin' }, { status: 403 });
+    }
+
+    // Agent capability grant (docs/specs/agent-capabilities.md): same rule as
+    // the team-default PATCH route — only a role with a capability ceiling can
+    // hold a grant at all.
+    let operatorConfig: OperatorGrantConfig | null = null;
+    let hasOperatorGrant = false;
+    if ('operatorGrant' in body) {
+      hasOperatorGrant = true;
+      if (!AGENT_CAPABILITY_NAMES.some(c => roleMayHold(teamDefault.slug, c))) {
+        return NextResponse.json({ error: `Role "${teamDefault.slug}" holds no agent capabilities; operatorGrant has no effect for it` }, { status: 400 });
+      }
+      if (body.operatorGrant !== null) {
+        const parsed = parseOperatorGrantInput(body.operatorGrant);
+        if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+        operatorConfig = parsed.config;
       }
     }
 
@@ -105,6 +143,7 @@ export async function POST(
     let result;
     if (existing) {
       // Update existing override
+      if (hasOperatorGrant) overriddenFields.metadata = withOperatorGrantMetadata(existing.metadata, operatorConfig);
       const [updated] = await db
         .update(workspaceSkills)
         .set({ ...overriddenFields, updatedAt: new Date() })
@@ -135,7 +174,10 @@ export async function POST(
       return NextResponse.json({ skill: result });
     }
 
-    // Create new workspace override, inheriting all non-overridden fields from team default
+    // Create new workspace override, inheriting all non-overridden fields from
+    // team default — except the operator grant, which is never inherited: it
+    // is the workspace's own opt-in, not a copy of the team's ceiling config.
+    if (hasOperatorGrant) overriddenFields.metadata = withOperatorGrantMetadata({}, operatorConfig);
     const [inserted] = await db
       .insert(workspaceSkills)
       .values({

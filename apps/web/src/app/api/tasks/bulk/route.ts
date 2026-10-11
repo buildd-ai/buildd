@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -66,7 +67,10 @@ export async function POST(req: NextRequest) {
 
   // Resolve accessible workspace IDs
   let accessibleWorkspaceIds: string[] = [];
-  if (apiAccount) {
+  if (apiAccount && isGrantSession(apiAccount)) {
+    // A grant session bulk-edits only its granted workspaces (lib/grant-scope.ts).
+    accessibleWorkspaceIds = constrainToGranted(apiAccount, apiAccount.workspaceIds ?? [], 'write');
+  } else if (apiAccount) {
     const permissions = await getAccountWorkspacePermissions(apiAccount.id);
     accessibleWorkspaceIds = permissions.map(p => p.workspaceId);
   } else if (user) {

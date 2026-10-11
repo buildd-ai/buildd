@@ -74,7 +74,6 @@ let hasAccess = true;
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),
   verifyAccountWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),
-  canCallerAdminTeam: async () => false,
   holdsInWorkspace: async () => false,
 }));
 mock.module('@buildd/core/db', () => ({

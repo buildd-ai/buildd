@@ -14,13 +14,13 @@
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 
 /**
- * Settings → Runners → Connections, opened on the model key field (the Claude
+ * Settings → Models → Runner sign-ins, opened on the model key field (the Claude
  * row's API key input; AgentBackendsSection opens and focuses it for this hash).
  */
-export const AGENT_CREDENTIAL_HREF = '/app/settings/runners#agent-key';
+export const AGENT_CREDENTIAL_HREF = '/app/settings/models#agent-key';
 
-/** Settings → Runners → Connections, where the Codex sign-in and OpenAI key rows are. */
-export const CODEX_CREDENTIAL_HREF = '/app/settings/runners#agent-backends';
+/** Settings → Models → Runner sign-ins, where the Codex sign-in and OpenAI key rows are. */
+export const CODEX_CREDENTIAL_HREF = '/app/settings/models#sign-ins';
 
 export interface ProviderAuthFailure {
   /** One plain sentence: what went wrong and what to do. */

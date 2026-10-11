@@ -8,6 +8,7 @@ import {
   RUN_METRICS,
   RUN_PHASES,
   parseMetricLine,
+  parseWorktreeModeLine,
   parseRepoSourceLine,
   parseWarmUploadLine,
   parseCacheSkippedLine,
@@ -85,6 +86,35 @@ describe('warm upload skip line (a repo over the warm snapshot cap)', () => {
     expect(none.repo.warmUploadSkipReason).toBeNull();
     const hostile = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { warmUpload: { skipped: 'sk-ant-leak' } } } as unknown as RunReportInput);
     expect(hostile.repo.warmUploadSkipReason).toBeNull();
+  });
+
+  test('a lease run that deferred its upload says so', () => {
+    expect(parseWarmUploadLine('BUILDD_WARM_UPLOAD=deferred')).toEqual({ deferred: true });
+    expect(parseWarmUploadLine('BUILDD_WARM_UPLOAD=deferred later')).toBeNull();
+    const r = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { warmUpload: { deferred: true } } });
+    expect(r.repo.warmUploadDeferred).toBe(true);
+    expect(r.repo.warmUploadSkipReason).toBeNull();
+  });
+});
+
+describe('a reused container\'s seed on the report', () => {
+  test('what the fetch brought, and whether it was skipped; never the kept packs as clone bytes', () => {
+    const r = assembleRunReport({
+      taskId: 'task-1', attempt: 1,
+      timings: { repoSource: { source: 'reuse' }, runnerMetrics: { restore_reuse_bytes: 12_288, reuse_fetch_skipped: 0 } },
+    });
+    expect(r.repo.bytes.reuseFetch).toBe(12_288);
+    expect(r.repo.reuseFetchSkipped).toBe(false);
+    expect(r.repo.bytes.clone).toBeNull();
+    const skipped = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { repoSource: { source: 'reuse' }, runnerMetrics: { restore_reuse_bytes: 0, reuse_fetch_skipped: 1 } } });
+    expect(skipped.repo.reuseFetchSkipped).toBe(true);
+    // Not a seed: no answer.
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { repoSource: { source: 'warm' } } }).repo.reuseFetchSkipped).toBeNull();
+  });
+
+  test('the wait for a lease in its tail', () => {
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { leaseWaitMs: 4_200 } }).durationsMs.leaseWait).toBe(4_200);
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { leaseWaitMs: -1 } }).durationsMs.leaseWait).toBeNull();
   });
 });
 
@@ -341,7 +371,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 11,
+      version: 15,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -349,7 +379,7 @@ describe('assembleRunReport', () => {
       runLabel: 'task-1.2',
       instanceType: 'standard-1',
       timestamps: { dispatchReceivedAt: 1_000, containerRunningAt: 4_000, claimedAt: 6_000, firstModelRequestAt: 9_000, exitedAt: 60_000 },
-      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, restoreReuse: null, toFirstModelRequest: 3_000, total: 59_000 },
+      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, restoreReuse: null, worktree: null, leaseWait: null, toFirstModelRequest: 3_000, total: 59_000 },
       exitCode: 0,
       outcome: 'done',
       crashReport: null,
@@ -366,12 +396,29 @@ describe('assembleRunReport', () => {
     expect(assembleRunReport({ ...FULL, dispatchReceivedAt: 9_000, timings: { scheduledFor: 10_000 } }).schedule.lateMs).toBeNull();
   });
 
+  test('depsOverlap: what the background deps work cost the session, and what it hid', () => {
+    // The session started at 10 s, the deps were ready at 100 s, the agent
+    // first needed them at 40 s and waited 20 s in total: 70 s of the 90 s hidden.
+    const r = assembleRunReport({ ...FULL, timings: { ...FULL.timings,
+      runnerPhases: { ...FULL.timings!.runnerPhases, session_start: 10_000, deps_ready: 100_000, first_gated_tool: 40_000 },
+      runnerMetrics: { gate_wait_ms: 20_000, gate_holds: 2 },
+    } });
+    expect(r.depsOverlap).toEqual({ sessionStartAt: 10_000, depsReadyAt: 100_000, firstGatedToolAt: 40_000, gateWaitMs: 20_000, gateHolds: 2, hiddenMs: 70_000 });
+    // The agent never needed deps: nothing held, the whole span hidden.
+    const quiet = assembleRunReport({ ...FULL, timings: { ...FULL.timings, runnerPhases: { session_start: 10_000, deps_ready: 50_000 } } });
+    expect(quiet.depsOverlap).toEqual({ sessionStartAt: 10_000, depsReadyAt: 50_000, firstGatedToolAt: null, gateWaitMs: 0, gateHolds: 0, hiddenMs: 40_000 });
+    // Deps ready before the session started: nothing to hide.
+    expect(assembleRunReport({ ...FULL, timings: { runnerPhases: { session_start: 50_000, deps_ready: 40_000 } } }).depsOverlap?.hiddenMs).toBe(0);
+    // No deps_ready: the run did not overlap (host runner, declared env.yaml, older image).
+    expect(assembleRunReport(FULL).depsOverlap).toBeNull();
+  });
+
   test('missing pieces are null, never guessed', () => {
     const r = assembleRunReport({ taskId: 'task-1', attempt: 1, dispatchReceivedAt: 1_000, timings: { exitedAt: 2_000, runnerPhases: { clone_start: 5 } }, exitCode: null, outcome: 'crashed', crashReport: 'no_worker_id' });
     expect(r.workerId).toBeNull();
-    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, restoreReuse: null, toFirstModelRequest: null, total: 1_000 });
+    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, restoreCache: null, restoreReuse: null, worktree: null, leaseWait: null, toFirstModelRequest: null, total: 1_000 });
     expect(r.resume).toEqual({ resumed: false, gapMs: null, layer: null, parkBytes: null });
-    expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, warmUploadSkipReason: null, cacheSkipped: null, bytes: { clone: null, restore: null, fetch: null, cache: null, cacheRaw: null, upload: null, warmRepo: null } });
+    expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, warmUploadSkipReason: null, cacheSkipped: null, warmUploadDeferred: false, reuseFetchSkipped: null, bytes: { clone: null, restore: null, fetch: null, reuseFetch: null, cache: null, cacheRaw: null, upload: null, warmRepo: null } });
     expect(r.exitCode).toBeNull();
     expect(r.crashReport).toBe('no_worker_id');
     expect(r.egress.model).toEqual({ requests: 0, rejected: 0, responseBytes: 0 });
@@ -425,8 +472,8 @@ describe('assembleRunReport', () => {
 
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
-      'agentRestarts', 'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'interruption', 'kind',
-      'modelAuth', 'outcome', 'repo', 'resources', 'resume', 'reusedContainer', 'runLabel', 'runnerPhases', 'runnerSize', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
+      'agentRestarts', 'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'depsOverlap', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'handover', 'instanceType', 'interruption', 'kind',
+      'modelAuth', 'outcome', 'repo', 'resources', 'resume', 'reusedContainer', 'runLabel', 'runnerPhases', 'runnerSize', 'schedule', 'taskId', 'timestamps', 'version', 'workerId', 'worktreeMode',
     ]);
   });
 
@@ -488,7 +535,8 @@ describe('assembleRunReport', () => {
     expect(r.durationsMs).toMatchObject({ clone: null, restoreWarm: 300, fetch: 100, warmUpload: 800 });
     expect(r.repo).toEqual({
       source: 'warm', fallbackReason: null, snapshotAgeMs: 3_600_000, warmUploadSkipReason: null, cacheSkipped: null,
-      bytes: { clone: null, restore: 1_000_000, fetch: 2_048, cache: 500_000, cacheRaw: null, upload: 0, warmRepo: null },
+      warmUploadDeferred: false, reuseFetchSkipped: null,
+      bytes: { clone: null, restore: 1_000_000, fetch: 2_048, reuseFetch: null, cache: 500_000, cacheRaw: null, upload: 0, warmRepo: null },
     });
   });
 
@@ -632,5 +680,24 @@ describe('measureResponse: GitHub and passthrough bodies are never piped through
     const out = measureResponse(new Response('hello world'), 'model', n => seen.push(n));
     expect(await out.text()).toBe('hello world');
     expect(seen).toEqual([11]);
+  });
+});
+
+test('browser time and usage are allowlisted into the run report', () => {
+  const report = assembleRunReport({ taskId: null, attempt: 1, browser: { sessionMs: 1250, sessions: 1, requests: 3, bytes: 40, relayErrors: 0 } });
+  expect(report.browser).toEqual({ provider: 'cloudflare', sessionMs: 1250, sessionSeconds: 1.25, sessions: 1, requests: 3, bytes: 40, relayErrors: 0 });
+});
+
+describe('session checkout report', () => {
+  test('worktree mode follows the runner contract and rejects unknown values', () => {
+    expect(parseWorktreeModeLine(runnerPhases.formatWorktreeModeLine('clone'))).toBe('clone');
+    expect(parseWorktreeModeLine(runnerPhases.formatWorktreeModeLine('worktree'))).toBe('worktree');
+    expect(parseWorktreeModeLine('BUILDD_WORKTREE_MODE=unknown')).toBeNull();
+    const report = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: {
+      worktreeMode: 'clone', runnerPhases: { worktree_start: 100, worktree_end: 400 },
+    } });
+    expect(report.worktreeMode).toBe('clone');
+    expect(report.durationsMs.worktree).toBe(300);
+    expect(assembleRunReport({ taskId: 'task-1', attempt: 1 }).worktreeMode).toBeNull();
   });
 });

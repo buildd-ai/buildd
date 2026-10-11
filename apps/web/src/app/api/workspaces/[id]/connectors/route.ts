@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -53,7 +54,7 @@ export async function GET(
   // Verify workspace access
   let teamId: string;
   if (auth.type === 'api') {
-    const ok = await verifyAccountWorkspaceAccess(auth.account.id, workspaceId);
+    const ok = await verifyAccountWorkspaceAccess(auth.account, workspaceId);
     if (!ok) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     teamId = auth.account.teamId;
   } else {
@@ -124,12 +125,17 @@ export async function PATCH(
   // Verify workspace access
   let teamId: string;
   if (auth.type === 'api') {
-    const ok = await verifyAccountWorkspaceAccess(auth.account.id, workspaceId);
+    const ok = await verifyAccountWorkspaceAccess(auth.account, workspaceId);
     if (!ok) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     teamId = auth.account.teamId;
   } else {
     const access = await verifyWorkspaceAccess(auth.user.id, workspaceId);
     if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    // manage_connectors in the workspace's team. API keys were already held
+    // to admin in authenticateRequest.
+    if (!roleHas(access.role, 'manage_connectors', await getTeamPermissionOverrides(access.teamId))) {
+      return NextResponse.json({ error: 'Requires team admin' }, { status: 403 });
+    }
     teamId = access.teamId;
   }
 

@@ -10,8 +10,8 @@ import { NextRequest } from 'next/server';
 const WORKER = '33333333-3333-4333-8333-333333333333';
 const ACCOUNT = '44444444-4444-4444-8444-444444444444';
 
-let authed: { id: string } | null;
-let worker: { id: string; accountId: string; workspaceId: string; taskId?: string | null } | null;
+let authed: { id: string; [k: string]: unknown } | null;
+let worker: { id: string; accountId: string; workspaceId: string; taskId?: string | null; claimedByUserId?: string | null } | null;
 let workspace: Record<string, unknown> | null;
 let resolverArgs: Record<string, unknown> | null;
 let task: { missionId: string | null } | null;
@@ -120,6 +120,44 @@ describe('per-task token', () => {
   it('404s another task’s worker of the same account, before resolving', async () => {
     authed = scoped('task-1');
     worker = { ...worker!, taskId: 'task-2' };
+    expect((await GET(req(), params())).status).toBe(404);
+    expect(resolverArgs).toBeNull();
+  });
+});
+
+// Invariant: an OAuth session acts as an account its whole team shares, so
+// only the session user that claimed the worker may ask where its pages come
+// from (lib/worker-owner.ts). A teammate on the same account, an admin-level
+// session that did not claim, and a session with no team id all get the same
+// 404 as a stranger, before the resolver runs.
+describe('GET /api/workers/[id]/page-source — OAuth session owner check', () => {
+  const session = (over: Record<string, unknown> = {}) =>
+    ({ id: ACCOUNT, teamId: 'team-1', sessionUserId: 'user-a', level: 'worker', ...over });
+
+  beforeEach(() => {
+    worker = { id: WORKER, accountId: ACCOUNT, workspaceId: 'ws-1', claimedByUserId: 'user-a' };
+  });
+
+  it('lets the session that claimed the worker resolve its page source', async () => {
+    authed = session();
+    expect((await GET(req(), params())).status).toBe(200);
+    expect(resolverArgs).not.toBeNull();
+  });
+
+  it('404s a same-team member on the shared account, before resolving', async () => {
+    authed = session({ sessionUserId: 'user-b' });
+    expect((await GET(req(), params())).status).toBe(404);
+    expect(resolverArgs).toBeNull();
+  });
+
+  it('404s an admin-level session that did not claim the worker', async () => {
+    authed = session({ sessionUserId: 'user-b', level: 'admin' });
+    expect((await GET(req(), params())).status).toBe(404);
+    expect(resolverArgs).toBeNull();
+  });
+
+  it('404s a session with no team id, even as the claimer', async () => {
+    authed = session({ teamId: null });
     expect((await GET(req(), params())).status).toBe(404);
     expect(resolverArgs).toBeNull();
   });

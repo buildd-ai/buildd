@@ -1,54 +1,68 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-mock.module('next/navigation', () => ({ usePathname: () => '/app/chat' }));
+let pathname = '/app/chat';
+let homeCount: number | null = 4;
+mock.module('next/navigation', () => ({ usePathname: () => pathname }));
 mock.module('./NeedsInputProvider', () => ({ useNeedsInput: () => ({ count: 3 }) }));
-mock.module('./EscalationProvider', () => ({ useEscalation: () => ({ count: 0 }) }));
+mock.module('@/lib/home-attention-store', () => ({ useHomeAttentionCount: () => homeCount }));
 
 const { default: MissionsBottomNav } = await import('./MissionsBottomNav');
 
-const html = renderToStaticMarkup(<MissionsBottomNav />);
-const tab = (href: string) => html.match(new RegExp(`<a[^>]*href="${href}"[\\s\\S]*?</a>`))?.[0] ?? '';
+const render = () => renderToStaticMarkup(<MissionsBottomNav />);
+const tab = (html: string, href: string) => html.match(new RegExp(`<a[^>]*href="${href}"[\\s\\S]*?</a>`))?.[0] ?? '';
 
-describe('MissionsBottomNav (v3 phone nav)', () => {
-  it('mono caps labels in order, no icons', () => {
+describe('MissionsBottomNav', () => {
+  it('five sentence-case labels in nav order, no icons, no caps', () => {
+    const html = render();
     expect(html).not.toContain('<svg');
-    expect(html).toMatch(/<nav[^>]*font-mono/);
-    expect(html).toMatch(/<nav[^>]*uppercase/);
+    expect(html).not.toMatch(/\buppercase\b|tracking-\[/);
     const labels = [...html.matchAll(/data-testid="nav-tab-label"[^>]*>([^<]+)</g)].map(m => m[1]);
-    expect(labels).toEqual(['Home', 'Chat', 'Missions', 'Activity', 'Health']);
+    expect(labels).toEqual(['Home', 'Missions', 'Activity', 'Health', 'Chat']);
   });
 
-  it('marks only the active tab, with a bar on its top edge', () => {
-    expect(tab('/app/chat')).toContain('aria-current="page"');
-    expect(tab('/app/chat')).toContain('data-testid="nav-active-bar"');
-    expect(tab('/app/chat')).toMatch(/nav-active-bar"[^>]*top-0/);
+  it('marks only the active tab: ink text and a bar on its top edge', () => {
+    const html = render();
+    expect(tab(html, '/app/chat')).toContain('aria-current="page"');
+    expect(tab(html, '/app/chat')).toMatch(/nav-active-bar"[^>]*top-0/);
+    expect(tab(html, '/app/chat')).toContain('text-text-primary');
     expect(html.match(/nav-active-bar/g)).toHaveLength(1);
-    expect(tab('/app/home')).not.toContain('aria-current');
+    expect(tab(html, '/app/home')).not.toContain('aria-current');
+  });
+
+  it('one style on every page: Home renders the bar the same way as anywhere else', () => {
+    const elsewhere = render().replace(/aria-current="page"|nav-active-bar/g, '');
+    pathname = '/app/home';
+    try {
+      const html = render();
+      expect(tab(html, '/app/home')).toContain('data-testid="nav-active-bar"');
+      expect(html.match(/<nav[^>]*>/)?.[0]).toBe(elsewhere.match(/<nav[^>]*>/)?.[0]);
+      expect(html).toContain('>Home<');
+    } finally {
+      pathname = '/app/chat';
+    }
   });
 
   it('every tab is at least a 44px touch target', () => {
-    const links = html.match(/<a\b[^>]*>/g) ?? [];
+    const links = render().match(/<a\b[^>]*>/g) ?? [];
     expect(links.length).toBe(5);
     for (const a of links) expect(a).toMatch(/min-h-11/);
   });
 
-  it('labels keep a readable gap between neighbours at 320px and 390px', () => {
-    const link = html.match(/<a\b[^>]*>/)?.[0] ?? '';
-    const cls = (prefix: string) => link.match(new RegExp(`(?:^|[\\s"])${prefix}text-\\[(\\d+)px\\]`))?.[1];
-    const tracking = (prefix: string) => link.match(new RegExp(`(?:^|[\\s"])${prefix}tracking-\\[\\.(\\d+)em\\]`))?.[1];
-    const MONO_ADVANCE = 0.6;
-    const longest = 8; // "MISSIONS" / "ACTIVITY"
-    const gap = (viewport: number, size: number, trackEm: number) =>
-      viewport / 5 - longest * size * (MONO_ADVANCE + trackEm);
-    const base = Number(cls('')), baseTrack = Number(`0.${tracking('') ?? '0'}`);
-    const wide = Number(cls('min-\\[390px\\]:') ?? base);
-    const wideTrack = Number(`0.${tracking('min-\\[390px\\]:') ?? tracking('') ?? '0'}`);
-    expect(gap(320, base, baseTrack)).toBeGreaterThanOrEqual(8);
-    expect(gap(390, wide, wideTrack)).toBeGreaterThanOrEqual(8);
+  it('one badge: Home carries the needs-you count; Activity carries none', () => {
+    const html = render();
+    expect(tab(html, '/app/home')).toMatch(/data-testid="nav-tab-badge"[^>]*>4</);
+    expect(tab(html, '/app/tasks')).not.toContain('nav-tab-badge');
+    expect(html.match(/nav-tab-badge/g)).toHaveLength(1);
+    expect(html).not.toContain('>19<');
   });
 
-  it('an alert count still shows on its tab', () => {
-    expect(tab('/app/tasks')).toMatch(/data-testid="nav-tab-badge"[^>]*>3</);
+  it('no badge before Home has published a count; never a substitute count', () => {
+    homeCount = null;
+    try {
+      expect(render()).not.toContain('nav-tab-badge');
+    } finally {
+      homeCount = 4;
+    }
   });
 });

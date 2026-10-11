@@ -3,12 +3,15 @@ import { tasks, missions, taskSchedules, workspaceSkills, workers, artifacts, wo
 import { resolvePrompt, resolvePromptTemplate } from '@buildd/core/prompts';
 import { CRITERIA_REARM_TEMPLATE, MISSION_PROMPT_DEFAULTS, MISSION_PROMPT_IDS } from './mission-prompts';
 import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
+import { contextArtifactsWhere } from '@/lib/context-artifact-ids';
+import { artifactsLinkedTo } from '@/lib/artifact-links';
 import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
 import { buildWorkspaceStateContext, type OrganizerCause, type WorkspaceStateCauseData } from './workspace-state-context';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { effectiveVisibleRoles, personalRoleVisibleSql, TEAM_SCOPED_BY_QUERY } from '@buildd/core/role-visibility';
 import type { TaskHandoff } from '@buildd/shared';
 
 /**
@@ -202,10 +205,14 @@ export function isWithinActiveHours(currentHour: number, start: number, end: num
 
 /**
  * Fetch available roles for a workspace with current load.
- * Returns workspace-override rows first, then team defaults for slugs not overridden.
+ * One row per slug by the shared role precedence (@buildd/core/role-visibility):
+ * workspace override > the requester's own personal role > a shared personal
+ * role > team default. `requesterUserId` is who the planned tasks are for; with
+ * none, another member's private role is never listed — a planner must not
+ * route work to a role its tasks could not run under.
  * Reusable by both the context builder and the /api/roles endpoint.
  */
-export async function getWorkspaceRoles(workspaceId: string) {
+export async function getWorkspaceRoles(workspaceId: string, requesterUserId: string | null = null) {
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
     columns: { teamId: true },
@@ -221,25 +228,26 @@ export async function getWorkspaceRoles(workspaceId: string) {
             and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, ws.teamId)),
           )
         : eq(workspaceSkills.workspaceId, workspaceId),
+      personalRoleVisibleSql(requesterUserId),
     ),
     columns: {
+      id: true,
       slug: true,
       name: true,
       model: true,
       color: true,
       description: true,
       workspaceId: true,
+      ownerUserId: true,
+      visibility: true,
     },
   });
 
-  // Deduplicate by slug — workspace override beats team default
-  const seenSlugs = new Map<string, typeof allRoles[0]>();
-  for (const r of allRoles) {
-    const existing = seenSlugs.get(r.slug);
-    if (!existing || (r.workspaceId !== null && existing.workspaceId === null)) {
-      seenSlugs.set(r.slug, r);
-    }
-  }
+  // One row per slug. The query already scoped rows to this workspace's team.
+  const seenSlugs = new Map(effectiveVisibleRoles(
+    allRoles.map(r => ({ ...r, teamId: ws?.teamId ?? '' })),
+    { teamId: TEAM_SCOPED_BY_QUERY, workspaceId, requesterUserId },
+  ).map(r => [r.slug, r] as const));
   const uniqueRoles = [...seenSlugs.values()];
 
   // Count active workers per role slug
@@ -419,6 +427,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       // mission silently gets the trunk-shape advice.
       integrationBranchEnabled: true,
       workingBranch: true,
+      createdByUserId: true,
     },
   });
   if (!mission) return null;
@@ -586,11 +595,16 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
   });
 
-  // Referenced artifacts from contextArtifactIds (cross-mission context)
+  // Referenced artifacts: the mission's links (artifact_links, owned by Living
+  // Specs). contextArtifactIds is dual-written into links at create, so the
+  // column only adds what predates links; an unlink removes the id from both.
+  // Both go through the team-scoped read.
+  const linked = await artifactsLinkedTo('mission', mission.id, { relations: ['context', 'requirement', 'normative_reference', 'design_reference'] });
+  const referencedIds = [...new Set([...(mission.contextArtifactIds ?? []), ...(Array.isArray(linked) ? linked.map(l => l.artifactId) : [])])];
   let referencedArtifacts: typeof priorArtifacts = [];
-  if (mission.contextArtifactIds?.length) {
+  if (referencedIds.length) {
     referencedArtifacts = await db.query.artifacts.findMany({
-      where: inArray(artifacts.id, mission.contextArtifactIds),
+      where: contextArtifactsWhere(referencedIds, mission.teamId),
       limit: 10,
       columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
     });
@@ -892,7 +906,8 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   }
   let roles: Awaited<ReturnType<typeof getWorkspaceRoles>> = [];
   if (roleWorkspaceIds.length > 0) {
-    const allRoleLists = await Promise.all(roleWorkspaceIds.map(id => getWorkspaceRoles(id)));
+    // The mission's creator is who its tasks are for (resolveTaskRequesterUserId).
+    const allRoleLists = await Promise.all(roleWorkspaceIds.map(id => getWorkspaceRoles(id, mission.createdByUserId ?? null)));
     // Deduplicate by slug — same role may exist in multiple workspaces
     const seenSlugs = new Set<string>();
     for (const list of allRoleLists) {

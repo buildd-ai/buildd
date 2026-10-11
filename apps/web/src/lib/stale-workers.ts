@@ -12,6 +12,7 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@/lib/interactive-detach';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
+import { kernelDeliveryById } from '@/lib/workflow/authority';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import { PARK_MAX_MS, PARK_MISSION_MAX_MS, notParkedScope } from '@/lib/worker-park';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -22,6 +23,8 @@ import {
   type AnswerDeliveryRecord,
   type ContinuationParentTask,
 } from '@/lib/answer-resume';
+import type { WaitingFor } from '@buildd/shared';
+import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -77,7 +80,7 @@ async function resolveStaleTask(
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { kind: true, pathManifest: true, outputRequirement: true, taskClass: true, status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true },
+    columns: { kind: true, pathManifest: true, outputRequirement: true, taskClass: true, status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true, deliveryId: true, deliveryRole: true },
   });
   // A visual-auditor mission task is settled only by its own evidence check
   // (workers/[id]/route.ts): the reaper never completes it from artifacts, and
@@ -89,6 +92,29 @@ async function resolveStaleTask(
     await resolveCompletedTask(taskId, workspaceId);
     return;
   }
+
+  // An attempt of a workflow-kernel delivery (docs/specs/workflow-state-kernel.md
+  // §9): the reaper never promotes its local commits to `completed`, and when it
+  // ends the task for good the kernel hears AttemptEnded(lost) and decides what
+  // is next. An infra requeue (back to pending) is not an attempt end.
+  const kernelDeliveryId = currentTask?.deliveryId
+    ? await kernelDeliveryById(currentTask.deliveryId).catch(() => null)
+    : null;
+  const kernelAttemptEnded = async () => {
+    if (!kernelDeliveryId || !currentTask) return;
+    const after = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true } });
+    if (after?.status !== 'failed') return;
+    // Lazy: the seam loads the effect handlers, which load half the app.
+    const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
+    await workflowAttemptEnded({
+      task: { id: taskId, workspaceId, deliveryId: currentTask.deliveryId ?? null, deliveryRole: currentTask.deliveryRole ?? null, context: currentTask.context },
+      workerId: staleWorker?.id ?? `reaper:${taskId}`,
+      status: 'lost',
+      localHeadSha: null,
+      commitCount: staleWorker?.commitCount ?? 0,
+      source: 'sweep:stale-workers',
+    }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${taskId}:`, err));
+  };
 
   // Reaper exemption: a task in condition_unmet with a pr_merged exit condition
   // is waiting for a webhook event — no in-flight worker to kill. Leave as pending
@@ -128,7 +154,8 @@ async function resolveStaleTask(
   if (currentTask?.category === 'review') {
     const ctx = (currentTask.context ?? {}) as Record<string, unknown>;
     const prNumber = ctx.prNumber as number | undefined;
-    const escalate = () => escalateReviewContractFailure({
+    // A kernel round re-queues itself (T27) instead of escalating at the first loss.
+    const escalate = () => kernelDeliveryId ? Promise.resolve() : escalateReviewContractFailure({
       taskId,
       repoFullName: String(ctx.repoFullName ?? ''),
       prNumber: Number(prNumber ?? 0),
@@ -206,6 +233,7 @@ async function resolveStaleTask(
         .where(eq(tasks.id, taskId));
     }
 
+    await kernelAttemptEnded();
     await resolveCompletedTask(taskId, workspaceId);
     return;
   }
@@ -227,7 +255,7 @@ async function resolveStaleTask(
   }
   // Reaper completion is evidence-backed: PR/artifact or positive commits.
   // Run the same predicate so future deliverable changes cannot bypass it.
-  const hasDeliverables = !!deliverables?.hasAny && !isMissionVisualAudit && !isSilentCompletion({
+  const hasDeliverables = !!deliverables?.hasAny && !isMissionVisualAudit && !kernelDeliveryId && !isSilentCompletion({
     status: 'completed', outputRequirement: currentTask?.outputRequirement,
     kind: currentTask?.kind, pathManifest: currentTask?.pathManifest,
     taskClass: currentTask?.taskClass,
@@ -365,6 +393,7 @@ async function resolveStaleTask(
     console.error(`[stale-workers] releaseAndNotify failed for task ${taskId}:`, e),
   );
 
+  await kernelAttemptEnded();
   await resolveCompletedTask(taskId, workspaceId);
 }
 
@@ -676,9 +705,6 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
   }
 
   if (staleWorkers.length > 0) {
-    const staleWorkerIds = staleWorkers.map(w => w.id);
-    const staleTaskIds = staleWorkers.map(w => w.taskId).filter(Boolean) as string[];
-
     // Book each reaped worker under the cause that actually applies. One UPDATE
     // per cause keeps this to at most three statements for the whole batch.
     const byCause = new Map<WorkerExitCause, { ids: string[]; error: string }>();
@@ -732,46 +758,67 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
     // any account and are skipped rather than charged to whoever is cleaning.
     await releaseConcurrencySeats(staleWorkers.map(w => w.accountId));
 
-    if (staleTaskIds.length > 0) {
-      // Fetch workspace IDs before updating, for dependency resolution
-      const staleTasks = await db.query.tasks.findMany({
-        where: inArray(tasks.id, staleTaskIds),
-        columns: { id: true, workspaceId: true },
-      });
-
-      // Only reset tasks that have NO other active workers (prevents duplicate claims)
-      const staleWorkerIds = staleWorkers.map(w => w.id);
-      for (const t of staleTasks) {
-        const otherActiveWorkers = await db.query.workers.findMany({
-          where: and(
-            eq(workers.taskId, t.id),
-            inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
-            not(inArray(workers.id, staleWorkerIds)),
-          ),
-          columns: { id: true },
-          limit: 1,
-        });
-
-        if (otherActiveWorkers.length === 0) {
-          const staleWorker = staleWorkers.find(w => w.taskId === t.id);
-          // Determine exit cause for this worker so reviewer tasks can distinguish
-          // infra failures (retry) from genuine timeouts (escalate)
-          let exitCauseForReview: WorkerExitCause | undefined;
-          if (staleWorker) {
-            const classification = classifyStaleExit(staleWorker as any);
-            exitCauseForReview = classification.exitCause;
-          }
-          await resolveStaleTask(t.id, t.workspaceId, staleWorker, exitCauseForReview);
-        } else {
-          await resolveCompletedTask(t.id, t.workspaceId);
-        }
-      }
-    }
+    await resolveTasksOfReapedWorkers(staleWorkers);
   }
 
   // 2. Fail active workers when their runner is offline — the one shared rule.
   const heartbeatOrphans = await failWorkersOfOfflineRunners({ accountIds: [accountId] });
   return { heartbeatOrphans };
+}
+
+type ReapedWorker = Parameters<typeof resolveStaleTask>[2] & {
+  taskId: string | null;
+  startedAt?: Date | string | null;
+  status?: string | null;
+};
+
+/**
+ * Settle the tasks of worker rows a sweep has just failed: requeue (with the
+ * infra backoff and caps in resolveStaleTask), complete on deliverables, or
+ * fail at the cap. A task that still has another live worker is left to it.
+ *
+ * Shared by the stale reaper and the lost-claim release (lib/lost-claim.ts),
+ * so a lost claim is resolved by exactly the rules a reaped one is.
+ */
+export async function resolveTasksOfReapedWorkers(
+  reaped: readonly ReapedWorker[],
+  exitCauseOverride?: WorkerExitCause,
+): Promise<void> {
+  const taskIds = reaped.map(w => w.taskId).filter(Boolean) as string[];
+  if (taskIds.length === 0) return;
+  // Fetch workspace IDs before updating, for dependency resolution
+  const staleTasks = await db.query.tasks.findMany({
+    where: inArray(tasks.id, taskIds),
+    columns: { id: true, workspaceId: true },
+  });
+
+  // Only reset tasks that have NO other active workers (prevents duplicate claims)
+  const reapedIds = reaped.map(w => w.id);
+  for (const t of staleTasks) {
+    const otherActiveWorkers = await db.query.workers.findMany({
+      where: and(
+        eq(workers.taskId, t.id),
+        inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
+        not(inArray(workers.id, reapedIds)),
+      ),
+      columns: { id: true },
+      limit: 1,
+    });
+
+    if (otherActiveWorkers.length === 0) {
+      const staleWorker = reaped.find(w => w.taskId === t.id);
+      // Determine exit cause for this worker so reviewer tasks can distinguish
+      // infra failures (retry) from genuine timeouts (escalate)
+      let exitCauseForReview: WorkerExitCause | undefined = exitCauseOverride;
+      if (staleWorker && !exitCauseForReview) {
+        const classification = classifyStaleExit(staleWorker as any);
+        exitCauseForReview = classification.exitCause;
+      }
+      await resolveStaleTask(t.id, t.workspaceId, staleWorker, exitCauseForReview);
+    } else {
+      await resolveCompletedTask(t.id, t.workspaceId);
+    }
+  }
 }
 
 /**
@@ -1010,7 +1057,7 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
       eq(workers.status, 'waiting_input'),
       lt(workers.updatedAt, missionCutoff),
     ),
-    columns: { id: true, taskId: true, accountId: true, waitingFor: true, updatedAt: true, branch: true, error: true },
+    columns: { id: true, taskId: true, accountId: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
     with: { task: { columns: { missionId: true } } },
   });
 
@@ -1056,9 +1103,10 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
     if (!originalTask) continue;
 
     // Build retry description with context about what was asked
-    const waitingFor = worker.waitingFor as { type?: string; prompt?: string; options?: string[] } | null;
+    const waitingFor = worker.waitingFor as Partial<WaitingFor> | null;
+    const optionLabels = waitingForOptionLabels(waitingFor?.options);
     const waitingContext = waitingFor?.prompt
-      ? `\n\n---\nPrevious attempt stalled waiting for input: "${waitingFor.prompt}"${waitingFor.options ? ` (options: ${waitingFor.options.join(', ')})` : ''}\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.`
+      ? `\n\n---\nPrevious attempt stalled waiting for input: "${waitingFor.prompt}"${optionLabels.length ? ` (options: ${optionLabels.join(', ')})` : ''}\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.`
       : '\n\n---\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.';
 
     const retryDescription = (originalTask.description || '') + waitingContext;
@@ -1071,6 +1119,28 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         updatedAt: new Date(),
       })
       .where(eq(tasks.id, originalTask.id));
+
+    // An attempt of a workflow-kernel delivery is not cloned here: a clone would
+    // run without the delivery link (its push would read as foreign) and the
+    // ledger row would stay `running`. The kernel hears AttemptEnded(lost) and
+    // decides whether to re-dispatch (docs/specs/workflow-state-kernel.md §9, §18.1).
+    const kernelDeliveryId = originalTask.deliveryId
+      ? await kernelDeliveryById(originalTask.deliveryId).catch(() => null)
+      : null;
+    if (kernelDeliveryId) {
+      const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
+      await workflowAttemptEnded({
+        task: { id: originalTask.id, workspaceId: originalTask.workspaceId, deliveryId: originalTask.deliveryId ?? null, deliveryRole: originalTask.deliveryRole ?? null, context: originalTask.context },
+        workerId: worker.id,
+        status: 'lost',
+        // What the worker reported: an unknown head with commits is not proof
+        // of a push, so unpushed owner work goes to AWAITING_PUSH (§9, AC-10).
+        localHeadSha: worker.lastCommitSha ?? null,
+        commitCount: worker.commitCount ?? 0,
+        source: 'sweep:waiting-input',
+      }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${originalTask.id}:`, err));
+      continue;
+    }
 
     // Create retry task with enriched context for branch continuity
     const existingCtx = (originalTask.context || {}) as Record<string, unknown>;

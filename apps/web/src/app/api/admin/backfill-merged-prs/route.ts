@@ -4,6 +4,7 @@ import { db } from '@buildd/core/db';
 import { sql, eq } from 'drizzle-orm';
 import { workers } from '@buildd/core/db/schema';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
+import { recordPrFact } from '@buildd/core/pr-facts';
 import { shouldMarkUnresolvable } from '@/lib/pr-freshness';
 
 /**
@@ -87,14 +88,9 @@ export async function POST(req: NextRequest) {
     const now = new Date();
     const terminal = shouldMarkUnresolvable({ failureCount, prOpenedAt, now });
     await db.update(workers)
-      .set({
-        prLastCheckedAt: now,
-        prCheckFailureCount: failureCount,
-        ...(terminal
-          ? { prLifecycleStatus: 'unresolvable' as const, prUnresolvableReason: reason, updatedAt: now }
-          : {}),
-      })
+      .set({ prLastCheckedAt: now, prCheckFailureCount: failureCount })
       .where(eq(workers.id, row.id));
+    if (terminal) await recordPrFact({ workerId: row.id }, { kind: 'unresolvable', reason });
     if (terminal) unresolvable++; else skipped++;
   };
 

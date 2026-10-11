@@ -64,7 +64,7 @@ mock.module('@buildd/core/db/schema', () => ({
   },
   workers: {
     costUsd: 'workers.costUsd', workspaceId: 'workers.workspaceId',
-    createdAt: 'workers.createdAt', taskId: 'workers.taskId',
+    createdAt: 'workers.createdAt', taskId: 'workers.taskId', costBasis: 'workers.costBasis',
   },
   tasks: { id: 'tasks.id', missionId: 'tasks.missionId' },
   teams: {
@@ -282,4 +282,27 @@ it('does not truncate sibling registrations before grouping seats', async () => 
   mockAccountsFindMany.mockClear();
   await getBudgetForecast(TEAM_ID, []);
   expect(mockAccountsFindMany.mock.calls[0][0]).not.toHaveProperty('limit');
+});
+
+// docs/specs/real-and-virtual-cost.md "Spend consequences": the burn rate
+// projects the credit pool, which real usage never draws on, and the mission
+// block guards money, which virtual usage never counts toward.
+describe('getBudgetForecast — cost basis filters', () => {
+  const sqlNeedle = (where: any, value: string): boolean =>
+    JSON.stringify(where).includes('workers.costBasis') && JSON.stringify(where).includes(`"${value}"`);
+
+  it('leaves real usage out of the pool burn rate', async () => {
+    mockFromChain.where.mockClear();
+    mockMissionsFindMany.mockImplementation(() => Promise.resolve([]));
+    await getBudgetForecast(TEAM_ID, [WS_ID]);
+    const burnWhere = mockFromChain.where.mock.calls.map((c: any[]) => c[0]).find((w: any) => JSON.stringify(w).includes('workers.costUsd'));
+    expect(sqlNeedle(burnWhere, 'real')).toBe(true);
+  });
+
+  it('leaves virtual usage out of mission spend', async () => {
+    mockInnerJoinChain.where.mockClear();
+    mockMissionsFindMany.mockImplementation(() => Promise.resolve([makeMission({})]));
+    await getBudgetForecast(TEAM_ID, [WS_ID]);
+    expect(sqlNeedle(mockInnerJoinChain.where.mock.calls[0][0], 'virtual')).toBe(true);
+  });
 });

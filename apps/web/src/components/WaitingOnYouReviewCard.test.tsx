@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { WaitingOnYouReviewCard } from './WaitingOnYouReviewCard';
+import { WaitingOnYouReviewCard, overrideConfirmCopy } from './WaitingOnYouReviewCard';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
 function item(partial: Partial<ActionQueueItem> = {}): ActionQueueItem {
@@ -37,23 +37,25 @@ describe('WaitingOnYouReviewCard mission context', () => {
 });
 
 describe('WaitingOnYouReviewCard recommendation', () => {
-  it('shows what the reviewer said to do next', () => {
+  it('leads with what the reviewer said to do next and folds the reason', () => {
     const html = renderToStaticMarkup(
       <WaitingOnYouReviewCard
         item={item({
-          escalationReason: 'Touches the token refresh path',
+          escalationReason: 'Touches the token refresh path. It also renames a column the runner reads.',
           recommendation: 'Confirm the refresh lock by hand, then merge.',
         })}
       />,
     );
-    expect(html).toContain('Agent recommends:');
     expect(html).toContain('Confirm the refresh lock by hand, then merge.');
+    expect(html).toContain('Details');
+    expect(html).not.toContain('renames a column');
   });
 
-  it('stays quiet when there is no recommendation', () => {
+  it('without a recommendation, the reason itself is the decision line', () => {
     const html = renderToStaticMarkup(
       <WaitingOnYouReviewCard item={item({ escalationReason: 'Touches auth' })} />,
     );
+    expect(html).toContain('Touches auth');
     expect(html).not.toContain('Agent recommends');
     expect(html).not.toContain('left no handoff recommendation');
   });
@@ -69,7 +71,7 @@ describe('WaitingOnYouReviewCard action hierarchy', () => {
     expect(html).toContain('>Apply<');
     expect(html).toContain('Apply with corrections');
     expect(html).toContain('Merge anyway');
-    // Apply is the filled/primary button (bg-accent); Merge anyway is a bare text link.
+    // Apply is the filled/primary button (btn-ink, the L3 charcoal); Merge anyway is a bare text link.
     const applyIdx = html.indexOf('>Apply<');
     const mergeAnywayIdx = html.indexOf('Merge anyway');
     expect(applyIdx).toBeGreaterThan(-1);
@@ -100,7 +102,7 @@ describe('WaitingOnYouReviewCard — CTA set derives from server state, per revi
       apply: html.includes('>Apply<'),
       applyWithCorrections: html.includes('Apply with corrections'),
       mergeAnywayLink: html.includes('Merge anyway'),
-      mergePrimary: /class="[^"]*bg-accent[^"]*"[^>]*>\s*Merge\s*</.test(html),
+      mergePrimary: /class="[^"]*btn-ink[^"]*"[^>]*>\s*Merge\s*</.test(html),
       reReview: html.includes('Re-review'),
     };
   }
@@ -225,7 +227,7 @@ describe('WaitingOnYouReviewCard — escalation with a concrete defect but no re
       dispatchFix: html.includes('>Dispatch fix<'),
       dispatchFixWithCorrections: html.includes('Dispatch fix with corrections'),
       mergeAnywayLink: html.includes('Merge anyway'),
-      mergePrimary: /class="[^"]*bg-accent[^"]*"[^>]*>\s*Merge\s*</.test(html),
+      mergePrimary: /class="[^"]*btn-ink[^"]*"[^>]*>\s*Merge\s*</.test(html),
       reReview: html.includes('>Re-review<'),
     };
   }
@@ -456,5 +458,29 @@ describe('WaitingOnYouReviewCard mission-PR merge gate', () => {
     );
     expect(html).not.toContain('cursor-not-allowed');
     expect(html).toContain('>Merge<');
+  });
+});
+
+describe('WaitingOnYouReviewCard — a kernel reviewer escalation is a verdict', () => {
+  const kernelEscalated = item({
+    escalationReason: 'The reviewer escalated this PR · Changes the token scope check; a person should confirm the new boundary.',
+    hasEscalationNote: true,
+    reviewerEscalated: true,
+    delivery: { owner: 'human', state: 'ESCALATED', headline: 'The reviewer escalated this PR', detail: 'Changes the token scope check; a person should confirm the new boundary.', cta: null, compositionVerified: false },
+  });
+
+  it('offers the escalation actions, not the no-verdict Merge + Re-review set', () => {
+    const html = renderToStaticMarkup(<WaitingOnYouReviewCard item={kernelEscalated} />);
+    expect(html).toContain('>Dispatch fix<');
+    expect(html).toContain('Merge anyway');
+    expect(html).not.toContain('>Re-review<');
+  });
+
+  it("asks to merge past the reviewer's escalation, never 'without a reviewer verdict'", () => {
+    expect(overrideConfirmCopy(kernelEscalated)).toBe("Merge past the reviewer's escalation?");
+    expect(overrideConfirmCopy(item({}))).toBe('Merge without a reviewer verdict?');
+    expect(overrideConfirmCopy(item({ verdictSummary: 'LGTM' }))).toBe('Merge this approved PR?');
+    expect(overrideConfirmCopy(item({ recommendation: 'Guard it.' }))).toBe('Merge despite escalation?');
+    expect(overrideConfirmCopy(item({ hasEscalationNote: true, escalationReason: 'No migration' }))).toBe('Merge despite the reported defect?');
   });
 });

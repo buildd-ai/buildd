@@ -1,0 +1,1 @@
+ALTER TABLE "workers" ADD COLUMN "pause_requested_at" timestamp with time zone;

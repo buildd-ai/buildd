@@ -4,10 +4,11 @@ import { useState } from 'react';
 import { TOKEN_SCOPE_DEFINITIONS } from '@buildd/core/token-scopes';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import DeleteAccountButton from '../accounts/DeleteAccountButton';
+import DeleteAccountButton from './DeleteAccountButton';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import SettingsSection from './SettingsSection';
+import PrimaryAction from '@/components/ui/PrimaryAction';
 import { StatusChip } from './_components/ConnectionRow';
 import { groupRunnerTokens } from './_lib/runner-token-groups';
 import { shortAgo } from '@/lib/mission-list-card';
@@ -38,8 +39,16 @@ interface Account {
   lastSeenAt?: string | null;
   /** Trusted as a long-lived host runner (team credential access). */
   hostRunner?: boolean;
-  /** The viewer is an owner/admin of this token's team, so may change hostRunner. */
+  /**
+   * The viewer holds manage_team_keys in this token's team, so may change
+   * hostRunner and the worker limit, and regenerate or delete the token.
+   */
   canManageHostRunner?: boolean;
+  /**
+   * The viewer may delete this token: they hold manage_team_keys, or they made
+   * it (DELETE /api/accounts/[id]). Omitted = canManageHostRunner.
+   */
+  canDelete?: boolean;
 }
 
 /** "seen 4m ago", "seen now", or nothing when no runner has reported lately. */
@@ -54,6 +63,9 @@ interface Workspace {
   name: string;
   repo: string | null;
 }
+
+/** Where a new runner token is made: a sheet over Runners. */
+export const NEW_TOKEN_HREF = '/app/settings/runners?new=1';
 
 export default function RunnerTokensSection({ accounts, workspaces = [] }: { accounts: Account[]; workspaces?: Workspace[] }) {
   const router = useRouter();
@@ -104,18 +116,19 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
     <SettingsSection
       title="Runner tokens"
       bare
-      action={<Link href="/app/accounts/new" className="btn btn-primary">+ New token</Link>}
+      id="runner-tokens"
+      // One primary: with tokens the header link is a plain button; empty, the
+      // inline "Create a runner token" below is the primary and this is hidden.
+      action={accounts.length > 0 ? <Link href={NEW_TOKEN_HREF} scroll={false} className="btn" data-testid="new-token">+ New token</Link> : undefined}
     >
       <p className="text-xs text-text-secondary mb-3">
-        For runners, CI and analytics clients. Model credentials are in Connections.
+        For runners, CI and analytics clients. Model sign-ins are on Models.
       </p>
 
       {accounts.length === 0 ? (
-        <div className="card p-6 text-center">
-          <p className="text-text-muted text-sm mb-3">No runner tokens</p>
-          <Link href="/app/accounts/new" className="btn btn-primary">
-            Create a runner token
-          </Link>
+        <div className="flex flex-wrap items-center gap-3" data-testid="runner-tokens-empty">
+          <p className="text-sm text-text-muted">No runner tokens.</p>
+          <PrimaryAction href={NEW_TOKEN_HREF}>Create a runner token</PrimaryAction>
         </div>
       ) : (
         <div className="card divide-y divide-border-default p-0">
@@ -132,11 +145,11 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                 >
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                      <span className="font-mono text-[13px] font-semibold text-text-primary truncate">{group.team}</span>
+                      <span className="text-sm font-semibold text-text-primary truncate">{group.team}</span>
                       {unlinked > 0 && <StatusChip tone="warn">{unlinked} unlinked</StatusChip>}
                     </span>
-                    <span className="mt-1 block truncate font-mono text-[11px] text-text-muted">
-                      {group.tokens.length} token{group.tokens.length === 1 ? '' : 's'}{seen ? ` · ${seen}` : ''}
+                    <span className="mt-1 block truncate text-meta text-text-muted">
+                      <span className="font-mono">{group.tokens.length}</span> token{group.tokens.length === 1 ? '' : 's'}{seen ? ` · ${seen}` : ''}
                     </span>
                   </span>
                   <span aria-hidden="true" className={`shrink-0 font-mono text-[12px] text-text-muted transition-transform ${teamOpen ? 'rotate-180' : ''}`}>▾</span>
@@ -146,28 +159,31 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                     {group.tokens.map((account) => {
                       const isExpanded = expandedId === account.id;
                       const hasWarning = account.accountWorkspaces && account.accountWorkspaces.length === 0;
+                      const canAdmin = account.canManageHostRunner === true;
+                      const canDelete = (account.canDelete ?? canAdmin) === true;
 
                       return (
                         <div key={account.id}>
                           {/* Compact row */}
                           <button
                             onClick={() => setExpandedId(isExpanded ? null : account.id)}
+                            aria-expanded={isExpanded}
                             className="w-full flex min-h-12 items-center gap-3 py-2.5 pl-6 pr-4 hover:bg-surface-3 transition-colors text-left"
                           >
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
-                                <span className="font-mono text-[13px] font-medium text-text-primary truncate">{account.name}</span>
+                                <span className="text-sm font-medium text-text-primary truncate">{account.name}</span>
                                 {hasWarning && (
                                   <span className="w-2 h-2 bg-status-warning flex-shrink-0" title="No workspace linked" />
                                 )}
                               </div>
                               {account.expiresAt && (
-                                <div className={`mt-0.5 font-mono text-[11px] ${new Date(account.expiresAt).getTime() <= Date.now() ? 'text-status-warning' : 'text-text-muted'}`}>
+                                <div className={`mt-0.5 text-meta ${new Date(account.expiresAt).getTime() <= Date.now() ? 'text-status-warning' : 'text-text-muted'}`}>
                                   {new Date(account.expiresAt).getTime() <= Date.now() ? 'Expired' : 'Expires'} {new Date(account.expiresAt).toLocaleDateString()}
                                 </div>
                               )}
                               {seenLabel(account.lastSeenAt) && (
-                                <div data-testid="token-last-seen" className="mt-0.5 font-mono text-[11px] text-text-muted">{seenLabel(account.lastSeenAt)}</div>
+                                <div data-testid="token-last-seen" className="mt-0.5 text-meta text-text-muted">{seenLabel(account.lastSeenAt)}</div>
                               )}
                             </div>
                             <code className="text-xs text-text-muted font-mono flex-shrink-0">
@@ -191,7 +207,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                     accountId={account.id}
                                     value={maxConcurrentWorkers[account.id] ?? account.maxConcurrentWorkers}
                                     onUpdate={(newValue) => setMaxConcurrentWorkers((cur) => ({ ...cur, [account.id]: newValue }))}
-                                    canEdit={account.canManageHostRunner === true}
+                                    canEdit={canAdmin}
                                   />
                                   {account.authType === 'api' && (
                                     <><span>·</span><span>Cost: ${account.totalCost}</span></>
@@ -218,18 +234,24 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                 <HostRunnerToggle
                                   accountId={account.id}
                                   hostRunner={account.hostRunner === true}
-                                  canManage={account.canManageHostRunner === true}
+                                  canManage={canAdmin}
                                 />
 
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <button
-                                    onClick={() => { setRegenerateError(null); setRegenerateTarget(account); }}
-                                    className="btn"
-                                  >
-                                    Regenerate key
-                                  </button>
-                                  <DeleteAccountButton accountId={account.id} accountName={account.name} />
-                                </div>
+                                {(canAdmin || canDelete) && (
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    {canAdmin && (
+                                      <button
+                                        onClick={() => { setRegenerateError(null); setRegenerateTarget(account); }}
+                                        className="btn"
+                                      >
+                                        Regenerate key
+                                      </button>
+                                    )}
+                                    {canDelete && (
+                                      <DeleteAccountButton accountId={account.id} accountName={account.name} />
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             </div>
                           )}

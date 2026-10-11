@@ -15,6 +15,8 @@ const mockConnectorsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockConnectorSharesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockConnectorWorkspacesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
+const mockPoliciesFindMany = mock(() => Promise.resolve([] as any[]));
+const mockLoadTeamCatalog = mock((_teamId: string) => Promise.resolve([] as any[]));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -24,9 +26,11 @@ mock.module('@buildd/core/db', () => ({
       connectorShares: { findMany: mockConnectorSharesFindMany },
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
       secrets: { findMany: mockSecretsFindMany },
+      connectorCatalogTeamPolicies: { findMany: mockPoliciesFindMany },
     },
   },
 }));
+mock.module('@/lib/connector-catalog-store', () => ({ loadTeamCatalog: mockLoadTeamCatalog }));
 
 import { listMountedConnectors } from './connector-queries';
 
@@ -55,6 +59,24 @@ describe('listMountedConnectors', () => {
     mockConnectorSharesFindMany.mockResolvedValue([]);
     mockConnectorWorkspacesFindMany.mockResolvedValue([]);
     mockSecretsFindMany.mockResolvedValue([]);
+    mockPoliciesFindMany.mockReset();
+    mockPoliciesFindMany.mockResolvedValue([]);
+    mockLoadTeamCatalog.mockReset();
+    mockLoadTeamCatalog.mockResolvedValue([]);
+  });
+
+  // Blocking keeps the connector and its credential, so without this the
+  // runtime would keep reporting it as usable.
+  it('returns blocked for a healthy connector whose catalog entry the team blocked', async () => {
+    mockConnectorsFindMany.mockResolvedValue([makeConnector(CONNECTOR_OK, { url: 'https://mcp.axiom.co/mcp' })]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([makeCwRow(CONNECTOR_OK, true)]);
+    mockSecretsFindMany.mockResolvedValue([makeSecret(CONNECTOR_OK)]);
+    mockPoliciesFindMany.mockResolvedValue([{ teamId: TEAM_ID }]);
+    mockLoadTeamCatalog.mockResolvedValue([{ slug: 'axiom', name: 'Axiom', url: 'https://mcp.axiom.co/mcp', policy: 'blocked' }]);
+
+    const result = await listMountedConnectors(WORKSPACE_ID);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.connectors[0]).toMatchObject({ id: CONNECTOR_OK, status: 'blocked' });
   });
 
   it('returns ok for a mounted enabled connector with a healthy credential', async () => {

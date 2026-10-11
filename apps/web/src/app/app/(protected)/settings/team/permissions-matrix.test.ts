@@ -32,6 +32,12 @@ describe('buildMatrix', () => {
     expect(names).toContain('manage_connectors');
   });
 
+  it('hides chat retro grants: chat retros are switched on from the admin app, so no team page has a control for them', () => {
+    const names = buildMatrix(api()).flatMap(g => g.rows.map(r => r.name));
+    expect(names).not.toContain('manage_chat_retro');
+    expect(names).not.toContain('activate_chat_retro_dogfood');
+  });
+
   it('marks admin and member as held per row', () => {
     const row = buildMatrix(api({ manage_connectors: ['owner', 'admin', 'member'] }))
       .flatMap(g => g.rows).find(r => r.name === 'manage_connectors')!;

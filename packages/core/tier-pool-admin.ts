@@ -366,6 +366,95 @@ export async function removeChallenger(args: {
   return row ? Number(row.allocation_version) : null;
 }
 
+/**
+ * Re-point a pool's incumbent arm at the registry's current primary.
+ *
+ * The registry row is the authority for what the primary is (the claim route
+ * and chat both serve it); the incumbent arm is a mirror that exists so the
+ * pool has a stable arm id for allocation and assignments. This keeps the
+ * mirror honest after the registry changes. The arm keeps its id, so the
+ * admin's weights, the allocation and every earlier assignment still point at
+ * it. A challenger that is already the new primary is removed in the same
+ * call (the live-arm unique key allows one arm per route and model) and its
+ * share folds into the incumbent. A dial pool restarts in `learning`: what it
+ * learned was about the old primary. One CAS statement per write, audited as an
+ * `allocation` change with `evidence.reason = 'primary_changed'`.
+ *
+ * Returns 'none' when there is no pool or it already matches, 'stale' when
+ * concurrent admin writes outlasted the retries.
+ */
+export async function syncIncumbentToRegistry(args: {
+  teamId: string;
+  tier: string;
+  surface: PoolSurface;
+  primary: { route: ArmRoute; model: string };
+  actorUserId: string | null;
+}): Promise<'none' | 'synced' | 'stale'> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const loaded = await findTeamPool(args.teamId, args.tier, args.surface);
+    if (!loaded) return 'none';
+    const { pool, arms } = loaded;
+    const incumbent = arms.find(a => a.role === 'incumbent' && a.status !== 'removed');
+    if (!incumbent) return 'none';
+    if (incumbent.route === args.primary.route && incumbent.model === args.primary.model) return 'none';
+
+    const duplicate = arms.find(a => a.role === 'challenger' && a.route === args.primary.route && a.model === args.primary.model);
+    if (duplicate) {
+      // Folds its share into the incumbent; the retry then re-points the incumbent.
+      const alloc = { ...(pool.allocation ?? {}) } as Allocation;
+      const share = alloc[duplicate.id] ?? 0;
+      delete alloc[duplicate.id];
+      alloc[incumbent.id] = Math.round(((alloc[incumbent.id] ?? 0) + share) * 10_000) / 10_000;
+      await removeChallenger({
+        teamId: args.teamId, poolId: pool.id, armId: duplicate.id, expectedVersion: pool.allocationVersion,
+        allocation: alloc, actorUserId: args.actorUserId,
+      });
+      continue;
+    }
+
+    let allocation = (pool.allocation ?? {}) as Allocation;
+    let dialStateJson: string | null = null;
+    const state = pool.dialState?.state;
+    if (pool.mode === 'dial' && state && state !== 'always') {
+      dialStateJson = JSON.stringify({
+        ...pool.dialState, state: 'learning', since: new Date().toISOString(), alternateArmId: null,
+      });
+      allocation = Object.fromEntries(arms.filter(a => a.status === 'active').map(a => [a.id, a.id === incumbent.id ? 1 : 0]));
+    }
+    const result = await db.execute(sql`
+      WITH prev AS (
+        SELECT allocation, dial_state, allocation_version FROM tier_pools
+        WHERE id = ${pool.id} AND team_id = ${args.teamId}
+      ), u AS (
+        UPDATE tier_pools
+        SET allocation = ${JSON.stringify(allocation)}::jsonb,
+            dial_state = COALESCE(${dialStateJson}::jsonb, dial_state),
+            allocation_version = allocation_version + 1, updated_at = now()
+        WHERE id = ${pool.id} AND team_id = ${args.teamId} AND allocation_version = ${pool.allocationVersion}
+        RETURNING allocation, dial_state, allocation_version
+      ), a AS (
+        UPDATE tier_pool_arms SET route = ${args.primary.route}::text, model = ${args.primary.model}::text
+        WHERE id = ${incumbent.id} AND pool_id = ${pool.id} AND role = 'incumbent' AND status <> 'removed'
+          AND EXISTS (SELECT 1 FROM u)
+        RETURNING id
+      ), log AS (
+        INSERT INTO tier_pool_changes (pool_id, kind, before, after, evidence, actor_user_id)
+        SELECT ${pool.id}::uuid, 'allocation',
+          jsonb_build_object('allocation', prev.allocation, 'dialState', prev.dial_state, 'version', prev.allocation_version,
+            'route', ${incumbent.route}::text, 'model', ${incumbent.model}::text),
+          jsonb_build_object('allocation', u.allocation, 'dialState', u.dial_state, 'version', u.allocation_version,
+            'route', ${args.primary.route}::text, 'model', ${args.primary.model}::text),
+          ${JSON.stringify({ reason: 'primary_changed', armId: incumbent.id })}::jsonb,
+          ${args.actorUserId}::uuid
+        FROM u, prev, a
+      )
+      SELECT allocation_version FROM u
+    `);
+    if ((result.rows as unknown[]).length > 0) return 'synced';
+  }
+  return 'stale';
+}
+
 // ── Stats ───────────────────────────────────────────────────────────────────
 
 /** Default look-back for the tier screen's numbers. */

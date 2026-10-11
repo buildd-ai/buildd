@@ -43,6 +43,14 @@ mock.module('@/lib/pr-re-review', () => ({ resolveReReviewPlan: mockResolveReRev
 const mockCarryForward = mock(async (_p: any) => ({ carried: false, reason: 'PR diff changed' }));
 mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForward }));
 
+// Workflow kernel (lib/workflow/seam.ts): a PR it owns is re-reviewed through
+// T5. Default: not a kernel PR, so every legacy case runs unchanged.
+const mockRequestKernelReview = mock(async (_p: any): Promise<any> => ({ handled: false }));
+mock.module('@/lib/workflow/seam', () => ({ requestReview: mockRequestKernelReview }));
+mock.module('@/lib/workflow/github-facts', () => ({
+  workspaceRepo: async () => ({ installationId: 999, repoFullName: 'org/repo', gitConfig: null }),
+}));
+
 const WORKSPACES_TABLE = { __name: 'workspaces' };
 const MISSIONS_TABLE = { __name: 'missions' };
 
@@ -120,6 +128,48 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
     mockSupersedeAncestorEscalations.mockReset();
     mockResolveReReviewPlan.mockReset();
     mockResolveReReviewPlan.mockResolvedValue({ kind: 'full' as const });
+    mockRequestKernelReview.mockReset();
+    mockRequestKernelReview.mockResolvedValue({ handled: false });
+  });
+
+  describe('workflow kernel PR', () => {
+    const current = { state: 'FIXING', version: 6, head: 'h1', round: 1 };
+
+    it('is T5 on the live head: a forced human request, never the runner-reported lastCommitSha', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+      // No recorded head at all: the legacy path would 422; the kernel reads GitHub.
+      mockResolveOpenWorkerForUser.mockResolvedValue({ ...openWorker, lastCommitSha: null });
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't', deliveryId: 'd', version: 7, decision: {} } });
+      const [req, ctx] = makeRequest();
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, dispatched: true, kernel: true });
+      expect(mockRequestKernelReview).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'ws-1', repoFullName: 'org/repo', prNumber: 42, installationId: 999, forced: true, actor: 'human:u-1',
+      }));
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
+    });
+
+    it('a round already in flight is the existing review, not a second one', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+      mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current } });
+      const [req, ctx] = makeRequest();
+      expect(await (await POST(req, ctx)).json()).toEqual({ ok: true, alreadyRequested: true, kernel: true });
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('a request the transition table refuses (e.g. a fix is running) is a 409 carrying the current view', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+      mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'state_not_allowed', current } });
+      const [req, ctx] = makeRequest();
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'state_not_allowed', current, kernel: true });
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
   });
 
   it('returns 401 when unauthenticated', async () => {

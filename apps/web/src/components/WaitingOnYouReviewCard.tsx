@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import Spinner from './Spinner';
-import { AgentRecommendation } from './AgentRecommendation';
+import { ReviewDecision } from './ReviewDecision';
+import { reviewDecisionLine } from '@/lib/attention-line';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { actionCardTaskLink } from '@/lib/action-card-context';
@@ -72,6 +73,31 @@ type CardState =
  * server decides delta-vs-full from the stored verdict, so the button never
  * needs to know which one it triggers.
  */
+function reviewCardVerdict(item: ActionQueueItem) {
+  const hasRecommendation = Boolean(item.recommendation);
+  // An open escalation note exists but carries no structured recommendation —
+  // still dispatchable off its free-text reason. A kernel-owned delivery the
+  // reviewer escalated arrives here with hasEscalationNote set by
+  // buildActionQueue (item.reviewerEscalated). Excluded once retries are
+  // exhausted for a conflict (deadZoneExhausted), which has its own dedicated
+  // CTA set further down and is never itself a reviewer note.
+  const canDispatchFix = !hasRecommendation && Boolean(item.hasEscalationNote) && !item.deadZoneExhausted;
+  const canApply = hasRecommendation || canDispatchFix;
+  const isApproved = !canApply && Boolean(item.verdictSummary);
+  const noVerdict = !canApply && !item.verdictSummary;
+  return { hasRecommendation, canDispatchFix, canApply, isApproved, noVerdict };
+}
+
+/** The Merge-override confirm line: it must agree with the verdict the card shows above it. */
+export function overrideConfirmCopy(item: ActionQueueItem): string {
+  const v = reviewCardVerdict(item);
+  if (v.hasRecommendation) return 'Merge despite escalation?';
+  if (item.reviewerEscalated && v.canDispatchFix) return "Merge past the reviewer's escalation?";
+  if (v.canDispatchFix) return 'Merge despite the reported defect?';
+  if (v.isApproved) return 'Merge this approved PR?';
+  return 'Merge without a reviewer verdict?';
+}
+
 export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   const [state, setState] = useState<CardState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
@@ -98,15 +124,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   }, [item.missionMergeBlockedReason]);
 
   const missionMergeBlocked = Boolean(item.missionMergeBlockedReason);
-  const hasRecommendation = Boolean(item.recommendation);
-  // An open escalation note exists but carries no structured recommendation —
-  // still dispatchable off its free-text reason. Excluded once retries are
-  // exhausted for a conflict (deadZoneExhausted), which has its own dedicated
-  // CTA set further down and is never itself a reviewer note.
-  const canDispatchFix = !hasRecommendation && Boolean(item.hasEscalationNote) && !item.deadZoneExhausted;
-  const canApply = hasRecommendation || canDispatchFix;
-  const isApproved = !canApply && Boolean(item.verdictSummary);
-  const noVerdict = !canApply && !item.verdictSummary;
+  const { hasRecommendation, canApply, isApproved, noVerdict } = reviewCardVerdict(item);
   // A terminal verdict exists (approve or escalate — both reach this card) AND
   // the PR's head has moved past the SHA it was made against: there is new
   // work the verdict never saw. Re-review then means a DELTA review against
@@ -231,16 +249,16 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   };
 
   return (
-    <div className="border-l-2 border-status-error bg-status-error/5 px-4 py-3">
+    <div data-level="3" className="card-decision px-4 py-4">
       {/* Header row: chip label + timestamp */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="text-[11px] font-mono font-medium text-status-error tracking-wide uppercase">
+            <span className="text-title font-semibold text-status-warning">
               Review
             </span>
             {item.waitingMinutes != null && item.waitingMinutes > 0 && (
-              <span className="text-[11px] text-text-muted">
+              <span className="text-meta text-text-muted">
                 {item.waitingMinutes < 60
                   ? `${item.waitingMinutes}m`
                   : `${Math.floor(item.waitingMinutes / 60)}h`}
@@ -254,19 +272,22 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
       {item.taskId ? (
         <Link
           href={actionCardTaskLink(item)}
-          className="text-[13px] font-medium text-text-primary truncate hover:underline block mt-0.5"
+          className="text-body font-medium text-text-primary truncate hover:underline block mt-0.5"
         >
           {item.taskTitle}
         </Link>
       ) : (
-        <div className="text-[13px] font-medium text-text-primary truncate mt-0.5">{item.taskTitle}</div>
+        <div className="text-body font-medium text-text-primary truncate mt-0.5">{item.taskTitle}</div>
       )}
 
       <ActionCardContextLine item={item} className="mt-0.5" />
-      {item.escalationReason && (
-        <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">{item.escalationReason}</p>
+      {(item.escalationReason || item.recommendation) && (
+        <ReviewDecision
+          decision={reviewDecisionLine({ recommendation: item.recommendation, reason: item.escalationReason ?? '' })}
+          detail={item.escalationReason}
+          blockers={[]}
+        />
       )}
-      <AgentRecommendation recommendation={item.recommendation} />
 
       {item.prNumber != null && (
         <>
@@ -278,11 +299,11 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
               server-side on every render (see EscalationRawItem doc) — once the
               blocking work lands, this block simply stops rendering. */}
           {state === 'idle' && missionMergeBlocked && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
-              <p className="text-[11px] text-status-error break-words">{item.missionMergeBlockedReason}</p>
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
+              <p className="text-meta text-status-error break-words">{item.missionMergeBlockedReason}</p>
               <span
                 title={item.missionMergeBlockedReason ?? undefined}
-                className="mt-1.5 inline-flex items-center gap-1 text-[12px] font-medium text-text-muted cursor-not-allowed opacity-60 px-2.5 py-1 border border-border-default rounded"
+                className="min-h-11 md:min-h-0 mt-1.5 inline-flex items-center gap-1 text-meta font-medium text-text-muted cursor-not-allowed opacity-60 px-2.5 py-1 border border-border-default rounded"
               >
                 Merge
               </span>
@@ -290,17 +311,17 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'idle' && !missionMergeBlocked && canApply && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={() => handleApply(undefined)}
-                  className="inline-flex items-center gap-1 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-1 rounded"
+                  className="min-h-11 md:min-h-0 inline-flex items-center gap-1 text-meta font-medium btn-ink border transition-colors px-2.5 py-1 rounded"
                 >
                   {hasRecommendation ? 'Apply' : 'Dispatch fix'}
                 </button>
                 <button
                   onClick={() => setState('corrections_open')}
-                  className="text-[12px] font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
                 >
                   {hasRecommendation ? 'Apply with corrections' : 'Dispatch fix with corrections'}
                 </button>
@@ -308,14 +329,14 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
               <div className="mt-1.5 flex items-center gap-3 flex-wrap">
                 <button
                   onClick={() => setState('confirming_override')}
-                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
                 >
                   Merge anyway
                 </button>
                 {canReReviewSinceApproval && (
                   <button
                     onClick={handleReReview}
-                    className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                    className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
                   >
                     Re-review changes since approval
                   </button>
@@ -331,18 +352,18 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
               task exists) also gets Re-review, since nothing re-dispatches on
               its own. */}
           {state === 'idle' && !missionMergeBlocked && !canApply && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={() => setState('confirming_override')}
-                  className="inline-flex items-center gap-1 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-1 rounded"
+                  className="min-h-11 md:min-h-0 inline-flex items-center gap-1 text-meta font-medium btn-ink border transition-colors px-2.5 py-1 rounded"
                 >
                   Merge
                 </button>
                 {noVerdict && (
                   <button
                     onClick={handleReReview}
-                    className="text-[12px] font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
+                    className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
                   >
                     Re-review
                   </button>
@@ -350,7 +371,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                 {isApproved && canReReviewSinceApproval && (
                   <button
                     onClick={handleReReview}
-                    className="text-[12px] font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
+                    className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
                   >
                     Re-review changes since approval
                   </button>
@@ -360,7 +381,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'corrections_open' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <textarea
                 autoFocus
                 value={correctionsText}
@@ -370,19 +391,19 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                     ? "What should the agent do instead? It also gets the reviewer's recommendation."
                     : 'What should the agent do? It also gets the reported defect.'
                 }
-                className="w-full text-[12px] text-text-primary bg-surface-primary border border-border-default rounded p-2 min-h-[72px] resize-y"
+                className="w-full text-meta text-text-primary bg-surface-primary border border-border-default rounded p-2 min-h-[72px] resize-y"
               />
               <div className="flex items-center gap-2 mt-1.5">
                 <button
                   onClick={() => { setCorrectionsText(''); setState('idle'); }}
-                  className="text-[12px] font-medium text-text-muted hover:text-text-secondary transition-colors px-2 py-0.5 border border-border-default rounded"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-text-muted hover:text-text-secondary transition-colors px-2 py-0.5 border border-border-default rounded"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={() => handleApply(correctionsText.trim() || undefined)}
                   disabled={correctionsText.trim().length === 0}
-                  className="text-[12px] font-medium text-white bg-accent hover:bg-accent/90 disabled:opacity-50 transition-colors px-2.5 py-0.5 rounded"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium btn-ink border disabled:opacity-50 transition-colors px-2.5 py-0.5 rounded"
                 >
                   {hasRecommendation ? 'Apply with corrections' : 'Dispatch fix with corrections'}
                 </button>
@@ -391,22 +412,22 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'applying' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex items-center gap-1.5">
               <Spinner size="xs" className="text-status-success" aria-label="Applying" />
-              <span className="text-[12px] text-text-muted">Applying…</span>
+              <span className="text-meta text-text-muted">Applying…</span>
             </div>
           )}
 
           {state === 'applied' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
-              <div className="flex items-center gap-1.5 text-[12px] font-medium text-status-success">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
+              <div className="flex items-center gap-1.5 text-meta font-medium text-status-success">
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path d="M20 6L9 17l-5-5" />
                 </svg>
                 Fix task dispatched
               </div>
               {appliedTaskId && (
-                <Link href={actionCardTaskLink(item, { taskId: appliedTaskId, page: true })} className="text-[12px] font-medium text-accent-text hover:underline">
+                <Link href={actionCardTaskLink(item, { taskId: appliedTaskId, page: true })} className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-accent-text hover:underline">
                   View task
                 </Link>
               )}
@@ -414,18 +435,18 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'apply_error' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex flex-wrap items-center justify-between gap-2">
+              <span className="text-meta text-status-error min-w-0 flex-1 basis-56">{errorMsg}</span>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <button
                   onClick={() => handleApply(correctionsText.trim() || undefined)}
-                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
                 >
                   Retry
                 </button>
                 <button
                   onClick={() => setState('idle')}
-                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
                 >
                   Dismiss
                 </button>
@@ -434,26 +455,20 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'confirming_override' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-text-secondary min-w-0">
-                {hasRecommendation
-                  ? 'Merge despite escalation?'
-                  : canDispatchFix
-                    ? 'Merge despite the reported defect?'
-                    : isApproved
-                      ? 'Merge this approved PR?'
-                      : 'Merge without a reviewer verdict?'}
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex flex-wrap items-center justify-between gap-2">
+              <span className="text-meta text-text-secondary min-w-0">
+                {overrideConfirmCopy(item)}
               </span>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <button
                   onClick={() => setState('idle')}
-                  className="text-[12px] font-medium text-text-muted hover:text-text-secondary transition-colors px-2 py-0.5 border border-border-default rounded"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-text-muted hover:text-text-secondary transition-colors px-2 py-0.5 border border-border-default rounded"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleMergeAnyway}
-                  className="text-[12px] font-medium text-white bg-status-success hover:bg-status-success/90 transition-colors px-2.5 py-0.5 rounded"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium btn-ink border transition-colors px-2.5 py-0.5 rounded"
                 >
                   Confirm Merge
                 </button>
@@ -462,14 +477,14 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'merging' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex items-center gap-1.5">
               <Spinner size="xs" className="text-status-success" aria-label="Merging" />
-              <span className="text-[12px] text-text-muted">Merging…</span>
+              <span className="text-meta text-text-muted">Merging…</span>
             </div>
           )}
 
           {state === 'merged' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1 text-[12px] font-medium text-status-success">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex items-center gap-1 text-meta font-medium text-status-success">
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M20 6L9 17l-5-5" />
               </svg>
@@ -480,18 +495,18 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           {state === 'pending' && (
             <div className="mt-2.5 pt-2 flex items-center gap-1.5" data-testid="review-card-pending">
               <Spinner size="xs" className="flex-shrink-0" aria-label="Waiting on checks or review" />
-              <span className="text-[11px] text-text-secondary min-w-0">{errorMsg}</span>
+              <span className="text-meta text-text-secondary min-w-0 flex-1 basis-56">{errorMsg}</span>
             </div>
           )}
 
           {state === 'error' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex flex-wrap items-center justify-between gap-2">
+              <span className="text-meta text-status-error min-w-0 flex-1 basis-56">{errorMsg}</span>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {mergeRetrySafe ? (
                   <button
                     onClick={handleMergeAnyway}
-                    className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                    className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
                   >
                     Retry
                   </button>
@@ -501,7 +516,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                       href={item.prUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-[11px] font-medium text-accent-text hover:underline"
+                      className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-accent-text hover:underline"
                     >
                       Check PR
                     </a>
@@ -509,7 +524,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                 )}
                 <button
                   onClick={() => setState('idle')}
-                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
                 >
                   Dismiss
                 </button>
@@ -518,25 +533,25 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 're_reviewing' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex items-center gap-1.5">
               <Spinner size="xs" className="text-status-success" aria-label="Dispatching review" />
-              <span className="text-[12px] text-text-muted">Dispatching a new review…</span>
+              <span className="text-meta text-text-muted">Dispatching a new review…</span>
             </div>
           )}
 
           {state === 're_review_error' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex flex-wrap items-center justify-between gap-2">
+              <span className="text-meta text-status-error min-w-0 flex-1 basis-56">{errorMsg}</span>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <button
                   onClick={handleReReview}
-                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
                 >
                   Retry
                 </button>
                 <button
                   onClick={() => setState('idle')}
-                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
                 >
                   Dismiss
                 </button>
@@ -545,7 +560,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 're_review_dispatched' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5 text-[12px] font-medium text-status-success">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex items-center gap-1.5 text-meta font-medium text-status-success">
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M20 6L9 17l-5-5" />
               </svg>
@@ -554,16 +569,16 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'conflict_dispatched' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <div className="flex items-center gap-1.5 mb-1.5">
                 <Spinner size="xs" className="flex-shrink-0" aria-label="Resolving conflicts" />
-                <span className="text-[11px] text-text-secondary">An agent is resolving the merge conflicts.</span>
+                <span className="text-meta text-text-secondary">An agent is resolving the merge conflicts.</span>
               </div>
               <div className="flex items-center gap-3">
                 {conflictRetryTaskId && (
                   <Link
                     href={actionCardTaskLink(item, { taskId: conflictRetryTaskId, page: true })}
-                    className="text-[12px] font-medium text-accent-text hover:underline"
+                    className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-accent-text hover:underline"
                   >
                     View task
                   </Link>
@@ -573,7 +588,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                     href={item.prUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-[12px] text-text-muted hover:text-text-secondary underline"
+                    className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
                   >
                     Abandon PR
                   </a>
@@ -583,8 +598,8 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'conflict_exhausted' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
-              <p className="text-[11px] text-status-error mb-1.5 break-words">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
+              <p className="text-meta text-status-error mb-1.5 break-words">
                 {errorMsg || 'Agents ran out of conflict-resolution retries.'}
               </p>
               <div className="flex items-center gap-3">
@@ -593,7 +608,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                     href={item.prUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-[12px] font-medium text-accent-text hover:underline"
+                    className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-accent-text hover:underline"
                   >
                     Resolve conflicts on GitHub
                   </a>
@@ -603,7 +618,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                     href={item.prUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-[12px] text-text-muted hover:text-text-secondary underline"
+                    className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta text-text-muted hover:text-text-secondary underline"
                   >
                     Abandon PR
                   </a>

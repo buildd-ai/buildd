@@ -43,10 +43,10 @@ function signals(over: Partial<PlannerSignals>): PlannerSignals {
 const picks = (src: ClaimPlanSource) => planClaimBatch(buildClaimPlanInput(src).input).picks.map(p => p.id);
 
 describe('resolveClaimPlannerConfig', () => {
-  it('defaults to record when the workspace sets no mode', () => {
-    expect(resolveClaimPlannerConfig(null)).toEqual({ mode: 'record', thresholds: null });
-    expect(resolveClaimPlannerConfig({})).toEqual({ mode: 'record', thresholds: null });
-    expect(resolveClaimPlannerConfig({ claimPlanner: null })).toEqual({ mode: 'record', thresholds: null });
+  it('defaults to apply when the workspace sets no mode', () => {
+    expect(resolveClaimPlannerConfig(null)).toEqual({ mode: 'apply', thresholds: null });
+    expect(resolveClaimPlannerConfig({})).toEqual({ mode: 'apply', thresholds: null });
+    expect(resolveClaimPlannerConfig({ claimPlanner: null })).toEqual({ mode: 'apply', thresholds: null });
   });
 
   it('an explicit off, or an unrecognised mode, is off', () => {
@@ -83,6 +83,26 @@ describe('splitOwnOpenPrs', () => {
     const { own, others } = splitOwnOpenPrs({ id: 'fix', reviewerRetryPrNumber: 10 }, [base, stacked, other]);
     expect(own).toEqual([base, stacked]);
     expect(others).toEqual([other]);
+  });
+
+  // Spec workflow-state-kernel §13.11 rule 4: "pending retry blocked by own lineage".
+  it('a fix attempt is never blocked by a PR from its own lineage', () => {
+    const predecessor = pr('root', 20, ['a.ts']);     // the chain's first PR, never closed
+    const sibling = pr('attempt-1', 21, ['a.ts']);    // an earlier attempt's PR
+    const stranger = pr('x', 22, ['a.ts']);
+    const retry = {
+      id: 'attempt-2', taskClass: 'attempt', parentTaskId: 'attempt-1', conflictRetryPrNumber: 23,
+      context: { rootTaskId: 'root', lineagePrNumbers: [20, 21] },
+    };
+    const { own, others } = splitOwnOpenPrs(retry, [predecessor, sibling, stranger]);
+    expect(own).toEqual([predecessor, sibling]);
+    expect(others).toEqual([stranger]);
+  });
+
+  it('lineage grants nothing to a task that is not an attempt', () => {
+    const parentPr = pr('parent', 30, ['a.ts']);
+    const { others } = splitOwnOpenPrs({ id: 'child', parentTaskId: 'parent', context: { lineagePrNumbers: [30] } }, [parentPr]);
+    expect(others).toEqual([parentPr]);
   });
 
   it('a task owns a PR its own earlier worker opened', () => {

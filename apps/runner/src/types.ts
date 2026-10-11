@@ -1,7 +1,7 @@
 import type { RoleBundle, RoleConfig, RoleInstructions } from './roles.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
-import type { RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
+import type { DerivedFileRule, RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -15,7 +15,8 @@ export interface PermissionSuggestion {
 
 // Waiting for user input (question/permission)
 export interface WaitingFor {
-  type: 'question' | 'permission';
+  /** `pause`: the person paused the run (pause.ts); answering it resumes the same session. */
+  type: 'question' | 'permission' | 'pause';
   prompt: string;
   options?: Array<{
     label: string;
@@ -28,8 +29,16 @@ export interface WaitingFor {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
-  /** Set only to `'hold'` — Jev held this question rather than asking outright (question-gate.ts). */
-  disposition?: 'hold';
+  /**
+   * The question gate's human-attention disposition (packages/core/needs-you.ts):
+   * `ask`, `hold` (Jev held it), or `recovered` (a repair task owns it). Absent when no gate
+   * reply exists — the server then re-checks the park itself.
+   */
+  disposition?: 'ask' | 'hold' | 'recovered';
+  /** The gate outcome behind `disposition`, the rail that forced an ask, the repair task of a recovered park. */
+  gateOutcome?: string;
+  rail?: string;
+  repairTaskId?: string;
   holdReason?: string;
   /** ISO timestamp; see question-gate.ts `HOLD_RESURFACE_MS`. */
   resurfaceAt?: string;
@@ -46,6 +55,7 @@ export const CheckpointEvent = {
   FIRST_READ: 'first_read',
   FIRST_EDIT: 'first_edit',
   FIRST_COMMIT: 'first_commit',
+  FIRST_PUSH: 'first_push',
   TASK_COMPLETED: 'task_completed',
   TASK_ERROR: 'task_error',
 } as const;
@@ -58,13 +68,14 @@ export const CHECKPOINT_LABELS: Record<CheckpointEventType, string> = {
   first_read: 'First file read',
   first_edit: 'First file edit',
   first_commit: 'First commit',
+  first_push: 'First push',
   task_completed: 'Task completed',
   task_error: 'Task failed',
 };
 
 // Milestone for progress tracking (typed union — no legacy format)
 export type Milestone =
-  | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
+  | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean; ops?: string[] }
   | { type: 'status'; label: string; progress?: number; ts: number }
   | { type: 'checkpoint'; event: CheckpointEventType; label: string; ts: number }
   | {
@@ -113,23 +124,6 @@ export type ChatMessage =
   | { type: 'tool_use'; name: string; input?: any; timestamp: number }
   | { type: 'user'; content: string; timestamp: number };
 
-// Agent team member
-export interface TeamMember {
-  name: string;
-  role?: string;
-  status: 'active' | 'idle' | 'done';
-  spawnedAt: number;
-}
-
-// Inter-agent message
-export interface TeamMessage {
-  from: string;
-  to: string | 'broadcast';
-  content: string;
-  summary?: string;
-  timestamp: number;
-}
-
 // Subagent task lifecycle tracking (from SDK task_started / task_notification messages)
 export interface SubagentTask {
   taskId: string;
@@ -156,14 +150,6 @@ export interface SubagentTask {
   };
 }
 
-// Team state for a worker
-export interface TeamState {
-  teamName: string;
-  members: TeamMember[];
-  messages: TeamMessage[];
-  createdAt: number;
-}
-
 // Local worker state
 export interface LocalWorker {
   id: string;
@@ -188,6 +174,8 @@ export interface LocalWorker {
   // on CI) emit no SDK stream messages, so checkStale exempts in-flight tools
   // from the soft-probe/stale-abort path and relies on the 30-min hard timeout.
   toolInFlight?: boolean;
+  // Set while a pause waits for the running tool to finish (pause.ts). Transient.
+  pauseRequestedAt?: number;
   // Transient (never persisted): set by loadAllWorkers when it rewrites a
   // 'working' worker to 'error' because SDK sessions cannot survive a runner
   // restart. restoreWorkersFromDisk reads it to notify the server, which would
@@ -238,7 +226,6 @@ export interface LocalWorker {
   codexThreadId?: string;
   error?: string;
   waitingFor?: WaitingFor;  // Set when agent asks a question
-  teamState?: TeamState;  // Set when agent spawns a team
   subagentTasks: SubagentTask[];  // Subagent task lifecycle (task_started → task_notification)
   // Total number of task_started events observed — uncapped, unlike subagentTasks (capped at 100).
   // When subagentTasksObservedCount > subagentTasks.length, persisted span metrics are floors.
@@ -261,6 +248,19 @@ export interface LocalWorker {
    * a restored worker does not sweep with an empty committed half.
    */
   prBaseRef?: string;
+  /**
+   * What the runner's pre-agent base merge did on a conflict retry (merged, or
+   * left in progress with the real conflicts). Appended to the system prompt.
+   */
+  derivedMergeNote?: string;
+  /**
+   * Lines of the worktree's mergiraf ledger (merge-drivers.ts MERGIRAF_LEDGER)
+   * already reported. Set when merge drivers are registered; undefined means
+   * no drivers, so nothing to report.
+   */
+  mergirafLedgerOffset?: number;
+  /** Where a usage-limit death's work went: `origin/<branch>@<sha>` or `archive:<path>`. */
+  recoveryRef?: string;
   /**
    * Set when the worker's environment was provisioned but degraded — today only
    * by a dependency install that failed for a non-structural reason (drift,
@@ -287,9 +287,28 @@ export interface LocalWorker {
   // never reset mid-worker, or two builds would collide on buildIndex.
   promptBuildIndex?: number;
   // Paths written while path-claim endpoint was unreachable (timeout/error). Flushed
-  // on the next successful claim call. Also included in update_progress PATCH body so
-  // the server can register them retroactively if the hook never recovers.
+  // on the next successful claim call. Runner-local only: the working-set
+  // tracker (below) is what tells the server about every edit, hook or not.
   pendingPaths?: string[];
+  /**
+   * Authoritative working set (working-set.ts): the task-owned file set from
+   * git with its generation, what the server has acknowledged holding, and the
+   * holders blocking the rest. Persisted so a restart replays from it.
+   */
+  workingSet?: import('./working-set').WorkingSetState;
+  /**
+   * Ship checkpoints whose coverage could not be proven, not yet reported to
+   * the server (the server was unreachable at the time, by definition).
+   * Drained by the next successful sync.
+   */
+  pendingShipReports?: import('@buildd/shared').ShipCheckpointReport[];
+  /** Live sibling conflict probes handed out by the server, waiting to run (sibling-probe.ts). Transient. */
+  siblingProbeQueue?: import('@buildd/shared').SiblingProbeRequest[];
+  siblingProbeRunning?: boolean;
+  /** Probe results not yet reported; drained by the next successful sync. */
+  pendingSiblingProbeResults?: import('@buildd/shared').SiblingProbeResult[];
+  /** Coverage-unknown milestones already posted, so a retried ship does not repeat them. Transient. */
+  shipCoverageMilestones?: string[];
   /**
    * Workspace `gitConfig.pathClaimEnforcement`, resolved at session start.
    * Absent = advisory (the default). See path-claim-enforcement.ts.
@@ -307,6 +326,10 @@ export interface LocalWorker {
   pathClaimDegraded?: number;
   /** How many of `pathClaimDegraded` the server has been told about (the next sync sends the delta). */
   pathClaimDegradedReported?: number;
+  /** `pathClaimDegraded` split by cause, so the server can tell a timeout from a network/5xx error. */
+  pathClaimDegradedByCause?: { timeout: number; error: number };
+  /** The `pathClaimDegradedByCause` totals the server has been told about. */
+  pathClaimDegradedByCauseReported?: { timeout: number; error: number };
   /** Last time the sweep refreshed the base ref with a fetch (ms epoch). */
   pathSweepBaseFetchedAt?: number;
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
@@ -316,6 +339,8 @@ export interface LocalWorker {
    * carry usage, whereas the SDK result's per-model map is empty on seat auth.
    */
   tokenTally?: { inputTokens: number; outputTokens: number };
+  /** How this run's usage is charged (cost-basis.ts); set when the agent env is built. */
+  costBasis?: 'real' | 'virtual' | 'unknown';
   // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap.
   // Currently never set — the abort was disabled after it fired on file content
   // (test titles, fixture strings) rather than real denials. Detection now only
@@ -328,6 +353,7 @@ export interface LocalWorker {
   phaseStart: number | null;
   phaseToolCount: number;
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
+  phaseOps?: string[];   // Distinct operation names called in the current phase (phaseOpName), cap 6
   /**
    * The model this session was started with — the per-task model the claim route
    * resolved (task.context.model) or the runner-global default. Reported back so
@@ -368,11 +394,17 @@ export interface LocalWorker {
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
   serverOauthToken?: string;
+  // How the claim chose the model credential (no secret). `scope` personal/none =
+  // this worker's alone; `runnerLocalAllowed: false` = the machine's own seat,
+  // login and provider must not be used. Absent on older servers / no team policy.
+  credentialDecision?: import('@buildd/shared').ClaimCredentialDecision;
   // The team's agent model endpoint (docs/design/agent-model-endpoint.md), when it
   // won the claim's ranking. The only model credential this worker's agent gets.
   modelEndpoint?: import('@buildd/shared').ClaimModelEndpoint;
   // The claim withheld a winning endpoint because this runner has a per-machine provider.
   modelEndpointIgnored?: boolean;
+  // Cloud claim: the endpoint behind egress lacks ToolSearch pass-through (ENABLE_TOOL_SEARCH=false).
+  toolSearchDisabled?: boolean;
   // Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
   // 'scoped': only the task-scoped token (agent-github-credentials.ts). A mode, not a secret.
   githubCredentials?: { mode: 'scoped' | 'runner' };
@@ -639,6 +671,10 @@ export interface BuilddTask {
 
 // Git workflow configuration (matches server schema)
 export interface WorkspaceGitConfig {
+  /** Files regenerated instead of merged (packages/shared DerivedFileRule; see merge-drivers.ts). */
+  derivedFiles?: DerivedFileRule[];
+  /** Register mergiraf as a structural merge driver in this runner's clones. */
+  mergiraf?: boolean;
   // Branching
   defaultBranch: string;
   branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
@@ -706,6 +742,10 @@ export interface WorkspaceGitConfig {
 
   // Auto-merge PRs via GitHub's auto-merge feature
   autoMergePR?: boolean;
+
+  // Policy checks before push / create_pr (workflow-state-kernel.md §6.10, S31).
+  // Only `commands` is the runner's; the server reads the rest.
+  preflight?: { commands?: string[] } | null;
 }
 
 // SSE event types
@@ -733,7 +773,8 @@ export interface TaskResult {
 
 // Command from server
 export interface WorkerCommand {
-  action: 'pause' | 'resume' | 'abort' | 'message' | 'rollback' | 'recover';
+  // deliver_pending: a message was queued for this worker; sync to collect it (no text).
+  action: 'pause' | 'resume' | 'abort' | 'message' | 'deliver_pending' | 'rollback' | 'recover';
   text?: string;
   timestamp: number;
   // rollback fields
@@ -788,6 +829,9 @@ export interface LocalUIConfig {
   // responds asynchronously via the dashboard, creating a follow-up task.
   // Set to false to preserve the legacy blocking waiting_input behavior.
   inputAsRetry?: boolean;
+  // How a pause is applied (pause.ts): 'session' (host default), 'park' (--once with
+  // resumable runs), 'none' (--once without: refused). Set by run-once.
+  pauseMode?: 'session' | 'park' | 'none';
   // Tier 3 structural isolation root. When set, each workspace gets its own
   // git clone at <root>/<workspaceId>/ and credential dirs are scoped there
   // too — eliminating cross-workspace filesystem access.

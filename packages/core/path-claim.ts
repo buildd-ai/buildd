@@ -1168,3 +1168,25 @@ export async function checkStarvation(workspaceId: string): Promise<void> {
     } catch { /* non-fatal */ }
   }
 }
+
+// ── Authoritative working set ────────────────────────────────────────────────
+//
+// The delta/ACK reconciliation that keeps `path_claims` equal to a task's
+// current owned file set lives in ./working-set.ts and is reached through this
+// module's export path. The import cycle (working-set.ts calls the primitives
+// above) is benign: neither side touches the other at module-evaluation time.
+export {
+  reconcileWorkingSet,
+  recordWorkingSet,
+  workingSetRecord,
+  workingSetSizeBucket,
+  activeLeases,
+  activeLeasePaths,
+  promoteLeasesToPrScope,
+  planPrHandoff,
+  authoritativeTaskScope,
+  leasablePaths,
+  type ReconcileWorkingSetInput,
+  type ReconcileWorkingSetResult,
+  type WorkingSetSizeBucket,
+} from './working-set';

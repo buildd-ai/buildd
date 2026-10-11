@@ -13,8 +13,10 @@
  * Run: bun test apps/runner/__tests__/unit/terminate-hydrate.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, mock, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -101,13 +103,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -214,14 +216,30 @@ function successMessages(sessionId = 'sess-resumed') {
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
+/** Poll until the resume flow has settled (queried at least once, no longer
+ * working) instead of sleeping a fixed time; loaded runners are slower. */
+async function waitSettled(getWorker: () => { status: string } | undefined, minCalls = 1) {
+  for (let i = 0; i < 200; i++) {
+    const w = getWorker();
+    if (queryCallCount >= minCalls && w && w.status !== 'working' && w.status !== 'running') break;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  await new Promise(r => setTimeout(r, 20));
+}
+
 describe('WorkerManager — terminate and hydrate (resume layers)', () => {
   let manager: InstanceType<typeof WorkerManager>;
+
+  afterAll(() => {
+    cleanupTestWorkspace();
+  });
 
   afterEach(() => {
     manager?.destroy();
   });
 
   beforeEach(() => {
+    initTestWorkspace();
     queryCallCount = 0;
     lastQueryOpts = null;
     allQueryOpts = [];
@@ -248,7 +266,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       expect(result).toBe(true);
 
       // Wait for async session start
-      await new Promise(r => setTimeout(r, 300));
+      await waitSettled(() => manager.getWorker('w-th-1'));
 
       // Should have called query (Layer 1 resume)
       expect(queryCallCount).toBeGreaterThanOrEqual(1);
@@ -371,7 +389,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       expect(result).toBe(true);
 
       // Wait for both layers to attempt
-      await new Promise(r => setTimeout(r, 500));
+      await waitSettled(() => manager.getWorker('w-th-1'));
 
       // Layer 2 should have recovered — worker is not stuck in error
       expect(queryCallCount).toBeGreaterThanOrEqual(2);
@@ -393,7 +411,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       ];
 
       await manager.sendMessage('w-th-1', 'Follow up');
-      await new Promise(r => setTimeout(r, 500));
+      await waitSettled(() => manager.getWorker('w-th-1'));
 
       // Verify the resume option was passed
       const resumeCall = allQueryOpts.find(o => o.options?.resume === 'sess-original-123');
@@ -425,8 +443,11 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       const result = await manager.sendMessage('w-th-1', 'Please also add tests');
       expect(result).toBe(true);
 
-      // Wait for both layers to attempt
-      await new Promise(r => setTimeout(r, 500));
+      // Wait for both layers to attempt. Poll rather than sleep a fixed time:
+      // loaded CI runners are slower than 500ms
+      for (let i = 0; i < 100 && (queryCallCount < 2 || worker.status !== 'done'); i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       // Should have called query twice: Layer 1 (resume) + Layer 2 (reconstruction)
       expect(queryCallCount).toBeGreaterThanOrEqual(2);
@@ -463,7 +484,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       const result = await manager.sendMessage('w-th-1', 'Use approach B');
       expect(result).toBe(true);
 
-      await new Promise(r => setTimeout(r, 500));
+      await waitSettled(() => manager.getWorker('w-th-1'));
 
       // Layer 2 should have been attempted after Layer 1 failed
       expect(queryCallCount).toBeGreaterThanOrEqual(2);
@@ -491,7 +512,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       const result = await manager.sendMessage('w-th-1', 'Follow up');
       expect(result).toBe(true);
 
-      await new Promise(r => setTimeout(r, 500));
+      await waitSettled(() => manager.getWorker('w-th-1'));
 
       // Both layers attempted
       expect(queryCallCount).toBeGreaterThanOrEqual(2);
@@ -521,7 +542,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       const result = await manager.sendMessage('w-th-1', 'Follow up');
       expect(result).toBe(true);
 
-      await new Promise(r => setTimeout(r, 500));
+      await waitSettled(() => manager.getWorker('w-th-1'));
 
       expect(worker.status).toBe('error');
       expect(worker.error).toBe('Reconstruction also failed');
@@ -548,7 +569,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       ];
 
       await manager.sendMessage('w-th-1', 'Follow up');
-      await new Promise(r => setTimeout(r, 500));
+      await waitSettled(() => manager.getWorker('w-th-1'));
 
       const errorEvents = events.filter(e => e.worker?.status === 'error');
       expect(errorEvents.length).toBeGreaterThanOrEqual(1);
@@ -571,7 +592,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       ];
 
       await manager.sendMessage('w-th-1', 'Follow up');
-      await new Promise(r => setTimeout(r, 500));
+      await waitSettled(() => manager.getWorker('w-th-1'));
 
       const failedCalls = mockUpdateWorker.mock.calls.filter(
         (call: any[]) => call[1]?.status === 'failed'
@@ -613,7 +634,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       const result = await manager.sendMessage('w-th-1', 'Also update the docs');
       expect(result).toBe(true);
 
-      await new Promise(r => setTimeout(r, 300));
+      await waitSettled(() => manager.getWorker('w-th-1'), 2);
 
       // The reconstructed session ends without calling complete_task, so it
       // now gets a sessionId of its own (see successMessages) and is
@@ -643,7 +664,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       defaultQueryBehavior = { type: 'error', error: new Error('Reconstruction query failed') };
 
       await manager.sendMessage('w-th-1', 'Continue');
-      await new Promise(r => setTimeout(r, 500));
+      await waitSettled(() => manager.getWorker('w-th-1'));
 
       // startSession catches the error internally
       expect(worker.status).toBe('error');
@@ -675,7 +696,7 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       defaultQueryBehavior = { type: 'success', messages: successMessages() };
 
       await manager.sendMessage('w-th-1', 'Add password reset');
-      await new Promise(r => setTimeout(r, 300));
+      await waitSettled(() => manager.getWorker('w-th-1'));
 
       // The reconstructed prompt should include task context
       expect(queryCallCount).toBeGreaterThanOrEqual(1);
@@ -709,7 +730,10 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       defaultQueryBehavior = { type: 'success', messages: successMessages() };
 
       await manager.sendMessage('w-th-1', 'One more thing');
-      await new Promise(r => setTimeout(r, 300));
+      // Poll rather than sleep a fixed time: loaded CI runners are slower than 300ms
+      for (let i = 0; i < 100 && statuses[statuses.length - 1] !== 'done'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       // Should have transitioned through working
       expect(statuses).toContain('working');
@@ -738,7 +762,9 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       ];
 
       await manager.sendMessage('w-th-1', 'Follow up');
-      await new Promise(r => setTimeout(r, 500));
+      for (let i = 0; i < 100 && statuses[statuses.length - 1] !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       expect(statuses).toContain('working');
       expect(statuses[statuses.length - 1]).toBe('error');

@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'bun:test';
 import { resolveBandDrillQaState, sampleBandSelection } from './sample-band';
-import { splitTaskRoots } from '../../../tasks/TaskGrid';
 import { BAND_LABEL } from '@/components/insights/flow-chart-model';
 
 const NOW = Date.UTC(2026, 9, 6, 12);
@@ -20,17 +19,17 @@ describe('resolveBandDrillQaState', () => {
 });
 
 describe('sampleBandSelection', () => {
-  it('sample: a populated band whose rows all render as roots', () => {
+  it('sample: a populated band, one row per task', () => {
     const s = sampleBandSelection('sample', undefined, NOW);
     expect(s.tasks.length).toBeGreaterThan(5);
     expect(s.tasks.length).toBeLessThan(50);
-    expect(splitTaskRoots(s.tasks).rootTasks).toHaveLength(s.tasks.length);
+    expect(new Set(s.tasks.map(t => t.id)).size).toBe(s.tasks.length);
   });
 
   it('large: a band holding hundreds of rows', () => {
     const s = sampleBandSelection('large', undefined, NOW);
     expect(s.tasks.length).toBeGreaterThanOrEqual(300);
-    expect(splitTaskRoots(s.tasks).rootTasks).toHaveLength(s.tasks.length);
+    expect(new Set(s.tasks.map(t => t.id)).size).toBe(s.tasks.length);
   });
 
   it('labels the selection like a real drill-down, defaulting to Released', () => {

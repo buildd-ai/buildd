@@ -18,6 +18,10 @@
  * - **Gating.** A hit can be retrieved and still held back (score floor,
  *   handoff exclusion). It comes back with `gated: true` and the rule's name,
  *   so the ledger records what the gate dropped, not just what survived.
+ * - **Relevance.** A retrieval that opts in (claim_context) has its shown hits
+ *   judged live and the confident "not relevant" ones moved below the rest,
+ *   inside a hard budget; every other push gets the sampled shadow. See
+ *   "Relevance live" below.
  * - **Hit counting.** Only pulls increment `knowledge_chunks.hit_count`; a push
  *   the agent never asked for is not a hit.
  * - **The ledger.** One `memory_uses` row per hit, written fire-and-forget as a
@@ -42,6 +46,7 @@ import {
 import type { SQL } from 'drizzle-orm';
 import { PUSH_MEMORY_STATES, pullMemoryStates, type MemoryState } from './memory-candidates';
 import { buildNamespace } from './knowledge-store/pg-vector-store';
+import { RELEVANCE_LIVE_BUDGET_MS } from './memory-decisions';
 import type { QueryMode, QueryResult } from './knowledge-store/types';
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
@@ -282,7 +287,7 @@ export interface MemoryRelevanceShadowInput {
   taskId: string;
   caller: MemoryCaller;
   query: string;
-  hits: Array<{ memoryId: string; rank: number; score: number | null; gatedBy: MemoryGate | null; content: string }>;
+  hits: Array<{ memoryId: string; rank: number; score: number | null; gatedBy: MemoryGate | null; content: string; mandatory?: boolean }>;
 }
 
 /** Must not throw and must not be awaited; schedule the work after the response. */
@@ -330,6 +335,126 @@ function shadowRelevance(
   } catch {
     // Shadow: nothing depends on it.
   }
+}
+
+// ── Relevance live ───────────────────────────────────────────────────────────
+
+/** What the live judge is asked: the shadow's input, plus its budget. */
+export interface MemoryRelevanceJudgeInput extends MemoryRelevanceShadowInput {
+  budgetMs: number;
+}
+
+export interface MemoryRelevanceVerdicts {
+  /** Memory ids to move below the rest. */
+  demote: ReadonlySet<string>;
+  /** Log the verdicts; `applied` false when the rule order was used instead. */
+  record(applied: boolean): void;
+}
+
+/**
+ * Resolves to null when it did not judge (no key, not allowed): the retrieval
+ * then keeps the rule order and the sampled shadow, as if it were not there.
+ */
+export type MemoryRelevanceJudge = (input: MemoryRelevanceJudgeInput) => Promise<MemoryRelevanceVerdicts | null>;
+
+let relevanceJudge: MemoryRelevanceJudge | null = null;
+
+/**
+ * Install (or clear, with null) the live relevance judge, returning the
+ * previous one. The web app installs one; the runner and tests run without,
+ * so a retrieval that asks for `relevance.live` gets the rule order there.
+ */
+export function setMemoryRelevanceJudge(hook: MemoryRelevanceJudge | null): MemoryRelevanceJudge | null {
+  const previous = relevanceJudge;
+  relevanceJudge = hook;
+  return previous;
+}
+
+/** Tags that mark a memory as never demoted by the live relevance gate. */
+export const MANDATORY_MEMORY_TAGS: readonly string[] = ['pinned', 'directive'];
+
+/**
+ * The default `relevance.mandatory`: a memory pinned or tagged as a directive
+ * keeps its place whatever Jev says. Chat directives render in their own
+ * block, not through this list, so on claim_context today this is a guard
+ * for memories that carry those markers, not a common case.
+ */
+export function mandatoryMemoryHit(r: QueryResult): boolean {
+  const meta = (r.metadata ?? {}) as Record<string, unknown>;
+  if (meta.pinned === true) return true;
+  const tags = Array.isArray(meta.tags) ? meta.tags : [];
+  return tags.some(t => typeof t === 'string' && MANDATORY_MEMORY_TAGS.includes(t));
+}
+
+const JUDGE_TIMEOUT = Symbol('judge-timeout');
+
+/**
+ * Ask the judge about the shown hits and reorder: the hits it demotes go
+ * below every other shown hit, in their original relative order; gated hits
+ * stay last. Nothing is removed and a mandatory hit is never moved. Returns
+ * null when nothing was judged (the shadow should run then), else the hits in
+ * their new order (unchanged on a timeout or no demotion).
+ */
+async function judgeRelevanceLive(
+  input: RetrieveMemoryInput,
+  teamId: string,
+  hits: RetrievedMemoryHit[],
+): Promise<RetrievedMemoryHit[] | null> {
+  const opt = input.relevance;
+  const judge = relevanceJudge;
+  if (!opt?.live || !judge || MEMORY_CALLER_VIA[input.caller] !== 'push') return null;
+  const taskId = uuidOrNull(input.attribution?.taskId);
+  const team = uuidOrNull(teamId);
+  if (!taskId || !team) return null;
+  const shown = hits.filter(h => !h.gated);
+  // One hit has no order to change: leave it to the shadow.
+  if (shown.length < 2) return null;
+
+  const isMandatory = (h: RetrievedMemoryHit) => {
+    try { return (opt.mandatory ?? mandatoryMemoryHit)(h.result) === true; } catch { return true; }
+  };
+  const mandatory = new Set(shown.filter(isMandatory).map(h => h.memoryId));
+  const budgetMs = opt.budgetMs ?? RELEVANCE_LIVE_BUDGET_MS;
+
+  let pending: Promise<MemoryRelevanceVerdicts | null>;
+  try {
+    pending = Promise.resolve(judge({
+      teamId: team,
+      workspaceId: uuidOrNull(input.scope.workspaceId),
+      taskId,
+      caller: input.caller,
+      query: input.query,
+      budgetMs,
+      hits: shown.map(h => ({
+        memoryId: h.memoryId, rank: h.rank, score: h.score, gatedBy: h.gatedBy,
+        content: h.result.content, mandatory: mandatory.has(h.memoryId),
+      })),
+    })).catch(() => null);
+  } catch {
+    return null;
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof JUDGE_TIMEOUT>(resolve => { timer = setTimeout(() => resolve(JUDGE_TIMEOUT), budgetMs); });
+  const verdicts = await Promise.race([pending, deadline]).finally(() => clearTimeout(timer));
+
+  if (verdicts === JUDGE_TIMEOUT) {
+    // The rule order is served; the verdicts, when they land, log as not applied.
+    void pending.then(v => { try { v?.record(false); } catch { /* telemetry */ } });
+    return hits;
+  }
+  if (!verdicts) return null;
+
+  const demoted = (h: RetrievedMemoryHit) => !h.gated && verdicts.demote.has(h.memoryId) && !mandatory.has(h.memoryId);
+  const moved = shown.some(demoted);
+  try { verdicts.record(true); } catch { /* telemetry */ }
+  if (!moved) return hits;
+  const ordered = [
+    ...shown.filter(h => !demoted(h)),
+    ...shown.filter(demoted),
+    ...hits.filter(h => h.gated),
+  ];
+  return ordered.map((h, i) => ({ ...h, rank: i + 1 }));
 }
 
 /**
@@ -410,6 +535,19 @@ export interface RetrieveMemoryInput {
   deferLedger?: boolean;
   /** 'empty' (default): any failure is an empty result. 'throw': propagate. */
   onError?: 'empty' | 'throw';
+  /**
+   * Judge the shown hits live and move confident "not relevant" ones below
+   * the rest (pushes attributed to a task only; needs an installed judge).
+   * Claim-time only: it waits up to `budgetMs` (default
+   * RELEVANCE_LIVE_BUDGET_MS) on the request path. A retrieval that is judged
+   * skips the after-response shadow; its verdicts are logged as live.
+   */
+  relevance?: {
+    live: true;
+    /** Never demoted. Default `mandatoryMemoryHit` (pinned or directive-tagged). */
+    mandatory?: (r: QueryResult) => boolean;
+    budgetMs?: number;
+  };
 }
 
 export interface RetrievedMemoryHit extends MemoryHit {
@@ -569,7 +707,7 @@ async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<Retriev
 
     const exclude = input.gate?.exclude;
     const minScore = input.gate?.minScore;
-    const hits: RetrievedMemoryHit[] = own.map((r, i) => {
+    let hits: RetrievedMemoryHit[] = own.map((r, i) => {
       const gatedBy: MemoryGate | null = exclude?.has(r.id)
         ? 'excluded'
         : typeof minScore === 'number' && (r.score ?? 0) < minScore
@@ -585,6 +723,9 @@ async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<Retriev
         result: r,
       };
     });
+
+    const judged = await judgeRelevanceLive(input, teamId, hits).catch(() => null);
+    if (judged) hits = judged;
 
     let committed = false;
     const commitLedger: RetrieveMemoryResult['commitLedger'] = (gateFor) => {
@@ -604,11 +745,14 @@ async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<Retriev
         caller: input.caller,
         attribution: input.attribution,
       }));
-      shadowRelevance(
-        { caller: input.caller, query: input.query, workspaceId, attribution: input.attribution },
-        teamId,
-        final.map(h => ({ ...h, content: h.result.content })),
-      );
+      // A judged retrieval already logged its verdicts as live.
+      if (!judged) {
+        shadowRelevance(
+          { caller: input.caller, query: input.query, workspaceId, attribution: input.attribution },
+          teamId,
+          final.map(h => ({ ...h, content: h.result.content })),
+        );
+      }
     };
     if (!input.deferLedger) commitLedger();
 

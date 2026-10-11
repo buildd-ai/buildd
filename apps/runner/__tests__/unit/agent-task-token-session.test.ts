@@ -10,11 +10,13 @@
  * Harness: SDK `query` stubbed, options
  * captured; the backend factory is wrapped to capture the Codex env.
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { tmpdir } from 'os';
 import type { LocalUIConfig } from '../../src/types';
 import * as realBackends from '../../src/backends/index.js';
 import * as realSessionLogger from '../../src/session-logger';
 import * as realEvidenceWriter from '../../src/evidence-writer';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
 const RUNNER_KEY = 'bld_runnerkey_session_abcdefghijklmnop';
 const TOKEN_A = 'bldt_sessionA.sigA_abcdefghijklmnopqrstu';
@@ -76,13 +78,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -208,6 +210,20 @@ function makeTask(workerId: string, backend?: 'codex', taskExtra: Record<string,
   };
 }
 
+/**
+ * Wait for the worker's session to reach a terminal state rather than sleeping
+ * a fixed interval: a fixed wait races the mocked backend under load.
+ */
+async function waitForSessionEnd(manager: InstanceType<typeof WorkerManager>, workerId: string, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = manager.getWorker(workerId)?.status;
+    if (status === 'done' || status === 'error' || status === 'waiting_input') return;
+    await new Promise(r => setTimeout(r, 10));
+  }
+  throw new Error(`worker ${workerId} did not finish within ${timeoutMs}ms (status: ${manager.getWorker(workerId)?.status})`);
+}
+
 async function runTask(manager: InstanceType<typeof WorkerManager>, workerId: string, backend?: 'codex', taskExtra: Record<string, unknown> = {}) {
   mockMessages = [
     { type: 'system', subtype: 'init', session_id: `sess-${workerId}` },
@@ -218,12 +234,12 @@ async function runTask(manager: InstanceType<typeof WorkerManager>, workerId: st
   mockClaimTask.mockImplementation(async () => ({ workers: [{
     id: workerId,
     branch: `buildd/${workerId}`,
-    worktreePath: '/tmp/test-workspace',
+    worktreePath: getTestWorkspace(),
     task,
     ...(backend === 'codex' ? { codexCredential: { credentialType: 'api_key', apiKey: 'sk-test-codex', expiresAt: null } } : {}),
   }] }));
   await manager.claimAndStart(task as any);
-  await new Promise(r => setTimeout(r, 250));
+  await waitForSessionEnd(manager, workerId);
   return task;
 }
 
@@ -239,7 +255,12 @@ describe('agent buildd MCP auth uses a per-task token', () => {
   let manager: InstanceType<typeof WorkerManager>;
   const savedEnv = process.env.BUILDD_AGENT_TASK_TOKEN;
 
+  afterAll(() => {
+    cleanupTestWorkspace();
+  });
+
   beforeEach(() => {
+    initTestWorkspace();
     lastQueryOpts = null;
     allQueryOpts.length = 0;
     mintCalls.length = 0;
@@ -302,6 +323,22 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     expectTokenNowhere(TOKEN_A);
   });
 
+  // A runner agent never acts as a person (docs/specs/workflow-state-kernel.md, T5 `human:`):
+  // the server reads a person only from an OAuth session, and the agent's buildd
+  // connection is the worker endpoint with a buildd credential, never the OAuth one.
+  test('Claude: the agent\'s buildd server is the worker endpoint on a buildd credential, never an OAuth session', async () => {
+    await runTask(manager, 'w-tt-principal');
+    expect(allQueryOpts.length).toBeGreaterThan(0);
+    for (const q of allQueryOpts) {
+      const servers = (q?.options?.mcpServers ?? {}) as Record<string, { url?: string; headers?: Record<string, string> }>;
+      const url = new URL(servers.buildd!.url!);
+      expect(url.pathname).toBe('/api/mcp');
+      expect(url.searchParams.get('worker')).toBe('w-tt-principal');
+      expect(servers.buildd!.headers!.Authorization).toMatch(/^Bearer bldt?_/);
+      for (const s of Object.values(servers)) expect(s.url ?? '').not.toContain('/api/mcp-oauth');
+    }
+  });
+
   test('Codex: BUILDD_MCP_BEARER_TOKEN is the token', async () => {
     await runTask(manager, 'w-tt-codex', 'codex');
     const run = backendRuns.find(r => r.backend === 'codex');
@@ -309,7 +346,7 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     expect(run!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(TOKEN_A);
     expect(run!.env?.BUILDD_API_KEY).toBeUndefined();
     expectTokenNowhere(TOKEN_A);
-  });
+  }, 30_000);
 
   const failures: Array<[string, () => Promise<unknown>]> = [
     ['network error', async () => { throw new TypeError('fetch failed'); }],
@@ -334,7 +371,7 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     mintImpl = async () => { throw Object.assign(new Error('x'), { status: 503 }); };
     await runTask(manager, 'w-tt-codex-fail', 'codex');
     expect(backendRuns.find(r => r.backend === 'codex')!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(RUNNER_KEY);
-  });
+  }, 30_000);
 
   test('BUILDD_AGENT_TASK_TOKEN=0 → runner key, no mint call, no warning', async () => {
     process.env.BUILDD_AGENT_TASK_TOKEN = '0';
@@ -354,7 +391,7 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     const worker = (manager as any).workers.get('w-tt-resume');
     expect(worker).toBeDefined();
     // Resume and follow-up both go through startSession with a resume id.
-    await (manager as any).startSession(worker, '/tmp/test-workspace', task, 'sess-w-tt-resume');
+    await (manager as any).startSession(worker, getTestWorkspace(), task, 'sess-w-tt-resume');
     expect(mintCalls.length).toBeGreaterThan(mintsBefore);
     const resumed = allQueryOpts[queriesBefore];
     expect(resumed?.options?.resume).toBe('sess-w-tt-resume');
@@ -414,13 +451,13 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     await runTask(manager, 'w-tt-orch-codex', 'codex', { roleSlug: 'organizer' });
     expect(mintCalls.every(c => c.level === 'admin')).toBe(true);
     expect(backendRuns.find(r => r.backend === 'codex')!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(TOKEN_A);
-  });
+  }, 30_000);
 
   test('organizer on Codex, admin mint refused → BUILDD_MCP_BEARER_TOKEN is the runner key', async () => {
     mintImpl = async () => { throw Object.assign(new Error('x'), { status: 403 }); };
     await runTask(manager, 'w-tt-orch-codex-refused', 'codex', { roleSlug: 'organizer' });
     expect(backendRuns.find(r => r.backend === 'codex')!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(RUNNER_KEY);
-  });
+  }, 30_000);
 
   test('builder role (execution mode) → the task token', async () => {
     await runTask(manager, 'w-tt-builder', undefined, { roleSlug: 'builder', mode: 'execution' });

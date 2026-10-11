@@ -1,16 +1,29 @@
-import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
-import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds } from '@/lib/team-access';
-import { UsageClient } from './UsageClient';
+import { requirePlatformOperator } from '@/lib/operator-page';
+import { getUserTeamIds, resolveActiveTeamScope } from '@/lib/team-access';
+import { UsageClient, type HostedRunnerProps } from './UsageClient';
 import { loadUsageView } from './_lib/load-usage-view';
+import { loadHostedRunnerMonth } from '@/lib/hosted-runner-usage-store';
+
+/** The active team's month on the hosted runner, or null. Never fails the page. */
+async function loadHostedRunner(userId: string): Promise<HostedRunnerProps | null> {
+  try {
+    const cookieStore = await cookies();
+    const scope = await resolveActiveTeamScope(userId, cookieStore.get('buildd-team')?.value);
+    return scope.teamId ? await loadHostedRunnerMonth(scope.teamId) : null;
+  } catch {
+    return null;
+  }
+}
 
 export const dynamic = 'force-dynamic';
 
 /**
  * `/app/health/usage`: what a task costs. Where the turns go (code navigation,
  * shell, buildd actions) is buildd's own tuning detail and lives
- * on Health → Operator.
+ * on Health → Operator. Platform owner only (it moved to the admin app;
+ * a team's spend is on Settings → Billing and budgets); everyone else gets a 404.
  *
  * The page is TASK-KEYED — every section reads the `aggregateByTask` fold, so a
  * task retried three times is one task costing the sum of its attempts. The one
@@ -23,8 +36,7 @@ export default async function UsageDrilldownPage({
 }) {
   const { workspace: wsFilter, window: rawWindow } = await searchParams;
 
-  const user = await getCurrentUser();
-  if (!user) redirect('/api/auth/signin');
+  const user = await requirePlatformOperator();
 
   const teamIds = await getUserTeamIds(user.id);
   if (teamIds.length === 0) {
@@ -46,5 +58,7 @@ export default async function UsageDrilldownPage({
     );
   }
 
-  return <UsageClient view={loaded.view} wsFilter={loaded.wsFilter} />;
+  // The team's hosted-runner month is team-wide spend: read only for the team view.
+  const hostedRunner = loaded.scope === 'team' ? loadHostedRunner(user.id) : null;
+  return <UsageClient view={loaded.view} wsFilter={loaded.wsFilter} hostedRunner={await hostedRunner} roleUsage={loaded.roleUsage} monthly={loaded.monthly} scope={loaded.scope} />;
 }

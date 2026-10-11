@@ -189,7 +189,7 @@ export async function sweepPostSessionRuns(opts: {
   lookbackMs?: number;
   policyVersion?: string;
   /** Stage B seams (decision call, receipt writer). */
-  triage?: Pick<TriageDeps, 'decide' | 'recordReceipts'>;
+  triage?: Pick<TriageDeps, 'decisionDeps' | 'recordReceipts'>;
   /** Checked before each item; false = stop starting work (time budget spent). */
   shouldContinue?: () => boolean;
 } = {}): Promise<PostSessionSweepSummary> {

@@ -16,6 +16,7 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { normalizeTaskKind } from '@buildd/core/model-router';
 
 type TaskRow = typeof tasks.$inferSelect;
 
@@ -46,7 +47,8 @@ export function attemptIdentityFrom(parent: AttemptParent | null | undefined): A
   return {
     ...(parent?.backend ? { backend: parent.backend } : {}),
     roleSlug: parent?.roleSlug ?? null,
-    kind: parent?.kind ?? null,
+    // Normalized so a stored out-of-vocabulary kind is not copied forward.
+    kind: normalizeTaskKind(parent?.kind),
     complexity: parent?.complexity ?? null,
     missionPhaseIndex: phaseSet ? parent!.missionPhaseIndex! : null,
     missionPhaseLabel: phaseSet ? parent!.missionPhaseLabel! : null,

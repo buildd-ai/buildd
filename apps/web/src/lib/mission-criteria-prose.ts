@@ -6,6 +6,8 @@ import { recalculateOverall, criterionFingerprint } from '@buildd/core/mission-h
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { AGENT_INFERENCE_KEY_LABELS } from '@/lib/getting-started';
 
 /**
  * `description` (prose) goal criteria under the `runner` grader: one read-only
@@ -173,9 +175,13 @@ async function findProseEvalTask(missionId: string, criterionIndex: number) {
 async function hasAgentBackendCredential(teamId: string | null): Promise<boolean> {
   if (!teamId) return false;
   const row = await db.query.secrets.findFirst({
-    where: and(
-      eq(secrets.teamId, teamId),
-      or(...AGENT_BACKEND_PURPOSES.map(p => eq(secrets.purpose, p))),
+    where: or(
+      and(
+        eq(secrets.teamId, teamId),
+        or(...AGENT_BACKEND_PURPOSES.map(p => eq(secrets.purpose, p))),
+      ),
+      // The team's Anthropic / OpenAI key in canonical storage (provider parity).
+      ...AGENT_INFERENCE_KEY_LABELS.map(label => teamCredentialWhere({ teamId, purpose: 'inference_key', label })),
     ),
     columns: { id: true },
   });

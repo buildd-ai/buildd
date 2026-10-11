@@ -8,7 +8,8 @@
  */
 import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { lazyRequester, pickVisibleRoleRowLazy, roleRowsInScope } from '@buildd/core/role-visibility';
 import { resolveClaudeAiArtifactAccess, type ClaimTasksResponse, type SkillBundle } from '@buildd/shared';
 import { generateDownloadUrl, isStorageConfigured } from '@/lib/storage';
 import { noteBodyReads } from '@/lib/body-read-monitor';
@@ -103,41 +104,54 @@ export async function attachSkillBundles(
   }
 }
 
+type RoleRow = typeof workspaceSkills.$inferSelect;
+
 /**
- * Resolve a role row by slug: workspace override > team default (§C.2
- * precedence), falling back to the legacy account-level row when no team
- * scope resolves anything. Shared by `attachRoleConfig` (persona/bundle)
- * and `attachRoleEnvSecrets` (role-env-injection.ts) so the precedence rule
- * lives in exactly one place — a second, divergent copy is how the two ends
- * up disagreeing about which role a task actually runs under.
+ * Every enabled role row for `roleSlug` a task in `wsId` could run under,
+ * personal rows included (team-level, any owner). Not yet filtered by who the
+ * task is for — `resolveRoleRow` does that — so callers can cache this per
+ * (team, slug, workspace) and still pick per task.
+ */
+export async function loadRoleCandidateRows(roleSlug: string, teamId: string, wsId: string): Promise<RoleRow[]> {
+  return db.select()
+    .from(workspaceSkills)
+    .where(and(
+      roleRowsInScope({ teamId, workspaceId: wsId }),
+      eq(workspaceSkills.slug, roleSlug),
+      eq(workspaceSkills.enabled, true),
+      eq(workspaceSkills.isRole, true),
+    ));
+}
+
+/**
+ * Resolve a role row by slug with the role-visibility precedence
+ * (@buildd/core/role-visibility): workspace override > the requester's own
+ * personal row > a shared personal row > team default. Another member's
+ * private role is never returned. Falls back to the legacy account-level row
+ * when no team scope resolves anything. Shared by `attachRoleConfig`
+ * (persona/bundle) and `attachRoleEnvSecrets` (role-env-injection.ts) so the
+ * precedence rule lives in exactly one place — a second, divergent copy is
+ * how the two end up disagreeing about which role a task actually runs under.
+ *
+ * `task` supplies the requester (`lazyRequester`), resolved only when a
+ * personal row for the slug exists; null = no person.
  */
 export async function resolveRoleRow(
   roleSlug: string,
   teamId: string | undefined,
   wsId: string,
   accountId: string,
-): Promise<typeof workspaceSkills.$inferSelect | undefined> {
-  let role;
+  task: object | null,
+  candidates?: RoleRow[],
+): Promise<RoleRow | undefined> {
+  let role: RoleRow | null | undefined;
 
   if (teamId) {
-    const rows = await db.select()
-      .from(workspaceSkills)
-      .where(and(
-        eq(workspaceSkills.teamId, teamId),
-        eq(workspaceSkills.slug, roleSlug),
-        eq(workspaceSkills.enabled, true),
-        eq(workspaceSkills.isRole, true),
-        or(
-          isNull(workspaceSkills.workspaceId),
-          eq(workspaceSkills.workspaceId, wsId),
-        ),
-      ))
-      .orderBy(sql`(${workspaceSkills.workspaceId} IS NOT NULL) DESC`)
-      .limit(1);
-    role = rows[0];
+    const rows = candidates ?? await loadRoleCandidateRows(roleSlug, teamId, wsId);
+    role = await pickVisibleRoleRowLazy(rows, roleSlug, { teamId, workspaceId: wsId }, lazyRequester(task));
   }
 
-  // Legacy account-level fallback
+  // Legacy account-level fallback (never a personal row)
   if (!role) {
     role = await db.query.workspaceSkills.findFirst({
       where: and(
@@ -145,6 +159,7 @@ export async function resolveRoleRow(
         eq(workspaceSkills.slug, roleSlug),
         eq(workspaceSkills.enabled, true),
         eq(workspaceSkills.isRole, true),
+        isNull(workspaceSkills.ownerUserId),
       ),
     });
   }
@@ -202,7 +217,7 @@ export async function attachRoleConfig(
     }
 
     const teamId = (task as any).workspace?.teamId as string | undefined;
-    const role = await resolveRoleRow(roleSlug, teamId, wsId, accountId);
+    const role = await resolveRoleRow(roleSlug, teamId, wsId, accountId, task ?? null);
     attachClaudeAiArtifacts(cw, (role?.metadata ?? null) as Record<string, unknown> | null, taskContext);
 
     // Persona first — independent of packaging. A blank body attaches nothing

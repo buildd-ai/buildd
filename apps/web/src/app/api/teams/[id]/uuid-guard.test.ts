@@ -28,6 +28,11 @@ describe('/api/teams/[id] non-UUID guard', () => {
     expect(uuidGuardViolations(src, 'id')).toEqual([]);
   });
 
+  it('ownership/route.ts checks isUuid(id) before querying', () => {
+    const src = readFileSync(join(ROOT, 'ownership/route.ts'), 'utf8');
+    expect(uuidGuardViolations(src, 'id')).toEqual([]);
+  });
+
   it('invitations/[invitationId]/route.ts checks isUuid(id) before querying', () => {
     const src = readFileSync(join(ROOT, 'invitations/[invitationId]/route.ts'), 'utf8');
     expect(uuidGuardViolations(src, 'id')).toEqual([]);

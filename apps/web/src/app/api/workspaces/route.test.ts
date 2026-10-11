@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { roleHas } from '@/lib/permission-registry';
 
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -40,6 +41,12 @@ mock.module('@/lib/github-installation-access', () => ({
 
 const mockEmit = mock(async (_e: any) => {});
 mock.module('@/lib/core-emit', () => ({ emit: mockEmit }));
+
+// The caller's role per team; `can` resolves through the real registry.
+let teamRoles: Record<string, string> = {};
+const mockCan = mock(async (caller: any, permission: any, teamId: string) =>
+  caller.kind === 'user' && roleHas(teamRoles[teamId], permission, {}));
+mock.module('@/lib/permissions', () => ({ can: mockCan }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -390,6 +397,8 @@ describe('POST /api/workspaces', () => {
     mockGetUserTeamIds.mockReset();
     mockGetUserDefaultTeamId.mockResolvedValue('team-1');
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    // team-1 is the user's personal team: the registry counts it as owned.
+    teamRoles = { 'team-1': 'owner' };
     process.env.NODE_ENV = 'production';
 
     mockWorkspacesInsert.mockReturnValue({
@@ -511,7 +520,9 @@ describe('POST /api/workspaces', () => {
 
   it('creates workspace with API key auth using API key team', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-api' });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-api', level: 'admin' });
+    const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'API Workspace' }]) }));
+    mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
 
     const req = new NextRequest('http://localhost:3000/api/workspaces', {
       method: 'POST',
@@ -524,6 +535,71 @@ describe('POST /api/workspaces', () => {
     const res = await POST(req);
 
     expect(res.status).toBe(200);
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ teamId: 'team-api' }));
+  });
+
+  // ── create_workspace (docs/specs/team-permissions.md) ────────────────────
+
+  function keyPost(level: string) {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-api', level, scopes: null });
+    return POST(new NextRequest('http://localhost:3000/api/workspaces', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_testkey' }),
+      body: JSON.stringify({ name: 'API Workspace' }),
+    }));
+  }
+
+  it('refuses a worker-level API key and writes nothing', async () => {
+    const res = await keyPost('worker');
+    expect(res.status).toBe(403);
+    expect(mockWorkspacesInsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses a trigger-level API key and writes nothing', async () => {
+    const res = await keyPost('trigger');
+    expect(res.status).toBe(403);
+    expect(mockWorkspacesInsert).not.toHaveBeenCalled();
+  });
+
+  it('a solo user still creates in their personal team (no teamId requested)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'x' }]) }));
+    mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+
+    const res = await POST(createMockPostRequest({ name: 'x' }));
+
+    expect(res.status).toBe(200);
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ teamId: 'team-1' }));
+    expect(mockCan).toHaveBeenCalledWith({ kind: 'user', userId: 'user-1' }, 'create_workspace', 'team-1');
+  });
+
+  for (const role of ['owner', 'admin']) {
+    it(`a team ${role} creates a workspace in that team`, async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-shared']);
+      teamRoles['team-shared'] = role;
+      const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'x' }]) }));
+      mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+
+      const res = await POST(createMockPostRequest({ name: 'x', teamId: 'team-shared' }));
+
+      expect(res.status).toBe(200);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ teamId: 'team-shared' }));
+    });
+  }
+
+  it('a team member is refused in that team and nothing is written (no silent fallback to personal)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-shared']);
+    teamRoles['team-shared'] = 'member';
+    mockEmit.mockClear();
+
+    const res = await POST(createMockPostRequest({ name: 'x', teamId: 'team-shared' }));
+
+    expect(res.status).toBe(403);
+    expect(mockWorkspacesInsert).not.toHaveBeenCalled();
+    expect(mockEmit).not.toHaveBeenCalledWith(expect.objectContaining({ teamId: 'team-shared' }));
   });
 
   it('refuses to link an installation that does not belong to the workspace team', async () => {

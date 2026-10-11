@@ -40,6 +40,8 @@ import {
 import { and, eq, inArray, isNotNull, ne, not, or, isNull } from 'drizzle-orm';
 import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
 import { sweepSubjectAnchoredTasks } from './subject-sweep';
+import { recordPrFact } from '@buildd/core/pr-facts';
+import { isMissionPrTask } from '@buildd/core/mission-integration';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -292,13 +294,18 @@ export async function shutdownDeadBuilddPrs(
       eq(tasks.subjectPrNumber, subjectPrNumber),
       ne(tasks.id, eventWorker.taskId),
     ),
-    columns: { id: true, missionId: true },
+    columns: { id: true, missionId: true, title: true, taskClass: true },
   });
 
-  if (loserTasks.length === 0) return result;
+  // A mission ship PR carries the whole mission branch. Sharing a subject with
+  // an unrelated task PR (a conflict-retry fix, say) is not evidence that PR
+  // carried its changes, and closing it strands the mission with no active
+  // task. Subject anchoring only nominates; ship PRs are never auto-closed.
+  const eligibleTasks = loserTasks.filter(t => !isMissionPrTask(t));
+  if (eligibleTasks.length === 0) return result;
 
-  const loserTaskIds = loserTasks.map(t => t.id);
-  const missionById = Object.fromEntries(loserTasks.map(t => [t.id, t.missionId]));
+  const loserTaskIds = eligibleTasks.map(t => t.id);
+  const missionById = Object.fromEntries(eligibleTasks.map(t => [t.id, t.missionId]));
 
   const loserWorkers = await db.query.workers.findMany({
     where: and(
@@ -392,10 +399,7 @@ async function closePrWithComment(
   // If the above throws, we do NOT stamp closed (let it propagate)
 
   // Step 4 of spec §5: stamp worker lifecycle
-  await db
-    .update(workers)
-    .set({ prLifecycleStatus: 'closed', updatedAt: new Date() })
-    .where(eq(workers.id, loser.workerId));
+  await recordPrFact({ workerId: loser.workerId }, { kind: 'closed' });
 
   // Step 5 of spec §5: supersede open escalations
   await supersedePrEscalations(loser.taskId, successorPrNumber);

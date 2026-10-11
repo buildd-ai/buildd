@@ -87,16 +87,18 @@ export function applyBudgetUsage(
  * `authType` is not a reliable seat signal: an account created by a CLI login
  * is recorded as `api` even when the runner behind it is on a seat, so gating
  * on it would silently stop the pool counter (and its alerts) for those
- * runners. Metered API-key spend is over-counted instead, which is the loud
- * failure. Exclude metered work once the credential's own billing mode is
- * persisted on the worker.
+ * runners. The worker's own `costBasis` is the signal instead: `real` usage
+ * was charged per token, not drawn from the plan, so it never counts. Any
+ * other basis (including unknown and absent) counts as before.
  */
 export function countsTowardAgentSdkCreditPool(input: {
   backend: string | null | undefined;
   authType: string | null | undefined;
   tenantId?: string | null;
+  costBasis?: import('./cost-basis').CostBasis | null;
 }): boolean {
   if (input.backend === 'codex') return false;
   if (input.tenantId) return false;
+  if (input.costBasis === 'real') return false;
   return true;
 }

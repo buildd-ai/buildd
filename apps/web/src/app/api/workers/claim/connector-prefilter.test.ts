@@ -20,6 +20,8 @@ const mockSharesFindMany = mock(async (_a?: any) => [] as any[]);
 const mockConnWorkspacesFindMany = mock(async (_a?: any) => [] as any[]);
 const mockSecretsFindMany = mock(async (_a?: any) => [] as any[]);
 const mockProviderGet = mock(async (_id: string) => 'decrypted' as string | null);
+const mockPoliciesFindMany = mock(async (_a?: any) => [] as any[]);
+const mockLoadTeamCatalog = mock(async (_teamId: string) => [] as any[]);
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -29,12 +31,14 @@ mock.module('@buildd/core/db', () => ({
       connectorShares: { findMany: mockSharesFindMany },
       connectorWorkspaces: { findMany: mockConnWorkspacesFindMany },
       secrets: { findMany: mockSecretsFindMany },
+      connectorCatalogTeamPolicies: { findMany: mockPoliciesFindMany },
     },
   },
 }));
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({ get: mockProviderGet }),
 }));
+mock.module('@/lib/connector-catalog-store', () => ({ loadTeamCatalog: mockLoadTeamCatalog }));
 
 const { runConnectorPreFilter } = await import('./connector-prefilter');
 
@@ -81,7 +85,7 @@ beforeEach(() => {
   process.env.ENCRYPTION_KEY = 'test-key';
   for (const m of [
     mockSkillsFindMany, mockConnectorsFindMany, mockSharesFindMany,
-    mockConnWorkspacesFindMany, mockSecretsFindMany,
+    mockConnWorkspacesFindMany, mockSecretsFindMany, mockPoliciesFindMany, mockLoadTeamCatalog,
   ]) {
     m.mockReset();
     m.mockResolvedValue([]);
@@ -154,6 +158,68 @@ describe('runConnectorPreFilter — never_mounted', () => {
     const r = await runConnectorPreFilter([task('t1')]);
 
     expect(r.taskConnectorFailures.has('t1')).toBe(false);
+  });
+});
+
+/** Team `teamId` has blocked the catalog entry whose URL is `url`. */
+function blockCatalogEntry(teamId: string, url: string) {
+  mockPoliciesFindMany.mockResolvedValue([{ teamId }]);
+  mockLoadTeamCatalog.mockImplementation(async (t: string) => t === teamId
+    ? [{ slug: 'axiom', name: 'Axiom', url, policy: 'blocked' }]
+    : []);
+}
+
+describe('runConnectorPreFilter — blocked_by_policy', () => {
+  // An admin blocking a catalog entry keeps the installed connector and its
+  // credential, so every other check passes — only the policy can stop it.
+  it('holds a task whose role mounts a connector the team has since blocked', async () => {
+    mockSkillsFindMany.mockResolvedValue([role(['conn-a'])]);
+    mockConnectorsFindMany.mockResolvedValue([connector('conn-a', { url: 'https://mcp.axiom.co/mcp' })]);
+    blockCatalogEntry('team-1', 'https://mcp.axiom.co/mcp/');
+
+    const r = await runConnectorPreFilter([task('t1')]);
+
+    expect(r.connectorMismatchTaskIds.has('t1')).toBe(true);
+    expect(r.taskConnectorFailures.get('t1')).toEqual([
+      { connectorId: 'conn-a', connectorName: 'conn-a', mode: 'blocked_by_policy' },
+    ]);
+  });
+
+  it("applies the owner team's block to a connector shared to another team", async () => {
+    mockSkillsFindMany.mockResolvedValue([role(['conn-a'])]);
+    mockConnectorsFindMany.mockResolvedValue([connector('conn-a', { teamId: 'team-OWNER', url: 'https://mcp.axiom.co/mcp' })]);
+    mockSharesFindMany.mockResolvedValue([{ connectorId: 'conn-a', sharedWithTeamId: 'team-1' }]);
+    blockCatalogEntry('team-OWNER', 'https://mcp.axiom.co/mcp');
+
+    const r = await runConnectorPreFilter([task('t1')]);
+
+    expect(r.taskConnectorFailures.get('t1')?.[0]?.mode).toBe('blocked_by_policy');
+  });
+
+  it("does not apply another team's block", async () => {
+    mockSkillsFindMany.mockResolvedValue([role(['conn-a'])]);
+    mockConnectorsFindMany.mockResolvedValue([connector('conn-a', { url: 'https://mcp.axiom.co/mcp' })]);
+    blockCatalogEntry('team-ELSEWHERE', 'https://mcp.axiom.co/mcp');
+
+    const r = await runConnectorPreFilter([task('t1')]);
+
+    expect(r.connectorMismatchTaskIds.size).toBe(0);
+  });
+
+  it('leaves an advisory-mode task its other connectors, never the blocked one', async () => {
+    mockSkillsFindMany.mockResolvedValue([role(['conn-a', 'conn-b'])]);
+    mockConnectorsFindMany.mockResolvedValue([
+      connector('conn-a', { url: 'https://mcp.axiom.co/mcp' }),
+      connector('conn-b'),
+    ]);
+    blockCatalogEntry('team-1', 'https://mcp.axiom.co/mcp');
+
+    const r = await runConnectorPreFilter([task('t1', { advisory: true })]);
+
+    expect(r.connectorMismatchTaskIds.has('t1')).toBe(false);
+    expect(r.taskDegradedConnectors.get('t1')).toEqual([
+      { id: 'conn-a', name: 'conn-a', failureMode: 'blocked_by_policy' },
+    ]);
   });
 });
 
@@ -404,5 +470,25 @@ describe('runConnectorPreFilter — role resolution and opt-out', () => {
     const r = await runConnectorPreFilter([task('t1', { teamId: null })]);
 
     expect(mockSkillsFindMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('runConnectorPreFilter — personal roles', () => {
+  // The old per-(team, slug, workspace) map let any team-level row with the
+  // slug stand for the team default, so another member's private role could
+  // gate (or ungate) this task. Each task now reads its own requester's winner.
+  it("gates each task on its requester's role, never another member's private one", async () => {
+    mockSkillsFindMany.mockResolvedValue([
+      role([]),
+      { ...role(['conn-gone']), id: 'r-bob', ownerUserId: 'u-bob', visibility: 'private' },
+    ]);
+    mockConnectorsFindMany.mockResolvedValue([]);
+
+    const bobs = { ...task('t-bob'), createdByUserId: 'u-bob' };
+    const alices = { ...task('t-alice'), createdByUserId: 'u-alice' };
+    const r = await runConnectorPreFilter([bobs, alices]);
+
+    expect(r.connectorMismatchTaskIds.has('t-bob')).toBe(true);
+    expect(r.connectorMismatchTaskIds.has('t-alice')).toBe(false);
   });
 });

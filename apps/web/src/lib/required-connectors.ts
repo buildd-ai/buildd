@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, isNull, or } from 'drizzle-orm';
+import { personalRoleVisibleSql, pickVisibleRoleRow, ROLE_VISIBILITY_COLUMNS } from '@buildd/core/role-visibility';
 
 /**
  * Validation for `tasks.requiredConnectors` — the task-level opt-in that turns a
@@ -23,25 +24,29 @@ export type RequiredConnectorsResult =
   | { ok: false; error: string };
 
 /**
- * Effective `connectorRefs` for a role in one workspace: the workspace-scoped
- * row wins over the team-wide row, matching the claim route's precedence.
+ * Effective `connectorRefs` for a role in one workspace, by the claim route's
+ * precedence (@buildd/core/role-visibility): workspace override > the
+ * requester's own personal role > a shared personal role > team default.
+ * Another member's private role is never read — its refs are not what the
+ * task's claim would mount.
  */
 export async function resolveRoleConnectorRefs(
   roleSlug: string,
   workspaceId: string,
   teamId: string,
+  requesterUserId: string | null = null,
 ): Promise<string[]> {
-  const roleRow = await db.query.workspaceSkills.findFirst({
+  const roleRows = await db.query.workspaceSkills.findMany({
     where: and(
       eq(workspaceSkills.slug, roleSlug),
       eq(workspaceSkills.enabled, true),
       eq(workspaceSkills.teamId, teamId),
       or(eq(workspaceSkills.workspaceId, workspaceId), isNull(workspaceSkills.workspaceId)),
+      personalRoleVisibleSql(requesterUserId),
     ),
-    columns: { connectorRefs: true },
-    // Workspace-scoped rows first; NULLs sort last under DESC in Postgres.
-    orderBy: (ws, { desc }) => [desc(ws.workspaceId)],
+    columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
   });
+  const roleRow = pickVisibleRoleRow(roleRows, roleSlug, { teamId, workspaceId, requesterUserId });
   return (roleRow?.connectorRefs as string[] | null) ?? [];
 }
 
@@ -53,7 +58,7 @@ export async function resolveRoleConnectorRefs(
  */
 export async function validateRequiredConnectors(
   raw: unknown,
-  ctx: { roleSlug: string | null; workspaceId: string; teamId: string | null },
+  ctx: { roleSlug: string | null; workspaceId: string; teamId: string | null; requesterUserId?: string | null },
 ): Promise<RequiredConnectorsResult> {
   if (raw === undefined || raw === null) return { ok: true, value: null };
 
@@ -70,7 +75,7 @@ export async function validateRequiredConnectors(
     return { ok: false, error: 'requiredConnectors requires the workspace to belong to a team' };
   }
 
-  const refs = await resolveRoleConnectorRefs(ctx.roleSlug, ctx.workspaceId, ctx.teamId);
+  const refs = await resolveRoleConnectorRefs(ctx.roleSlug, ctx.workspaceId, ctx.teamId, ctx.requesterUserId ?? null);
   const invalid = ids.filter((id) => !refs.includes(id));
   if (invalid.length > 0) {
     return {

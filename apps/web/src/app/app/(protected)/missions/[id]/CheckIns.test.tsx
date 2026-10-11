@@ -12,7 +12,7 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
-import HeartbeatStatusBadge from './HeartbeatStatusBadge';
+import { LastCheckPill } from './MissionCheckIns';
 import HeartbeatTimeline from './HeartbeatTimeline';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
@@ -20,10 +20,16 @@ import QuietHoursConfig from './QuietHoursConfig';
 describe('Last check badge', () => {
   it('renders the last check label', () => {
     const html = renderToStaticMarkup(
-      <HeartbeatStatusBadge check={{ label: 'stuck, organizer started', tone: 'warning', at: null }} />,
+      <LastCheckPill check={{ label: 'stuck, organizer started', tone: 'warning', at: null }} />,
     );
     expect(html).toContain('stuck, organizer started');
     expect(html).not.toMatch(/heartbeat/i);
+  });
+
+  it('is a StatePill in the tone of the check', () => {
+    const html = renderToStaticMarkup(<LastCheckPill check={{ label: 'on track', tone: 'success', at: null }} />);
+    expect(html).toContain('data-state="landed"');
+    expect(html).toContain('data-testid="mission-last-check"');
   });
 });
 

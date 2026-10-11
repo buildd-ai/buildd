@@ -1,0 +1,59 @@
+'use client';
+
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import ConfirmDialog from '@/components/ConfirmDialog';
+
+export default function DeleteWorkspaceButton({ workspaceId, workspaceName }: { workspaceId: string; workspaceName: string }) {
+  const router = useRouter();
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleDelete() {
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}`, {
+        method: 'DELETE',
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to delete');
+      }
+
+      router.push('/app/settings/workspaces');
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete workspace');
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setShowConfirm(true)}
+        disabled={deleting}
+        className="btn btn-danger min-h-11 shrink-0"
+      >
+        {deleting ? 'Deleting…' : 'Delete workspace'}
+      </button>
+
+      <ConfirmDialog
+        open={showConfirm}
+        title={`Delete "${workspaceName}"?`}
+        message={error || "Deletes every task and worker in this workspace. You can't undo this."}
+        confirmLabel="Delete"
+        variant="danger"
+        loading={deleting}
+        onConfirm={handleDelete}
+        onCancel={() => {
+          setShowConfirm(false);
+          setError(null);
+        }}
+      />
+    </>
+  );
+}

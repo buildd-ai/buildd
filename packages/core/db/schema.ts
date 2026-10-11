@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { relations, sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -42,6 +42,7 @@ export const teams = pgTable('teams', {
   // active hours — where there is no single known viewer. Seeded from the detected zone
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
+  warmHandover: text('warm_handover').$type<'off' | 'repo' | 'deps'>().default('off').notNull(),
 
   // Per-team permission grants: permission name -> team roles that hold it. An
   // absent key = the registry default (apps/web/src/lib/permission-registry.ts).
@@ -59,6 +60,11 @@ export const teams = pgTable('teams', {
     monthlyRunnerHours?: number | null;
     overage?: 'block' | 'allow';
   } | null>(),
+  // Monthly hosted (cloud) runner allowance, in counted hours: wall time on the
+  // hosted runner weighted by container size (standard 1x, large 2x), summed
+  // from `runner_usage`. NULL = no cap. Written by hosted billing; read only
+  // through apps/web/src/lib/hosted-runner-usage-store.ts.
+  hostedRunnerHours: integer('hosted_runner_hours'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
@@ -119,6 +125,13 @@ export const teams = pgTable('teams', {
   // 'own' = each person's own key, no team fallback — team work with no person
   // (grading, visual QA) then finds no key and takes its runner path.
   inferenceKeyPolicy: text('inference_key_policy').$type<'team' | 'team_or_own' | 'own'>().notNull().default('team'),
+  // Whose credential every provider spends — chat, inference AND agent runs:
+  // 'team' = team keys only, personal ones ignored; 'personal_first' = the
+  // requesting person's own key, else the team's; 'personal_only' = no team key
+  // at all. NULL = not chosen yet: read inferenceKeyPolicy through
+  // credentialPolicyOf (apps/web/src/lib/inference-key-policy.ts), which maps
+  // team/team_or_own/own one-to-one. inferenceKeyPolicy is dropped later.
+  credentialPolicy: text('credential_policy').$type<'team' | 'personal_first' | 'personal_only'>(),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
@@ -135,11 +148,35 @@ export const teams = pgTable('teams', {
   // Admin policy: a new conversation starts at min(person's last tier, the
   // default tier above) — reset down to it, never up. Off = the person's last tier.
   chatCapNewSessionTier: boolean('chat_cap_new_session_tier').notNull().default(false),
+  // How this team's catalog-resolved tiers advance to newly certified models:
+  // { mode: 'latest-compatible' | 'soak' | 'manual', soakHours?, adoptedThrough?,
+  // setBy?, setAt? }. NULL = latest-compatible. A workspace's own value wins.
+  // Read only through packages/core/model-upgrade-policy.ts (readUpgradePolicy).
+  modelUpgradePolicy: jsonb('model_upgrade_policy').$type<import('../model-upgrade-policy').ModelUpgradePolicy | null>(),
   // Chat session retros (experiment, apps/web/src/lib/chat-retro/). Opt-in per
   // team: NULL or a missing key = off. `lessons` records content-free lesson
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
   // file suggested improvements as tasks. Removal: see chat-retro/REMOVAL.md.
   chatRetro: jsonb('chat_retro').$type<{ lessons?: boolean; proposals?: boolean } | null>(),
+  // Task estimates (experiment, packages/core/task-estimate.ts). Opt-in per
+  // team: NULL or a missing key = off. `enabled` writes a frozen estimate for
+  // every new task and shows estimate surfaces. Read only through
+  // packages/core/task-estimate-source.ts (taskEstimatesEnabled). Removal: see
+  // packages/core/TASK-ESTIMATES-REMOVAL.md.
+  taskEstimates: jsonb('task_estimates').$type<{ enabled?: boolean; setBy?: string; setAt?: string } | null>(),
+  // Enforceable model-tier ceilings (most restrictive layer wins): the team's
+  // cap, per-workspace caps, what an auto tier over the cap does, and an audit
+  // tail. NULL = no ceiling, routing unchanged. Distinct from chatDefaultTier,
+  // which only seeds a new chat. Read/written only through
+  // packages/core/model-tier-ceiling-store.ts; contract in
+  // docs/specs/model-tier-ceilings.md.
+  modelTierCeilings: jsonb('model_tier_ceilings').$type<import('@buildd/shared').TeamTierCeilingPolicy | null>(),
+
+  // Enforceable Coding provider / payment-source restrictions (team layer and
+  // per-workspace layers). NULL = unrestricted, which is every existing team.
+  // A denial is a refusal, never a redirect (unlike enabledBackends). Read
+  // through packages/core/coding-policy-store.ts; rule in coding-policy.ts.
+  codingPolicy: jsonb('coding_policy').$type<import('../coding-policy').TeamCodingPolicy | null>(),
 
   // Billing (knowledge-base: buildd/plans/billing-v1.md). Never read directly by a
   // gate — read packages/core/entitlements.ts entitlements(team), which also
@@ -186,6 +223,13 @@ export const teamMembers = pgTable('team_members', {
   // value is a choice (all workspaces / auto); an absent key was never chosen.
   // Seeds every new conversation (apps/web/src/lib/chat/composer-prefs.ts).
   chatComposerPrefs: jsonb('chat_composer_prefs').$type<{ workspaceId?: string | null; tier?: string | null }>(),
+  // This person's model-tier ceilings in this team: `admin` (set by a team
+  // admin, the member cannot lift it) and `self` (their own, only lowers).
+  // NULL = none. See teams.modelTierCeilings.
+  modelTierCeilings: jsonb('model_tier_ceilings').$type<import('@buildd/shared').MemberTierCeilings | null>(),
+  // This person's own Coding provider restriction. It can only narrow what the
+  // team and workspace allow, and applies only to tasks they requested.
+  codingPolicy: jsonb('coding_policy').$type<import('../coding-policy').CodingPolicyLayer | null>(),
 }, (t) => ({
   pk: primaryKey({ columns: [t.teamId, t.userId] }),
   teamIdx: index('team_members_team_idx').on(t.teamId),
@@ -235,6 +279,10 @@ export const accounts = pgTable('accounts', {
   expiresAt: timestamp('expires_at', { withTimezone: true }),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   githubId: text('github_id'),
+  // The person who minted this key. NULL = minted before this was recorded, or
+  // by no person (system/runner bootstrap). Bounds the key when its creator's
+  // team role drops (key-level-policy.ts).
+  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
 
   // Authentication type
   authType: text('auth_type').default('api').notNull().$type<'api' | 'oauth'>(),
@@ -315,6 +363,29 @@ export const accountWorkspaces = pgTable('account_workspaces', {
 //   - 'direct': every task PR merges into the default branch on its own.
 export type BranchStrategy = 'mission-branch' | 'direct';
 
+/**
+ * Cheap checks run before CI (docs/specs/workflow-state-kernel.md §6.10, S31).
+ * Advisory for the workflow kernel: a runner or server without them is no less
+ * safe, only noisier. Every field is off when absent.
+ */
+export interface WorkspacePreflightConfig {
+  /** create_pr refuses a title/body that CI's No Production Data prose scan would reject (counts, UUIDs). */
+  prProseScan?: boolean;
+  /**
+   * Shell commands the runner runs in the worktree before a push or create_pr
+   * (e.g. `bun run no-prod-data:check`). A failure denies that call with the
+   * output as the agent's next instruction; the attempt stays open.
+   */
+  commands?: string[];
+  /**
+   * CI check or workflow names (case-insensitive substrings) whose failure a
+   * preflight should have caught. A kernel CI failure naming one is tagged
+   * `preflight_miss` so the miss rate is measurable. Absent: the built-in
+   * production-data check name.
+   */
+  ciChecks?: string[];
+}
+
 // Git workflow configuration type
 export interface WorkspaceGitConfig {
   // Branching
@@ -340,6 +411,13 @@ export interface WorkspaceGitConfig {
   // linked-knowledge.ts) only honours an id the calling account could reach
   // anyway — same team, not sensitive, token restriction respected.
   linkedKnowledgeWorkspaces?: string[];
+
+  // Opt-in: a person (dashboard or OAuth session, never an API key or runner)
+  // must also hold read or higher on the linked GitHub repo before Buildd
+  // shows them code, files tasks for them, or lets chat work over this
+  // workspace. Absent ⇒ 'off': team membership is the whole check. Read only
+  // through resolveMemberRepoAccessMode (apps/web/src/lib/member-repo-access-shared.ts).
+  memberRepoAccess?: 'off' | 'require_read';
 
   // Commit conventions
   commitStyle: 'conventional' | 'freeform' | 'custom';
@@ -414,6 +492,8 @@ export interface WorkspaceGitConfig {
   // Cloud-runner container class. Absent = derived from recent run reports
   // (apps/web/src/lib/runner-size.ts); an explicit value always wins.
   runnerSize?: 'standard' | 'large';
+  /** Null/absent inherits the team policy. */
+  warmHandover?: 'off' | 'repo' | 'deps' | null;
   // Written by buildd, never by the settings form: the first derivation that
   // moved this workspace to `large`, kept so one light run does not move it back.
   runnerSizeDerived?: { size: 'large'; reason: 'memory_pressure' | 'low_disk' | 'container_restart' | 'large_checkout'; at: string };
@@ -464,6 +544,21 @@ export interface WorkspaceGitConfig {
   // Edit/Write/MultiEdit before the write, and a checkpoint sweep that finds a
   // collision (Bash/untracked/Codex writes) stops push/completion and defers the task.
   pathClaimEnforcement?: 'advisory' | 'enforce' | null;
+
+  // Policy checks before PR creation and push (docs/specs/workflow-state-kernel.md
+  // §6.10, S31). All off by default; advisory for the workflow kernel.
+  preflight?: WorkspacePreflightConfig | null;
+  // Files a runner regenerates instead of merging (see DerivedFileRule). Absent
+  // or empty: runners register no merge driver and conflicts go to the agent.
+  derivedFiles?: DerivedFileRule[];
+  // Register mergiraf (structural merge) as a driver in runner clones for the
+  // languages it parses. Off by default; skipped quietly if the binary is absent.
+  mergiraf?: boolean;
+  // Explicit overlap hotspots: paths or `dir/**` patterns where a same-file
+  // overlap with an in-flight task is a deterministic hold, never a claim-time
+  // HOLD/START decision (apps/web/src/lib/hard-overlap-surfaces.ts). Absent:
+  // only migrations, generated files and serialized surfaces are hard.
+  overlapHotspots?: string[] | null;
 
   // Block config file changes during worker sessions (SDK v0.2.49+ ConfigChange hook)
   // When true, returns { continue: false } to prevent agents from modifying config files.
@@ -520,6 +615,12 @@ export interface WorkspaceGitConfig {
   // 'enforce' defers a PR behind earlier open PRs on a serialized surface and
   // fails closed when intent state cannot be verified.
   surfaceOrdering?: 'off' | 'shadow' | 'enforce' | null;
+  // Landing lane (knowledge-base: buildd/design/landing-lane.md): at most one
+  // behind-refresh in flight per repo + base. Off by default (absent/'off':
+  // no lane reads). 'shadow' takes and releases the lane but never makes a
+  // refresh wait, recording when it would have; 'enforce' parks a refresh
+  // while another delivery on the same base holds the lane.
+  landingLane?: 'off' | 'shadow' | 'enforce' | null;
   // Semantic check before a clean base refresh (conflict-aware-orchestration.md
   // §4, apps/web/src/lib/semantic-refresh.ts). Off by default (no extra reads).
   // 'shadow' records same-symbol / unknown verdicts and refreshes as before;
@@ -566,6 +667,18 @@ export interface WorkspaceGitConfig {
   // Paths are derived by init scan (re-scan to refresh); never hand-typed. Reviewer sees class intent, not raw globs.
   policyConfig?: import('@buildd/shared').WorkspacePolicyConfig;
 
+  // Early release of dependent tasks before their upstream's PR merges
+  // (knowledge-base: buildd/design/early-release.md). Absent / 'off' = no
+  // early release — today's merge-gated behaviour. 'rule_only' runs just the
+  // Layer 1 deterministic override (early-release-rules.ts) on the upstream
+  // PR's diff and never calls the decision model. 'rule_and_jev' runs the
+  // full `buildd.early_release` kind (early-release-decision.ts), asking Jev
+  // when no rule fires. Read only through resolveEarlyReleaseMode() in
+  // apps/web/src/lib/early-release-mode.ts; PATCH /api/workspaces/[id] rejects
+  // any other value, and GET /api/workspaces/[id]/settings reports the resolved
+  // mode. Clear with `earlyRelease: null`.
+  earlyRelease?: { mode?: 'off' | 'rule_only' | 'rule_and_jev' } | null;
+
   // Auto-resolve merge conflicts by dispatching a same-branch needs-work retry.
   // Absent / true = ON (default). Set to false to disable auto-dispatch and let
   // the human trigger resolution manually from the escalation card.
@@ -578,6 +691,21 @@ export interface WorkspaceGitConfig {
   // exactly pre-mission behaviour: every question reaches a person unchanged,
   // with no pushback and no decide/hold.
   jevQuestionGate?: boolean;
+
+  // Workflow state kernel (docs/specs/workflow-state-kernel.md §14). Absent /
+  // true = ON: a PR delivery opened from then on is owned by the kernel (review
+  // rounds, fix loop, delivery proof). Set to false, the emergency kill switch,
+  // to hand every kernel delivery of this workspace back to the legacy paths
+  // (sticky per delivery) and open no new ones.
+  workflowKernel?: boolean;
+
+  // Trunk circuit breaker (docs/specs/workflow-state-kernel.md §6.10). Absent =
+  // ON with the base-red rule: a kernel PR whose failing checks also fail on
+  // its base branch's own head joins one trunk incident instead of filing a
+  // per-PR CI retry. `{ minDeliveries, windowMinutes }` also opens an incident
+  // when that many deliveries hit one signature inside the window (opt-in).
+  // `false` turns the breaker off.
+  trunkBreaker?: false | { minDeliveries?: number; windowMinutes?: number };
 
   // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
   // knowledge-base: buildd/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
@@ -903,6 +1031,12 @@ export interface ResultMeta {
    */
   provisionFailure?: { code: string; phase: string; message: string };
   /**
+   * Where an abnormally terminated worker's work went: `origin/<branch>@<sha>`
+   * (WIP checkpoint pushed to the task branch) or `archive:<path>` on the runner.
+   * The retry's context carries it so the next attempt resumes, not restarts.
+   */
+  recoveryRef?: string;
+  /**
    * Every tool_use in the session counted by exact tool name (`Bash`, `Edit`,
    * `mcp__buildd__buildd`, …), written by the runner at terminal state. Counts,
    * not events — unlike `workers.mcpCalls` this is never truncated.
@@ -994,8 +1128,17 @@ export const workspaces = pgTable('workspaces', {
   // workspaces (those are never serialized by the per-repo guard).
   maxConcurrentTasks: integer('max_concurrent_tasks').default(3).notNull(),
 
+  // "Pause new starts until <time>": until then runner claims skip this
+  // workspace's tasks (the claim route's workspacePaused gate). Running work
+  // carries on and a person's interactive claim is never paused. NULL or a
+  // past time = not paused, so it resumes on its own. By = the user who set it.
+  newStartsPausedUntil: timestamp('new_starts_paused_until', { withTimezone: true }),
+  newStartsPausedBy: text('new_starts_paused_by'),
+
   // Git workflow configuration
   gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
+  // Workspace override of teams.modelUpgradePolicy. NULL = inherit the team's.
+  modelUpgradePolicy: jsonb('model_upgrade_policy').$type<import('../model-upgrade-policy').ModelUpgradePolicy | null>(),
   configStatus: text('config_status').default('unconfigured').notNull().$type<'unconfigured' | 'admin_confirmed'>(),
 
   // Webhook configuration for external agent dispatch (OpenClaw, etc.)
@@ -1108,6 +1251,27 @@ export const missions = pgTable('missions', {
   // symmetrically, a mission nothing else ever touches again ages out forever
   // with no re-entry. Null = never attempted.
   prSweepLastCheckedAt: timestamp('pr_sweep_last_checked_at', { withTimezone: true }),
+  // Keeping the integration branch current with dev (docs/design/mission-delivery-arc.md
+  // P5, superseded): the trunk SHA last confirmed merged into (or already an
+  // ancestor of) `workingBranch`. A refresh compares this against trunk's live
+  // head and skips the GitHub call entirely when they already match — the
+  // idempotency half of debouncing a burst of dev merges. Null means never
+  // refreshed (or opted in after the column existed).
+  branchRefreshHeadSha: text('branch_refresh_head_sha'),
+  // Single-flight lease for the refresh itself: a claim sets this to now() +
+  // the lease window, and a second caller racing the same mission (the
+  // concurrency half of debouncing a burst) only proceeds once it is null or
+  // in the past. Always cleared at the end of the attempt that set it.
+  branchRefreshLeaseUntil: timestamp('branch_refresh_lease_until', { withTimezone: true }),
+  /** Ownership token prevents expired callers from changing a successor's refresh. */
+  branchRefreshLeaseToken: text('branch_refresh_lease_token'),
+  // The open conflict-resolution task dispatched after a 409 merging dev into
+  // this mission's integration branch — at most one at a time (mirrors
+  // conflict-retry's one-live-retry-per-PR rule). Non-null and non-terminal
+  // means "stop refreshing this mission until that task finishes"; the next
+  // refresh attempt self-heals the column to null once it observes the task
+  // reached a terminal status.
+  branchRefreshConflictTaskId: uuid('branch_refresh_conflict_task_id'),
   // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
@@ -1320,6 +1484,11 @@ export const tasks = pgTable('tasks', {
   // Task creator tracking
   createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
+  // The person this task is for: the signed-in creator, or — for a task an agent,
+  // schedule or mission files — the person behind its parent task, schedule or
+  // mission. NULL = no person (pure API-key creation). Personal credentials and
+  // personal roles serve only this person's tasks.
+  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator' | 'conflict'>(),
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
   // Enables reverse lookup: given a stray task, find the schedule that created it.
@@ -1343,6 +1512,12 @@ export const tasks = pgTable('tasks', {
   // on the same headSha; only one fix task per (workspace, PR, headSha).
   reviewerRetryPrNumber: integer('reviewer_retry_pr_number'),
   reviewerRetryHeadSha: text('reviewer_retry_head_sha'),
+  // Workflow kernel attempt linkage (docs/specs/workflow-state-kernel.md §5.6):
+  // the delivery this task is an attempt of, and its role in it. NULL = not a
+  // kernel delivery's attempt (legacy, or not PR work). No FK: the delivery row
+  // references tasks (owner_task_id), and a delivery is never deleted on its own.
+  deliveryId: uuid('delivery_id'),
+  deliveryRole: text('delivery_role').$type<'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review'>(),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research'>(),
   // How `category` was decided, once the decision model has looked at the task
@@ -1358,6 +1533,12 @@ export const tasks = pgTable('tasks', {
     skipped?: 'sensitive' | 'unconfigured';
     at: string;
   }>(),
+  // The task verdict's cached decision (apps/web/src/lib/task-verdict-decision.ts):
+  // the wording/actions the decision model picked for the state the rules
+  // derived, its error-class calls and the orchestration_decisions ids behind
+  // them. Written on a state change only; the page reads it, never computes it.
+  // Shape: StoredVerdictDecision in apps/web/src/lib/task-verdict.ts.
+  verdictDecision: jsonb('verdict_decision').$type<Record<string, unknown>>(),
   project: text('project'),
   // Output requirement — controls what deliverables are enforced on completion
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
@@ -1454,6 +1635,7 @@ export const tasks = pgTable('tasks', {
   runnerPrefIdx: index('tasks_runner_pref_idx').on(t.runnerPreference),
   modeIdx: index('tasks_mode_idx').on(t.mode),
   createdByAccountIdx: index('tasks_created_by_account_idx').on(t.createdByAccountId),
+  createdByUserIdx: index('tasks_created_by_user_idx').on(t.createdByUserId),
   parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
   projectIdx: index('tasks_project_idx').on(t.project),
   missionIdx: index('tasks_mission_idx').on(t.missionId),
@@ -1500,6 +1682,7 @@ export const tasks = pgTable('tasks', {
   // CI retries carry the same subject anchor, so `category` scopes it to reviews;
   // `creation_source = 'webhook'` + a parent scopes it to createReviewerTask rows,
   // so a human/API filing auto-classified as 'review' never collides with it.
+  deliveryIdx: index('tasks_delivery_idx').on(t.deliveryId).where(sql`${t.deliveryId} IS NOT NULL`),
   onePendingReviewPerHeadIdx: uniqueIndex('tasks_one_pending_review_per_head_unique')
     .on(t.workspaceId, t.subjectPrNumber, t.subjectHeadSha)
     .where(sql`${t.category} = 'review' AND ${t.status} = 'pending' AND ${t.creationSource} = 'webhook' AND ${t.parentTaskId} IS NOT NULL AND ${t.subjectPrNumber} IS NOT NULL AND ${t.subjectHeadSha} IS NOT NULL`),
@@ -1606,6 +1789,35 @@ export const taskSubjectClaims = pgTable('task_subject_claims', {
     .where(sql`${t.state} = 'active'`),
 }));
 
+// Early-release ledger — docs/design/early-release.md "Data model". One row per
+// decision to release (or hold) a dependent task before its upstream's PR has
+// merged. Append-only: a reconciler revoking a release stamps revokedAt /
+// revokedReason on the existing row rather than deleting it, so the decision
+// history stays auditable. Every row written here also fires the
+// `early_release` gate event.
+export const dependencyReleases = pgTable('dependency_releases', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  dependentTaskId: uuid('dependent_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  upstreamTaskId: uuid('upstream_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // The upstream PR the decision was made against.
+  upstreamPrNumber: integer('upstream_pr_number').notNull(),
+  // start_now: dependent may claim off trunk. start_stacked: claim off the
+  // upstream's branch (baseBranch). wait: keep the dependsOn gate closed.
+  decision: text('decision').notNull().$type<'start_now' | 'wait' | 'start_stacked'>(),
+  // Who decided: a deterministic rule, the decision model, or the fallback when
+  // the model was unavailable or unsure.
+  source: text('source').notNull().$type<'rule' | 'model' | 'fallback'>(),
+  // Stable machine-readable reason, e.g. which rule matched.
+  reasonCode: text('reason_code').notNull(),
+  // Branch the dependent was released onto; set for start_stacked.
+  baseBranch: text('base_branch'),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).defaultNow().notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedReason: text('revoked_reason'),
+}, (t) => ({
+  dependentUpstreamIdx: index('dependency_releases_dependent_upstream_idx').on(t.dependentTaskId, t.upstreamTaskId),
+}));
+
 // The discrepancy ledger — docs/design/spec-conformance.md §7. A row is the
 // derived GAP between a spec's declared status and what the checker actually
 // found, not a re-derived report line: identity is the exact
@@ -1621,7 +1833,9 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   // §8: which way the gap runs. code_ahead/contradicted may be written by
   // Tier-2 CI; spec_ahead is written only by the Tier-3 cron (slice 7) after
   // its deeper search rules out a rename — CI never writes it directly.
-  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted'>(),
+  // `conflict` (Living Specs, D-5): two requirements of approved revisions
+  // disagree. Advisory only: it never blocks a merge or a completion.
+  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted' | 'conflict'>(),
   // §9: open -> accepted is a parked, not closed, state; -> resolved happens
   // only when a re-run's assertion result lands cleanly, never by self-report.
   status: text('status').notNull().default('open').$type<'open' | 'accepted' | 'resolved'>(),
@@ -1654,6 +1868,9 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   proposalRejectedReason: text('proposal_rejected_reason'),
   // The exact read that produced the current verdict — never a similarity score.
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  // A Living Spec finding names the exact approved revision it was judged
+  // against; NULL for a repo-spec (docs/specs) assertion.
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'set null' }),
 }, (t) => ({
   workspaceIdx: index('spec_discrepancies_workspace_idx').on(t.workspaceId),
   // THE identity constraint (§7): exactly one row per (workspace, spec, assertion).
@@ -1693,8 +1910,23 @@ export type WorkerWaitingFor = {
  * older rows carry only the label, so readers must degrade to parsing it.
  */
 export type WorkerMilestone =
-  | { type: 'phase'; label?: string; toolCount: number; ts: number; pending?: boolean }
-  | { type: 'status'; label?: string; progress?: number; ts: number }
+  | {
+      type: 'phase';
+      /** The assistant text that opened the phase (first sentence) — kept verbatim for audit. */
+      label?: string;
+      toolCount: number;
+      ts: number;
+      pending?: boolean;
+      /**
+       * Distinct operations the phase called, in order (`get_decision`, `Edit`,
+       * `Bash`): the MCP action or tool name, never its input. Lets readers name
+       * a phase by what it did when its text was only a lead-in to the calls.
+       * Absent on older runners.
+       */
+      ops?: string[];
+    }
+  | { type: 'status'; label?: string; progress?: number; ts: number; origin?: 'agent' }
+  | { type: 'plan'; label?: string; progress?: number; ts: number; origin?: 'agent' }
   | { type: 'checkpoint'; event: string; label?: string; ts: number }
   | {
       type: 'action';
@@ -1713,12 +1945,24 @@ export const workers = pgTable('workers', {
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // The person whose OAuth session claimed this worker (the session's JWT
+  // subject, a users.id). An OAuth session acts as an account its whole team
+  // shares, so accountId alone cannot tell one member's claim from another's;
+  // the worker owner check (lib/worker-owner.ts) requires this to match the
+  // caller's session user. NULL: claimed by a bld_ key, which owns by account.
+  // No FK on purpose: a deleted user must not turn the claim back into an
+  // account-owned (NULL) one.
+  claimedByUserId: uuid('claimed_by_user_id'),
   name: text('name').notNull(),
   runner: text('runner').notNull(),
   branch: text('branch').notNull(),
   status: text('status').default('idle').notNull().$type<WorkerStatusValue>(),
   waitingFor: jsonb('waiting_for').$type<WorkerWaitingFor | null>(),
   costUsd: decimal('cost_usd', { precision: 10, scale: 6 }).default('0').notNull(),
+  // How costUsd and the tokens were charged: real (per token) | virtual (plan
+  // usage at list price) | mixed | unknown. Reported by whoever picked the
+  // credential (packages/core/cost-basis.ts). NULL = no usage recorded.
+  costBasis: text('cost_basis').$type<import('../cost-basis').CostBasis | null>(),
   // Token usage (for seat-based accounts where cost isn't meaningful)
   inputTokens: integer('input_tokens').default(0).notNull(),
   outputTokens: integer('output_tokens').default(0).notNull(),
@@ -1861,14 +2105,24 @@ export const workers = pgTable('workers', {
   pendingInstructions: text('pending_instructions'),
   // Instruction history - log of sent instructions and worker responses
   instructionHistory: jsonb('instruction_history').default([]).$type<Array<{
+    /** Server-generated at enqueue; consumers settle and acknowledge by it. Absent on older entries. */
+    id?: string;
     type: 'instruction' | 'response';
     /** Omitted for sensitive workspaces — the {type, ts} envelope is kept only. */
     message?: string;
     timestamp: number;
-    // 'pending' = queued, not yet confirmed delivered; 'delivered' = a consumer
-    // (the runner) confirmed the text reached the agent session. Never set to
-    // 'delivered' at write time — that recorded deliveries that never happened.
-    deliveryState?: 'pending' | 'delivered';
+    // 'pending' = queued (shown as Queued); 'delivered' = a consumer (the
+    // runner, or an MCP read) confirmed the text reached the agent session;
+    // 'acknowledged' = the agent's turn read it (observed, never inferred).
+    // Never set to 'delivered' at write time — that recorded deliveries that
+    // never happened. Undelivered is derived (run ended first), never stored.
+    // Read through messageDeliveryStatus (apps/web/src/lib/worker-instructions.ts).
+    deliveryState?: 'pending' | 'delivered' | 'acknowledged';
+    deliveredAt?: number;
+    acknowledgedAt?: number;
+    /** Settled by id: its consumer reports reads, so an unread one is undelivered once the run ends. */
+    awaitsAck?: true;
+    turnAtSend?: number;
   }>>(),
   // Transitional capability flag: true once this worker's runner has checked in
   // with `consumeInstructions: true`, i.e. it speaks the delivery-confirmation
@@ -1884,6 +2138,11 @@ export const workers = pgTable('workers', {
   // the worker counts as holding its transcript (answer-resume.ts G2) and is
   // exempt from the offline-runner sweep. NULL for every other runner.
   parkedUntil: timestamp('parked_until', { withTimezone: true }),
+  // A person asked this running worker to pause (POST /api/workers/[id]/pause).
+  // Served to the runner on every PATCH response (`pauseRequested`) until the
+  // worker parks as waiting_input or ends, so a missed realtime push still
+  // lands. Cleared on that park, or on any terminal status.
+  pauseRequestedAt: timestamp('pause_requested_at', { withTimezone: true }),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
   // What the agent actually sent on a completion the outputRequirement gate
@@ -2016,7 +2275,10 @@ export const workers = pgTable('workers', {
  */
 export const localSessions = pgTable('local_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  /** Owner when the hook authenticated with an account API key. Exactly one of accountId / userId. */
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  /** Owner when the hook authenticated with the person's presence token (presenceTokens). */
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   /** Resolved from the session's git remote among the workspaces the account reaches; null if none matched. */
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   /** 'claude' | 'codex' | 'cursor' | 'other' */
@@ -2032,13 +2294,51 @@ export const localSessions = pgTable('local_sessions', {
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
   endedAt: timestamp('ended_at', { withTimezone: true }),
   endReason: text('end_reason'),
-  /** The interactive worker this session's own claim_task minted. One session per worker, ever. */
+  /**
+   * Legacy: the single worker a session could hold before multi-claim. Read
+   * (never written) so a session bound before localSessionWorkers existed still
+   * releases its worker; the bindings live in localSessionWorkers now.
+   */
   boundWorkerId: uuid('bound_worker_id').references(() => workers.id, { onDelete: 'set null' }),
   boundAt: timestamp('bound_at', { withTimezone: true }),
 }, (t) => ({
   clientIdx: uniqueIndex('local_sessions_client_idx').on(t.accountId, t.clientKind, t.clientSessionHash),
+  userClientIdx: uniqueIndex('local_sessions_user_client_idx').on(t.userId, t.clientKind, t.clientSessionHash),
+  oneOwner: check('local_sessions_one_owner', sql`num_nonnulls(${t.accountId}, ${t.userId}) = 1`),
   boundWorkerIdx: uniqueIndex('local_sessions_bound_worker_idx').on(t.boundWorkerId),
   workspaceSeenIdx: index('local_sessions_workspace_seen_idx').on(t.workspaceId, t.lastSeenAt),
+}));
+
+/**
+ * The interactive workers a local session holds: one row per claim its own
+ * claim_task (or a subagent's) minted. The worker is the primary key, so a
+ * worker belongs to at most one session, ever; a session may hold several.
+ */
+export const localSessionWorkers = pgTable('local_session_workers', {
+  workerId: uuid('worker_id').primaryKey().references(() => workers.id, { onDelete: 'cascade' }),
+  localSessionId: uuid('local_session_id').references(() => localSessions.id, { onDelete: 'cascade' }).notNull(),
+  boundAt: timestamp('bound_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  sessionIdx: index('local_session_workers_session_idx').on(t.localSessionId),
+}));
+
+/**
+ * A person's presence token (apps/web/src/lib/presence-token.ts): what the
+ * agent plugin's hooks authenticate with, one per machine. The token itself is
+ * signed, never stored; this row is what makes it revocable and lists it in
+ * settings. It can only report presence and bind/release that person's own
+ * interactive workers.
+ */
+export const presenceTokens = pgTable('presence_tokens', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  /** The machine it was issued to (hostname at `buildd login`). */
+  label: text('label').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, (t) => ({
+  userIdx: index('presence_tokens_user_idx').on(t.userId),
 }));
 
 /**
@@ -2275,15 +2575,202 @@ export const artifacts = pgTable('artifacts', {
   // explicit Share action, which also (re)generates the shareToken.
   visibility: text('visibility').$type<'private' | 'public'>().notNull().default('private'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
+  // The revision `content` / `storageKey` currently hold (artifact_revisions.revision).
+  // Maintained by the artifacts_record_revision trigger, never by app code; a
+  // writer passes it back as a compare-and-swap guard. 0 = a body written before
+  // revisions existed, snapshotted as revision 1 on its first change.
+  currentRevision: integer('current_revision').notNull().default(0),
+  // Who is writing this body ("user:<id>" / "account:<id>"), copied onto the
+  // revision the trigger records. Optional: an unset author records the worker.
+  contentAuthor: text('content_author'),
+  // An uploaded file's state (lib/artifact-upload.ts): 'pending' from the
+  // presigned URL until its bytes are verified (size, then sha256 onto the
+  // revision), then 'ready', or 'failed'. NULL = not an upload (inline body, or
+  // a row from before this column), treated as ready. Set by the server only:
+  // metadata is caller-writable, so a flag there could be forged.
+  uploadState: text('upload_state').$type<'pending' | 'ready' | 'failed'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workerIdx: index('artifacts_worker_idx').on(t.workerId),
+  uploadPendingIdx: index('artifacts_upload_pending_idx').on(t.createdAt).where(sql`upload_state = 'pending'`),
   shareTokenIdx: uniqueIndex('artifacts_share_token_idx').on(t.shareToken),
   workspaceIdx: index('artifacts_workspace_idx').on(t.workspaceId),
   workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
   missionIdx: index('artifacts_mission_idx').on(t.missionId),
   initiativeIdx: index('artifacts_initiative_idx').on(t.initiativeId),
+}));
+
+/**
+ * Immutable history of an artifact's body. Every write that changes
+ * `artifacts.content` or `artifacts.storage_key` appends one row, recorded by
+ * the artifacts_record_revision trigger (migration *_artifact_revisions_trigger)
+ * in the same statement
+ * as the write, so no write path can skip it. Rows are never updated: the
+ * artifact_revisions_immutable trigger refuses any change except filling a hash
+ * that was NULL (a file body, hashed once its bytes are verified).
+ */
+export const artifactRevisions = pgTable('artifact_revisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  content: text('content'),
+  storageKey: text('storage_key'),
+  // sha256 hex of the UTF-8 content; NULL for a file body until verified.
+  contentHash: text('content_hash'),
+  sizeBytes: integer('size_bytes'),
+  // The artifact's worker when this body was written, not necessarily its author.
+  workerId: uuid('worker_id'),
+  // The writer, when the write named one (artifacts.content_author); 'legacy'
+  // for a body snapshotted from before revisions existed.
+  author: text('author'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  artifactRevisionIdx: uniqueIndex('artifact_revisions_artifact_revision_idx').on(t.artifactId, t.revision),
+}));
+
+/**
+ * What an artifact read actually returned, one row per GET that hands back
+ * any of an artifact's body: which revision, which view (full, outline,
+ * section, range, grep) and how many characters. "Available to the agent" is
+ * not "read by the agent"; verification cites this. Content-free (ids,
+ * selectors, counts) and FK-free like memory_uses: the ledger must never make a
+ * read fail, and it outlives the rows it names. Written after the response.
+ */
+export const artifactReads = pgTable('artifact_reads', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').notNull(),
+  revision: integer('revision').notNull(),
+  workspaceId: uuid('workspace_id'),
+  accountId: uuid('account_id'),
+  userId: uuid('user_id'),
+  taskId: uuid('task_id'),
+  view: text('view').notNull().$type<'full' | 'meta' | 'outline' | 'section' | 'range' | 'grep'>(),
+  /** The view's own arguments: { section } | { offset, length } | { pattern }. */
+  selector: jsonb('selector').$type<Record<string, unknown>>(),
+  returnedChars: integer('returned_chars').notNull(),
+  totalChars: integer('total_chars').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  artifactIdx: index('artifact_reads_artifact_idx').on(t.artifactId, t.createdAt),
+  taskIdx: index('artifact_reads_task_idx').on(t.taskId),
+}));
+
+/**
+ * Typed links from an artifact to the things it informs: a chat message or
+ * conversation, a task, a mission, a plan, and later a spec revision or a
+ * verification. One payload row, many links; nothing is copied.
+ * Owned by Living Specs (docs/specs/execution-control-plane.md): only
+ * apps/web/src/lib/artifact-links.ts writes it; the kernel reads it by id.
+ *
+ * `relation` says what the artifact is to the subject. Only an approved spec
+ * revision confers authority (decision D-6), so `normative_reference` is legal
+ * only with a pinned `artifact_revision`, and no relation approves anything.
+ * `artifact_revision` NULL = floating (follows the current body).
+ */
+export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec_revision', 'verification'] as const;
+export const ARTIFACT_LINK_RELATIONS = ['context', 'requirement', 'normative_reference', 'design_reference', 'evidence', 'output'] as const;
+export type ArtifactLinkSubject = (typeof ARTIFACT_LINK_SUBJECTS)[number];
+export type ArtifactLinkRelation = (typeof ARTIFACT_LINK_RELATIONS)[number];
+
+export const artifactLinks = pgTable('artifact_links', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'cascade' }).notNull(),
+  artifactRevision: integer('artifact_revision'),
+  subjectKind: text('subject_kind').notNull().$type<ArtifactLinkSubject>(),
+  subjectId: uuid('subject_id').notNull(),
+  relation: text('relation').notNull().$type<ArtifactLinkRelation>(),
+  // The subject's team, resolved and checked at write; reads scope by it.
+  teamId: uuid('team_id').notNull(),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniqueLink: uniqueIndex('artifact_links_unique_idx').on(t.artifactId, t.subjectKind, t.subjectId, t.relation),
+  subjectIdx: index('artifact_links_subject_idx').on(t.subjectKind, t.subjectId),
+  normativeIsPinned: check('artifact_links_normative_is_pinned', sql`${t.relation} <> 'normative_reference' OR ${t.artifactRevision} IS NOT NULL`),
+}));
+
+/**
+ * Living Specs: governed intent with immutable revisions (Living Specs v2, G1).
+ * A spec is a stable identity; its body lives in one artifact (`body_artifact_id`)
+ * so storage, history, hashes, bounded reads and redaction are the artifact
+ * machinery's. Each spec revision pins exactly one artifact revision.
+ * Owned by Living Specs (docs/specs/execution-control-plane.md): only
+ * apps/web/src/lib/specs/ writes these tables.
+ *
+ * `version` is the compare-and-swap token for drafts: a revise names the
+ * version it read, so two writers can never silently overwrite each other.
+ * Approval (G2) is a person's act on one revision; nothing here approves.
+ */
+export const SPEC_SCOPES = ['product', 'domain', 'feature', 'mission'] as const;
+export const SPEC_STATUSES = ['draft', 'in_review', 'approved', 'superseded', 'retired'] as const;
+export type SpecScope = (typeof SPEC_SCOPES)[number];
+export type SpecStatus = (typeof SPEC_STATUSES)[number];
+
+export const specs = pgTable('specs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  title: text('title').notNull(),
+  scope: text('scope').notNull().$type<SpecScope>(),
+  parentSpecId: uuid('parent_spec_id'),
+  status: text('status').notNull().default('draft').$type<SpecStatus>(),
+  version: integer('version').notNull().default(1),
+  bodyArtifactId: uuid('body_artifact_id').references(() => artifacts.id, { onDelete: 'restrict' }).notNull(),
+  // The newest revision (the draft head) and the approved one, by spec revision number.
+  headRevision: integer('head_revision').notNull().default(1),
+  approvedRevision: integer('approved_revision'),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: index('specs_workspace_idx').on(t.workspaceId),
+  parentIdx: index('specs_parent_idx').on(t.parentSpecId),
+}));
+
+export const specRevisions = pgTable('spec_revisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  // The body: exactly this revision of the spec's body artifact, and its hash.
+  artifactRevision: integer('artifact_revision').notNull(),
+  contentHash: text('content_hash').notNull(),
+  authorKind: text('author_kind').notNull().$type<'user' | 'agent'>(),
+  authorId: text('author_id').notNull(),
+  changeSummary: text('change_summary'),
+  // Repo specs (docs/specs, Git-canonical per D-1) this revision cites, each
+  // pinned to the exact commit it was validated at on write. Immutable with
+  // the revision, so a moving branch never changes what it cites.
+  repoRefs: jsonb('repo_refs').$type<Array<{ path: string; commitSha: string }>>(),
+  // Set once by a person's approval (G2); never for an agent.
+  approvedBy: text('approved_by'),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/**
+ * One verdict on one acceptance criterion of an approved spec revision, for
+ * one task's outcome (Living Specs V1, D-5). Append-only: a re-check adds a
+ * row, and the outcome reads the newest row per criterion. A verdict is bound
+ * to the PR head it judged and the references it actually read, so a verdict
+ * on an older head never speaks for the current one. Distinct from task and PR
+ * state: a task can complete and its PR merge while its governed outcome
+ * reads fail.
+ */
+export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
+  headSha: text('head_sha'),
+  // The check's evidence refs and the artifact reads (F4 ledger ids) behind it.
+  evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskCriterionIdx: index('spec_outcome_verdicts_task_idx').on(t.taskId, t.specRevisionId, t.criterionId, t.createdAt),
 }));
 
 /**
@@ -2297,6 +2784,34 @@ export const artifacts = pgTable('artifacts', {
  * The partial unique index keeps at most one active review per artifact, so a
  * double tap cannot leave two (no db.transaction on neon-http).
  */
+/**
+ * Hosted (cloud) runner time, one row per attempt, written when the attempt's
+ * run report arrives (POST /api/workers/[id]/artifacts with a
+ * `cloud-run-report:*` key). The report artifact itself is one per worker and
+ * a resumed attempt overwrites it, so the per-attempt seconds are kept here.
+ * Read by the monthly roll-up (apps/web/src/lib/hosted-runner-usage-store.ts).
+ * `startedAt`/`endedAt`: container running to exit, so a month boundary can
+ * split an attempt between two months.
+ */
+export const runnerUsage = pgTable('runner_usage', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  attempt: integer('attempt').notNull(),
+  // packages/shared/src/runner-size.ts RUNNER_SIZES
+  size: text('size').$type<'standard' | 'large'>().notNull(),
+  runnerSeconds: integer('runner_seconds').notNull(),
+  weightedRunnerSeconds: integer('weighted_runner_seconds').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workerAttemptIdx: uniqueIndex('runner_usage_worker_attempt_idx').on(t.workerId, t.attempt),
+  workspaceEndedIdx: index('runner_usage_workspace_ended_idx').on(t.workspaceId, t.endedAt),
+  taskIdx: index('runner_usage_task_idx').on(t.taskId),
+}));
+
 export const visualShotReviews = pgTable('visual_shot_reviews', {
   id: uuid('id').primaryKey().defaultRandom(),
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
@@ -2526,6 +3041,10 @@ export const missionNotes = pgTable('mission_notes', {
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
+  // Human-attention disposition of an agent/outside-caller question note
+  // (packages/core/needs-you.ts): only 'ask' reaches Needs You;
+  // 'recovered' means a repair task owns it. NULL on every other note.
+  disposition: text('disposition').$type<'ask' | 'recovered'>(),
   // Set when a retry opens the replacement PR. Kept on the superseded note so
   // the timeline remains an audit trail and can link to the successor.
   supersededByPrNumber: integer('superseded_by_pr_number'),
@@ -2782,11 +3301,23 @@ export const workspaceSkills = pgTable('workspace_skills', {
   configHash: text('config_hash'), // SHA-256 of packaged tarball for cache invalidation
   configStorageKey: text('config_storage_key'), // R2 object key for role config tarball
   repoUrl: text('repo_url'), // for builder roles (git clone target)
+  // Personal roles: the member who owns this row. NULL = a team role (the
+  // default) or a workspace override. A personal row is always team-level
+  // (workspaceId NULL) and its slug is unique per owner, not per team.
+  ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  // Who may run a personal role: 'private' = its owner's tasks only; 'team' =
+  // shared, anyone in the team. Team roles are always 'team'.
+  visibility: text('visibility').notNull().default('team').$type<'private' | 'team'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   // Team-level default: one (team, slug) when workspaceId IS NULL
-  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL`),
+  // Team-level namespace: one (team, slug) across team roles AND shared
+  // personal roles, so two concurrent shares of one slug cannot both land.
+  // Private personal rows are outside it (ownerSlugIdx covers them).
+  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL AND (${t.ownerUserId} IS NULL OR ${t.visibility} = 'team')`),
+  // Personal roles: one (team, owner, slug)
+  ownerSlugIdx: uniqueIndex('ws_skills_owner_slug_idx').on(t.teamId, t.ownerUserId, t.slug).where(sql`${t.ownerUserId} IS NOT NULL`),
   // Workspace override: one (workspace, slug) when workspaceId IS NOT NULL
   workspaceOverrideSlugIdx: uniqueIndex('ws_skills_workspace_slug_idx').on(t.workspaceId, t.slug).where(sql`${t.workspaceId} IS NOT NULL`),
   workspaceIdx: index('workspace_skills_workspace_idx').on(t.workspaceId),
@@ -3003,7 +3534,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'openai_api_key' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'openai_api_key' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential' | 'cloudflare_gateway_token'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -4053,10 +4584,16 @@ export const cronRuns = pgTable('cron_runs', {
 }));
 
 // ── OAuth (MCP connector for claude.ai and other MCP clients) ────────────────
-// Implements OAuth 2.1 with PKCE. Tokens are workspace-scoped: each issued
-// JWT carries the workspaceId the user picked during /authorize, and the
-// /api/mcp-oauth/[workspace] route rejects tokens whose claim doesn't match
-// the URL path. Refresh tokens rotate on use.
+// Implements OAuth 2.1 with PKCE. Two token shapes, told apart by which of
+// workspace_id / grant_id the code or refresh token carries (exactly one):
+//  - legacy: the JWT carries the one workspaceId picked during /authorize, and
+//    /api/mcp-oauth/[workspace] rejects tokens whose claim doesn't match the
+//    path. Acts as the person (an implicit single-workspace 'person' grant).
+//  - grant: the JWT carries a grant_id into mcp_oauth_grants. The workspaces it
+//    reaches are resolved server-side on every request as the grant's
+//    workspaces ∩ the user's CURRENT team memberships (apps/web/src/lib/mcp-grants.ts),
+//    never read from the token. docs/specs/auth-oauth-boundaries.md.
+// Refresh tokens rotate on use.
 
 export const oauthClients = pgTable('oauth_clients', {
   clientId: text('client_id').primaryKey(),
@@ -4071,7 +4608,9 @@ export const oauthCodes = pgTable('oauth_codes', {
   code: text('code').primaryKey(),
   clientId: text('client_id').notNull(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // Legacy single-workspace code. Exactly one of workspaceId / grantId is set.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  grantId: uuid('grant_id').references(() => mcpOauthGrants.id, { onDelete: 'cascade' }),
   redirectUri: text('redirect_uri').notNull(),
   codeChallenge: text('code_challenge').notNull(),
   codeChallengeMethod: text('code_challenge_method').notNull().default('S256'),
@@ -4081,13 +4620,27 @@ export const oauthCodes = pgTable('oauth_codes', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   expiresIdx: index('oauth_codes_expires_at_idx').on(t.expiresAt),
+  oneBinding: check('oauth_codes_one_binding', sql`num_nonnulls(${t.workspaceId}, ${t.grantId}) = 1`),
 }));
 
 export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
-  token: text('token').primaryKey(),
+  // SHA-256 (hex) of the refresh token. The token itself is never stored; it
+  // is looked up by its hash (apps/web/src/lib/oauth/storage.ts). The column
+  // keeps its original name so existing rows were hashed in place.
+  tokenHash: text('token').primaryKey(),
+  // One family per sign-in: set at the authorization-code exchange and carried
+  // by every rotated token. Presenting an already-rotated token revokes the
+  // family. `familyIssuedAt` is the sign-in time; the family's absolute
+  // lifetime counts from it (REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS).
+  familyId: uuid('family_id').defaultRandom().notNull(),
+  familyIssuedAt: timestamp('family_issued_at', { withTimezone: true }).defaultNow().notNull(),
   clientId: text('client_id').notNull(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // Legacy single-workspace token. Exactly one of workspaceId / grantId is set.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  // The grant this token refreshes. The grant's workspaces and acts-as kind
+  // live on the grant row, so a refresh can never widen or change them.
+  grantId: uuid('grant_id').references(() => mcpOauthGrants.id, { onDelete: 'cascade' }),
   scope: text('scope'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
@@ -4095,6 +4648,49 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
 }, (t) => ({
   expiresIdx: index('oauth_refresh_tokens_expires_at_idx').on(t.expiresAt),
   userWorkspaceIdx: index('oauth_refresh_tokens_user_workspace_idx').on(t.userId, t.workspaceId),
+  grantIdx: index('oauth_refresh_tokens_grant_idx').on(t.grantId),
+  familyIdx: index('oauth_refresh_tokens_family_idx').on(t.familyId),
+  oneBinding: check('oauth_refresh_tokens_one_binding', sql`num_nonnulls(${t.workspaceId}, ${t.grantId}) = 1`),
+}));
+
+/** Who a grant's requests act as. 'person': the signed-in user (a `human:`
+ * principal, person-only actions allowed). 'agent': the user's agent
+ * (attributed to the user, never a person principal). Chosen at consent; the
+ * owner may later downgrade 'person' to 'agent' in Settings, never the reverse
+ * (that needs a fresh consent). A legacy workspace-claim token counts as 'person'. */
+export type McpGrantActsAs = 'person' | 'agent';
+export type McpGrantScope = 'read' | 'write';
+
+/**
+ * An account-level MCP OAuth grant: one user's consent for one client to reach
+ * a chosen set of workspaces. Tokens carry only the grant id; the workspaces
+ * are the child rows, intersected with the user's current team memberships on
+ * every request (apps/web/src/lib/mcp-grants.ts). New workspaces are never
+ * added implicitly.
+ */
+export const mcpOauthGrants = pgTable('mcp_oauth_grants', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  clientId: text('client_id').references(() => oauthClients.clientId, { onDelete: 'cascade' }).notNull(),
+  actsAs: text('acts_as').notNull().$type<McpGrantActsAs>(),
+  scopes: jsonb('scopes').$type<McpGrantScope[]>().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userIdx: index('mcp_oauth_grants_user_idx').on(t.userId),
+  actsAsValid: check('mcp_oauth_grants_acts_as_valid', sql`${t.actsAs} in ('person', 'agent')`),
+  scopesValid: check('mcp_oauth_grants_scopes_valid', sql`jsonb_typeof(${t.scopes}) = 'array' and jsonb_array_length(${t.scopes}) > 0 and ${t.scopes} <@ '["read","write"]'::jsonb`),
+}));
+
+export const mcpOauthGrantWorkspaces = pgTable('mcp_oauth_grant_workspaces', {
+  grantId: uuid('grant_id').references(() => mcpOauthGrants.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.grantId, t.workspaceId] }),
+  workspaceIdx: index('mcp_oauth_grant_workspaces_workspace_idx').on(t.workspaceId),
 }));
 
 // ── MCP Connectors ────────────────────────────────────────────────────────────
@@ -4129,10 +4725,14 @@ export const connectors = pgTable('connectors', {
   // Assertion-mode fields (authMode='assertion')
   assertionAudience: text('assertion_audience'),
   assertionTokenEndpoint: text('assertion_token_endpoint'),
-  // Display icon, resolved best-effort at create time (catalog entry → MCP
-  // serverInfo.icons → site favicon). NULL renders a letter avatar.
+  // Display icon as a `data:` URL, resolved best-effort at create time, after
+  // OAuth connect, and lazily on list (catalog entry → MCP serverInfo.icons →
+  // websiteUrl / site favicon). NULL renders a letter avatar. Legacy rows may
+  // still hold a remote URL until the next lazy refresh inlines it.
   // See apps/web/src/lib/connector-icon.ts.
   iconUrl: text('icon_url'),
+  // Last icon lookup attempt; gates the lazy refresh to once per TTL.
+  iconCheckedAt: timestamp('icon_checked_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -4701,6 +5301,250 @@ export const taskDispatchOutbox = pgTable('task_dispatch_outbox', {
 
 export type TaskDispatchOutboxRow = typeof taskDispatchOutbox.$inferSelect;
 
+// ── Workflow state kernel (docs/specs/workflow-state-kernel.md §5) ──────────
+// Only apps/web/src/lib/workflow/ reads or writes these tables
+// (packages/core/__tests__/workflow-write-sites.test.ts). Every state change is
+// one version-CAS statement written by apps/web/src/lib/workflow/kernel.ts.
+
+// §5.1 — one row per deliverable that is meant to reach GitHub as a PR.
+export const workflowDeliveries = pgTable('workflow_deliveries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  ownerTaskId: uuid('owner_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // Null until PrBound. The repo is part of the PR key: a PR number alone
+  // collides across two repos of one workspace.
+  repoFullName: text('repo_full_name'),
+  prNumber: integer('pr_number'),
+  baseRef: text('base_ref'),
+  // DeliveryState (apps/web/src/lib/workflow/types.ts); state_reason carries
+  // repair_kind / escalation reason / close_cause.
+  state: text('state').notNull(),
+  stateReason: text('state_reason'),
+  // CAS counter (§7): every applied transition increments it.
+  version: bigint('version', { mode: 'number' }).default(0).notNull(),
+  // The GitHub head the delivery acts on. Set only by HeadObserved-class
+  // transitions from a live read, never from a runner-reported local SHA.
+  currentHeadSha: text('current_head_sha'),
+  currentRound: integer('current_round').default(0).notNull(),
+  maxRounds: integer('max_rounds').default(3).notNull(),
+  // The attempt (FIXING/REPAIRING: a workflow_attempts id) whose end the
+  // delivery is waiting on. Owner attempts are the owner task itself.
+  boundAttemptId: uuid('bound_attempt_id'),
+  resumeState: text('resume_state'),
+  trunkIncidentId: uuid('trunk_incident_id'),
+  // Heads covered by a standing review approval: the head a verdict (or a
+  // human) approved plus carry-forward equivalents. Exact-head binding.
+  approvedHeads: text('approved_heads').array().default(sql`'{}'::text[]`).notNull(),
+  // 'verdict' | 'human' | 'composition' | 'policy' — what the standing approval
+  // rests on. 'policy' (no review required) is never a verdict at the head.
+  approvalBasis: text('approval_basis'),
+  // Heads covered ONLY by a verified composition attestation (a release or
+  // integration PR assembled from already-reviewed constituents). Kept apart
+  // from approved_heads so no reader mistakes it for a verdict at that head.
+  compositionHeads: text('composition_heads').array().default(sql`'{}'::text[]`).notNull(),
+  ci: text('ci'),
+  ciHeadSha: text('ci_head_sha'),
+  mergeable: text('mergeable'),
+  mergeableHeadSha: text('mergeable_head_sha'),
+  // GitHub's values, never receipt time.
+  mergedAt: timestamp('merged_at', { withTimezone: true }),
+  mergeCommitSha: text('merge_commit_sha'),
+  supersededByPr: integer('superseded_by_pr'),
+  supersededByUrl: text('superseded_by_url'),
+  supersededReason: text('superseded_reason'),
+  recordedBy: text('recorded_by'),
+  // The newest head-bound policy finding (PolicyEvidenceRecorded, §6.3 T28):
+  // { headSha, outcome, reason, destructive }. Evidence for ONE head; a
+  // delivery on any other head ignores it.
+  policyEvidence: jsonb('policy_evidence').$type<{ headSha: string; outcome: 'human' | 'agent_split'; reason: string; destructive: boolean } | null>(),
+  // Who decides for this delivery (§14 cutover): 'kernel', or 'legacy' once the
+  // gitConfig.workflowKernel kill switch handed it back. Sticky: a delivery
+  // released to legacy finishes there even if the switch is turned on again,
+  // so no delivery ever has two authorities.
+  authority: text('authority').default('kernel').notNull().$type<'kernel' | 'legacy'>(),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  lastTransitionAt: timestamp('last_transition_at', { withTimezone: true }),
+}, (t) => ({
+  ownerUnique: uniqueIndex('workflow_deliveries_owner_unique').on(t.workspaceId, t.ownerTaskId),
+  prUnique: uniqueIndex('workflow_deliveries_pr_unique').on(t.workspaceId, t.repoFullName, t.prNumber).where(sql`${t.prNumber} IS NOT NULL`),
+  stateIdx: index('workflow_deliveries_state_idx').on(t.workspaceId, t.state),
+}));
+
+export type WorkflowDeliveryRow = typeof workflowDeliveries.$inferSelect;
+
+// §5.2 — a verdict is a property of (PR, head SHA, round); head_sha is set at
+// dispatch and never edited.
+export const workflowReviewRounds = pgTable('workflow_review_rounds', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  round: integer('round').notNull(),
+  headSha: text('head_sha').notNull(),
+  kind: text('kind').notNull().$type<'full' | 'delta'>(),
+  priorRound: integer('prior_round'),
+  // Delta scope: for a composition with a novel delta, only these paths are new.
+  scope: jsonb('scope').$type<Record<string, unknown>>(),
+  reviewerTaskId: uuid('reviewer_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  status: text('status').default('queued').notNull().$type<'queued' | 'reviewing' | 'decided' | 'failed' | 'superseded'>(),
+  verdict: text('verdict').$type<'approve' | 'request_changes' | 'escalate'>(),
+  effectiveVerdict: text('effective_verdict').$type<'approve' | 'request_changes' | 'escalate'>(),
+  confidence: real('confidence'),
+  failureCount: integer('failure_count').default(0).notNull(),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  roundUnique: uniqueIndex('workflow_review_rounds_round_unique').on(t.deliveryId, t.round),
+  // Single flight: one open round per (delivery, head, kind).
+  openPerHead: uniqueIndex('workflow_review_rounds_open_per_head').on(t.deliveryId, t.headSha, t.kind).where(sql`${t.status} IN ('queued', 'reviewing')`),
+}));
+
+export type WorkflowReviewRoundRow = typeof workflowReviewRounds.$inferSelect;
+
+// §5.3 — append-only observations. A duplicate fact_key is a no-op that
+// returns the first application's result. payload holds normalised fields the
+// reducer read, never a raw webhook body.
+export const workflowFacts = pgTable('workflow_facts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }),
+  repoFullName: text('repo_full_name'),
+  prNumber: integer('pr_number'),
+  kind: text('kind').notNull(),
+  factKey: text('fact_key').notNull(),
+  observedAt: timestamp('observed_at', { withTimezone: true }).defaultNow().notNull(),
+  source: text('source').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
+  appliedTransitionId: uuid('applied_transition_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  factKeyUnique: uniqueIndex('workflow_facts_fact_key_unique').on(t.workspaceId, t.factKey),
+  deliveryIdx: index('workflow_facts_delivery_idx').on(t.deliveryId, t.observedAt),
+  prIdx: index('workflow_facts_pr_idx').on(t.workspaceId, t.repoFullName, t.prNumber),
+}));
+
+export type WorkflowFactRow = typeof workflowFacts.$inferSelect;
+
+// §5.4 — append-only transition log; the one source for the PR activity
+// comment, mission notes and explain's because[] chain.
+export const workflowTransitions = pgTable('workflow_transitions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  fromVersion: bigint('from_version', { mode: 'number' }).notNull(),
+  toVersion: bigint('to_version', { mode: 'number' }).notNull(),
+  fromState: text('from_state'),
+  toState: text('to_state').notNull(),
+  command: text('command').notNull(),
+  idempotencyKey: text('idempotency_key').notNull(),
+  actor: text('actor').notNull(),
+  evidence: jsonb('evidence').$type<Record<string, unknown>>().default({}).notNull(),
+  bypass: jsonb('bypass').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  idempotencyUnique: uniqueIndex('workflow_transitions_idempotency_unique').on(t.deliveryId, t.idempotencyKey),
+  versionUnique: uniqueIndex('workflow_transitions_version_unique').on(t.deliveryId, t.toVersion),
+}));
+
+export type WorkflowTransitionRow = typeof workflowTransitions.$inferSelect;
+
+// §5.5 — transactional outbox: inserted by the statement that applied the
+// transition, drained at least once by apps/web/src/lib/workflow/effects.ts.
+export const workflowEffects = pgTable('workflow_effects', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  transitionId: uuid('transition_id').references(() => workflowTransitions.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull(),
+  dedupeKey: text('dedupe_key').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
+  status: text('status').default('pending').notNull().$type<'pending' | 'delivering' | 'done' | 'failed' | 'dead'>(),
+  attemptCount: integer('attempt_count').default(0).notNull(),
+  notBefore: timestamp('not_before', { withTimezone: true }).defaultNow().notNull(),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }),
+  lastError: text('last_error'),
+  outcome: text('outcome'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  dedupeUnique: uniqueIndex('workflow_effects_dedupe_unique').on(t.dedupeKey),
+  dueIdx: index('workflow_effects_due_idx').on(t.notBefore).where(sql`${t.status} IN ('pending', 'delivering')`),
+  deliveryIdx: index('workflow_effects_delivery_idx').on(t.deliveryId, t.createdAt),
+}));
+
+export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;
+
+// The landing lane (lib/workflow/landing-lane.ts): one row per repo + base
+// whose delivery is the one behind-refresh in flight there. A row whose
+// delivery left the refresh window, or whose lease ran out, holds nothing;
+// the next acquire takes it over by compare-and-set.
+export const landingLanes = pgTable('landing_lanes', {
+  repoFullName: text('repo_full_name').notNull(),
+  baseRef: text('base_ref').notNull(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  headSha: text('head_sha').notNull(),
+  grantedAt: timestamp('granted_at', { withTimezone: true }).defaultNow().notNull(),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.repoFullName, t.baseRef] }),
+  deliveryIdx: index('landing_lanes_delivery_idx').on(t.deliveryId),
+}));
+
+// §5.7 — one retry ledger per family; the only source for "attempt N of M".
+// Allocation is consumption: the row is inserted by the dispatching statement.
+export const workflowAttempts = pgTable('workflow_attempts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  family: text('family').notNull().$type<'review_fix' | 'ci' | 'conflict' | 'migration' | 'trunk'>(),
+  attemptNo: integer('attempt_no').notNull(),
+  mode: text('mode').notNull().$type<'mechanical' | 'agent'>(),
+  boundHeadSha: text('bound_head_sha'),
+  triggerFactId: uuid('trigger_fact_id'),
+  triggerReason: text('trigger_reason'),
+  // No FK, like tasks.delivery_id (§5.6): allocation is consumption, so the
+  // dispatching statement writes the attempt row naming its task id BEFORE the
+  // dispatch_fix effect inserts that task (and re-inserts it under the same id
+  // after a crash). A tasks FK rejects every such allocation.
+  taskId: uuid('task_id'),
+  trigger: text('trigger').default('automatic').notNull().$type<'automatic' | 'human'>(),
+  reportedShas: text('reported_shas').array().default(sql`'{}'::text[]`).notNull(),
+  pushedHeadSha: text('pushed_head_sha'),
+  status: text('status').default('queued').notNull().$type<'queued' | 'running' | 'ended' | 'skipped' | 'cancelled'>(),
+  outcome: text('outcome').$type<'delivered' | 'unproven' | 'failed' | 'noop'>(),
+  maxAttempts: integer('max_attempts').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+}, (t) => ({
+  attemptUnique: uniqueIndex('workflow_attempts_no_unique').on(t.deliveryId, t.family, t.mode, t.attemptNo),
+  taskIdx: index('workflow_attempts_task_idx').on(t.taskId),
+}));
+
+export type WorkflowAttemptRow = typeof workflowAttempts.$inferSelect;
+
+// §5.8 — one incident per trunk-red signature; per-PR CI retries are not
+// dispatched while it is open.
+export const trunkIncidents = pgTable('trunk_incidents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  repoFullName: text('repo_full_name').notNull(),
+  baseRef: text('base_ref').notNull(),
+  signature: text('signature').notNull(),
+  status: text('status').default('open').notNull().$type<'open' | 'fixing' | 'resolved'>(),
+  openedByFact: uuid('opened_by_fact'),
+  trunkFixTaskId: uuid('trunk_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // Bounded by the circuit-breaker cap.
+  affectedDeliveries: jsonb('affected_deliveries').$type<string[]>().default([]).notNull(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  openSignatureUnique: uniqueIndex('trunk_incidents_open_signature_unique').on(t.workspaceId, t.repoFullName, t.baseRef, t.signature).where(sql`${t.status} <> 'resolved'`),
+}));
+
+export type TrunkIncidentRow = typeof trunkIncidents.$inferSelect;
+
 // Releases — one row per deployment/release event for a workspace.
 export const releases = pgTable('releases', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -4933,6 +5777,123 @@ export const agentCapabilityDecisions = pgTable('agent_capability_decisions', {
 
 export type AgentCapabilityDecision = typeof agentCapabilityDecisions.$inferSelect;
 
+/**
+ * A team admin's rule for what an agent run may get when it asks for a
+ * capability (apps/web/src/lib/capability-grants.ts). Matched by provider
+ * (catalog slug) and risk, optionally narrowed to a workspace, role,
+ * environment or resource; the most specific matching rule wins. No rule =
+ * the built-in default (read/query auto-grant, write/admin ask a human).
+ * `effect: 'auto_grant'` is refused for write/admin: writes always need a
+ * person. `scopeKey` is the canonical join of the match columns, so one
+ * scope holds one rule and a PUT is an upsert.
+ */
+export const capabilityPolicies = pgTable('capability_policies', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  provider: text('provider').notNull(),
+  risk: text('risk').notNull().$type<'read' | 'query' | 'write' | 'admin'>(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  roleSlug: text('role_slug'),
+  environment: text('environment'),
+  resource: text('resource'),
+  effect: text('effect').notNull().$type<'auto_grant' | 'ask_human' | 'forbidden'>(),
+  maxTtlSeconds: integer('max_ttl_seconds'),
+  scopeKey: text('scope_key').notNull(),
+  updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamScopeIdx: uniqueIndex('capability_policies_team_scope_idx').on(t.teamId, t.scopeKey),
+}));
+
+export type CapabilityPolicy = typeof capabilityPolicies.$inferSelect;
+
+/**
+ * One agent run's request for a capability and, once decided, its grant:
+ * pending → granted | denied; granted → revoked | expired. Bound to exactly
+ * one team, workspace, task, worker and role, one provider (and connector
+ * when the provider is a connector), one risk, and optionally one exact tool,
+ * resource and environment. A grant is checked on every use against the
+ * live task, worker, role, team policy, catalog policy and credential health
+ * (authorizeCapabilityUse), so revoking it stops the next call.
+ *
+ * `dedupeKey` is unique among open rows (pending/granted): the same worker
+ * asking twice gets the same row back. Never holds credential material;
+ * `scope` carries provider-specific bounds (model ids, budget) only.
+ */
+export const capabilityGrants = pgTable('capability_grants', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  requestedByAccountId: uuid('requested_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  roleSlug: text('role_slug'),
+  // Semantic need, `domain:verb` (observability:query) or a named capability (model.inference).
+  capability: text('capability').notNull(),
+  provider: text('provider').notNull(),
+  connectorId: uuid('connector_id').references(() => connectors.id, { onDelete: 'cascade' }),
+  risk: text('risk').notNull().$type<'read' | 'query' | 'write' | 'admin'>(),
+  tool: text('tool'),
+  resource: text('resource'),
+  environment: text('environment'),
+  scope: jsonb('scope').$type<Record<string, unknown>>(),
+  reason: text('reason'),
+  status: text('status').notNull().$type<'pending' | 'granted' | 'denied' | 'revoked' | 'expired'>(),
+  decidedBy: text('decided_by').$type<'policy' | 'human' | 'system'>(),
+  decidedByUserId: uuid('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  decisionReason: text('decision_reason'),
+  ttlSeconds: integer('ttl_seconds').notNull(),
+  dedupeKey: text('dedupe_key').notNull(),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, (t) => ({
+  openDedupeIdx: uniqueIndex('capability_grants_open_dedupe_idx').on(t.dedupeKey).where(sql`${t.status} IN ('pending', 'granted')`),
+  workerIdx: index('capability_grants_worker_idx').on(t.workerId, t.status),
+  teamStatusIdx: index('capability_grants_team_status_idx').on(t.teamId, t.status, t.requestedAt),
+}));
+
+export type CapabilityGrant = typeof capabilityGrants.$inferSelect;
+
+/**
+ * Running spend per model.inference grant (the ledger behind
+ * capability-model-inference-ledger.ts). Reservations count as spent until
+ * settled. Changed only by single conditional statements: a reserve is one
+ * INSERT … ON CONFLICT DO UPDATE … WHERE <headroom> that also writes the
+ * reservation row, so N concurrent callers can never overdraw a budget.
+ * Dollars are whole micro-dollars.
+ */
+export const capabilityGrantUsage = pgTable('capability_grant_usage', {
+  grantId: uuid('grant_id').primaryKey().references(() => capabilityGrants.id, { onDelete: 'cascade' }),
+  calls: integer('calls').notNull().default(0),
+  tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+  usdMicros: bigint('usd_micros', { mode: 'number' }).notNull().default(0),
+  inFlight: integer('in_flight').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+/**
+ * One reserved model.inference call. Open (settledAt NULL) while the call is
+ * in flight; settle swaps its reservation for the debit. One left open past
+ * the stale window (a crashed request) is settled at the full reservation.
+ */
+export const capabilityGrantReservations = pgTable('capability_grant_reservations', {
+  id: uuid('id').primaryKey(),
+  grantId: uuid('grant_id').references(() => capabilityGrants.id, { onDelete: 'cascade' }).notNull(),
+  usdMicros: bigint('usd_micros', { mode: 'number' }).notNull(),
+  tokens: bigint('tokens', { mode: 'number' }).notNull(),
+  reservedAt: timestamp('reserved_at', { withTimezone: true }).defaultNow().notNull(),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+  debitUsdMicros: bigint('debit_usd_micros', { mode: 'number' }),
+  debitTokens: bigint('debit_tokens', { mode: 'number' }),
+  costSource: text('cost_source').$type<'provider' | 'reservation' | 'none'>(),
+  outcome: text('outcome').$type<'ok' | 'error' | 'not_sent' | 'stale'>(),
+}, (t) => ({
+  openIdx: index('capability_grant_reservations_open_idx').on(t.grantId, t.reservedAt).where(sql`${t.settledAt} IS NULL`),
+}));
+
 export const gateEventsRelations = relations(gateEvents, ({ one }) => ({
   workspace: one(workspaces, { fields: [gateEvents.workspaceId], references: [workspaces.id] }),
   mission: one(missions, { fields: [gateEvents.missionId], references: [missions.id] }),
@@ -4942,6 +5903,74 @@ export const gateEventsRelations = relations(gateEvents, ({ one }) => ({
 
 export type GateEvent = typeof gateEvents.$inferSelect;
 export type NewGateEvent = typeof gateEvents.$inferInsert;
+
+/**
+ * Audit trail of deployment actions buildd runs server-side with a stored
+ * deploy credential, and of every plaintext reveal of one
+ * (apps/web/src/lib/deployments, docs/specs/deployment-actions.md).
+ *
+ * Unlike gate_events this is not fire-and-forget: the row is written BEFORE
+ * the credential is used (outcome 'started') and settled afterwards, and a
+ * request whose row cannot be written does not run. A crash mid-deploy
+ * therefore still leaves a 'started' row.
+ *
+ * Holds the credential REFERENCE (a label) only. There is no column a
+ * credential value could go in, and `result` is built field by field from an
+ * allowlist, never copied from a provider response.
+ */
+export const deploymentAuditEvents = pgTable('deployment_audit_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // Null only for a reveal, which is team-wide.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // 'operator': an agent role acting under its workspace grant.
+  // 'admin': a human's admin API key, the escape hatch.
+  principal: text('principal').notNull().$type<'operator' | 'admin'>(),
+  roleSlug: text('role_slug'),
+  operation: text('operation').notNull(),
+  capabilities: jsonb('capabilities').$type<string[]>().notNull(),
+  // True when an elevated capability (secrets:reveal, deployment_secrets:manage) was exercised.
+  elevated: boolean('elevated').default(false).notNull(),
+  provider: text('provider'),
+  project: text('project'),
+  environment: text('environment'),
+  credentialRef: text('credential_ref'),
+  outcome: text('outcome').notNull().$type<'started' | 'denied' | 'succeeded' | 'failed'>(),
+  reason: text('reason'),
+  result: jsonb('result').$type<Record<string, unknown>>(),
+}, (t) => ({
+  workspaceOccurredIdx: index('deployment_audit_events_workspace_occurred_idx').on(t.workspaceId, t.occurredAt),
+  teamOccurredIdx: index('deployment_audit_events_team_occurred_idx').on(t.teamId, t.occurredAt),
+  taskIdx: index('deployment_audit_events_task_idx').on(t.taskId),
+}));
+
+export type DeploymentAuditEvent = typeof deploymentAuditEvents.$inferSelect;
+export type NewDeploymentAuditEvent = typeof deploymentAuditEvents.$inferInsert;
+
+// Append-only: every write made through the platform-owner API (/api/admin/*),
+// with the value before and after. See apps/web/src/lib/admin/audit.ts.
+export const platformAdminAuditEvents = pgTable('platform_admin_audit_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+  // The platform-owner key's account. Kept as a plain id: the row outlives the key.
+  actorAccountId: uuid('actor_account_id'),
+  // e.g. 'experiment.update', 'team.experiment_flags.update'
+  action: text('action').notNull(),
+  targetType: text('target_type').notNull().$type<'experiment' | 'team'>(),
+  targetId: text('target_id').notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
+  before: jsonb('before').$type<Record<string, unknown>>(),
+  after: jsonb('after').$type<Record<string, unknown>>(),
+}, (t) => ({
+  targetOccurredIdx: index('platform_admin_audit_events_target_occurred_idx').on(t.targetType, t.targetId, t.occurredAt),
+}));
+
+export type PlatformAdminAuditEvent = typeof platformAdminAuditEvents.$inferSelect;
 
 /**
  * One row per worker session end, on every path — completed, failed, the
@@ -5294,6 +6323,43 @@ export const orchestrationTouchLabels = pgTable('orchestration_touch_labels', {
 export type OrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferSelect;
 export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferInsert;
 
+// Live sibling conflict probes (apps/web/src/lib/sibling-conflict-probe.ts).
+// One row per pair of live workers whose observed touches share a file. The
+// cron finds the pair and asks the prober; the prober's runner, which has the
+// clone, runs `git merge-tree` against the other branch on its next heartbeat
+// and reports the result. The row is the request and the per-pair debounce;
+// each result is also a `sibling_conflict_probe` gate event.
+export type SiblingProbeStatus = 'requested' | 'dispatched' | 'done';
+export type SiblingProbeOutcome = 'clean' | 'conflict' | 'mergiraf_resolved' | 'error';
+
+export const siblingProbes = pgTable('sibling_probes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // `${lowerWorkerId}:${higherWorkerId}`: one row per pair, whichever side found it.
+  pairKey: text('pair_key').notNull(),
+  workerAId: uuid('worker_a_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  workerBId: uuid('worker_b_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  // The worker whose runner runs the merge-tree: the one asked to rebase on a conflict.
+  proberWorkerId: uuid('prober_worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  sharedFiles: jsonb('shared_files').$type<string[]>().notNull(),
+  status: text('status').$type<SiblingProbeStatus>().notNull().default('requested'),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+  dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+  probedAt: timestamp('probed_at', { withTimezone: true }),
+  outcome: text('outcome').$type<SiblingProbeOutcome | null>(),
+  conflictFiles: jsonb('conflict_files').$type<string[] | null>(),
+  // Last time both workers were told.
+  notifiedAt: timestamp('notified_at', { withTimezone: true }),
+  // The two branch heads (sorted, `sha:sha`) of the conflict both workers were
+  // last told about. The same heads conflicting again are never re-sent.
+  notifiedHeads: text('notified_heads'),
+}, (t) => ({
+  pairIdx: uniqueIndex('sibling_probes_pair_idx').on(t.workspaceId, t.pairKey),
+  proberStatusIdx: index('sibling_probes_prober_status_idx').on(t.proberWorkerId, t.status),
+}));
+
+export type SiblingProbe = typeof siblingProbes.$inferSelect;
+
 // Creation-time manifest predictions (knowledge-base: buildd/design/conflict-aware-orchestration.md
 // §5a, packages/core/manifest-prediction.ts). One row per task per candidate
 // policy, written in shadow AFTER the creation response for teams that opted in
@@ -5372,6 +6438,80 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
 
 export type OrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferSelect;
 export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferInsert;
+
+/**
+ * How a task estimate was made (packages/core/task-estimate.ts). Content-free
+ * apart from `clusterLabel` (a directory prefix in this task's own workspace)
+ * and `summary` (one sentence built from numbers and that label). Never holds
+ * another workspace's paths, titles or text.
+ */
+export interface TaskEstimateExplanation {
+  sources: Array<{ source: 'neighbours' | 'clusters' | 'prior'; n: number; weight: number }>;
+  clusterLabel: string | null;
+  /** 0..1: how much the new-repo prior counted. Falls as local history grows. */
+  priorWeight: number;
+  summary: string;
+}
+
+/**
+ * Task estimates experiment: one frozen row per task per estimator version.
+ * Insert-only. A re-estimate is a new version, never an update, so accuracy is
+ * always scored against what was predicted before the work started. Its own
+ * table (docs/design/experiment-lifecycle.md: an experiment brings its own
+ * payload table); dropping it reverts the experiment without touching a task row.
+ */
+export const taskEstimates = pgTable('task_estimates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  estimatorVersion: text('estimator_version').notNull(),
+  p50Minutes: real('p50_minutes').notNull(),
+  p80Minutes: real('p80_minutes').notNull(),
+  p50Tokens: integer('p50_tokens').notNull(),
+  p80Tokens: integer('p80_tokens').notNull(),
+  expectedRepairs: real('expected_repairs').notNull().default(0),
+  explanation: jsonb('explanation').$type<TaskEstimateExplanation>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskVersionIdx: uniqueIndex('task_estimates_task_version_idx').on(t.taskId, t.estimatorVersion),
+  workspaceCreatedIdx: index('task_estimates_workspace_created_idx').on(t.workspaceId, t.createdAt),
+}));
+
+export type TaskEstimate = typeof taskEstimates.$inferSelect;
+export type NewTaskEstimate = typeof taskEstimates.$inferInsert;
+
+/**
+ * What a task estimated in `task_estimates` actually took, kept next to it
+ * (packages/core/task-estimate-actuals.ts). One row per task, rewritten as the
+ * task settles (a merge after the last session fills in wall time); the frozen
+ * estimate row is never touched. Work tasks only: attempt and bookkeeping
+ * tasks are other tasks' cost, counted as `repairs` on their parent.
+ */
+export const taskEstimateActuals = pgTable('task_estimate_actuals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  /** Sum of completed-session durations: the cost measure. */
+  agentMinutes: real('agent_minutes').notNull(),
+  /** Input + output tokens over the same sessions. */
+  tokens: integer('tokens').notNull(),
+  /** Retry (attempt) tasks that hang off this task. */
+  repairs: integer('repairs').notNull().default(0),
+  workerCount: integer('worker_count').notNull().default(0),
+  firstStartedAt: timestamp('first_started_at', { withTimezone: true }),
+  /** First start to merge; to the last session's end when nothing merged. Null with no start. */
+  wallMinutes: real('wall_minutes'),
+  wallBasis: text('wall_basis').$type<'merge' | 'last_session'>(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskIdx: uniqueIndex('task_estimate_actuals_task_idx').on(t.taskId),
+  teamIdx: index('task_estimate_actuals_team_idx').on(t.teamId),
+}));
+
+export type TaskEstimateActuals = typeof taskEstimateActuals.$inferSelect;
+export type NewTaskEstimateActuals = typeof taskEstimateActuals.$inferInsert;
 
 export type Artifact = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;
@@ -5660,3 +6800,59 @@ export const postSessionFindings = pgTable('post_session_findings', {
 
 export type PostSessionFinding = typeof postSessionFindings.$inferSelect;
 export type NewPostSessionFinding = typeof postSessionFindings.$inferInsert;
+
+/**
+ * Failure Pattern Sentinel: one durable incident per systemic failure pattern.
+ *
+ * NOT a raw event table — the events stay in workers, worker_terminal_records
+ * and gate_events. A row here is keyed by the rule engine's stable pattern
+ * `signature` + `detector_version` (apps/web/src/lib/failure-pattern-sentinel.ts)
+ * and carries only bounded pointers back to those rows. Written by
+ * apps/web/src/lib/failure-incident-store.ts: insert is ON CONFLICT DO NOTHING
+ * on the unique key and every update is a compare-and-swap on `version`, so two
+ * sweeps racing on one pattern converge on one row (neon-http has no
+ * interactive transactions).
+ */
+export const failureIncidents = pgTable('failure_incidents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  // `<rule>|ws=<id>|<discriminators>` — identity of the pattern, never of one occurrence.
+  signature: text('signature').notNull(),
+  // Bump instead of reshaping a signature in place; a new version is a new incident.
+  detectorVersion: text('detector_version').notNull(),
+  rule: text('rule').notNull().$type<FailureIncidentRule>(),
+  reasonCode: text('reason_code').notNull(),
+  title: text('title').notNull(),
+  // Only ever raised on update; a reopen restarts from the rule's minimum.
+  severity: text('severity').notNull().$type<FailureIncidentSeverity>(),
+  status: text('status').notNull().default('open').$type<FailureIncidentStatus>(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  occurrenceCount: integer('occurrence_count').notNull().default(0),
+  // Times it came back after `resolved`.
+  recurrenceCount: integer('recurrence_count').notNull().default(0),
+  affectedRefs: jsonb('affected_refs').$type<FailureIncidentAffectedRefs>().notNull().default({ taskIds: [], workerIds: [], prNumbers: [] }),
+  evidenceRefs: jsonb('evidence_refs').$type<FailureIncidentEvidenceRef[]>().notNull().default([]),
+  // Latest impact counters from the rule (a snapshot, overwritten per detection).
+  impact: jsonb('impact').$type<Record<string, number>>().notNull().default({}),
+  lastAlertedAt: timestamp('last_alerted_at', { withTimezone: true }),
+  lastAlertSeverity: text('last_alert_severity').$type<FailureIncidentSeverity>(),
+  linkedFixTaskId: uuid('linked_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  // Optimistic-lock counter for the compare-and-swap update.
+  version: integer('version').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  signatureVersionIdx: uniqueIndex('failure_incidents_signature_version_idx').on(t.signature, t.detectorVersion),
+  workspaceStatusSeenIdx: index('failure_incidents_workspace_status_seen_idx').on(t.workspaceId, t.status, t.lastSeenAt),
+}));
+
+export const failureIncidentsRelations = relations(failureIncidents, ({ one }) => ({
+  workspace: one(workspaces, { fields: [failureIncidents.workspaceId], references: [workspaces.id] }),
+  linkedFixTask: one(tasks, { fields: [failureIncidents.linkedFixTaskId], references: [tasks.id] }),
+}));
+
+export type FailureIncidentRow = typeof failureIncidents.$inferSelect;
+export type NewFailureIncidentRow = typeof failureIncidents.$inferInsert;

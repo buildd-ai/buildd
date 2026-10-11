@@ -1097,8 +1097,21 @@ export const INVARIANTS: Invariant[] = [
     resolves: false,
     query: (s, now) => {
       const out: InvariantViolation[] = [];
+      // One row per PR: the worker with the NEWEST open anchor. The PR-opened
+      // webhook (registerLocalPr) stamps the PR onto every worker on its
+      // branch, including predecessors that failed long before it opened, and
+      // their completedAt would age a fresh PR by days. A later worker on the
+      // PR (a CI or conflict fix) pushed to it, which is a touch in the same
+      // sense a review is in lastLookedAt. Either way this undercounts, which
+      // is the direction a filing signal must fail in.
+      const newestByPr = new Map<string, SnapshotWorker>();
       for (const w of s.workers) {
         if (!isOpenPrWorker(w)) continue;
+        const k = `${w.workspaceId} ${w.prNumber}`;
+        const seen = newestByPr.get(k);
+        if (!seen || prOpenedAt(w) > prOpenedAt(seen)) newestByPr.set(k, w);
+      }
+      for (const w of newestByPr.values()) {
         // A null base is unknown, never trunk (schema.ts prBaseRef) — and drift
         // against an unknown base is uncountable, not zero. A short-circuit,
         // not the guarantee: countBaseDrift returns 0 for a null base anyway.

@@ -15,6 +15,7 @@ globalThis.fetch = mockFetch as any;
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: RunnerTokensSection } = await import('./RunnerTokensSection');
+const { describeControls } = await import('./_lib/form-controls');
 
 const account = {
   id: 'fixture-token', name: 'Analytics client', type: 'service', authType: 'api',
@@ -41,6 +42,16 @@ async function expandToken() {
 }
 
 describe('RunnerTokensSection token details', () => {
+  it('links token creation to the creation page from populated and empty states', async () => {
+    await mount({});
+    const newToken = [...host.querySelectorAll('a')].find((link) => link.textContent?.includes('+ New token'));
+    expect(newToken?.getAttribute('href')).toBe('/app/settings/runners?new=1');
+
+    await act(async () => { root.render(<RunnerTokensSection accounts={[]} />); });
+    const createToken = [...host.querySelectorAll('a')].find((link) => link.textContent?.includes('Create a runner token'));
+    expect(createToken?.getAttribute('href')).toBe('/app/settings/runners?new=1');
+  });
+
   it('flags an expired token in the compact row and an unused one in the detail', async () => {
     await mount({ expiresAt: '2000-01-01T00:00:00Z' });
     expect(host.textContent).toContain('Expired');
@@ -107,5 +118,55 @@ describe('RunnerTokensSection token details', () => {
     // Verify the input field is NOT present
     const input = host.querySelector<HTMLInputElement>('input[type="number"]');
     expect(input).toBeFalsy();
+  });
+});
+
+describe('RunnerTokensSection: one primary', () => {
+  it('with tokens, the header "New token" is a plain button to the new-token page', async () => {
+    await mount({});
+    const link = host.querySelector<HTMLAnchorElement>('[data-testid="new-token"]')!;
+    expect(link.getAttribute('href')).toBe('/app/settings/runners?new=1');
+    expect(link.className).not.toContain('btn-primary');
+    expect(host.querySelectorAll('.btn-primary').length).toBe(0);
+  });
+
+  it('empty: one muted sentence and the one primary, unboxed', async () => {
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => { root.render(<RunnerTokensSection accounts={[]} />); });
+    const empty = host.querySelector<HTMLElement>('[data-testid="runner-tokens-empty"]')!;
+    expect(empty.className).not.toContain('card');
+    const primaries = host.querySelectorAll<HTMLAnchorElement>('.btn-primary');
+    expect(primaries.length).toBe(1);
+    expect(primaries[0].textContent).toBe('Create a runner token');
+    expect(primaries[0].getAttribute('href')).toBe('/app/settings/runners?new=1');
+    expect(host.querySelector('[data-testid="new-token"]')).toBeNull();
+  });
+});
+
+/** Read-only for a member: only what they may do, which is making their own token. */
+describe('RunnerTokensSection: a member without manage_team_keys', () => {
+  it('reads every token detail as text; New token is the one control', async () => {
+    await mount({ maxConcurrentWorkers: 3, hostRunner: true, canManageHostRunner: false });
+    await expandToken();
+    expect(host.textContent).toContain('Workers: 3');
+    expect(host.textContent).toContain('Trusted');
+    expect(describeControls(host)).toEqual(['a "+ New token"']);
+    expect(host.textContent).not.toMatch(/Admins can|Only a team owner|can change this/);
+  });
+
+  it('may delete a token they made themselves', async () => {
+    await mount({ canManageHostRunner: false, canDelete: true });
+    await expandToken();
+    expect(describeControls(host)).toEqual(['a "+ New token"', 'button "Delete"']);
+  });
+
+  it('an admin keeps Regenerate key and Delete', async () => {
+    await mount({ canManageHostRunner: true });
+    await expandToken();
+    const labels = describeControls(host);
+    expect(labels).toContain('button "Regenerate key"');
+    expect(labels).toContain('button "Delete"');
   });
 });

@@ -196,9 +196,10 @@ into `filled` would claim work landed that did not.
 ### 2.6 Transitive reduction
 
 The auto-`dependsOn` pass in `apps/web/src/app/api/tasks/route.ts` adds an edge
-to every in-flight task whose `pathManifest` genuinely overlaps — concrete path
-or directory prefix, decided by `shouldSerializeByManifest()` in
-`packages/core/path-overlap.ts`. A wildcard (`['**']`) manifest on either side
+to every in-flight task whose `pathManifest` shares a file, a migration path or
+a serialized surface with it, decided by `partitionOverlapEdges()` in
+`packages/core/path-overlap.ts`. A directory-prefix-only overlap is soft
+evidence (`pathDeclaration.softOverlaps`), never an edge. A wildcard (`['**']`) manifest on either side
 mints **no** edge: it declares "scope not stated", and the claim-time gates have
 always treated it as advisory, so authoring may not promote it to a hard edge
 (see §2.7).

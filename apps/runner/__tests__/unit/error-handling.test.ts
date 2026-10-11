@@ -12,7 +12,9 @@
  * Run: bun test apps/runner/__tests__/unit/error-handling.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -97,13 +99,13 @@ mock.module('../../src/buildd', () => ({
 // Mock workspace resolver
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -246,7 +248,19 @@ describe('Error Handling', () => {
     manager?.destroy();
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     clearAllMocks();
   });
 
@@ -426,7 +440,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: a loaded CI runner can take >200ms
+      for (let i = 0; i < 50 && manager.getWorker('w-sdk-abort')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-sdk-abort');
       expect(worker?.status).toBe('error');
@@ -455,7 +472,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      for (let i = 0; i < 100 && manager.getWorker('w-budget')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      await new Promise(r => setTimeout(r, 50));
 
       const worker = manager.getWorker('w-budget');
       expect(worker?.status).toBe('error');
@@ -483,7 +503,7 @@ describe('Error Handling', () => {
       }] }));
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      for (let i = 0; i < 100 && manager.getWorker('w-cap-ctx')?.status !== 'error'; i++) await new Promise(r => setTimeout(r, 50));
 
       expect(manager.getWorker('w-cap-ctx')?.status).toBe('error');
       expect(Object.keys((manager as any).contextBreaker.snapshot())).toEqual([]);
@@ -507,7 +527,8 @@ describe('Error Handling', () => {
         lastQueryOptions = null;
         manager = new WorkerManager(makeConfig({ maxBudgetUsd: 5 } as any));
         await manager.claimAndStart(makeTask());
-        await new Promise(r => setTimeout(r, 200));
+        // Poll rather than sleep a fixed 200ms: session setup is slower on loaded CI runners.
+        for (let i = 0; i < 100 && lastQueryOptions === null; i++) await new Promise(r => setTimeout(r, 50));
         expect(lastQueryOptions).not.toBeNull();
         return lastQueryOptions;
       }
@@ -616,7 +637,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: a loaded CI runner can take >200ms
+      for (let i = 0; i < 50 && manager.getWorker('w-auth-fail')?.currentAction !== 'Auth failed'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-auth-fail');
       expect(worker?.status).toBe('error');
@@ -816,7 +840,12 @@ describe('Error Handling', () => {
       const events = collectEvents(manager);
 
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than sleep a fixed time: loaded CI runners can exceed 200ms.
+      for (let i = 0; i < 50; i++) {
+        const w = manager.getWorker('w-unknown-err');
+        if (w?.milestones.some(m => m.label.includes('Error:'))) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-unknown-err');
       // Should have an error milestone for the unexpected result subtype
@@ -881,7 +910,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than sleep a fixed 200ms: a loaded CI host can take longer.
+      for (let i = 0; i < 100 && manager.getWorker('w-bad-config')?.status !== 'done'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       // Worker should still complete successfully
       const worker = manager.getWorker('w-bad-config');
@@ -1063,7 +1095,13 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll for the session to finish rather than sleeping a fixed 200ms: on a loaded CI
+      // runner it can still be running, and eviction only removes finished workers.
+      for (let i = 0; i < 100; i++) {
+        const w = manager.getWorker('w-evict');
+        if (w && (w.status === 'done' || w.status === 'error')) break;
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       const worker = manager.getWorker('w-evict');
       expect(worker).toBeDefined();
@@ -1187,7 +1225,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: a loaded CI runner can take >200ms
+      for (let i = 0; i < 50 && manager.getWorker('w-abort-msg')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-abort-msg');
       // The catch block distinguishes abort errors by checking for "aborted" in message
@@ -1306,7 +1347,12 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than sleep a fixed 200ms: a loaded CI host can take longer.
+      for (let i = 0; i < 50; i++) {
+        const w = manager.getWorker('w-budget-ms');
+        if (w?.milestones.some(m => m.label.includes(SESSION_BUDGET_CAP_ERROR))) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-budget-ms');
       const budgetMilestones = worker?.milestones.filter(m =>

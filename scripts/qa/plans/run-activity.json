@@ -1,0 +1,127 @@
+[
+  {
+    "route": "/app/dev/fixtures?state=run-activity&scenario=research-lifecycle",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:run-activity-research-lifecycle"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:run-activity-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=run-activity&scenario=legacy-percent-stream",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:run-activity-legacy-percent-stream"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:run-activity-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=run-activity&scenario=waiting-input",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:run-activity-waiting-input"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:run-activity-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=run-activity&scenario=error",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:run-activity-error"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:run-activity-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=run-activity&scenario=steering-acks",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:run-activity-steering-acks"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:run-activity-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=run-activity&scenario=attempts-tie",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:run-activity-attempts-tie"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:run-activity-fixture"
+          }
+        ]
+      },
+      {
+        "key": "status-flipped",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:run-activity-attempts-tie"
+          },
+          {
+            "action": "click",
+            "selector": "testid:run-activity-flip-status"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:run-activity-fixture"
+          }
+        ]
+      }
+    ]
+  }
+]

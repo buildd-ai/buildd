@@ -20,6 +20,7 @@ import {
   type UnrecognizedModelReason,
 } from './model-capability-requirements';
 import { TIERS, bundledTierEntry, type Tier } from './model-tier-defaults';
+import { findCertification, isCertified, type CertificationMap } from './model-certification';
 
 /** Where a resolved model id came from, for the error record. */
 export type DispatchModelSource =
@@ -66,14 +67,17 @@ const KNOWN_GOOD_IDS: ReadonlySet<string> = new Set([
  * `MODEL_MIN_CLI_VERSION` is refused: its CLI floor is unrecorded, and every
  * new model so far has raised it. This is the rule `makeCatalogServabilityCheck`
  * already applies to catalog-picked tiers; the point here is that a pool arm, an
- * experiment arm or a pin used to bypass it.
+ * experiment arm or a pin used to bypass it — unless central certification
+ * (`certifications`, model-certification.ts) has vouched for the id.
  */
 export function checkDispatchModel(
   model: string,
   catalog: readonly CatalogEntry[],
+  certifications?: CertificationMap | null,
 ): DispatchModelVerdict {
   if (!model.startsWith('claude-')) return { ok: true };
   if (KNOWN_GOOD_IDS.has(model)) return { ok: true };
+  if (isCertified(findCertification(certifications, model))) return { ok: true };
   if (catalog.length === 0) return { ok: true };
 
   const want = model.toLowerCase();
@@ -131,13 +135,14 @@ export function guardDispatchModel(args: {
   tier: Tier;
   fallbacks: ReadonlyArray<{ model: string; source: DispatchModelSource }>;
   catalog: readonly CatalogEntry[];
+  certifications?: CertificationMap | null;
 }): GuardedModel {
-  const verdict = checkDispatchModel(args.resolved, args.catalog);
+  const verdict = checkDispatchModel(args.resolved, args.catalog, args.certifications);
   if (verdict.ok) return { model: args.resolved, source: args.source, rejection: null };
 
   const next =
     args.fallbacks.find(
-      (f) => f.model !== args.resolved && checkDispatchModel(f.model, args.catalog).ok,
+      (f) => f.model !== args.resolved && checkDispatchModel(f.model, args.catalog, args.certifications).ok,
     ) ?? { model: bundledTierEntry(args.tier).model, source: 'tier_default' as const };
 
   return {

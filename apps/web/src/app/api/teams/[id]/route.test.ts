@@ -38,6 +38,11 @@ mock.module('@buildd/core/db/schema', () => ({
   users: 'users',
 }));
 
+const chatCleanups: string[] = [];
+mock.module('@/lib/artifact-attachment-cleanup', () => ({
+  removeTeamChatAttachments: async (teamId: string) => { chatCleanups.push(teamId); return { removed: 0, objectsRemoved: 0 }; },
+}));
+
 import { DELETE, GET, PATCH } from './route';
 
 const ctx = { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) };
@@ -237,6 +242,56 @@ describe('PATCH /api/teams/[id] — key policy', () => {
     for (const u of capturedUpdates) expect(u).not.toHaveProperty('chatDisabled');
   });
 
+  it('the legacy name never opts a team in: credentialPolicy stays unset when it was unset', async () => {
+    const saved = teamRow;
+    teamRow = { ...(saved ?? {}), credentialPolicy: null };
+    for (const legacy of ['team', 'team_or_own', 'own']) {
+      capturedUpdates.length = 0;
+      await PATCH(patchReq({ inferenceKeyPolicy: legacy }), ctx);
+      expect(capturedUpdates[0]).toMatchObject({ inferenceKeyPolicy: legacy });
+      expect(capturedUpdates[0]).not.toHaveProperty('credentialPolicy');
+    }
+    teamRow = saved;
+  });
+
+  it('the legacy name keeps credentialPolicy in step for a team that already opted in', async () => {
+    const saved = teamRow;
+    teamRow = { ...(saved ?? {}), credentialPolicy: 'team' };
+    const want = { team: 'team', team_or_own: 'personal_first', own: 'personal_only' } as const;
+    for (const [legacy, cp] of Object.entries(want)) {
+      capturedUpdates.length = 0;
+      await PATCH(patchReq({ inferenceKeyPolicy: legacy }), ctx);
+      expect(capturedUpdates[0]).toMatchObject({ inferenceKeyPolicy: legacy, credentialPolicy: cp });
+    }
+    teamRow = saved;
+  });
+
+  it('an admin sets the credential policy by its new name, writing both columns', async () => {
+    const want = { team: 'team', personal_first: 'team_or_own', personal_only: 'own' } as const;
+    for (const [cp, legacy] of Object.entries(want)) {
+      capturedUpdates.length = 0;
+      const res = await PATCH(patchReq({ credentialPolicy: cp }), ctx);
+      expect(res.status).toBe(200);
+      expect(capturedUpdates[0]).toMatchObject({ credentialPolicy: cp, inferenceKeyPolicy: legacy });
+    }
+  });
+
+  it('rejects an unknown credential policy, including a legacy value under the new name', async () => {
+    for (const bad of ['anyone', 'team_or_own']) {
+      const res = await PATCH(patchReq({ credentialPolicy: bad }), ctx);
+      expect(res.status).toBe(400);
+    }
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('GET reads the credential policy column', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ credentialPolicy: true });
+    principal = null;
+  });
+
   it('a member cannot change it', async () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     expect((await PATCH(patchReq({ inferenceKeyPolicy: 'own' }), ctx)).status).toBe(403);
@@ -352,12 +407,13 @@ describe('DELETE /api/teams/[id]', () => {
   const del = () =>
     DELETE(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111', { method: 'DELETE' }), ctx);
 
-  beforeEach(() => { deletedTeams = 0; });
+  beforeEach(() => { deletedTeams = 0; chatCleanups.length = 0; });
 
   it('a member cannot delete the team', async () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     expect((await del()).status).toBe(403);
     expect(deletedTeams).toBe(0);
+    expect(chatCleanups).toEqual([]);
   });
 
   it('an admin cannot delete the team', async () => {
@@ -376,6 +432,8 @@ describe('DELETE /api/teams/[id]', () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
     expect((await del()).status).toBe(200);
     expect(deletedTeams).toBe(1);
+    // Its conversations cascade; their chat attachments are removed in the same request.
+    expect(chatCleanups).toEqual(['11111111-1111-4111-8111-111111111111']);
   });
 
   it('an owner still cannot delete a personal team', async () => {
@@ -383,5 +441,61 @@ describe('DELETE /api/teams/[id]', () => {
     teamRow = { ...teamRow, slug: 'personal-user-1' };
     expect((await del()).status).toBe(400);
     expect(deletedTeams).toBe(0);
+  });
+});
+
+describe('PATCH /api/teams/[id] — task estimates experiment switch', () => {
+  it('an admin turns it on; it is stamped with who and when', async () => {
+    const res = await PATCH(patchReq({ taskEstimates: { enabled: true } }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates).toHaveLength(1);
+    const v = capturedUpdates[0].taskEstimates;
+    expect(v).toMatchObject({ enabled: true, setBy: 'user-1' });
+    expect(Number.isFinite(Date.parse(v.setAt))).toBe(true);
+  });
+
+  it('an owner turns it off', async () => {
+    membership = { ...membership, role: 'owner' };
+    const res = await PATCH(patchReq({ taskEstimates: { enabled: false } }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0].taskEstimates).toMatchObject({ enabled: false, setBy: 'user-1' });
+  });
+
+  it('a member or viewer cannot change it', async () => {
+    for (const role of ['member', 'viewer']) {
+      membership = { teamId: 'team-1', userId: 'user-1', role };
+      expect((await PATCH(patchReq({ taskEstimates: { enabled: true } }), ctx)).status).toBe(403);
+    }
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('an API key (no session) cannot change it', async () => {
+    mockRequireSessionUser.mockResolvedValue({ response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) });
+    expect((await PATCH(patchReq({ taskEstimates: { enabled: true } }), ctx)).status).toBe(401);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('rejects anything but { enabled: boolean }; a client cannot set setBy/setAt', async () => {
+    for (const bad of [true, null, [], { enabled: 'yes' }, {}, { enabled: true, setBy: 'someone-else' }]) {
+      expect((await PATCH(patchReq({ taskEstimates: bad }), ctx)).status).toBe(400);
+    }
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('GET returns the stored switch', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ taskEstimates: true });
+    principal = null;
+  });
+});
+describe('warm handover team settings', () => {
+  it('stores all supported modes and rejects invalid policy', async () => {
+    for (const mode of ['off', 'repo', 'deps']) {
+      expect((await PATCH(patchReq({ warmHandover: mode }), ctx)).status).toBe(200);
+      expect(capturedUpdates.at(-1).warmHandover).toBe(mode);
+    }
+    for (const value of [null, true, 'unknown']) expect((await PATCH(patchReq({ warmHandover: value }), ctx)).status).toBe(400);
   });
 });

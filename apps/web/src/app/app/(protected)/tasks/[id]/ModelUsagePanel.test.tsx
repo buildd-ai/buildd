@@ -24,13 +24,13 @@ describe('ModelUsagePanel', () => {
       <ModelUsagePanel modelUsage={{ 'claude-opus-5': usage(1000, 200) }} tierLabel="Premium" />,
     );
     expect(html).toContain('Premium');
-    expect(html).toContain('Model Usage');
-    expect(html.indexOf('Premium')).toBeLessThan(html.indexOf('Model Usage'));
+    expect(html).toContain('Model usage');
+    expect(html.indexOf('Premium')).toBeLessThan(html.indexOf('Model usage'));
   });
 
   test('omits the tier when the task has none', () => {
     const html = renderToStaticMarkup(<ModelUsagePanel modelUsage={{ 'claude-opus-5': usage(1, 1) }} />);
-    expect(html).toContain('Model Usage');
+    expect(html).toContain('Model usage');
   });
 
   test('makes it visible that more than one model ran', () => {
@@ -72,5 +72,22 @@ describe('ModelUsagePanel', () => {
     expect(html).toContain('Total: 12s');
     expect(html).toContain('API: 9s');
     expect(html).toContain('max turns');
+  });
+
+  test('hides a model row\'s token figures when it reports 0 tokens after real turns', () => {
+    const html = renderToStaticMarkup(
+      <ModelUsagePanel modelUsage={{ 'claude-opus-5': usage(0, 0) }} turns={12} />,
+    );
+    expect(html).toContain('Model usage');
+    expect(html).not.toContain('0k in');
+    expect(html).not.toContain('0k out');
+  });
+
+  test('keeps token figures when they were reported', () => {
+    const html = renderToStaticMarkup(
+      <ModelUsagePanel modelUsage={{ 'claude-opus-5': usage(4000, 2000) }} turns={12} />,
+    );
+    expect(html).toContain('4k in');
+    expect(html).toContain('2k out');
   });
 });

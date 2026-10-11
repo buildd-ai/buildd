@@ -65,9 +65,18 @@ export type OrchestrationFallbackReason =
   | 'missing_key'
   | 'retrieval_error'
   | 'no_candidates'
+  | 'rule_decided'
   | 'deadline'
   | 'invalid'
   | 'error';
+
+/**
+ * Returned by `buildState` when the evidence it read settles the question in
+ * code (a measured high conflict risk, say): the rule's verdict stands, the
+ * model is not called, and the row records `rule_decided` so the skip is
+ * visible in the ledger rather than silent.
+ */
+export const RULE_DECIDED: unique symbol = Symbol.for('buildd.orchestration.rule_decided');
 
 /** Why a usable answer was recorded but not applied. */
 export type OrchestrationSuggestReason = 'shadow' | 'below_threshold' | 'non_jev' | 'not_in_cohort';
@@ -185,7 +194,7 @@ export interface OrchestrationDecisionParams<Q extends DecisionQuestions> {
    * there is nothing to ask (no candidates): the rule stands, nothing is spent.
    * Must stop work when `signal` aborts.
    */
-  buildState: (signal: AbortSignal) => Promise<DecisionText | null>;
+  buildState: (signal: AbortSignal) => Promise<DecisionText | null | typeof RULE_DECIDED>;
   /** Reject an answer the caller cannot act on (outside the candidate map, say). */
   isValidAnswer?: (value: string | number | boolean) => boolean;
   cohort?: ApplyingCohort;
@@ -415,7 +424,7 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
     // 2. Retrieval / state, inside the same deadline, cancelled on expiry.
     const controller = new AbortController();
     const retrievalStart = now();
-    let state: DecisionText | null | typeof DEADLINE;
+    let state: DecisionText | null | typeof RULE_DECIDED | typeof DEADLINE;
     try {
       state = await withDeadline(Promise.resolve().then(() => params.buildState(controller.signal)), remaining());
     } catch (err) {
@@ -428,6 +437,7 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
       return await fallback('deadline', { model: access.model });
     }
     if (state === null || state === undefined) return await fallback('no_candidates', { model: access.model });
+    if (state === RULE_DECIDED) return await fallback('rule_decided', { model: access.model });
 
     // 3. The decision, with whatever budget is left.
     const budget = remaining();

@@ -268,7 +268,6 @@ export function archiveSession(worker: LocalWorker): void {
       commits: worker.commits,
       output: isSensitive ? [] : worker.output,
       resultMeta: worker.resultMeta,
-      teamState: worker.teamState,
       promptSuggestions: worker.promptSuggestions,
     };
 

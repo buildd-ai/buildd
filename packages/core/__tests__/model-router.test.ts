@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveEffectiveModel } from '../model-router';
+import { resolveEffectiveModel, normalizeTaskKind } from '../model-router';
 
 describe('resolveEffectiveModel', () => {
   it('explicit override bypasses every gate', () => {
@@ -171,5 +171,49 @@ describe('resolveEffectiveModel', () => {
       });
       expect(d.model).toBe('opus');
     });
+  });
+});
+
+// Regression: tasks.kind is a plain text column, so a category value
+// ('feature', 'test') can reach the router. It used to throw
+// "Cannot read properties of undefined (reading 'normal')" and 500 the claim.
+describe('resolveEffectiveModel with an out-of-vocabulary kind', () => {
+  it.each([['feature'], ['test'], ['constructor'], ['']])('kind=%s routes as engineering instead of throwing', (bad) => {
+    for (const complexity of ['simple', 'normal', 'complex'] as const) {
+      const got = resolveEffectiveModel({ kind: bad as any, complexity });
+      const want = resolveEffectiveModel({ kind: 'engineering', complexity });
+      expect(got).toEqual(want);
+    }
+  });
+
+  it('applies engineering budget gates to a normalized kind', () => {
+    const d = resolveEffectiveModel({ kind: 'feature' as any, complexity: 'complex', dailyBudgetPct: 0.75 });
+    expect(d.model).toBe('sonnet');
+    expect(d.reason).toBe('budget_downshift');
+  });
+
+  it('an unknown complexity falls back to normal', () => {
+    expect(resolveEffectiveModel({ kind: 'engineering', complexity: 'huge' as any }).model).toBe('sonnet');
+  });
+});
+
+describe('normalizeTaskKind', () => {
+  it('passes a valid kind through', () => {
+    for (const k of ['coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation']) {
+      expect(normalizeTaskKind(k)).toBe(k);
+    }
+  });
+  it('maps category values onto the closest kind', () => {
+    expect(normalizeTaskKind('feature')).toBe('engineering');
+    expect(normalizeTaskKind('test')).toBe('engineering');
+    expect(normalizeTaskKind('bug')).toBe('engineering');
+    expect(normalizeTaskKind('docs')).toBe('writing');
+  });
+  it('maps anything else to engineering and keeps null/empty as null', () => {
+    expect(normalizeTaskKind('constructor')).toBe('engineering');
+    expect(normalizeTaskKind('whatever')).toBe('engineering');
+    expect(normalizeTaskKind(null)).toBeNull();
+    expect(normalizeTaskKind(undefined)).toBeNull();
+    expect(normalizeTaskKind('')).toBeNull();
   });
 });

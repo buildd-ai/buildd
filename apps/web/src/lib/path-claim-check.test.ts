@@ -140,7 +140,7 @@ describe('checkPathClaim', () => {
     expect(r.body.blockingMissionId).toBe(OTHER_MISSION_ID);
     expect(r.body.message).toContain('different mission');
     expect(r.body.message).toContain('path_released message');
-    expect(r.body.message).toContain('update_progress');
+    expect(r.body.message).toContain('next turn boundary');
     expect(r.body.message).not.toContain('Pusher');
     expect(mockRegisterWaiter).toHaveBeenCalledWith(SIBLING_ID, TASK_ID, 'shared.ts', WORKSPACE_ID);
 
@@ -150,7 +150,7 @@ describe('checkPathClaim', () => {
     const ev: any = pathClaimEvents[0];
     expect(ev.outcome).toBe('deferred');
     expect(ev.gate).toBe(REAL_GATE_SLUGS.PATH_CLAIM);
-    expect(ev.detail).toEqual({ blockingTaskId: SIBLING_ID, blockingPath: 'shared.ts', crossMission: true, deadlock: false });
+    expect(ev.detail).toEqual({ signal: 'claim_blocked', blockingTaskId: SIBLING_ID, blockingPath: 'shared.ts', crossMission: true, deadlock: false });
   });
 
   it('on conflict: the body names the held path and every requested path that is held, so a runner can deny per path', async () => {

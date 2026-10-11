@@ -10,7 +10,9 @@
  * Run: bun test apps/runner/__tests__/unit/terminal-reason.test.ts
  */
 
-import { describe, test, expect, mock, afterEach, setDefaultTimeout } from 'bun:test';
+import { describe, test, expect, mock, afterEach, setDefaultTimeout, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 setDefaultTimeout(15_000);
@@ -46,13 +48,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -154,8 +156,8 @@ function injectWorker(manager: InstanceType<typeof WorkerManager>, worker: Local
   (manager as any).workers.set(worker.id, worker);
   (manager as any).sessions.set(worker.id, {
     abortController: new AbortController(),
-    cwd: '/tmp/test-workspace',
-    repoPath: '/tmp/test-workspace',
+    cwd: getTestWorkspace(),
+    repoPath: getTestWorkspace(),
     generation: 1,
     inputStream: {
       enqueue: () => {},
@@ -189,6 +191,13 @@ function makeResultMessage(opts: {
 
 describe('terminal_reason milestone', () => {
   let manager: InstanceType<typeof WorkerManager>;
+
+  afterAll(() => {
+    cleanupTestWorkspace();
+
+
+  });
+
 
   afterEach(() => {
     manager?.destroy();

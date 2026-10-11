@@ -32,7 +32,13 @@ import {
   type LookupAll, type VerifyOutcome,
 } from './net/public-address';
 
+import type { CredentialPolicy } from './inference-key-policy';
+import type { PolicyScope } from './providers/policy';
+
 export const LITELLM_LABEL = 'litellm' as const;
+
+/** A gateway is an organisation's: never personal or account-scoped, never an env var. */
+const GATEWAY_SCOPES: readonly PolicyScope[] = ['workspace', 'team'];
 
 export interface LiteLLMGateway {
   /** OpenAI-compatible root, no trailing slash, e.g. `https://litellm.example.com/v1`. */
@@ -131,37 +137,32 @@ export async function resolveLiteLLMGateway(
   flags: { ignoreKeyPolicy?: boolean } = {},
 ): Promise<LiteLLMGateway | null> {
   try {
-    const { db } = await import('./db');
-    const { secrets } = await import('./db/schema');
-    const { and, eq, isNull, or, sql } = await import('drizzle-orm');
     const { decrypt } = await import('./secrets');
+    const { toCredentialPolicy } = await import('./inference-key-policy');
+    let credentialPolicy: CredentialPolicy = 'team';
     if (!flags.ignoreKeyPolicy) {
       const { loadInferenceKeyPolicy } = await import('./inference-keys');
-      if ((await loadInferenceKeyPolicy(opts.teamId)) === 'own') return null;
+      const policy = await loadInferenceKeyPolicy(opts.teamId);
+      if (policy === 'own') return null;
+      credentialPolicy = toCredentialPolicy(policy);
     }
-    const rows = await db.query.secrets.findMany({
-      where: and(
-        eq(secrets.teamId, opts.teamId),
-        eq(secrets.purpose, 'inference_key'),
-        eq(secrets.label, LITELLM_LABEL),
-        isNull(secrets.userId),
-        isNull(secrets.accountId),
-        or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-      ),
-      columns: { id: true, encryptedValue: true, workspaceId: true, healthStatus: true, updatedAt: true },
+    // The resolver's chat ranking, narrowed to the shared scopes a gateway can
+    // sit in: workspace row first, then the team's; healthy over revoked;
+    // newest. A row that does not parse as a gateway is skipped.
+    const { resolveProviderCredential } = await import('./providers/resolve');
+    const result = await resolveProviderCredential({
+      teamId: opts.teamId,
+      workspaceId: opts.workspaceId ?? null,
+      accountId: null,
+      requesterUserId: null,
+      surface: 'chat',
+      provider: 'litellm',
+      scopes: GATEWAY_SCOPES,
+      team: { credentialPolicy },
+      accept: v => parseGateway(v) !== null,
+      decrypt,
     });
-    const ranked = rows.sort((a, b) =>
-      (a.workspaceId ? 0 : 1) - (b.workspaceId ? 0 : 1) ||
-      (a.healthStatus === 'revoked' ? 1 : 0) - (b.healthStatus === 'revoked' ? 1 : 0) ||
-      (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0));
-    for (const r of ranked) {
-      try {
-        const g = parseGateway(decrypt(r.encryptedValue));
-        if (g) return g;
-      } catch (e) {
-        console.error(`[litellm-gateway] failed to decrypt secret ${r.id}:`, e);
-      }
-    }
+    if (!result.none) return parseGateway(result.credential.value);
   } catch (e) {
     console.warn('[litellm-gateway] lookup failed:', e);
   }

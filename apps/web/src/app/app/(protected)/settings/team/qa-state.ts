@@ -14,6 +14,14 @@ export type TeamQaState = 'multi-member';
 /** userId of the synthetic row. Not a UUID, so it can never match a real user. */
 export const QA_FIXTURE_MEMBER_ID = 'qa-fixture-member';
 
+/**
+ * Whether `userId` is a synthetic fixture row (this file's, or the dev fixtures page's
+ * `?state=team-members`). TeamDetailClient never sends a member write for one.
+ */
+export function isQaFixtureMemberId(userId: string): boolean {
+  return userId.startsWith('qa-fixture-');
+}
+
 export function resolveTeamQaState(
   raw: string | string[] | undefined,
   nodeEnv: string | undefined = process.env.NODE_ENV,

@@ -11,7 +11,7 @@ import { buildMissionCardView, summarizeMissionForCard } from './mission-card-vi
 import { buildMissionListCard, type ListMissionRow, type ListTaskRow, type MissionListCardModel } from './mission-list-card';
 import { buildPulseSegments } from './mission-pulse';
 import { feedStripOrder } from './mission-strip-order';
-import { stripOrder } from './mission-task-strip';
+import { stripCountsLabel, stripOrder, stripSlotCounts, stripSlots, stripTone } from './mission-task-strip';
 
 const NOW = Date.UTC(2026, 0, 1, 13, 0, 0);
 const asDate = (ms: number | null | undefined) => (ms == null ? null : new Date(ms));
@@ -139,5 +139,44 @@ describe('cross-mission blocker', () => {
 
   it('an external blocker adds no on-strip edge', () => {
     expect(dagBoard(spec, { externalDeps }).tasks[dagId(spec, 'B')].offStrip).toHaveLength(1);
+  });
+});
+
+describe('one tone/bucket projection: strip header, list card and phase bar agree', () => {
+  // 01 landed, 02-04 failed, 05 open, 06-08 held (a chain behind 05).
+  const spec: DagSpec = {
+    tasks: ['1', '2', '3', '4', '5', '6', '7', '8'],
+    edges: { 2: ['1'], 3: ['1'], 4: ['1'], 5: ['1'], 6: ['5'], 7: ['6'], 8: ['7'] },
+    states: { 1: 'landed', 2: 'failed', 3: 'failed', 4: 'failed' },
+  };
+  const withCancelled = (): BoardTaskInput[] => [
+    ...dagTasks(spec),
+    { ...dagTasks({ tasks: ['X'] })[0], id: 'fx-cancelled', title: 'feat: dropped', status: 'cancelled', dependsOn: null } as BoardTaskInput,
+  ];
+
+  it('strip header counts, list buckets and cell tones reconcile on the 8-node fixture', () => {
+    const board = dagBoard(spec);
+    const slots = stripSlots(board);
+    const header = stripSlotCounts(slots);
+    expect(header).toEqual({ landed: 1, failed: 3, open: 1, held: 3, active: 0 });
+    expect(stripCountsLabel(header)).toBe('1 open · 3 failed · 3 held');
+
+    const { model } = listCard(dagTasks(spec).map(toListTaskRow));
+    expect(model.buckets).toEqual(header);
+    expect(model.counts).toMatchObject({ failed: 3, open: 1, held: 3 });
+    // Every rendered cell paints the tone its strip slot paints.
+    const byId = new Map(slots.map(s => [s.id, stripTone((s as { state: Parameters<typeof stripTone>[0] }).state)]));
+    for (const c of listCells(model)) expect(c.tone).toBe(byId.get(c.taskId)!);
+    expect(listCells(model).filter(c => c.tone === 'error')).toHaveLength(3);
+  });
+
+  it('cancelled tasks have no cell and no count on either surface', () => {
+    const tasks = withCancelled();
+    const slots = stripSlots(dagBoard(spec, { tasks }));
+    expect(slots).toHaveLength(8);
+    const { model } = listCard(tasks.map(toListTaskRow));
+    expect(listCells(model)).toHaveLength(8);
+    expect(model.buckets).toEqual(stripSlotCounts(slots));
+    expect(Object.values(model.buckets).reduce((a, b) => a + b, 0)).toBe(listCells(model).length);
   });
 });

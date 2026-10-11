@@ -1415,4 +1415,56 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(toWorker?.[2]).toMatchObject({ workerId: WORKER_ID, status: 'superseded' });
     expect(toTask?.[1]).toBe('worker:progress');
   });
+
+  describe('POST /api/workers/[id]/respond — OAuth session owner check', () => {
+    // Invariant: a bearer caller may answer only a worker it claimed. An OAuth
+    // session shares its account with the whole team, so ownership is the
+    // session user recorded at claim (claimedByUserId), not the account.
+    // Answering a teammate's worker goes through the dashboard cookie path,
+    // which checks workspace membership instead.
+    const oauthWorker = { ...baseWorker, accountId: 'account-1', workspaceId: 'workspace-1', claimedByUserId: 'user-a' };
+    const session = (sessionUserId: string, extra: Record<string, unknown> = {}) =>
+      ({ id: 'account-1', teamId: 'team-1', sessionUserId, level: 'admin', ...extra });
+
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+      mockWorkersFindFirst.mockResolvedValue({ ...oauthWorker });
+    });
+
+    it('the session user that claimed the worker is allowed', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session('user-a'));
+      const res = await POST(createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'oauth-token'), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(mockWorkersUpdateSet).toHaveBeenCalled();
+    });
+
+    it('another member of the same team on the same account is refused, and nothing is written', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session('user-b'));
+      // A dashboard cookie for the same person must not rescue the bearer path.
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-b' });
+      const res = await POST(createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'oauth-token'), { params: mockParams });
+      expect(res.status).toBe(403);
+      expect(mockWorkersUpdateSet).not.toHaveBeenCalled();
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockTasksUpdateSet).not.toHaveBeenCalled();
+      expect(mockTriggerEvent).not.toHaveBeenCalled();
+    });
+
+    it("the dashboard cookie session still answers a teammate's worker via workspace access", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-b' });
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-b', 'workspace-1');
+    });
+
+    it('a session with no team id is refused even when the user matches', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session('user-a', { teamId: null }));
+      const res = await POST(createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'oauth-token'), { params: mockParams });
+      expect(res.status).toBe(403);
+      expect(mockWorkersUpdateSet).not.toHaveBeenCalled();
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+  });
 });

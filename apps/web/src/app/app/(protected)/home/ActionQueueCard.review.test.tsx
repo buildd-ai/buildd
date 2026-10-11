@@ -1,0 +1,58 @@
+import { describe, expect, it } from 'bun:test';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ActionQueueCard } from './ActionQueueCard';
+import type { ActionQueueItem } from '@/lib/action-queue';
+
+const REASON = 'The change adds a table and a migration, and workspace policy requires a person for both. The migration index also collides with the base branch. Proposed policy additions: a manifest file as dependency_bump.';
+
+const item = {
+  subjectKey: 'review-1',
+  chip: 'REVIEW',
+  prNumber: 7,
+  workspaceId: 'ws-example',
+  taskTitle: 'Add an incident table',
+  prUrl: 'https://example.test/o/r/pull/7',
+  machineStatus: 'CI running',
+  humanReview: {
+    label: 'Review on GitHub',
+    reason: REASON,
+    decision: 'Approve the additive migration after the branch refresh lands.',
+    blockers: [{ kind: 'migration', text: 'Adds one table' }],
+  },
+} as unknown as ActionQueueItem;
+
+describe('human PR review card', () => {
+  it('leads with the decision, tags the why, and folds the full reason', () => {
+    const html = renderToStaticMarkup(<ActionQueueCard item={item} />);
+    expect(html).toContain('Approve the additive migration after the branch refresh lands.');
+    expect(html).toContain('migration');
+    expect(html).toContain('CI running');
+    expect(html).toContain('Details');
+    expect(html).not.toContain('Proposed policy additions');
+    expect(html).not.toContain('Review required ·');
+    expect(html).toContain('/pull/7/files');
+  });
+
+  it('is an L3 decision: the decision frame and a charcoal primary button', () => {
+    const html = renderToStaticMarkup(<ActionQueueCard item={item} />);
+    expect(html).toMatch(/data-testid="human-pr-review-card" data-level="3" class="card-decision/);
+    expect(html).toMatch(/class="btn btn-ink[^"]*" href="[^"]*\/pull\/7\/files"/);
+  });
+
+  it('a ship card shows the short title, keeps the full one as tooltip, and carries the refresh line', () => {
+    const ship = {
+      ...item,
+      taskTitle: 'Ship mission: Incident sentinel',
+      refreshFirst: { prNumber: 8, prUrl: 'https://example.test/o/r/pull/8', taskId: null, chip: 'REVIEW' },
+    } as unknown as ActionQueueItem;
+    const html = renderToStaticMarkup(<ActionQueueCard item={ship} />);
+    expect(html).toContain('data-testid="human-pr-review-card"');
+    expect(html).toContain('>Ship Incident sentinel<');
+    expect(html).toContain('title="Ship mission: Incident sentinel"');
+    expect(html).toContain('data-testid="refresh-first"');
+    expect(html).toContain('PR #8');
+    // The refresh line sits after the review card, not inside its folded detail.
+    expect(html.indexOf('refresh-first')).toBeGreaterThan(html.indexOf('Review on GitHub'));
+    expect(html).toContain('Approve the additive migration after the branch refresh lands.');
+  });
+});

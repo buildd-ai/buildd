@@ -186,35 +186,6 @@
       ]
     },
     {
-      "id": "task-create",
-      "path": "/app/tasks/new",
-      "title": "Create task form",
-      "specRef": "§2 Task — title, description, roleSlug, priority, outputRequirement; §4 POST /api/tasks",
-      "category": "core",
-      "expectations": [
-        {
-          "id": "task-create-form",
-          "desc": "Task creation form renders with title and description fields",
-          "specClaim": "Task: title (required), description; POST /api/tasks"
-        },
-        {
-          "id": "task-create-role-select",
-          "desc": "Role selector is present to route to a specific role",
-          "specClaim": "task.roleSlug — claim-time routing constraint"
-        },
-        {
-          "id": "task-create-submit",
-          "desc": "Submit button is present and appears wired",
-          "specClaim": "POST /api/tasks returns new task; should navigate to task detail"
-        },
-        {
-          "id": "task-create-no-errors",
-          "desc": "Form renders without visible errors",
-          "specClaim": "Shipped, live UI"
-        }
-      ]
-    },
-    {
       "id": "settings",
       "path": "/app/settings",
       "title": "Settings",

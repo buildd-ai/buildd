@@ -19,8 +19,9 @@ export interface SheetProps {
    * `auto` (default): content height, capped at 85vh.
    * `tall`: a fixed 88% sheet whose body scrolls — the task sheet over a mission.
    * `peek` / `expanded`: 35% / 55% heights for context-preserving inspection.
+   * `full`: full phone viewport, centered large panel on desktop for evidence.
    */
-  height?: 'auto' | 'tall' | 'peek' | 'expanded';
+  height?: 'auto' | 'tall' | 'peek' | 'expanded' | 'full';
   /**
    * Keep the underlying chart visible and interactive, without a modal backdrop.
    * At md+ this also renders inline, right where the sheet sits in the tree,
@@ -204,6 +205,7 @@ export default function Sheet({
   if (!open) return null;
 
   const tall = height !== 'auto';
+  const full = height === 'full';
 
   const header = (
     <div className="sticky top-0 z-10 flex items-center justify-between gap-3 px-4 py-3 border-b border-border-default bg-surface-1">
@@ -247,7 +249,7 @@ export default function Sheet({
   }
 
   const sheet = (
-    <div className={`fixed inset-0 z-50 flex items-end justify-center ${contextual ? 'pointer-events-none' : ''}`} role="presentation">
+    <div className={`fixed inset-0 z-50 flex ${full ? 'md:items-center md:p-6' : 'items-end'} justify-center ${contextual ? 'pointer-events-none' : ''}`} role="presentation">
       {!contextual && <div
         className="absolute inset-0 bg-black/50"
         onClick={onClose}
@@ -260,8 +262,8 @@ export default function Sheet({
         aria-label={title}
         data-testid={testId}
         tabIndex={trapFocus ? -1 : undefined}
-        className={`relative pointer-events-auto w-full ${width === 'wide' ? 'max-w-3xl' : 'max-w-lg'} bg-surface-1 border-t-2 border-border-strong shadow-lg pb-[env(safe-area-inset-bottom)] focus:outline-none ${
-          tall ? `flex flex-col ${height === 'peek' ? 'h-[35dvh]' : height === 'expanded' ? 'h-[55dvh]' : 'h-[88dvh]'} overflow-hidden` : 'max-h-[85vh] overflow-y-auto'
+        className={`relative pointer-events-auto w-full ${full ? 'md:max-w-4xl pt-[env(safe-area-inset-top)]' : width === 'wide' ? 'max-w-3xl' : 'max-w-lg'} bg-surface-1 border-t-2 border-border-strong shadow-lg pb-[env(safe-area-inset-bottom)] focus:outline-none ${
+          tall ? `flex flex-col ${full ? 'h-[100dvh] md:h-auto md:max-h-[90dvh]' : height === 'peek' ? 'h-[35dvh]' : height === 'expanded' ? 'h-[55dvh]' : 'h-[88dvh]'} overflow-hidden` : 'max-h-[85vh] overflow-y-auto'
         }`}
       >
         {handle}

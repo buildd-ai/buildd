@@ -7,7 +7,7 @@ describe('ChatSetupCard', () => {
   it('the title is a heading on the kit card, the body under it, the fix as a link', () => {
     const html = renderToStaticMarkup(createElement(ChatSetupCard, { reason: 'no_key', canManage: true }));
     expect(html).toMatch(/<h3[^>]*data-testid="kit-setup-title"[^>]*>Connect a model provider<\/h3><p class="kit-note">Chat is where/);
-    expect(html).toContain('href="/app/settings/providers"');
+    expect(html).toContain('href="/app/settings/models#keys"');
   });
 });
 
@@ -15,7 +15,7 @@ describe('chatSetupCopy', () => {
   it('admin, no key: connect a provider (not "turn on chat")', () => {
     const c = chatSetupCopy('no_key', true);
     expect(c.title).toBe('Connect a model provider');
-    expect(c.cta).toEqual({ href: '/app/settings/providers', label: 'Connect a provider' });
+    expect(c.cta).toEqual({ href: '/app/settings/models#keys', label: 'Connect a provider' });
   });
 
   it('owner or admin under the own-key policy: add your own key too', () => {

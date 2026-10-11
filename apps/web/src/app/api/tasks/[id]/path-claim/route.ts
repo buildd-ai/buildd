@@ -48,7 +48,7 @@ function authorizeFor({ user, apiAccount }: Auth) {
       return Boolean(await verifyWorkspaceAccess(user.id, task.workspaceId));
     }
     if (apiAccount) {
-      return Boolean(await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId));
+      return Boolean(await verifyAccountWorkspaceAccess(apiAccount, task.workspaceId));
     }
     return false;
   };

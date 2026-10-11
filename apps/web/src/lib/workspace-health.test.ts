@@ -8,14 +8,13 @@ import {
 } from './workspace-health';
 
 // A workspace nothing here should complain about: confirmed, restricted, a
-// risk-class policy, and a user who belongs to one team.
+// risk-class policy.
 const healthy: WorkspaceHealthInput = {
   name: 'app',
   repo: 'https://github.com/example/app',
   configStatus: 'admin_confirmed',
   accessMode: 'restricted',
   gitConfig: { policyConfig: { preset: 'balanced', riskClasses: [] } },
-  userTeamCount: 1,
 };
 
 const ids = (input: WorkspaceHealthInput) => checkWorkspaceHealth(input).map(i => i.id);
@@ -73,31 +72,17 @@ describe('checkWorkspaceHealth', () => {
     });
 
     it('never offers a restrict-access action', () => {
-      const items = checkWorkspaceHealth({ ...healthy, configStatus: 'unconfigured', accessMode: 'open', userTeamCount: 3 });
+      const items = checkWorkspaceHealth({ ...healthy, configStatus: 'unconfigured', accessMode: 'open' });
       expect(items.some(i => (i.action?.kind as string) === 'restrict-access')).toBe(false);
     });
   });
 
-  describe('team placement rule', () => {
-    it('is absent when the user belongs to one team', () => {
-      expect(ids({ ...healthy, userTeamCount: 1 })).not.toContain('team-placement');
-    });
-
-    it('is an action, not a warning, when the user belongs to more than one team', () => {
-      const items = checkWorkspaceHealth({ ...healthy, userTeamCount: 2 });
-      expect(items.map(i => i.id)).toEqual(['team-placement']);
-      expect(items[0].severity).toBe('action');
-      expect(items[0].action).toEqual({ kind: 'move-team', label: 'Move to team…' });
-    });
-  });
-
-  it('orders warnings before actions', () => {
-    expect(ids({
-      ...healthy,
-      configStatus: 'unconfigured',
-      accessMode: 'open',
-      userTeamCount: 3,
-    })).toEqual(['policy', 'team-placement']);
+  // Moving a workspace is a Danger zone action on the settings page; the
+  // health card repeating it put the same action on the page twice.
+  it('never offers a move-team action', () => {
+    const items = checkWorkspaceHealth({ ...healthy, configStatus: 'unconfigured', gitConfig: { autoMergePR: true } });
+    expect(items.map(i => i.id)).toEqual(['policy']);
+    expect(items.some(i => (i.action?.kind as string) === 'move-team')).toBe(false);
   });
 
   describe('system workspace exemption', () => {
@@ -107,7 +92,6 @@ describe('checkWorkspaceHealth', () => {
       configStatus: 'unconfigured',
       accessMode: 'open',
       gitConfig: { autoMergePR: true },
-      userTeamCount: 2,
     };
 
     it('shows only the info line for a repo-less system workspace', () => {
@@ -125,12 +109,12 @@ describe('checkWorkspaceHealth', () => {
 
     it('does not exempt a __-prefixed workspace that has a repo', () => {
       expect(ids({ ...coordination, repo: 'https://github.com/example/app' }))
-        .toEqual(['policy', 'team-placement']);
+        .toEqual(['policy']);
     });
 
     it('does not exempt a repo-less workspace without the system prefix', () => {
       expect(ids({ ...coordination, name: 'notes' }))
-        .toEqual(['policy', 'team-placement']);
+        .toEqual(['policy']);
     });
   });
 });

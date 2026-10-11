@@ -2,13 +2,13 @@
 title: MCP Action Contracts
 status: active
 owner: max
-last_verified: 2026-09-30
-summary: The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
+last_verified: 2026-10-08
+summary: /api/mcp MUST serve the buildd_<group> action tools (legacy buildd only to runners predating them), recall and learn over stateless Streamable HTTP, Bearer-authenticate every call and gate actions by privilege.
 domain: mcp
 surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/app/api/github/pr/review/route.ts, apps/web/src/lib/pr-review-status.ts]
 related: [auth-oauth-boundaries, knowledge-store-retrieval, mcp-connectors-and-roles]
 keywords: [iserror, triggeractions, workeractions, register_skill, streamable http, http 405, request_pr_review, get_pr_review, adopted pr, waitfor]
-verified_by: [apps/web/src/app/api/mcp/tools.test.ts, apps/web/src/app/api/mcp/route.tool-gating.test.ts, apps/web/src/app/api/mcp/route.group-tools.test.ts, packages/core/__tests__/mcp-tool-groups.test.ts, packages/core/__tests__/mcp-tools-admin-gated-actions.test.ts, packages/core/__tests__/mcp-tools-write-fence.test.ts, packages/core/__tests__/mcp-tools-workspace-guard.test.ts, packages/core/__tests__/mcp-tools-pr-review.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/pr-review-status.test.ts, apps/web/src/lib/pr-review-callback.test.ts]
+verified_by: [apps/web/src/app/api/mcp/tools.test.ts, apps/web/src/app/api/mcp/route.tool-gating.test.ts, apps/web/src/app/api/mcp/route.group-tools.test.ts, packages/core/__tests__/mcp-tool-groups.test.ts, packages/core/__tests__/mcp-response-budgets.test.ts, packages/core/__tests__/mcp-tools-admin-gated-actions.test.ts, packages/core/__tests__/mcp-tools-write-fence.test.ts, packages/core/__tests__/mcp-tools-workspace-guard.test.ts, packages/core/__tests__/mcp-tools-pr-review.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/pr-review-status.test.ts, apps/web/src/lib/pr-review-callback.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -46,10 +46,17 @@ every supported action.
 - `tools/list` on the `groups` surface lists `buildd_<group>` for each group the
   token level has an action in; its `action` enum is those actions plus `help`.
   `buildd` is not listed there but MUST stay callable with the same routing.
-- The `legacy` surface lists `buildd` as before and is the default for every
-  session. `?tools=groups` opts in to the groups surface. The server flag
-  `BUILDD_MCP_TOOL_SURFACE=groups` moves sessions without `?worker=` to groups;
-  runner worker sessions stay legacy. `?tools=legacy|groups` overrides either way.
+- `groups` is the standard surface for every session; no URL parameter or
+  server flag selects a surface. The one exception: a runner worker session
+  (`?worker=`) whose runner has not advertised `CAPABILITY_MCP_GROUP_TOOLS` on
+  its heartbeat (looked up by the worker's account and local UI URL) gets the
+  `legacy` surface, which lists `buildd` alone. Unknown (no URL, no heartbeat,
+  lookup error) counts as not advertised. The legacy surface is a
+  compatibility fallback for runners that predate group tools, to be removed.
+- The runner recognises a buildd action on any action tool name
+  (`isBuilddActionTool`: `mcp__buildd__buildd` or `mcp__buildd__buildd_<group>`)
+  plus `input.action`, never one exact name: `create_pr` arrives on
+  `buildd_work`.
 - A wrong-group action the token level may not call MUST get the same
   not-available-at-your-level error as `help`, not a pointer to a tool the
   level is not shown.
@@ -61,21 +68,42 @@ every supported action.
   (`MCP_GROUP_PARAMS`), each with one short description, and stays an open
   object: untyped fields pass through. A level sees only the fields its listed
   actions take.
+- A group tool's description gives a line (signature + summary) only to its
+  `listed` actions (`ACTION_LISTING`, usage-derived and dated: called often, or
+  named by a skill, role prompt or runner prompt); the rest are named on one
+  closing `More: a, b — call help {action} for docs.` line. Both kinds stay in
+  the `action` enum and dispatch identically.
+- The listing is narrowed by who is behind the session, not only its level: a
+  session with no person (API key or per-task token) is not shown the
+  personal-role skill actions it would always be refused, and an orchestration
+  task token is shown only the admin actions its own mission allows
+  (`ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS`). A runner worker session therefore
+  lists no admin-only action. The legacy surface is not narrowed.
 - Budget: the whole `groups` surface at admin level (group tools plus
   `recall`, `learn` and the other listed tools) stays under 6k estimated tokens
-  (JSON length / 3.6, as `chat-eval static` counts). The test holds it 150 under,
-  so one added action summary does not turn a parallel PR red.
+  (JSON length / 3.6, as `chat-eval static` counts); the test holds it under
+  5.1k, and a task-token worker session under 4k.
+- The busiest actions cap what they send by default and every cut names how
+  much it cut and the param or action that returns the rest (`explain` on a
+  workspace pages ranked summaries with `limit`/`offset`; `claim_task` previews
+  the description and lists only open PRs touching the task's paths; `get_task`,
+  `get_pr`, `manage_missions get` take `all: true`). Sizes are held by
+  `packages/core/__tests__/mcp-response-budgets.test.ts`.
 - A call with no `params` object uses the fields beside `action` as its params.
   A sub-action passed as the tool's `action` (e.g. `update`) MUST get an
   `isError: true` naming the action and `params.action`, and run nothing.
 
 **Acceptance criteria**:
-- AC-21: GIVEN a trigger token WHEN tools/list is called with `?tools=groups` THEN the group tools
+- AC-21: GIVEN a trigger token WHEN tools/list is called THEN the group tools
   are exactly `buildd_tasks`, `buildd_work`, `buildd_artifacts`,
   `buildd_schedules`.
 - AC-22: WHEN `buildd_missions` is called with `action: "list_runners"` THEN the
   result is `isError: true` naming `buildd_analytics`.
 - AC-23: WHEN `buildd` is called with any action THEN it dispatches as before.
+- AC-24: GIVEN a worker session whose runner advertised `CAPABILITY_MCP_GROUP_TOOLS`
+  WHEN tools/list is called THEN it lists the group tools and not `buildd`;
+  GIVEN one whose runner did not THEN it lists `buildd` and no group tool,
+  whatever the URL says.
 
 **Analytics contract**:
 - `buildd_analytics` groups explain, errors, failure/gate analytics, budget,
@@ -112,6 +140,8 @@ every supported action.
 - Registry: `packages/core/mcp-tool-groups.ts` — `ACTION_AREA`, `mcpGroupOf`
 - Listing and routing: `apps/web/src/app/api/mcp/tools.ts` — `listMcpTools`,
   `routeGroupToolCall`, `mcpToolSurfaceFor`
+- Old-runner check: `apps/web/src/lib/mcp-request-scope.ts` — `workerRunnerSupportsGroupTools`
+- Runner tool-name match: `packages/shared/src/tool-names.ts` — `isBuilddActionTool`
 
 ---
 

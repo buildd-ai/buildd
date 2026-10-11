@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   ROUTES, ROUTE_IDS, routeOrder, routeModelId, routeAuthHeaders, routeAttributionHeaders, openRouterModelId,
-  PROVIDER_BASE_URLS, gatewayModel, KIT_PROVIDERS,
+  PROVIDER_BASE_URLS, gatewayModel, KIT_PROVIDERS, cloudflareGatewayURL, cloudflareWorkersAiURL,
 } from './index';
 
 describe('route registry', () => {
@@ -56,5 +56,25 @@ describe('route headers', () => {
   it('attributes only where the route takes it', () => {
     expect(routeAttributionHeaders('openrouter', { appName: 'a', appUrl: 'https://a.test' })).toEqual({ 'X-Title': 'a', 'HTTP-Referer': 'https://a.test' });
     expect(routeAttributionHeaders('litellm', { appName: 'a' })).toEqual({});
+  });
+});
+
+describe('Cloudflare AI Gateway URLs', () => {
+  const accountId = '0123456789abcdef0123456789abcdef';
+
+  it('builds a gateway provider root', () => {
+    expect(cloudflareGatewayURL({ accountId, gatewayId: 'buildd' }, 'openrouter'))
+      .toBe(`https://gateway.ai.cloudflare.com/v1/${accountId}/buildd/openrouter`);
+  });
+
+  it('sends Workers AI through the gateway when there is one, else the REST API', () => {
+    expect(cloudflareWorkersAiURL({ accountId, gatewayId: 'buildd' })).toBe(`https://gateway.ai.cloudflare.com/v1/${accountId}/buildd/workers-ai`);
+    expect(cloudflareWorkersAiURL({ accountId })).toBe(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run`);
+  });
+
+  it('refuses malformed ids and a gateway path without a gateway', () => {
+    expect(() => cloudflareGatewayURL({ accountId: 'nope', gatewayId: 'g' }, 'openrouter')).toThrow();
+    expect(() => cloudflareGatewayURL({ accountId, gatewayId: '../x' }, 'openrouter')).toThrow();
+    expect(() => cloudflareGatewayURL({ accountId }, 'openrouter')).toThrow();
   });
 });

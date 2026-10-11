@@ -6,18 +6,29 @@ import {
   connectorWorkspaces,
   secrets,
 } from '@buildd/core/db/schema';
-import { eq, and, or, isNull, inArray, ne } from 'drizzle-orm';
+import { eq, and, inArray, ne } from 'drizzle-orm';
+import {
+  effectiveVisibleRoles,
+  lazyRequester,
+  pickVisibleRoleRowLazy,
+  ROLE_VISIBILITY_COLUMNS,
+  roleRowsInScope,
+  roleRowsVisibleTo,
+} from '@buildd/core/role-visibility';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
 
 // ── Typed connector failure taxonomy ─────────────────────────────────────────
 
-export type ConnectorFailureMode = 'never_mounted' | 'expired_or_revoked' | 'transient';
+export type ConnectorFailureMode = 'never_mounted' | 'blocked_by_policy' | 'expired_or_revoked' | 'transient';
 
 /**
  * A typed failure for a single connector that a role requires.
  *
  * - never_mounted:      connector doesn't exist, belongs to a different team, or is disabled
+ * - blocked_by_policy:  the task's team (or the connector's owner team) blocked its catalog entry;
+ *                       the connector and its credential are kept, agents just may not use it
  * - expired_or_revoked: connector exists but its credential is missing, expired, or corrupt
  * - transient:          connector is visible and credentialed but unreachable via HTTP probe
  */
@@ -35,6 +46,22 @@ const PROBE_BUDGET_MS = 5000;
 // ── checkConnectorRouting ─────────────────────────────────────────────────────
 
 /**
+ * `probe: false` skips the HTTP pass. Who the task is for decides which
+ * personal role applies: pass `task` (requester resolved lazily) or an
+ * already-known `requesterUserId`; neither = no person (team and shared roles).
+ */
+export interface ConnectorRoutingOpts {
+  probe?: boolean;
+  task?: object | null;
+  requesterUserId?: string | null;
+}
+
+function requesterThunk(opts: ConnectorRoutingOpts): () => Promise<string | null> {
+  if (opts.requesterUserId !== undefined) return async () => opts.requesterUserId ?? null;
+  return lazyRequester(opts.task);
+}
+
+/**
  * Check whether the task's role requires connectors that are not usable in its
  * workspace. Returns a list of typed failures (with mode), or null when all
  * connectors are available and healthy.
@@ -46,6 +73,7 @@ const PROBE_BUDGET_MS = 5000;
  *
  * Failure modes (in evaluation order):
  * 1. never_mounted      — connector not in DB / wrong team / disabled for this workspace
+ *    blocked_by_policy  — team catalog policy blocks it (lib/connector-access-policy.ts)
  * 2. expired_or_revoked — credential missing, expired (oauth), or undecryptable (header/stdio)
  * 3. transient          — HTTP HEAD probe failed within budget; skips stdio connectors
  *
@@ -56,25 +84,21 @@ export async function checkConnectorRouting(
   roleSlug: string,
   workspaceId: string,
   teamId: string,
-  opts: { probe?: boolean } = {},
+  opts: ConnectorRoutingOpts = {},
 ): Promise<ConnectorFailure[] | null> {
   const roleRows = await db.query.workspaceSkills.findMany({
     where: and(
       eq(workspaceSkills.slug, roleSlug),
       eq(workspaceSkills.isRole, true),
       eq(workspaceSkills.enabled, true),
-      eq(workspaceSkills.teamId, teamId),
-      or(
-        isNull(workspaceSkills.workspaceId),
-        eq(workspaceSkills.workspaceId, workspaceId),
-      ),
+      roleRowsInScope({ teamId, workspaceId }),
     ),
-    columns: { slug: true, workspaceId: true, connectorRefs: true },
+    columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
   });
 
-  // Prefer workspace-scoped row over team default (same precedence as claim route)
-  const roleRow =
-    roleRows.find(r => r.workspaceId === workspaceId) ?? roleRows[0];
+  // Same precedence as the claim route (role-visibility.ts): override > own
+  // personal > shared personal > team default; never another member's private row.
+  const roleRow = await pickVisibleRoleRowLazy(roleRows, roleSlug, { teamId, workspaceId }, requesterThunk(opts));
   if (!roleRow) return null;
 
   const refs = (roleRow.connectorRefs as string[] | null) ?? [];
@@ -107,7 +131,9 @@ export async function checkConnectorRouting(
     cwEnabled.set(row.connectorId, (row as any).enabled !== false);
   }
 
-  // ── Pass 1: visibility checks → never_mounted ─────────────────────────────
+  const blockedCatalogs = await loadBlockedCatalogs([teamId, ...connectorRows.map(c => c.teamId)]);
+
+  // ── Pass 1: visibility checks → never_mounted, then blocked_by_policy ─────
 
   const failures: ConnectorFailure[] = [];
   type ConnectorRow = (typeof connectorRows)[number];
@@ -125,6 +151,10 @@ export async function checkConnectorRouting(
     }
     if (cwEnabled.has(refId) && !cwEnabled.get(refId)) {
       failures.push({ connectorId: refId, connectorName: connector.name, mode: 'never_mounted' });
+      continue;
+    }
+    if (connectorBlock(connector, teamId, blockedCatalogs)) {
+      failures.push({ connectorId: refId, connectorName: connector.name, mode: 'blocked_by_policy' });
       continue;
     }
     visibleConnectors.push(connector);
@@ -297,34 +327,25 @@ export async function findAlternativeRole(
   blockedRoleSlug: string,
   workspaceId: string,
   teamId: string,
+  opts: Omit<ConnectorRoutingOpts, 'probe'> = {},
 ): Promise<string | null> {
+  const requesterUserId = await requesterThunk(opts)();
   const siblingRows = await db.query.workspaceSkills.findMany({
     where: and(
       eq(workspaceSkills.isRole, true),
       eq(workspaceSkills.enabled, true),
-      eq(workspaceSkills.teamId, teamId),
       ne(workspaceSkills.slug, blockedRoleSlug),
-      or(
-        isNull(workspaceSkills.workspaceId),
-        eq(workspaceSkills.workspaceId, workspaceId),
-      ),
+      roleRowsVisibleTo({ teamId, workspaceId, requesterUserId }),
     ),
-    columns: { slug: true, workspaceId: true, connectorRefs: true },
+    columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
   });
 
-  // Deduplicate: prefer workspace-scoped row over team-level default
-  const bySlug = new Map<string, (typeof siblingRows)[number]>();
-  for (const row of siblingRows) {
-    const existing = bySlug.get(row.slug);
-    if (!existing || row.workspaceId === workspaceId) {
-      bySlug.set(row.slug, row);
-    }
-  }
-
-  for (const role of bySlug.values()) {
+  // One row per slug, by the shared precedence; another member's private role
+  // is never offered as the alternative.
+  for (const role of effectiveVisibleRoles(siblingRows, { teamId, workspaceId, requesterUserId })) {
     const refs = (role.connectorRefs as string[] | null) ?? [];
     if (refs.length === 0) return role.slug;
-    const failures = await checkConnectorRouting(role.slug, workspaceId, teamId);
+    const failures = await checkConnectorRouting(role.slug, workspaceId, teamId, { requesterUserId });
     if (!failures) return role.slug;
   }
 

@@ -189,7 +189,7 @@ function missionRank(m: InitiativeMissionInput): number {
 
 export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number } = {}): InitiativeCardModel {
   const now = opts.now ?? Date.now();
-  const href = `/app/initiatives/${encodeURIComponent(input.id)}`;
+  const href = `/app/missions?group=${encodeURIComponent(input.id)}`;
   const missions = input.missions.filter((m) => m.status !== 'archived');
   const closed = input.status === 'completed' || input.status === 'archived';
 
@@ -270,7 +270,7 @@ export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number
     }
     if (missions.length === 0) {
       facts.push({ key: 'no_missions', text: 'No missions yet', href: null });
-      action = { kind: 'add_mission', label: 'Add mission', href: `/app/missions/new?initiative=${encodeURIComponent(input.id)}`, missionId: null };
+      action = { kind: 'add_mission', label: 'Add mission', href: `/app/missions?new=1&initiative=${encodeURIComponent(input.id)}`, missionId: null };
     }
     action ??= { kind: 'open', label: 'Open', href, missionId: null };
   }
@@ -328,8 +328,15 @@ export function groupInitiativeCards(cards: readonly InitiativeCardModel[]): Ini
     .filter((g) => g.cards.length > 0);
 }
 
-export function initiativesHeadline(input: { needsYou: number; active: number }): string {
-  if (input.needsYou > 0) return `${input.needsYou} ${input.needsYou === 1 ? 'needs' : 'need'} you`;
-  if (input.active > 0) return `${input.active} active`;
-  return 'Nothing active';
+/**
+ * The list's one count line, `2 need you · 3 active · 6 completed`: what needs
+ * you first, then each group. `needsYou` marks the part drawn in the accent.
+ */
+export function initiativesCountLine(groups: readonly InitiativeGroup[]): Array<{ text: string; needsYou: boolean }> {
+  return groups.map((g) => {
+    const n = g.cards.length;
+    return g.section === 'needs_you'
+      ? { text: `${n} ${n === 1 ? 'needs' : 'need'} you`, needsYou: true }
+      : { text: `${n} ${g.label.toLowerCase()}`, needsYou: false };
+  });
 }

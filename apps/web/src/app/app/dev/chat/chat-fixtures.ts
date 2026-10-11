@@ -238,8 +238,15 @@ function explore(): ChatMessage[] {
   ];
 }
 
-export type ChatFixtureState = 'empty' | 'starting' | 'streaming' | 'streaming-long' | 'revised' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual';
-export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'starting', 'streaming', 'streaming-long', 'revised', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual'];
+export type ChatFixtureState = 'empty' | 'starting' | 'streaming' | 'streaming-long' | 'revised' | 'composed' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual' | 'attachment' | 'files';
+export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'starting', 'streaming', 'streaming-long', 'revised', 'composed', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual', 'attachment', 'files'];
+
+/** `attachment`: a long build log, pasted. */
+const PASTED_LOG = (() => {
+  let out = 'deploy-2026-10-10.log\n';
+  for (let i = 1; out.length < 60_000; i++) out += `[${String(i).padStart(5, '0')}] step ${1 + (i % 5)}: ${i % 97 === 0 ? 'ERROR lock timeout on migrations table' : 'ok'}\n`;
+  return out.slice(0, 60_000);
+})();
 
 /** `revised`: the hypothesis the turn writes before its tools run, which they disprove. */
 export const REVISED_EARLY = 'A fix for the rounding bug is already queued. Let me check why nobody has claimed it.';
@@ -274,6 +281,53 @@ export function revisedFrames(): RevisedFrame[] {
     frame([{ type: 'step-start' }, early('done'), ...reads('done'), { type: 'step-start' }, { type: 'text', text: REVISED_FINAL, state: 'done' }], 'ready', 26_400),
   ];
 }
+
+/** `composed`: what the turn says while it works, then what it settles on. */
+export const COMPOSED_EARLY = 'The rates service needs a follow-up for stale rates. Let me check what is already filed before I add one.';
+export const COMPOSED_FINAL = 'Nothing covered stale rates, so I filed one task for it: alert when the rates service has not refreshed for more than an hour. It sits in Multi-currency invoices next to the rates service task it guards, and a builder can claim it now. The rates service itself is in CI; I left it alone.';
+
+/**
+ * `composed`, frame by frame (docs/specs/chat-stream-composition.md, the
+ * storyboard): the interim prose, a read and a write running under the live
+ * line, the write done, the final answer streaming in the same slot, then
+ * settled with its groups: what it created, what it referenced. The page
+ * plays them a few seconds apart (`&frame=N` holds one) and loads the task's
+ * card late, so a capture shows the card's shell filling in place.
+ */
+export function composedFrames(): RevisedFrame[] {
+  const ask = user('m1', 'Make sure someone hears about it when exchange rates go stale.', 1);
+  const steps = (parts: ChatMessage['parts']) => withSteps(parts);
+  const lookup = (state: 'running' | 'done') => {
+    pseq = 0;
+    return state === 'done'
+      ? call('get_task', { task: 'rates service' }, { summary: 'rates service, in CI', data: {}, objects: [taskRef] })
+      : call('get_task', { task: 'rates service' }, undefined, { state: 'input-available' });
+  };
+  const filed = (state: 'running' | 'done') => (state === 'done'
+    ? call('create_task', { title: 'Alert when the rates service is stale', missionId: MISSION_ID }, { summary: 'filed', data: {}, objects: [staleRef] })
+    : call('create_task', { title: 'Alert when the rates service is stale', missionId: MISSION_ID }, undefined, { state: 'input-available' }));
+  const frame = (parts: ChatMessage['parts'], status: RevisedFrame['status'], durationMs?: number): RevisedFrame => (
+    { status, messages: [ask, withScope(agent('m2', 1, steps(parts), durationMs))] }
+  );
+  const early = (state: 'streaming' | 'done') => ({ type: 'text', text: COMPOSED_EARLY, state } as const);
+  return [
+    frame([{ type: 'step-start' }, early('streaming')], 'streaming'),
+    frame([{ type: 'step-start' }, early('done'), lookup('running')], 'streaming'),
+    frame([{ type: 'step-start' }, early('done'), lookup('done'), filed('running')], 'streaming'),
+    frame([{ type: 'step-start' }, early('done'), lookup('done'), filed('done')], 'streaming'),
+    frame([{ type: 'step-start' }, early('done'), lookup('done'), filed('done'), { type: 'step-start' }, { type: 'text', text: COMPOSED_FINAL.slice(0, 140), state: 'streaming' }], 'streaming'),
+    frame([{ type: 'step-start' }, early('done'), lookup('done'), filed('done'), { type: 'step-start' }, { type: 'text', text: COMPOSED_FINAL, state: 'done' }], 'ready', 31_200),
+  ];
+}
+
+/** The task `composed` files. */
+export const staleRef: BuilddObjectRef = { kind: 'task', id: 'task-stale-rates', workspaceId: WS.id, fallbackText: 'Task: Alert when the rates service is stale' };
+
+/**
+ * After Confirm on `propose`: the reply streams below the card, then lands.
+ * The dev page plays these so the approval → resume motion can be captured.
+ */
+export const RESUME_REPLY = 'Filed. buildd is planning it now; the plan lands on the mission card as agents pick up its first tasks, and I will post here when the first one ships.';
 
 /** A visual review moment as mission-events.ts posts it: the same words and data. */
 const visualEvent = (id: string, min: number, moment: VisualReviewMoment, model: VisualReviewModel, extra: { fixes?: number; routes?: string[] } = {}): ChatMessage => ({
@@ -346,6 +400,46 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
     case 'revised':
       // The early hypothesis on screen while the tools run (frame 1).
       return { title: null, ...revisedFrames()[1] };
+    case 'composed':
+      // The write done, the final answer not started (frame 3).
+      return { title: null, ...composedFrames()[3] };
+    case 'files':
+      // An image and a PDF rode the message as file cards (Living Specs C3):
+      // a long file name truncates inside the card at a phone's width.
+      return {
+        title: null, status: 'streaming',
+        messages: [
+          {
+            ...user('m1', 'Does the chart match the quarterly report?', 1),
+            parts: [
+              { type: 'text', text: 'Does the chart match the quarterly report?' },
+              { type: 'data-file', data: { kind: 'file', id: 'fixture-file-chart', name: 'revenue-by-region-q3-final-reviewed-version-2.png', mediaType: 'image/png', sizeBytes: 482_113 } },
+              { type: 'data-file', data: { kind: 'file', id: 'fixture-file-report', name: 'Q3 quarterly report.pdf', mediaType: 'application/pdf', sizeBytes: 2_315_904 } },
+            ],
+          },
+          withScope(agent('m2', 1, withSteps([
+            { type: 'text', text: 'The chart shows EMEA at 31%, and the report says 29% on page 4', state: 'streaming' },
+          ]))),
+        ],
+      };
+    case 'attachment':
+      // A 60,000-character paste rode the message as an attachment card
+      // (Living Specs C2); the reply streams under it without moving it.
+      return {
+        title: null, status: 'streaming',
+        messages: [
+          {
+            ...user('m1', 'Which step failed, and why?', 1),
+            parts: [
+              { type: 'text', text: 'Which step failed, and why?' },
+              { type: 'data-attachment', data: { id: 'fixture-paste-deploy-log', title: 'deploy-2026-10-10.log', text: PASTED_LOG } },
+            ],
+          },
+          withScope(agent('m2', 1, withSteps([
+            { type: 'text', text: 'Step 3, the migration, failed: the lock timed out after 30 seconds while', state: 'streaming' },
+          ]))),
+        ],
+      };
     case 'streaming':
       return {
         title: null, status: 'streaming',
@@ -526,6 +620,11 @@ export function fixtureViews(state: ChatFixtureState): Record<string, ObjectView
     [missionRef, missionView(moment, state === 'visual' ? visualFixtureModel() : null)],
     [questionRef, questionView(state !== 'answered')],
     [taskRef, taskView()],
+    [staleRef, {
+      kind: 'task', id: staleRef.id, workspaceId: WS.id, title: 'Alert when the rates service is stale', scope: 'fx', label: 'stale rates alert',
+      status: 'pending', roleName: 'Builder', roleColor: '#0C72CB', missionId: MISSION_ID, missionTitle: 'Multi-currency invoices',
+      worker: null, now: null, renderedAt: at(16),
+    }],
     ...prRefs.map((r, i): [BuilddObjectRef, ObjectView] => [r, prView(SHIPPED[i])]),
   ];
   return Object.fromEntries(pairs.map(([r, v]) => [`${r.kind}:${r.id}`, v]));

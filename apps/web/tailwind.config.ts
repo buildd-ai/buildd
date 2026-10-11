@@ -7,9 +7,11 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['var(--font-ibm-plex-mono)', 'ui-monospace', 'monospace'],
-        display: ['var(--font-ibm-plex-mono)', 'ui-monospace', 'monospace'],
-        mono: ['var(--font-ibm-plex-mono)', 'ui-monospace', 'monospace'],
+        // Schibsted Grotesk for UI and titles, JetBrains Mono for counts, IDs and
+        // lifecycle. Newsreader is `.font-voice` (globals.css), not a family here.
+        sans: ['var(--font-schibsted)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        display: ['var(--font-schibsted)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-jetbrains-mono)', 'ui-monospace', 'monospace'],
       },
       // Type roles (docs/design/design-system.md §3). Sizes live in globals.css
       // `--type-*` and switch at md there, so one class covers both widths.
@@ -73,30 +75,32 @@ const config: Config = {
           research: 'var(--cat-research)',
         },
       },
-      // Brutalist: square everything, including 'full' — there is no true circle in
-      // this scale. Avatars/status-dots are square too; do not build ring spinners
-      // on rounded-full (they render as rotating squares) — use <Spinner> instead.
+      // Three radii (globals.css --radius-*): 3px strip cells (`sm`), 4px pills
+      // and controls (DEFAULT, `md`, `full`), 6px cards (`lg` and up). There is
+      // no circle: `full` is the pill radius, so do not build ring spinners on
+      // it — use <Spinner>. radius-scale.test.ts holds every radius to this set.
       borderRadius: {
         none: '0',
-        sm: '0',
-        DEFAULT: '0',
-        md: '0',
-        lg: '0',
-        xl: '0',
-        '2xl': '0',
-        '3xl': '0',
-        full: '0',
+        sm: 'var(--radius-cell)',
+        DEFAULT: 'var(--radius-pill)',
+        md: 'var(--radius-pill)',
+        lg: 'var(--radius-card)',
+        xl: 'var(--radius-card)',
+        '2xl': 'var(--radius-card)',
+        '3xl': 'var(--radius-card)',
+        full: 'var(--radius-pill)',
       },
-      // Brutalist: every shadow utility is a hard offset (themed via --border-strong), no blur.
+      // No shadows: frames are 1px hairlines (1.5px for a focused card or a
+      // decision), so every shadow utility resolves to none.
       boxShadow: {
         none: 'none',
-        sm: '2px 2px 0 0 var(--border-strong)',
-        DEFAULT: '3px 3px 0 0 var(--border-strong)',
-        md: '4px 4px 0 0 var(--border-strong)',
-        lg: '5px 5px 0 0 var(--border-strong)',
-        xl: '7px 7px 0 0 var(--border-strong)',
-        '2xl': '9px 9px 0 0 var(--border-strong)',
-        inner: 'inset 2px 2px 0 0 var(--border-strong)',
+        sm: 'none',
+        DEFAULT: 'none',
+        md: 'none',
+        lg: 'none',
+        xl: 'none',
+        '2xl': 'none',
+        inner: 'none',
       },
       animation: {
         'pulse-border': 'pulse-border 2s ease-in-out infinite',

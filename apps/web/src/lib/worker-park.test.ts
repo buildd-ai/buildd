@@ -7,6 +7,7 @@ mock.module('@buildd/core/db', () => ({ db: {} }));
 
 import {
   PARK_MAX_MS,
+  ownedByCaller,
   PARK_MISSION_MAX_MS,
   notParkedScope,
   parkWhere,
@@ -24,6 +25,7 @@ function render(fragment: any): { sql: string; params: unknown[] } {
 const NOW = new Date('2026-01-01T12:00:00.000Z');
 const WORKER = '33333333-3333-4333-8333-333333333333';
 const ACCOUNT = '44444444-4444-4444-8444-444444444444';
+const KEY = { id: ACCOUNT };
 
 describe('park TTL', () => {
   it('24 h for a standalone task, 4 h for a mission task (the waiting_input timeouts)', () => {
@@ -35,7 +37,7 @@ describe('park TTL', () => {
 });
 
 describe('reattachWhere: the only way a second process takes over a worker', () => {
-  const r = render(reattachWhere(WORKER, ACCOUNT, NOW));
+  const r = render(reattachWhere(WORKER, KEY, NOW));
 
   it('is keyed on the worker AND the calling account', () => {
     expect(r.sql).toContain('"workers"."id" = $');
@@ -58,14 +60,14 @@ describe('reattachWhere: the only way a second process takes over a worker', () 
 
 describe('parkWhere / unparkWhere', () => {
   it('park: own worker, live status only', () => {
-    const r = render(parkWhere(WORKER, ACCOUNT));
+    const r = render(parkWhere(WORKER, KEY));
     expect(r.sql).toContain('"workers"."id" = $');
     expect(r.sql).toContain('"workers"."account_id" = $');
     expect(r.params).toEqual(expect.arrayContaining([WORKER, ACCOUNT, 'waiting_input', 'running']));
   });
 
   it('unpark: own worker only', () => {
-    const r = render(unparkWhere(WORKER, ACCOUNT));
+    const r = render(unparkWhere(WORKER, KEY));
     expect(r.sql).toContain('"workers"."account_id" = $');
     expect(r.params).toEqual(expect.arrayContaining([WORKER, ACCOUNT]));
   });
@@ -85,15 +87,51 @@ describe('task-scoped callers (per-task token): confined to their own task', () 
   const TASK = '66666666-6666-4666-8666-666666666666';
 
   it('adds a task_id predicate to all three when a task is given', () => {
-    for (const r of [render(parkWhere(WORKER, ACCOUNT, TASK)), render(unparkWhere(WORKER, ACCOUNT, TASK)), render(reattachWhere(WORKER, ACCOUNT, NOW, TASK))]) {
+    for (const r of [render(parkWhere(WORKER, { id: ACCOUNT, taskScope: { taskId: TASK } })), render(unparkWhere(WORKER, { id: ACCOUNT, taskScope: { taskId: TASK } })), render(reattachWhere(WORKER, { id: ACCOUNT, taskScope: { taskId: TASK } }, NOW))]) {
       expect(r.sql).toContain('"workers"."task_id" = $');
       expect(r.params).toContain(TASK);
     }
   });
 
   it('adds nothing for an account key', () => {
-    for (const r of [render(parkWhere(WORKER, ACCOUNT)), render(unparkWhere(WORKER, ACCOUNT)), render(reattachWhere(WORKER, ACCOUNT, NOW))]) {
+    for (const r of [render(parkWhere(WORKER, KEY)), render(unparkWhere(WORKER, KEY)), render(reattachWhere(WORKER, KEY, NOW))]) {
       expect(r.sql).not.toContain('task_id');
     }
+  });
+});
+
+// Same rule as callerOwnsWorker (lib/worker-owner.ts), in SQL: an OAuth session
+// resolves to an account its whole team shares, so the predicate also pins the
+// claimer. Every UPDATE above goes through it.
+describe('ownedByCaller: only the principal that claimed', () => {
+  const USER = '77777777-7777-4777-8777-777777777777';
+  const session = { id: ACCOUNT, teamId: 'team-1', sessionUserId: USER };
+
+  it('a bld_ key: its account, and only a worker no session claimed', () => {
+    const r = render(ownedByCaller(KEY));
+    expect(r.sql).toContain('"workers"."account_id" = $');
+    expect(r.sql).toContain('"workers"."claimed_by_user_id" is null');
+    expect(r.params).toContain(ACCOUNT);
+  });
+
+  it('an OAuth session: its account AND its own user as the claimer', () => {
+    const r = render(ownedByCaller(session));
+    expect(r.sql).toContain('"workers"."account_id" = $');
+    expect(r.sql).toContain('"workers"."claimed_by_user_id" = $');
+    expect(r.sql).toContain('"workers"."workspace_id" is not null');
+    expect(r.params).toEqual(expect.arrayContaining([ACCOUNT, USER]));
+  });
+
+  it('every park predicate carries it', () => {
+    for (const r of [render(parkWhere(WORKER, session)), render(unparkWhere(WORKER, session)), render(reattachWhere(WORKER, session, NOW))]) {
+      expect(r.sql).toContain('"workers"."claimed_by_user_id" = $');
+      expect(r.params).toContain(USER);
+    }
+  });
+
+  it('matches no row on a missing account id or a session with no team id', () => {
+    expect(render(ownedByCaller({ id: '' })).sql).toBe('false');
+    expect(render(ownedByCaller({ ...session, teamId: null })).sql).toBe('false');
+    expect(render(parkWhere(WORKER, { ...session, teamId: undefined })).sql).toContain('false');
   });
 });

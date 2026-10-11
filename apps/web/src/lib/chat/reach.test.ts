@@ -38,6 +38,17 @@ describe('loadChatReach', () => {
     expect([...reach.workspaceIds]).toEqual(['a']);
   });
 
+  it('drops a workspace with the GitHub repo check on that the person cannot be confirmed for', async () => {
+    rows = [
+      { id: 'a', dataClass: 'standard', gitConfig: null },
+      { id: 'g', dataClass: 'standard', gitConfig: { memberRepoAccess: 'require_read' } },
+    ];
+    // Without a person (no userId) the check does not apply.
+    expect([...(await loadChatReach('t-1')).workspaceIds]).toEqual(['a', 'g']);
+    // With one, 'g' cannot be confirmed here (no repo facts) and fails closed.
+    expect([...(await loadChatReach('t-1', 'u-1')).workspaceIds]).toEqual(['a']);
+  });
+
   it('fails closed: a lookup error reaches no workspace, and an owner lookup error is unknown', async () => {
     fail = true;
     const reach = await loadChatReach('t-1');

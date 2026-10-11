@@ -13,10 +13,20 @@ mock.module('@/lib/connector-team-auth', () => ({
   forbidden: () => NextResponse.json({ error: 'Forbidden' }, { status: 403 }),
 }));
 mock.module('@/lib/connector-catalog-store', () => ({ loadTeamCatalog: mockLoad }));
-mock.module('@/lib/connector-provision', () => ({ preinstallForTeam: mockPreinstall }));
-mock.module('@buildd/core/db/schema', () => ({ connectorCatalogTeamPolicies: { teamId: 'p.team_id', slug: 'p.slug' } }));
+mock.module('@/lib/connector-provision', () => ({
+  preinstallForTeam: mockPreinstall,
+  registrationRefusalBody: (err: any) => err?.refusal ? { error: 'needs_approved_client', message: 'Vercel has not approved buildd' } : null,
+}));
+mock.module('@buildd/core/db/schema', () => ({
+  connectorCatalogTeamPolicies: { teamId: 'p.team_id', slug: 'p.slug' },
+  connectors: { teamId: 'c.team_id' },
+}));
+let teamConnectors: any[] = [];
 mock.module('@buildd/core/db', () => ({
-  db: { insert: () => ({ values: (v: any) => ({ onConflictDoUpdate: async (c: any) => { upserts.push({ v, c }); } }) }) },
+  db: {
+    insert: () => ({ values: (v: any) => ({ onConflictDoUpdate: async (c: any) => { upserts.push({ v, c }); } }) }),
+    query: { connectors: { findMany: async () => teamConnectors } },
+  },
 }));
 
 const { PUT } = await import('./route');
@@ -24,7 +34,7 @@ const put = (body: unknown) => PUT(new NextRequest('http://localhost:3000/api/co
   method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 }));
 
-beforeEach(() => { caller = { teamId: 't1', canManage: true, accountId: null }; upserts.length = 0; mockPreinstall.mockClear(); });
+beforeEach(() => { caller = { teamId: 't1', canManage: true, accountId: null }; upserts.length = 0; mockPreinstall.mockClear(); teamConnectors = []; });
 
 describe('PUT /api/connectors/catalog/policy', () => {
   it('403 for a team member without manage_connectors', async () => {
@@ -43,6 +53,25 @@ describe('PUT /api/connectors/catalog/policy', () => {
     expect(res.status).toBe(200);
     expect(mockPreinstall).not.toHaveBeenCalled();
     expect(upserts[0].v).toMatchObject({ teamId: 't1', slug: 'neon', policy: 'blocked' });
+  });
+
+  // Blocking is a deny for agents, not an uninstall: report what was kept.
+  it('blocking reports the installed connectors it kept (and revoked from agents)', async () => {
+    teamConnectors = [
+      { id: 'conn-neon', url: 'https://MCP.neon.tech/mcp/' },
+      { id: 'conn-neon-sse', url: 'https://mcp.neon.tech/sse' },
+      { id: 'conn-other', url: 'https://mcp.example.com' },
+    ];
+    const res = await put({ slug: 'neon', policy: 'blocked' });
+    expect(await res.json()).toEqual({ slug: 'neon', policy: 'blocked', connectorId: null, retainedConnectorIds: ['conn-neon', 'conn-neon-sse'] });
+  });
+
+  it("returns needs_approved_client when the provider won't register buildd", async () => {
+    mockPreinstall.mockRejectedValueOnce(Object.assign(new Error('DCR failed (400)'), { refusal: true }));
+    const res = await put({ slug: 'neon', policy: 'preinstalled' });
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toBe('needs_approved_client');
+    expect(upserts).toHaveLength(0);
   });
 
   it('preinstalled provisions first, then records, and returns the connector', async () => {

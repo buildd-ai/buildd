@@ -161,6 +161,7 @@ describe('WorkerSync.syncWorkerToServer — abort handling', () => {
     await sync.syncWorkerToServer(worker);
 
     expect(mockAbort).not.toHaveBeenCalled();
-    expect(mockSendMessage).toHaveBeenCalledWith(worker.id, 'please rebase');
+    // No served ids from this (older-shaped) response: nothing to track for acknowledgement.
+    expect(mockSendMessage).toHaveBeenCalledWith(worker.id, 'please rebase', []);
   });
 });

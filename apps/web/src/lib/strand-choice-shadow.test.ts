@@ -11,8 +11,8 @@ const strandedRow = () => ({
 });
 const cta = () => ({ missionId: 'm', quietMs: 0, taskId: 't', claimable: 1, blockedReason: null, order: 'runner-first' as const });
 const deps = (choice: string, confidence: number, calls: { n: number }) => ({
-  resolveAccess: (async () => ({ ok: true, apiKey: 'k', model: 'jev' })) as any,
-  decide: (async () => { calls.n++; return { ok: true, answers: { pick: { choice, confidence } }, model: 'jev', latencyMs: 1 }; }) as any,
+  resolveAccess: (async () => ({ ok: true, apiKey: 'k', model: 'typesafe/jev-1.13' })) as any,
+  decide: (async () => { calls.n++; return { ok: true, answers: { pick: { choice, confidence } }, model: 'typesafe/jev-1.13', latencyMs: 1 }; }) as any,
   cache: new Map(), log: () => {},
 });
 
@@ -28,15 +28,7 @@ describe('applyStrandChoice', () => {
     expect(card.strand.order).toBe('runner-first');
   });
 
-  it('gated: a confident wait-for-local orders Keep local first; never flips anything', async () => {
-    const calls = { n: 0 };
-    const card = { row: strandedRow() as any, strand: cta() };
-    await applyStrandChoice([card], { now: NOW, mode: 'gated', deps: deps('wait-for-local', 0.99, calls) });
-    expect(card.strand.order).toBe('local-first');
-    expect(card.row.executor).toBe('local');
-  });
-
-  it('gated, decision fails: today’s order (fail open)', async () => {
+  it('gated, decision fails: fallback order on error (fail open)', async () => {
     const card = { row: strandedRow() as any, strand: cta() };
     await applyStrandChoice([card], {
       now: NOW, mode: 'gated',
@@ -50,5 +42,34 @@ describe('applyStrandChoice', () => {
     const row = { ...strandedRow(), executor: 'runner' };
     await applyStrandChoice([{ row: row as any, strand: cta() }], { now: NOW, mode: 'gated', deps: deps('wait-for-local', 0.99, calls) });
     expect(calls.n).toBe(0);
+  });
+
+  it('gated cache miss: renders fallback order immediately, schedules background call', async () => {
+    const calls = { n: 0 };
+    const scheduled: Array<() => Promise<unknown>> = [];
+    const card = { row: strandedRow() as any, strand: cta() };
+    const cache = new Map();
+    const deps_obj = {
+      resolveAccess: (async () => ({ ok: true, apiKey: 'k', model: 'typesafe/jev-1.13' })) as any,
+      decide: (async () => { calls.n++; return { ok: true, answers: { pick: { choice: 'wait-for-local', confidence: 0.99 } }, model: 'typesafe/jev-1.13', latencyMs: 1 }; }) as any,
+      cache, log: () => {},
+    };
+    await applyStrandChoice([card], {
+      now: NOW,
+      mode: 'gated',
+      schedule: (fn: () => Promise<unknown>) => { scheduled.push(fn); },
+      deps: deps_obj,
+    });
+    // Cache miss: should render fallback order immediately (non-blocking)
+    expect(card.strand.order).toBe('runner-first');
+    // Call should be scheduled for later
+    expect(scheduled).toHaveLength(1);
+    await scheduled[0]();
+    expect(calls.n).toBe(1);
+    scheduled.length = 0;
+    await applyStrandChoice([card], { now: NOW, mode: 'gated', schedule: fn => { scheduled.push(fn); }, deps: deps_obj });
+    expect(card.strand.order).toBe('local-first');
+    expect(scheduled).toHaveLength(0);
+    expect(calls.n).toBe(1);
   });
 });

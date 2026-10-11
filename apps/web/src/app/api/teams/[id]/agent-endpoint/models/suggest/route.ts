@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { isUuid } from '@/lib/uuid';
 import { suggestEndpointModels } from '@/lib/endpoint-model-suggest';
 
@@ -21,7 +22,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (session.response) return session.response;
   const userId = session.user.id;
   if (!(await getUserTeamIds(userId)).includes(id)) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
-  if (!(await getUserAdminTeamIds(userId)).includes(id)) {
+  if (!(await can({ kind: 'user', userId }, 'manage_inference_providers', id))) {
     return NextResponse.json({ error: 'Only a team owner or admin can manage the agent endpoint.' }, { status: 403 });
   }
   const body = await req.json().catch(() => null) as Record<string, unknown> | null;

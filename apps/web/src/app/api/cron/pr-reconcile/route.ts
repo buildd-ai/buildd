@@ -41,6 +41,11 @@
 //                       the guarantee.
 //                       It also re-drives behind PRs whose branch refresh was
 //                       deferred outside landing enforce (lib/refresh-redrive.ts).
+//                       It also reconciles early-release decisions
+//                       (dependency_releases) against the upstream PR's
+//                       current state — new overlapping commits, a close
+//                       without merging, or a request-changes round whose fix
+//                       overlaps the dependent (lib/early-release-reconciler.ts).
 //   (no scope)          daily — the above plus sweepDeadZonePrs(), which spawns
 //                       conflict-resolution tasks. That one creates work, so it
 //                       stays on the slower cadence.
@@ -74,14 +79,18 @@ import { sweepStrandedTasks } from '@/lib/stranded-tasks-sweep';
 import { sweepSpecDiscrepancyRechecks } from '@/lib/spec-recheck';
 import { sweepDuplicateLineagePrs } from '@/lib/retry-pr-supersession';
 import { sweepClosedUnsupersededPrs } from '@/lib/pr-supersession-detect';
+import { sweepMissionBranchRefresh } from '@/lib/mission-branch-refresh';
+import { reconcileEarlyReleases, type ReconcileEarlyReleasesResult } from '@/lib/early-release-reconciler';
 import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
-import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
+import { LANDING_CYCLE_COOLDOWN_MS, PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
 import { sweepCiRedPrs } from '@/lib/ci-red-sweep-deps';
+import { drainDueEffects, reconcileKernelDeliveries, reconcileTrunkIncidents, restartTreadmillCycles } from '@/lib/workflow/seam';
 import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { emit } from '@/lib/core-emit';
 
 export const maxDuration = 60;
 
@@ -108,13 +117,20 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
       // half of this route, and a mission-sweep failure must not throw away
       // reconcile work that already landed in the database.
       sweepMissionIntegrationPrs().catch(err => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // The backstop half of keeping mission branches current with dev
+      // (lib/mission-branch-refresh.ts) — covers a lost webhook delivery.
+      // Hourly, like merge-state healing: a mission branch left stale for a
+      // full day is exactly the failure mode this exists to close. Isolated.
+      sweepMissionBranchRefresh().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
       // Stranded-task detection has nothing to do with PRs — it rides this
@@ -161,7 +177,53 @@ export async function GET(req: NextRequest) {
       sweepClosedUnsupersededPrs().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
+      // Re-checks every non-revoked early-release decision against the
+      // upstream PR's current state (lib/early-release-reconciler.ts).
+      // Isolated — a reconciler failure must not discard the rest of the sweep.
+      reconcileEarlyReleases().catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // The workflow kernel's outbox floor drain (docs/specs/workflow-state-kernel.md
+      // §10.3): effects a request's inline drain did not finish (a crash, a
+      // backed-off retry, a delayed push_recovery try). Isolated.
+      drainDueEffects().catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // The trunk circuit breaker's recovery (§6.10, T26): re-read each open
+      // incident's base head; a green base resolves it and every delivery
+      // blocked on it resumes. Isolated.
+      reconcileTrunkIncidents().catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // The kernel's reconciliation floor (§11): re-read each open kernel delivery's PR and
+      // import its head / merged / closed state as a fact, then re-enqueue any effect its
+      // state owes and lacks. A lost synchronize or closed webhook costs an hour, not the PR.
+      // Isolated.
+      reconcileKernelDeliveries().catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // S15 cycles: a delivery the behind-refresh treadmill escalated gets a fresh refresh
+      // budget once the landing cooldown has passed (bounded by the reducer's cycle cap), the
+      // kernel's counterpart of the legacy marker's cycle. The landing sweep then lands it.
+      // Isolated.
+      restartTreadmillCycles({ cooldownMs: LANDING_CYCLE_COOLDOWN_MS }).catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // Module backstops for lossy webhooks (e.g. merge readiness outcome
+      // labels). Core only emits; modules.ts lists who reacts. Each
+      // subscriber is isolated by emit().
+      emit({ type: 'sweep.pr_hourly', at: new Date() }),
     ]);
+    if ('error' in kernelFloor) {
+      console.error('[KernelFloor] error:', kernelFloor.error);
+    } else {
+      console.log(`[KernelFloor] checked=${kernelFloor.checked} imported=${kernelFloor.imported} enqueued=${kernelFloor.enqueued} errors=${kernelFloor.errors}`);
+    }
+    if ('error' in treadmillCycles) {
+      console.error('[TreadmillCycles] error:', treadmillCycles.error);
+    } else {
+      console.log(`[TreadmillCycles] checked=${treadmillCycles.checked} restarted=${treadmillCycles.restarted} refused=${treadmillCycles.refused} errors=${treadmillCycles.errors}`);
+    }
     // subjectsReconciled is NOT folded into `changed` below: the subject sweep
     // only runs on the merged/closed branches, each of which already increments
     // stamped or closed, so adding it would count one event twice. It rides in
@@ -177,6 +239,13 @@ export async function GET(req: NextRequest) {
     }
     if ('error' in missionPrs) {
       console.error('[MissionPrSweep] error:', missionPrs.error);
+    }
+    if ('error' in branchRefresh) {
+      console.error('[MissionBranchRefresh] error:', branchRefresh.error);
+    } else {
+      console.log(
+        `[MissionBranchRefresh] scanned=${branchRefresh.scanned} merged=${branchRefresh.merged} conflicts=${branchRefresh.conflicts} skipped=${branchRefresh.skipped} errors=${branchRefresh.errors}`,
+      );
     }
     if ('error' in stranded) {
       console.error('[StrandedSweep] error:', stranded.error);
@@ -219,10 +288,16 @@ export async function GET(req: NextRequest) {
         `[ClosedPrSupersession] candidates=${closedPrs.candidates} recorded=${closedPrs.recorded} suggested=${closedPrs.suggested} none=${closedPrs.none} skipped=${closedPrs.skipped}`,
       );
     }
+    if ('error' in earlyRelease) {
+      console.error('[EarlyReleaseReconciler] error:', earlyRelease.error);
+    } else {
+      logEarlyRelease(earlyRelease);
+    }
     // `changed` is what separates a healthy idle sweep from a dead one. Rows
     // stamped merged or closed are the only real work this route does; a
     // "skipped" row is a PR that is simply still open.
     const missionPrErrors = 'error' in missionPrs ? 1 : (missionPrs.errors ?? 0);
+    const branchRefreshErrors = 'error' in branchRefresh ? 1 : branchRefresh.errors;
     const strandedErrors = 'error' in stranded ? 1 : 0;
     const specRecheckErrors = 'error' in specRecheck ? 1 : specRecheck.rechecksFailed + specRecheck.followUpsFailed;
     const lineageErrors = 'error' in lineagePrs ? 1 : lineagePrs.stranded;
@@ -230,27 +305,36 @@ export async function GET(req: NextRequest) {
     const refreshRedriveErrors = 'error' in refreshRedrive ? 1 : refreshRedrive.errors;
     const ciRedErrors = 'error' in ciRed ? 1 : ciRed.errors;
     const closedPrErrors = 'error' in closedPrs ? 1 : 0;
+    const earlyReleaseErrors = 'error' in earlyRelease ? 1 : earlyRelease.errors;
     report({
       processed:
         reconcile.total + (deadZone?.total ?? 0) + ('error' in missionPrs ? 0 : missionPrs.total)
+        + ('error' in branchRefresh ? 0 : branchRefresh.scanned)
         + ('error' in landing ? 0 : landing.processed)
         + ('error' in refreshRedrive ? 0 : refreshRedrive.redriven)
-        + ('error' in ciRed ? 0 : ciRed.processed),
+        + ('error' in ciRed ? 0 : ciRed.processed)
+        + ('error' in earlyRelease ? 0 : earlyRelease.processed),
       changed:
         reconcile.stamped + reconcile.closed + reconcile.unresolvable + reconcile.conflictsDetected
         + (deadZone?.sparked ?? 0) + (deadZone?.exhausted ?? 0)
         + ('error' in missionPrs ? 0 : missionPrs.opened)
+        + ('error' in branchRefresh ? 0 : branchRefresh.merged + branchRefresh.conflicts)
         + ('error' in stranded ? 0 : stranded.stranded + stranded.cleared)
         + ('error' in specRecheck ? 0 : specRecheck.rechecksDispatched + specRecheck.followUpsDispatched)
         + ('error' in lineagePrs ? 0 : lineagePrs.closed)
         + ('error' in landing ? 0 : landingChanged(landing))
         + ('error' in refreshRedrive ? 0 : refreshRedrive.merged + refreshRedrive.exhausted)
         + ('error' in ciRed ? 0 : ciRedChanged(ciRed))
-        + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested),
+        + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested)
+        + ('error' in kernelFloor ? 0 : kernelFloor.imported + kernelFloor.enqueued)
+        + ('error' in treadmillCycles ? 0 : treadmillCycles.restarted)
+        + ('error' in earlyRelease ? 0 : earlyRelease.refreshed + earlyRelease.escalated),
       errors:
-        reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors
-        + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs },
+        reconcile.errors + missionPrErrors + branchRefreshErrors + strandedErrors + specRecheckErrors + lineageErrors
+        + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors + earlyReleaseErrors
+        + ('error' in kernelFloor ? 1 : kernelFloor.errors)
+        + ('error' in treadmillCycles ? 1 : treadmillCycles.errors),
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles },
     });
 
     return NextResponse.json({
@@ -259,6 +343,7 @@ export async function GET(req: NextRequest) {
       reconcile,
       deadZone,
       missionPrs,
+      branchRefresh,
       stranded,
       specRecheck,
       lineagePrs,
@@ -266,8 +351,19 @@ export async function GET(req: NextRequest) {
       refreshRedrive,
       ciRed,
       closedPrs,
+      kernelOutbox,
+      trunk,
+      kernelFloor,
+      treadmillCycles,
+      earlyRelease,
     });
   });
+}
+
+function logEarlyRelease(r: ReconcileEarlyReleasesResult): void {
+  console.log(
+    `[EarlyReleaseReconciler] enumerated=${r.enumerated} processed=${r.processed} refreshed=${r.refreshed} escalated=${r.escalated} ignored=${r.ignored} skipped=${r.skipped} errors=${r.errors}`,
+  );
 }
 
 function logRefreshRedrive(r: RefreshRedriveResult): void {

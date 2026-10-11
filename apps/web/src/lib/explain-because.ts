@@ -22,6 +22,7 @@ import { intersectPaths } from '@buildd/core/path-overlap';
 import type { MissionStateView, WaitingOnDescriptor } from './mission-state-view';
 import { suggestionRef } from './mission-state-view';
 import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -57,6 +58,9 @@ export interface StateBecauseExtras {
     title: string | null;
     status: string;
     live?: boolean;
+    /** A reviewer task: runners claim it even in a local-executor mission. */
+    runnerClaimable?: boolean;
+    missingBrowser?: boolean;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
      * is described as waiting on them (and ref'd to the first), never as
@@ -89,7 +93,7 @@ export interface StateBecauseExtras {
    * (not gated on `view.kind`), since these tasks never drive `failing` and
    * would otherwise be invisible to `because[]`.
    */
-  supersededTasks?: Array<{ id: string; title: string | null; prNumber: number; supersedingTaskId?: string | null }>;
+  supersededTasks?: Array<{ id: string; title: string | null; prNumber: number | null; supersedingTaskId?: string | null; replacedByAudit?: true }>;
 }
 
 /**
@@ -122,6 +126,16 @@ export function buildStateBecause(
   }
 
   for (const t of extra.supersededTasks ?? []) {
+    if (t.replacedByAudit || t.prNumber == null) {
+      links.push(
+        link(
+          `Visual audit "${t.title ?? t.id}" failed, but a later audit${t.supersedingTaskId ? ` ("${t.supersedingTaskId}")` : ''} completed with passing phone and desktop screenshots of the same routes, so it does not count as a mission failure.`,
+          'artifacts.metadata.qa (replacedAudits)',
+          { ...base, taskId: t.id },
+        ),
+      );
+      continue;
+    }
     links.push(
       link(
         t.supersedingTaskId
@@ -187,12 +201,19 @@ function openTaskLinks(
     }
     // A local-executor mission: its rows are the person's session's to claim,
     // so "no live worker" (read: a runner should have it) is the wrong claim.
-    if (w.local && !t.live) {
+    if (w.local && !t.live && !t.runnerClaimable) {
       return link(
         t.status === 'pending'
           ? `Task "${t.title ?? t.id}" is pending, waiting for a local session to claim it (runners never pick up this mission's tasks).`
           : `Task "${t.title ?? t.id}" is ${t.status} in a local session.`,
         'mission.executor',
+        { ...base, taskId: t.id },
+      );
+    }
+    if (t.missingBrowser && orphaned(t)) {
+      return link(
+        `Task "${t.title ?? t.id}" is waiting for a runner with the missing browser capability. No eligible runner advertises a working browser provider for this workspace.`,
+        'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor',
         { ...base, taskId: t.id },
       );
     }
@@ -282,6 +303,24 @@ function causeLinksFor(
             `Task "${p.title}" is completed but its PR's CI is still red after ${w.attempts} fix attempt${w.attempts === 1 ? '' : 's'}`
               + `${w.failing.length ? `: ${w.failing.join(', ')}` : ''}.`,
             'workers.prLifecycleStatus + tasks.parentTaskId',
+            {
+              ...base,
+              taskId: p.taskId,
+              ...(p.prNumber != null ? { prNumber: p.prNumber } : {}),
+              ...(p.prUrl ? { prUrl: p.prUrl } : {}),
+            },
+          ),
+        );
+
+    case 'landing_blocked':
+      return (extra.unmergedPrs ?? [])
+        .filter(p => w.taskIds.includes(p.taskId))
+        .slice(0, 10)
+        .map(p =>
+          link(
+            `Task "${p.title}" is completed but its PR cannot land yet: ${w.label}. `
+              + `${w.owner === 'person' ? 'This needs a person' : 'buildd owns the next step'}: ${w.nextAction}`,
+            'deriveLandingBlocker',
             {
               ...base,
               taskId: p.taskId,
@@ -566,6 +605,51 @@ export function dispatchWakeLink(row: LatestDispatchRow | null | undefined, subj
       return link(`Latest wake (${cause}) failed after ${attempts} attempt${attempts === 1 ? '' : 's'}${err}. It is parked; the next state change writes a new wake.`, 'task_dispatch_outbox.status', refs);
     default:
       return null;
+  }
+}
+
+/**
+ * Slice E (§17.5): for a kernel-owned delivery, the transition that put it
+ * where it is, read from `workflow_transitions` (the newest row). It is the
+ * cause the chain's conclusion rests on, so it goes just before it.
+ */
+export function deliveryTransitionLink(
+  d: { state: string; headline: string; detail: string | null; prNumber: number | null; attemptLine: string | null; lastTransition: { command: string; fromState: string | null; toState: string; createdAt: string } | null } | null | undefined,
+  subject: BecauseSubjectRefs,
+): Link | null {
+  if (!d?.lastTransition) return null;
+  const t = d.lastTransition;
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    ...(d.prNumber != null ? { prNumber: d.prNumber } : {}),
+  };
+  const moved = t.fromState ? `${t.fromState} → ${t.toState}` : t.toState;
+  const detail = d.detail ? `; ${d.detail}` : '';
+  const attempts = d.attemptLine ? ` (${d.attemptLine})` : '';
+  return link(`Delivery is ${d.state} (${d.headline}${detail})${attempts}: ${t.command} moved it ${moved} at ${t.createdAt}.`, 'DeliveryView.lastTransition', refs);
+}
+
+/**
+ * Why a pending task waits on a plan limit: the hold the claim stamped on it
+ * (`tasks.context.entitlementBlock`). Null when there is none.
+ */
+export function entitlementHoldLink(context: unknown, subject: BecauseSubjectRefs): Link | null {
+  const block = parseEntitlementBlock((context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]);
+  if (!block) return null;
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+  };
+  switch (block.kind) {
+    case 'hosted_runner':
+      return link(
+        `Hosted runner allowance used: ${block.used} of ${block.limit} counted hours this month. New cloud runs wait until it refills (${block.resetsAt}) or grows; a runner of your own can take the task now.`,
+        'tasks.context.entitlementBlock', refs);
+    case 'usage':
+      return link(`Monthly managed runner-hours used: ${block.used} of ${block.limit}. It starts when the allowance refills (${block.resetsAt}) or grows.`, 'tasks.context.entitlementBlock', refs);
+    case 'concurrency':
+      return link(`${block.active} of ${block.limit} managed runs are active. It starts when one finishes.`, 'tasks.context.entitlementBlock', refs);
   }
 }
 

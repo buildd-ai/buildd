@@ -1,0 +1,2 @@
+DROP INDEX "ws_skills_team_slug_idx";--> statement-breakpoint
+CREATE UNIQUE INDEX "ws_skills_team_slug_idx" ON "workspace_skills" USING btree ("team_id","slug") WHERE "workspace_skills"."workspace_id" IS NULL AND ("workspace_skills"."owner_user_id" IS NULL OR "workspace_skills"."visibility" = 'team');

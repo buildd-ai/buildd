@@ -9,9 +9,45 @@ const ids = (t: string) => copyViolations(t).map((r) => r.id);
 describe('copy rules', () => {
   it('every rule flags its own bad example and passes its good one', () => {
     for (const rule of COPY_RULES) {
+      if (rule.fileLevel) continue;
       expect(rule.test(rule.bad.replace(/\s+/g, ' '))).toBe(true);
       expect(rule.test(rule.good)).toBe(false);
     }
+  });
+
+  it('flags "not this, it\'s that": the owner\'s Models card, verbatim', () => {
+    // Settings > Models, Claude subscription card (owner, 2026-10-09: "ai slopfest").
+    expect(ids("Not chat: A subscription seat signs in a runner; buildd’s server never spends a seat.")).toContain('not-this-its-that');
+    expect(ids('Not codex runs: A Claude subscription signs in Claude Code; the Codex CLI cannot use it.')).toContain('not-this-its-that');
+    expect(ids('Not cloud runs: Cloud containers never receive a seat; only an owner seat set on your own Cloudflare Worker can.')).toContain('not-this-its-that');
+    expect(ids('Not codex runs: The Codex CLI speaks the OpenAI wire; this provider does not serve it.')).toContain('not-this-its-that');
+    // The contrast form of the same habit.
+    expect(ids('Endpoint runs are metered on its key, not a Claude seat.')).toContain('not-this-its-that');
+  });
+
+  it('flags internal words in end-user copy', () => {
+    expect(ids('Not codex runs: The Codex CLI speaks the OpenAI wire; this provider does not serve it.')).toContain('internal-jargon');
+    expect(ids('Serves Chat · claude runs · cloud runs')).toContain('internal-jargon');
+    expect(ids('Cloud containers never receive a seat.')).toContain('internal-jargon');
+  });
+
+  it('flags a warning shown where a default would do', () => {
+    expect(ids('No policy chosen: agents use team keys.')).toContain('warning-instead-of-default');
+    expect(ids('Pick one to apply it to agent runs.')).toContain('warning-instead-of-default');
+  });
+
+  it('leaves the rewritten Models copy alone', () => {
+    for (const t of ['Keys and subscriptions your agents and chat use.', 'Who pays', 'Team key', "Everyone uses the team's key.", "Mine, then the team's", "Uses your key when you've added one.", 'Mine only', 'You need your own key to start work.', 'Used for chat and Claude agents.', 'Used by Claude agents on your runners.', 'Not set', 'Working', 'Not used by anything']) {
+      expect(ids(t)).toEqual([]);
+    }
+  });
+
+  it('counts an explanation rendered twice in one file', () => {
+    const tsx = `export const A = () => <div><p>Uses your team key for every agent you start.</p><details><p>Uses your team key for every agent you start.</p></details></div>;`;
+    const { counts } = scanSources([{ path: NEW, content: tsx }]);
+    expect(counts['duplicate-explanation'][NEW]).toBe(1);
+    const once = `export const A = () => <p>Uses your team key for every agent you start.</p>;`;
+    expect(scanSources([{ path: NEW, content: once }]).counts['duplicate-explanation'][NEW]).toBeUndefined();
   });
 
   it('flags the copy that started this: storage explaining itself', () => {

@@ -48,6 +48,7 @@ export interface EgressProps {
 }
 
 interface AgentSource {
+  fetch(request: Request): Promise<Response>;
   getGithubGrant(): Promise<GithubGrantLookup>;
   getSnapshotScope(): Promise<SnapshotScope | null>;
   recordEgress(event: EgressEvent): Promise<void>;
@@ -67,6 +68,15 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     const reqUrl = new URL(request.url);
     const host = reqUrl.hostname;
     const kind = classifyEgressHost(host);
+    if (kind === 'browser') {
+      const taskId = this.ctx.props?.taskId;
+      const agent = taskId ? await this.agent() : null;
+      if (!agent || !taskId) return Response.json({ code: 'provider_missing' }, { status: 503 });
+      // Fetch preserves WebSocket upgrades; generic RPC serialization is not a CDP transport.
+      const headers = new Headers(request.headers);
+      headers.set('x-buildd-browser-task', taskId);
+      return agent.fetch(new Request(request, { headers }));
+    }
     if (kind === 'snapshot') return this.snapshot(request);
     const cls = egressClassForKind(kind);
     if (kind === 'passthrough') return this.counted('passthrough', at, fetch(request));

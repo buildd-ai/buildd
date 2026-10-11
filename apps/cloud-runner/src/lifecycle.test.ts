@@ -411,6 +411,19 @@ describe('IMAGE_ENV: the image ENV, passed explicitly (a Cloudflare exec does no
   });
 });
 
+// Remote browser access is a per-run capability, never an account credential.
+describe('browser container environment', () => {
+  test('passes only the enabled bridge and ephemeral token', () => {
+    const env = buildContainerEnv({ BUILDD_SERVER: 'https://buildd.example', BROWSER_BRIDGE: '1', browserSessionToken: 'browser-run-token' }, 'bldt_test');
+    expect(env.BUILDD_BROWSER_BRIDGE_URL).toBe('https://buildd-browser.invalid');
+    expect(env.BUILDD_BROWSER_SESSION_TOKEN).toBe('browser-run-token');
+    expect(Object.keys(env).some(k => /cloudflare|^CF_|API_TOKEN/i.test(k))).toBe(false);
+  });
+  test('does not advertise a bridge without its run token', () => {
+    expect(buildContainerEnv({ BUILDD_SERVER: 'https://buildd.example', BROWSER_BRIDGE: '1' }, 'bldt_test').BUILDD_BROWSER_BRIDGE_URL).toBeUndefined();
+  });
+});
+
 describe('deferredRetryBackoffMs for the owner seat', () => {
   test('cap and wall reasons use the longer seat schedule, then give up', () => {
     for (const reason of ['owner_seat_cap', 'owner_seat_wall']) {

@@ -20,6 +20,13 @@
  * exactly one auth variable per its `authHeader`, every other one deleted. A
  * per-machine provider keeps priority over it (`teamEndpointIgnored`).
  *
+ * Deferred tool loading (ToolSearch): Claude Code turns it off by itself for
+ * any non-Anthropic ANTHROPIC_BASE_URL. `ENABLE_TOOL_SEARCH=true` is set only
+ * for a Claude run under a team endpoint whose claim says `toolSearch` (the
+ * winning row's effective capability) — derived per run, so one runner can
+ * serve endpoints that differ. Every other path deletes the variable: it is
+ * not in RUNNER_ENV_PASSTHROUGH, and an inherited one is never trusted.
+ *
  * A Codex task applies it differently: `OPENAI_BASE_URL` = the endpoint's
  * `openAiBaseUrl`, `OPENAI_API_KEY` = its key — present only for an
  * OpenAI-compatible kind (gateway, openrouter). A machine that already has
@@ -58,6 +65,13 @@ export interface ModelEnvInput {
   modelEndpoint?: ClaimModelEndpoint;
   /** The claim said an endpoint won but withheld its key (this runner reported an override). */
   teamEndpointWithheld?: boolean;
+  /**
+   * Cloud run: the claim says the endpoint behind the dispatcher's egress does
+   * not pass ToolSearch through. Claude Code in the container thinks it talks
+   * to Anthropic and would keep it on, so ENABLE_TOOL_SEARCH=false is set.
+   * Claude only; ignored when a team endpoint or per-machine provider applies.
+   */
+  toolSearchDisabled?: boolean;
   /** Native budget model; mapped through the endpoint into ANTHROPIC_DEFAULT_HAIKU_MODEL. */
   budgetModel?: string;
   /**
@@ -66,7 +80,20 @@ export interface ModelEnvInput {
    * injected and no claim-delivered Claude credential is materialized.
    */
   hostSeat?: 'env' | 'login' | null;
+  /**
+   * The claim's `credentialDecision.runnerLocalAllowed` (absent = true). With
+   * `false` (the requester's own key under personal_only) nothing of the
+   * machine's may displace the claim's credential: the per-machine provider
+   * and host seat are ignored, and inherited model auth variables (and a
+   * machine OPENAI_BASE_URL) are removed before anything is applied. An
+   * operator ANTHROPIC_BASE_URL is kept, so an untrusted origin still gets no
+   * server credential: the run fails closed rather than sending the key there.
+   */
+  runnerLocalAllowed?: boolean;
 }
+
+/** Machine model variables removed from the agent env when runnerLocalAllowed is false. */
+const MACHINE_MODEL_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'] as const;
 
 export interface ModelEnvResult {
   env: Record<string, string>;
@@ -77,6 +104,11 @@ export interface ModelEnvResult {
   endpoint: 'anthropic' | 'trusted' | 'team' | 'custom';
   /** A team endpoint was delivered (or withheld for this runner) but the per-machine provider won. */
   teamEndpointIgnored: boolean;
+  /**
+   * Whether ENABLE_TOOL_SEARCH=true was set for this run (team endpoint,
+   * Claude, `toolSearch`). For logs/telemetry only; carries no secret.
+   */
+  toolSearch: boolean;
   /** Origin of the effective base URL (no path, no userinfo), when one is set and parseable. */
   baseUrlOrigin?: string;
   injected: ServerCredential[];
@@ -138,8 +170,33 @@ export function shouldUseClaudeCredential(
   return !!(worker.claudeAccessToken || worker.claudeCredentialId);
 }
 
+export const TOOL_SEARCH_ENV = 'ENABLE_TOOL_SEARCH';
+/** Claude Code's extra request headers: newline-separated `Name: Value` lines. */
+export const CUSTOM_HEADERS_ENV = 'ANTHROPIC_CUSTOM_HEADERS';
+
+/**
+ * `modelEndpoint.headers` as ANTHROPIC_CUSTOM_HEADERS, or null when there are
+ * none. A name or value with a line break (or a name that is not a token) is
+ * dropped rather than allowed to inject another header.
+ */
+export function customHeadersValue(headers: Record<string, string> | undefined): string | null {
+  const lines = Object.entries(headers ?? {})
+    .filter(([k, v]) => /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(k) && typeof v === 'string' && !/[\r\n]/.test(v))
+    .map(([k, v]) => `${k}: ${v}`);
+  return lines.length > 0 ? lines.join('\n') : null;
+}
+
 export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput): ModelEnvResult {
-  const { llmProvider, serverApiKey, serverOauthToken, tenantOauthToken, isCodexTask } = input;
+  const { serverApiKey, serverOauthToken, tenantOauthToken, isCodexTask } = input;
+  const localAllowed = input.runnerLocalAllowed !== false;
+  // Machine config is simply not there for this run: no provider, no seat,
+  // no inherited key. Everything below then behaves as on a bare machine.
+  const llmProvider = localAllowed ? input.llmProvider : undefined;
+  const inputHostSeat = localAllowed ? input.hostSeat : null;
+  if (!localAllowed) for (const k of MACHINE_MODEL_VARS) delete env[k];
+
+  // Only the team endpoint branch below may turn deferred tool loading on.
+  delete env[TOOL_SEARCH_ENV];
 
   // A machine that already points OPENAI_BASE_URL somewhere specific keeps
   // that over the team's agent model endpoint — checked on the INCOMING env,
@@ -168,21 +225,28 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
     if (isCodexTask) {
       if (!teamEndpoint.openAiBaseUrl) {
         return {
-          env, endpoint: 'team', baseUrlOrigin: originOf(teamEndpoint.baseUrl), injected: [], withheld, teamEndpointIgnored: false,
+          env, endpoint: 'team', baseUrlOrigin: originOf(teamEndpoint.baseUrl), injected: [], withheld, teamEndpointIgnored: false, toolSearch: false,
           error: `The team's agent model endpoint (${teamEndpoint.kind}) speaks only the Anthropic Messages API — it has no OpenAI-compatible route for a Codex task. Configure an OpenAI-compatible endpoint (a LiteLLM gateway or OpenRouter) for this team/workspace, or run this task on a runner with its own OPENAI_BASE_URL / Codex credential.`,
         };
       }
       delete env.OPENAI_API_KEY;
       env.OPENAI_BASE_URL = teamEndpoint.openAiBaseUrl;
       env.OPENAI_API_KEY = teamEndpoint.authToken;
-      return { env, endpoint: 'team', baseUrlOrigin: originOf(teamEndpoint.openAiBaseUrl), injected: [], withheld, teamEndpointIgnored: false };
+      return { env, endpoint: 'team', baseUrlOrigin: originOf(teamEndpoint.openAiBaseUrl), injected: [], withheld, teamEndpointIgnored: false, toolSearch: false };
     }
 
     for (const k of AUTH_VARS) delete env[k];
     env.ANTHROPIC_BASE_URL = teamEndpoint.baseUrl;
     env[teamEndpoint.authHeader === 'x-api-key' ? 'ANTHROPIC_API_KEY' : 'ANTHROPIC_AUTH_TOKEN'] = teamEndpoint.authToken;
+    // The team endpoint's own headers replace any the machine set: a
+    // machine's headers were meant for its own proxy, not the team's.
+    delete env[CUSTOM_HEADERS_ENV];
+    const customHeaders = customHeadersValue(teamEndpoint.headers);
+    if (customHeaders) env[CUSTOM_HEADERS_ENV] = customHeaders;
     if (input.budgetModel) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = mapAgentModel(teamEndpoint, input.budgetModel);
-    return { env, endpoint: 'team', baseUrlOrigin: originOf(teamEndpoint.baseUrl), injected: [], withheld, teamEndpointIgnored: false };
+    const toolSearch = teamEndpoint.toolSearch === true;
+    if (toolSearch) env[TOOL_SEARCH_ENV] = 'true';
+    return { env, endpoint: 'team', baseUrlOrigin: originOf(teamEndpoint.baseUrl), injected: [], withheld, teamEndpointIgnored: false, toolSearch };
   }
 
   // A configured provider always means third-party model traffic.
@@ -217,7 +281,7 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
     }
     // The machine's own seat (an env token, or `claude login` on the host)
     // wins: a server-delivered seat only fills in when the machine has none.
-    const hostSeat = !isCodexTask && !tenantOauthToken && (input.hostSeat || (env.CLAUDE_CODE_OAUTH_TOKEN ? 'env' : null));
+    const hostSeat = !isCodexTask && !tenantOauthToken && (inputHostSeat || (env.CLAUDE_CODE_OAUTH_TOKEN ? 'env' : null));
     if (!isCodexTask && serverOauthToken && !env.CLAUDE_CODE_OAUTH_TOKEN && !hostSeat) {
       env.CLAUDE_CODE_OAUTH_TOKEN = serverOauthToken;
       injected.push('serverOauthToken');
@@ -226,7 +290,8 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
       env.CLAUDE_CODE_OAUTH_TOKEN = tenantOauthToken;
       injected.push('tenantOauthToken');
     }
-    return { env, endpoint, baseUrlOrigin, injected, withheld, teamEndpointIgnored, ...(hostSeat ? { hostSeatUsed: true } : {}) };
+    if (!isCodexTask && input.toolSearchDisabled && endpoint === 'anthropic') env[TOOL_SEARCH_ENV] = 'false';
+    return { env, endpoint, baseUrlOrigin, injected, withheld, teamEndpointIgnored, toolSearch: false, ...(hostSeat ? { hostSeatUsed: true } : {}) };
   }
 
   if (!isCodexTask && serverApiKey) withheld.push('serverApiKey');
@@ -245,5 +310,5 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
   for (const k of AUTH_VARS) delete env[k];
   if (chosen) env[chosen[0]] = chosen[1];
 
-  return { env, endpoint, baseUrlOrigin, injected, withheld, teamEndpointIgnored };
+  return { env, endpoint, baseUrlOrigin, injected, withheld, teamEndpointIgnored, toolSearch: false };
 }

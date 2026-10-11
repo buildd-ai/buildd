@@ -49,7 +49,9 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { pidsToStop, type ProcInfo } from './run-once';
 import { resolveBuilddHome } from './buildd-home';
-import { emitPhase, emitRepoSource } from './phase-lines';
+import { DEPENDENCY_MANIFEST_FILENAME, findDependencyRoots, verifyDependencyHandover, type DependencyManifest, type DependencyHandoverReport } from './dependency-manifest';
+import { pnpmStoreDir } from './warm-repo';
+import { emitMetric, emitPhase, emitRepoSource } from './phase-lines';
 
 /** Printed on success, last line: the agent reads it next to exit code 0. */
 export const RESET_OK_LINE = 'BUILDD_RESET=ok';
@@ -66,6 +68,8 @@ const PACK_RE = /^pack-[0-9a-f]{40,64}\.pack$/;
 export interface ResetPaths {
   /** The container user's HOME. Wiped, except KEEP_DIRNAME. */
   home: string;
+  warmHandover?: 'off' | 'repo' | 'deps';
+  expectedDigest?: string;
   /** Where --once clones each workspace (BUILDD_HOME/once-workspaces). */
   isolationRoot: string;
   /** The bun install cache (warm-repo.ts bunCacheDir). Kept, scrubbed. */
@@ -93,6 +97,7 @@ export interface ResetResult {
   killed: number;
   keptPacks: number;
   keptCache: boolean;
+  handover?: DependencyHandoverReport;
 }
 
 export function keepDirOf(home: string): string {
@@ -114,6 +119,8 @@ export function containerResetPaths(env: Record<string, string | undefined>, cac
   const builddHome = resolveBuilddHome({ env, home });
   return {
     home,
+    warmHandover: env.BUILDD_WARM_HANDOVER === 'deps' ? 'deps' : env.BUILDD_WARM_HANDOVER === 'repo' ? 'repo' : 'off',
+    expectedDigest: env.BUILDD_DEPS_EXPECTED_DIGEST,
     isolationRoot: env.BUILDD_WORKSPACE_ISOLATION_ROOT || join(builddHome, 'once-workspaces'),
     cacheDir,
     skeletonDirs: [builddHome, join(home, 'work')],
@@ -266,12 +273,32 @@ export function resetContainer(paths: ResetPaths, d: ResetDeps): ResetResult {
     for (const name of (() => { try { return readdirSync(paths.isolationRoot); } catch { return []; } })()) {
       const clone = join(paths.isolationRoot, name);
       if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
-      try { if (!lstatSync(join(clone, '.git')).isDirectory()) continue; } catch { continue; }
-      result.keptPacks += keepClone(clone, join(keep, 'git', name));
+      try { if (!lstatSync(clone).isDirectory() || !lstatSync(join(clone, '.git')).isDirectory()) continue; } catch { continue; }
+      if (!paths.warmHandover || paths.warmHandover === 'off') continue;
+      const cloneKeep = join(keep, 'git', name);
+      result.keptPacks += keepClone(clone, cloneKeep);
+      if (paths.warmHandover === 'deps') {
+        let expected: DependencyManifest | null = null;
+        try { expected = JSON.parse(readFileSync(join(clone, DEPENDENCY_MANIFEST_FILENAME), 'utf8')); } catch { /* absence falls back */ }
+        // ls-files cannot execute hooks; explicitly disable the optional fsmonitor.
+        const listed = git(clone, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', 'ls-files', '-z']);
+        const trackedPaths = listed.ok ? listed.out.split('\0').filter(Boolean) : [];
+        result.handover = verifyDependencyHandover({ repoRoot: clone, storeDir: pnpmStoreDir(paths.cacheDir), expected,
+          expectedDigest: paths.expectedDigest ?? '', trackedPaths });
+        if (result.handover.fellBack) writeFileSync(join(keep, 'deps-fallback'), result.handover.reason ?? 'verification_failed');
+        if (!result.handover.fellBack) {
+          for (const path of findDependencyRoots(clone)) {
+            if (trackedPaths.some(t => t === path || t.startsWith(`${path}/`))) continue;
+            const destination = join(cloneKeep, 'deps', path);
+            mkdirSync(dirname(destination), { recursive: true });
+            renameSync(join(clone, path), destination);
+          }
+        }
+      }
     }
 
     const keptCache = join(keep, 'cache');
-    if (isInside(paths.cacheDir, paths.home) && existsSync(paths.cacheDir) && lstatSync(paths.cacheDir).isDirectory()) {
+    if (paths.warmHandover && paths.warmHandover !== 'off' && isInside(paths.cacheDir, paths.home) && existsSync(paths.cacheDir) && lstatSync(paths.cacheDir).isDirectory()) {
       renameSync(paths.cacheDir, keptCache);
       scrubCache(keptCache, keptCache);
       result.keptCache = true;
@@ -319,9 +346,59 @@ export interface SeedOptions {
   lineOpts?: Parameters<typeof emitPhase>[1];
 }
 
-function git(cwd: string, args: string[], timeoutMs = 10 * 60 * 1000): { ok: boolean; out: string; err: string } {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: timeoutMs });
+function git(cwd: string, args: string[], o: { timeoutMs?: number; input?: string } = {}): { ok: boolean; out: string; err: string } {
+  const r = spawnSync('git', args, {
+    cwd, encoding: 'utf-8', stdio: [o.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    timeout: o.timeoutMs ?? 10 * 60 * 1000, maxBuffer: 64 * 1024 * 1024,
+    ...(o.input === undefined ? {} : { input: o.input }),
+  });
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim().slice(-300) };
+}
+
+/** Where the seed's temporary negotiation refs live; none is left after the seed. */
+const HAVE_REF_PREFIX = 'refs/buildd/reuse-have/';
+/** At most this many kept commits are offered to origin as haves. */
+const MAX_HAVES = 32;
+
+/** Bytes git keeps for objects (loose + packed), as warm-repo.ts objectBytes counts them. */
+function objectBytesOf(repo: string): number {
+  let kib = 0;
+  for (const line of git(repo, ['count-objects', '-v']).out.split('\n')) {
+    const m = /^(size|size-pack): (\d+)$/.exec(line.trim());
+    if (m) kib += Number(m[2]);
+  }
+  return kib * 1024;
+}
+
+/**
+ * The kept commits worth offering origin as haves: those no other kept
+ * commit names as a parent (the tips the previous clone had, whatever its
+ * refs said), the hinted tip first, each one complete. A commit whose
+ * history or trees lean on objects the reset did not keep (they were loose)
+ * is never offered: origin would then leave out objects the seed does not
+ * have. Checked cumulatively, so the shared history is walked once.
+ */
+function completeHeads(clonePath: string, hint: string | null): string[] {
+  const listed = git(clonePath, ['cat-file', '--batch-all-objects', '--batch-check=%(objecttype) %(objectname)']);
+  const commits = listed.out.split('\n').filter(l => l.startsWith('commit ')).map(l => l.slice('commit '.length));
+  if (!listed.ok || commits.length === 0) return [];
+  // Newest first; a shallow commit's missing parents are not named.
+  const walked = git(clonePath, ['rev-list', '--no-walk', '--parents', '--stdin'], { input: `${commits.join('\n')}\n` });
+  if (!walked.ok) return [];
+  const rows = walked.out.split('\n').map(l => l.split(' ')).filter(r => r[0]);
+  const parents = new Set(rows.flatMap(r => r.slice(1)));
+  const heads = rows.map(r => r[0]!).filter(c => !parents.has(c));
+  const ordered = hint && heads.includes(hint) ? [hint, ...heads.filter(h => h !== hint)] : heads;
+  const ok: string[] = [];
+  for (const head of ordered) {
+    if (ok.length >= MAX_HAVES) break;
+    if (git(clonePath, ['rev-list', '--objects', '--quiet', head, ...(ok.length ? ['--not', ...ok] : [])]).ok) ok.push(head);
+  }
+  return ok;
+}
+
+function setRefs(clonePath: string, lines: string[]): void {
+  if (lines.length) git(clonePath, ['update-ref', '--stdin'], { input: `${lines.join('\n')}\n` });
 }
 
 /**
@@ -335,8 +412,13 @@ function git(cwd: string, args: string[], timeoutMs = 10 * 60 * 1000): { ok: boo
  * when the kept clone was. Not like a warm restore: there is no snapshot tip
  * (WARM_BASE_REF), so a park bundle is built against origin, as after a clone.
  *
- * BUILDD_PHASE=restore_reuse_start/_end around it and BUILDD_REPO_SOURCE=reuse
- * on success, for the run report.
+ * Origin is asked for what it added only: the fetch negotiates with the kept
+ * commits (temporary refs under HAVE_REF_PREFIX, deleted after), and does not
+ * run at all when `git ls-remote` shows origin's tip is already kept.
+ *
+ * BUILDD_PHASE=restore_reuse_start/_end around it, BUILDD_REPO_SOURCE=reuse on
+ * success, and the metrics restore_reuse_bytes (what the fetch brought) and
+ * reuse_fetch_skipped, for the run report.
  */
 export function seedCloneFromKept(clonePath: string, cloneUrl: string, keptDir: string, o: SeedOptions): boolean {
   if (!existsSync(join(keptDir, 'pack'))) return false;
@@ -385,20 +467,52 @@ function seed(clonePath: string, cloneUrl: string, keptDir: string, o: SeedOptio
       packs++;
     }
     if (packs === 0) return failWith('no packs kept');
-    // A hint only: fetch negotiation starts from it, and fsck below checks
-    // whatever origin answers is complete.
-    if (tip && git(clonePath, ['cat-file', '-e', `${tip}^{commit}`]).ok) {
-      git(clonePath, ['update-ref', `refs/remotes/origin/${branch}`, tip]);
-    }
     if (!git(clonePath, ['remote', 'add', '-t', branch, 'origin', cloneUrl]).ok) return failWith('remote add failed');
-    const fetchError = o.fetchOrigin(clonePath);
-    if (fetchError) return failWith(`fetch failed: ${fetchError}`);
+    // The fetch below would spawn a detached `maintenance --auto` / `gc --auto`
+    // that repacks under objects/pack while the fsck reads it. Held off until
+    // the seed is verified.
+    git(clonePath, ['config', 'maintenance.auto', 'false']);
+    git(clonePath, ['config', 'gc.auto', '0']);
     const head = `refs/remotes/origin/${branch}`;
+    // What the fetch negotiates with. The seed has no refs, and without
+    // haves origin sends the whole tree again. The hint is not enough on its
+    // own: the tip it names is often a loose object (a small fetch during the
+    // previous task) the reset did not keep. Only complete commits are
+    // offered, and fsck below checks whatever origin answers anyway.
+    const haves = completeHeads(clonePath, tip);
+    // Origin's tip already here, complete: nothing to fetch.
+    const remote = git(clonePath, ['ls-remote', '--exit-code', 'origin', `refs/heads/${branch}`], { timeoutMs: 60_000 });
+    const remoteTip = remote.ok ? remote.out.split(/\s+/)[0] ?? '' : '';
+    const skipFetch = HEX_OID_RE.test(remoteTip)
+      && (haves.includes(remoteTip) || git(clonePath, ['rev-list', '--objects', '--quiet', remoteTip]).ok);
+    const before = objectBytesOf(clonePath);
+    if (skipFetch) {
+      if (!git(clonePath, ['update-ref', head, remoteTip]).ok) return failWith('update-ref failed');
+    } else {
+      setRefs(clonePath, haves.map((oid, i) => `create ${HAVE_REF_PREFIX}${i} ${oid}`));
+      const fetchError = o.fetchOrigin(clonePath);
+      setRefs(clonePath, haves.map((_, i) => `delete ${HAVE_REF_PREFIX}${i}`));
+      if (fetchError) return failWith(`fetch failed: ${fetchError}`);
+    }
+    emitMetric('reuse_fetch_skipped', skipFetch ? 1 : 0, o.lineOpts);
+    emitMetric('restore_reuse_bytes', Math.max(0, objectBytesOf(clonePath) - before), o.lineOpts);
     if (!git(clonePath, ['rev-parse', '--verify', '-q', head]).ok) return failWith(`origin has no ${branch}`);
     const fsck = git(clonePath, ['fsck', '--connectivity-only', '--no-dangling']);
     if (!fsck.ok) return failWith(`fsck --connectivity-only failed: ${fsck.err}`);
+    git(clonePath, ['config', '--unset', 'maintenance.auto']);
+    git(clonePath, ['config', '--unset', 'gc.auto']);
     git(clonePath, ['symbolic-ref', 'refs/remotes/origin/HEAD', head]);
     if (!git(clonePath, ['checkout', '-q', '-B', branch, '--track', `origin/${branch}`]).ok) return failWith('checkout failed');
+    const dependencyRoot = join(keptDir, 'deps');
+    if (existsSync(dependencyRoot)) {
+      for (const path of findDependencyRoots(dependencyRoot)) {
+        const destination = join(clonePath, path);
+        // The freshly checked-out origin owns every tracked path.
+        if (existsSync(destination)) continue;
+        mkdirSync(dirname(destination), { recursive: true });
+        renameSync(join(dependencyRoot, path), destination);
+      }
+    }
     rmSync(keptDir, { recursive: true, force: true });
     o.log(`[reuse] seeded ${clonePath} from ${packs} kept pack(s); refs fetched from origin`);
     return true;

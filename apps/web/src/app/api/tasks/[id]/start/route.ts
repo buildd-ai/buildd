@@ -26,6 +26,7 @@ import {
   type ForceStartIntent,
   type WaitingReason,
 } from '@buildd/core/waiting-reason';
+import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 
 /**
  * POST /api/tasks/[id]/start
@@ -52,6 +53,7 @@ export async function POST(
   // Dual auth: API key or session
   let authType: 'api' | 'session';
   let accountId: string | null = null;
+  let sessionAccount: NonNullable<Awaited<ReturnType<typeof authenticateApiKey>>> | null = null;
   let userId: string | null = null;
 
   const authHeader = req.headers.get('authorization');
@@ -64,6 +66,7 @@ export async function POST(
     }
     authType = 'api';
     accountId = account.id;
+    sessionAccount = account;
   } else {
     const user = await getCurrentUser();
     if (!user) {
@@ -99,7 +102,7 @@ export async function POST(
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       }
     } else {
-      const hasAccess = await verifyAccountWorkspaceAccess(accountId!, task.workspaceId);
+      const hasAccess = await verifyAccountWorkspaceAccess(sessionAccount ?? accountId!, task.workspaceId);
       if (!hasAccess) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       }
@@ -166,12 +169,12 @@ export async function POST(
     const roleSlug = (task as any).roleSlug as string | null;
     const teamId = (task.workspace as any)?.teamId as string | null;
     if (roleSlug && teamId) {
-      const connectorFailures = await checkConnectorRouting(roleSlug, task.workspaceId, teamId);
+      const connectorFailures = await checkConnectorRouting(roleSlug, task.workspaceId, teamId, { task });
       if (connectorFailures) {
         const detail = connectorFailures
           .map(f => `'${f.connectorName}' (${f.mode})`)
           .join(', ');
-        const alternativeRole = await findAlternativeRole(roleSlug, task.workspaceId, teamId);
+        const alternativeRole = await findAlternativeRole(roleSlug, task.workspaceId, teamId, { task });
         return NextResponse.json({
           error: `Task cannot be started: role '${roleSlug}' has connector issues: ${detail}`,
           gateReason: 'connector_routing_mismatch',
@@ -325,13 +328,20 @@ export async function POST(
     // clears the stamp). Not forceable and not an error: the task stays
     // queued and the dashboard shows the entitlement state.
     const entitlementTeamId = (task.workspace as { teamId?: string | null } | undefined)?.teamId;
-    if (entitlementTeamId && (task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]) {
-      const block = await checkManagedRunnerEntitlement(entitlementTeamId);
+    const stamped = (task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY] as { kind?: unknown } | undefined;
+    if (entitlementTeamId && stamped) {
+      // A hosted runner hold is re-checked against the hosted allowance, the
+      // managed holds against the managed plan.
+      const block = stamped.kind === 'hosted_runner'
+        ? await checkHostedRunnerAllowance(entitlementTeamId)
+        : await checkManagedRunnerEntitlement(entitlementTeamId);
       if (block) {
         return NextResponse.json({
           error: block.kind === 'concurrency'
             ? `Queued: ${block.active} of ${block.limit} managed runs are active. It starts when one finishes.`
-            : `Queued: this month's ${block.limit} managed runner-hours are used. It starts when the allowance refills or grows.`,
+            : block.kind === 'hosted_runner'
+              ? `Queued: hosted runner allowance used (${block.used} of ${block.limit} hours this month). It starts when the allowance refills or grows, or on a runner of your own.`
+              : `Queued: this month's ${block.limit} managed runner-hours are used. It starts when the allowance refills or grows.`,
           gateReason: 'entitlement_blocked',
           blockClass: 'entitlement',
           entitlement: block,

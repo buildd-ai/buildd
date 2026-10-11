@@ -62,11 +62,9 @@ describe('no surface asserts an unqualified restriction', () => {
     readFileSync(join(WEB_SRC, rel), 'utf8').includes(needle);
 
   const SURFACES = [
-    'app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx',
-    'app/app/(protected)/team/[slug]/settings/TeamRoleEditor.tsx',
-    'app/app/(protected)/workspaces/[id]/skills/SkillList.tsx',
-    'app/app/(protected)/workspaces/[id]/skills/SkillForm.tsx',
-    'app/app/(protected)/team/new/TeamRoleForm.tsx',
+    // The one role editor (team, personal and workspace-scoped roles) and the new-role form.
+    'app/app/(protected)/settings/roles/[slug]/edit/TeamRoleEditor.tsx',
+    'app/app/(protected)/settings/roles/new/TeamRoleForm.tsx',
   ];
 
   for (const surface of SURFACES) {
@@ -82,8 +80,6 @@ describe('no surface asserts an unqualified restriction', () => {
   test('the tool control is labelled by the shared constant', () => {
     expect(SUBAGENT_TOOLS_LABEL).toBe('Subagent Tools');
     for (const surface of SURFACES) {
-      // SkillList shows a count, not the control, so it needs no heading.
-      if (surface.endsWith('SkillList.tsx')) continue;
       expect(has(surface, 'SUBAGENT_TOOLS_LABEL')).toBe(true);
     }
   });

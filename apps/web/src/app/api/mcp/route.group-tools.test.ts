@@ -2,8 +2,9 @@
  * The remote MCP route's group tools (buildd_<group>): what tools/list shows
  * per level and surface, how a group call routes, and that the one-tool
  * `buildd` stays callable on the groups surface, where it is not listed.
- * The groups surface is opt-in (`?tools=groups`); every session defaults to
- * the legacy one-tool `buildd`.
+ * Groups is the standard surface. The one exception is a runner worker
+ * session (`?worker=`) whose runner did not advertise the group-tools
+ * capability on its heartbeat: it keeps the legacy one-tool `buildd`.
  */
 
 
@@ -17,6 +18,7 @@ const TEAM_ID = 'team-1';
 
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
+const mockHeartbeatsFindFirst = mock(() => Promise.resolve(null as any));
 // Rows returned by any `db.select().from().where().limit()` — used by the
 // "does this caller reach a sensitive workspace" lookup.
 const mockSelectLimit = mock(() => Promise.resolve([] as any[]));
@@ -44,6 +46,7 @@ mock.module('@buildd/core/db', () => ({
       },
       teams: { findFirst: mock(() => Promise.resolve(null)) },
       workers: { findFirst: mockWorkersFindFirst },
+      workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
       tasks: { findFirst: mock(() => Promise.resolve(null)) },
     },
     update: mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve([])) })) })),
@@ -88,6 +91,7 @@ mock.module('@buildd/core/mcp-tools', () => ({
 }));
 
 import { POST } from './route';
+import { CAPABILITY_MCP_GROUP_TOOLS } from '@buildd/shared';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -137,42 +141,69 @@ describe('MCP group tools — tools/list', () => {
     mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard', teamId: TEAM_ID });
   });
 
-  it('default: an interactive session (no worker) gets the legacy buildd tool', async () => {
+  it('default: an interactive session (no worker) gets the group tools, no buildd', async () => {
     authenticateAs({ level: 'admin', authType: 'api' });
     const names = await listTools(`?workspace=${WORKSPACE_ID}`);
-    expect(names).toContain('buildd');
-    expect(names.some(n => n.startsWith('buildd_') && n !== 'buildd_memory')).toBe(false);
-    // The runner-written repo .mcp.json shape (?repo=, no worker) too.
-    const repo = await listTools(`?repo=owner/repo`);
-    expect(repo).toContain('buildd');
-    expect(repo).not.toContain('buildd_tasks');
-  });
-
-  it('admin, opted in: every group tool, no buildd', async () => {
-    authenticateAs({ level: 'admin', authType: 'api' });
-    const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=groups`);
     for (const t of ['buildd_missions', 'buildd_tasks', 'buildd_work', 'buildd_prs', 'buildd_runners', 'buildd_analytics', 'buildd_artifacts', 'buildd_schedules', 'buildd_admin', 'recall', 'learn', 'check_path_claim', 'send_worker_message']) {
       expect(names).toContain(t);
     }
+    expect(names).not.toContain('buildd');
+    // The runner-written repo .mcp.json shape (?repo=, no worker) too.
+    const repo = await listTools(`?repo=owner/repo`);
+    expect(repo).toContain('buildd_tasks');
+    expect(repo).not.toContain('buildd');
+  });
+
+  it('?tools= is not read: legacy cannot be requested, groups need no opt-in', async () => {
+    authenticateAs({ level: 'admin', authType: 'api' });
+    const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=legacy`);
+    expect(names).toContain('buildd_work');
     expect(names).not.toContain('buildd');
   });
 
   it('trigger: only the groups it has actions in', async () => {
     authenticateAs({ level: 'trigger', authType: 'api' });
-    const names = (await listTools(`?workspace=${WORKSPACE_ID}&tools=groups`)).filter(n => n.startsWith('buildd'));
+    const names = (await listTools(`?workspace=${WORKSPACE_ID}`)).filter(n => n.startsWith('buildd'));
     expect(names.sort()).toEqual(['buildd_artifacts', 'buildd_schedules', 'buildd_tasks', 'buildd_work']);
   });
 
-  it('a runner worker session keeps the legacy buildd tool', async () => {
+  it('a worker session whose runner advertises group tools gets them', async () => {
     authenticateAs({ level: 'worker', authType: 'api' });
-    mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1' });
+    mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1', localUiUrl: 'http://runner.local:8766' });
+    mockHeartbeatsFindFirst.mockResolvedValue({ environment: { envKeys: ['backend:codex', CAPABILITY_MCP_GROUP_TOOLS] } });
+    const names = await listTools(`?workspace=${WORKSPACE_ID}&worker=${WORKER_ID}`);
+    expect(names).toContain('buildd_work');
+    expect(names).not.toContain('buildd');
+  });
+
+  it('a worker session whose runner predates group tools keeps the legacy buildd tool', async () => {
+    authenticateAs({ level: 'worker', authType: 'api' });
+    mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1', localUiUrl: 'http://runner.local:8766' });
+    mockHeartbeatsFindFirst.mockResolvedValue({ environment: { envKeys: ['backend:codex'] } });
     const names = await listTools(`?workspace=${WORKSPACE_ID}&worker=${WORKER_ID}`);
     expect(names).toContain('buildd');
     expect(names).not.toContain('buildd_work');
-    // ...and can opt in.
+    // ...and the old opt-in no longer moves it: a runner that cannot match the
+    // group tool names must not be served them.
     const opted = await listTools(`?workspace=${WORKSPACE_ID}&worker=${WORKER_ID}&tools=groups`);
-    expect(opted).toContain('buildd_work');
-    expect(opted).not.toContain('buildd');
+    expect(opted).toContain('buildd');
+    expect(opted).not.toContain('buildd_work');
+  });
+
+  it('a worker session whose runner cannot be identified keeps the legacy buildd tool', async () => {
+    authenticateAs({ level: 'worker', authType: 'api' });
+    // No local UI URL registered yet, so no heartbeat row to read.
+    mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1', localUiUrl: null });
+    mockHeartbeatsFindFirst.mockResolvedValue({ environment: { envKeys: [CAPABILITY_MCP_GROUP_TOOLS] } });
+    expect(await listTools(`?workspace=${WORKSPACE_ID}&worker=${WORKER_ID}`)).toContain('buildd');
+    // No heartbeat row.
+    mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1', localUiUrl: 'http://runner.local:8766' });
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+    expect(await listTools(`?workspace=${WORKSPACE_ID}&worker=${WORKER_ID}`)).toContain('buildd');
+    // The lookup failing.
+    mockHeartbeatsFindFirst.mockRejectedValue(new Error('db down'));
+    expect(await listTools(`?workspace=${WORKSPACE_ID}&worker=${WORKER_ID}`)).toContain('buildd');
+    mockHeartbeatsFindFirst.mockReset();
   });
 
   const initialize = async (query: string) => {
@@ -184,16 +215,18 @@ describe('MCP group tools — tools/list', () => {
     return body.result.instructions as string;
   };
 
-  it('initialize carries the groups instructions when opted in', async () => {
+  it('initialize carries the groups instructions by default', async () => {
     authenticateAs({ level: 'worker', authType: 'api' });
-    const instructions = await initialize(`?workspace=${WORKSPACE_ID}&tools=groups`);
+    const instructions = await initialize(`?workspace=${WORKSPACE_ID}`);
     expect(instructions).toContain('buildd_<group>');
     expect(instructions).toContain('help');
   });
 
-  it('initialize carries the legacy instructions by default', async () => {
+  it('initialize carries the legacy instructions for a worker on a runner that predates group tools', async () => {
     authenticateAs({ level: 'worker', authType: 'api' });
-    const instructions = await initialize(`?workspace=${WORKSPACE_ID}`);
+    mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1', localUiUrl: 'http://runner.local:8766' });
+    mockHeartbeatsFindFirst.mockResolvedValue({ environment: { envKeys: [] } });
+    const instructions = await initialize(`?workspace=${WORKSPACE_ID}&worker=${WORKER_ID}`);
     expect(instructions).toContain('Tools: `buildd` (task actions)');
     expect(instructions).not.toContain('buildd_<group>');
   });
@@ -227,7 +260,7 @@ describe('MCP group tools — tools/call', () => {
 
   it('a wrong-group action above the level is refused without naming an unlisted tool', async () => {
     authenticateAs({ level: 'trigger', authType: 'api' });
-    const result = await callTool('buildd_tasks', { action: 'manage_missions', params: {} }, `?workspace=${WORKSPACE_ID}&tools=groups`);
+    const result = await callTool('buildd_tasks', { action: 'manage_missions', params: {} }, `?workspace=${WORKSPACE_ID}`);
     expect(result.isError).toBe(true);
     expect(text(result)).toBe('"manage_missions" is not available at your token level (trigger).');
     expect(mockHandleBuilddAction).not.toHaveBeenCalled();

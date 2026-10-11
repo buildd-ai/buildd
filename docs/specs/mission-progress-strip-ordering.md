@@ -128,18 +128,9 @@ but does not exist (see `timeline-mobile-rail.md` §10.3); nothing here needs it
 1. **component order** — components ordered by the earliest `createdAt` of any
    member (ties: smallest task id).
 2. **level** — ascending.
-3. **readiness class** — ascending, from this table:
-
-   | class | display states |
-   |---|---|
-   | 0 | `landed` |
-   | 1 | `review` |
-   | 2 | `running`, `fixing`, `waiting` |
-   | 3 | `ci_failed`, `failed` |
-   | 4 | `ready` |
-   | 5 | `blocked` |
-   | 6 | `queued` |
-
+3. ~~readiness class~~ — removed: no key reads runtime state, so a status
+   change never moves a cell and ‹ / › / arrow keys step to the adjacent
+   rendered cell.
 4. **phase index** — the stored `missionPhaseIndex`, nulls last.
 5. **`createdAt`** — ascending.
 6. **task id** — ascending (total order; two renders of one model are identical).
@@ -190,7 +181,7 @@ crosses a level.
 
 Phase stays a tie-breaker (key 4), not a primary grouping. `phase` and
 `dependsOn` are independent fields and nothing cross-validates them
-(`structure-layout.ts` header comment); a phase-first order breaks ORD-1
+(the removed Structure layout's header comment said so); a phase-first order breaks ORD-1
 whenever a later-phase task is a dependency of an earlier-phase one. The
 non-interactive `LandedMeter` variants (`band` without `selection`, `strip`)
 keep their phase-grouped layout and captions: they are unaddressable (§2.6).
@@ -367,8 +358,8 @@ There are four edge walks over mission tasks today:
    tasks.
 3. `buildMissionBoard` — its own `deps` / `unblocks` loops with its own
    satisfaction rule (§3.1, ST-1).
-4. `computeStructureLayout` — its own `blockerMap` / `dependentsOf` and
-   assignRanks (deleted).
+4. computeStructureLayout (the Structure canvas, since removed) — its own
+   blockerMap / dependentsOf and assignRanks.
 
 **Rule ADJ-1**: identifyChains' pass 1 is extracted into one exported pure
 helper in `apps/web/src/lib/condensed-timeline.ts` (proposed name:
@@ -385,7 +376,8 @@ buildMissionAdjacency). Input: tasks with `id`, `status`, `dependsOn`,
 
 **Rule ADJ-2**: `identifyChains`, `collapseTerminalChains`,
 `buildMissionBoard` (its `deps`, `unblocks` and ready/blocked decision),
-`computeStructureLayout` (its rank pass) and the strip (§2, §3, §5) all read
+the Flow timeline (`buildFlowTimeline`, which reads the board's deps and the
+strip order; `mission-flow-timeline.md`) and the strip (§2, §3, §5) all read
 that one result. None of them walks `dependsOn` itself afterwards.
 
 **Rule ADJ-3**: frontier(T) is `reduceToFrontier` — exported from
@@ -627,10 +619,12 @@ cell's tick slot, minimum 1px, at every n ≤ 64. At 4.1px a direct mark is a
 
 ## 9. Next open
 
-**Rule NX-1**: Next open cycles through **active** cells only, in strip order
-(§2.1), starting after the selection and wrapping. Held cells are skipped:
-there is nothing to do on a held task except look at its blockers, which the
-marks already show.
+**Rule NX-1**: Next open cycles through **open** cells only (active and not
+failed, `openIndices`), in strip order (§2.1), starting after the selection
+and wrapping. Held cells are skipped: there is nothing to do on a held task
+except look at its blockers, which the marks already show. Failed cells are
+skipped too: the header counts them apart (TONE-1), so the cycle must not
+visit a cell the count does not call open.
 
 Readiness decides membership (active vs held); topology decides sequence
 (strip order). The two are not alternatives: Next open uses both, and because
@@ -643,7 +637,9 @@ which counts held cells the button then visits; after this change the count
 and the cycle set are the same set.
 
 **Rule NX-3**: label states: `Next open · 06` / `Only open task · 06` /
-`All tasks landed` (unchanged) / **new** `Nothing open · 3 held` when a = 0
+`All tasks landed` (unchanged) / `Nothing open · 2 failed` when a = 0 and a
+cell has failed (it selects the leftmost failed cell) / **new**
+`Nothing open · 3 held` when a = 0, nothing failed
 and h > 0 — enabled, and it selects the leftmost held cell (whose blocker is
 off-strip or in a cycle; there is no other way for every non-landed cell to
 be held).
@@ -670,7 +666,7 @@ else the first active cell; else the first held cell; else the last cell.
 | `MissionBoardParts.tsx` `StripCells` | the "Task {i + 1} of {n}, …" aria-label | §4 aria-label |
 | `MissionBoardParts.tsx` `STRIP_CELL_CLASS` | `ready` and `blocked` sharing one class | §3.2 table |
 | `mission-board.ts` `buildMissionBoard` | `BoardDep.ok` = landed-or-in-review; `depsLanded` from feedLanded (deleted); the `allById` filter that drops off-strip deps; the `unblocks` push loop | the shared adjacency (ADJ-2, ST-1, ST-2) |
-| `structure-layout.ts` assignRanks (deleted) and its local `blockerMap` build | private Kahn | moved into the shared helper (ADJ-1); `computeStructureLayout` reads its levels |
+| structure-layout.ts assignRanks and its local blockerMap build (the file is since removed with the Structure canvas) | private Kahn | moved into the shared helper (ADJ-1) |
 | `condensed-timeline.ts` `identifyChains` pass 1 and `collapseTerminalChains` edge loop | two local adjacency builds | the shared helper |
 | `MissionProgressBar.tsx` `FullBar`, `StackedBar`, mini branch | three inline copies of `const order = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }` + sort | one exported state-compaction helper, used by all three (ADDR-2 keeps them state-compacted; there must be one copy, not three) |
 
@@ -739,7 +735,7 @@ Each criterion is checkable against a board model built from fixtures
   `--strip-gap` resolves to 1px and every marked tick has a rendered width
   ≥ 1px (W-1, W-3).
 - **AC-20**: GIVEN the codebase after the change, WHEN `buildMissionBoard`,
-  `identifyChains`, `collapseTerminalChains`, `computeStructureLayout` and
+  `identifyChains`, `collapseTerminalChains`, `buildFlowTimeline` and
   `stripOrder` are searched, THEN none of them reads `.dependsOn` directly;
   each consumes the shared adjacency helper's result (ADJ-2).
 - **AC-21**: GIVEN `MissionProgressBar.tsx` after the change, WHEN searched,
@@ -770,8 +766,8 @@ Each criterion is checkable against a board model built from fixtures
   shared adjacency helper
 - `apps/web/src/lib/task-presentation.ts` — `isGateSatisfied`,
   `deriveChainPosition`, `reduceToFrontier`
-- `apps/web/src/lib/structure-layout.ts` — `computeStructureLayout`,
-  assignRanks (deleted)
+- `apps/web/src/lib/flow-timeline.ts` — `buildFlowTimeline` (reads the
+  shared adjacency through the board; the Structure layout it replaced is removed)
 - `apps/web/src/components/MissionProgressBar.tsx` — `MissionProgressBar`
   (delete list only)
 - `apps/web/src/app/globals.css` — `fleet-hatch`, `fleet-hatch-future`,

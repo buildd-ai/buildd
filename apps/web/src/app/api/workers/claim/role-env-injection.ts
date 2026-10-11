@@ -38,7 +38,7 @@ import { secrets, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, isNull, or } from 'drizzle-orm';
 import type { ClaimTasksResponse } from '@buildd/shared';
 import { getSecretsProvider } from '@buildd/core/secrets';
-import { resolveRoleRow } from './skill-and-role-injection';
+import { loadRoleCandidateRows, resolveRoleRow } from './skill-and-role-injection';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /** The claim-candidate rows this block looks tasks up in. */
@@ -131,7 +131,7 @@ export async function attachRoleEnvSecrets(
     try {
       // A role-less task still gets the workspace-wide default (e.g. the
       // NODE_AUTH_TOKEN a repo's registry config reads for every task).
-      const role = roleSlug ? await resolveRoleRow(roleSlug, teamId, wsId, accountId) : undefined;
+      const role = roleSlug ? await resolveRoleRow(roleSlug, teamId, wsId, accountId, task) : undefined;
       const mapping = declaredMapping(task, role);
       const envNames = Object.keys(mapping);
       if (envNames.length === 0) continue;
@@ -198,7 +198,9 @@ export async function runRoleEnvPreFilter(
   if (!process.env.ENCRYPTION_KEY) return gaps;
 
   try {
-    const roleCache = new Map<string, Promise<Awaited<ReturnType<typeof resolveRoleRow>>>>();
+    // Candidate rows are cached per (team, slug, workspace); the winner is
+    // picked per task, since a personal role depends on who the task is for.
+    const candidateCache = new Map<string, ReturnType<typeof loadRoleCandidateRows>>();
     const plans = await Promise.all(filteredTasks.map(async (task) => {
       const wsId = task?.workspaceId as string | undefined;
       const teamId = task?.workspace?.teamId as string | undefined;
@@ -207,8 +209,8 @@ export async function runRoleEnvPreFilter(
       let role;
       if (roleSlug) {
         const key = `${teamId}|${roleSlug}|${wsId}`;
-        if (!roleCache.has(key)) roleCache.set(key, resolveRoleRow(roleSlug, teamId, wsId, accountId));
-        role = await roleCache.get(key);
+        if (!candidateCache.has(key)) candidateCache.set(key, loadRoleCandidateRows(roleSlug, teamId, wsId));
+        role = await resolveRoleRow(roleSlug, teamId, wsId, accountId, task, await candidateCache.get(key));
       }
       const mapping = declaredMapping(task, role);
       const needs = Object.keys(mapping).filter(n => !RUNNER_PROVIDED_ROLE_ENV.has(n));

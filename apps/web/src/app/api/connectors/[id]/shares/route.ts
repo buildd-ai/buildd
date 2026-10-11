@@ -1,13 +1,13 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { connectors, connectorShares, teams, teamMembers } from '@buildd/core/db/schema';
+import { connectors, connectorShares, teams } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { canManageTeamConnectors } from '@/lib/connector-team-auth';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -31,19 +31,6 @@ async function authenticateRequest(req: NextRequest) {
   return null;
 }
 
-/**
- * Same team-admin gate as connector create (spec §6): a plain `member` is
- * rejected; absence of a team_members row means a personal team => allowed.
- */
-async function isTeamAdmin(userId: string, teamId: string): Promise<boolean> {
-  const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)),
-    columns: { role: true },
-  });
-  // No row = the caller's personal team, which they own.
-  if (!membership) return true;
-  return roleHas(membership.role, 'manage_connectors', await getTeamPermissionOverrides(teamId));
-}
 
 type OwnerAdminContext = {
   auth: Exclude<NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>, { type: 'denied' } | { type: 'dev' }>;
@@ -75,7 +62,7 @@ async function requireOwnerAdmin(
   }
 
   // §1b AC-4: grantees / plain members can never manage shares.
-  if (auth.type === 'session' && !(await isTeamAdmin(auth.user.id, connector.teamId))) {
+  if (auth.type === 'session' && !(await canManageTeamConnectors(auth.user.id, connector.teamId))) {
     return { error: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) };
   }
 
@@ -158,6 +145,13 @@ export async function POST(
   // grant path; also proves the target team exists.
   if (!ctx.teamIds.includes(targetTeamId)) {
     return NextResponse.json({ error: 'Target team not found' }, { status: 404 });
+  }
+
+  // A share puts the owner team's connector (and its OAuth identity) into the
+  // target team's agents, so the actor must manage that team too — not just
+  // belong to it.
+  if (ctx.auth.type === 'session' && !(await canManageTeamConnectors(ctx.auth.user.id, targetTeamId))) {
+    return NextResponse.json({ error: 'Only an owner or admin of the target team can share a connector into it.' }, { status: 403 });
   }
 
   try {

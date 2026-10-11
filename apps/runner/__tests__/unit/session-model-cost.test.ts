@@ -11,7 +11,9 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/session-model-cost.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -79,13 +81,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -271,7 +273,19 @@ describe('resolveActualModel (what the session really ran on)', () => {
 describe('per-task model reaches the SDK', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     capturedModels.length = 0;
     mockMessages = [];
     mockUpdateWorker.mockReset();

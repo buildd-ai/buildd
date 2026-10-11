@@ -1,5 +1,6 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
+import { normalizeDerivedFiles } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { workspaces, githubRepos, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
@@ -10,10 +11,11 @@ import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
-import { findRemovedPathFieldInGitConfig, isRunnerSize, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
+import { findRemovedPathFieldInGitConfig, isWarmHandover, isRunnerSize, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
+import { validateEarlyReleaseConfig } from '@/lib/early-release-mode';
 
 const RUNNER_PREFERENCES = new Set(['any', 'user', 'service', 'action']);
 const WEBHOOK_EVENTS = new Set(['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled']);
@@ -330,6 +332,19 @@ export async function PATCH(
           );
         }
       }
+      // The workflow kernel kill switch (docs/specs/workflow-state-kernel.md §14):
+      // a boolean or null on write. Reads tolerate older string forms through the
+      // one reading (lib/workflow/authority.ts), but a new write says exactly
+      // which side it means.
+      if ('workflowKernel' in gitConfig) {
+        const v = (gitConfig as Record<string, unknown>).workflowKernel;
+        if (v !== null && typeof v !== 'boolean') {
+          return NextResponse.json(
+            { error: 'gitConfig.workflowKernel must be true, false (the kill switch: deliveries go to legacy) or null to clear' },
+            { status: 400 },
+          );
+        }
+      }
       // Path-claim enforcement opt-in: exact values only, so a truthy typo can
       // never quietly turn edit denial on (or appear to and not).
       if ('pathClaimEnforcement' in gitConfig) {
@@ -339,6 +354,41 @@ export async function PATCH(
             { error: "gitConfig.pathClaimEnforcement must be 'advisory', 'enforce' or null" },
             { status: 400 },
           );
+        }
+      }
+      // Early-release opt-in: exact modes only, so a typo can never quietly
+      // release dependents before their upstream merges (or appear to and not).
+      if ('earlyRelease' in gitConfig) {
+        const error = validateEarlyReleaseConfig((gitConfig as Record<string, unknown>).earlyRelease);
+        if (error) return NextResponse.json({ error }, { status: 400 });
+      }
+      // Derived files: refuse any rule the runner would drop on read (repo-wide
+      // pattern, migration chain, malformed), so what is stored is what runs.
+      if ('derivedFiles' in gitConfig) {
+        const rules = (gitConfig as Record<string, unknown>).derivedFiles;
+        if (rules !== null) {
+          const valid = Array.isArray(rules)
+            && normalizeDerivedFiles(rules).length === rules.length
+            && rules.every((r) => (r as { strategy?: unknown }).strategy === undefined
+              || (r as { strategy?: unknown }).strategy === 'ours' || (r as { strategy?: unknown }).strategy === 'theirs');
+          if (!valid) {
+            return NextResponse.json(
+              { error: "gitConfig.derivedFiles must be null or a list of { glob, regenerate, strategy?: 'ours' | 'theirs' }; a repo-wide pattern or a migration chain is never derived" },
+              { status: 400 },
+            );
+          }
+        }
+      }
+      if ('overlapHotspots' in gitConfig) {
+        const hs = (gitConfig as Record<string, unknown>).overlapHotspots;
+        if (hs !== null && (!Array.isArray(hs) || hs.length > 200 || !hs.every((h) => typeof h === 'string' && h.trim().length > 0 && h.trim() !== '**'))) {
+          return NextResponse.json({ error: 'gitConfig.overlapHotspots must be null or a list (at most 200) of non-empty paths or dir/** patterns; a repo-wide pattern is not a hotspot' }, { status: 400 });
+        }
+      }
+      if ('mergiraf' in gitConfig) {
+        const on = (gitConfig as Record<string, unknown>).mergiraf;
+        if (on !== null && typeof on !== 'boolean') {
+          return NextResponse.json({ error: 'gitConfig.mergiraf must be a boolean or null' }, { status: 400 });
         }
       }
       // Where the workspace's work runs: exact values only, so a typo can never
@@ -355,6 +405,10 @@ export async function PATCH(
       // Cloud-runner container class: exact values only. The derived marker is
       // buildd's to write; an admin may only clear it (null), which lets the
       // next dispatch derive the size afresh.
+      if ('warmHandover' in gitConfig) {
+        const value = (gitConfig as Record<string, unknown>).warmHandover;
+        if (value !== null && !isWarmHandover(value)) return NextResponse.json({ error: "gitConfig.warmHandover must be 'off', 'repo', 'deps' or null" }, { status: 400 });
+      }
       if ('runnerSize' in gitConfig) {
         const value = (gitConfig as Record<string, unknown>).runnerSize;
         if (value !== null && !isRunnerSize(value)) {
@@ -369,6 +423,29 @@ export async function PATCH(
           { error: 'gitConfig.runnerSizeDerived is set by buildd; send null to clear it' },
           { status: 400 },
         );
+      }
+      // Member repo access (lib/member-repo-access.ts): exact values only, and
+      // turning it on needs a linked repo, or every member would be refused.
+      if ('memberRepoAccess' in gitConfig) {
+        const mode = (gitConfig as Record<string, unknown>).memberRepoAccess;
+        if (mode !== null && mode !== 'off' && mode !== 'require_read') {
+          return NextResponse.json(
+            { error: "gitConfig.memberRepoAccess must be 'off', 'require_read' or null" },
+            { status: 400 },
+          );
+        }
+        if (mode === 'require_read') {
+          const linked = await db.query.workspaces.findFirst({
+            where: eq(workspaces.id, id),
+            columns: { githubRepoId: true },
+          });
+          if (!linked?.githubRepoId) {
+            return NextResponse.json(
+              { error: 'gitConfig.memberRepoAccess needs a linked GitHub repository first' },
+              { status: 400 },
+            );
+          }
+        }
       }
       // GitHub credentials opt-out for self-hosted agents: the one accepted
       // value is 'runner', so a typo cannot hand agents the operator's token.
@@ -390,6 +467,15 @@ export async function PATCH(
           if (mode !== null && mode !== 'off' && mode !== 'shadow' && mode !== 'enforce') {
             return NextResponse.json(
               { error: "gitConfig.surfaceOrdering must be 'off', 'shadow', 'enforce' or null" },
+              { status: 400 },
+            );
+          }
+        }
+        if ('landingLane' in gc) {
+          const mode = gc.landingLane;
+          if (mode !== null && mode !== 'off' && mode !== 'shadow' && mode !== 'enforce') {
+            return NextResponse.json(
+              { error: "gitConfig.landingLane must be 'off', 'shadow', 'enforce' or null" },
               { status: 400 },
             );
           }

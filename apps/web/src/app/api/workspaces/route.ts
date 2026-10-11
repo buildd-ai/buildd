@@ -12,6 +12,8 @@ import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { emit } from '@/lib/core-emit';
+import { can } from '@/lib/permissions';
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 
 /**
  * The account fields a workspace listing may carry. The response spreads each
@@ -205,6 +207,16 @@ export async function POST(req: NextRequest) {
     }
     if (!teamId) {
       return NextResponse.json({ error: 'No team found' }, { status: 500 });
+    }
+
+    // create_workspace: owner/admin of the target team for a session (the
+    // registry counts a personal team as owned), an admin-level key of its
+    // own team. A member is refused, not quietly moved to their personal team.
+    const mayCreate = apiAccount
+      ? hasTokenRouteAdminAccess(apiAccount, req)
+      : await can({ kind: 'user', userId: user!.id }, 'create_workspace', teamId);
+    if (!mayCreate) {
+      return NextResponse.json({ error: 'Creating a workspace in this team requires team admin' }, { status: 403 });
     }
 
     // A GitHub installation may only be linked into a team it belongs to (see

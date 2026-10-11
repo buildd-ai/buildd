@@ -34,11 +34,36 @@ QA_PORT=3217 QA_VIEWPORT=mobile DEV_USER_EMAIL=you@example.com \
   `DISABLE_WRITES=true` and your `DEV_USER_EMAIL`, captures, then tears down.
 - **It needs a `DATABASE_URL`.** Point it at a dev database or a Neon dev branch,
   never prod. Keep it in your shell or an ignored env file, and never commit env files.
+- **Real data without touching prod:** `QA_NEON_BRANCH=1` makes `shoot.sh` create a
+  copy-on-write Neon branch of production (`scripts/qa/neon-branch.sh`, expires in 3h),
+  capture against it and delete it on exit. Needs `npx neonctl@latest auth` once.
+  `QA_NEON_MIGRATE=1` applies your checkout's migrations to the branch first. The
+  branch is unscrubbed real data: for your own review only; never upload its shots.
+  Do not rely on `apps/web/.env.local`: on some machines it points at production.
 - `QA_VIEWPORT`: `mobile` = 390x844 touch phone at 3x; `WxH` for anything else
   (below 768px wide it also emulates touch); unset = 1280x900 desktop. Shoot both
   when the change is layout-sensitive.
 - Shots are full-height and 3x on mobile, so they're large. Downscale before
   reading them on macOS: `sips -Z 1800 /tmp/qa/screenshots/*.png`.
+
+## Local service recipe (local or cloud browser)
+
+A cloud visual-auditor connects to its task's remote browser through runner-provided
+loopback endpoints. Run the same capture helper; do not install Chromium or copy a
+Cloudflare credential into the container. `BUILDD_BROWSER_PROVIDER` and the connection
+endpoints are supplied by the runner only after its browser probe succeeds.
+
+With a synthetic/local `DATABASE_URL` available (see `scripts/demo/`), start
+`scripts/qa/serve-local.sh` in the background. It binds the app to `0.0.0.0`, waits
+for `/api/version`, and writes `${QA_OUTPUT:-/tmp/qa}/service.json` only when ready.
+For a cloud provider it also registers that port with the task's private browser
+relay; the returned `browserUrl` remains the loopback origin. Pass that URL as
+`QA_BASE_URL` to `scripts/qa/capture.ts`, using `QA_NO_LOGIN=1` with dev auth.
+Stop the service process after capturing. No public port is exposed.
+
+Copy `browser` from each entry in `captures.json` into artifact `metadata.qa.browser`.
+A `providerError` is a capture failure with no valid screenshot, never a visual
+finding or an `ok` verdict. Report the named failure rather than swapping providers.
 
 ## Worker recipe (no DB)
 
@@ -108,7 +133,9 @@ don't turn it on by habit.
 | `routes` | `QA_ROUTES` | Comma-separated paths. Empty = full manifest (`apps/web/src/qa/visual-qa-routes.json`). |
 | `plan` | `QA_PLAN` | A capture plan instead of `routes`: the JSON itself, or a repo path. See "Capture plans" below. |
 | `viewport` | `QA_VIEWPORT` | `mobile` or `WxH`. Empty = desktop. A malformed value fails the capture. |
+| `theme` | `QA_THEME` | `light` or `dark`. Emulates `prefers-color-scheme` and seeds buildd's own `buildd-theme` key; recorded per capture as `theme`. Empty = app default, no theme recorded. |
 | `mission_id` / `task_id` | `QA_MISSION_ID` / `QA_TASK_ID` | Fill `:id` routes in manifest mode only. |
+| `viewer` | `BUILDD_OPERATOR_USER_EMAILS` | `operator` makes the CI user a platform operator, for the owner-only Health pages and Settings → Models → Features. Empty = an ordinary team owner. |
 | `judge` | (step gate) | Default `false`. `true` = CI verdict on the team OAuth seat (see above). |
 
 - The data is a scrubbed prod clone, so the ids in your routes must exist there.
@@ -117,6 +144,11 @@ don't turn it on by habit.
 - Each dispatch gets its own Neon branch and concurrency group, so parallel
   dispatches don't collide or cancel each other. Leaked `ci/visual-qa-*` branches
   older than 2h are swept at the start of every run.
+- A mission branch boots even when its own migration sits below prod's journal
+  mark: the clone applies migrations whose DDL is wholly absent
+  (`MIGRATION_CI_CLONE_APPLY_ABSENT`). The ref must contain that change, so a
+  branch cut before it needs a dev sync first. A red `Run migrations` saying
+  "partially present" needs a reconciliation migration on the branch.
 - A red `Guard scrubbed clone` step means the scrub missed something. No app, no
   shots, no artifact. The error names `table.column` only; fix the scrub, don't
   work around the guard.
@@ -142,6 +174,9 @@ file, or the JSON itself. Spec: `docs/specs/qa-capture-steps.md`.
   viewport shot, id `<route-id>--<key>`, `state` in `captures.json`).
 - Actions (closed list): `click`, `hover`, `fill` (`value`), `press` (`key`),
   `select` (`value`), `waitFor` (`state: visible | hidden`), `waitMs` (`ms`, max 5000).
+  `assertLayout` (optional scope `selector`, `minTarget` px) fails the run (exit 4) on sideways
+  scroll, or below 768px on a tap target under 44px. The run-detail regression plan is
+  `scripts/qa/plans/run-activity.json`: dispatch it with `-f viewport=360x780` and `-f viewport=desktop`.
   Selectors: `testid:<id>`, `role:<role>[name=<name>]`, `text:<text>`, `css:<css>`.
 - **Steps never commit.** Open, reveal, type; never confirm, submit or save. A step that
   sends a write needs `commit: true`, honoured only with `QA_PAGE_SOURCE=sandbox`; a
@@ -204,10 +239,37 @@ neither.
   scrolling? Headers, banners and filters that push it below the fold are a finding.
 - **Tap targets.** Roughly 44px or more, not crowded, nothing that only works on hover.
 - **Overflow.** No horizontal scroll, no clipped text, no table forced wider than the viewport.
-- **Both themes, if the change touches colour.** Capture has no theme switch, so
-  check the other theme by hand, or say you didn't.
+- **Both themes.** `QA_THEME=light` (or `dark`) emulates `prefers-color-scheme` before the
+  page loads, so any app that follows the OS theme switches, and also seeds buildd's own
+  stored choice. A mission audit needs every required route in both: upload each shot with
+  `metadata.qa.theme` copied from `captures.json`, and completion counts a route only once it
+  has a light and a dark base shot (either viewport). The cheapest cover is two dispatches,
+  `viewport=mobile theme=light` and `theme=dark` for desktop; shoot both themes at 390 when
+  the change touches colour. `QA_TEAM_ID=<team uuid>` renders as that team.
+- **Nothing shown twice.** The same fact, count or action in two places on one page (a
+  count in the header and again in a card, two buttons for one action), and duplicate
+  chrome titles (the page heading and the header both rendering the same text).
+- **Before/after on a mission branch.** When `get_page_source` says
+  `captureRef.source: "mission_integration"`, shoot the same routes from the trunk the
+  mission merges into as well, and say in the finding what changed ("the empty state no
+  longer repeats the count"). Upload only the `captureRef.ref` shots: a shot from another
+  branch is listed as a capture gap.
+- **The workspace's design rules and reference, when set.** See below.
 - **Redirects and error states.** If a shot is the login page or an error boundary,
   you didn't review the page.
+
+## Design rules and reference (per workspace, optional)
+
+Two `gitConfig.visualQa` fields add checks to the auto-appended `[surface audit]` task.
+Both are off when absent, so one workspace's design system never reaches another's audit.
+
+| Field | Value | Effect |
+|---|---|---|
+| `designRules` | A repo path, e.g. `docs/design/design-system.md` | The checklist adds "check each shot against `<path>`", and the auditor reads it before judging. Absolute and `..` paths are ignored. |
+| `reference` | An artifact id or key, or an `http(s)` URL | Findings compare each shot with the approved design reference and say where the page departs from it. Read an artifact one with `get_artifact`. |
+
+Set them with `manage_workspaces action=update gitConfig={ visualQa: {...} }`, passing the **whole** existing `visualQa` object: the
+`gitConfig` merge is shallow, so sending only the new field drops `pageSource` and the rest.
 
 ## Gotchas
 
@@ -223,7 +285,8 @@ neither.
   either way.
 - **Port 3100 (shoot.sh's default) is often taken** by another session. Always pass
   a free `QA_PORT`. If the port is busy, the readiness probe can hit someone else's server.
-- **Headless comes up in the dark theme.** A shot being dark is not a regression.
+- **With no `QA_THEME`, headless comes up in buildd's default dark theme.** A shot being
+  dark is not a regression; set `QA_THEME` to choose.
 - **`Failed to load external module <pkg>-<hash>` is a real bug, locally and in CI.**
   Next auto-externalizes some packages (its `server-external-packages.jsonc`), and
   under `bun --bun next dev` Bun cannot resolve Turbopack's hashed alias for them.

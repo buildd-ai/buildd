@@ -10,7 +10,8 @@
  * a mission differently from the mission itself.
  */
 import type { MastheadChip, MastheadPosition } from '@/components/missions/MissionMasthead';
-import { buildMissionCardView, toFeedTask, type MissionCardRow } from '@/lib/mission-card-view';
+import { buildMissionCardView, failedDeliverableTaskIds, toFeedTask, type MissionCardRow } from '@/lib/mission-card-view';
+import type { DeliveryView } from '@/lib/workflow/projections';
 import { buildMissionFeedGroups } from '@/lib/mission-feed-groups';
 import type { PulseSegment } from '@/lib/mission-pulse';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
@@ -28,8 +29,13 @@ export interface MissionContextBarData {
   upHref: string;
 }
 
-export function buildMissionContextBar(row: MissionCardRow, taskId: string): MissionContextBarData {
-  const card = buildMissionCardView(row, { from: 'missions' });
+/** `deliveryViews`: S35, the same reading the mission's card makes (see `summarizeMissionForCard`). */
+export function buildMissionContextBar(
+  row: MissionCardRow,
+  taskId: string,
+  deliveryViews?: ReadonlyMap<string, DeliveryView> | null,
+): MissionContextBarData {
+  const card = buildMissionCardView(row, { from: 'missions', deliveryViews });
   const model = buildMissionFeedGroups((row.tasks ?? []).map(toFeedTask));
 
   let rowId: string | null = model.rowsById.has(taskId) ? taskId : null;
@@ -56,10 +62,16 @@ export function buildMissionContextBar(row: MissionCardRow, taskId: string): Mis
   };
 }
 
+/** The task ids the page loads DeliveryViews for (S35), the same set a card surface loads. */
+export function missionContextDeliveryTaskIds(row: MissionCardRow): string[] {
+  return failedDeliverableTaskIds([row]);
+}
+
 /** The page's gate (AC-13): no mission row, no bar — the breadcrumb renders instead. */
 export function missionContextBarFor(
   row: MissionCardRow | null | undefined,
   taskId: string,
+  deliveryViews?: ReadonlyMap<string, DeliveryView> | null,
 ): MissionContextBarData | null {
-  return row ? buildMissionContextBar(row, taskId) : null;
+  return row ? buildMissionContextBar(row, taskId, deliveryViews) : null;
 }

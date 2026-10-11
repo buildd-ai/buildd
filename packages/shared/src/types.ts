@@ -227,6 +227,7 @@ export interface BillingRedirectResponse {
 }
 
 export interface Team {
+  warmHandover?: import('./warm-handover').WarmHandover;
   id: string;
   name: string;
   slug: string;
@@ -469,10 +470,90 @@ export interface MergePolicy {
 
   // How long a PR can sit at this tier before notifying
   stallNotifyMinutes?: number;  // default: 30 for human/agent-review, 5 for auto-threshold
+
+  /**
+   * Who decides a migration that moves data (INSERT/UPDATE/DELETE/MERGE).
+   * 'person' (default): a person merges it, as before. 'agent-review': it goes
+   * through the reviewer agent like any other PR and lands on approval. Only
+   * takes effect under tier 'agent-review' (there is no reviewer otherwise).
+   * Destructive DDL, rewritten migrations and mixed PRs are unaffected.
+   */
+  dataMigrations?: DataMigrationsPolicy;
+}
+
+export type DataMigrationsPolicy = 'person' | 'agent-review';
+const VALID_DATA_MIGRATIONS: DataMigrationsPolicy[] = ['person', 'agent-review'];
+
+/**
+ * True when the reviewer agent, not a person, decides data migrations: tier
+ * 'agent-review' and `dataMigrations: 'agent-review'`. Tolerates any stored
+ * shape (a malformed or missing policy is the default: a person decides).
+ */
+export function agentReviewsDataMigrations(mergePolicy: unknown): boolean {
+  if (!mergePolicy || typeof mergePolicy !== 'object' || Array.isArray(mergePolicy)) return false;
+  const mp = mergePolicy as Record<string, unknown>;
+  return mp.tier === 'agent-review' && mp.dataMigrations === 'agent-review';
+}
+
+/**
+ * A workspace's copy review (`gitConfig.copyReview`; absent = off). When a PR
+ * changes user-facing strings, the reviewer judges just those strings against
+ * the workspace's voice guide. 'review' posts the findings; 'gate' turns an
+ * approval with strings to rewrite into request-changes carrying the rewrites.
+ */
+export type CopyReviewMode = 'review' | 'gate';
+export interface CopyReviewConfig {
+  /** Repo path of the voice guide the strings are judged against. */
+  voiceGuide: string;
+  /** Optional lint the reviewer runs in its checkout (e.g. `bun run copy:check`). */
+  lintCommand?: string;
+  /** Globs of UI files whose strings count. Default: UI-looking files under app/components/pages. */
+  paths?: string[];
+  mode: CopyReviewMode;
+}
+const COPY_REVIEW_MODES: CopyReviewMode[] = ['review', 'gate'];
+const COPY_REVIEW_KEYS = new Set(['voiceGuide', 'lintCommand', 'paths', 'mode']);
+
+export type CopyReviewParseResult =
+  | { ok: true; config: CopyReviewConfig }
+  | { ok: false; error: string; field?: string };
+
+/** Shape-check a copy review config for the write path. */
+export function parseCopyReviewConfig(val: unknown): CopyReviewParseResult {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return { ok: false, error: 'copyReview must be an object' };
+  const o = val as Record<string, unknown>;
+  for (const key of Object.keys(o)) {
+    if (!COPY_REVIEW_KEYS.has(key)) return { ok: false, error: `copyReview has unknown field: ${key}`, field: key };
+  }
+  if (typeof o.voiceGuide !== 'string' || !o.voiceGuide.trim()) {
+    return { ok: false, error: 'copyReview.voiceGuide must name the voice guide file', field: 'voiceGuide' };
+  }
+  if (!COPY_REVIEW_MODES.includes(o.mode as CopyReviewMode)) {
+    return { ok: false, error: `copyReview.mode must be one of: ${COPY_REVIEW_MODES.join(', ')}`, field: 'mode' };
+  }
+  if (o.lintCommand !== undefined && (typeof o.lintCommand !== 'string' || !o.lintCommand.trim())) {
+    return { ok: false, error: 'copyReview.lintCommand must be a command', field: 'lintCommand' };
+  }
+  if (o.paths !== undefined && (!Array.isArray(o.paths) || !o.paths.every((p) => typeof p === 'string' && p.trim()))) {
+    return { ok: false, error: 'copyReview.paths must be a list of globs', field: 'paths' };
+  }
+  const config: CopyReviewConfig = { voiceGuide: o.voiceGuide.trim(), mode: o.mode as CopyReviewMode };
+  if (typeof o.lintCommand === 'string') config.lintCommand = o.lintCommand.trim();
+  if (Array.isArray(o.paths)) config.paths = o.paths as string[];
+  return { ok: true, config };
+}
+
+/** The copy review a stored gitConfig asks for, or null (off). A malformed config reads as off. */
+export function copyReviewConfigOf(gitConfig: unknown): CopyReviewConfig | null {
+  if (!gitConfig || typeof gitConfig !== 'object') return null;
+  const raw = (gitConfig as { copyReview?: unknown }).copyReview;
+  if (raw == null) return null;
+  const parsed = parseCopyReviewConfig(raw);
+  return parsed.ok ? parsed.config : null;
 }
 
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
-const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes']);
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
@@ -557,6 +638,14 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
       ok: false,
       error: `mergePolicy.tier must be one of: ${VALID_TIERS.join(', ')}`,
       field: 'tier',
+    };
+  }
+
+  if (obj.dataMigrations !== undefined && !VALID_DATA_MIGRATIONS.includes(obj.dataMigrations as DataMigrationsPolicy)) {
+    return {
+      ok: false,
+      error: `mergePolicy.dataMigrations must be one of: ${VALID_DATA_MIGRATIONS.join(', ')}`,
+      field: 'dataMigrations',
     };
   }
 
@@ -704,7 +793,11 @@ export interface TaskEvidence {
   capturedAt: string;
 }
 
-export type TaskMismatchKind = 'pushed_without_diff' | 'success_with_red_check' | 'last_command_failed';
+/**
+ * `fix_check_still_red`: a CI-fix attempt reported success while the check it
+ * was sent to fix was still red (or not yet green) on the PR head.
+ */
+export type TaskMismatchKind = 'pushed_without_diff' | 'success_with_red_check' | 'last_command_failed' | 'fix_check_still_red';
 
 /** One claim the task made that its own record contradicts. */
 export interface TaskMismatch {
@@ -862,6 +955,8 @@ export interface Worker {
   status: WorkerStatusType;
   waitingFor: WaitingFor | null;
   costUsd: number;
+  /** How costUsd and the tokens were charged (docs/specs/real-and-virtual-cost.md). NULL = no usage. */
+  costBasis?: 'real' | 'virtual' | 'mixed' | 'unknown' | null;
   turns: number;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -910,7 +1005,8 @@ export interface QuestionRecommendation {
 }
 
 export interface WaitingFor {
-  type: 'question' | 'permission' | 'confirmation';
+  /** `pause`: a person paused a running agent; answering it (Resume) continues the same session. */
+  type: 'question' | 'permission' | 'confirmation' | 'pause';
   prompt: string;
   options?: (string | WaitingForOption)[];
   /**
@@ -930,6 +1026,24 @@ export interface WaitingFor {
   recommended?: QuestionRecommendation;
   /** Deterministic origin facts the runner adds. */
   where?: QuestionWhere;
+  /**
+   * Human-attention disposition (packages/core/needs-you.ts), stamped
+   * by the worker PATCH route on every park: only `ask` (or a `hold` past its
+   * `resurfaceAt`) is admitted to Needs You. A runner may send `ask`/`hold`
+   * from its question-gate reply, or `recovered` with a `repairTaskId` the
+   * server verifies; anything else is re-checked server-side.
+   */
+  disposition?: 'ask' | 'hold' | 'recovered';
+  dispositionBy?: 'gate' | 'server_recheck' | 'permission' | 'backfill';
+  /** The question gate's outcome that produced the disposition, when the gate did. */
+  gateOutcome?: string;
+  /** The hard rail that forced an `ask`. */
+  rail?: string;
+  /** The repair task that owns a `recovered` park. */
+  repairTaskId?: string;
+  holdReason?: string;
+  /** ISO timestamp a `hold` is surfaced at. */
+  resurfaceAt?: string;
 }
 
 /** Normalize mixed options (string[] or WaitingForOption[]) to WaitingForOption[] */
@@ -1162,6 +1276,17 @@ export interface McpServerInfo {
 }
 
 export interface WorkerEnvironment {
+  /** Latest real launch/CDP round trip; configuration alone is not capability. */
+  browserProvider?: {
+    provider: 'local' | 'cloudflare';
+    ok: boolean;
+    checkedAt: string;
+    code?: string;
+    detail?: string;
+    handle?: string;
+    browserVersion?: string;
+    latencyMs?: number;
+  };
   tools: WorkerTool[];
   envKeys: string[];
   mcp: string[] | McpServerInfo[];
@@ -1417,7 +1542,7 @@ export interface ClaimTasksInput {
 
 /** The agent model endpoint as a claim delivers it (packages/core/agent-endpoint.ts). */
 export interface ClaimModelEndpoint {
-  kind: 'gateway' | 'openrouter' | 'anthropic-compatible';
+  kind: 'gateway' | 'openrouter' | 'anthropic-compatible' | 'cloudflare';
   /** Anthropic-compatible root; the agent's ANTHROPIC_BASE_URL. */
   baseUrl: string;
   authToken: string;
@@ -1433,6 +1558,23 @@ export interface ClaimModelEndpoint {
    * clearly rather than guess a wire format.
    */
   openAiBaseUrl?: string;
+  /**
+   * Claude's deferred MCP/tool loading (ToolSearch / `tool_reference`) is
+   * supported through this endpoint: the runner sets ENABLE_TOOL_SEARCH=true
+   * in a Claude run's env. The effective value for this endpoint
+   * (@buildd/core/agent-endpoint `effectiveToolSearch`), not the kind's
+   * default. Absent/false: not set. Never applied to a Codex run.
+   */
+  toolSearch?: boolean;
+  /** `cloudflare` only: the provider the AI Gateway forwards to (`openrouter` ⇒ OpenRouter model names). */
+  upstream?: 'anthropic' | 'openrouter';
+  /**
+   * Extra headers every model call sends: an authenticated AI Gateway's
+   * `cf-aig-authorization` (a Run-only token). The runner sets them as
+   * ANTHROPIC_CUSTOM_HEADERS. Sent only to a runner that declares
+   * `agent_endpoint_headers`. Secret.
+   */
+  headers?: Record<string, string>;
 }
 
 export type ClaimDiagnosticReason =
@@ -1476,6 +1618,8 @@ export type ClaimTaskExclusionCode =
   | 'workspace_cap'
   /** The workspace's work runs on the other executor (gitConfig.executor: cloud vs host). */
   | 'workspace_executor'
+  /** The workspace paused new starts until a set time (runner claims only). */
+  | 'workspace_paused'
   | 'path_overlap'
   /** Codex task and this caller can run neither Codex nor its credential. */
   | 'capability_mismatch'
@@ -1488,6 +1632,17 @@ export type ClaimTaskExclusionCode =
   /** An interactive session claimed this task too recently; retry after the window. */
   | 'rate_limited'
   | keyof NonNullable<ClaimDiagnostics['deferrals']>;
+
+/** A wall that held a claim: what it is, on which provider, and when it lifts (ISO, or null when unknown). */
+export interface ClaimBudgetWall {
+  /** account_seat: the account's own OAuth session or budget; provider_pause: a rate limit or budget wall a run recorded for the team; tenant_budget: the tenant's own budget. */
+  kind: 'account_seat' | 'provider_pause' | 'tenant_budget';
+  backend: AgentBackend;
+  resetsAt: string | null;
+}
+
+/** Why the account refused a claim outright (HTTP 429), named for the caller. */
+export type ClaimAccountLimitCode = 'max_concurrent_workers' | 'daily_cost_limit' | 'max_concurrent_sessions';
 
 export interface ClaimTaskExclusion {
   code: ClaimTaskExclusionCode;
@@ -1518,6 +1673,18 @@ export interface ClaimDiagnostics {
    */
   blockedByPr?: { prNumber: number | null; prUrl: string | null };
   /**
+   * The budget and rate-limit walls this claim was held by, set on a
+   * budget_exhausted refusal: which wall, on which provider, and when it lifts.
+   * `summary` is the same thing as one or two sentences for a person.
+   * A wall is listed only where a task was actually deferred on it.
+   *
+   * Only these hard walls produce budget_exhausted. The learned forecast
+   * (`deferrals.oauth_parallelism`, `budgetPressure`) and plan allowances
+   * (hosted runner hours) never do: they hold a claim under their own
+   * deferral reason, and the forecast never holds an explicit start.
+   */
+  budgetBlock?: { walls: ClaimBudgetWall[]; summary: string };
+  /**
    * Populated when reason=all_candidates_deferred: per-reason breakdown of why
    * every candidate in the window was skipped without a claim attempt.
    */
@@ -1527,6 +1694,11 @@ export interface ClaimDiagnostics {
     path_overlap?: number;
     /** Scope-undeclared ('**') task held behind a sibling in the same mission. */
     advisory_manifest?: number;
+    /**
+     * Declared scope overlaps an in-flight task's only softly (directory
+     * prefix, or a pre-v2 inferred edge): held unless HOLD/START said START.
+     */
+    soft_overlap?: number;
     mission_budget?: number;
     mission_concurrent?: number;
     mission_paced?: number;
@@ -1541,6 +1713,12 @@ export interface ClaimDiagnostics {
      * retry family is already open (one open retry per subject).
      */
     sibling_retry_open?: number;
+    /**
+     * Workflow-kernel review fix skipped at claim: its target was resolved
+     * while it queued (approved, merged, head moved, round superseded), or the
+     * live revalidation could not run and the claim was rolled back.
+     */
+    fix_not_needed?: number;
     /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
@@ -1573,6 +1751,33 @@ export interface ClaimDiagnostics {
     managed_concurrency?: number;
     /** Same, for the plan's monthly managed runner-hours allowance. */
     managed_runner_hours?: number;
+    /**
+     * A cloud claim held because the team's monthly hosted runner allowance
+     * (counted hours) is used. Only when an allowance is set.
+     */
+    hosted_runner_hours?: number;
+    /**
+     * The team's credential policy needs the requester's own key for this task
+     * (`personal_only`) and this claim cannot deliver one: no requester, no key
+     * stored (for a cloud claim: no personal route for egress), or a runner
+     * without the personal-credential feature.
+     */
+    no_personal_credential?: number;
+    /**
+     * The Coding provider policy (team / workspace / requester) does not allow
+     * this task's backend or the payment source its run would use. Held, not
+     * failed, and never redirected to another provider. The gate event's detail
+     * is the structured `provider_not_allowed` / `payment_source_not_allowed` /
+     * `no_model_credential` error. See packages/core/coding-policy.ts.
+     */
+    provider_not_allowed?: number;
+    /**
+     * The task's tier or model is above the effective model-tier ceiling for
+     * its team / workspace / requester (docs/specs/model-tier-ceilings.md).
+     * Held, not failed: it runs when the ceiling is raised or the task is
+     * re-tiered. The gate event's detail is the structured policy_denied error.
+     */
+    tier_policy?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -1612,7 +1817,7 @@ export interface AssertionConnectorEntry {
 export interface DegradedConnector {
   id: string;
   name: string;
-  failureMode: 'never_mounted' | 'expired_or_revoked' | 'transient';
+  failureMode: 'never_mounted' | 'blocked_by_policy' | 'expired_or_revoked' | 'transient';
   detail?: string;
 }
 
@@ -1638,6 +1843,26 @@ export interface WorkerPromptBundlesResponse {
   skillBundles?: SkillBundle[];
   roleConfig?: RoleConfig;
   roleInstructions?: RoleInstructions;
+}
+
+/**
+ * How a claimed worker's model credential was chosen, when the team has set a
+ * credential policy (`teams.credential_policy`). No secret material. Absent
+ * when the team has no policy: the claim is exactly what it was before.
+ */
+export interface ClaimCredentialDecision {
+  surface: 'agent-claude' | 'agent-codex';
+  policy: 'team' | 'personal_first' | 'personal_only';
+  /**
+   * `personal`: the requester's own key is the only model credential attached.
+   * `team`: the team's credentials, chosen as before.
+   * `none`: no model credential (an interactive session under personal_only).
+   */
+  scope: 'personal' | 'team' | 'none';
+  /** Provider of the personal key, when `scope` is `personal`. */
+  provider?: string;
+  /** May the runner's own machine credentials (host seat, llmProvider) take precedence? */
+  runnerLocalAllowed: boolean;
 }
 
 export interface ClaimTasksResponse {
@@ -1693,6 +1918,17 @@ export interface ClaimTasksResponse {
      * bypassed.
      */
     modelEndpointIgnored?: boolean;
+    /**
+     * Cloud claims only: the team's agent model endpoint won for this task but
+     * does not pass deferred tool loading (ToolSearch / `tool_reference`)
+     * through. The container's Claude Code believes it talks to Anthropic (the
+     * dispatcher's egress rewrites the traffic), so the runner sets
+     * ENABLE_TOOL_SEARCH=false. A per-run marker, not a credential; absent
+     * means "leave Claude Code's default".
+     */
+    toolSearchDisabled?: boolean;
+    /** How the model credential was chosen; set only for a team with a credential policy. */
+    credentialDecision?: ClaimCredentialDecision;
     /**
      * Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
      * `scoped`: the runner strips inherited GitHub tokens and host git/gh
@@ -1916,6 +2152,22 @@ export interface PathDeclaration {
    * to caller-supplied edges. Only these may ever be removed on narrowing.
    */
   inferredDependsOn?: string[];
+  /**
+   * `v2`: `inferredDependsOn` holds only HARD inferred edges (same file,
+   * migration, serialized surface). Prefix-only overlap is never a dependsOn
+   * edge; it is recorded in `softOverlaps` and decided at claim time. Absent on
+   * rows written before the rule; migration 0267 converted the pending ones.
+   */
+  overlapPolicy?: 'v2';
+  /**
+   * Soft overlap evidence: in-flight tasks whose declared scope overlapped this
+   * one's by directory prefix or on the same ordinary file (`same_file`; a
+   * generated, hotspot or migration file stays a hard edge), or, `legacy_inferred`, an inferred edge
+   * minted before the hard/soft rule, reclassified against current manifests
+   * at claim). Never a dependsOn edge: the claim route defers on it only while
+   * the other task is in flight, and the HOLD/START decision may start it.
+   */
+  softOverlaps?: Array<{ taskId: string; paths: string[]; kind: 'prefix' | 'same_file' | 'legacy_inferred' }>;
   /** Most recent narrowings, oldest first, capped. */
   narrowings?: PathNarrowing[];
   /**
@@ -1936,6 +2188,141 @@ export interface PathDeclaration {
    * manifest so the claim route holds the task until the holder releases.
    */
   collision?: PathCollisionRecord;
+  /**
+   * The last authoritative working-set reconciliation this task's runner ran
+   * (lib/working-set-sync.ts): the proof a ship checkpoint rests on. Bounded —
+   * the set itself lives in `path_claims`, never here.
+   */
+  workingSet?: WorkingSetRecord;
+  /**
+   * Written when the task's worker ended with its PR still open: the leases it
+   * held were promoted into the effective manifest so the open-PR overlap
+   * surface (claim route layer 1) covers the PR's actual changed files, not
+   * what the author declared. Merge or close releases it with the PR.
+   */
+  prHandoff?: PrHandoffRecord;
+}
+
+// ── Authoritative working set (path-claim-ownership.md) ─────────────────────
+//
+// The runner tracks the task-owned file set from git (branch-owned diff from
+// the PR base plus uncommitted changes) and sends only what changed since the
+// server's last ACK. `path_claims` rows are the authoritative current set;
+// `workers.observedTouches` is a bounded diagnostic sample and is never what
+// coordination is decided on.
+
+/** Chunk bound for one delta: no PATCH carries more paths than this per side. */
+export const WORKING_SET_CHUNK = 500;
+
+export type WorkingSetCheckpoint = 'pre_push' | 'completion';
+
+/** Runner → server, on `PATCH /api/workers/[id]`. */
+export interface WorkingSetDelta {
+  /** Runner-local generation of the set this delta was computed from; monotonic per worker session. */
+  generation: number;
+  /** Paths now in the task-owned set the server has not acknowledged for this session. */
+  add: string[];
+  /** Paths the server acknowledged earlier that have left the set (reverted / no longer differ from base). */
+  remove: string[];
+  /** After this delta is applied, every path in the current set has been offered. */
+  complete: boolean;
+  /** Set when this delta is the full reconciliation before a ship. */
+  checkpoint?: WorkingSetCheckpoint;
+  /** Ask for the server's current held paths for this task (a restart seeds its local state from them). */
+  includeHeld?: boolean;
+}
+
+/** Server → runner, on the same PATCH response as `workingSetAck`. */
+export interface WorkingSetAck {
+  generation: number;
+  /** Paths newly leased by this delta. */
+  acquired: string[];
+  /** Paths of `add` another live task holds, with the holder. Not leased. */
+  blocked: PathCollisionNotice[];
+  /** Paths of `remove` whose lease this delta gave back. */
+  released: string[];
+  /** Active leases this task holds after the delta. */
+  heldCount: number;
+  /** Only with `includeHeld`; capped at WORKING_SET_HELD_CAP. */
+  heldPaths?: string[];
+  /** Whether the server could apply the delta at all (a closed task leases nothing). */
+  applied: boolean;
+  /** `complete`: nothing blocked and the runner said the set was fully offered. `blocked`: a holder stands in the way. `partial`: more chunks to come. */
+  coverage: 'complete' | 'blocked' | 'partial';
+}
+
+/**
+ * Server → runner, on the PATCH response: run `git merge-tree` between this
+ * worker's HEAD and a live sibling's pushed branch (sibling-conflict-probe).
+ */
+export interface SiblingProbeRequest {
+  probeId: string;
+  /** The sibling's branch on `origin`. */
+  otherBranch: string;
+  /** Files both workers touched; a conflict outside them still counts. */
+  sharedFiles: string[];
+  /** Workspace `gitConfig.mergiraf`: try mergiraf on each conflicted file before calling it real. */
+  mergiraf: boolean;
+}
+
+/** One conflicted file, with its conflict regions (line ranges in the merged result). */
+export interface SiblingProbeConflict {
+  path: string;
+  hunks: Array<{ startLine: number; endLine: number }>;
+}
+
+/** Runner → server, on the next PATCH: what the merge-tree found. */
+export interface SiblingProbeResult {
+  probeId: string;
+  outcome: 'clean' | 'conflict' | 'mergiraf_resolved' | 'error';
+  conflicts?: SiblingProbeConflict[];
+  /** Files mergiraf merged cleanly (counted out of `conflicts`). */
+  resolvedByMergiraf?: string[];
+  error?: string;
+  headSha?: string | null;
+  otherSha?: string | null;
+}
+
+/** Cap on `heldPaths` in an ACK; above it the runner re-offers from its own sweep instead. */
+export const WORKING_SET_HELD_CAP = 5000;
+
+/** Bounded proof kept on `tasks.path_declaration.workingSet`. */
+export interface WorkingSetRecord {
+  generation: number;
+  coverage: WorkingSetAck['coverage'];
+  heldCount: number;
+  blockedCount: number;
+  /** First few blocked paths with their holders, for explain/UI. */
+  blockedSample: Array<{ path: string; blockingTaskId: string }>;
+  checkpoint: WorkingSetCheckpoint | null;
+  workerId: string | null;
+  at: string;
+}
+
+/**
+ * Runner → server: the outcome of a ship checkpoint the runner could not
+ * prove, reported on the next sync that reaches the server. The server records
+ * it on the gate ledger as `coverage_unknown_at_ship`.
+ */
+export interface ShipCheckpointReport {
+  source: WorkingSetCheckpoint;
+  result: 'unknown';
+  /** Why coverage could not be established. */
+  cause: 'timeout' | 'error' | 'sweep_incomplete' | 'server_rejected';
+  /** Whether the ship was refused (enforce mode) or let through advisory. */
+  refused: boolean;
+  attempts: number;
+  at: number;
+}
+
+export interface PrHandoffRecord {
+  at: string;
+  workerId: string | null;
+  prNumber: number | null;
+  /** How many lease paths were promoted into the effective manifest. */
+  promoted: number;
+  /** The manifest was the repo-wide sentinel or absent and is now concrete. */
+  replacedSentinel: boolean;
 }
 
 /** Enforce-mode path claims: why a task was deferred at a checkpoint. */
@@ -2231,6 +2618,19 @@ export interface VisualReviewResolvedElsewhere {
   resolvedBy: string;
 }
 
+/**
+ * A failed audit whose obligation a later audit met: every route the failed
+ * one was sent to check has a passing phone and desktop shot from an audit
+ * that completed after it started, and nothing in the review is unresolved.
+ * The failed task stays failed (its attempt is history); it just no longer
+ * reads as the mission's failure.
+ */
+export interface VisualReviewReplacedAudit {
+  auditTaskId: string;
+  /** The completed audits whose shots cover it. */
+  replacedBy: string[];
+}
+
 /** One audit screenshot, as every surface renders it. */
 export interface VisualReviewShot {
   /** The artifact id. */
@@ -2457,6 +2857,8 @@ export interface VisualReviewModel {
   captureGaps?: VisualReviewCaptureGap[];
   /** Cells resolved by a later round's capture of the same place under a different variant. Never in `cells` or `queue`. */
   resolvedElsewhere?: VisualReviewResolvedElsewhere[];
+  /** Failed audits a later completed audit replaced. Still in `audits`, never the phase. */
+  replacedAudits?: VisualReviewReplacedAudit[];
   generatedAt: string;
 }
 
@@ -2799,6 +3201,16 @@ export interface InitiativeKPIState {
 }
 export const CAPABILITY_SANDBOX_MOUNT_ALLOWLIST = 'sandbox:mount-allowlist';
 
+/**
+ * Runner capability: this runner matches buildd actions on the group tools
+ * (`mcp__buildd__buildd_<group>`), not only the legacy one-tool name. The MCP
+ * route serves a `?worker=` session the group tools only when the worker's
+ * runner advertised this on its heartbeat; any other runner keeps the legacy
+ * tool. Not `mcp:`-prefixed: the claim route reserves that prefix for the MCP
+ * servers a runner has.
+ */
+export const CAPABILITY_MCP_GROUP_TOOLS = 'buildd-mcp:group-tools';
+
 // ============================================================================
 // WORKER FAILURE ANALYTICS
 // ============================================================================
@@ -3061,6 +3473,38 @@ export interface GateAnalytics {
   gates: GateRow[];
   /** How many gates ranked out of `gates`. Zero means the list is exhaustive. */
   truncatedGates: number;
+  /**
+   * Path-coordination events (`path_claim` / `path_declaration`) sorted into
+   * the signals a sentinel must keep apart: history truncation and healthy
+   * contention are not an outage. See packages/core/path-coordination-signal.ts.
+   */
+  pathCoordination: PathCoordinationSummary;
+}
+
+export type PathCoordinationSignal =
+  /** The bounded observed-touch sample hit its cap. Advisory: coverage is unaffected. */
+  | 'observation_truncated'
+  /** A live holder blocked a claim. Healthy coordination, not an incident. */
+  | 'claim_blocked'
+  /** A circular wait was detected. A conflict to resolve, tracked on its own. */
+  | 'deadlock_detected'
+  /** Timeout, network, 5xx or DB failure reaching the coordinator. Real degradation. */
+  | 'coordination_unavailable'
+  /** A ship checkpoint could not prove coverage, so the ship was refused (or, advisory, let through). */
+  | 'coverage_unknown_at_ship';
+
+export type PathCoordinationSeverity = 'advisory' | 'healthy' | 'conflict' | 'degraded' | 'critical';
+
+export interface PathCoordinationSummary {
+  counts: Record<PathCoordinationSignal, number>;
+  /** Path events in the window the classifier could not place. */
+  unclassified: number;
+  /** True only on `coordination_unavailable` or `coverage_unknown_at_ship` events. */
+  incident: boolean;
+  /** Highest severity present, or null with no path events. */
+  severity: PathCoordinationSeverity | null;
+  /** One line a sentinel can quote. */
+  verdict: string;
 }
 
 /** One full knowledge-ingest job no runner has taken (GET /api/health/failures `stalledIngest`). */
@@ -3271,6 +3715,12 @@ export interface LaneBar {
   prNumber?: number | null;
   state: 'running' | 'waiting' | 'done' | 'failed';
   href?: string | null;
+  /** The task's mission, so a chart can light up one mission's runs; null when standalone. */
+  missionId?: string | null;
+  /** The run's task, for an explicit "Open task" link. */
+  taskId?: string | null;
+  /** How the run stands or ended, in words ("Stopped: session limit · work kept"). lib/fleet-view-end-reason.ts. */
+  endReason?: string | null;
 }
 
 export interface Lane {
@@ -3286,12 +3736,14 @@ export interface FleetSlotWorker {
   /** One-word task name ("checkout") and its short label. */
   label: string;
   rest: string;
+  /** The task's full title, for a readable name when the label is a machine identifier. */
+  title?: string | null;
   roleSlug: string | null;
   roleName: string | null;
   roleColor: string | null;
   status: string;
-  /** 0..100, or null when the runner has not reported progress. */
-  progress: number | null;
+  /** Latest phase supported by lifecycle evidence. */
+  phase: string | null;
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;
@@ -3329,10 +3781,27 @@ export interface FleetRunner {
     /** Live runs in the group now (== slots.length). */
     running: number;
   };
+  /**
+   * Set on the one `FleetSnapshot.sessions` lane: the tasks people's own coding
+   * sessions (Claude Code, Codex, Cursor) claimed, one slot per live claim.
+   * Not a runner and no runner capacity (docs/specs/local-agent-presence.md).
+   */
+  interactive?: {
+    /** Live session claims (== slots.length). */
+    running: number;
+    /** Sessions online now, with or without a task; null when not loaded. */
+    online: number | null;
+  };
 }
 
 export interface FleetSnapshot {
   runners: FleetRunner[];
+  /**
+   * Live claims from interactive sessions, as their own lane. Never one of
+   * `runners`, never in `live` or `capacity`. Null (or absent) when none is live.
+   */
+  sessions?: FleetRunner | null;
+  /** Live workers on runner slots (session claims are in `sessions`). */
   live: number;
   capacity: number;
   /** Timeline window, epoch ms. */
@@ -3364,6 +3833,8 @@ export interface PrListItem {
   // Present only when they matter (apps/web/src/lib/pr-list.ts prSignals):
   /** Why a person is needed: the escalation inbox's decision. */
   waitingOnYou?: string;
+  /** The escalation gate kept it from you: the next step Buildd is taking, in words. */
+  builddOwns?: string;
   /** An agent is already on it. */
   resolving?: 'conflict' | 'ci' | 'review';
   /** CI fix tasks buildd has dispatched for this PR (red only). */
@@ -3515,9 +3986,53 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
   bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
   coverage: { completeHistoricalCalls: boolean; note: string };
 }
+/** n / p50 / p90 over a set of durations, in milliseconds; null quantiles when n = 0. */
+export interface DurationSummary {
+  n: number;
+  p50Ms: number | null;
+  p90Ms: number | null;
+}
+/**
+ * Early-release rollout measure (knowledge-base: buildd/design/early-release.md
+ * "Failure modes & the measure"), read off `dependency_releases` rows and the
+ * `early_release` gate ledger. Served as `earlyRelease` on
+ * `GET /api/stats/coordination` (or alone with `?metric=earlyRelease`).
+ */
+export interface EarlyReleaseStats extends CoordinationMetricFilters {
+  /** Each workspace's resolved `gitConfig.earlyRelease.mode`, so zero releases can be told apart from "never opted in". */
+  modes: Array<{ workspaceId: string; mode: 'off' | 'rule_only' | 'rule_and_jev' }>;
+  /** Release decisions made in the window, by decision. */
+  decisions: { start_now: number; start_stacked: number; wait: number };
+  /**
+   * Of the dependents released (start_now / start_stacked) in the window, how
+   * many the reconciler later had to refresh or escalate, or whose release was
+   * revoked or whose task was cancelled. A dependent counts once in `reworked`
+   * even if several apply; the per-cause counts may overlap.
+   */
+  rework: {
+    released: number;
+    reworked: number;
+    rate: number | null;
+    refreshed: number;
+    escalated: number;
+    cancelled: number;
+  };
+  /**
+   * Upstream PR raised → dependent's own PR merged, over dependents whose PR
+   * merged in the window. `released` = dependents with a start_now/start_stacked
+   * release; `notOptedIn` = dependents in workspaces whose mode is 'off' and that
+   * were never released (today's merge-gated path). Opted-in dependents held at
+   * `wait` are in neither cohort.
+   */
+  chainDuration: { released: DurationSummary; notOptedIn: DurationSummary };
+  /** Release decision (≈ upstream PR raised) → dependent's first claim, for dependents released in the window. */
+  raisedToClaimed: DurationSummary;
+  coverage: { note: string };
+}
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+  earlyRelease?: EarlyReleaseStats;
 }
 /**
  * Aggregate counts over the orchestration decision ledger
@@ -3915,4 +4430,85 @@ export interface PromptEvalRunSummary {
   startedAt: string;
   finishedAt: string | null;
   results: PromptEvalResultSummary[];
+}
+
+/**
+ * A file the workspace regenerates rather than merges (`gitConfig.derivedFiles`).
+ *
+ * Runners register a merge driver for `glob` in their own clone (never the
+ * repo): on a conflict it takes one side whole, then `regenerate` runs from the
+ * repo root once the merge has no other conflicts. Lockfiles, generated indexes.
+ * Never a migration chain: renumbering reorders schema changes.
+ */
+export interface DerivedFileRule {
+  /** A gitattributes pattern, e.g. `bun.lock` or `docs/specs/INDEX.md`. */
+  glob: string;
+  /** Shell command run from the repo root, e.g. `bun install`. */
+  regenerate: string;
+  /** Which side the driver keeps before regenerating. Default `theirs` (the incoming base). */
+  strategy?: 'ours' | 'theirs';
+}
+
+// ── Failure Pattern Sentinel: durable incidents ─────────────────────────────
+// One row per stable systemic-failure pattern (`failure_incidents`), written by
+// `apps/web/src/lib/failure-incident-store.ts` from the candidates the pure
+// rules in `apps/web/src/lib/failure-pattern-sentinel.ts` produce. The raw
+// events stay where they already live (workers / worker_terminal_records /
+// gate_events); an incident only carries bounded refs back to them.
+
+/** Ordered: low < medium < high < critical. */
+export type FailureIncidentSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+export type FailureIncidentStatus = 'open' | 'acknowledged' | 'resolved';
+
+/** The deterministic rule that raised an incident. Renaming one forks its history. */
+export type FailureIncidentRule =
+  | 'retry_fork'
+  | 'lineage_multi_pr'
+  | 'repeated_failure'
+  | 'stranded_gate'
+  | 'path_overlap_stall'
+  | 'provider_attribution_mismatch'
+  | 'failure_rate_spike'
+  | 'output_unmet_boundary';
+
+/** A pointer at an existing row — never a copy of it. */
+export interface FailureIncidentEvidenceRef {
+  kind: 'task' | 'worker' | 'gate_event' | 'pr' | 'terminal_record';
+  /** Row id, or the PR number as a string for `kind: 'pr'`. */
+  id: string;
+  /** ISO timestamp of the underlying event; drives the occurrence watermark. */
+  at: string;
+  note?: string;
+}
+
+/** Bounded (newest kept) sets of what the incident touched. */
+export interface FailureIncidentAffectedRefs {
+  taskIds: string[];
+  workerIds: string[];
+  prNumbers: number[];
+}
+
+export interface FailureIncident {
+  id: string;
+  workspaceId: string | null;
+  signature: string;
+  detectorVersion: string;
+  rule: FailureIncidentRule;
+  reasonCode: string;
+  title: string;
+  severity: FailureIncidentSeverity;
+  status: FailureIncidentStatus;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  occurrenceCount: number;
+  recurrenceCount: number;
+  affectedRefs: FailureIncidentAffectedRefs;
+  evidenceRefs: FailureIncidentEvidenceRef[];
+  impact: Record<string, number>;
+  lastAlertedAt: string | null;
+  lastAlertSeverity: FailureIncidentSeverity | null;
+  linkedFixTaskId: string | null;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
 }

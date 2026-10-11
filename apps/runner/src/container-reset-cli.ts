@@ -43,6 +43,7 @@ const result = resetContainer(containerResetPaths(env, bunCacheDir(env)), {
   sleep: (ms) => Bun.sleepSync(ms),
   log: (m) => console.log(m),
 });
+if (result.handover) console.log(`BUILDD_HANDOVER=${JSON.stringify({ mode: 'deps', ...result.handover })}`);
 console.log(`[reset] killed ${result.killed} process(es); kept ${result.keptPacks} pack(s)${result.keptCache ? ' and the dependency cache' : ''}`);
 if (!result.ok) {
   console.log(`${RESET_FAILED_LINE_PREFIX}${(result.error ?? 'unknown').replace(/\s+/g, ' ').slice(0, 300)}`);

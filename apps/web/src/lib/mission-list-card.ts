@@ -20,7 +20,8 @@ import {
   foldMissionDeliverables,
   type MissionFeedTaskInput,
 } from './mission-pulse';
-import { taskRowsStripOrder } from './mission-strip-order';
+import { taskRowsStripProjection } from './mission-strip-order';
+import { stripCounts, stripTone, type StripBucket, type StripState, type StripTone } from './mission-task-strip';
 import {
   toFeedTask,
   latestWorker,
@@ -35,13 +36,15 @@ import { missionNeedsYou } from './mission-state-view';
 import { missionTaskHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
+import type { WaitingFor } from '@buildd/shared';
+import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 
 type DateLike = Date | string | null | undefined;
 
 // ─── Input (the list's extra columns over MissionCardRow) ─────────────────────
 
 export interface ListWorkerRow extends MissionCardWorkerRow {
-  waitingFor?: { type?: string; prompt?: string; options?: string[] } | null;
+  waitingFor?: Partial<WaitingFor> | null;
 }
 export interface ListTaskRow extends MissionCardTaskRow {
   result?: { summary?: string | null } | null;
@@ -58,8 +61,6 @@ export interface MissionListCardOptions {
   now?: number;
   /** Role slug → the role's own colour (workspace_skills.color). Never hardcoded here. */
   roleColors?: ReadonlyMap<string, string | null>;
-  /** Live worker id → its last reported progress, 0..100. */
-  progressByWorker?: ReadonlyMap<string, number>;
   /**
    * Every task the page loaded, by id (the page's cross-mission index): a
    * dependency on another mission's task is judged from it, the way the
@@ -79,8 +80,8 @@ export interface ListCell {
   label: string;
   title: string;
   state: ListCellState;
-  /** 0..1 — the live worker's reported progress for `running`, 1 otherwise. */
-  fill: number;
+  /** The canonical strip tone: the only thing a surface paints from. `state` is the raw word. */
+  tone: StripTone;
   href: string;
 }
 
@@ -116,7 +117,9 @@ export interface MissionListCardModel {
   kind: ListCardKind;
   status: { label: string; tone: ListTone };
   phases: ListPhase[];
-  counts: { done: number; total: number; inCi: number; running: number; needsYou: number; queued: number; failed: number };
+  counts: { done: number; total: number; inCi: number; running: number; needsYou: number; open: number; held: number; failed: number };
+  /** Per-bucket cell tally from the canonical strip projection; cancelled has no cell. */
+  buckets: Record<StripBucket, number>;
   live: { count: number; dots: Array<{ roleSlug: string | null; color: string | null }> };
   /** Minutes since the mission's first worker started. Null before any work. */
   elapsedMin: number | null;
@@ -242,29 +245,23 @@ export function buildMissionListCard(
   // cell's coarser state word is the list's own.
   const feed: MissionFeedTaskInput[] = tasks.map(toFeedTask);
   const feedRows = new Map(foldMissionDeliverables(feed).rows.map(r => [r.task.id, r]));
-  const order = taskRowsStripOrder(tasks as unknown as Parameters<typeof taskRowsStripOrder>[0], opts.taskIndex);
+  const { order, states: stripStates } = taskRowsStripProjection(tasks as unknown as Parameters<typeof taskRowsStripProjection>[0], opts.taskIndex);
   const ordered = order.flatMap(id => feedRows.get(id) ?? []);
   const phases: ListPhase[] = [];
   const phaseRuns = new Map<string, number>();
-  const counts = { done: view.done, total: view.total, inCi: 0, running: 0, needsYou: 0, queued: 0, failed: 0 };
+  const counts = { done: view.done, total: view.total, inCi: 0, running: 0, needsYou: 0, open: 0, held: 0, failed: 0 };
+  const cellStates: StripState[] = [];
   let question: ListQuestion | null = null;
 
   for (const r of ordered) {
     const fs = deriveFeedTaskState(r, { now });
     const source = byId.get(r.task.id)!;
     let state: ListCellState;
-    let fill = 1;
     switch (fs.state) {
       case 'moving': {
         // A completed row that is still moving is its PR in CI or mid-merge.
         const inCi = r.task.status === 'completed' && !!deriveFeedPrState(r.task.worker);
         state = inCi ? 'in_ci' : 'running';
-        if (!inCi) {
-          const candidates = [source, ...r.attempts.map(a => byId.get(a.id)!).filter(Boolean)];
-          const live = candidates.map(liveWorkerOf).find(Boolean);
-          const pct = live?.id ? opts.progressByWorker?.get(live.id) : undefined;
-          fill = pct == null ? 0 : Math.max(0, Math.min(1, pct / 100));
-        }
         break;
       }
       default:
@@ -273,11 +270,11 @@ export function buildMissionListCard(
     if (state === 'in_ci') counts.inCi++;
     else if (state === 'running') counts.running++;
     else if (state === 'needs_you') counts.needsYou++;
-    else if (state === 'queued') counts.queued++;
-    else if (state === 'failed') counts.failed++;
+    const strip = stripStates.get(r.task.id);
+    if (strip && state !== 'skipped') cellStates.push(strip);
 
     const { label } = taskShortLabel(source);
-    const cell: ListCell = { taskId: r.task.id, label, title: r.task.title, state, fill, href: link(r.task.id) };
+    const cell: ListCell = { taskId: r.task.id, label, title: r.task.title, state, tone: stripTone(strip ?? 'ready'), href: link(r.task.id) };
 
     if (state === 'needs_you' && !question) {
       const candidates = [source, ...r.attempts.map(a => byId.get(a.id)!).filter(Boolean)];
@@ -287,7 +284,7 @@ export function buildMissionListCard(
       if (parked) {
         question = {
           taskId: r.task.id, label, href: cell.href, workerId: parked.id ?? null,
-          prompt: parked.waitingFor!.prompt!, options: (parked.waitingFor!.options ?? []).slice(0, 3),
+          prompt: parked.waitingFor!.prompt!, options: waitingForOptionLabels(parked.waitingFor!.options).slice(0, 3),
         };
       }
     }
@@ -314,6 +311,11 @@ export function buildMissionListCard(
       if (state === 'done') phase.done++;
     }
   }
+
+  const buckets = stripCounts(cellStates);
+  counts.failed = buckets.failed;
+  counts.held = buckets.held;
+  counts.open = buckets.open;
 
   // A phase whose every task was cancelled has nothing countable to show —
   // drop it rather than render an empty, caption-only group.
@@ -452,7 +454,7 @@ export function buildMissionListCard(
   return {
     id: row.id, kind, status, phases, counts,
     live: { count: summary.liveWorkers, dots },
-    elapsedMin, criteria, question, ask, strand, sentence, recurring, held, done,
+    buckets, elapsedMin, criteria, question, ask, strand, sentence, recurring, held, done,
   };
 }
 

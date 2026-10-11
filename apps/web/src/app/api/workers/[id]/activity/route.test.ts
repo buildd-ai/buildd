@@ -230,3 +230,58 @@ describe('POST /api/workers/[id]/activity', () => {
     expect(data.deduplicated).toBe(true);
   });
 });
+
+// Invariant: an OAuth session resolves to an account its whole team shares, so
+// the account id alone does not say who claimed the worker. Only the session
+// user recorded as claimedByUserId owns it; the team-admin path is separate.
+describe('POST /api/workers/[id]/activity — OAuth session owner check', () => {
+  const sessionWorker = {
+    id: WORKER_ID,
+    accountId: 'account-1',
+    taskId: 'task-1',
+    workspaceId: 'ws-1',
+    claimedByUserId: 'user-a',
+    milestones: [],
+    workspace: { teamId: 'team-1' },
+  };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+    mockWorkersFindFirst.mockResolvedValue(sessionWorker);
+  });
+
+  it('allows the OAuth session that claimed the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', sessionUserId: 'user-a', level: 'worker' });
+    const res = await POST(createMockRequest({ toolName: 'Read' }, 'oauth_a'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockWorkersUpdate).toHaveBeenCalled();
+  });
+
+  it('refuses another same-team OAuth member on the shared account and writes nothing', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', sessionUserId: 'user-b', level: 'worker' });
+    const res = await POST(createMockRequest({ toolName: 'Read' }, 'oauth_b'), { params: mockParams });
+    expect(res.status).toBe(404);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('still lets an admin-level member of the worker\'s team write via the team-admin path', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', sessionUserId: 'user-b', level: 'admin' });
+    const res = await POST(createMockRequest({ toolName: 'Read' }, 'oauth_b_admin'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockWorkersUpdate).toHaveBeenCalled();
+  });
+
+  it('refuses a session with no team id, even as the claiming user', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: null, sessionUserId: 'user-a', level: 'worker' });
+    const res = await POST(createMockRequest({ toolName: 'Read' }, 'oauth_noteam'), { params: mockParams });
+    expect(res.status).toBe(404);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+});

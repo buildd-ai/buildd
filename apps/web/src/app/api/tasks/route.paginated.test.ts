@@ -154,7 +154,7 @@ mock.module('@/lib/pusher', () => ({
   events: { TASK_CREATED: 'task:created', TASK_ASSIGNED: 'task:assigned', TASK_CLAIMED: 'task:claimed', TASK_COMPLETED: 'task:completed', TASK_FAILED: 'task:failed', WORKER_STARTED: 'worker:started', WORKER_PROGRESS: 'worker:progress', WORKER_COMPLETED: 'worker:completed', WORKER_FAILED: 'worker:failed' },
 }));
 mock.module('@/lib/pr-state-refresh', () => ({ refreshStaleWorkersForWorkspaces: mock(() => Promise.resolve()) }));
-mock.module('@/lib/change-intent', () => ({ resolveAnchorInjections: mock(() => []) }));
+mock.module('@/lib/change-intent', () => ({ resolveAnchorInjections: mock(() => []), overlapTouchesSerializedSurface: mock(() => false) }));
 mock.module('@/lib/deferred-start', () => _deferredStartMod);
 // Use real intakeSubject (not a stub) so the live binding in route.ts stays correct
 // when route.test.ts runs next. The paginated tests only call GET, so intakeSubject

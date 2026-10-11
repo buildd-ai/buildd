@@ -6,7 +6,7 @@ import { RESERVED_ROLE_SLUGS, isReservedRoleSlug } from './reserved-slugs';
 const SRC = join(import.meta.dir, '..');
 
 describe('isReservedRoleSlug', () => {
-  it('rejects the static segments that sit beside /app/team/[slug]', () => {
+  it('rejects the static segments that sit beside /app/settings/roles/[slug]', () => {
     expect(isReservedRoleSlug('new')).toBe(true);
   });
 
@@ -21,20 +21,20 @@ describe('isReservedRoleSlug', () => {
 });
 
 /**
- * The hazard: `app/app/(protected)/team/new/` is a static segment beside the
- * dynamic `team/[slug]/`. Next.js resolves static first, so a role slugged
+ * The hazard: `app/app/(protected)/settings/roles/new/` is a static segment
+ * beside the dynamic `settings/roles/[slug]/`. Next.js resolves static first, so a role slugged
  * "new" would render the New Role form forever instead of that role's page,
  * with no error explaining why.
  *
  * The first version of this guard was pointed at `teams.slug` — which appears
- * in no URL in this app, since teams route by id at `/app/teams/[id]`. It
+ * in no URL in this app, since teams route by id (`/app/settings/team?team=<id>`). It
  * therefore rejected valid team names while leaving the real hazard open. The
  * three checks below exist so that mistake cannot repeat silently: they pin
  * which entity the route consumes, and which endpoints enforce the guard.
  */
-describe('the guard is anchored to the slug /app/team/[slug] actually resolves', () => {
+describe('the guard is anchored to the slug /app/settings/roles/[slug] actually resolves', () => {
   it('resolves a role (workspaceSkills), not a team', () => {
-    const route = readFileSync(join(SRC, 'app/app/(protected)/team/[slug]/page.tsx'), 'utf8');
+    const route = readFileSync(join(SRC, 'app/app/(protected)/settings/roles/[slug]/page.tsx'), 'utf8');
     expect(route).toContain('workspaceSkills.slug');
     // If this route ever resolves teams instead, the guard must move with it.
     expect(route).not.toContain('teams.slug');
@@ -52,7 +52,7 @@ describe('the guard is anchored to the slug /app/team/[slug] actually resolves',
   });
 
   it('covers every static sibling of [slug]', () => {
-    const teamDir = join(SRC, 'app/app/(protected)/team');
+    const teamDir = join(SRC, 'app/app/(protected)/settings/roles');
     const staticSegments = readdirSync(teamDir, { withFileTypes: true })
       .filter(e => e.isDirectory() && !e.name.startsWith('[') && !e.name.startsWith('('))
       .map(e => e.name);

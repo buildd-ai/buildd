@@ -56,11 +56,12 @@ mock.module('@/lib/team-access', () => ({
   resolveAccountTeamIds: async (_u: unknown, account: { teamId: string } | null) => (account ? [account.teamId] : []),
 }));
 mock.module('@buildd/core/decision-ledger', () => ({
+  DECISION_LEDGER_MAX_ROWS: 500,
   readDecisionLedgerPage: ledger,
   summarizeDecisionLedger: (rows: unknown[]) => ({ total: rows.length }),
 }));
 mock.module('@/lib/orchestration-decision-stats-query', () => ({ fetchOrchestrationDecisionStats: decisionStats }));
-mock.module('@/lib/coordination-stats-query', () => ({ fetchCoordinationStats: async () => ({}) }));
+mock.module('@/lib/coordination-stats-query', () => ({ fetchCoordinationStats: async () => ({}), coordinationFilters: () => ({}) }));
 
 const { mintTaskToken } = await import('./task-token');
 const { authenticateTaskScopedCaller, taskScopeAllowsDelegated, isDelegatedReach } = await import('./task-token-auth');

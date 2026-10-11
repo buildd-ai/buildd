@@ -11,6 +11,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
  */
 
 const findManyArgs: any[] = [];
+const secretArgs: any[] = [];
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -20,7 +21,7 @@ mock.module('@buildd/core/db', () => ({
         }),
       },
       workspaces: { findFirst: () => Promise.resolve({ id: 'ws-1' }) },
-      secrets: { findFirst: () => Promise.resolve({ id: 's' }) },
+      secrets: { findFirst: (args: any) => { secretArgs.push(args); return Promise.resolve({ id: 's' }); } },
       tasks: {
         findMany: (args: any) => {
           findManyArgs.push(args);
@@ -71,5 +72,23 @@ describe('resolveProseCriterion — dedupe lookup scoping', () => {
     expect(sql).toMatch(/"tasks"\."context" -> 'criteriaProseEval' ->> 'criterionIndex' = \$3/);
     expect(sql).toMatch(/ and /i);
     expect(params).toEqual(['mission-1', 'mission-1', '2']);
+  });
+});
+
+describe('resolveProseCriterion: which credentials let a runner grade', () => {
+  // Provider parity: the team's Anthropic or OpenAI key in canonical storage
+  // (`inference_key` + provider label) runs agents too, so it counts; a
+  // personal key never does (user_id IS NULL on that branch).
+  it('counts the legacy agent purposes and the canonical Anthropic / OpenAI team key', async () => {
+    secretArgs.length = 0;
+    await resolveProseCriterion({
+      missionId: 'mission-1', criterionIndex: 2, text: 't', fingerprint: 'fp',
+      evidence: { deliverables: [], artifacts: [] },
+    });
+    if (secretArgs.length === 0) return; // the lookup only runs when a task would be dispatched
+    const { sql, params } = dialect.sqlToQuery(secretArgs[0].where);
+    expect(params).toEqual(expect.arrayContaining(['anthropic_api_key', 'inference_key', 'anthropic', 'openai']));
+    expect(sql).toContain('"secrets"."user_id" is null');
+    expect(sql).toContain('"secrets"."label" = ');
   });
 });

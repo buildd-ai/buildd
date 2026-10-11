@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { estimateCostUsd, estimateCostUsdFromTotals, priceForModel, setCatalogPrices } from '../model-prices';
+import { estimateCostUsd, estimateCostUsdFromTotals, priceForModel, priceSessionUsage, setCatalogPrices } from '../model-prices';
 import { normalizeCatalog } from '../model-catalog';
 import type { ModelUsage } from '../db/schema';
 import fixture from './fixtures/openrouter-models.json';
@@ -180,5 +180,45 @@ describe('estimateCostUsdFromTotals (seat/OAuth path)', () => {
       'claude-sonnet-4-6',
     );
     expect(cost).toBeCloseTo(0.3, 6);
+  });
+});
+
+describe('priceSessionUsage (a local session, priced from its own token buckets)', () => {
+  afterEach(() => setCatalogPrices([]));
+  const b = (model: string, over: Partial<{ input: number; cacheRead: number; cacheWrite5m: number; cacheWrite1h: number; output: number; requests: number }> = {}) => ({
+    model, input: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, output: 0, requests: 1, ...over,
+  });
+
+  it('prices the four disjoint buckets, a 1h cache write at 2x input', () => {
+    // claude-opus-5 static row: $5 in / $25 out / $0.5 cache read / $6.25 5m write.
+    const M = 1_000_000;
+    const r = priceSessionUsage([b('claude-opus-5', { input: M, cacheRead: M, cacheWrite5m: M, cacheWrite1h: M, output: M, requests: 3 })]);
+    expect(r.costUsd).toBeCloseTo(5 + 0.5 + 6.25 + 10 + 25, 6);
+    expect(r.unpricedModels).toEqual([]);
+    expect(r.modelUsage['claude-opus-5']).toMatchObject({
+      inputTokens: M, outputTokens: M, cacheReadInputTokens: M, cacheCreationInputTokens: 2 * M,
+    });
+    expect(r.modelUsage['claude-opus-5'].costUSD).toBeCloseTo(46.75, 6);
+    expect(r.allInInputTokens).toBe(4 * M);
+    expect(r.outputTokens).toBe(M);
+    expect(r.requests).toBe(3);
+  });
+
+  it('an unknown model is unpriced: the total is unknown, never understated as 0', () => {
+    const r = priceSessionUsage([b('claude-sonnet-5', { input: 100, output: 100 }), b('some-vendor/mystery-model', { input: 100, output: 100 })]);
+    expect(r.costUsd).toBeNull();
+    expect(r.unpricedModels).toEqual(['some-vendor/mystery-model']);
+    expect(r.modelUsage['some-vendor/mystery-model'].costUSD).toBeNull();
+    // Tokens still count.
+    expect(r.allInInputTokens).toBe(200);
+  });
+
+  it('the live catalog prices a non-Anthropic model it knows', () => {
+    const entries = normalizeCatalog(fixture);
+    const known = entries.find(e => !/claude|anthropic/i.test(e.id));
+    expect(known).toBeDefined();
+    expect(priceSessionUsage([b(known!.id, { input: 1000, output: 1000 })]).costUsd).toBeNull();
+    setCatalogPrices(entries);
+    expect(priceSessionUsage([b(known!.id, { input: 1000, output: 1000 })]).costUsd).not.toBeNull();
   });
 });

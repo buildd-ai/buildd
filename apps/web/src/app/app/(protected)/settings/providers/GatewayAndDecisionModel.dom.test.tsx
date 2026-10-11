@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: GatewayAndDecisionModel } = await import('./GatewayAndDecisionModel');
+const { describeControls } = await import('../_lib/form-controls');
 
 let gateway: unknown = null;
 let decisionModel: unknown = null;
@@ -79,11 +80,40 @@ describe('GatewayAndDecisionModel', () => {
     expect(writes.at(-1)).toEqual({ url: '/api/teams/t', method: 'PATCH', body: { decisionModel: null } });
   });
 
+  it('saves Clef via Cloudflare as a System One model, defaulting to Clef', async () => {
+    await mount();
+    await click(host.querySelectorAll('input[name="decision-model"]')[1]);
+    const cf = [...host.querySelectorAll('input[name="decision-via"]')].find((r) => r.parentElement?.textContent === 'Cloudflare');
+    await click(cf);
+    const trigger = host.querySelector('[data-testid="decision-model-cf"]');
+    expect(trigger?.textContent).toContain('Clef');
+    await click(trigger);
+    await click([...document.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes('Clef Flash')));
+    await click([...host.querySelectorAll('[data-testid="decision-model"] button')].find((b) => b.textContent === 'Save'));
+    expect(writes.at(-1)).toEqual({ url: '/api/teams/t', method: 'PATCH', body: { decisionModel: { endpoint: 'systemone', model: 'clef-flash', via: 'cloudflare' } } });
+  });
+
+  it('names Cloudflare in the current model', async () => {
+    decisionModel = { endpoint: 'systemone', model: 'clef', via: 'cloudflare' };
+    await mount(false);
+    expect(text('decision-model-current')).toBe('clef via Cloudflare');
+  });
+
   it('is read-only for a member', async () => {
     decisionModel = { endpoint: 'chat', model: 'qwen3-8b', via: 'openrouter' };
     await mount(false);
     expect(text('decision-model-current')).toBe('qwen3-8b via OpenRouter');
     expect(button('Connect')).toBeUndefined();
     expect(host.querySelector('input[name="decision-model"]')).toBeNull();
+  });
+
+  it('a member reads a connected gateway and the decision model with no control at all', async () => {
+    gateway = { baseURL: 'https://litellm.example.com/v1', last4: 'abcd', health: 'healthy', lastVerificationError: null };
+    decisionModel = { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' };
+    await mount(false);
+    expect(text('litellm-gateway-status')).toContain('https://litellm.example.com/v1');
+    expect(text('decision-model-current')).toBe('qwen3-8b via LiteLLM');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this/);
   });
 });

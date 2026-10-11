@@ -39,7 +39,7 @@ export async function GET(
       return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
     }
     accountId = account.id;
-    const hasAccess = await verifyAccountWorkspaceAccess(accountId, workspaceId);
+    const hasAccess = await verifyAccountWorkspaceAccess(account, workspaceId);
     if (!hasAccess) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }

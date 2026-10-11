@@ -10,13 +10,14 @@
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, connectors, connectorWorkspaces } from '@buildd/core/db/schema';
+import { workers, tasks, connectors, connectorWorkspaces, connectorShares, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getActiveSigningKey, signAssertion } from '@/lib/signing-keys';
 import { Redis } from '@upstash/redis';
 import { getIssuer } from '@/lib/oauth/config';
 import { isUuid } from '@/lib/uuid';
+import { checkConnectorBlocked, blockedBody } from '@/lib/connector-access-policy';
 
 // ---------------------------------------------------------------------------
 // Rate limiting via Redis (degrades to allow if Redis unavailable)
@@ -115,6 +116,7 @@ export async function POST(
     columns: {
       id: true,
       teamId: true,
+      url: true,
       authMode: true,
       assertionAudience: true,
       assertionTokenEndpoint: true,
@@ -127,6 +129,29 @@ export async function POST(
 
   if (connector.authMode !== 'assertion') {
     return NextResponse.json({ error: 'Forbidden', error_description: 'Connector does not use assertion auth mode' }, { status: 403 });
+  }
+
+  // ── Cross-team visibility + team catalog policy ──────────────────────────
+  // The task's team must own the connector or hold a share for it — the same
+  // visibility the claim route mounts by. Then, because every mint is an
+  // agent tool-use boundary, re-check the catalog policy: blocking the entry
+  // mid-session stops new assertions without touching the connector.
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, task.workspaceId),
+    columns: { teamId: true },
+  });
+  const consumingTeamId = ws?.teamId ?? null;
+  const visible = !!consumingTeamId && (connector.teamId === consumingTeamId || !!(await db.query.connectorShares.findFirst({
+    where: and(eq(connectorShares.connectorId, connectorId), eq(connectorShares.sharedWithTeamId, consumingTeamId)),
+    columns: { connectorId: true },
+  })));
+  if (!visible) {
+    return NextResponse.json({ error: 'not_found', error_description: 'Connector not found' }, { status: 404 });
+  }
+  const block = await checkConnectorBlocked(connector, consumingTeamId!);
+  if (block) {
+    const body = blockedBody(block);
+    return NextResponse.json({ ...body, error_description: body.message }, { status: 403 });
   }
 
   // ── Verify connector enabled for this workspace ──────────────────────────

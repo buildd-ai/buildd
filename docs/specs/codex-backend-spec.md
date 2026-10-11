@@ -73,7 +73,7 @@ assertions:
 
 > **INV-5 (failures are dual-emitted).** A failed command or MCP call emits **both** the `assistant` `tool_use` and a `user` `tool_result{is_error}`. *Reason:* error-trace + MCP-failure tracking consume the `user`/`tool_result` shape. *Guard:* `codex-events.test.ts`.
 
-> **INV-6 (mcp arguments carried through).** `mcp_tool_call.arguments` is passed as `tool_use.input` when present. The SDK `.d.ts` omits `arguments`, but the CLI JSONL emits it (verified, §10). *Reason:* the output-requirement gate matches `mcp__buildd__buildd` calls by `input.action` (e.g. `create_pr`). *Guard:* `codex-events.test.ts` mcp case.
+> **INV-6 (mcp arguments carried through).** `mcp_tool_call.arguments` is passed as `tool_use.input` when present. The SDK `.d.ts` omits `arguments`, but the CLI JSONL emits it (verified, §10). *Reason:* the output-requirement gate matches buildd action-tool calls (`isBuilddActionTool`) by `input.action` (e.g. `create_pr`). *Guard:* `codex-events.test.ts` mcp case.
 
 > **INV-7 (todo_list is not a tool_use).** `todo_list` items map to `[]`. *Reason:* repeated todo updates would trip `detectRepetitiveToolCalls`. The live todo still surfaces via channel-1 progress.
 

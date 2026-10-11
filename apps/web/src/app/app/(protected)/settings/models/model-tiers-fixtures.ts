@@ -29,10 +29,10 @@ export const CELLS: ModelPolicyCell[] = [
     tier: 'standard', surface: 'agent', state: 'shifted', poolId: 'pool-std', share: 0.5, shiftedTo: 'deepseek/deepseek-v4-pro',
     alternates: [{ provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' }],
     whatRan: [
-      { model: 'claude-sonnet-5', share: 0.6, runs: 30, mergedRate: 0.8, reviewOkRate: 0.7, costPerRunUsd: 0.42,
-        recentRuns: [{ taskId: 'task-a', at: '2026-10-01T10:00:00Z', merged: true, reviewOk: true }] },
-      { model: 'deepseek/deepseek-v4-pro', share: 0.4, runs: 20, mergedRate: 0.75, reviewOkRate: 0.65, costPerRunUsd: 0.12,
-        recentRuns: [{ taskId: 'task-b', at: '2026-10-02T10:00:00Z', merged: false, reviewOk: null }] },
+      { model: 'claude-sonnet-5', share: 0.6, runs: 30, mergedRate: 0.8, reviewOkRate: 0.7, mergedGraded: 25, reviewOkGraded: 20, costPerRunUsd: 0.42,
+        recentRuns: [{ taskId: 'task-a', title: 'Add retry to webhook sender', at: '2026-10-01T10:00:00Z', merged: true, reviewOk: true }] },
+      { model: 'deepseek/deepseek-v4-pro', share: 0.4, runs: 20, mergedRate: 0.75, reviewOkRate: 0.65, mergedGraded: 4, reviewOkGraded: 0, costPerRunUsd: 0.12,
+        recentRuns: [{ taskId: 'task-b', title: 'Fix flaky date test', at: '2026-10-02T10:00:00Z', merged: false, reviewOk: null }] },
     ],
   }),
   cell({
@@ -47,7 +47,7 @@ export const CELLS: ModelPolicyCell[] = [
     primary: { provider: 'anthropic', model: 'claude-opus-5' },
     alternates: [{ provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' }],
     whatRan: [
-      { model: 'claude-opus-5', share: 1, runs: 10, mergedRate: null, reviewOkRate: null, costPerRunUsd: 0.05,
+      { model: 'claude-opus-5', share: 1, runs: 10, mergedRate: null, reviewOkRate: null, mergedGraded: 0, reviewOkGraded: 0, costPerRunUsd: 0.05,
         satisfiedRate: 0.9, thumbsUp: 9, thumbsDown: 1, reaskedRate: 0.1, recentRuns: [] },
     ],
   }),

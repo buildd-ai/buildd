@@ -32,6 +32,7 @@ import {
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
+import { recordPrFact } from '@buildd/core/pr-facts';
 import { TERMINAL_PR_LIFECYCLE, isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 
 const BATCH_CAP = 10;
@@ -282,34 +283,47 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         // (a throw would have skipped straight to the catch), so this is
         // always a CONFIRMED state — prLastVerifiedAt advances alongside
         // prLastCheckedAt, unlike the catch branch below.
-        const update: Record<string, unknown> = {
+        const bookkeeping = {
           prLastCheckedAt: now,
           prLastVerifiedAt: now,
           prCheckFailureCount: 0,
-          updatedAt: now,
         };
         let didMerge = false;
+        let stamped: Array<{ id: string; taskId: string | null }> = [];
 
         if (pr.merged && pr.merged_at) {
-          update.mergedAt = new Date(pr.merged_at);
-          update.prLifecycleStatus = 'merged';
+          // The merge belongs to the PR: one fact stamps this row and every
+          // other row carrying it (lib/pr-merge-stamp), GitHub's merged_at.
+          await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: pr.merged_at });
+          stamped = await stampPrMergedOnAllRows({ prUrl: worker.prUrl, prNumber: worker.prNumber, mergedAt: pr.merged_at }).catch(err => {
+            console.error(`[pr-state-refresh] merge stamp failed for PR #${worker.prNumber}:`, err);
+            return [] as Array<{ id: string; taskId: string | null }>;
+          });
           didMerge = true;
         } else if (pr.state === 'closed') {
-          update.prLifecycleStatus = 'closed';
+          await recordPrFact({ workerId: worker.id }, { kind: 'closed' });
         } else if (pr.state === 'open' && CI_STATUSES.has(worker.prLifecycleStatus ?? '')) {
           // Reconcile CI state: fetch live check-suite verdict for open CI-tracked PRs.
           // This corrects stale ci_failed→ci_green and ci_green→ci_failed transitions
-          // that webhooks may have missed or not yet delivered.
+          // that webhooks may have missed or not yet delivered. The verdict is for
+          // the live head, so it is never an old-SHA fact.
           const headSha = (pr as any).head?.sha as string | undefined;
           if (headSha) {
             const liveStatus = await fetchCiLifecycleStatus(installationId, repo, headSha);
             if (liveStatus !== null && liveStatus !== worker.prLifecycleStatus) {
-              update.prLifecycleStatus = liveStatus;
+              await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: liveStatus, headSha, currentHeadSha: headSha });
             }
           }
         }
 
-        await db.update(workers).set(update).where(eq(workers.id, worker.id));
+        // Clocks advance whatever the fact was (they are not guarded columns).
+        await db.update(workers).set({ ...bookkeeping, updatedAt: now }).where(eq(workers.id, worker.id));
+        if (pr.state === 'closed' && worker.prNumber != null) {
+          // §11: a kernel-owned delivery imports the same close/merge from its own live read.
+          await import('@/lib/workflow/seam')
+            .then(({ observePrState }) => observePrState({ workspaceId, repoFullName: repo, prNumber: worker.prNumber!, installationId, source: 'sweep:pr-state-refresh' }))
+            .catch((err) => console.error(`[pr-state-refresh] kernel close import failed for PR #${worker.prNumber}:`, err));
+        }
         failedAt.delete(worker.id);
 
         await triggerEvent(channels.workspace(workspaceId), events.WORKER_PROGRESS, {
@@ -325,16 +339,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         if (didMerge) {
           // Same dedupe key as the webhook: a merge it already reported writes nothing.
           await emit({ type: 'pr.merged', repoFullName: repo, prNumber: worker.prNumber, url: worker.prUrl });
-          // The merge belongs to the PR: stamp any other row carrying it (a
-          // retry attempt that adopted the PR number). See lib/pr-merge-stamp.
-          const siblings = await stampPrMergedOnAllRows({
-            prUrl: worker.prUrl,
-            prNumber: worker.prNumber,
-            mergedAt: new Date(pr.merged_at!),
-          }).catch(err => {
-            console.error(`[pr-state-refresh] sibling merge stamp failed for PR #${worker.prNumber}:`, err);
-            return [] as Array<{ id: string; taskId: string | null }>;
-          });
+          const siblings = stamped.filter((r) => r.id !== worker.id);
           for (const s of siblings) {
             if (s.taskId && s.taskId !== worker.taskId) {
               checkDependsOnResolved(s.taskId).catch(err =>

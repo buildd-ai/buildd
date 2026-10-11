@@ -1,8 +1,8 @@
 /**
  * The sea (knowledge-base: buildd/design/chat-canvas.md, "The sea"): the one soft element on the
  * chat surface. Round, blurred pools of colour drift slowly behind the canvas,
- * like water seen from above. They carry the mood (calm teal, one copper pool
- * when something needs the person, blue and violet while a turn streams) and
+ * like water seen from above. They carry the mood (calm neutral, one decision-orange pool
+ * when something needs the person, audit blue while a turn streams) and
  * never read as data: no lines, bars or streaks. Pure.
  */
 import type { CanvasMood } from './canvas-empty';

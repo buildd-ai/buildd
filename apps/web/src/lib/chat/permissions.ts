@@ -103,16 +103,18 @@ function toolDecl(name: string, spec: ChatToolSpec): KitToolDecl {
 }
 
 function groupDecl(group: ToolGroup): ToolGroupDecl {
-  const tools = Object.entries(ALL_CHAT_TOOL_SPECS)
-    .filter(([, spec]) => spec.group === group)
-    .map(([name, spec]) => toolDecl(name, spec));
+  const specs = Object.entries(ALL_CHAT_TOOL_SPECS).filter(([, spec]) => spec.group === group);
+  const tools = specs.map(([name, spec]) => toolDecl(name, spec));
+  // A write that always asks (an irreversible merge) is never skipped by "Allow", so a group
+  // whose only writes are such has nothing to allow.
+  const skippable = specs.some(([, spec]) => Object.values(spec.ops).some(o => o.class === 'write' && !o.alwaysAsk));
   const label = TOOL_GROUP_LABELS[group];
   // The group's mode comes from what chat registers: a deferred-only tool is
   // declared (the kit keeps it off the model) but is not a tool yet.
   const live = tools.filter(t => !t.deferred);
   // Admin-class calls (deletes, budgets, workspace config) always ask.
   if (group === 'admin') return { label, tools, fixed: 'ask' };
-  if (live.some(t => t.class === 'write')) return { label, tools, modes: ['ask', 'allow'] };
+  if (live.some(t => t.class === 'write') && skippable) return { label, tools, modes: ['ask', 'allow'] };
   return { label, tools, fixed: live.every(t => t.class === 'read') ? 'read' : 'ask' };
 }
 

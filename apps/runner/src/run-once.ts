@@ -31,6 +31,7 @@
  * The decision logic below takes its collaborators as arguments; the real
  * wiring is `runOnceFromCli` at the bottom.
  */
+import { browserRoleNeedsProbe, selectBrowserProvider, startBrowserShim, stopBrowserShim } from './browser-provider';
 import { onceFleetIdentity } from '@buildd/shared';
 import type { LocalUIConfig, WorkerStatus } from './types';
 import type { WorkspaceResolver } from './workspace';
@@ -237,8 +238,13 @@ const DEFERRED_TASK_EXCLUSION_CODES = new Set<string>([
   'provider_unavailable', 'budget_paused', 'routing_paused', 'sibling_retry_open',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'ordered_behind',
   'path_overlap', 'connector_mismatch', 'role_env_unsatisfied',
+  // personal_only and the requester has no key yet (or this runner is too
+  // old to receive one): queued until they add a key or the runner updates.
+  'no_personal_credential', 'provider_not_allowed',
   // Commercial entitlement on a managed runner: queued until capacity frees.
   'managed_concurrency', 'managed_runner_hours',
+  // The team's hosted runner allowance: queued until it refills or grows.
+  'hosted_runner_hours',
   // SQL-probe codes (explicit-task-exclusion.ts) — scheduled, cooling down, or
   // simply stale by the time the probe ran; none of these say "never".
   'deferred', 'deps_blocked', 'runner_cooldown', 'state_changed',
@@ -325,6 +331,8 @@ export interface RunOnceDeps {
    * refresh (warm-repo.ts). Best effort; a throw is logged and ignored.
    */
   afterRun?(outcome: Outcome): Promise<void>;
+  /** BUILDD_PHASE=run_end (phase-lines.ts): the outcome is known and only the runner's tail is left. */
+  emitRunEnd?(): void;
   /**
    * Resumable runs: park this waiting worker (flush, upload the park bundle,
    * mark it parked). True means parked and the process should exit. Absent
@@ -392,6 +400,8 @@ async function superviseWorker(workerId: string, d: RunOnceDeps, opts: { parkArm
     await wm.abort(workerId, `No input received within ${mins} minutes (--once max wait)`).catch(() => {});
   }
   d.log(`[once] worker ${workerId} finished: ${outcome}`);
+  // Only the tail is left (a parked run keeps its container for the resume).
+  if (outcome !== 'parked') d.emitRunEnd?.();
   await d.afterRun?.(outcome).catch(err => d.log(`[once] after-run step failed: ${err instanceof Error ? err.message : err}`));
   if (outcome === 'parked') {
     d.log(`${PARKED_LINE_PREFIX}${workerId}`);
@@ -604,6 +614,8 @@ export async function runOnceFromCli(opts: {
 
   // ── Parking (resumable runs; BUILDD_ONCE_PARK=1 from the cloud Worker) ──
   const parking = park.parkingEnabled(opts.env);
+  // A pause parks the run when resumable runs are on; otherwise it is refused (pause.ts).
+  config.pauseMode = parking ? 'park' : 'none';
   const snapshots = curlTransport(opts.env.BUILDD_SNAPSHOT_URL ?? '');
   const parkPaths = {
     builddHome: opts.builddHome,
@@ -645,8 +657,13 @@ export async function runOnceFromCli(opts: {
 
   const isolationRoot = config.workspaceIsolationRoot || join(opts.builddHome, 'once-workspaces');
   // Warm repos (BUILDD_WARM_REPO=1, set only by the cloud Worker): restore the
-  // workspace snapshot before cloning, refresh it after the run.
-  const warm = warmRepoEnabled(opts.env) ? createWarmRepoSession(opts.env, join(opts.builddHome, 'warm-tmp')) : null;
+  // workspace snapshot before cloning, refresh it after the run. A fresh run
+  // restores the dependency cache behind the agent session (deps-gate.ts); a
+  // resumed one adopts its session directly, with no install to gate, so it
+  // restores the cache inline as before.
+  const warm = warmRepoEnabled(opts.env)
+    ? createWarmRepoSession(opts.env, join(opts.builddHome, 'warm-tmp'), { deferCache: !opts.resumeWorkerId })
+    : null;
   const onceResolver = createOnceResolver(
     opts.resolver,
     isolationRoot,
@@ -667,6 +684,15 @@ export async function runOnceFromCli(opts: {
   const outbox = new Outbox(join(opts.builddHome, `outbox-once-${outboxTask}.json`));
   outbox.setFlushHandler(createReplayHandler(() => config));
 
+  const browserProvider = selectBrowserProvider(opts.env);
+  if (browserProvider?.name === 'cloudflare' && opts.taskId) {
+    const browserTask = await client.getTask(opts.taskId);
+    if (browserRoleNeedsProbe(browserTask?.roleSlug)) {
+      const probe = await browserProvider.probe();
+      console.log(`BUILDD_BROWSER_PROBE=${JSON.stringify(probe)}`);
+      if (probe.ok) startBrowserShim(opts.env);
+    }
+  }
   const wm = new WorkerManager(config, resolver);
   wm.attachOutbox(outbox);
   // Mid-session credential refresh for long tasks. Not in a cloud container:
@@ -680,8 +706,9 @@ export async function runOnceFromCli(opts: {
     getTask: (id) => client.getTask(id) as Promise<OnceTask | null>,
     workerManager: wm,
     flushOutbox: async () => ({ remaining: await flushOutboxWithRetry(outbox) }),
-    shutdown: () => (cloud ? Promise.resolve() : credentialBroker.shutdown()),
+    shutdown: async () => { stopBrowserShim(); if (!cloud) await credentialBroker.shutdown(); },
     afterRun: async (outcome) => warm?.refresh(outcome),
+    emitRunEnd: () => emitPhase('run_end'),
     ...(parking ? {
       park: async (workerId: string) => {
         const w = wm.getWorker(workerId);

@@ -17,6 +17,8 @@ import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
 import { and, eq, or, isNull } from 'drizzle-orm';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
+import { CLAUDE_CREDENTIAL_PURPOSES, claudeCredentialRank } from './claude-credential-rows';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 export type { CredentialHealthStatus } from '@buildd/core/secrets';
 
@@ -73,8 +75,11 @@ export async function recordCredentialAuthFailure(
 }
 
 /**
- * Find the active Claude credential (oauth_token preferred over anthropic_api_key)
- * for a team, optionally scoped to a workspace. Returns the secretId or null.
+ * Find the active Claude credential for a team, optionally scoped to a
+ * workspace: a seat token (oauth_token) first, else the team's Anthropic API
+ * key in either storage agent runs read, canonical (`inference_key` + label
+ * `anthropic`) before the legacy `anthropic_api_key`. Team rows only (a
+ * personal key is never named). Returns the secretId or null.
  */
 export async function getActiveClaudeSecretId(
   teamId: string,
@@ -85,19 +90,15 @@ export async function getActiveClaudeSecretId(
     : isNull(secrets.workspaceId);
 
   const rows = await db.query.secrets.findMany({
-    where: and(
-      eq(secrets.teamId, teamId),
-      or(eq(secrets.purpose, 'oauth_token'), eq(secrets.purpose, 'anthropic_api_key')),
-      scopeFilter,
-    ),
-    columns: { id: true, purpose: true },
+    where: teamCredentialWhere({ teamId, purpose: [...CLAUDE_CREDENTIAL_PURPOSES] }, scopeFilter),
+    columns: { id: true, purpose: true, label: true, userId: true },
   });
-
-  // Prefer oauth_token (seat-based, more likely to be the active cred)
-  const oauthRow = rows.find((r) => r.purpose === 'oauth_token');
-  if (oauthRow) return oauthRow.id;
-  const apiKeyRow = rows.find((r) => r.purpose === 'anthropic_api_key');
-  return apiKeyRow?.id ?? null;
+  // Seat token first (more likely to be the active cred), then canonical, then legacy.
+  const best = rows
+    .map((r) => ({ r, rank: claudeCredentialRank(r) }))
+    .filter((x) => x.rank >= 0)
+    .sort((a, b) => a.rank - b.rank)[0]?.r;
+  return best?.id ?? null;
 }
 
 /**

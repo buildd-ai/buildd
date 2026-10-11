@@ -10,7 +10,9 @@
  *
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/reconcile-reap-cleanup.test.ts
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 import * as realGitOps from '../../src/git-operations';
 
@@ -75,13 +77,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -110,7 +112,7 @@ mock.module('fs', () => ({
 
 mock.module('../../src/git-operations', () => ({
   ...realGitOps,
-  setupWorktree: async (_repo: string, branch: string) => ({ path: '/tmp/test-workspace', branch, base: 'origin/main' }),
+  setupWorktree: async (_repo: string, branch: string) => ({ path: getTestWorkspace(), branch, base: 'origin/main' }),
   removeWorktreeIfUnowned: async () => {},
 }));
 
@@ -186,7 +188,19 @@ function failedPatches(workerId: string) {
 describe('stopping a live session runs its own cleanup', () => {
   let manager: any;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     mockCleanupClaudeConfigDir.mockClear();
     mockUpdateWorker.mockClear();
     mockGetWorkerRemote.mockReset();

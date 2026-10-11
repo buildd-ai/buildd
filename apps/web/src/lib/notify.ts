@@ -195,6 +195,17 @@ export interface AlertSubject {
   workspaceId?: string | null;
   missionId?: string | null;
   taskId?: string | null;
+  /**
+   * A PR escalation: with `needsAttention`, the escalation gate's verdict for
+   * this PR decides whether it pages (lib/escalation-notify.ts). Needs the
+   * workspace, given directly or through the task.
+   */
+  prNumber?: number | null;
+}
+
+async function taskWorkspace(taskId: string): Promise<string | null> {
+  const t = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { workspaceId: true } });
+  return t?.workspaceId ?? null;
 }
 
 async function resolveSubjectTeam(subject: AlertSubject): Promise<string | null> {
@@ -221,8 +232,28 @@ async function resolveSubjectTeam(subject: AlertSubject): Promise<string | null>
  */
 export async function notifyTeamOf(subject: AlertSubject, event: TeamAlertEvent, payload: NotifyPayload): Promise<void> {
   try {
+    let digest: { count: number; kind: import('@buildd/core/policy-digest').PolicyRail } | null = null;
+    if (event === 'needsAttention' && subject.prNumber != null) {
+      const workspaceId = subject.workspaceId ?? (subject.taskId ? await taskWorkspace(subject.taskId) : null);
+      if (workspaceId) {
+        const esc = await import('./escalation-notify');
+        const verdicts = await esc.loadEscalationVerdicts({ workspaceId, prNumber: subject.prNumber });
+        if (verdicts && !esc.verdictsAllowPage(verdicts)) return;
+        const teamId = verdicts ? await resolveSubjectTeam({ ...subject, workspaceId }) : null;
+        if (verdicts && teamId) {
+          const plan = esc.planEscalationPage({ teamId, workspaceId, prNumber: subject.prNumber, verdicts });
+          if (plan.action === 'skip') return;
+          if (plan.action === 'digest') digest = { count: plan.count, kind: plan.kind };
+        }
+      }
+    }
     const teamId = await resolveSubjectTeam(subject);
     if (!teamId) return;
+    if (digest) {
+      const { policyDigestLine } = await import('@buildd/core/policy-digest');
+      await notifyTeam(teamId, event, { ...payload, title: policyDigestLine(digest.kind, digest.count), message: 'Open Home to see each one and decide.' });
+      return;
+    }
     await notifyTeam(teamId, event, payload);
   } catch (err) {
     console.error('[notify] notifyTeamOf failed', err instanceof Error ? err.message : 'unknown');

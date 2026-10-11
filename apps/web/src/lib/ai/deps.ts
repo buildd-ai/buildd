@@ -7,6 +7,7 @@
  * (there are no joins) and nothing for `lint-hand-built-sql` to catch.
  */
 
+import { loadTierCeiling } from '@buildd/core/model-tier-ceiling-store';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, aiPlans, aiUsage, teams } from '@buildd/core/db/schema';
 import { and, eq, gte, inArray, sql, sum, type SQL } from 'drizzle-orm';
@@ -81,6 +82,7 @@ export const planDeps: PlanDeps = {
   price,
 
   chatCatalog: () => getCachedOpenRouterCatalog(),
+  tierCeiling: (teamId, workspaceId) => loadTierCeiling({ teamId, workspaceId, userId: null }, 'chat'),
 
   async loadBudget(account, now) {
     const [acct, team] = await Promise.all([

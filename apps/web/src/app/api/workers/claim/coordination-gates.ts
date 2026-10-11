@@ -48,11 +48,14 @@ export function findActiveClaimBlocker(
   taskId: string,
   manifest: readonly string[] | null | undefined,
   activeClaims: Map<string, string[]> | null | undefined,
+  /** Holders that never block this task (a fix attempt's own lineage). */
+  exempt?: ReadonlySet<string>,
 ): { holderTaskId: string; claimedPaths: string[]; overlapPaths: string[] } | null {
   const concrete = (manifest ?? []).filter(p => p !== REPO_WIDE_SENTINEL);
   if (concrete.length === 0 || !activeClaims) return null;
   for (const [holderTaskId, claimedPaths] of activeClaims) {
     if (holderTaskId === taskId) continue; // own claims never block self
+    if (exempt?.has(holderTaskId)) continue;
     const concreteClaimed = claimedPaths.filter(p => p !== REPO_WIDE_SENTINEL);
     if (concreteClaimed.length === 0) continue;
     if (pathsOverlap(concrete, concreteClaimed)) {

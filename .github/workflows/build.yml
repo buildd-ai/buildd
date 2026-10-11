@@ -75,7 +75,7 @@ jobs:
           bun-version: "1.4.2"
 
       - name: Cache bun install cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -179,6 +179,18 @@ jobs:
       - name: Lint migration journal ordering
         run: bun run migrations:lint
 
+      # drizzle-kit takes the next index from the local journal, so parallel
+      # branches mint the same NNNN_ and git cannot see it (the .sql names
+      # differ). Fail the PR the moment its base takes the slot, naming the
+      # colliding file and the next free index, instead of finding out at the
+      # landing gate or a failed deploy. Fix: `bun run migrations:renumber`.
+      # See packages/core/db/migration-index.ts.
+      - name: Check migration indices are free on the base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bun run migrations:index-check "--base=origin/$BASE_REF"
+
       - name: Lint hardcoded model IDs
         # The self-test runs first: it plants a known violation outside the
         # allowlist and requires the scan to catch it, so a pattern or allowlist
@@ -208,7 +220,7 @@ jobs:
       # apps/web's tsconfig is `incremental`; tsc validates the restored
       # buildinfo by file content hashes, so a stale entry only costs a recheck.
       - name: Cache apps/web tsbuildinfo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: apps/web/tsconfig.tsbuildinfo
           key: tsbuildinfo-${{ runner.os }}-${{ github.sha }}
@@ -243,8 +255,17 @@ jobs:
         with:
           bun-version: "1.4.2"
 
+      # The dependency handover fixture exercises a real frozen pnpm install.
+      - name: Setup Node for pnpm
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install pnpm for dependency handover tests
+        run: npm install --global pnpm@12.10.1
+
       - name: Cache bun install cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -308,7 +329,7 @@ jobs:
           bun-version: "1.4.2"
 
       - name: Cache bun install cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -336,7 +357,7 @@ jobs:
         run: node packages/ai-kit/scripts/smoke-consumer.mjs
 
       - name: Cache Next build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: apps/web/.next/cache
           key: nextjs-${{ runner.os }}-${{ hashFiles('bun.lock') }}-${{ hashFiles('apps/web/src/**', 'apps/web/public/**', 'apps/web/*.mjs', 'apps/web/*.json', 'packages/**/*.ts', 'packages/**/*.tsx', '!**/node_modules/**') }}
@@ -584,35 +605,95 @@ jobs:
   # invariants live in a trigger and CTEs that a mocked `db` cannot observe.
   # Postgres + the neon-http proxy the app's driver speaks, migrated from
   # scratch, so this also proves every migration applies to an empty database.
+  #
+  # Why this can run twice for one release PR, and when it doesn't:
+  #   push to dev   -> tests the branch HEAD (the dev commit itself)
+  #   pull_request  -> tests GitHub's synthetic merge ref (head merged into base)
+  # For a PR into `dev` or a hotfix those are different trees and both are kept.
+  # For a release PR (head = dev) the push run already covered the same commit, so
+  # when the merge ref's tree is identical to the head's tree AND that commit's push
+  # run already passed this job, the PR run records a pass without repeating the work.
+  # It never *skips* the job (a Skipped check satisfies branch protection without
+  # running); it always completes, and when the merge ref differs (main moved ahead
+  # of dev) or the push run is missing/red/in progress, it runs the full suite.
+  # The name says which ref is under test, so the two checks are not near-twins.
   db-architecture:
-    name: DB architecture (real Postgres)
+    name: DB architecture (real Postgres) · ${{ github.event_name == 'pull_request' && 'merge ref' || 'branch HEAD' }}
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_USER: demo
-          POSTGRES_PASSWORD: demo
-          POSTGRES_DB: buildd_test
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U demo -d buildd_test"
-          --health-interval 2s --health-timeout 3s --health-retries 30
+    permissions:
+      contents: read
+      actions: read
     env:
       DATABASE_URL: postgres://demo:demo@localhost:5432/buildd_test
       NEON_LOCAL_FETCH_ENDPOINT: http://127.0.0.1:4444/sql
+      RUN_DB_TESTS_DOUBLE_RUN: "1"
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      # Started by hand rather than as a `services:` container, and not from
+      # Docker Hub: shared runner IPs hit its anonymous pull limit under load,
+      # and a service container cannot retry. The official postgres image comes
+      # from the ECR Public mirror; pgvector is installed from the PGDG apt repo
+      # the image already has configured.
+      - name: Start Postgres (pgvector)
+        run: |
+          IMAGE=public.ecr.aws/docker/library/postgres:17
+          for attempt in 1 2 3 4 5; do
+            docker pull "$IMAGE" && break
+            if [ "$attempt" = 5 ]; then echo "::error::docker pull $IMAGE failed 5/5 times"; exit 1; fi
+            sleep $((15 * attempt))
+          done
+          docker run -d --name postgres -p 5432:5432 \
+            -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=buildd_test \
+            "$IMAGE"
+          docker exec postgres bash -c 'apt-get update -qq && apt-get install -y -qq postgresql-17-pgvector >/dev/null'
+          for i in $(seq 1 60); do
+            docker exec postgres pg_isready -U demo -d buildd_test && break
+            sleep 2
+          done
+          docker exec postgres pg_isready -U demo -d buildd_test || { echo "::error::Postgres did not become ready"; exit 1; }
+          docker exec postgres psql -U demo -d buildd_test -c 'CREATE EXTENSION IF NOT EXISTS vector' \
+            || { echo "::error::pgvector did not install"; exit 1; }
+      - name: Detect redundant run (release PR already covered by the dev push run)
+        id: dedupe
+        if: github.event_name == 'pull_request' && github.head_ref == 'dev' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # HEAD is the synthetic merge commit; HEAD^2 is the PR head.
+          merge_tree=$(git rev-parse 'HEAD^{tree}')
+          head_tree=$(git rev-parse 'HEAD^2^{tree}' 2>/dev/null || true)
+          if [ -z "$head_tree" ] || [ "$merge_tree" != "$head_tree" ]; then
+            echo "Merge ref differs from branch HEAD — running the suite."
+            exit 0
+          fi
+          runs=$(gh api "repos/$REPO/actions/workflows/build.yml/runs?head_sha=$HEAD_SHA&event=push" --jq '.workflow_runs[].id' || true)
+          for id in $runs; do
+            ok=$(gh api "repos/$REPO/actions/runs/$id/jobs" --paginate \
+              --jq '[.jobs[] | select(.name | startswith("DB architecture (real Postgres)")) | select(.conclusion == "success")] | length' || true)
+            if [ "${ok:-0}" -gt 0 ]; then
+              echo "Merge ref tree == branch HEAD tree and push run $id already passed this suite."
+              echo "redundant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "No passing push run for $HEAD_SHA yet — running the suite."
       # apps/web/tests/db/migration-baseline.test.ts replays the pre-squash
       # migration tree from this tag (LAST_RELEASE_BEFORE_SQUASH in
       # packages/core/db/migrate-plan.ts) to prove the baseline equivalent; a
       # shallow checkout carries no tags.
       - name: Fetch the pre-squash release tag
+        if: steps.dedupe.outputs.redundant != 'true'
         run: git fetch --no-tags --depth=1 origin +refs/tags/v0.284.0:refs/tags/v0.284.0
       - uses: oven-sh/setup-bun@v2
+        if: steps.dedupe.outputs.redundant != 'true'
         with:
           bun-version: "1.4.2"
-      - run: bun install
+      - if: steps.dedupe.outputs.redundant != 'true'
+        run: bun install
       # The app's unchanged neon-http driver talks to scripts/ci/neon-sql-shim.ts:
       # the same /sql wire protocol as the local neon-http proxy it replaced,
       # over one persistent pg pool instead of a control-plane lookup, a SCRAM
@@ -620,6 +701,7 @@ jobs:
       # go through it, so they still run the app's own driver and migrator;
       # apps/web/tests/db/neon-sql-shim.test.ts pins its fidelity on real Postgres.
       - name: Start neon-sql shim
+        if: steps.dedupe.outputs.redundant != 'true'
         run: |
           nohup bun scripts/ci/neon-sql-shim.ts > "$RUNNER_TEMP/neon-sql-shim.log" 2>&1 &
           for i in $(seq 1 30); do
@@ -632,11 +714,13 @@ jobs:
           cat "$RUNNER_TEMP/neon-sql-shim.log"
           echo "neon-sql shim never answered" && exit 1
       - name: Migrate
+        if: steps.dedupe.outputs.redundant != 'true'
         run: cd packages/core && bun db:migrate
       - name: Run DB architecture tests
+        if: steps.dedupe.outputs.redundant != 'true'
         run: bun run test:db
       - name: Shim log
-        if: failure()
+        if: failure() && steps.dedupe.outputs.redundant != 'true'
         run: cat "$RUNNER_TEMP/neon-sql-shim.log" || true
 
   # Detect which areas changed to skip expensive integration/E2E when unnecessary

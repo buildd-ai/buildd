@@ -25,7 +25,20 @@ describe('MCP update_progress', () => {
     expect(api.mock.calls[0]?.[0]).toBe(`/api/workers/${WORKER_ID}`);
     expect(api.mock.calls[0]?.[1]?.method).toBe('PATCH');
     expect(JSON.parse(String(api.mock.calls[0]?.[1]?.body)).kind).toBe('engineering');
-    expect(result.content[0]?.text).toContain('Progress updated: 10%');
+    expect(result.content[0]?.text).toContain('Progress updated');
+  });
+
+  it('does not invent a percent when progress is omitted', async () => {
+    const api = mock(async () => ({ status: 'running' }));
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'update_progress',
+      { message: 'Tests passed', plan: 'Verify and ship' }, context);
+    const body = JSON.parse(String(api.mock.calls[0]?.[1]?.body));
+    expect(body).not.toHaveProperty('progress');
+    for (const milestone of body.appendMilestones) {
+      expect(milestone).not.toHaveProperty('progress');
+      expect(milestone.origin).toBe('agent');
+    }
+    expect(result.content[0]?.text).not.toContain('%');
   });
 
   it('honours an explicit workerId instead of the session default', async () => {
@@ -78,36 +91,40 @@ describe('MCP update_progress', () => {
     expect(body.appendMilestones).toEqual([
       {
         type: 'plan',
+        origin: 'agent',
         label: '1. Add regression test\n2. Fix progress routing',
         progress: 25,
         ts: expect.any(Number),
       },
       {
         type: 'status',
+        origin: 'agent',
         label: 'Plan ready',
         progress: 25,
         ts: expect.any(Number),
       },
     ]);
-    expect(result.content[0]?.text).toContain('Progress updated: 25% - Plan ready');
+    expect(result.content[0]?.text).toContain('Progress updated - Plan ready');
   });
 
-  // update_progress surfaces the served instruction in its tool result, so it is
-  // a real consumer of the instruction queue. It has to declare that (otherwise
-  // it only gets a read-only copy) and confirm delivery (otherwise the queue
-  // stays pending and the same instruction repeats on every progress update).
-  it('declares itself an instruction consumer', async () => {
+  // Steering is decoupled from progress: on a runner-managed worker the runner
+  // is the only consumer and delivers at the next turn boundary whether or not
+  // the agent ever reports progress. update_progress declares itself the
+  // AGENT consumer, which the server honours only on an interactive worker.
+  it('declares itself the agent consumer, never consumeInstructions', async () => {
     const api = mock(async () => ({ status: 'running' }));
     await handleBuilddAction(api as unknown as ApiFn, 'update_progress', { progress: 10 }, context);
     const body = JSON.parse(String(api.mock.calls[0]?.[1]?.body));
-    expect(body.consumeInstructions).toBe(true);
+    expect(body.consumer).toBe('agent');
+    expect(body).not.toHaveProperty('consumeInstructions');
   });
 
-  it('confirms delivery of an instruction it surfaced to the agent', async () => {
+  it('confirms delivery and reading of a message it surfaced to the agent, by id', async () => {
     const api = mock(async () => ({
       status: 'running',
       instructions: 'Switch to the device flow',
       instructionsAck: 'Switch to the device flow',
+      instructionIds: ['i-1'],
     }));
 
     const result = await handleBuilddAction(
@@ -121,6 +138,10 @@ describe('MCP update_progress', () => {
     expect(api).toHaveBeenCalledTimes(2);
     const ackBody = JSON.parse(String(api.mock.calls[1]?.[1]?.body));
     expect(ackBody.instructionsDelivered).toBe('Switch to the device flow');
+    // The text is in the tool result the agent reads this turn: delivered and
+    // read at once.
+    expect(ackBody.instructionIdsDelivered).toEqual(['i-1']);
+    expect(ackBody.instructionsAcknowledged).toEqual(['i-1']);
   });
 
   it('sends no confirmation when nothing was served', async () => {

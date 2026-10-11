@@ -1,4 +1,5 @@
 import type { ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
+import { describeBudgetWall } from './claim-limits';
 
 /**
  * The reason an explicitly requested task (claim with `taskId`) was deferred
@@ -39,6 +40,18 @@ export function describeExplicitDeferral(
         detail: `It declares no file scope and its mission already has a scope-undeclared task in flight${peer ? ` (${peer})` : ''}; only one runs at a time. Wait for that task, or re-create this one with a pathManifest (or outputRequirement 'artifact_required' / 'none' if it edits no files).`,
       };
     }
+    case 'soft_overlap': {
+      const holder = str(detail.holderTaskId);
+      const paths = Array.isArray(detail.paths) ? (detail.paths as unknown[]).filter((p): p is string => typeof p === 'string').slice(0, 5) : [];
+      const verdict = str(detail.verdict);
+      const why = verdict === 'deterministic_hold'
+        ? `the overlap is ${str(detail.overlapKind) ?? 'hard'}, so it waits deterministically`
+        : `the hold/start decision said ${verdict ?? 'HOLD'}`;
+      return {
+        code: reason,
+        detail: `Its declared scope overlaps in-flight task ${holder ?? '(unknown)'}${paths.length ? ` on ${paths.join(', ')}` : ''}, and ${why}. It starts when that task finishes or a START is decided. ${FORCE_HINT}`,
+      };
+    }
     case 'mission_budget':
       return { code: reason, detail: 'Its mission is budget_exhausted. Raise the mission budget to resume it.' };
     case 'mission_concurrent': {
@@ -66,6 +79,10 @@ export function describeExplicitDeferral(
     case 'budget_paused': {
       const backend = str(detail.backend) ?? 'its provider';
       const at = str(detail.resetsAt);
+      const wall = str(detail.wall);
+      if ((wall === 'account_seat' || wall === 'provider_pause' || wall === 'tenant_budget') && (backend === 'claude' || backend === 'codex')) {
+        return { code: reason, detail: `${describeBudgetWall({ kind: wall, backend, resetsAt: at })} There's no provider to fail over to.` };
+      }
       return { code: reason, detail: `The ${backend} budget or rate limit is exhausted${at ? ` until ${at}` : ''}, with no provider to fail over to.` };
     }
     case 'routing_paused':
@@ -79,6 +96,13 @@ export function describeExplicitDeferral(
         code: reason,
         detail: 'Another fix attempt for the same PR is already open, so this one was cancelled rather than started beside it: one retry lineage updates one PR.',
       };
+    case 'fix_not_needed': {
+      const why = str(detail.reason);
+      return {
+        code: reason,
+        detail: `The review fix was revalidated at claim and is no longer needed${why ? ` (${why})` : ''}; it was skipped, not failed.`,
+      };
+    }
     case 'ordered_behind': {
       const blocker = str(detail.blockedBy);
       return {
@@ -119,6 +143,43 @@ export function describeExplicitDeferral(
       return {
         code: reason,
         detail: `The team's monthly managed runner-hours are used up. It stays queued and starts automatically when the allowance refills${at ? ` (${at})` : ''} or grows.`,
+      };
+    }
+    case 'no_personal_credential': {
+      const backendKey = detail.surface === 'agent-codex' ? 'OpenAI' : 'Anthropic';
+      const why: Record<string, string> = {
+        no_requester: 'it was not started by a person (a schedule, webhook or automation filed it), so there is no one whose key could pay for it',
+        requester_has_no_key: `the person it is for has not added their own ${backendKey} API key`,
+        runner_lacks_feature: 'the runner that asked for it is too old to be trusted with a personal key; an updated runner can take it',      };
+      const cause = str(detail.cause);
+      return {
+        code: reason,
+        detail: `The team's credential policy is personal keys only, and ${(cause && why[cause]) || 'no personal key can be used for it'}. Add a personal ${backendKey} key under Settings, or have an admin change the team's credential policy.`,
+      };
+    }
+    case 'provider_not_allowed': {
+      const message = str(detail.message);
+      const remedy = str(detail.remedy);
+      return {
+        code: reason,
+        detail: `${message ?? 'The Coding provider policy does not allow this run.'} ${remedy ?? 'Ask a team admin to change the Coding provider policy.'} It stays queued and is re-checked on every claim.`,
+      };
+    }
+    case 'tier_policy': {
+      const message = str(detail.message);
+      const remedy = str(detail.remedy);
+      return {
+        code: reason,
+        detail: `${message ?? 'Its model tier is above the model-tier maximum that applies to it.'} ${remedy ?? 'Lower the task tier, or ask a team admin to raise the maximum.'} It stays queued and is re-checked on every claim.`,
+      };
+    }
+    case 'hosted_runner_hours': {
+      const at = str(detail.resetsAt);
+      const used = num(detail.used);
+      const limit = num(detail.limit);
+      return {
+        code: reason,
+        detail: `Hosted runner allowance used${used !== null && limit !== null ? ` (${used} of ${limit} counted hours this month)` : ''}. It stays queued and starts automatically when the allowance refills${at ? ` (${at})` : ''} or grows, or a runner of your own can take it.`,
       };
     }
   }

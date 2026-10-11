@@ -733,6 +733,13 @@ describe('deriveTaskHealthSignal', () => {
       ])).toEqual(['x', 'y']);
     });
 
+    it("foreignDependencyIds skips a surface audit's out-of-mission deps: they no longer hold it", () => {
+      expect(foreignDependencyIds([
+        { id: 'a', title: 'Build', dependsOn: ['x'] },
+        { id: 'audit', title: '[surface audit] M', dependsOn: ['a', 'unlinked'] },
+      ])).toEqual(['x']);
+    });
+
     it('health reads loaded out-of-mission dependencies: an unmet one is a DAG wait, not STALLED', () => {
       const tasks = [
         { id: 'b', status: 'pending', taskClass: 'work', title: 'Second', workers: [], dependsOn: ['foreign'], createdAt: ago(3_600_000) },

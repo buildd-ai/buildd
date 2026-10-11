@@ -8,13 +8,15 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/prepare-claimed-worker.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 import { clearCloneThrottles, noteCloneThrottled } from '../../src/git-clone';
 
 // ─── Mocks (must precede importing workers.ts) ──────────────────────────────
 
-let mockResolve: () => string | null = () => '/tmp/test-workspace';
+let mockResolve: () => string | null = () => getTestWorkspace();
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: () => ({
@@ -80,7 +82,7 @@ mock.module('../../src/workspace', () => ({
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -152,8 +154,20 @@ describe('prepareClaimedWorker: Pusher and poll claims prepare a worker the same
   let manager: InstanceType<typeof WorkerManager>;
   let startFromClaim: ReturnType<typeof mock>;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
-    mockResolve = () => '/tmp/test-workspace';
+
+
+    initTestWorkspace();
+    mockResolve = () => getTestWorkspace();
     mockNotifyBrokerCredentials.mockClear();
     mockClaimTask.mockReset();
     mockUpdateWorker.mockReset();

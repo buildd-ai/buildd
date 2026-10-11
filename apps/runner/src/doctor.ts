@@ -5,10 +5,11 @@
  * to diagnose and fix issues it can't resolve with built-in logic.
  */
 
+import { archiveWorktreeWorkSync } from './worktree-archive';
 import { pruneLocalBranches } from './branch-prune';
 import { execSync, spawnSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync, copyFileSync, truncateSync } from 'fs';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { resolveBuilddHome } from './buildd-home';
 import { checkBwrapSupport } from './env-scan';
 import {
@@ -651,6 +652,17 @@ export function fixStaleWorktrees(liveWorkers?: LiveWorkerView): FixResult {
       `[worktree-sweep] removing ${w.path} (branch=${w.branch || '<detached>'}, ` +
       `idle=${Math.round(w.ageMs / 60000)}m, reason=${w.reason})`,
     );
+    // `worktree remove --force` exits 0 on a dirty tree: archive first, and
+    // keep the tree if the archive can't be written.
+    try {
+      if (existsSync(w.path)) {
+        const a = archiveWorktreeWorkSync(w.path, basename(w.path));
+        if (a.archived) console.log(`[worktree-sweep] archived work from ${w.path}: ${[a.bundle, a.patch].filter(Boolean).join(', ')}`);
+      }
+    } catch (err) {
+      console.warn(`[worktree-sweep] keeping ${w.path}: archive failed — ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
+      continue;
+    }
     // Remove via git (also drops the .git/worktrees/ admin ref), fallback to rm -rf.
     try {
       execSync(`git worktree remove --force "${w.path}" 2>/dev/null`, {

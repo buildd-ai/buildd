@@ -7,6 +7,7 @@ import {
   type StageASource,
 } from '@buildd/core/post-session-quality';
 import type { TriageOutcome } from '@buildd/core/post-session-triage';
+import { decisionDepsFor } from './post-session-triage-test-deps';
 import {
   processPostSessionRun,
   sweepPostSessionRuns,
@@ -37,10 +38,9 @@ const skipDecide = (async () => ({
   answers: {
     decision: { type: 'choice', choice: 'skip', confidence: 0.9, probabilities: {} },
     focus: { type: 'choice', choice: 'general', confidence: 0.9, probabilities: {} },
-    reasonCode: { type: 'choice', choice: 'routine_success', confidence: 0.9, probabilities: {} },
   },
 })) as any;
-const triage = { decide: skipDecide, recordReceipts: async () => {} };
+const triage = { decisionDeps: decisionDepsFor(skipDecide), recordReceipts: async () => {} };
 
 function worker(over: Partial<PostSessionWorkerRef> = {}): PostSessionWorkerRef {
   return {
@@ -341,7 +341,7 @@ describe('sweepPostSessionRuns — Stage B triage', () => {
     for (const row of store.rows.values()) {
       expect(row.state).toBe('skipped');
       expect(row.triage).toMatchObject({ finalDecision: 'skip', rule: 'triage', hardTriggered: false });
-      expect(row.triage?.triage).toMatchObject({ status: 'ok', decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
+      expect(row.triage?.triage).toMatchObject({ status: 'ok', decision: 'skip', focus: 'general', reasonCode: 'focus_general' });
     }
     // Replay: nothing left to collect or triage.
     expect(await sweepPostSessionRuns({ store, now: NOW, triage })).toMatchObject({ candidates: 0, triaged: 0 });
@@ -350,7 +350,7 @@ describe('sweepPostSessionRuns — Stage B triage', () => {
   it('an unavailable decision fails open: the sweep completes and the run skips', async () => {
     const store = fakeStore([worker({ id: 'a' })]);
     const decide = (async () => ({ ok: false, error: { kind: 'timeout' }, latencyMs: 5000, attempts: 2 })) as any;
-    const res = await sweepPostSessionRuns({ store, now: NOW, triage: { decide } });
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage: { decisionDeps: decisionDepsFor(decide) } });
     expect(res).toMatchObject({ collected: 1, triaged: 1, selected: 0, triageUnavailable: 1, triageErrors: 0 });
     const row = [...store.rows.values()][0];
     expect(row.triage?.triage).toMatchObject({ status: 'unavailable', reasonCode: 'triage_unavailable' });
@@ -379,9 +379,10 @@ describe('sweepPostSessionRuns — Stage B triage', () => {
       params.onUsage?.({ usage: { inputTokens: 100, outputTokens: 4, costUsd: 0.0002 } });
       return skipDecide();
     }) as any;
-    const res = await sweepPostSessionRuns({ store, now: NOW, triage: { decide, recordReceipts: async () => {} } });
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage: { decisionDeps: decisionDepsFor(decide), recordReceipts: async () => {} } });
     expect(res).toMatchObject({ triaged: 2, selected: 1, hardTriggered: 1 });
-    expect(res.triageCost).toEqual({ calls: 2, usd: 0.0004, inputTokens: 200, outputTokens: 8 });
+    // The hard-triggered run is decided by rule and asks no model.
+    expect(res.triageCost).toEqual({ calls: 1, usd: 0.0002, inputTokens: 100, outputTokens: 4 });
   });
 
   it('records a triage stage failure and moves on to the next run', async () => {

@@ -5,12 +5,14 @@ import Chip, { type ChipTone, type ChipVariant } from './Chip';
 const classesOf = (html: string) => html.match(/^<span class="([^"]*)"/)?.[1].split(/\s+/) ?? [];
 
 describe('Chip', () => {
-  it('is a square, uppercase, mono chip on the chip type role that never wraps', () => {
+  it('is a mono chip on the chip type role, in the case it was written, on the 4px pill radius, that never wraps', () => {
     const cls = classesOf(renderToStaticMarkup(<Chip tone="success">Done</Chip>));
-    for (const c of ['text-chip', 'uppercase', 'font-mono', 'border', 'whitespace-nowrap', 'shrink-0']) {
+    for (const c of ['text-chip', 'font-mono', 'border', 'rounded', 'whitespace-nowrap', 'shrink-0']) {
       expect(cls).toContain(c);
     }
-    expect(cls.some(c => c.startsWith('rounded'))).toBe(false);
+    // design-system.md §1.1: all-caps tracked labels are for section headers only.
+    expect(cls).not.toContain('uppercase');
+    expect(cls.some(c => c.startsWith('tracking-'))).toBe(false);
   });
 
   it('draws a leading square dot by default and drops it with dot={false}', () => {

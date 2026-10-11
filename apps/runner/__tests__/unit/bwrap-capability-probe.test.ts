@@ -93,6 +93,20 @@ describe('checkBwrapMountIsolationSupport', () => {
     }
   });
 
+  it('inner-sandbox probe also mounts the ELF loader dirs (merged-usr hosts)', () => {
+    const calls: string[] = [];
+    mockExecSync.mockImplementation((cmd: string) => {
+      calls.push(cmd);
+      return Buffer.from('ok\n');
+    });
+    checkBwrapSupport();
+    const probe = calls.find(c => c.includes('bwrap') && c.includes('echo'))!;
+    expect(probe).toContain('--unshare-net');
+    for (const dir of ['/bin', '/lib', '/lib64']) {
+      expect(probe).toContain(`--ro-bind-try ${dir} ${dir}`);
+    }
+  });
+
   it('is true on a host that refuses net namespaces but allows user + pid', () => {
     netNamespaceRefused();
     // The strict probe correctly reports false for Claude Code's inner sandbox…

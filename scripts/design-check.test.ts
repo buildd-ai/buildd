@@ -84,4 +84,52 @@ describe('design-check', () => {
     expect(() => readSources(join(mkdtempSync(join(tmpdir(), 'dc-')), 'absent'))).toThrow(/does not exist/);
   });
 
+  const flagged = (path: string, line: string, key: keyof ReturnType<typeof scanSources>['counts']) =>
+    scanSources([{ path, content: line }]).counts[key][path] ?? 0;
+
+  it('flags a hand-rolled framed box but not Card, a hairline row, or a pill', () => {
+    expect(flagged(OLD, '<div className="rounded-lg border border-border p-4" />', 'framedBoxes')).toBe(1);
+    expect(flagged(OLD, '<div className="border rounded-md px-3" />', 'framedBoxes')).toBe(1);
+    expect(flagged(OLD, '<div className="card p-4" />', 'framedBoxes')).toBe(0);
+    expect(flagged(OLD, '<div className="border-b border-border py-2" />', 'framedBoxes')).toBe(0);
+    expect(flagged('apps/web/src/components/ui/Card.tsx', '<div className="rounded-lg border p-4" />', 'framedBoxes')).toBe(0);
+  });
+
+  it('flags uppercase and arbitrary tracking labels', () => {
+    expect(flagged(OLD, '<span className="text-meta uppercase">Status</span>', 'trackedLabels')).toBe(1);
+    expect(flagged(OLD, '<span className="tracking-[0.08em]">x</span>', 'trackedLabels')).toBe(1);
+    expect(flagged(OLD, '<span className="normal-case tracking-tight">x</span>', 'trackedLabels')).toBe(0);
+  });
+
+  it('flags accent fills and accent selected states outside the allowed components', () => {
+    expect(flagged(OLD, '<div className="bg-accent text-white" />', 'accentFills')).toBe(1);
+    expect(flagged(OLD, '<button className="bg-primary/10" />', 'accentFills')).toBe(1);
+    expect(flagged(OLD, "<b className={active ? 'border-accent' : ''} />", 'accentFills')).toBe(1);
+    expect(flagged(OLD, '<span className="text-accent-text" />', 'accentFills')).toBe(0);
+    expect(flagged('apps/web/src/components/ui/PrimaryAction.tsx', '<a className="bg-accent" />', 'accentFills')).toBe(0);
+    expect(flagged('apps/web/src/app/home/NeedsYouCards.tsx', '<a className="bg-accent" />', 'accentFills')).toBe(0);
+  });
+
+  it('flags tinted state boxes', () => {
+    expect(flagged(OLD, '<div className="bg-status-error/10" />', 'tintedStateBoxes')).toBe(1);
+    expect(flagged(OLD, '<span className="bg-status-error" />', 'tintedStateBoxes')).toBe(0);
+  });
+
+  it('per-file rules fail on a new file even when another file paid down', () => {
+    const line = '<div className="bg-status-error/10" />';
+    const before = scanSources([{ path: OLD, content: `${line}\n${line}` }]);
+    const after = scanSources([
+      { path: OLD, content: line },
+      { path: NEW, content: line },
+    ]);
+    const r = findRegressions(before.counts, after.counts, after.violations);
+    expect(r.map(x => x.rule)).toEqual(['tintedStateBoxes']);
+    expect(r[0].offenders.map(v => v.file)).toEqual([NEW]);
+  });
+
+  it('--update keeps entries for files that still have violations', () => {
+    const baseline = scanSources([{ path: OLD, content: 'function StatusBadge() {}' }]).counts;
+    const renamed = scanSources([{ path: NEW, content: 'function StatusBadge() {}' }]).counts;
+    expect(updatedBaseline(baseline, renamed, false).next.localStatusBadges).toEqual({ [NEW]: 1 });
+  });
 });

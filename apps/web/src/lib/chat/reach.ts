@@ -19,6 +19,7 @@ import {
 import type { ChatObjectOwner, ChatReach } from './in-process-api';
 import { isStandardWorkspace } from '../workspace-data-class';
 import type { OwnedKind } from './reach-rules';
+import { filterWorkspacesByMemberRepoAccess } from '../member-repo-access';
 
 /** Sensitive by either marker: the column, or the older gitConfig flag. Shared in ../workspace-data-class. */
 export { isStandardWorkspace };
@@ -94,14 +95,21 @@ export const OWNER_LOOKUPS: Record<OwnedKind, (id: string) => Promise<Owner | nu
     .from(evidenceBackends).where(eq(evidenceBackends.id, id)).limit(1)),
 };
 
-export async function loadChatReach(teamId: string): Promise<ChatReach> {
+export async function loadChatReach(teamId: string, userId?: string): Promise<ChatReach> {
   let workspaceIds = new Set<string>();
   try {
     const rows = await db.query.workspaces.findMany({
       where: eq(workspaces.teamId, teamId),
       columns: { id: true, dataClass: true, gitConfig: true },
     });
-    workspaceIds = new Set(rows.filter(isStandardWorkspace).map(r => r.id));
+    const standard = rows.filter(isStandardWorkspace);
+    workspaceIds = new Set(standard.map(r => r.id));
+    // A workspace with the opt-in GitHub repo check on drops out for a person
+    // who fails it (lib/member-repo-access.ts); the rest are not asked.
+    if (userId) {
+      const gitConfigOf = new Map(standard.map(r => [r.id, r.gitConfig] as const));
+      workspaceIds = await filterWorkspacesByMemberRepoAccess(userId, workspaceIds, { gitConfigOf: id => gitConfigOf.get(id) });
+    }
   } catch (e) {
     console.error('[chat] reach lookup failed; tools see no workspace:', e);
   }

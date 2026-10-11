@@ -53,6 +53,6 @@ export function productionDeps(deadlineAt: number): PassDeps {
       });
     },
     pruneExpiredLessons: store.pruneExpiredLessons,
-    lessonsUrl: `${APP_BASE_URL}/app/settings/ai#chat-retro`,
+    lessonsUrl: `${APP_BASE_URL}/app/settings/models#chat-retro`,
   };
 }

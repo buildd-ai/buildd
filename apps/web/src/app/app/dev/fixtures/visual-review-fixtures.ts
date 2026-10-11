@@ -18,6 +18,7 @@
 import { VISUAL_REVIEW_PHASES, type VisualReviewNeedsYouReason, type VisualReviewPhase } from '@buildd/shared';
 import type { VisualReviewFixtureOptions } from '@/lib/visual-review-model.fixtures';
 import { mockWorkers } from './fixtures-data';
+import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
 
 export const VISUAL_REVIEW_FIXTURE_STATE = 'visual-review';
 /** The real mission Board, Lanes and Feed with a visual model (mission-board-visual-fixtures.ts). */
@@ -30,6 +31,8 @@ export const MISSION_LIST_EXECUTOR_FIXTURE_STATE = 'mission-list-executor';
 export const MISSION_CHECK_INS_FIXTURE_STATE = 'mission-check-ins';
 /** The task page's Evidence files section in each state (TaskEvidenceFilesFixture.tsx). */
 export const TASK_EVIDENCE_FIXTURE_STATE = 'task-evidence';
+/** The task page's Agent errors for a retried task: routine fresh start vs lost work (TaskErrorEvidenceFixture.tsx). */
+export const TASK_ERROR_EVIDENCE_FIXTURE_STATE = 'task-error-evidence';
 /** The mission's Goal criteria sheet: not-verifiable and ready states (GoalCriteriaFixture.tsx). */
 export const GOAL_CRITERIA_FIXTURE_STATE = 'goal-criteria';
 
@@ -39,12 +42,19 @@ export const ONBOARDING_FIXTURE_STATE = 'onboarding';
 /** Settings → Storage with fixture backends (EvidenceStorageFixture.tsx). */
 export const EVIDENCE_STORAGE_FIXTURE_STATE = 'evidence-storage';
 
+/** Settings → Connected apps with fake connections and a local api (ConnectionsFixture.tsx). */
+export const MCP_CONNECTIONS_FIXTURE_STATE = 'mcp-connections';
+
+/** Team settings → Platform Operator access, team ceiling + per-workspace grants (OperatorAccessFixture.tsx). */
+export const OPERATOR_ACCESS_FIXTURE_STATE = 'operator-access';
 /** Settings → Model providers with a gateway, a team agent endpoint and two overrides (ModelProvidersFixture.tsx). */
 export const MODEL_PROVIDERS_FIXTURE_STATE = 'model-providers';
 
 /** The completed task page's What shipped header, and Checks by commit (task-shipped-fixtures.ts). */
 export const TASK_SHIPPED_FIXTURE_STATE = 'task-shipped';
 export const COMMIT_CHECKS_FIXTURE_STATE = 'commit-checks';
+/** The task page head per docs/specs/task-page.md regression case (task-page-fixtures.ts). */
+export const TASK_PAGE_FIXTURE_STATE = 'task-page';
 
 /** A question's answer pending, recorded, already answered and failed (AnswerStatesFixture.tsx). */
 export const ANSWER_STATES_FIXTURE_STATE = 'answer-states';
@@ -61,16 +71,42 @@ export const TOOL_BREAKDOWN_FIXTURE_STATE = 'tool-breakdown';
 
 /** The mission Board's Landed strip and its tethered drawer (mission-task-strip-fixtures.ts). */
 export const MISSION_TASK_STRIP_FIXTURE_STATE = 'mission-task-strip';
+export const MISSION_PLAN_FIXTURE_STATE = 'mission-plan';
 
 /** Workspace settings' Cloud runner size section, derived / explicit / default (RunnerSizeFixture.tsx). */
 export const RUNNER_SIZE_FIXTURE_STATE = 'runner-size';
+/** The mission page's "Waive visual audit": the blocked audit's drawer and the Visual review card. */
+export const SURFACE_AUDIT_WAIVER_FIXTURE_STATE = 'surface-audit-waiver';
+/** The hosted runner allowance on every surface it shows (HostedRunnerFixture.tsx). */
+export const HOSTED_RUNNER_FIXTURE_STATE = 'hosted-runner';
 /** Activity's Interactive sessions section, one session per state (InteractiveSessionsFixture.tsx). */
 export const INTERACTIVE_SESSIONS_FIXTURE_STATE = 'interactive-sessions';
 
 /** Settings → Workspaces list: differs chips, team groups, inactive fold (WorkspacesListFixture.tsx). */
 export const WORKSPACES_LIST_FIXTURE_STATE = 'workspaces-list';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, FAILURE_KINDS_FIXTURE_STATE, ENTITLEMENT_BLOCKED_FIXTURE_STATE, COORDINATION_HOLD_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE, RUNNER_SIZE_FIXTURE_STATE, INTERACTIVE_SESSIONS_FIXTURE_STATE, WORKSPACES_LIST_FIXTURE_STATE];
+/** Kernel-owned deliveries on Home and the task page (DeliveryStatesFixture.tsx). */
+export const DELIVERY_STATES_FIXTURE_STATE = 'delivery-states';
+/** The next moves those deliveries offer, opened (DeliveryActionsFixture.tsx). */
+export const DELIVERY_REVIEW_ACTIONS_FIXTURE_STATE = 'delivery-review-actions';
+export const DELIVERY_DOCK_FIXTURE_STATE = 'delivery-dock';
+export const DELIVERY_RUN_FIX_FIXTURE_STATE = 'delivery-run-fix';
+/** Activity Now/History, with one delivery walked through audit fail → repair → land (ActivityDeliveryFixture.tsx). */
+export const ACTIVITY_DELIVERY_FIXTURE_STATE = 'activity-delivery';
+
+/** The team page's members, owner + admin + member, seen as each (team-members-fixtures.ts). */
+export const TEAM_MEMBERS_FIXTURE_STATE = 'team-members';
+
+/** The shared refined-UI components in one gallery (RefinedComponentsFixture.tsx). */
+export const REFINED_COMPONENTS_FIXTURE_STATE = 'refined-components';
+
+/** The mission Flow timeline over the prototype's two missions (MissionFlowFixture.tsx). */
+export const MISSION_FLOW_FIXTURE_STATE = 'mission-flow';
+
+/** Home's Agents panel and delivery rows with a busy fleet (HomeCardsFixture.tsx); `&data=empty` for none. */
+export const HOME_CARDS_FIXTURE_STATE = 'home-cards';
+
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, OPERATOR_ACCESS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, TASK_PAGE_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, FAILURE_KINDS_FIXTURE_STATE, ENTITLEMENT_BLOCKED_FIXTURE_STATE, COORDINATION_HOLD_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, MISSION_PLAN_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE, RUNNER_SIZE_FIXTURE_STATE, INTERACTIVE_SESSIONS_FIXTURE_STATE, WORKSPACES_LIST_FIXTURE_STATE, HOSTED_RUNNER_FIXTURE_STATE, DELIVERY_STATES_FIXTURE_STATE, SURFACE_AUDIT_WAIVER_FIXTURE_STATE, DELIVERY_REVIEW_ACTIONS_FIXTURE_STATE, DELIVERY_DOCK_FIXTURE_STATE, DELIVERY_RUN_FIX_FIXTURE_STATE, ACTIVITY_DELIVERY_FIXTURE_STATE, TEAM_MEMBERS_FIXTURE_STATE, REFINED_COMPONENTS_FIXTURE_STATE, MISSION_FLOW_FIXTURE_STATE, RUN_ACTIVITY_FIXTURE_STATE, HOME_CARDS_FIXTURE_STATE, MCP_CONNECTIONS_FIXTURE_STATE, TASK_ERROR_EVIDENCE_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);

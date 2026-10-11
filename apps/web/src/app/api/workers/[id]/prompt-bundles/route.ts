@@ -20,7 +20,8 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import type { ClaimTasksResponse, WorkerPromptBundlesResponse } from '@buildd/shared';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { isUuid } from '@/lib/uuid';
 import { attachRoleConfig, attachSkillBundles } from '../../claim/skill-and-role-injection';
 
@@ -39,7 +40,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    columns: { id: true, accountId: true, taskId: true },
+    columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true },
     with: {
       task: {
         columns: { id: true, workspaceId: true, roleSlug: true, context: true },
@@ -47,7 +48,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       },
     },
   });
-  if (!worker || worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) return notFound();
+  if (!worker || !callerOwnsWorker(account, worker)) return notFound();
   const task = (worker as { task?: Record<string, any> | null }).task;
   if (!task) return notFound();
 

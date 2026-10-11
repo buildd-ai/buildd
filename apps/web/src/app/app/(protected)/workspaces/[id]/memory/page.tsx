@@ -9,6 +9,7 @@ import type { Memory } from '@buildd/core/memory-store';
 import { getMemoryStoreForTeam } from '@/lib/memory-helper';
 import { workspaceProjectKey } from '@buildd/core/project-scope';
 import ObservationList from './ObservationList';
+import KnowledgeHealthSection from './KnowledgeHealthSection';
 import { roleHas } from '@/lib/permission-registry';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
 
@@ -48,10 +49,8 @@ export default async function WorkspaceMemoryPage({
 
   if (isDev) {
     return (
-      <main className="min-h-screen p-8">
-        <div className="max-w-4xl mx-auto">
-          <p className="text-text-muted">Development mode · no database</p>
-        </div>
+      <main className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+        <p className="text-text-muted">Development mode · no database</p>
       </main>
     );
   }
@@ -75,18 +74,15 @@ export default async function WorkspaceMemoryPage({
   const { memories, total } = await fetchInitialMemories(id);
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-4xl mx-auto">
-        <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
-          &larr; {workspace.name}
-        </Link>
-
-        <div className="flex justify-between items-start mb-8">
-          <div>
-            <h1 className="text-3xl font-bold">Memory</h1>
-            <p className="text-text-muted mt-1">{total} memories</p>
-          </div>
-        </div>
+    <main className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+      <div className="max-w-4xl space-y-8">
+        <header>
+          <h1 className="hidden md:block text-xl font-semibold text-text-primary">Memory</h1>
+          <p className="text-sm text-text-secondary md:mt-1.5">
+            <span className="font-mono">{total}</span> {total === 1 ? 'memory' : 'memories'} in{' '}
+            <Link href={`/app/workspaces/${id}`} className="underline hover:text-text-primary">{workspace.name}</Link>
+          </p>
+        </header>
 
         <ObservationList
           workspaceId={id}
@@ -108,6 +104,7 @@ export default async function WorkspaceMemoryPage({
           }))}
           canReview={roleHas(access.role, 'review_memory', await getTeamPermissionOverrides(access.teamId))}
         />
+        <KnowledgeHealthSection workspaceId={id} />
       </div>
     </main>
   );

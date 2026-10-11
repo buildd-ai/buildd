@@ -1,4 +1,7 @@
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
+import { withoutLandingOverrideGrant } from '@/lib/landing-override-grant';
+import { withoutPrReachGrant } from '@/lib/pr-reach-grant';
+import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, accounts, accountWorkspaces } from '@buildd/core/db/schema';
@@ -9,6 +12,7 @@ import { eq, and, lte, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, classifyScheduleCadence } from '@/lib/schedule-helpers';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
+import { scheduleTaskEstimate } from '@/lib/task-estimate-hook';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
 import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
@@ -369,7 +373,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         // Build task context — include trigger metadata if present
         const template = schedule.taskTemplate;
         const taskContext: Record<string, unknown> = {
-          ...(template.context || {}),
+          // A landing grant is a person's call on one task, never a template's (landing-override-grant.ts).
+          ...withoutPrReachGrant(withoutReviewDispatchContext(withoutLandingOverrideGrant(template.context || {}))),
           scheduleId: schedule.id,
           scheduleName: schedule.name,
         };
@@ -861,8 +866,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         // The template's role, if it still names a role this workspace has.
         // A stale slug files the task role-less rather than stranding it at
         // claim (role-routing §1 row 11, §3.1).
+        // The schedule's creator is who its tasks are for, so their own
+        // private role counts; anyone else's never does.
         const templateRole = template.roleSlug
-          && (await resolveEffectiveRoleSlugs(taskWorkspaceId)).has(template.roleSlug)
+          && (await resolveEffectiveRoleSlugs(taskWorkspaceId, schedule.createdByUserId ?? null)).has(template.roleSlug)
           ? template.roleSlug
           : null;
         if (template.roleSlug && !templateRole) {
@@ -966,6 +973,14 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           scheduleCreationManifestShadow(task, { teamId: workspace?.teamId ?? null }, after);
         } catch (err) {
           console.error(`[cron-schedules] manifest shadow scheduling failed for ${task.id} (non-fatal):`, err);
+        }
+
+        // Task estimates experiment (lib/task-estimate-hook.ts): after the
+        // response, never awaited; a planning cycle is bookkeeping and skipped.
+        try {
+          scheduleTaskEstimate(task, after);
+        } catch (err) {
+          console.error(`[cron-schedules] estimate scheduling failed for ${task.id} (non-fatal):`, err);
         }
 
         // Fire schedule triggered event — thin payload only (Pusher 10KB cap).

@@ -1,12 +1,12 @@
 'use client';
 
 /**
- * The initiative card (model: lib/initiative-view.ts), used by the Initiatives
- * list, plus the pieces the initiative page reuses: the status chip, the
- * mission-segmented bar, the next-action button and the mission lines.
+ * The initiative row (model: lib/initiative-view.ts), used by the Initiatives
+ * list, plus the pieces the initiative page reuses: the status pill, the
+ * mission strip, the next-action control and the mission lines.
  *
- * Anatomy: status + title + next action; owner · target · n/N missions; one bar
- * segment per mission; the facts that need you, each a link; its missions.
+ * Anatomy (L1, the MissionRow anatomy): title + status + next action; the
+ * facts that need you; one small strip cell per mission; owner · target · n/N.
  */
 import Link from 'next/link';
 import { useState, useTransition } from 'react';
@@ -20,78 +20,55 @@ import type {
 } from '@/lib/initiative-view';
 import { ArmButton, InlineAnswer, StatusWord } from '@/components/missions/MissionListCards';
 import PhaseBar from '@/components/missions/PhaseBar';
+import { TonePill } from '@/components/ui/StatePill';
+import TaskStrip from '@/components/ui/TaskStrip';
+import type { StateKey, StateTone } from '@/components/ui/states';
 
-const STATUS_CHIP: Record<InitiativeStatus, string> = {
-  planned: 'border-border-strong text-text-secondary',
-  active: 'border-accent text-accent-text',
-  paused: 'border-border-default text-text-muted',
-  completed: 'border-status-success text-status-success',
-  archived: 'border-border-default text-text-muted',
+/** A status a person set is not a delivery state, so it is a tone pill without a glyph. */
+const STATUS_TONE: Record<InitiativeStatus, StateTone> = {
+  planned: 'q',
+  active: 'run',
+  paused: 'q',
+  completed: 'ok',
+  archived: 'q',
 };
 
 export function InitiativeStatusChip({ status, label }: { status: InitiativeStatus; label: string }) {
   return (
-    <span
-      data-testid="initiative-status"
-      data-status={status}
-      className={`inline-flex shrink-0 items-center border px-1.5 py-[3px] font-mono text-[11px] md:text-[10px] font-bold uppercase leading-none tracking-[1.5px] ${STATUS_CHIP[status]}`}
-    >
-      {label}
+    <span data-testid="initiative-status" data-status={status} className="inline-flex shrink-0">
+      <TonePill tone={STATUS_TONE[status]}>{label}</TonePill>
     </span>
   );
 }
 
-const SEGMENT_BOX: Record<InitiativeSegment['state'], string> = {
-  done: 'border-status-success bg-status-success',
-  needs_you: 'border-status-warning',
-  held: 'border-dashed border-status-warning',
-  running: 'border-accent',
-  waiting: 'border-border-strong',
-};
-const SEGMENT_FILL: Record<InitiativeSegment['state'], string> = {
-  done: 'bg-status-success',
-  needs_you: 'bg-status-warning',
-  held: 'bg-status-warning/40',
-  running: 'bg-accent',
-  waiting: 'bg-text-muted',
-};
-const SEGMENT_WORD: Record<InitiativeSegment['state'], string> = {
-  done: 'done',
-  needs_you: 'needs you',
-  held: 'held',
+const SEGMENT_STATE: Record<InitiativeSegment['state'], StateKey> = {
+  done: 'landed',
+  needs_you: 'needs_you',
+  // Held: paused until someone arms it.
+  held: 'waiting',
   running: 'running',
-  waiting: 'not started',
+  waiting: 'ready',
 };
 
-/** One segment per mission: a done mission is solid, an open one fills to its tasks done. */
-export function InitiativeBar({ segments, size = 'md' }: { segments: readonly InitiativeSegment[]; size?: 'md' | 'lg' }) {
+/** A mission segment as a strip display state. */
+export const segmentStripState = (state: InitiativeSegment['state']): StateKey => SEGMENT_STATE[state];
+
+/** The small box strip, one cell per mission: the progress element (replaces the old segmented bar). */
+export function InitiativeStrip({ segments }: { segments: readonly InitiativeSegment[] }) {
   if (segments.length === 0) return null;
-  const h = size === 'lg' ? 'h-[14px]' : 'h-[10px]';
   return (
-    <div data-testid="initiative-bar" className="flex min-w-0 gap-[3px]">
-      {segments.map((s) => (
-        <Link
-          key={s.missionId}
-          href={s.href}
-          data-testid="initiative-bar-segment"
-          data-state={s.state}
-          aria-label={`${s.title}: ${SEGMENT_WORD[s.state]}`}
-          title={`${s.title} · ${SEGMENT_WORD[s.state]}${s.state !== 'done' && s.fill > 0 ? ` · ${Math.round(s.fill * 100)}% of tasks` : ''}`}
-          className={`relative block min-w-[10px] flex-1 overflow-hidden border ${h} ${SEGMENT_BOX[s.state]} hover:opacity-90`}
-        >
-          {s.state !== 'done' && s.fill > 0 && (
-            <span aria-hidden="true" className={`absolute inset-y-0 left-0 ${SEGMENT_FILL[s.state]}`} style={{ width: `${Math.round(s.fill * 100)}%` }} />
-          )}
-        </Link>
-      ))}
-    </div>
+    <TaskStrip
+      size="sm"
+      label="Missions"
+      cells={segments.map((s) => ({ id: s.missionId, state: segmentStripState(s.state), title: s.title }))}
+    />
   );
 }
 
-const PRIMARY_BTN =
-  'inline-flex min-h-11 items-center gap-1 whitespace-nowrap border-2 border-primary bg-primary px-3.5 font-mono text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50 md:min-h-9';
-const QUIET_BTN =
-  'inline-flex min-h-11 items-center gap-1 whitespace-nowrap border-2 border-border-strong bg-surface-3 px-3.5 font-mono text-[12px] font-semibold text-text-primary transition-colors hover:bg-surface-4 md:min-h-9';
+const TEXT_ACTION =
+  'inline-flex min-h-11 items-center gap-1 whitespace-nowrap font-mono text-meta text-text-secondary hover:text-text-primary hover:underline disabled:opacity-50 md:min-h-0';
+/** Answering a decision is the one prominent action: ink, never an orange fill. */
+const ANSWER_BTN = 'btn btn-ink h-11 md:h-8';
 
 /** Sets an initiative's status. The one place the dashboard writes it. */
 export function useSetInitiativeStatus(initiativeId: string) {
@@ -132,7 +109,7 @@ function MarkCompletedButton({ initiativeId }: { initiativeId: string }) {
         data-kind="mark_completed"
         onClick={() => setStatus('completed')}
         disabled={pending}
-        className={PRIMARY_BTN}
+        className={TEXT_ACTION}
       >
         {pending ? 'Saving…' : 'Mark completed'}
       </button>
@@ -141,17 +118,25 @@ function MarkCompletedButton({ initiativeId }: { initiativeId: string }) {
   );
 }
 
-export function InitiativeActionButton({ initiativeId, action }: { initiativeId: string; action: InitiativeAction | null }) {
+/**
+ * The initiative's next action. On a list row every action but answering is a
+ * text link (`open` is dropped: the title is the link). On the initiative page
+ * (`header`) only answering shows: held missions are armed from their own line,
+ * and the status control and "+ New mission" cover the rest.
+ */
+export function InitiativeActionButton({ initiativeId, action, variant = 'row' }: { initiativeId: string; action: InitiativeAction | null; variant?: 'row' | 'header' }) {
   if (!action) return null;
+  if (action.kind === 'answer') {
+    return (
+      <Link href={action.href ?? '#'} data-testid="initiative-action" data-kind="answer" className={ANSWER_BTN}>
+        {action.label} <span aria-hidden="true">→</span>
+      </Link>
+    );
+  }
+  if (variant === 'header' || action.kind === 'open') return null;
   if (action.kind === 'mark_completed') return <MarkCompletedButton initiativeId={initiativeId} />;
-  if (action.kind === 'arm' && action.missionId) return <ArmButton missionId={action.missionId} />;
   return (
-    <Link
-      href={action.href ?? '#'}
-      data-testid="initiative-action"
-      data-kind={action.kind}
-      className={action.kind === 'open' ? QUIET_BTN : PRIMARY_BTN}
-    >
+    <Link href={action.href ?? '#'} data-testid="initiative-action" data-kind={action.kind} className={TEXT_ACTION}>
       {action.label} <span aria-hidden="true">→</span>
     </Link>
   );
@@ -255,17 +240,18 @@ export function InitiativeMeta({ card }: { card: InitiativeCardModel }) {
   );
 }
 
+/** What needs you, one `! …` line (MissionRow's decide line); a finished initiative says so quietly. */
 export function InitiativeFacts({ card }: { card: InitiativeCardModel }) {
   if (card.facts.length === 0) return null;
   return (
-    <p data-testid="initiative-facts" className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[12.5px]">
+    <p data-testid="initiative-facts" className="flex flex-wrap gap-x-4 gap-y-1 text-body">
       {card.facts.map((f) =>
         f.href ? (
-          <Link key={f.key} href={f.href} className="text-status-warning underline decoration-dotted underline-offset-2 hover:text-text-primary">
-            {f.text}
+          <Link key={f.key} href={f.href} className="font-semibold text-status-warning hover:underline">
+            ! {f.text}
           </Link>
         ) : (
-          <span key={f.key} className={f.key === 'all_done' ? 'text-status-success' : 'text-text-secondary'}>
+          <span key={f.key} className={f.key === 'all_done' ? 'text-status-success' : 'text-text-muted'}>
             {f.text}
           </span>
         ),
@@ -274,60 +260,32 @@ export function InitiativeFacts({ card }: { card: InitiativeCardModel }) {
   );
 }
 
-const SECTION_EDGE: Record<InitiativeCardModel['section'], string> = {
-  needs_you: 'border-l-status-warning',
-  active: 'border-l-accent',
-  planned: 'border-l-border-strong',
-  paused: 'border-l-border-default',
-  completed: 'border-l-status-success',
-};
-
-export function InitiativeCard({ card }: { card: InitiativeCardModel }) {
+/** One initiative on the list: an L1 row (hairline above, no box), the MissionRow anatomy. */
+export function InitiativeRow({ card }: { card: InitiativeCardModel }) {
   return (
     <article
-      data-testid="initiative-card"
+      data-testid="initiative-row"
       data-section={card.section}
       data-status={card.status}
-      className={`card border-l-[6px] px-4 py-4 md:px-5 ${SECTION_EDGE[card.section]}`}
+      className="flex flex-col gap-1.5 border-t border-border-default py-3.5"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <InitiativeStatusChip status={card.status} label={card.statusLabel} />
-            <h3 className="min-w-0 font-mono text-[15px] font-semibold leading-tight tracking-[-0.2px] text-text-primary md:text-[17px]">
-              <Link href={card.href} className="line-clamp-2 hover:underline sm:line-clamp-1">{card.title}</Link>
-            </h3>
-          </div>
-          <div className="mt-1.5">
-            <InitiativeMeta card={card} />
-          </div>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+          <h3 className="min-w-0 text-title font-semibold text-text-primary [overflow-wrap:anywhere]">
+            <Link href={card.href} className="hover:underline hover:decoration-[var(--border-strong)]">{card.title}</Link>
+          </h3>
+          <InitiativeStatusChip status={card.status} label={card.statusLabel} />
         </div>
         <span className="hidden shrink-0 sm:block">
           <InitiativeActionButton initiativeId={card.id} action={card.action} />
         </span>
       </div>
-
-      {card.segments.length > 0 && (
-        <div className="mt-3.5">
-          <InitiativeBar segments={card.segments} />
-        </div>
-      )}
-
-      {card.facts.length > 0 && (
-        <div className="mt-3">
-          <InitiativeFacts card={card} />
-        </div>
-      )}
-
-      {card.action && (
-        <div className="mt-3 sm:hidden">
+      <InitiativeFacts card={card} />
+      <InitiativeStrip segments={card.segments} />
+      <InitiativeMeta card={card} />
+      {card.action && card.action.kind !== 'open' && (
+        <div className="sm:hidden">
           <InitiativeActionButton initiativeId={card.id} action={card.action} />
-        </div>
-      )}
-
-      {card.missions.length > 0 && (
-        <div className="mt-3.5">
-          <InitiativeMissionLines missions={card.missions} limit={4} moreHref={card.href} />
         </div>
       )}
     </article>

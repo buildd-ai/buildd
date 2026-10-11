@@ -39,12 +39,20 @@ function wiringSources(): string[] {
 
 const slugs = Object.entries(GATE_SLUGS);
 
+/**
+ * Slugs declared ahead of their first call site, by a schema/vocabulary task
+ * whose wiring is a named follow-up. Each must still be in the gate audit, and
+ * the entry must be removed once the slug is wired — the test below fails if a
+ * pending slug is already referenced, so the list cannot go stale silently.
+ */
+const PENDING_WIRING = new Set<string>([]);
+
 describe('gate slug coverage', () => {
   const corpus = wiringSources()
     .map(f => readFileSync(join(REPO_ROOT, f), 'utf8'))
     .join('\n');
 
-  it.each(slugs)('%s is referenced by at least one wired call site', (constName, slug) => {
+  it.each(slugs.filter(([c]) => !PENDING_WIRING.has(c)))('%s is referenced by at least one wired call site', (constName, slug) => {
     // Call sites use the GATE_SLUGS constant, so the constant NAME is what
     // appears in the source — asserting on the literal slug string would pass
     // on the definition file alone, which is excluded above.
@@ -52,6 +60,14 @@ describe('gate slug coverage', () => {
       corpus.includes(`GATE_SLUGS.${constName}`),
       `GATE_SLUGS.${constName} ('${slug}') is declared but never fired — either wire it or drop it`,
     ).toBe(true);
+  });
+
+  it.each([...PENDING_WIRING])('%s is pending wiring and not yet referenced', (constName) => {
+    expect(constName in GATE_SLUGS, `${constName} is listed as pending but is not a GATE_SLUGS key`).toBe(true);
+    expect(
+      corpus.includes(`GATE_SLUGS.${constName}`),
+      `GATE_SLUGS.${constName} is wired now — remove it from PENDING_WIRING`,
+    ).toBe(false);
   });
 
   it.each(slugs)('%s appears in the gate audit', (_constName, slug) => {

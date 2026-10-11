@@ -51,8 +51,8 @@ export interface ChatOpSpec {
   deferredReason?: string;
   /**
    * Always gets an approval card, whatever the person's "Allow": the op starts
-   * recurring or unattended work (a schedule, an armed mission). Unlike
-   * `admin`, a member may still propose it.
+   * recurring or unattended work (a schedule, an armed mission), or cannot be
+   * undone (a merge). Unlike `admin`, a member may still propose it.
    */
   alwaysAsk?: true;
 }
@@ -74,6 +74,8 @@ const deferred = (reason: string): ChatOpSpec => ({ class: 'deferred', routes: [
 const self = (target: TargetDecl, ...routes: RouteRef[]): ChatOpSpec => ({ class: 'self', target, routes: [WS, ...routes] });
 /** A write that starts recurring or unattended work: never skips its card. */
 const startsWork = (op: ChatOpSpec): ChatOpSpec => ({ ...op, alwaysAsk: true });
+/** A write that cannot be undone (a merge): never skips its card either. */
+const irreversible = (op: ChatOpSpec): ChatOpSpec => ({ ...op, alwaysAsk: true });
 const single = (group: ToolGroup, op: ChatOpSpec): ChatToolSpec => ({ group, ops: { '': op } });
 /** A single-op spec for an MCP action; its group is the action's ACTION_AREA. */
 const one = (op: ChatOpSpec): Omit<ChatToolSpec, 'group'> => ({ ops: { '': op } });
@@ -141,12 +143,14 @@ export const CHAT_TOOL_SPECS = withAreas({
   explain: one(read('GET /api/explain')),
   get_error_traces: one(read('GET /api/workspaces/:id/error-traces', 'GET /api/tasks/:id/error-traces', 'GET /api/workers/:id')),
   get_failure_analytics: one(read('GET /api/health/failures')),
+  list_incidents: one(read('GET /api/health/incidents')),
   dispatch_health: one(deferred('ops read over the transport; the dashboard section covers chat users')),
   get_manifest_coverage: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
   get_path_claim_stats: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
   get_decision_stats: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
   get_budget_forecast: one(read('GET /api/health/budget')),
   list_connectors: one(read('GET /api/connectors/mounted')),
+  resolve_capability: one(deferred('planner/agent discovery before routing; chat users see connectors on Settings')),
   get_usage_stats: one(deferred('its route scopes by the caller\'s teams and takes a workspace slug, so it can\'t be pinned to the conversation team yet')),
   // A runner row carries a workspaceIds array: the reach filter keeps a row
   // only if one of them is in reach, and strips the rest (in-process-api.ts).
@@ -159,7 +163,10 @@ export const CHAT_TOOL_SPECS = withAreas({
   get_pr: one(read('GET /api/github/pr')),
   list_prs: one(read('GET /api/prs')),
   get_pr_review: one(read('GET /api/github/pr/review')),
-  merge_pr: one(deferred(`${KEY_ONLY} (and needs the green-CI + merge-safety gate from the design)`)),
+  // The signed-in person's merge, through the dashboard's own merge route (the landing
+  // page's rails: CI, deny paths, verdict, size, freshness). Its overrides (freshness /
+  // size) are the spent-treadmill escape hatch. Irreversible, so it always asks.
+  merge_pr: one(irreversible(write({ param: 'workspaceId', is: 'workspace' }, 'POST /api/prs/:prNumber/merge'))),
   close_pr: one(deferred(KEY_ONLY)),
   update_pr: one(deferred(KEY_ONLY)),
   request_pr_review: one(deferred(KEY_ONLY)),
@@ -189,6 +196,9 @@ export const CHAT_TOOL_SPECS = withAreas({
   list_artifact_templates: one(read()),
   create_artifact: one(write({ param: 'missionId', is: 'mission' }, 'POST /api/missions/:id/artifacts', 'POST /api/initiatives/:id/artifacts')),
   update_artifact: one(deferred(KEY_ONLY)),
+  link_artifact: one(deferred(KEY_ONLY)),
+  list_artifact_links: one(deferred(KEY_ONLY)),
+  manage_specs: one(deferred('Living Specs are drafted and revised by agents first; chat gets them with the approval flow (G2)')),
 
   // ── admin: workspace config, roles, experiments, models ──
   manage_workspaces: {
@@ -258,6 +268,12 @@ export const CHAT_NATIVE_TOOL_SPECS = {
    * told to stop at a safe point (or to carry on, on resume).
    */
   hold_task: single('tasks', write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'PATCH /api/tasks/:id', 'POST /api/workers/:id/instruct')),
+  /**
+   * The long pastes of this conversation (Living Specs C2): list them, or read
+   * one in bounded form (outline, section, range, grep). Only this
+   * conversation's own attachments, by its owner; no route, no other subject.
+   */
+  read_attachment: single('tasks', read()),
   /** Knowledge search (the MCP `recall` tool). */
   recall: single('memory', read()),
   /** Save team knowledge (the MCP `learn` tool). Team-visible, so a card. */
@@ -275,13 +291,24 @@ export const CHAT_NATIVE_TOOL_SPECS = {
   unwatch: single('notifications', self({ param: 'watchId', is: 'subscription' }, 'GET /api/subscriptions', 'DELETE /api/subscriptions/:id')),
   list_watches: single('notifications', read('GET /api/subscriptions')),
 
+  // ── personal roles (the signed-in person's own; team roles stay admin) ──
+  /**
+   * Create an agent role owned by the person chatting, private until shared.
+   * The MCP register_skill { personal: true } path, as the signed-in user, in
+   * the conversation team (create_personal_roles: members by default). A
+   * member-usable group, unlike register_skill (admin). A write, so a card.
+   */
+  create_personal_role: single('workers', write({ conversation: true }, 'POST /api/roles', 'POST /api/roles/:id/share')),
+  /** Share one of the person's personal roles with the team, or take it back to private. */
+  share_personal_role: single('workers', write({ conversation: true }, 'GET /api/roles', 'POST /api/roles/:id/share')),
+
 } satisfies Record<string, ChatToolSpec>;
 
 export type ChatToolName = keyof typeof CHAT_TOOL_SPECS | keyof typeof CHAT_NATIVE_TOOL_SPECS;
 
 export const ALL_CHAT_TOOL_SPECS: Record<string, ChatToolSpec> = { ...CHAT_TOOL_SPECS, ...CHAT_NATIVE_TOOL_SPECS };
 
-export type NotInChatReason = 'secret' | 'worker-only' | 'deprecated';
+export type NotInChatReason = 'secret' | 'worker-only' | 'deprecated' | 'connection-only' | 'not-yet';
 
 /** MCP actions chat never offers, and why. */
 export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string; deepLink?: string }> = {
@@ -290,16 +317,26 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
     note: 'Secret values would pass through the model and its provider. Manage keys and tokens on the settings screen.',
     deepLink: '/app/settings?section=agent-backends',
   },
+  manage_providers: {
+    reason: 'secret',
+    note: 'A model key would pass through the model and its provider. Manage providers and keys on the settings screen.',
+    deepLink: '/app/settings?section=agent-backends',
+  },
   claim_task: { reason: 'worker-only', note: 'Claims work for a runner; a person in chat is not a worker.' },
   update_progress: { reason: 'worker-only', note: 'A running worker reports its own progress.' },
+  receive_messages: { reason: 'worker-only', note: 'A running worker collects the messages sent to it.' },
   complete_task: { reason: 'worker-only', note: 'A worker completes its own task.' },
   create_pr: { reason: 'worker-only', note: 'PRs are opened by the worker that wrote the branch.' },
   emit_event: { reason: 'worker-only', note: 'Worker milestone events.' },
+  request_capability: { reason: 'worker-only', note: 'A running agent asks for access for its own worker; people decide on Settings.' },
   upload_artifact: { reason: 'worker-only', note: 'Uploads a worker-produced file.' },
   get_page_source: { reason: 'worker-only', note: 'The visual auditor asks where its own pages come from.' },
+  deploy: { reason: 'worker-only', note: 'Authority is an Operator task\'s role grant in its workspace; a person in chat has no task.' },
   record_pr_supersession: { reason: 'worker-only', note: 'Recorded by the worker that superseded a PR.' },
   post_note: { reason: 'worker-only', note: 'Posts to the calling worker\'s task feed.' },
   suggest_schedule_update: { reason: 'worker-only', note: 'A scheduled worker suggests changes to its own schedule.' },
+  update_incident: { reason: 'not-yet', note: 'Acknowledging or resolving a sentinel incident is an MCP/API action for now; chat has no incident target or approval card.' },
+  list_workspaces: { reason: 'connection-only', note: 'Discovery for an MCP connection that reaches several workspaces; a chat conversation is already bound to its team and workspace.' },
 };
 
 /**

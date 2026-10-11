@@ -13,26 +13,46 @@ import { mockWorkers, type FixtureState } from './fixtures-data';
 import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
 import MissionTaskStripFixture from './MissionTaskStripFixture';
+import MissionPlanFixture from './MissionPlanFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
 import GoalCriteriaFixture from './GoalCriteriaFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
+import ConnectionsFixture from './ConnectionsFixture';
+import OperatorAccessFixture from './OperatorAccessFixture';
 import ModelProvidersFixture from './ModelProvidersFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
+import TaskErrorEvidenceFixture from './TaskErrorEvidenceFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
+import { TaskPageFixture } from './TaskPageFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import FailureKindsFixture from './FailureKindsFixture';
+import DeliveryStatesFixture from './DeliveryStatesFixture';
+import DeliveryActionsFixture, { DELIVERY_ACTION_FIXTURE_STATES, type DeliveryActionFixtureState } from './DeliveryActionsFixture';
 import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
 import CoordinationHoldFixture from './CoordinationHoldFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
+import HostedRunnerFixture from './HostedRunnerFixture';
 import InteractiveSessionsFixture from './InteractiveSessionsFixture';
+import RunActivityFixture from './RunActivityFixture';
+import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
+import ActivityDeliveryFixture from './ActivityDeliveryFixture';
+import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
+import TeamMembersFixture from './TeamMembersFixture';
+import RefinedComponentsFixture from './RefinedComponentsFixture';
+import MissionFlowFixture from './MissionFlowFixture';
+import HomeCardsFixture from './HomeCardsFixture';
 import {
+    ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
+    MCP_CONNECTIONS_FIXTURE_STATE,
+    OPERATOR_ACCESS_FIXTURE_STATE,
     RUNNER_SIZE_FIXTURE_STATE,
     WORKSPACES_LIST_FIXTURE_STATE,
+    HOSTED_RUNNER_FIXTURE_STATE,
     INTERACTIVE_SESSIONS_FIXTURE_STATE,
     MODEL_PROVIDERS_FIXTURE_STATE,
     TOOL_BREAKDOWN_FIXTURE_STATE,
@@ -40,18 +60,27 @@ import {
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
     MISSION_TASK_STRIP_FIXTURE_STATE,
+    MISSION_PLAN_FIXTURE_STATE,
     MISSION_CHECK_INS_FIXTURE_STATE,
     GOAL_CRITERIA_FIXTURE_STATE,
     ONBOARDING_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
+    TASK_ERROR_EVIDENCE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
+    TASK_PAGE_FIXTURE_STATE,
     ANSWER_STATES_FIXTURE_STATE,
     AGENT_ACCESS_FIXTURE_STATE,
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
     COORDINATION_HOLD_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
+    DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
+    SURFACE_AUDIT_WAIVER_FIXTURE_STATE,
+    TEAM_MEMBERS_FIXTURE_STATE,
+    REFINED_COMPONENTS_FIXTURE_STATE,
+    MISSION_FLOW_FIXTURE_STATE,
+    HOME_CARDS_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
     visualReviewFixtureLinks,
@@ -81,6 +110,10 @@ export default function DevFixturesPage() {
 
     const worker = mockWorkers[state as FixtureState] || mockWorkers['waiting-input'];
 
+    if (state === ACTIVITY_DELIVERY_FIXTURE_STATE) {
+        return <ActivityDeliveryFixture />;
+    }
+
     if (state === MISSION_BOARD_VISUAL_FIXTURE_STATE) {
         return (
             <KeyHintsProvider value={hints}>
@@ -91,6 +124,14 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_TASK_STRIP_FIXTURE_STATE) {
         return <MissionTaskStripFixture />;
+    }
+
+    if (state === MISSION_PLAN_FIXTURE_STATE) {
+        return <MissionPlanFixture />;
+    }
+
+    if (state === SURFACE_AUDIT_WAIVER_FIXTURE_STATE) {
+        return <SurfaceAuditWaiverFixture />;
     }
 
     if (state === MISSION_LIST_EXECUTOR_FIXTURE_STATE) {
@@ -105,8 +146,16 @@ export default function DevFixturesPage() {
         return <TaskEvidenceFilesFixture />;
     }
 
+    if (state === TASK_ERROR_EVIDENCE_FIXTURE_STATE) {
+        return <TaskErrorEvidenceFixture />;
+    }
+
     if (state === TASK_SHIPPED_FIXTURE_STATE) {
         return <TaskShippedFixture />;
+    }
+
+    if (state === TASK_PAGE_FIXTURE_STATE) {
+        return <TaskPageFixture />;
     }
 
     if (state === COMMIT_CHECKS_FIXTURE_STATE) {
@@ -129,6 +178,14 @@ export default function DevFixturesPage() {
         return <FailureKindsFixture />;
     }
 
+    if (state === DELIVERY_STATES_FIXTURE_STATE) {
+        return <DeliveryStatesFixture />;
+    }
+
+    if ((DELIVERY_ACTION_FIXTURE_STATES as readonly string[]).includes(state)) {
+        return <DeliveryActionsFixture state={state as DeliveryActionFixtureState} />;
+    }
+
     if (state === ANSWER_STATES_FIXTURE_STATE) {
         return <AnswerStatesFixture />;
     }
@@ -145,6 +202,9 @@ export default function DevFixturesPage() {
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
     }
+    if (state === MCP_CONNECTIONS_FIXTURE_STATE) {
+        return <ConnectionsFixture />;
+    }
     if (state === INTERACTIVE_SESSIONS_FIXTURE_STATE) {
         return <InteractiveSessionsFixture />;
     }
@@ -155,8 +215,35 @@ export default function DevFixturesPage() {
     if (state === WORKSPACES_LIST_FIXTURE_STATE) {
         return <WorkspacesListFixture />;
     }
+    if (state === HOSTED_RUNNER_FIXTURE_STATE) {
+        return <HostedRunnerFixture />;
+    }
     if (state === MODEL_PROVIDERS_FIXTURE_STATE) {
         return <ModelProvidersFixture />;
+    }
+
+    if (state === RUN_ACTIVITY_FIXTURE_STATE) {
+        return <RunActivityFixture />;
+    }
+
+    if (state === OPERATOR_ACCESS_FIXTURE_STATE) {
+        return <OperatorAccessFixture />;
+    }
+
+    if (state === TEAM_MEMBERS_FIXTURE_STATE) {
+        return <TeamMembersFixture />;
+    }
+
+    if (state === REFINED_COMPONENTS_FIXTURE_STATE) {
+        return <RefinedComponentsFixture />;
+    }
+
+    if (state === HOME_CARDS_FIXTURE_STATE) {
+        return <HomeCardsFixture />;
+    }
+
+    if (state === MISSION_FLOW_FIXTURE_STATE) {
+        return <MissionFlowFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {
@@ -170,7 +257,7 @@ export default function DevFixturesPage() {
     return (
         <KeyHintsProvider value={hints}>
         <div className="min-h-screen bg-surface-1 p-8">
-            <div className="max-w-4xl mx-auto">
+            <div className="max-w-4xl mx-auto min-w-0">
                 <div className="mb-6">
                     <h1 className="text-2xl font-bold mb-2">Dev Fixtures: Worker States</h1>
                     <p className="text-text-secondary mb-4">
@@ -213,9 +300,10 @@ export default function DevFixturesPage() {
                             />
                         </div>
 
-                        <div className="mt-6 p-4 bg-surface-3 rounded-lg">
+                        <div className="mt-6 p-4 bg-surface-3 rounded-lg min-w-0">
                             <h3 className="font-medium mb-2">Raw Worker Data</h3>
-                            <pre className="text-xs overflow-auto max-h-64 p-2 bg-surface-1 text-status-success rounded">
+                            {/* Wrap long lines (the prompt) so the block never widens the page at phone width. */}
+                            <pre className="text-xs overflow-auto max-h-64 min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] p-2 bg-surface-1 text-status-success rounded">
                                 {JSON.stringify(worker, null, 2)}
                             </pre>
                         </div>

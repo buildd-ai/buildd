@@ -298,7 +298,7 @@ describe('GET /api/stats/usage — aggregation', () => {
     expect(body.workspaceIds).toEqual(['ws-2']);
   });
 
-  it('reports cost as unavailable on a seat-auth window instead of $0.00', async () => {
+  it('reports cost as unavailable on a window with no recorded cost instead of $0.00', async () => {
     mockWorkersFindMany.mockResolvedValue([
       worker({ taskId: 'a', costUsd: '0' }),
       worker({ taskId: 'b', costUsd: '0' }),
@@ -306,7 +306,7 @@ describe('GET /api/stats/usage — aggregation', () => {
 
     const body = await (await GET(makeRequest())).json();
     expect(body.perTask.costUsd.kind).toBe('unavailable');
-    expect(body.perTask.costUsd.detail).toMatch(/seat-based/);
+    expect(body.perTask.costUsd.detail).toMatch(/recorded a cost/);
     expect(dist(body.perTask.inputTokens).median).toBe(20_000);
   });
 

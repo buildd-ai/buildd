@@ -1,201 +1,236 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
-import { CHAT_PROVIDER_INFO, chatKeysInUse, type KeyPolicy, type ProviderKeysView } from '@/lib/provider-keys-client';
-import { listProviderKeys, removeProviderKey, setProviderKey, testProviderKey } from '@/lib/provider-keys-api';
-import { ProviderKeyCard } from '@/components/settings/ProviderKeyCard';
-import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
+import { useCallback, useEffect, useState, type ComponentProps } from 'react';
 import { useSearchParams } from 'next/navigation';
-import ConnectOpenRouterButton, { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
-import { chatStatusCopy, choiceFromPolicy, policyFromChoice, type PolicyChoice } from './provider-copy';
+import type { ListProvidersResponse, ProviderApiScope } from '@buildd/shared';
+import { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
+import { Select } from '@/components/ui/Select';
+import Section from '@/components/ui/Section';
+import Notice from '@/components/ui/Notice';
+import CredentialPolicySelector from './CredentialPolicySelector';
+import ProviderRow from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
+import AgentBackendsSection, { type SignInSlots } from '../AgentBackendsSection';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
-
-export interface ChatAvailabilityProp {
-  available: boolean;
-  reason: 'no_key' | null;
-}
+import { ADVANCED_ANCHOR, coverageText, coverageView, groupProviders, policySentence } from './providers-view';
 
 /**
- * Settings → Connections → Model providers. The one place a team's provider
- * keys live: status, scope, last check, Test / Replace / Remove, and whose key
- * server-side AI spends. Keys never come back beyond last4.
+ * The model keys, one scope per page. `scope="team"` is Settings › Team ›
+ * Models: Keys (the team's), Workspace keys (one workspace at a time, picked
+ * from a list) and Routing. `scope="mine"` is Settings › You › Keys: your own
+ * keys and nothing of the team's to change, with the team's "Who pays" as a
+ * line. No page mixes the two.
  *
- * Every provider gets the same card and the same controls; any one, two or
- * three may be set. OpenRouter carries a "recommended" hint and an extra
- * Connect button, neither of which changes what the card does.
+ * Every model provider in registry order, one row each (Claude and OpenAI each
+ * group their key and subscription into one row). "Who pays" shows on Models
+ * only once it matters: a personal key exists in the team, or the policy is no
+ * longer the default. Built on `/api/providers`: what a provider serves, the
+ * scopes it can be stored at and what each stored row serves today come from
+ * the response, never from a copy here. Keys never come back beyond last4.
+ *
+ * On Models a provider row shows every way it is connected in its opened
+ * detail: the key, a subscription sign-in and a runner sign-in (`signIns`, the
+ * Claude and Codex logins, at the row's scope). There is no separate sign-ins
+ * section.
+ *
+ * Routing: what the cards don't cover (gateway, agent endpoint, decision
+ * model) and the provider routing toggle. A gateway change reloads the cards,
+ * so both sections live in one component.
  */
-export default function ModelProvidersClient({ teamId, isAdmin, availability, workspaces = [] }: {
+export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [], signIns, scope = 'team' }: {
   teamId: string;
+  /** Fallback for the Routing section until the list loads. */
   isAdmin: boolean;
-  availability: ChatAvailabilityProp;
-  /** The team's workspaces, for the agent endpoint's scope selector. */
+  /** The team's workspaces, for Workspace keys and the agent endpoint. */
   workspaces?: EndpointWorkspace[];
+  /** Props for the sign-ins folded into the Claude and OpenAI rows. Omitted: the rows hold keys only. */
+  signIns?: Pick<ComponentProps<typeof AgentBackendsSection>, 'workspaces' | 'currentTeamId' | 'manageableTeamIds' | 'canManage' | 'canManageRouting'>;
+  /** Whose keys this page holds: the team's (Models) or yours (Keys). */
+  scope?: 'team' | 'mine';
 }) {
-  const [view, setView] = useState<ProviderKeysView | null>(null);
+  const params = useSearchParams();
+  const [workspaceId, setWorkspaceId] = useState<string | null>(workspaces[0]?.id ?? null);
+  const [data, setData] = useState<ListProvidersResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Bumped when the gateway changes: the sections that route through it reload.
   const [gatewayRev, setGatewayRev] = useState(0);
+  // One row open at a time, across both lists: `<scope>:<group>`.
+  const [openRow, setOpenRow] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setView(await listProviderKeys(teamId));
+      const qs = new URLSearchParams({ teamId });
+      if (workspaceId && scope === 'team') qs.set('workspaceId', workspaceId);
+      const res = await fetch(`/api/providers?${qs}`);
+      if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? LOAD_ERROR);
+      setData(await res.json() as ListProvidersResponse);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load provider keys');
+      setError(e instanceof Error ? e.message : LOAD_ERROR);
     }
-  }, [teamId]);
+  }, [teamId, workspaceId, scope]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const canManage = view ? view.canManageTeamKeys : isAdmin;
-  const status = view ? chatStatusCopy(availability, chatKeysInUse(view), canManage, view.keyPolicy) : null;
-  const showOwnCount = view?.keyPolicy !== 'team';
-  const flow = providerFlowMessage(useSearchParams());
-  const openRouterUnset = !!view && !view.providers.find((p) => p.provider === 'openrouter')?.team;
+  // Old deep link (getting-started, failed-task page): open the Claude row on its key field.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.hash === '#agent-key') setOpenRow(`${scope}:claude`);
+  }, [scope]);
 
-  return (
-    <div className="space-y-8">
-      {status && (
-        <div className="flex items-start gap-3 text-sm" data-testid="chat-status" data-tone={status.tone}>
-          {/* mt-1.5 sits the square on the first line's middle, however the text wraps. */}
-          <span aria-hidden className={`mt-1.5 w-2.5 h-2.5 shrink-0 ${STATUS_TONE_SQUARE[status.tone]}`} />
-          <span className="min-w-0">
-            <span className="text-text-primary" data-testid="chat-status-text">{status.text}</span>
-            {status.action && (
-              <> <Link href={status.action.href} className="underline text-accent-text hover:no-underline">{status.action.label}</Link></>
-            )}
-          </span>
-        </div>
-      )}
+  const flow = providerFlowMessage(params);
+  const canManageRouting = data ? data.caller.can.manage_inference_providers : isAdmin;
 
-      <section aria-labelledby="providers-h">
-        <h2 id="providers-h" className="section-label mb-3">Team keys</h2>
-        {error && <div className="notice notice-err mb-3 text-xs">{error}</div>}
-        {flow && (
-          <p role={flow.tone === 'err' ? 'alert' : 'status'} className={`mb-3 text-sm ${flow.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{flow.text}</p>
-        )}
-        <div className="space-y-2.5">
-          {CHAT_PROVIDER_INFO.map((info) => {
-            const card = view?.providers.find((p) => p.provider === info.id);
+  const list = (rowScope: ProviderApiScope, slots: SignInSlots | null, testId: string) => (
+    data
+      ? (
+        <ul className="border-y border-border-default divide-y divide-border-default" data-testid={testId}>
+          {groupProviders(data.providers).map((g) => {
+            const key = `${rowScope}:${g.id}`;
             return (
-              <ProviderKeyCard
-                key={info.id}
-                info={info}
-                status={card?.team ?? null}
-                ownKeyCount={showOwnCount ? card?.membersWithOwnKey ?? null : null}
-                mode="team"
-                canEdit={canManage}
-                recommended={info.id === 'openrouter'}
-                addAction={info.id === 'openrouter' && openRouterUnset
-                  ? <ConnectOpenRouterButton scope="team" teamId={teamId} returnTo="/app/settings/providers" />
-                  : undefined}
-                loading={view === null && !error}
-                onSave={async (value) => { const k = await setProviderKey(teamId, info.id, 'team', value); await load(); return k; }}
-                onRemove={async () => { await removeProviderKey(teamId, info.id, 'team'); await load(); }}
-                onTest={async () => { const r = await testProviderKey(teamId, info.id, 'team'); await load(); return r; }}
+              <ProviderRow
+                key={key}
+                group={g}
+                scope={rowScope}
+                data={data}
+                workspaceId={workspaceId}
+                onChanged={load}
+                open={openRow === key}
+                onToggle={(o) => setOpenRow(o ? key : null)}
+                signIn={!slots ? null : g.id === 'claude' ? slots.claude : g.id === 'openai' ? slots.openai : null}
               />
             );
           })}
-          <GatewayCard teamId={teamId} canManage={canManage} onChanged={() => setGatewayRev((r) => r + 1)} />
-        </div>
-        {!canManage && <p className="text-xs text-text-muted mt-2.5">Only a team owner or admin can change team keys.</p>}
-      </section>
+        </ul>
+      )
+      : !error && <p className="text-body text-text-muted">Loading…</p>
+  );
 
-      {view && (
-        <KeyPolicyControl teamId={teamId} policy={view.keyPolicy} canManage={canManage} onChanged={load} />
+  const status = (
+    <>
+      {flow && (
+        <p role={flow.tone === 'err' ? 'alert' : 'status'} className={`text-body ${flow.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{flow.text}</p>
+      )}
+      {error && (
+        <Notice tone="err" action={{ label: 'Retry', onClick: () => { void load(); } }} data-testid="providers-load-error">
+          {LOAD_ERROR}
+        </Notice>
+      )}
+    </>
+  );
+
+  if (scope === 'mine') {
+    return (
+      <Section title="Your keys" id="keys" className="scroll-mt-20">
+        <div className="space-y-6">
+          {status}
+          {data && (
+            <p className="text-body text-text-secondary" data-testid="credential-policy-line">
+              <span className="font-semibold text-text-primary">Who pays: </span>{policySentence(data.policy)}
+            </p>
+          )}
+          {list('mine', null, 'provider-list-mine')}
+        </div>
+      </Section>
+    );
+  }
+
+  const render = (slots: SignInSlots | null, workspaceSlots: SignInSlots | null) => (
+    <>
+      <Section title="Keys" id="keys" className="scroll-mt-20">
+        {/* Old links: /app/settings/providers and #provider-keys land here. */}
+        <span id="provider-keys" aria-hidden="true" />
+        {/* Old links: #sign-ins, #agent-backends (the sign-ins section these rows now hold). */}
+        <span id="sign-ins" aria-hidden="true" />
+        <span id="agent-backends" aria-hidden="true" />
+        <div className="space-y-6">
+          {status}
+
+          {slots?.notice}
+
+          {data && showWhoPays(data) && (
+            <CredentialPolicySelector
+              teamId={teamId}
+              policy={data.policy}
+              canManage={data.caller.can.manage_team_settings}
+              onSaved={(policy) => setData((d) => (d ? { ...d, policy } : d))}
+            />
+          )}
+
+          <div>
+            {data && (
+              <dl className="inset-panel mb-3 space-y-1 text-meta" data-testid="provider-coverage" aria-label="What is covered">
+                {coverageView(data).map((l) => (
+                  <div key={l.surface} className="flex flex-wrap gap-x-2" data-testid={`coverage-${l.surface}`} data-covered={l.usedBy.length > 0 ? 'true' : 'false'}>
+                    <dt className="w-44 shrink-0 text-text-secondary">{l.label}</dt>
+                    <dd className={`min-w-0 break-words ${l.usedBy.length ? 'text-text-primary' : 'text-text-muted'}`}>{coverageText(l)}</dd>
+                  </div>
+                ))}
+                <p className="pt-1 text-text-muted">
+                  Claude Code and cloud coding need an Anthropic-compatible route. A ChatGPT login signs in Codex only.
+                </p>
+              </dl>
+            )}
+            {list('team', slots, 'provider-list-team')}
+          </div>
+        </div>
+      </Section>
+
+      {workspaces.length > 0 && (
+        <Section title="Workspace keys" id="workspace-keys" className="scroll-mt-20">
+          <div className="space-y-3">
+            <p className="text-meta text-text-muted">A workspace key is used for that workspace&apos;s work in place of the team key.</p>
+            <div className="min-w-0 w-full sm:w-64">
+              <Select
+                value={workspaceId ?? ''}
+                onChange={(v) => setWorkspaceId(v || null)}
+                options={workspaces.map((w) => ({ value: w.id, label: w.name }))}
+                aria-label="Workspace"
+                sheetTitle="Workspace"
+                testId="scope-workspace"
+              />
+            </div>
+            {list('workspace', workspaceSlots, 'provider-list-workspace')}
+          </div>
+        </Section>
       )}
 
-      <DecisionModelPicker teamId={teamId} canManage={canManage} rev={gatewayRev} />
+      <Section title="Routing" id={ADVANCED_ANCHOR} className="scroll-mt-20">
+        {/* Old #advanced links (the section's previous name). */}
+        <span id="advanced" aria-hidden="true" />
+        <div className="space-y-8">
+          <p className="text-meta text-text-muted">Gateway, agent endpoint and the decision model.</p>
+          <GatewayCard teamId={teamId} canManage={canManageRouting} onChanged={() => { setGatewayRev((r) => r + 1); void load(); }} />
+          <DecisionModelPicker teamId={teamId} canManage={canManageRouting} rev={gatewayRev} />
+          <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces} rev={gatewayRev} />
+          {slots && <div className="border-y border-border-default">{slots.routing}</div>}
+        </div>
+      </Section>
+    </>
+  );
 
-      <AgentEndpointSection teamId={teamId} canManage={canManage} workspaces={workspaces} rev={gatewayRev} />
-
-    </div>
+  if (!signIns || signIns.workspaces.length === 0) return render(null, null);
+  // Two sign-in sets: the team's for the Keys rows, the picked workspace's for
+  // Workspace keys. Only the team's notice and routing row are drawn.
+  return (
+    <AgentBackendsSection {...signIns} scope="team" workspaceId={null}>
+      {(teamSlots) => (
+        workspaceId
+          ? (
+            <AgentBackendsSection {...signIns} scope="workspace" workspaceId={workspaceId}>
+              {(wsSlots) => render(teamSlots, wsSlots)}
+            </AgentBackendsSection>
+          )
+          : render(teamSlots, null)
+      )}
+    </AgentBackendsSection>
   );
 }
 
-function KeyPolicyControl({ teamId, policy, canManage, onChanged }: {
-  teamId: string;
-  policy: KeyPolicy;
-  canManage: boolean;
-  onChanged: () => Promise<void>;
-}) {
-  const [choice, setChoice] = useState<PolicyChoice>(choiceFromPolicy(policy));
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+const LOAD_ERROR = "Couldn't load your providers.";
 
-  useEffect(() => { setChoice(choiceFromPolicy(policy)); }, [policy]);
-
-  async function save(next: PolicyChoice) {
-    const prev = choice;
-    setChoice(next);
-    setBusy(true);
-    setErr(null);
-    try {
-      const res = await fetch(`/api/teams/${teamId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inferenceKeyPolicy: policyFromChoice(next) }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Could not save');
-      await onChanged();
-    } catch (e) {
-      setChoice(prev);
-      setErr(e instanceof Error ? e.message : 'Could not save');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!canManage) {
-    const line = policy === 'own'
-      ? "Each person's own key"
-      : policy === 'team_or_own'
-        ? 'Team key · your own key allowed'
-        : 'Team key';
-    return <p className="text-sm text-text-secondary" data-testid="key-policy">{line}</p>;
-  }
-
-  const radio = (mode: PolicyChoice['mode'], text: string, hint?: string) => (
-    <label className="flex items-start gap-3 px-4 py-3 cursor-pointer">
-      <input
-        type="radio"
-        name="key-policy"
-        className="control-radio appearance-none mt-0.5"
-        checked={choice.mode === mode}
-        disabled={busy}
-        onChange={() => save({ mode, allowOwn: mode === 'team' ? choice.allowOwn : false })}
-      />
-      <span>
-        <span className="block text-sm text-text-primary">{text}</span>
-        {hint && <span className="block text-xs text-text-secondary mt-0.5">{hint}</span>}
-      </span>
-    </label>
-  );
-
-  return (
-    <section aria-labelledby="key-policy-h" data-testid="key-policy">
-      <h2 id="key-policy-h" className="section-label mb-3">Whose key</h2>
-      <div className="card divide-y divide-border-default">
-        <div>
-          {radio('team', 'Team key')}
-          {choice.mode === 'team' && (
-            <label className="flex items-center gap-2 px-4 pb-3 pl-11 text-xs text-text-secondary cursor-pointer">
-              <input
-                type="checkbox"
-                className="control-check appearance-none"
-                checked={choice.allowOwn}
-                disabled={busy}
-                onChange={(e) => save({ mode: 'team', allowOwn: e.target.checked })}
-              />
-              Let people use their own key instead
-            </label>
-          )}
-        </div>
-        {radio('own', "Each person's own key", 'Team features run on a runner.')}
-      </div>
-      {err && <p role="alert" className="text-xs text-status-error mt-2">{err}</p>}
-    </section>
-  );
+/** "Who pays" matters once someone in the team has a personal key, or the policy was changed. */
+export function showWhoPays(data: Pick<ListProvidersResponse, 'policy' | 'personalKeyCount' | 'providers'>): boolean {
+  if (data.policy.credentialPolicy && data.policy.credentialPolicy !== 'team') return true;
+  if ((data.personalKeyCount ?? 0) > 0) return true;
+  return data.providers.some((p) => (p.set.mine?.length ?? 0) > 0);
 }

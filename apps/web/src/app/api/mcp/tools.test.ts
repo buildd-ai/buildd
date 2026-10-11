@@ -7,8 +7,8 @@
  */
 
 import { describe, it, expect, test } from 'bun:test';
-import { allActions } from '@buildd/core/mcp-tools';
-import { actionHelp, MCP_TOOL_GROUPS, mcpGroupOf, mcpGroupToolName } from '@buildd/core/mcp-tool-groups';
+import { allActions, adminActions, PERSONAL_ROLE_ACTIONS, ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS } from '@buildd/core/mcp-tools';
+import { ACTION_LISTING, actionHelp, MCP_TOOL_GROUPS, mcpGroupOf, mcpGroupToolName } from '@buildd/core/mcp-tool-groups';
 import {
   requiredScopeForMcpTool, actionsForLevel, groupActionsForLevel, listMcpTools, mcpServerInstructions, mcpToolSurfaceFor, routeGroupToolCall,
   type McpAccountLevel,
@@ -163,7 +163,9 @@ describe('listMcpTools — group tools', () => {
         for (const a of actions.slice(0, -1)) {
           expect(allowed.has(a), `${level} ${t.name} ${a}`).toBe(true);
           expect(mcpGroupToolName(mcpGroupOf(a)!)).toBe(t.name);
-          expect(t.description).toContain(`- ${a} {`);
+          // Listed with its own line, or named on the More: line (ACTION_LISTING).
+          if (ACTION_LISTING[a as keyof typeof ACTION_LISTING] === 'more') expect(t.description).toMatch(new RegExp(`\\nMore: (.*, )?${a}(,| —)`));
+          else expect(t.description).toContain(`- ${a} {`);
         }
       }
     }
@@ -239,11 +241,36 @@ describe('listMcpTools — group tools', () => {
     }
   });
 
-  // Budget: 6k tokens (docs/specs/mcp-action-contracts.md). Stay >=150 under it so
-  // one more action summary does not turn a parallel PR red.
-  it('keeps the whole groups surface under 6k tokens with headroom', () => {
+  // Budget: 6k tokens (docs/specs/mcp-action-contracts.md). Measured ~4.8k for
+  // admin once rare actions moved to More: lines (2026-10-08); the ceiling sits
+  // ~300 above that so one more action summary does not turn a parallel PR red.
+  // Raised from 5.1k / 4k when the listed actions' required params became
+  // declared properties (task 6d3c3355): a schema-constrained model sends only
+  // declared fields, so an undeclared params object reached buildd as {}.
+  it('keeps the whole groups surface under 5.6k tokens', () => {
     const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6000 - 150);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(5600);
+  });
+
+  it('keeps a runner worker session (task token) under 4.5k tokens', () => {
+    const all = tools({ accountLevel: 'worker', isSensitive: false, surface: 'groups', principal: 'task_token' });
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(4500);
+  });
+
+  it('names the rare actions on one More: line per group, and keeps them callable', () => {
+    for (const t of groupTools('admin')) {
+      const more = t.description.split('\n').filter(l => l.startsWith('More: '));
+      const rare = t.inputSchema.properties.action.enum.filter(a => ACTION_LISTING[a as keyof typeof ACTION_LISTING] === 'more');
+      if (rare.length === 0) { expect(more, t.name).toEqual([]); continue; }
+      expect(more, t.name).toEqual([`More: ${rare.join(', ')} — call help {action} for docs.`]);
+      const group = MCP_TOOL_GROUPS.find(g => mcpGroupToolName(g) === t.name)!;
+      for (const a of rare) {
+        expect(t.description, `${t.name} ${a}`).not.toContain(`- ${a} {`);
+        expect(routeGroupToolCall(group, { action: a, params: { x: 1 } }, 'admin')).toEqual({ kind: 'dispatch', action: a, params: { x: 1 } });
+        const help = routeGroupToolCall(group, { action: 'help', params: { action: a } }, 'admin');
+        expect(help.kind === 'reply' && !help.isError && help.text.startsWith(`${a} params:`), `${a} help`).toBe(true);
+      }
+    }
   });
 
   it('is far smaller than the legacy buildd tool', () => {
@@ -340,7 +367,7 @@ describe('routeGroupToolCall', () => {
   it('every action is dispatched by its group and refused by every other', () => {
     for (const a of allActions) {
       for (const g of MCP_TOOL_GROUPS) {
-        const r = routeGroupToolCall(g, { action: a }, 'admin');
+        const r = routeGroupToolCall(g, { action: a, params: { x: 1 } }, 'admin');
         expect(r.kind, `${g} ${a}`).toBe(mcpGroupOf(a) === g ? 'dispatch' : 'reply');
       }
     }
@@ -348,26 +375,30 @@ describe('routeGroupToolCall', () => {
 });
 
 describe('surface choice and instructions', () => {
-  it('legacy is the default for every session; groups is opt-in', () => {
-    expect(mcpToolSurfaceFor({})).toBe('legacy');
+  it('groups is the standard surface for every session that is not a runner worker', () => {
+    expect(mcpToolSurfaceFor({})).toBe('groups');
+    expect(mcpToolSurfaceFor({ workerParam: null })).toBe('groups');
+    expect(mcpToolSurfaceFor({ workerParam: '' })).toBe('groups');
+  });
+
+  it('a runner worker session gets groups only when its runner supports them', () => {
+    expect(mcpToolSurfaceFor({ workerParam: 'w', runnerSupportsGroupTools: true })).toBe('groups');
+    // A runner that predates group tools (or one that cannot be identified) keeps legacy.
+    expect(mcpToolSurfaceFor({ workerParam: 'w', runnerSupportsGroupTools: false })).toBe('legacy');
+    expect(mcpToolSurfaceFor({ workerParam: 'w', runnerSupportsGroupTools: null })).toBe('legacy');
     expect(mcpToolSurfaceFor({ workerParam: 'w' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ toolsParam: 'bogus' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ toolsParam: 'legacy' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ toolsParam: 'groups' })).toBe('groups');
-    expect(mcpToolSurfaceFor({ workerParam: 'w', toolsParam: 'groups' })).toBe('groups');
   });
 
-  it('the server default flag moves non-worker sessions to groups, never runner workers', () => {
-    expect(mcpToolSurfaceFor({ serverDefault: 'groups' })).toBe('groups');
-    expect(mcpToolSurfaceFor({ serverDefault: 'groups', workerParam: 'w' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ serverDefault: 'groups', toolsParam: 'legacy' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ serverDefault: 'bogus' })).toBe('legacy');
+  it('takes no client or server opt-in: the surface is not a URL or env choice', () => {
+    // The old ?tools= / BUILDD_MCP_TOOL_SURFACE inputs no longer exist; extra keys change nothing.
+    expect(mcpToolSurfaceFor({ workerParam: 'w', toolsParam: 'groups', serverDefault: 'groups' } as never)).toBe('legacy');
+    expect(mcpToolSurfaceFor({ toolsParam: 'legacy', serverDefault: 'legacy' } as never)).toBe('groups');
   });
 
-  it('listMcpTools and the instructions default to legacy', () => {
-    expect(toolNames({ accountLevel: 'admin', isSensitive: false })).toContain('buildd');
-    expect(toolNames({ accountLevel: 'admin', isSensitive: false })).not.toContain('buildd_tasks');
-    expect(mcpServerInstructions('admin')).toBe(mcpServerInstructions('admin', 'legacy'));
+  it('listMcpTools and the instructions default to groups', () => {
+    expect(toolNames({ accountLevel: 'admin', isSensitive: false })).toContain('buildd_tasks');
+    expect(toolNames({ accountLevel: 'admin', isSensitive: false })).not.toContain('buildd');
+    expect(mcpServerInstructions('admin')).toBe(mcpServerInstructions('admin', 'groups'));
   });
 
   it('groups instructions name the reachable group tools and help', () => {
@@ -433,4 +464,63 @@ it('scoped sessions describe capabilities instead of legacy levels', () => {
   const instructions = mcpServerInstructions('worker','groups',['analytics:read']);
   expect(instructions).toContain('**Token scopes:** analytics:read');
   expect(instructions).not.toContain('**Token level:**');
+});
+
+describe('groups scoped by who is behind the session', () => {
+  const ADMIN_ONLY = new Set<string>(adminActions);
+  const listedActions = (opts: Parameters<typeof listMcpTools>[0]) =>
+    tools(opts).filter(t => t.name.startsWith('buildd_')).flatMap(t => t.inputSchema.properties.action.enum.filter(a => a !== 'help'));
+
+  it('a runner worker session (task token or key) lists no admin-only action', () => {
+    for (const principal of ['task_token', 'key'] as const) {
+      const listed = listedActions({ accountLevel: 'worker', isSensitive: false, surface: 'groups', principal });
+      expect(listed.filter(a => ADMIN_ONLY.has(a)), principal).toEqual([]);
+      // ...and its descriptions do not name one either.
+      const text = tools({ accountLevel: 'worker', isSensitive: false, surface: 'groups', principal }).map(t => t.description).join('\n');
+      for (const a of ADMIN_ONLY) expect(text, `${principal} ${a}`).not.toMatch(new RegExp(`\\b${a}\\b`));
+    }
+  });
+
+  it('a person at worker level keeps the personal-role path of the skill actions', () => {
+    const listed = listedActions({ accountLevel: 'worker', isSensitive: false, surface: 'groups', principal: 'person' });
+    expect(listed.filter(a => ADMIN_ONLY.has(a)).sort()).toEqual([...PERSONAL_ROLE_ACTIONS].sort());
+  });
+
+  it("an orchestration task token lists only its own mission's admin actions", () => {
+    const listed = listedActions({ accountLevel: 'admin', isSensitive: false, surface: 'groups', principal: 'task_token', orchestrationTaskToken: true });
+    expect(listed.filter(a => ADMIN_ONLY.has(a)).sort()).toEqual(Object.keys(ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS).sort());
+    // Help does not document what it cannot call.
+    const r = routeGroupToolCall('admin', { action: 'help', params: { action: 'manage_secrets' } }, 'admin', null, { orchestrationTaskToken: true });
+    expect(r).toEqual({ kind: 'reply', isError: true, text: '"manage_secrets" is not available at your token level (admin).' });
+  });
+
+  it('no reach given keeps the level list (chat and other callers unchanged)', () => {
+    for (const level of LEVELS) expect(actionsForLevel(level, null, {})).toEqual(actionsForLevel(level));
+  });
+
+  it('the legacy surface is untouched by reach', () => {
+    const a = tools({ accountLevel: 'worker', isSensitive: false, surface: 'legacy', principal: 'task_token' });
+    const b = tools({ accountLevel: 'worker', isSensitive: false, surface: 'legacy' });
+    expect(a).toEqual(b);
+  });
+});
+
+describe('empty params (task 6d3c3355)', () => {
+  it('a call whose params arrive empty is refused, naming the fields the action needs', () => {
+    const r = routeGroupToolCall('work', { action: 'create_pr', params: {} }, 'admin');
+    expect(r.kind).toBe('reply');
+    if (r.kind !== 'reply') return;
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('params arrived empty');
+    for (const f of ['title', 'head', 'lede']) expect(r.text).toContain(f);
+  });
+
+  it('an action with no required params still dispatches with empty params', () => {
+    expect(routeGroupToolCall('work', { action: 'update_progress', params: {} }, 'admin')).toEqual({ kind: 'dispatch', action: 'update_progress', params: {} });
+  });
+
+  it('flattened fields beside action still count as params', () => {
+    const r = routeGroupToolCall('work', { action: 'post_note', type: 'update', title: 'x' }, 'admin');
+    expect(r).toEqual({ kind: 'dispatch', action: 'post_note', params: { type: 'update', title: 'x' } });
+  });
 });

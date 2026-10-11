@@ -6,13 +6,24 @@ const WS = '22222222-2222-4222-8222-222222222222';
 const KEY = 'sk-agent-example-1234';
 const mockRequireSessionUser = mock(async () => ({ user: { id: 'u-1' } }) as any);
 const mockGetUserTeamIds = mock(async () => [TEAM] as string[]);
-const mockGetUserAdminTeamIds = mock(async () => [] as string[]);
+// The caller's team roles and the team's permission overrides, read by the
+// real permission check (lib/permissions.ts) through this db mock.
+let roles: Record<string, string> = {};
+let overrides: Record<string, unknown> | null = null;
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      teamMembers: { findMany: async () => Object.entries(roles).map(([teamId, role]) => ({ teamId, role })) },
+      teams: { findFirst: async () => ({ id: 'not-a-personal-team', permissionOverrides: overrides }) },
+    },
+  },
+}));
 const preview = { ok: true, available: true, listed: ['claude-haiku-4-5'], rows: [{ model: 'claude-haiku-4-5-20251001', tiers: ['budget'], value: 'claude-haiku-4-5', source: 'equivalent', served: true }] };
 const mockPreview = mock(async (_input: any) => preview as any);
 const mockSuggest = mock(async (_input: any) => [{ model: 'claude-opus-5', suggested: 'team-smart', confidence: 0.9 }] as any[]);
 
 mock.module('@/lib/auth-helpers', () => ({ requireSessionUser: mockRequireSessionUser }));
-mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds, getUserAdminTeamIds: mockGetUserAdminTeamIds }));
+mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds }));
 mock.module('@/lib/agent-endpoint-settings', () => ({ previewAgentEndpointModels: mockPreview }));
 mock.module('@/lib/endpoint-model-suggest', () => ({ suggestEndpointModels: mockSuggest }));
 
@@ -26,7 +37,7 @@ const body = { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.c
 
 beforeEach(() => {
   mockGetUserTeamIds.mockResolvedValue([TEAM]);
-  mockGetUserAdminTeamIds.mockResolvedValue([]);
+  roles = {}; overrides = null;
   mockPreview.mockClear();
   mockSuggest.mockClear();
 });
@@ -42,7 +53,7 @@ describe('POST /api/teams/[id]/agent-endpoint/models', () => {
   });
 
   it('an admin gets the model ids and rows, no-store; workspaceId is the scope; the key is never echoed', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue([TEAM]);
+    roles = { [TEAM]: 'admin' };
     const res = await POST(req({ ...body, workspaceId: WS }), ctx());
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
@@ -53,7 +64,7 @@ describe('POST /api/teams/[id]/agent-endpoint/models', () => {
   });
 
   it('a refusal passes through; a throw is a generic 500 without the key', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue([TEAM]);
+    roles = { [TEAM]: 'admin' };
     mockPreview.mockResolvedValueOnce({ ok: false, status: 400, error: 'Enter the key to list this endpoint\'s models.' });
     expect((await POST(req(body), ctx())).status).toBe(400);
     mockPreview.mockRejectedValueOnce(new Error(`boom ${KEY}`));
@@ -63,7 +74,7 @@ describe('POST /api/teams/[id]/agent-endpoint/models', () => {
   });
 
   it('invalid JSON is a 400', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue([TEAM]);
+    roles = { [TEAM]: 'admin' };
     const bad = new NextRequest(`http://localhost:3000/api/teams/${TEAM}/agent-endpoint/models`, { method: 'POST', body: 'nope' });
     expect((await POST(bad, ctx())).status).toBe(400);
   });
@@ -76,7 +87,7 @@ describe('POST /api/teams/[id]/agent-endpoint/models/suggest', () => {
   });
 
   it('returns the suggestions for the session user, scoped', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue([TEAM]);
+    roles = { [TEAM]: 'admin' };
     const res = await SUGGEST(req({ listed: ['a', 'b'], models: ['m'], workspaceId: WS }, 'models/suggest'), ctx());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ suggestions: [{ model: 'claude-opus-5', suggested: 'team-smart', confidence: 0.9 }] });
@@ -84,8 +95,30 @@ describe('POST /api/teams/[id]/agent-endpoint/models/suggest', () => {
   });
 
   it('a non-array list or a non-UUID workspace is a 400', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue([TEAM]);
+    roles = { [TEAM]: 'admin' };
     expect((await SUGGEST(req({ listed: 'a', models: [] }, 'models/suggest'), ctx())).status).toBe(400);
     expect((await SUGGEST(req({ listed: [], models: [], workspaceId: 'x' }, 'models/suggest'), ctx())).status).toBe(400);
+  });
+});
+
+describe('agent-endpoint models and suggest honour the team permission overrides', () => {
+  const suggestBody = { listed: ['a'], models: ['m'] };
+
+  it('an admin is refused once manage_inference_providers is owner-only; nothing is called', async () => {
+    roles = { [TEAM]: 'admin' };
+    overrides = { manage_inference_providers: ['owner'] };
+    expect((await POST(req(body), ctx())).status).toBe(403);
+    expect((await SUGGEST(req(suggestBody, 'models/suggest'), ctx())).status).toBe(403);
+    expect(mockPreview).not.toHaveBeenCalled();
+    expect(mockSuggest).not.toHaveBeenCalled();
+  });
+
+  it('a member is admitted once manage_inference_providers is granted to members', async () => {
+    roles = { [TEAM]: 'member' };
+    overrides = { manage_inference_providers: ['owner', 'admin', 'member'] };
+    expect((await POST(req(body), ctx())).status).toBe(200);
+    expect(mockPreview).toHaveBeenCalledTimes(1);
+    expect((await SUGGEST(req(suggestBody, 'models/suggest'), ctx())).status).toBe(200);
+    expect(mockSuggest).toHaveBeenCalledTimes(1);
   });
 });

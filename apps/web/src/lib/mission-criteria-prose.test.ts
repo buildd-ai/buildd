@@ -29,6 +29,8 @@ mock.module('drizzle-orm', () => ({
   eq: (...args: any[]) => ({ _op: 'eq', args }),
   and: (...args: any[]) => ({ _op: 'and', args }),
   or: (...args: any[]) => ({ _op: 'or', args }),
+  isNull: (...args: any[]) => ({ _op: 'isNull', args }),
+  inArray: (...args: any[]) => ({ _op: 'inArray', args }),
   desc: (col: any) => ({ _op: 'desc', col }),
   sql: (...args: any[]) => ({ _op: 'sql', args }),
 }));

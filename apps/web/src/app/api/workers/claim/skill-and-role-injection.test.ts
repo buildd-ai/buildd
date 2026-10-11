@@ -34,28 +34,34 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaceSkills: {
     slug: 'slug', name: 'name', enabled: 'enabled', isRole: 'isRole',
     workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId',
+    ownerUserId: 'ownerUserId', visibility: 'visibility',
   },
+  // task-requester (loaded only when a personal role is in play)
+  tasks: { id: 'tasks.id' }, missions: { id: 'missions.id' }, taskSchedules: { id: 'taskSchedules.id' },
 }));
 
-/** db.select().from().where().orderBy().limit() → mockSelectRows() */
+/** db.select().from().where() → mockSelectRows() (awaitable at where) */
 function selectChain() {
   const chain: any = {
     from: () => chain,
-    where: (w: any) => { mockSelectWhere(w); return chain; },
-    orderBy: (o: any) => { mockSelectOrderBy(o); return chain; },
-    limit: () => mockSelectRows(),
+    where: (w: any) => { mockSelectWhere(w); return mockSelectRows(); },
   };
   return chain;
 }
 
+/** AND nodes flattened — the role-scope helper nests its own and(). */
+function conjuncts(where: any): any[] {
+  return (where?.args ?? []).flatMap((n: any) => (n?.type === 'and' ? conjuncts(n) : [n]));
+}
+
 /** Reads one predicate out of the stubbed WHERE tree by node type + field. */
 function predicate(where: any, type: string, field: string) {
-  return (where?.args ?? []).find((n: any) => n?.type === type && n.field === field);
+  return conjuncts(where).find((n: any) => n?.type === type && n.field === field);
 }
 
 /** Reads a top-level OR node by the field its branches are about. */
 function orBranches(where: any, field: string) {
-  return (where?.args ?? [])
+  return conjuncts(where)
     .find((n: any) => n?.type === 'or' && n.args?.some((b: any) => b.field === field))?.args;
 }
 
@@ -237,6 +243,11 @@ describe('attachSkillBundles', () => {
 
 describe('attachRoleConfig', () => {
   const roleRow = (extra: Record<string, unknown> = {}) => ({
+    id: 'role-team',
+    teamId: 'team-1',
+    workspaceId: null,
+    ownerUserId: null,
+    visibility: 'team',
     slug: 'builder',
     name: 'Builder',
     content: '# Builder\nYou ship code.',
@@ -304,16 +315,49 @@ describe('attachRoleConfig', () => {
     expect(workers[0].roleConfig).toBeDefined();
   });
 
-  // §C.2 precedence is expressed as `(workspaceId IS NOT NULL) DESC LIMIT 1`, so
-  // it lives entirely in the ORDER BY: flipping DESC→ASC hands every task the
-  // team default and silently discards workspace overrides.
-  it('orders workspace overrides ahead of the team default', async () => {
-    mockSelectRows.mockResolvedValue([roleRow()]);
+  // Precedence is decided in JS over every in-scope row (role-visibility.ts),
+  // not by an ORDER BY … LIMIT 1 that could only rank two kinds of row.
+  it('a workspace override beats the team default, in any row order', async () => {
+    mockSelectRows.mockResolvedValue([
+      roleRow({ id: 'r-team', name: 'Team default' }),
+      roleRow({ id: 'r-ws', workspaceId: 'ws-t1', name: 'Override' }),
+    ]);
+    const workers = [worker('t1')];
 
-    await attachRoleConfig([worker('t1')], [task('t1', { roleSlug: 'builder', workspace: { teamId: 'team-1' } })], 'acct-1');
+    await attachRoleConfig(workers, [task('t1', { roleSlug: 'builder', workspace: { teamId: 'team-1' } })], 'acct-1');
 
-    const orderBy = mockSelectOrderBy.mock.calls[0]?.[0] as any;
-    expect(orderBy.strings.join('')).toContain('IS NOT NULL) DESC');
+    expect(workers[0].roleInstructions.name).toBe('Override');
+  });
+
+  it("never applies another member's private role; the requester's own wins over the team default", async () => {
+    const rows = [
+      roleRow({ id: 'r-team', name: 'Team default' }),
+      roleRow({ id: 'r-bob', ownerUserId: 'u-bob', visibility: 'private', name: 'Bob private' }),
+      roleRow({ id: 'r-alice', ownerUserId: 'u-alice', visibility: 'private', name: 'Alice private' }),
+    ];
+    mockSelectRows.mockResolvedValue(rows);
+
+    const carol = [worker('t1')];
+    await attachRoleConfig(carol, [task('t1', { roleSlug: 'builder', createdByUserId: 'u-carol', workspace: { teamId: 'team-1' } })], 'acct-1');
+    expect(carol[0].roleInstructions.name).toBe('Team default');
+
+    const alice = [worker('t2')];
+    await attachRoleConfig(alice, [task('t2', { roleSlug: 'builder', createdByUserId: 'u-alice', workspace: { teamId: 'team-1' } })], 'acct-1');
+    expect(alice[0].roleInstructions.name).toBe('Alice private');
+  });
+
+  it("a task whose only candidate is another member's private role gets no team role", async () => {
+    mockSelectRows.mockResolvedValue([roleRow({ id: 'r-bob', ownerUserId: 'u-bob', visibility: 'private' })]);
+    mockSkillsFindFirst.mockResolvedValue(null);
+    const workers = [worker('t1')];
+
+    await attachRoleConfig(workers, [task('t1', { roleSlug: 'builder', createdByUserId: 'u-alice', workspace: { teamId: 'team-1' } })], 'acct-1');
+
+    expect(workers[0].roleInstructions).toBeUndefined();
+    expect(workers[0].roleConfig).toBeUndefined();
+    // The legacy account fallback never returns a personal row either.
+    const where = (mockSkillsFindFirst.mock.calls[0]?.[0] as any)?.where;
+    expect(predicate(where, 'isNull', 'ownerUserId')).toEqual({ field: 'ownerUserId', type: 'isNull' });
   });
 
   it('scopes the role lookup to the task team, slug, enabled roles and the task workspace', async () => {

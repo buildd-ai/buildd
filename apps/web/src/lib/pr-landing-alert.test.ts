@@ -249,7 +249,8 @@ describe('alertOnLanding: copy and tap URL', () => {
     await alertOnLanding(base(human('fix_exhausted', 'conflict attempts are exhausted')), deps);
     const url = new URL(state.sent[0].payload.url);
     expect(url.origin).toBe('https://app.example.test');
-    expect(url.pathname).toBe('/app/prs/42/act');
+    expect(url.pathname).toBe('/app/home');
+    expect(url.searchParams.get('pr')).toBe('42');
     const res = verifyLandingActionToken(url.searchParams.get('t'), state.now);
     expect(res.ok).toBe(true);
     expect((res as any).payload).toMatchObject({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head1', action: 'conflict', reason: 'needs_human:fix_exhausted', taskId: 'task-1' });
@@ -262,13 +263,13 @@ describe('alertOnLanding: copy and tap URL', () => {
     delete process.env.ENCRYPTION_KEY;
     const { deps, state } = makeDeps();
     await alertOnLanding(base(human('fix_exhausted')), deps);
-    expect(state.sent[0].payload.url).toBe('https://app.example.test/app/prs/42/act');
+    expect(state.sent[0].payload.url).toBe('https://app.example.test/app/home?pr=42');
   });
 
   it('addresses the owning workspace and task', async () => {
     const { deps, state } = makeDeps();
     await alertOnLanding(base(human('size_cap')), deps);
-    expect(state.sent[0].subject).toEqual({ workspaceId: 'ws-1', taskId: 'task-1' });
+    expect(state.sent[0].subject).toEqual({ workspaceId: 'ws-1', taskId: 'task-1', prNumber: 42 });
   });
 });
 

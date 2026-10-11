@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { isUuid } from '@/lib/uuid';
-import { deleteTeamAgentEndpoint, listTeamAgentEndpoints, setAgentEndpointAppliesTo, setTeamAgentEndpoint } from '@/lib/agent-endpoint-settings';
+import { listTeamAgentEndpoints, setAgentEndpointAppliesTo } from '@/lib/agent-endpoint-settings';
+import { removeAgentEndpoint, writeAgentEndpoint } from '@/lib/providers/write-path';
 
 /**
  * The team's agent model endpoint (@buildd/core/agent-endpoint,
  * docs/design/agent-model-endpoint.md §6).
  *
  *   GET    → { endpoints: MaskedAgentEndpoint[] }                     any member
- *   PUT    { kind, baseUrl?, apiKey?, authHeader?, models?, agentBaseUrl?, workspaceId?, appliesTo? }
+ *   PUT    { kind, baseUrl?, apiKey?, authHeader?, models?, agentBaseUrl?, workspaceId?, appliesTo?, capabilities? }
  *          → { endpoint }                                             owner/admin; one real call first
  *   PATCH  { appliesTo: string[] | null, consolidate?: boolean }
  *          → { endpoint, copies }                                     owner/admin; no key, no call out
@@ -17,10 +19,13 @@ import { deleteTeamAgentEndpoint, listTeamAgentEndpoints, setAgentEndpointApplie
  *
  * A blank apiKey keeps the saved key, for the same kind and URL at that scope
  * only (else 400). `appliesTo` (team row only): the workspace ids it applies
- * to, null for all; a PUT without it keeps the saved list. PATCH changes only
+ * to, null for all; a PUT without it keeps the saved list. `capabilities`
+ * ({ toolSearch?: boolean }, null = the kind's defaults): a PUT without it
+ * keeps the saved value for the same kind. PATCH changes only
  * that list, and with `consolidate` deletes selected workspaces' own copies
  * that route exactly like the team row. Session only. The key never leaves the server. Verify an existing row with
- * POST /api/secrets/[id]/verify.
+ * POST /api/secrets/[id]/verify. Writes go through the one provider write path
+ * (`@/lib/providers/write-path`), as `/api/providers` does.
  */
 
 async function caller(req: NextRequest, teamId: string, admin: boolean): Promise<Response | null> {
@@ -28,7 +33,7 @@ async function caller(req: NextRequest, teamId: string, admin: boolean): Promise
   if (session.response) return session.response;
   const userId = session.user.id;
   if (!(await getUserTeamIds(userId)).includes(teamId)) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
-  if (admin && !(await getUserAdminTeamIds(userId)).includes(teamId)) {
+  if (admin && !(await can({ kind: 'user', userId }, 'manage_inference_providers', teamId))) {
     return NextResponse.json({ error: 'Only a team owner or admin can manage the agent endpoint.' }, { status: 403 });
   }
   return null;
@@ -56,7 +61,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   const { workspaceId, ...endpoint } = body;
   try {
-    const r = await setTeamAgentEndpoint({ teamId: id, workspaceId, endpoint });
+    const r = await writeAgentEndpoint({ teamId: id, workspaceId, endpoint });
     return r.ok ? NextResponse.json({ endpoint: r.endpoint }) : NextResponse.json({ error: r.error }, { status: r.status });
   } catch (error) {
     console.error('[agent-endpoint] write failed:', error);
@@ -90,7 +95,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const workspaceId = req.nextUrl.searchParams.get('workspaceId');
   if (workspaceId && !isUuid(workspaceId)) return NextResponse.json({ error: 'workspaceId must be a workspace id' }, { status: 400 });
   try {
-    return NextResponse.json({ deleted: await deleteTeamAgentEndpoint(id, workspaceId || null) });
+    return NextResponse.json({ deleted: await removeAgentEndpoint(id, workspaceId || null) });
   } catch (error) {
     console.error('[agent-endpoint] delete failed:', error);
     return NextResponse.json({ error: 'Failed to remove the agent endpoint' }, { status: 500 });

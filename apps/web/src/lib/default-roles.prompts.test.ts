@@ -21,10 +21,11 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+const defaultRoles = await import('./default-roles');
 const {
   DEFAULT_ROLES, ROLE_PROMPT_IDS, deliverSeededRoleContent, planDefaultRoleResync, resolveDefaultRoles, roleContentHash, rolePromptId,
-} = await import('./default-roles');
-const { installPrompts, resetPrompts } = await import('@buildd/core/prompts');
+} = defaultRoles;
+const { activePromptFingerprints, installPrompts, listRegisteredPrompts, promptFallbackCounts, resetPrompts } = await import('@buildd/core/prompts');
 const { promptContentHash } = await import('@buildd/core/prompts-source');
 const { resetPolicyOverrides } = await import('./policy-overrides');
 const { resetPolicyOverridesLoader } = await import('./policy-overrides-source');
@@ -110,5 +111,74 @@ describe('default roles through the prompts table', () => {
   it('without a prompts row, a code or override change still needs a version bump (unchanged behaviour)', () => {
     const roles = resolveDefaultRoles({ builder: { content: 'override text' } });
     expect(planDefaultRoleResync([seeded()], roles)).toEqual([]);
+  });
+});
+
+describe('Platform Operator persona', () => {
+  const { OPERATOR_PROMPT_ID, resolveRolePersona, rolePersonaIdentity } = defaultRoles;
+  const operator = DEFAULT_ROLES.find(r => r.slug === 'operator')!;
+  const row = (body: string, version: number) => ({ id: OPERATOR_PROMPT_ID, version, body, contentHash: promptContentHash(body) });
+
+  it('is a registered default role with its own prompt id', () => {
+    expect(OPERATOR_PROMPT_ID).toBe('buildd.role.operator');
+    expect(ROLE_PROMPT_IDS).toContain(OPERATOR_PROMPT_ID);
+    expect(listRegisteredPrompts().map(p => p.id)).toContain(OPERATOR_PROMPT_ID);
+  });
+
+  it('with no prompts row, resolves to the public fallback and counts the fallback', () => {
+    const p = resolveRolePersona('operator')!;
+    expect(p).toEqual({
+      slug: 'operator', promptId: OPERATOR_PROMPT_ID, source: 'default',
+      promptVersion: `v${operator.version}`, fingerprint: roleContentHash(operator.content), body: operator.content,
+    });
+    expect(promptFallbackCounts()[OPERATOR_PROMPT_ID]).toEqual({ missing: 1, invalid: 0 });
+    // Only the one id was resolved: no other role's fallback was counted.
+    expect(Object.keys(promptFallbackCounts())).toEqual([OPERATOR_PROMPT_ID]);
+  });
+
+  it('an active row supplies the body; version and fingerprint name that row', () => {
+    installPrompts([row('# Operator (stand-in private text)', 3)]);
+    const p = resolveRolePersona('operator')!;
+    expect(p.source).toBe('active');
+    expect(p.body).toBe('# Operator (stand-in private text)');
+    expect(p.promptVersion).toBe(`v${operator.version}+p3`);
+    expect(p.fingerprint).toBe(promptContentHash('# Operator (stand-in private text)'));
+    // The fingerprint is the one deploy identity reports for that row.
+    expect(activePromptFingerprints()).toContainEqual({ id: OPERATOR_PROMPT_ID, version: 3, contentHash: p.fingerprint });
+  });
+
+  it('a new row version changes version and fingerprint; removing it reverts to the fallback', () => {
+    installPrompts([row('# Operator v1', 1)]);
+    const v1 = resolveRolePersona('operator')!;
+    installPrompts([row('# Operator v2', 2)]);
+    const v2 = resolveRolePersona('operator')!;
+    expect(v2.promptVersion).not.toBe(v1.promptVersion);
+    expect(v2.fingerprint).not.toBe(v1.fingerprint);
+    resetPrompts();
+    expect(resolveRolePersona('operator')!.fingerprint).toBe(roleContentHash(operator.content));
+  });
+
+  it('a blank row is rejected and the fallback runs', () => {
+    installPrompts([row('   ', 4)]);
+    const p = resolveRolePersona('operator')!;
+    expect(p.source).toBe('default');
+    expect(p.body).toBe(operator.content);
+    expect(promptFallbackCounts()[OPERATOR_PROMPT_ID]).toEqual({ missing: 0, invalid: 1 });
+  });
+
+  it('the identity carries no prompt text', () => {
+    installPrompts([row('# Operator (stand-in private text)', 3)]);
+    const identity = rolePersonaIdentity(resolveRolePersona('operator')!);
+    expect(Object.keys(identity).sort()).toEqual(['fingerprint', 'promptId', 'promptVersion', 'slug', 'source']);
+    expect(JSON.stringify(identity)).not.toContain('stand-in private text');
+  });
+
+  it('is null for a slug with no default role', () => {
+    expect(resolveRolePersona('not-a-role')).toBeNull();
+  });
+
+  it('the public fallback does not route and grants nothing by itself', () => {
+    expect(operator.routing).toEqual({ disabled: true });
+    expect(operator.canDelegateTo).toEqual([]);
   });
 });

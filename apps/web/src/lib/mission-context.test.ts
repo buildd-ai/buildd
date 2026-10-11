@@ -75,6 +75,9 @@ const mockInnerJoin = mock(() => ({ where: mockWhere }));
 const mockFrom = mock(() => ({ innerJoin: mockInnerJoin, where: mockWhere }));
 const mockSelect = mock(() => ({ from: mockFrom }));
 
+// Typed links have real-PG tests (apps/web/tests/db/artifact-links.test.ts); here a mission has none.
+const mockLinked = mock(async (..._a: unknown[]) => [] as Array<{ artifactId: string }>);
+mock.module('@/lib/artifact-links', () => ({ artifactsLinkedTo: mockLinked }));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -1503,6 +1506,23 @@ describe('getWorkspaceRoles', () => {
     mockFrom.mockReturnValue({ innerJoin: mockInnerJoin, where: mockWhere });
     mockSelect.mockReset();
     mockSelect.mockReturnValue({ from: mockFrom });
+  });
+
+  it("never lists another member's private role; lists the requester's own over the team default", async () => {
+    const rows = [
+      { id: 'r1', slug: 'builder', name: 'Builder (team)', model: 'sonnet', color: '#a', description: null, workspaceId: null, ownerUserId: null, visibility: 'team' },
+      { id: 'r2', slug: 'builder', name: 'Builder (alice)', model: 'opus', color: '#a', description: null, workspaceId: null, ownerUserId: 'u-alice', visibility: 'private' },
+      { id: 'r3', slug: 'bobs', name: 'Bob only', model: 'sonnet', color: '#a', description: null, workspaceId: null, ownerUserId: 'u-bob', visibility: 'private' },
+      { id: 'r4', slug: 'shared', name: 'Shared', model: 'sonnet', color: '#a', description: null, workspaceId: null, ownerUserId: 'u-bob', visibility: 'team' },
+    ];
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+    mockSkillsFindMany.mockResolvedValueOnce(rows);
+    const alice = await getWorkspaceRoles('ws-1', 'u-alice');
+    expect(alice.map(r => r.name).sort()).toEqual(['Builder (alice)', 'Shared']);
+
+    mockSkillsFindMany.mockResolvedValueOnce(rows);
+    const nobody = await getWorkspaceRoles('ws-1');
+    expect(nobody.map(r => r.name).sort()).toEqual(['Builder (team)', 'Shared']);
   });
 
   it('returns empty array when no roles exist', async () => {

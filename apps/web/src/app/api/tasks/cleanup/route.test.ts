@@ -49,6 +49,10 @@ mock.module('@/lib/worker-deliverables', () => ({
   getWorkerDeliverableArtifactCount: mockGetWorkerDeliverableArtifactCount,
 }));
 
+// Workflow kernel authority (lib/workflow/authority.ts): which delivery ids the kernel owns.
+let kernelOwned = new Set<string>();
+mock.module('@/lib/workflow/authority', () => ({ kernelDeliveryById: async (id: string) => (kernelOwned.has(id) ? id : null) }));
+
 // A task the retry cap fails must still cascade to its dependents — otherwise
 // they sit pending forever behind a task that will never complete.
 const mockResolveCompletedTask = mock((_taskId: string, _workspaceId: string) => Promise.resolve());
@@ -389,6 +393,35 @@ describe('POST /api/tasks/cleanup', () => {
     expect(mockCleanupStuckWaitingInput).toHaveBeenCalledTimes(2);
     expect(mockCleanupStuckWaitingInput).toHaveBeenCalledWith('account-1');
     expect(mockCleanupStuckWaitingInput).toHaveBeenCalledWith('account-2');
+  });
+
+  it('S9: a kernel attempt whose dead worker left only local commits is never promoted to completed (AC-10)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    const deadWorker = { id: 'w-dead', status: 'failed', commitCount: 2, lastCommitSha: 'L9', branch: 'b', prUrl: null, prNumber: null };
+    mockCheckWorkerDeliverables.mockReturnValue({ hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'commits' });
+    const run = async (deliveryId: string | null) => {
+      mockWorkersFindMany.mockReset();
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([deadWorker])
+        .mockResolvedValueOnce([{ id: 'w-dead' }])
+        .mockResolvedValueOnce([]);
+      mockTasksFindMany.mockResolvedValue([{ id: 'fix-task', status: 'assigned', claimedBy: 'account-1', updatedAt: threeHoursAgo, deliveryId }]);
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({ set: mock((data: any) => { sets.push(data); return { where: mock(() => Promise.resolve()) }; }) });
+      expect((await POST(createMockRequest())).status).toBe(200);
+      return sets;
+    };
+    kernelOwned = new Set(['dlv-1']);
+    const kernelSets = await run('dlv-1');
+    expect(kernelSets.some((d) => d.status === 'completed')).toBe(false);
+    expect(kernelSets.some((d) => d.result?.sha === 'L9')).toBe(false);
+    // The same worker on a legacy task is still promoted as before.
+    kernelOwned = new Set();
+    const legacySets = await run(null);
+    expect(legacySets.some((d) => d.status === 'completed' && d.result?.sha === 'L9')).toBe(true);
   });
 
   it('clears claimedBy, claimedAt, and expiresAt when resetting orphaned tasks to pending', async () => {

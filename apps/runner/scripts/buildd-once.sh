@@ -35,6 +35,14 @@ if [ -s "$CF_CA" ]; then
     CURL_CA_BUNDLE="$bundle" REQUESTS_CA_BUNDLE="$bundle"
 fi
 
+# A lease container's deferred warm snapshot upload (apps/runner/src/
+# warm-upload-cli.ts), just before the cloud agent releases the container.
+# After the CA setup: the upload goes to an intercepted HTTPS pseudo-host.
+if [ "${1:-}" = --upload-warm ]; then
+  cd "${BUILDD_REPO_ROOT:-/opt/buildd}"
+  exec bun run apps/runner/src/warm-upload-cli.ts
+fi
+
 # Local runs pass GH_TOKEN; make git use it for https clones and pushes. On
 # Cloudflare no token is in env (the egress proxy adds it) and this is a no-op.
 if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] && ! git config --global --get credential.https://github.com.helper >/dev/null 2>&1; then

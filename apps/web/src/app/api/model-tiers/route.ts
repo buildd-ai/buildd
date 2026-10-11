@@ -1,110 +1,13 @@
-import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { modelTierRegistry, workspaces } from '@buildd/core/db/schema';
+import { modelTierRegistry } from '@buildd/core/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
-import { getCurrentUser } from '@/lib/auth-helpers';
-import {
-  getUserTeamIds,
-  getUserTeamRole,
-  resolveActiveTeamId,
-  verifyWorkspaceAccess,
-  verifyAccountWorkspaceAccess,
-} from '@/lib/team-access';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { authenticate, resolveTeam } from '@/lib/model-tier-access';
 import { resolveAllTiers, invalidateTierCache, TIERS, type Tier, type TierSurface } from '@buildd/core/model-tier-registry';
+import { POOL_SURFACES, incumbentRoute, tierAllowsPool } from '@buildd/core/tier-pool';
+import { syncIncumbentToRegistry } from '@buildd/core/tier-pool-admin';
+import { invalidateTierPoolCache } from '@buildd/core/tier-pool-source';
 import { isTierSurface, type TierEntryWithSurfaces } from '@buildd/core/model-tier-defaults';
-
-// Resolve the teamId for a given workspaceId.
-async function getTeamIdForWorkspace(workspaceId: string): Promise<string | null> {
-  const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
-    columns: { teamId: true },
-  });
-  return ws?.teamId ?? null;
-}
-
-type TeamResolution = { teamId: string } | { error: NextResponse };
-
-/**
- * Resolve which team's registry a request reads or writes, and check the caller
- * may do so.
- *
- * - `workspaceId`: the caller must reach that workspace. Without this check any
- *   session user (or any admin key on another team) could read or overwrite
- *   another team's tier registry, which the claim path then honours. Denied or
- *   missing workspaces 404, like the other workspace routes.
- * - `teamId` (session only): the caller must belong to that team. Settings →
- *   Model tiers sends it, so a user in several teams edits the team on screen.
- * - neither: an API key's own team, or the session's ACTIVE team (the
- *   `buildd-team` cookie), not whichever membership row happens to come first.
- *
- * Session writes also need owner or admin in the resolved team: which model
- * backs a tier sets spend for the whole team, so it is an admin call
- * (knowledge-base: buildd/design/agent-chat.md → Models). API keys are already held to admin level
- * by each handler.
- */
-async function resolveTeam(
-  req: NextRequest,
-  user: { id: string } | null,
-  apiAccount: { id: string; teamId?: string | null } | null,
-  opts: { workspaceId: string | null; teamId: string | null; write: boolean },
-): Promise<TeamResolution> {
-  const fail = (status: number, error: string) => ({ error: NextResponse.json({ error }, { status }) });
-
-  if (apiAccount) {
-    if (opts.workspaceId) {
-      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, opts.workspaceId);
-      if (!hasAccess) return fail(404, 'Workspace not found');
-      const teamId = await getTeamIdForWorkspace(opts.workspaceId);
-      return teamId ? { teamId } : fail(404, 'Workspace not found');
-    }
-    return apiAccount.teamId ? { teamId: apiAccount.teamId } : fail(400, 'Could not resolve team');
-  }
-
-  if (!user) return fail(401, 'Unauthorized');
-
-  let teamId: string | null;
-  let role: string | null = null;
-  if (opts.workspaceId) {
-    const access = await verifyWorkspaceAccess(user.id, opts.workspaceId);
-    if (!access?.teamId) return fail(404, 'Workspace not found');
-    teamId = access.teamId;
-    role = (access as { role?: string | null }).role ?? null;
-  } else if (opts.teamId) {
-    const teamIds = await getUserTeamIds(user.id);
-    if (!teamIds.includes(opts.teamId)) return fail(404, 'Team not found');
-    teamId = opts.teamId;
-  } else {
-    teamId = await resolveActiveTeamId(user.id, req.cookies.get('buildd-team')?.value);
-  }
-  if (!teamId) return fail(400, 'Could not resolve team');
-
-  if (opts.write) {
-    if (!role) role = await getUserTeamRole(user.id, teamId);
-    if (!roleHas(role, 'manage_model_tiers', await getTeamPermissionOverrides(teamId))) {
-      return fail(403, 'Only a team owner or admin can change model tiers');
-    }
-  }
-  return { teamId };
-}
-
-/** Session user or API key, with API keys held to admin level. */
-async function authenticate(req: NextRequest) {
-  const user = await getCurrentUser();
-  const authHeader = req.headers.get('authorization');
-  const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
-
-  if (!user && !apiAccount) {
-    return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
-  }
-  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
-    return { error: NextResponse.json({ error: 'Admin token required' }, { status: 403 }) };
-  }
-  return { user, apiAccount: apiAccount as { id: string; teamId?: string | null } | null };
-}
 
 /** `surface` from a body or query: absent/null = the shared row; anything else must name a surface. */
 function parseSurface(raw: unknown): { surface: TierSurface | null } | { error: NextResponse } {
@@ -115,6 +18,33 @@ function parseSurface(raw: unknown): { surface: TierSurface | null } | { error: 
 
 function surfaceMatch(surface: TierSurface | null) {
   return surface ? eq(modelTierRegistry.surface, surface) : isNull(modelTierRegistry.surface);
+}
+
+/**
+ * After a team-level registry write, bring each surface's pool incumbent in
+ * line with the primary that surface now resolves to. The registry stays the
+ * authority; this keeps the pool's mirror of it (and its audit trail) honest.
+ * Never throws: the registry write has landed and serves correctly either way.
+ */
+async function syncPools(teamId: string, tier: Tier, actorUserId: string | null): Promise<'none' | 'synced' | 'stale'> {
+  if (!tierAllowsPool(tier)) return 'none';
+  let out: 'none' | 'synced' | 'stale' = 'none';
+  try {
+    for (const surface of POOL_SURFACES) {
+      const entry = (await resolveAllTiers(teamId, null, surface))[tier];
+      if (!entry) continue;
+      const r = await syncIncumbentToRegistry({
+        teamId, tier, surface, actorUserId,
+        primary: { route: incumbentRoute(surface, entry.provider), model: entry.model },
+      });
+      if (r === 'stale' || (r === 'synced' && out === 'none')) out = r;
+    }
+    invalidateTierPoolCache(teamId);
+  } catch (error) {
+    console.error('model-tiers: pool incumbent sync failed:', error);
+    return 'stale';
+  }
+  return out;
 }
 
 // GET /api/model-tiers?workspaceId=<id> | ?teamId=<id>
@@ -225,7 +155,9 @@ export async function POST(req: NextRequest) {
 
     invalidateTierCache(teamId, workspaceId ?? null);
 
-    return NextResponse.json({ ok: true, tier, provider, model, surface });
+    // Workspace overrides are not the team's primary; the team pool is untouched by them.
+    const poolSync = workspaceId ? 'none' : await syncPools(teamId, tier as Tier, auth.user?.id ?? null);
+    return NextResponse.json({ ok: true, tier, provider, model, surface, poolSync });
   } catch (error) {
     console.error('POST /api/model-tiers error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -269,8 +201,9 @@ export async function DELETE(req: NextRequest) {
       ));
 
     invalidateTierCache(teamId, workspaceId ?? null);
+    const poolSync = workspaceId ? 'none' : await syncPools(teamId, tier as Tier, auth.user?.id ?? null);
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, poolSync });
   } catch (error) {
     console.error('DELETE /api/model-tiers error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

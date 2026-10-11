@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { healthItemFor, healthNavFor } from '@/lib/health-nav';
@@ -16,13 +17,21 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
   const active = healthItemFor(pathname);
   const items = healthNavFor(isOperator);
   const workspace = params.get('workspace');
+  const activeTabRef = useRef<HTMLAnchorElement>(null);
+
+  // The strip overflows at phone width; bring the current tab into view so
+  // one reads as selected. block:'nearest' keeps the page from scrolling.
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView?.({ inline: 'center', block: 'nearest' });
+  }, [active?.id]);
+
   const href = (base: string) => (workspace ? `${base}?workspace=${encodeURIComponent(workspace)}` : base);
 
   return (
     <>
       <div className="hidden md:block w-56 shrink-0 border-r border-border-default bg-surface-2">
         <nav aria-label="Health" data-testid="health-subnav" className="sticky top-0 max-h-screen overflow-y-auto px-3 py-6">
-          <div className="block px-2 mb-5 text-[15px] font-semibold text-text-primary">Health</div>
+          <div className="block px-2 mb-5 text-lede font-semibold text-text-primary">Health</div>
           <ul className="space-y-0.5">
             {items.map(item => {
               const isActive = active?.id === item.id;
@@ -32,9 +41,9 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
                     href={href(item.href)}
                     aria-current={isActive ? 'page' : undefined}
                     data-active={isActive ? 'true' : undefined}
-                    className={`block px-2 py-1.5 text-[13px] border-l-2 transition-colors ${
+                    className={`block px-2 py-1.5 text-body border-l-2 transition-colors ${
                       isActive
-                        ? 'border-accent text-accent-text bg-accent-soft font-medium'
+                        ? 'border-text-primary text-text-primary font-semibold'
                         : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3'
                     }`}
                   >
@@ -56,10 +65,11 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
           return (
             <Link
               key={item.id}
+              ref={isActive ? activeTabRef : undefined}
               href={href(item.href)}
               aria-current={isActive ? 'page' : undefined}
               className={`shrink-0 px-3 min-h-11 flex items-center text-body border-b-2 ${
-                isActive ? 'border-accent text-accent-text font-medium' : 'border-transparent text-text-secondary'
+                isActive ? 'border-text-primary text-text-primary font-semibold' : 'border-transparent text-text-secondary'
               }`}
             >
               {item.label}

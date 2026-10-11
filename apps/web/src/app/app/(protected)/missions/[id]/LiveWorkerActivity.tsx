@@ -15,7 +15,8 @@ interface Props {
   costUsd: string | null;
   inputTokens?: number;
   outputTokens?: number;
-  authType?: string | null;
+  /** `workers.cost_basis`: virtual dollars are a list-price value, not spend. */
+  costBasis?: string | null;
   milestones: Milestones;
   /** Called on every worker realtime event so the panel can refetch the summary
    *  (turns/cost/status/PR) and flip out of the running view when the run ends. */
@@ -40,7 +41,7 @@ export default function LiveWorkerActivity({
   costUsd,
   inputTokens,
   outputTokens,
-  authType,
+  costBasis,
   milestones,
   onWorkerEvent,
 }: Props) {
@@ -133,15 +134,17 @@ export default function LiveWorkerActivity({
         </button>
       </div>
 
-      {/* Live turns / cost or tokens */}
+      {/* Live turns / tokens / cost */}
       <div className="flex items-center gap-3 text-[11px] text-text-muted tabular-nums">
         {turns != null && <span>{turns} turn{turns !== 1 ? 's' : ''}</span>}
-        {authType === 'oauth'
-          ? ((inputTokens || 0) + (outputTokens || 0)) > 0 && (
-              <span>{((inputTokens || 0) + (outputTokens || 0)).toLocaleString()} tokens</span>
-            )
-          : costUsd != null && <span title={ESTIMATED_COST_TITLE}>{formatEstimatedUsd(costUsd, 3)}</span>
-        }
+        {((inputTokens || 0) + (outputTokens || 0)) > 0 && (
+          <span>{((inputTokens || 0) + (outputTokens || 0)).toLocaleString()} tokens</span>
+        )}
+        {costUsd != null && Number(costUsd) > 0 && (
+          <span title={ESTIMATED_COST_TITLE}>
+            {formatEstimatedUsd(costUsd, 3)}{costBasis === 'virtual' ? ' list price' : ''}
+          </span>
+        )}
       </div>
 
       {/* Live background-agents tree (transient, from Pusher) */}

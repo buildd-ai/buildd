@@ -37,6 +37,61 @@ function record(over: Partial<TaskRoleShadowRecord> = {}): TaskRoleShadowRecord 
 const NOW = () => new Date('2026-10-02T12:00:00Z');
 const INPUT = { taskId: 'task-1', statedRoleSlug: null, teamId: 'team-1', workspaceId: 'ws-1' };
 
+describe('applyTaskRoleDecision ledger coverage', () => {
+  it('writes a content-free fallback row for each skip that made no call', async () => {
+    for (const [outcome, reason] of [['too_few_candidates', 'insufficient_candidates'], ['sensitive', 'sensitive_workspace'], ['no_key', 'no_key']] as const) {
+      const recordDecision = mock(async () => {});
+      await applyTaskRoleDecision(INPUT, { outcome, applyEnabled: true, fingerprint: 'fp-x' }, { recordDecision, skipRowExists: async () => false, log: () => {} });
+      expect(recordDecision).toHaveBeenCalledTimes(1);
+      expect(recordDecision.mock.calls[0][0]).toMatchObject({ status: 'fallback', reason, applied: false, capability: TASK_ROLE_CAPABILITY });
+    }
+  });
+
+  it('records at most one skip row per task and reason when apply runs twice', async () => {
+    const rows: Array<{ taskId?: string | null; reason?: string | null }> = [];
+    const recordDecision = mock(async (r: any) => { rows.push(r); });
+    const skipRowExists = async (taskId: string, _cap: string, reason: string) =>
+      rows.some((r) => r.taskId === taskId && r.reason === reason);
+    const shadow = { outcome: 'too_few_candidates' as const, applyEnabled: true, fingerprint: 'fp-x' };
+    await applyTaskRoleDecision(INPUT, shadow, { recordDecision, skipRowExists, log: () => {} });
+    await applyTaskRoleDecision(INPUT, shadow, { recordDecision, skipRowExists, log: () => {} });
+    expect(rows).toHaveLength(1);
+  });
+
+  it('a disabled capability leaves no row', async () => {
+    const recordDecision = mock(async () => {});
+    await applyTaskRoleDecision(INPUT, { outcome: 'disabled' }, { recordDecision, log: () => {} });
+    expect(recordDecision).not.toHaveBeenCalled();
+  });
+
+  it('records the stated-role sample as an unapplied observation with the stated role as ruleAnswer', async () => {
+    const write = mock(async () => true);
+    const recordDecision = mock(async () => {});
+    const res = await applyTaskRoleDecision(
+      { ...INPUT, statedRoleSlug: 'researcher' },
+      { outcome: 'logged', record: record({ stated: 'researcher', decision: 'builder' }), applyEnabled: true },
+      { write, recordDecision, log: () => {} },
+    );
+    expect(res.outcome).toBe('stated');
+    expect(write).not.toHaveBeenCalled();
+    expect(recordDecision).toHaveBeenCalledTimes(1);
+    expect(recordDecision.mock.calls[0][0]).toMatchObject({
+      ruleAnswer: 'researcher', verdict: 'builder', applied: false, status: 'suggested', reason: 'stated_role_sample',
+    });
+  });
+
+  it('records the kind sub-answer in a sibling row and never applies it', async () => {
+    const recordDecision = mock(async () => {});
+    await applyTaskRoleDecision(
+      INPUT,
+      { outcome: 'logged', record: record({ kindDecision: 'engineering', kindConfidence: 0.8, kindHeuristic: 'research' }), applyEnabled: true },
+      { write: async () => true, recordDecision, log: () => {}, minConfidence: 0.9 },
+    );
+    const kindRow = recordDecision.mock.calls.map(c => c[0]).find((r: any) => r.subjectType === 'task_kind');
+    expect(kindRow).toMatchObject({ verdict: 'engineering', confidence: 0.8, ruleAnswer: 'research', applied: false, status: 'suggested', subjectId: 'task-1' });
+  });
+});
+
 describe('applyTaskRoleDecision', () => {
   it('writes a confident in-set answer once, with the roleInferred stamp', async () => {
     const write = mock(async () => true);
@@ -149,7 +204,9 @@ describe('applyTaskRoleDecision', () => {
 
     recordDecision.mockClear();
     await applyTaskRoleDecision({ taskId: 'task-1', statedRoleSlug: 'researcher', teamId: 'team-1' }, { outcome: 'logged', record: record(), applyEnabled: true }, { write, log: () => {}, recordDecision });
-    expect(recordDecision).not.toHaveBeenCalled();
+    // A stated role is sampled as an unapplied observation, never written.
+    expect(recordDecision).toHaveBeenCalledTimes(1);
+    expect(recordDecision.mock.calls[0][0]).toMatchObject({ applied: false, reason: 'stated_role_sample' });
   });
 
   it('never throws when the ledger write fails', async () => {

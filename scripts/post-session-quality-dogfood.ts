@@ -82,6 +82,7 @@ function triageGap(run: DogfoodRun): string | null {
   if (typeof run.hardTriggered !== 'boolean' || !Array.isArray(run.hardTriggerReasons)) return 'hard-trigger provenance missing';
   if (run.finalDecision !== 'skip' && run.finalDecision !== 'analyse') return 'no final decision';
   if (t.status === 'unavailable') return t.reasonCode === TRIAGE_UNAVAILABLE ? null : 'unavailable triage without its reason code';
+  if (t.status === 'rule') return t.decision === 'analyse' && t.reasonCode ? null : 'rule triage without its decision or reason code';
   if (t.status !== 'ok') return `unknown triage status ${t.status}`;
   if (!t.decision || !t.focus || !t.reasonCode || typeof t.confidence !== 'number') return 'decision, focus, reason or confidence missing';
   return null;

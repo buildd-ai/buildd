@@ -9,6 +9,8 @@
  *
  *   - every required route × {mobile, desktop} has a base-state screenshot
  *     artifact (no `qa.state`) written by THIS worker,
+ *   - every required route has a base shot in each theme (`qa.theme` light
+ *     and dark, at either viewport),
  *   - whose storage object was minted for THAT row by upload-url
  *     (its artifact key names this row's id, see mintedByUploadUrl)
  *     and exists (a row with no upload, or pointing at someone else's object,
@@ -27,7 +29,7 @@ import { artifacts, tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { objectExists } from '@/lib/storage';
 import { isArtifactKeyForUpload, isAuditScreenshotKeyForUpload } from '@/lib/storage-keys';
-import { isSurfaceFixTask } from '@buildd/core/surface-audit';
+import { isSurfaceFixTask, missingThemeCells, parseSurfaceAuditTheme, type SurfaceAuditTheme } from '@buildd/core/surface-audit';
 import type { PageSource } from '@buildd/core/visual-qa-page-source';
 import { auditRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import {
@@ -62,6 +64,8 @@ export interface QaMeta {
    * extra evidence: it never covers, nor uncovers, a required cell.
    */
   state?: string;
+  /** The theme the page was captured in. Absent when unknown: such a shot covers neither theme. */
+  theme?: SurfaceAuditTheme;
 }
 
 export interface QaShot {
@@ -83,6 +87,9 @@ export interface VisualEvidenceVerdict {
   unlinkedIssues: string[];
   /** Artifact ids with unknown verdict values (not in QA_VERDICTS). */
   invalidVerdicts: Array<{ id: string; verdict: unknown }>;
+  providerFailures?: string[];
+  /** `<route> @ <theme> theme` for routes with no base shot in that theme. Present only when non-empty. */
+  missingThemes?: string[];
 }
 
 /** Rows read per check; comfortably above one run's 40-shot bound plus re-shoots. */
@@ -109,6 +116,7 @@ export function parseQaMeta(metadata: unknown): QaMeta | null {
     fixTaskId: typeof qa.fixTaskId === 'string' ? qa.fixTaskId : null,
     ...(qa.source === 'sandbox' || qa.source === 'vercel-preview' ? { source: qa.source } : {}),
     ...(typeof qa.state === 'string' && qa.state.trim() ? { state: qa.state.trim() } : {}),
+    ...(parseSurfaceAuditTheme(qa.theme) ? { theme: parseSurfaceAuditTheme(qa.theme)! } : {}),
   };
 }
 
@@ -176,10 +184,22 @@ export function evaluateVisualAuditEvidence(input: {
   const unlinkedIssues: string[] = [];
   const invalidVerdicts: Array<{ id: string; verdict: unknown }> = [];
   const counting: QaMeta[] = [];
+  const providerFailures: string[] = [];
 
   for (const s of shots) {
     // Check for invalid verdict first, before parseQaMeta drops it
     if (isRecord(s.metadata) && isRecord(s.metadata.qa)) {
+      const raw = s.metadata.qa;
+      const browser = raw.browser;
+      const failedProvider = Boolean(raw.providerError)
+        || (isRecord(raw.probe) && raw.probe.ok === false)
+        || (browser !== undefined && (!isRecord(browser)
+          || !['local', 'cloudflare'].includes(String(browser.provider))
+          || !isRecord(browser.probe) || browser.probe.ok !== true));
+      if (failedProvider) {
+        providerFailures.push(s.id);
+        continue;
+      }
       const verdict = s.metadata.qa.verdict;
       if (typeof verdict !== 'undefined' && !QA_VERDICTS.includes(verdict as QaVerdict)) {
         invalidVerdicts.push({ id: s.id, verdict });
@@ -221,14 +241,19 @@ export function evaluateVisualAuditEvidence(input: {
     }
   }
 
+  // Each route also needs a base shot in both themes, at either viewport.
+  const missingThemes = missingThemeCells(routes, base, qaRouteSatisfies);
+
   return {
-    ok: missing.length === 0 && unlinkedIssues.length === 0 && invalidVerdicts.length === 0,
+    ok: missing.length === 0 && missingThemes.length === 0 && unlinkedIssues.length === 0 && invalidVerdicts.length === 0 && providerFailures.length === 0,
     requiredRoutes,
     missing,
     emptyFindings,
     notUploaded,
     unlinkedIssues,
     invalidVerdicts,
+    ...(providerFailures.length > 0 ? { providerFailures } : {}),
+    ...(missingThemes.length > 0 ? { missingThemes } : {}),
   };
 }
 
@@ -241,11 +266,18 @@ function list(items: string[]): string {
 /** The 400 body's `error`: what is missing and how to fix it. */
 export function formatVisualEvidenceRejection(v: VisualEvidenceVerdict): string {
   const parts = ['Visual audit evidence incomplete.'];
+  if (v.providerFailures?.length) parts.push(`Unusable browser provider evidence: ${list(v.providerFailures)}. Restore a working browser session and capture again.`);
   if (v.missing.length > 0) {
     parts.push(
       `Missing screenshots (route @ viewport): ${list(v.missing)}. Upload each with upload_artifact ` +
         `(type: 'screenshot', metadata.qa = { runKey, route, viewport: 'mobile' | 'desktop', finding, verdict: 'ok' | 'issue' | 'unsure' }) ` +
         'and PUT the bytes.',
+    );
+  }
+  if (v.missingThemes?.length) {
+    parts.push(
+      `Missing themes (route @ theme): ${list(v.missingThemes)}. Capture each route again with QA_THEME=light or ` +
+        "QA_THEME=dark and record it as metadata.qa.theme: 'light' | 'dark' on the shot.",
     );
   }
   if (v.invalidVerdicts.length > 0) {

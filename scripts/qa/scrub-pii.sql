@@ -228,26 +228,53 @@ DELETE FROM conversations;
 -- Standing rules are text a person wrote about how they work; wiped like chat.
 DELETE FROM chat_directives;
 DELETE FROM local_sessions;         -- presence of people's local coding sessions (repo, client)
+DELETE FROM presence_tokens;        -- people's machine names; a clone's tokens can't verify anyway
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
+DELETE FROM mcp_oauth_grant_workspaces;  -- MCP connection grants: a person's consent, not app state
+DELETE FROM mcp_oauth_grants;
 DELETE FROM oauth_clients;
 DELETE FROM system_cache;
 DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
+-- Failure incident ledger: titles and evidence refs echo task/PR titles and
+-- error text; derived from gate_events and worker failures, wiped with them.
+DELETE FROM failure_incidents;
+-- Who deployed what with which credential reference: an audit trail, not app state.
+DELETE FROM deployment_audit_events;
+-- Writes made through the platform-owner API: an audit trail, not app state.
+DELETE FROM platform_admin_audit_events;
 -- Stripe webhook idempotency ledger: event ids are Stripe-side identifiers.
 DELETE FROM stripe_events;
 -- Capability decisions: per-run grant/PR audit; resources name repos and PRs.
 DELETE FROM agent_capability_decisions;
+-- Capability requests/grants carry agent-written reasons, tool and resource
+-- names; team capability policy names providers, roles and resources.
+DELETE FROM capability_grants;
+DELETE FROM capability_policies;
 -- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
 DELETE FROM task_dispatch_outbox;
+-- Workflow kernel ledger: facts, transitions and effects carry repo names, PR
+-- heads and evidence payloads. Children first (effects reference transitions).
+DELETE FROM landing_lanes;
+DELETE FROM workflow_effects;
+DELETE FROM workflow_transitions;
+DELETE FROM workflow_facts;
+DELETE FROM workflow_review_rounds;
+DELETE FROM workflow_attempts;
+DELETE FROM workflow_deliveries;
+DELETE FROM trunk_incidents;
 DELETE FROM watcher_events;
 -- Watches and their ledger: payloads carry task/PR titles and repo names.
 DELETE FROM notification_deliveries;
 DELETE FROM subscriptions;
 DELETE FROM action_queue_snoozes;
 DELETE FROM task_area_prediction_events;
+-- Task estimates experiment: the explanation names a directory in the repo.
+DELETE FROM task_estimates;
+DELETE FROM task_estimate_actuals;
 -- Post-session quality ledgers: findings carry analyser prose, runs carry
 -- collection error text.
 DELETE FROM post_session_findings;
@@ -257,6 +284,8 @@ DELETE FROM orchestration_manifest_predictions;
 DELETE FROM orchestration_touch_labels;
 DELETE FROM orchestration_decisions;
 DELETE FROM orchestration_overlap_answers;
+-- Live sibling conflict probes: shared and conflicted file paths.
+DELETE FROM sibling_probes;
 -- Model decision ledger: reasons can be prose and human overrides free-form.
 DELETE FROM decision_outcomes;
 DELETE FROM decision_challenger_runs;
@@ -388,6 +417,8 @@ UPDATE initiatives i SET
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM initiatives) s WHERE i.id = s.id;
 
 UPDATE missions m SET
+  branch_refresh_lease_token = NULL,
+  branch_refresh_lease_until = NULL,
   title = pg_temp.qa_title('Mission', s.n, m.title),
   description = pg_temp.qa_text(m.description),
   working_branch = CASE WHEN m.working_branch IS NULL THEN NULL ELSE 'buildd/' || left(md5(m.id::text), 8) || '-mission-' || s.n END,
@@ -499,8 +530,26 @@ UPDATE artifacts a SET
   content = pg_temp.qa_text(a.content),
   storage_key = CASE WHEN a.storage_key IS NULL THEN NULL ELSE 'artifacts/' || a.id END,
   share_token = CASE WHEN a.share_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(a.id::text) END,
-  metadata = pg_temp.qa_json(a.metadata)
+  metadata = pg_temp.qa_json(a.metadata),
+  content_author = NULL
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM artifacts) s WHERE a.id = s.id;
+
+-- Body history holds every body an artifact ever had, and the revision trigger
+-- snapshots the pre-scrub body when the UPDATE above changes it. Drop it all,
+-- after that UPDATE: a clone keeps current bodies only.
+DELETE FROM artifact_revisions;
+-- The read ledger's selectors hold search text agents typed.
+DELETE FROM artifact_reads;
+-- Links carry ids only; who made one is an account or user id.
+UPDATE artifact_links SET created_by = NULL;
+-- Living Specs: titles and summaries are prose; who wrote or approved a
+-- revision is an account or user id. Bodies are artifacts, scrubbed above.
+UPDATE specs SET title = 'Spec ' || left(md5(id::text), 8), created_by = NULL;
+UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
+  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END;
+-- Outcome verdicts: the evidence holds what a reviewer observed (prose), file
+-- refs and who recorded it; criterion ids and head SHAs are not content.
+UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence);
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.
@@ -579,6 +628,10 @@ UPDATE surface_reservations SET
   surface = pg_temp.qa_hash('path/', surface),
   repo_full_name = pg_temp.qa_hash('org-1/repo-', repo_full_name),
   base_ref = pg_temp.qa_branch(base_ref);
+
+UPDATE dependency_releases SET
+  base_branch = pg_temp.qa_branch(base_branch),
+  revoked_reason = pg_temp.qa_text(revoked_reason);
 
 UPDATE path_claims SET
   path = pg_temp.qa_hash('path/', path);

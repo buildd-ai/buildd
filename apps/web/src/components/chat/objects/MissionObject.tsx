@@ -3,15 +3,15 @@
 /**
  * The mission as an object in the feed. The inline card and the docked pane
  * are the mission board's own components (LandedMeter, MissionBoard,
- * MissionLanes) over the same model the mission page builds, live over the
+ * FlowTimeline) over the same model the mission page builds, live over the
  * mission's Pusher channels.
  */
 import Link from 'next/link';
 import { useState } from 'react';
 import type { BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
 import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
-import MissionLanes from '@/app/app/(protected)/missions/[id]/MissionLanes';
-import { LandedMeter, RoleGlyph, ScopeChip } from '@/app/app/(protected)/missions/[id]/MissionBoardParts';
+import FlowTimeline from '@/app/app/(protected)/missions/[id]/FlowTimeline';
+import { RoleGlyph, ScopeChip } from '@/app/app/(protected)/missions/[id]/MissionBoardParts';
 import { MissionLiveContext } from '@/app/app/(protected)/missions/[id]/MissionLiveStore';
 import type { BuilddObjectRef } from '../chat-contract';
 import { useChatActions } from '../ChatActions';
@@ -20,6 +20,8 @@ import type { MissionObjectView } from './object-views';
 import { Eyebrow, OpenButton, StateChip, missionTone } from './parts';
 import { refKey } from '../chat-contract';
 import { ChatVisualDeck, MissionVisualRow, hasVisualReview } from './mission-visual';
+import TaskStrip, { type TaskStripCell } from '@/components/ui/TaskStrip';
+import type { StateKey } from '@/components/ui/states';
 import ContinueOnRunnerCta from '@/components/missions/ContinueOnRunnerCta';
 
 const STATUS_TEXT: Record<BoardStatus, { text: string; cls: string }> = {
@@ -37,6 +39,17 @@ const STATUS_TEXT: Record<BoardStatus, { text: string; cls: string }> = {
 const ROW_ORDER: Record<BoardStatus, number> = {
   waiting: 0, ci_failed: 1, fixing: 1, failed: 1, running: 2, review: 3, ready: 4, blocked: 5, merged: 6, done: 6,
 };
+
+const STRIP_STATE: Record<BoardStatus, StateKey> = {
+  waiting: 'waiting', running: 'running', review: 'review', ci_failed: 'ci_failed', fixing: 'fixing', failed: 'failed',
+  ready: 'ready', blocked: 'blocked', merged: 'landed', done: 'landed',
+};
+
+/** The mission's tasks in plan order as the shared strip's cells. */
+export function missionStripCells(model: MissionBoardModel): TaskStripCell[] {
+  return model.phases.flatMap(p => p.taskIds).map(id => model.tasks[id]).filter(Boolean)
+    .map(t => ({ id: t.id, state: STRIP_STATE[t.status], title: t.label }));
+}
 
 /** The rows the inline card lists: what needs you first, then live work, then the rest. */
 export function missionCardRows(model: MissionBoardModel, max = 6): { rows: BoardTask[]; more: number } {
@@ -92,7 +105,7 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
         </div>
         <OpenButton inPane={inPane} onOpen={open} />
       </div>
-      {model.landed.total > 0 && <LandedMeter model={model} variant="strip" />}
+      {model.landed.total > 0 && <TaskStrip size="sm" cells={missionStripCells(model)} label="Mission tasks" />}
       {view.strand && <ContinueOnRunnerCta strand={view.strand} />}
       {hasVisualReview(view.visual) && (
         <MissionVisualRow objRef={objRef} visual={view.visual} className="border-t border-border-default pt-2.5" />
@@ -106,7 +119,7 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
         data-testid="object-card"
         data-kind="mission"
         data-in-pane={inPane ? 'true' : undefined}
-        className="border-2 border-border-strong bg-card shadow-[var(--card-shadow)]"
+        className="overflow-hidden rounded-[var(--radius-card)] border border-border-default bg-card"
       >
         {compact}
         {!inPane && (
@@ -119,7 +132,7 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
             <div className="px-5 pb-3 pt-4">
               <h3 className="font-mono text-[19px] font-semibold text-text-primary [overflow-wrap:anywhere]">{view.title}</h3>
               {view.goal && <p className="mt-1 font-[family-name:var(--font-outfit)] text-[15px] leading-relaxed text-text-secondary">{view.goal}</p>}
-              {model.landed.total > 0 && <div className="mt-4"><LandedMeter model={model} variant="band" /></div>}
+              {model.landed.total > 0 && <div className="mt-4"><TaskStrip size="sm" cells={missionStripCells(model)} label="Mission tasks" /></div>}
               {view.strand && <ContinueOnRunnerCta strand={view.strand} className="mt-3" />}
               <div className="mt-2 flex items-center justify-between font-mono text-[12px] text-text-muted">
                 <span>{counts}</span>
@@ -161,11 +174,11 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
 export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: BuilddObjectRef; view: MissionObjectView; variant?: 'pane' | 'sheet' }) {
   const store = useObjectStore();
   const actions = useChatActions();
-  const [layout, setLayout] = useState<'board' | 'lanes'>('board');
+  const [layout, setLayout] = useState<'board' | 'flow'>('board');
   const tone = missionTone(view.stateLabel, view.status);
   const link = { missionId: view.id, from: null, initiativeId: null };
   const visual = view.visual ?? null;
-  // Board / Lanes take the model and wire review themselves; inside the
+  // The Board takes the model and wires review itself; inside the
   // chat's pane and sheet the deck renders inline, never as a Dialog over the
   // BottomSheet.
   const boardVisual = { visual, reviewLayout: 'sheet' as const };
@@ -198,7 +211,7 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
           <span className="flex-1" />
           {variant === 'pane' && (
             <div role="tablist" aria-label="Mission layout" className="flex shrink-0 border-[1.5px] border-border-strong">
-              {(['board', 'lanes'] as const).map(l => (
+              {(['board', 'flow'] as const).map(l => (
                 <button
                   key={l}
                   type="button"
@@ -214,10 +227,10 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
           )}
         </header>
         {view.goal && <p className="mt-1.5 max-w-[90ch] font-mono text-[12.5px] text-text-muted">{view.goal}</p>}
-        {/* Board and Lanes lay the live store's progress over the model themselves.
+        {/* Board and Flow lay the live store's progress over the model themselves.
             The pane and the sheet are always narrow: the Board's compact layout. */}
-        {variant === 'pane' && layout === 'lanes'
-          ? <MissionLanes model={view.board} {...link} {...boardVisual} />
+        {variant === 'pane' && layout === 'flow'
+          ? <FlowTimeline model={view.board} compact {...link} />
           : <MissionBoard model={view.board} compact {...link} {...boardVisual} />}
       </div>
     </MissionLiveContext.Provider>

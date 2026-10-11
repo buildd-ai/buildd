@@ -82,7 +82,8 @@ export async function POST(
     }
 
     const currentRole = membership.role as TeamRole;
-    if (!roleHas(currentRole, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
+    const overrides = await getTeamPermissionOverrides(teamId);
+    if (!roleHas(currentRole, 'manage_team_members', overrides)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
@@ -97,8 +98,13 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
     }
 
-    if (role === 'owner' && !roleHas(currentRole, 'assign_team_owner', await getTeamPermissionOverrides(teamId))) {
+    if (role === 'owner' && !roleHas(currentRole, 'assign_team_owner', null /* locked */)) {
       return NextResponse.json({ error: 'Only owners can add owners' }, { status: 403 });
+    }
+
+    // Widening manage_team_members must not let its holders mint admins.
+    if (role === 'admin' && !roleHas(currentRole, 'assign_team_roles', overrides)) {
+      return NextResponse.json({ error: 'Adding an admin needs the assign_team_roles permission' }, { status: 403 });
     }
 
     // Validate user exists

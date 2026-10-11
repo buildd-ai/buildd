@@ -43,6 +43,7 @@ import { sweepPostSessionRuns, type PostSessionRunStore, type PostSessionWorkerR
 import { recordPostSessionFindings, recordTriagedRuns, type PostSessionFindingStore, type StoredFinding } from './post-session-findings';
 import { analysePostSessionRun, type KnowledgeClaim, type PostSessionTraceCoverage } from './post-session-quality-analysis';
 import { readCompletedSessionTranscript } from './session-transcript';
+import { decisionDepsFor } from './post-session-triage-test-deps';
 
 const NOW = new Date('2026-10-04T12:00:00Z');
 const HOUR = 60 * 60 * 1000;
@@ -137,7 +138,7 @@ interface ArtifactRow {
   metadata: CorrectionProposalSpec['metadata'];
 }
 
-type Answer = { decision: string; focus: string; reasonCode: string; confidence?: number };
+type Answer = { decision: string; focus: string; confidence?: number };
 
 interface SessionInputs {
   reviews: Array<{ status: string; verdict: string | null; confidence: number | null }>;
@@ -164,6 +165,8 @@ class World {
   writes: Array<{ table: string; op: string; id: string }> = [];
   dispatched: string[] = [];
   decideCalls = 0;
+  /** The run whose triage is in flight: the decision call carries no ids. */
+  private triaging: string | null = null;
   private seq = 0;
   private turns = 10;
 
@@ -217,7 +220,7 @@ class World {
       ciFixes: 0, errorTraces: [], transcript: 'missing', evidence: [], knowledge: null,
       ...opts.inputs,
     });
-    this.answers.set(turns, opts.answer ?? { decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
+    this.answers.set(turns, opts.answer ?? { decision: 'skip', focus: 'general' });
     return { workerId, taskId, turns };
   }
 
@@ -353,6 +356,7 @@ class World {
       async loadTriageInput(runId) {
         const r = w.runs.get(runId);
         if (!r) return null;
+        w.triaging = runId;
         const ws = w.workspaces.get(r.workspaceId)!;
         return { runId: r.id, state: r.state, facts: r.facts, workspaceId: r.workspaceId, teamId: ws.teamId, dataClass: ws.dataClass };
       },
@@ -514,11 +518,11 @@ class World {
 
   /** Same result shape as `decisionCall`. */
   decide(mode: 'ok' | 'throw' | 'timeout' = 'ok') {
-    return (async (params: { state: { behaviour: { turns: number } }; decisionId: string; onUsage?: (r: unknown) => void }) => {
+    return (async (params: { decisionId: string; onUsage?: (r: unknown) => void }) => {
       this.decideCalls++;
       if (mode === 'throw') throw new Error('decision transport down');
       if (mode === 'timeout') return { ok: false, error: { kind: 'timeout' }, latencyMs: 5000, attempts: 2 };
-      const a = this.answers.get(params.state.behaviour.turns)!;
+      const a = this.answers.get(this.workers.get(this.runs.get(this.triaging!)!.workerId)!.turns)!;
       params.onUsage?.({ decisionId: params.decisionId, model: 'decision-model', usage: { inputTokens: 400, outputTokens: 6, costUsd: 0.0001 } });
       return {
         ok: true, model: 'decision-model', latencyMs: 180, attempts: 1,
@@ -526,7 +530,6 @@ class World {
         answers: {
           decision: { type: 'choice', choice: a.decision, confidence: a.confidence ?? 0.82, probabilities: {} },
           focus: { type: 'choice', choice: a.focus, confidence: 0.6, probabilities: {} },
-          reasonCode: { type: 'choice', choice: a.reasonCode, confidence: 0.55, probabilities: {} },
         },
       };
     }) as never;
@@ -573,7 +576,7 @@ class World {
       env: {},
       sweep: o => sweepPostSessionRuns({
         ...o, store: runStore,
-        triage: { decide: this.decide(opts.decide), recordReceipts: async () => {} },
+        triage: { decisionDeps: decisionDepsFor(this.decide(opts.decide)), recordReceipts: async () => {} },
       }),
       record: o => recordTriagedRuns({ ...o, store: findingStore, analyse: this.analyse({ brokenWorkers: opts.brokenWorkers }) }),
     });
@@ -604,7 +607,7 @@ function successWithoutPr(w: World, name = 'no-pr') {
   return w.session(name, {
     worker: { prNumber: null, prLifecycleStatus: null, mergedAt: null },
     inputs: { evidence: [{ id: 'evidence-ci-log', kind: 'command_output' }] },
-    answer: { decision: 'skip', focus: 'general', reasonCode: 'routine_success' },
+    answer: { decision: 'skip', focus: 'general' },
   });
 }
 
@@ -632,7 +635,7 @@ function staleKnowledge(w: World, name = 'stale') {
         ],
       },
     },
-    answer: { decision: 'analyse', focus: 'knowledge', reasonCode: 'retrieval_gap', confidence: 0.74 },
+    answer: { decision: 'analyse', focus: 'knowledge', confidence: 0.78 },
   });
 }
 
@@ -672,16 +675,16 @@ describe('post-session quality loop — end to end', () => {
     expect(cleanRun.finalDecision).toBe('skip');
     expect(cleanRun.hardTriggered).toBe(false);
     expect(cleanRun.triage).toMatchObject({
-      status: 'ok', decision: 'skip', focus: 'general', reasonCode: 'routine_success', confidence: 0.82,
-      provenance: { model: 'decision-model', rule: 'triage', promptVersion: expect.any(String) },
+      status: 'ok', decision: 'skip', focus: 'general', reasonCode: 'focus_general', confidence: 0.82,
+      provenance: { model: 'typesafe/jev-1.13', rule: 'triage', source: 'model', policyVersion: expect.any(String) },
     });
     const noPrRun = w.runsFor(p.workerId)[0];
-    expect(noPrRun.triage).toMatchObject({ status: 'ok', decision: 'skip', provenance: { rule: 'hard_trigger' } });
+    expect(noPrRun.triage).toMatchObject({ status: 'rule', decision: 'analyse', provenance: { rule: 'hard_trigger', source: 'rule' } });
     expect(noPrRun.hardTriggered).toBe(true);
     expect(noPrRun.hardTriggerReasons).toEqual(['success_without_evidence']);
     expect(noPrRun.finalDecision).toBe('analyse');
     expect(noPrRun.state).toBe('analysed');
-    expect(w.runsFor(s.workerId)[0].triage).toMatchObject({ decision: 'analyse', focus: 'knowledge', reasonCode: 'retrieval_gap', confidence: 0.74 });
+    expect(w.runsFor(s.workerId)[0].triage).toMatchObject({ decision: 'analyse', focus: 'knowledge', reasonCode: 'focus_knowledge', confidence: 0.78 });
 
     // (4) The selected session yields a structured, evidence-backed finding.
     const f = w.findingBy('success_has_shipping_evidence')!;
@@ -710,7 +713,8 @@ describe('post-session quality loop — end to end', () => {
       stageFailures: { collect: 0, triage: 0, transcript: 0, analyse: 0, act: 0 },
       stageErrors: [],
     });
-    expect(readout.stageCost.triage.calls).toBe(3);
+    // The hard-triggered session is decided by rule and asks no model.
+    expect(readout.stageCost.triage.calls).toBe(2);
   });
 
   it('replay is a no-op: a second pass, a crash replay of the record step, and racing sweeps file nothing twice', async () => {
@@ -839,7 +843,7 @@ describe('post-session quality loop — end to end', () => {
     const w = new World();
     w.workspace();
     w.setMode('ws-dogfood', 'propose');
-    const analyse = { decision: 'analyse', focus: 'retrieval', reasonCode: 'retrieval_gap' } as const;
+    const analyse = { decision: 'analyse', focus: 'retrieval' } as const;
     // Same behaviour in every session: the first edit precedes the first recall.
     const full = w.session('full', { answer: analyse });
     w.inputs.get(full.workerId)!.transcript = editBeforeRecallTranscript(full.workerId);
@@ -887,14 +891,14 @@ describe('post-session quality loop — end to end', () => {
 
     expect(w.runsFor(c.workerId)[0]).toMatchObject({
       state: 'skipped', finalDecision: 'skip',
-      triage: { status: 'unavailable', reasonCode: 'triage_unavailable', decision: null, provenance: { rule: 'fail_open_skip', error: 'transport' } },
+      triage: { status: 'unavailable', reasonCode: 'triage_unavailable', decision: null, provenance: { rule: 'fail_open_skip', fallbackCause: 'provider_failure' } },
     });
     // No model, so the stale-knowledge session is skipped too: a model-only signal is lost, not invented.
     expect(w.runsFor(s.workerId)[0].state).toBe('skipped');
     // The hard trigger still routes to analysis; the analyser failure leaves it triaged with the reason.
     const pRun = w.runsFor(p.workerId)[0];
     expect(pRun).toMatchObject({ state: 'triaged', hardTriggered: true, errorStage: 'analyse', lastError: 'analyser exploded' });
-    expect(pRun.triage).toMatchObject({ status: 'unavailable', provenance: { rule: 'hard_trigger' } });
+    expect(pRun.triage).toMatchObject({ status: 'rule', provenance: { rule: 'hard_trigger' } });
     expect(r1).toMatchObject({ triaged: 3, selectedForAnalysis: 1, analysed: 0, stageErrors: [] });
     expect(r1.stageFailures.analyse).toBe(1);
     expect(w.findings.size).toBe(0);
@@ -903,7 +907,7 @@ describe('post-session quality loop — end to end', () => {
     // new session fails open to skip; the stranded run is picked up and acted on once.
     const t = w.session('timeout');
     const r2 = await w.pass({ decide: 'timeout', now: new Date(NOW.getTime() + HOUR) });
-    expect(w.runsFor(t.workerId)[0].triage).toMatchObject({ status: 'unavailable', provenance: { error: 'timeout', rule: 'fail_open_skip' } });
+    expect(w.runsFor(t.workerId)[0].triage).toMatchObject({ status: 'unavailable', provenance: { fallbackCause: 'provider_failure', rule: 'fail_open_skip' } });
     expect(w.runsFor(p.workerId)[0].state).toBe('analysed');
     expect(r2.tasksCreated).toBe(1);
     expect(w.followUpTasks()).toHaveLength(1);

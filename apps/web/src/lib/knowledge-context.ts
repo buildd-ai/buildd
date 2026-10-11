@@ -189,6 +189,12 @@ export async function buildKnowledgeContext(
     // is measured by the ledger (see retrieveMemory); the other corpora have
     // no ledger yet, so their hit_count still counts these queries.
     const memoryIndex = opts?.memoryIndex;
+    // Claim time only: the live relevance gate waits on the request path, and
+    // the claim is where that wait is budgeted. Mission planning keeps the
+    // rule order and the sampled shadow.
+    const liveRelevance = (opts?.caller ?? 'claim_context') === 'claim_context'
+      ? { relevance: { live: true as const } }
+      : {};
     const sources: Array<{
       label: string;
       run: () => Promise<QueryResult[]>;
@@ -212,6 +218,7 @@ export async function buildKnowledgeContext(
             attribution: opts?.attribution,
             ledger: opts?.ledger ?? afterResponseMemoryLedger,
             deferLedger: true,
+            ...liveRelevance,
           });
           return retrieval.results;
         },
@@ -239,6 +246,7 @@ export async function buildKnowledgeContext(
           gate: { minScore: PRECISION_FLOOR, exclude: excluded },
           attribution: opts?.attribution,
           ledger: opts?.ledger ?? afterResponseMemoryLedger,
+          ...liveRelevance,
         })).results,
       });
     }

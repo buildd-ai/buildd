@@ -9,8 +9,8 @@ describe('PhaseBar cell labels', () => {
   const html = renderToStaticMarkup(
     <PhaseBar
       phases={[{
-        key: 'p1', label: 'Currency through the product', done: 0, total: 1,
-        cells: [{ taskId: 't1', label: 'invoices', title: 'render in currency', state: 'queued', fill: 1, href: '/app/tasks/t1' }],
+        key: 'p1', phaseKey: 'p1', label: 'Currency through the product', done: 0, total: 1,
+        cells: [{ taskId: 't1', label: 'invoices', title: 'render in currency', state: 'queued', href: '/app/tasks/t1' }],
       }]}
     />,
   );

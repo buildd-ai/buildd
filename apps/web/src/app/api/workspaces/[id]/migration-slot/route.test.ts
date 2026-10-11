@@ -76,7 +76,7 @@ describe('POST /api/workspaces/[id]/migration-slot', () => {
     expect(res.status).toBe(404);
     // The cross-tenant write must never reach the DB.
     expect(mockUpdate).not.toHaveBeenCalled();
-    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('acc-attacker', FOREIGN_WORKSPACE_ID);
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'acc-attacker' }), FOREIGN_WORKSPACE_ID);
   });
 
   it('reserves the next number for an account with workspace access', async () => {

@@ -1,4 +1,5 @@
 import { getModelDisplayName, primaryModelFromUsage } from '@buildd/core/model-display';
+import { showTokenCount } from './milestone-log';
 
 export interface ModelUsageEntry {
   inputTokens?: number;
@@ -17,6 +18,8 @@ interface Props {
   durationApiMs?: number | null;
   terminalReason?: string | null;
   stopReason?: string | null;
+  /** Turns the run took; a model row reporting 0 tokens after turns hides its token figures. */
+  turns?: number | null;
 }
 
 /**
@@ -35,6 +38,7 @@ export default function ModelUsagePanel({
   durationApiMs,
   terminalReason,
   stopReason,
+  turns,
 }: Props) {
   const entries = Object.entries(modelUsage ?? {});
   if (entries.length === 0) return null;
@@ -45,8 +49,8 @@ export default function ModelUsagePanel({
 
   return (
     <div className="mt-3 p-3 bg-surface-3 border border-border-default/50">
-      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
-        {tierLabel ? `${tierLabel} · ` : ''}Model Usage
+      <div className="font-mono text-[11px] md:text-[10px] text-text-muted mb-2">
+        {tierLabel ? `${tierLabel} · ` : ''}Model usage
         {multiple ? ` · ${all.length} models` : ''}
       </div>
       <div className="space-y-1.5">
@@ -56,12 +60,13 @@ export default function ModelUsagePanel({
           const cached = usage.cacheReadInputTokens || 0;
           const out = usage.outputTokens || 0;
           const cost = usage.costUSD || 0;
+          const tokensKnown = showTokenCount(inp + cached + out, turns);
           return (
             <div key={model} className="flex items-center justify-between font-mono text-[11px]">
               <span className="text-text-secondary">{getModelDisplayName(model)}</span>
               <div className="flex items-center gap-3 text-text-muted">
-                <span>{((inp + cached) / 1000).toFixed(0)}k in</span>
-                <span>{(out / 1000).toFixed(0)}k out</span>
+                {tokensKnown && <span>{((inp + cached) / 1000).toFixed(0)}k in</span>}
+                {tokensKnown && <span>{(out / 1000).toFixed(0)}k out</span>}
                 {cached > 0 && (
                   <span className="text-status-success">{(cached / 1000).toFixed(0)}k cached</span>
                 )}

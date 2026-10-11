@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
   // The workspace id becomes the tenant segment of every key signed below, so
   // the caller must actually have access to it.
   const authorized = apiAccount
-    ? await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
+    ? await verifyAccountWorkspaceAccess(apiAccount, workspaceId)
     : !!(await verifyWorkspaceAccess(user!.id, workspaceId));
 
   if (!authorized) {

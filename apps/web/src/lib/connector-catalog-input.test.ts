@@ -3,7 +3,7 @@ import { describe, it, expect, mock } from 'bun:test';
 const mockDiscover = mock(async (_url: string) => ({ authMode: 'oauth' as 'oauth' | 'none', authorizationServer: {} }));
 const mockIcon = mock(async (_url: string) => 'https://x.dev/icon.png' as string | null);
 mock.module('@/lib/mcp-oauth', () => ({ discoverOAuthMetadata: mockDiscover }));
-mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: mockIcon }));
+mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: mockIcon, resolveConnectorIconData: async () => null }));
 
 const { parseCatalogEntryInput, verifyCatalogServer } = await import('./connector-catalog-input');
 

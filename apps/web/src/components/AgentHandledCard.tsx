@@ -3,6 +3,7 @@ import Spinner from './Spinner';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import { describePendingGates, type ActionQueueItem } from '@/lib/action-queue';
 import { actionCardTaskLink } from '@/lib/action-card-context';
+import { deliveryReading } from '@/lib/workflow/delivery-display';
 
 /**
  * Informational card for work an agent already owns — a live CI fix, a check
@@ -14,7 +15,17 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
   const gate = item.ciGate;
   // A pending CI/review wait names exactly what is pending ("CI passed ·
   // reviewer checking the latest commit"), never a generic "still running".
-  const label = item.pendingGates
+  // A kernel-owned delivery states its own reading (workflow-state-kernel
+  // §17.5): the headline, then the evidence below the title.
+  const delivery = item.delivery ?? null;
+  const deliveryReads = delivery
+    ? deliveryReading({ stage: delivery.stage, state: delivery.state, headline: delivery.headline, owner: delivery.owner })
+    : null;
+  const label = delivery && deliveryReads
+    ? deliveryReads.label
+    : delivery
+    ? delivery.headline
+    : item.pendingGates
     ? describePendingGates(item.pendingGates)
     : gate && gate.kind !== 'blocked'
     ? gate.label
@@ -42,7 +53,20 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
         </div>
       )}
 
+      {delivery?.detail && (
+        <p data-testid="agent-handled-delivery-detail" className="mt-0.5 text-[12px] text-text-secondary [overflow-wrap:anywhere]">{delivery.detail}</p>
+      )}
+
       <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+        {delivery?.cta?.action === 'repair_remediation' && (
+          <Link
+            data-testid="agent-handled-repair-cta"
+            href={actionCardTaskLink(item, { taskId: delivery.cta.taskId, page: true })}
+            className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] font-semibold text-accent-text hover:underline"
+          >
+            {delivery.cta.label}
+          </Link>
+        )}
         {fixTaskId && (
           <Link href={actionCardTaskLink(item, { taskId: fixTaskId, page: true })} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] font-medium text-accent-text hover:underline">
             {fixTaskTitle ?? 'View fix attempt'}

@@ -61,6 +61,18 @@ describe('effectiveRoles with overrides', () => {
     expect(PERMISSIONS.manage_billing.minKeyLevel).toBeNull();
   });
 
+  it('role, credential, notification, workspace-creation and agent-role permissions are overridable', () => {
+    const named: Permission[] = ['assign_team_roles', 'manage_team_credentials', 'manage_team_notifications', 'create_workspace', 'manage_agent_roles'];
+    for (const p of named) {
+      expect(LOCKED_PERMISSIONS.has(p)).toBe(false);
+      expect(roleHas('member', p, null)).toBe(false);
+      expect(roleHas('member', p, { [p]: ['owner', 'admin', 'member'] })).toBe(true);
+      expect(roleHas('admin', p, { [p]: ['owner'] })).toBe(false);
+      expect(sanitizeOverrides({ [p]: ['admin', 'member'] })).toEqual({ [p]: ['admin', 'member'] });
+      expect(parseOverridesInput({ [p]: ['owner', 'admin', 'member'] })).toEqual({ ok: true, overrides: { [p]: ['owner', 'admin', 'member'] } });
+    }
+  });
+
   it('unknown roles never hold anything', () => {
     expect(roleHas('superuser', 'manage_connectors', { manage_connectors: ['owner', 'admin', 'member'] })).toBe(false);
     expect(roleHas(null, 'manage_connectors', null)).toBe(false);

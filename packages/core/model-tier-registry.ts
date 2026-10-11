@@ -14,8 +14,10 @@
  *   4. Team row                  ┘
  *   5. Remote policy service     (only when BUILDD_MODEL_POLICY_URL/TOKEN are
  *                                 set; skipped while it is down)
- *   6. Live catalog pick         (newest release in the tier's price band — see
- *                                 model-catalog.ts; self-heals without a deploy)
+ *   6. Live catalog pick         (newest certified release in the tier's price
+ *                                 band that the team's upgrade policy adopts —
+ *                                 model-catalog.ts, model-certification.ts,
+ *                                 model-upgrade-policy.ts; no deploy needed)
  *   7. Bundled fallback          (DEFAULT_MODEL_POLICY = TIER_DEFAULTS, last resort)
  *
  * Resolution happens at claim time so a registry update affects already-queued tasks
@@ -34,9 +36,11 @@ export { TIER_DEFAULTS, TIERS, TIER_SURFACES } from './model-tier-defaults';
 import type { Tier, TierEntry, TierProvider, TierSurface } from './model-tier-defaults';
 import { TIERS, TIER_SURFACES, bundledTierEntry } from './model-tier-defaults';
 import { resolveRegistryTier, resolveRemoteTier, tierEntryFromRegistry, tierEntryFromRemote, type TierPolicyMeta } from './model-policy';
-import { pickTierModel } from './model-catalog';
 import { getCachedOpenRouterCatalog } from './model-catalog-cache';
-import { makeCatalogServabilityCheck, type UnrecognizedModelReason } from './model-capability-requirements';
+import type { UnrecognizedModelReason } from './model-capability-requirements';
+import { getModelCertifications } from './model-certification-store';
+import { pickPolicyTierModel } from './model-upgrade-policy';
+import { loadUpgradePolicy } from './model-upgrade-policy-store';
 
 /** Maps the model-router's legacy alias vocabulary to the new tier vocabulary. */
 export function mapRouterAlias(alias: string): Tier {
@@ -109,28 +113,36 @@ function warnUnrecognized(id: string, reason: UnrecognizedModelReason): void {
   warnedUnrecognized.add(key);
   const why =
     reason === 'newer_than_floor_table'
-      ? 'it was released after every model in MODEL_MIN_CLI_VERSION, so its CLI floor is unknown'
+      ? 'it is newer than every model in MODEL_MIN_CLI_VERSION and not yet certified'
       : reason === 'no_recorded_model_in_catalog'
         ? 'no model in MODEL_MIN_CLI_VERSION is in the catalog, so nothing marks which releases are known (tiers fall back to TIER_DEFAULTS)'
         : 'the catalog gave no release time for it';
   console.warn(
     `[model-tier-registry] catalog pick refused ${id}: ${why}. ` +
-      `To adopt it, add its minimum CLI version to MODEL_MIN_CLI_VERSION in packages/core/model-capability-requirements.ts.`,
+      `It is adopted once the certification probe certifies it (manage_model_tiers action=model model=${id} shows its state).`,
   );
 }
 
 async function resolveFromCatalog(
   tier: Tier,
+  teamId: string | null,
+  workspaceId: string | null | undefined,
   runnerCliVersion?: string | null,
 ): Promise<TierEntry | null> {
   try {
     const entries = await getCachedOpenRouterCatalog();
     if (entries.length === 0) return null;
 
-    const pick = pickTierModel(tier, entries, 'anthropic', {
-      isServable: makeCatalogServabilityCheck(entries, runnerCliVersion, {
-        onUnrecognized: warnUnrecognized,
-      }),
+    const [certifications, { policy }] = await Promise.all([
+      getModelCertifications(),
+      loadUpgradePolicy(teamId, workspaceId),
+    ]);
+    const pick = pickPolicyTierModel(tier, entries, {
+      policy,
+      certifications,
+      runnerCliVersion,
+      now: Date.now(),
+      onUnrecognized: warnUnrecognized,
     });
     if (!pick) return null;
 
@@ -179,14 +191,14 @@ export async function resolveTierEntry(
 
   // 6: no explicit registry row (or the DB was unreachable): try the live
   // catalog before the hand-maintained default. A same-band release is
-  // adopted without a registry write only if it was released no later than
-  // the newest model in MODEL_MIN_CLI_VERSION; anything newer needs a floor
-  // row there (a code change, so a deploy) first — see resolveFromCatalog.
+  // adopted without a registry write when the static floor table already
+  // vouches for it or the certification probe has certified it, and the
+  // team's upgrade policy (latest-compatible / soak / manual) lets it move.
   // Not cached per team — the pick can depend on the claiming runner's CLI
   // version. getCachedOpenRouterCatalog() already caches the expensive part
   // (the network fetch); pickTierModel is a cheap in-memory scan.
   // The catalog refines the policy's bundled layer, so it reports as one.
-  const catalogEntry = await resolveFromCatalog(tier, runnerCliVersion);
+  const catalogEntry = await resolveFromCatalog(tier, teamId, workspaceId, runnerCliVersion);
   if (catalogEntry) return { ...catalogEntry, policy: bundledMeta('buildd-catalog', surface) };
 
   // 7: the policy's bundled fallback.

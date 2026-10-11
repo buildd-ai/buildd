@@ -8,6 +8,13 @@ mock.module('@/lib/mission-pr', () => ({
   evaluateMissionWorkState: () => Promise.resolve(missionWorkState),
   findMissionPrOwner: () => Promise.resolve(missionPrOwner),
 }));
+// The workflow kernel's deliveries by PR (Slice D): empty = every PR is legacy, so every
+// test above the S16 block runs exactly the column answer it always did.
+let deliveryShips = new Map<string, any>();
+mock.module('@/lib/workflow/delivery-ship', () => ({
+  deliveryShipsForPrs: () => Promise.resolve(deliveryShips),
+  shipKey: (ws: string | null, u: string | null) => (ws && u ? `${ws}:${u.replace('https://github.com/', '').replace('/pull/', '#').toLowerCase()}` : null),
+}));
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
@@ -438,6 +445,55 @@ describe('canCompleteMission — task rows', () => {
 
       const d = await canCompleteMission('m1');
       expect(d.ok).toBe(true);
+    });
+
+    // A stalled round-2 audit, then a later audit that completed with passing
+    // phone and desktop shots: the visual review model records the stalled
+    // one as replaced, and the gate reads that instead of the bare row.
+    describe('replaced by a later completed audit', () => {
+      const stalled = () => ({ ...audit('failed', { errorType: 'infra_stalled' }, '[surface audit] round 2: Mobile nav'), id: 'a-stalled' });
+      const later = () => ({ ...audit('completed', null), id: 'a-later' });
+
+      it('closes normally when the model records the replacement', async () => {
+        activeMission();
+        taskRows = [work('completed', 'Build the nav'), stalled(), later()];
+        visualModel = { phase: 'reviewed', roundCapOpen: false, summary: { awaitingHuman: 0 }, cells: [], replacedAudits: [{ auditTaskId: 'a-stalled', replacedBy: ['a-later'] }] };
+
+        const d = await canCompleteMission('m1');
+        expect(d.ok).toBe(true);
+        expect(d.infraStalledTitles).toEqual([]);
+        // One model read serves the replacement and the review hold.
+        expect(mockLoadVisualReview).toHaveBeenCalledTimes(1);
+      });
+
+      it('still blocks when nothing replaced it (missing shot, unresolved finding)', async () => {
+        activeMission();
+        taskRows = [work('completed', 'Build the nav'), stalled(), later()];
+        visualModel = { phase: 'stalled', roundCapOpen: false, summary: { awaitingHuman: 0 }, cells: [], replacedAudits: [] };
+
+        const d = await canCompleteMission('m1');
+        expect(d.code).toBe('infra_stalled');
+        expect(d.infraStalledTitles).toEqual(['[surface audit] round 2: Mobile nav']);
+      });
+
+      it('fails closed: a model read error keeps the stall blocking', async () => {
+        activeMission();
+        taskRows = [work('completed', 'Build the nav'), stalled(), later()];
+        mockLoadVisualReview.mockImplementationOnce(async () => { throw new Error('db down'); });
+
+        const d = await canCompleteMission('m1');
+        expect(d.code).toBe('infra_stalled');
+      });
+
+      it('never clears a stalled implementation task, whatever the model says', async () => {
+        activeMission();
+        taskRows = [{ ...work('failed', 'Deploy the worker', { result: { errorType: 'infra_stalled' } }), id: 'b-stalled' }, later()];
+        visualModel = { phase: 'reviewed', roundCapOpen: false, summary: { awaitingHuman: 0 }, cells: [], replacedAudits: [{ auditTaskId: 'b-stalled', replacedBy: ['a-later'] }] };
+
+        const d = await canCompleteMission('m1');
+        expect(d.code).toBe('infra_stalled');
+        expect(d.infraStalledTitles).toEqual(['Deploy the worker']);
+      });
     });
   });
 
@@ -1584,5 +1640,52 @@ describe('completeMissionIfVerified — accepted goal-criteria patterns', () => 
 
     expect(r.completed).toBe(true);
     expect(acceptedPatternCalls).toEqual(['m1']);
+  });
+});
+
+// S16 (docs/specs/workflow-state-kernel.md §16, §17.3): for a PR the kernel owns, the gate
+// reads the delivery; the gate's own rules (and every legacy case above) are unchanged.
+describe('canCompleteMission — reads the kernel delivery for a kernel-owned PR (S16)', () => {
+  const url = 'https://github.com/org/repo/pull/2287';
+  const row = (over: Record<string, unknown> = {}) => work('completed', 'Kernel task', {
+    workspaceId: 'ws-1',
+    workers: [{ prUrl: url, prNumber: 2287, mergedAt: null, prLifecycleStatus: 'pr_open', supersededByPrNumber: null, supersededByPrUrl: null, supersededReason: null, ...over }],
+  });
+  beforeEach(() => { reset(); deliveryShips = new Map(); activeMission({ goalCriteria: null }); });
+
+  it('MERGED before stamp_pr_rows ran: shipped, not awaiting merge', async () => {
+    taskRows = [row()];
+    deliveryShips.set('ws-1:org/repo#2287', { state: 'MERGED' });
+    expect(await canCompleteMission('m1')).toMatchObject({ ok: true, awaitingMerge: 0 });
+  });
+
+  it('SUPERSEDED before its projection ran: shipped, and the detail names the PR it landed under', async () => {
+    taskRows = [row({ prLifecycleStatus: 'closed' })];
+    deliveryShips.set('ws-1:org/repo#2287', { state: 'SUPERSEDED', supersededByPr: 2293, supersededByUrl: 'https://github.com/org/repo/pull/2293', supersededReason: 're-landed' });
+    const d = await canCompleteMission('m1');
+    expect(d).toMatchObject({ ok: true, supersededCount: 1 });
+    expect(d.supersededDetails[0]).toMatchObject({ prNumber: 2287, supersededByPrNumber: 2293, supersededReason: 're-landed' });
+  });
+
+  it('ABANDONED by a person: settled, reported with the reason', async () => {
+    taskRows = [row({ prLifecycleStatus: 'closed' })];
+    deliveryShips.set('ws-1:org/repo#2287', { state: 'ABANDONED', stateReason: 'plan changed' });
+    const d = await canCompleteMission('m1');
+    expect(d).toMatchObject({ ok: true, awaitingMerge: 0 });
+    expect(d.abandonedDetails).toEqual([{ taskId: expect.any(String), title: 'Kernel task', prNumber: 2287, abandonedReason: 'plan changed' }]);
+  });
+
+  it('CLOSED_UNMERGED blocks as closed with no supersession, whatever a stray column says', async () => {
+    taskRows = [row({ prLifecycleStatus: 'closed', supersededByPrNumber: 2293 })];
+    deliveryShips.set('ws-1:org/repo#2287', { state: 'CLOSED_UNMERGED' });
+    const d = await canCompleteMission('m1');
+    expect(d).toMatchObject({ ok: false, code: 'awaiting_merge' });
+    expect(d.awaitingMergeDetails[0].closedUnsuperseded).toBe(true);
+  });
+
+  it('an open delivery (in review, fixing, landing) blocks as awaiting merge, even if a column lagged to merged', async () => {
+    taskRows = [row({ mergedAt: '2026-10-01T00:00:00.000Z' })];
+    deliveryShips.set('ws-1:org/repo#2287', { state: 'AWAITING_REVIEW' });
+    expect(await canCompleteMission('m1')).toMatchObject({ ok: false, code: 'awaiting_merge' });
   });
 });

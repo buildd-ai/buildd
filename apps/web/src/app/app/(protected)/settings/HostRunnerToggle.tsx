@@ -55,7 +55,7 @@ export default function HostRunnerToggle({
         )}
       </div>
       <p className="text-xs text-text-muted">
-        A host runner can lease and refresh the team&apos;s model credentials. Leave it off for keys that only claim tasks or run in cloud containers.
+        A trusted host runner receives the team&apos;s model credentials.
       </p>
       {error && <p className="text-xs text-status-error">{error}</p>}
     </div>

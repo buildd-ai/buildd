@@ -70,8 +70,10 @@ describe('AC-18: mission page query shape', () => {
     expect(MISSION_TASKS_WITH.with.workers.with.artifacts.columns).toBe(MISSION_ARTIFACT_COLUMNS);
   });
 
-  it('page.tsx uses the shared shape for both mission reads and inlines no heavy column', () => {
-    expect(PAGE.split('with: MISSION_DETAIL_WITH').length - 1).toBe(2);
+  it('page.tsx uses the shared shape for its mission read and inlines no heavy column', () => {
+    // One read: the read-through PR fact import runs after the response, so the
+    // page no longer re-reads the mission it just refreshed (workflow kernel §11).
+    expect(PAGE.split('with: MISSION_DETAIL_WITH').length - 1).toBe(1);
     expect(PAGE).not.toMatch(/\bcontent:\s*true/);
     expect(PAGE).not.toMatch(/\bresult:\s*true/);
     expect(PAGE).not.toMatch(/\bcontext:\s*true/);
@@ -231,6 +233,26 @@ describe('digestTaskContext and the Visual review coverage', () => {
     expect(auditRequiredRoutes({ context: digestTaskContext(context) }, deps))
       .toEqual(auditRequiredRoutes({ context }, deps));
     expect(auditRequiredRoutes({ context: digestTaskContext(context) }, deps)).toContain('/app/tasks');
+  });
+});
+
+describe('digests and the Landed drawer audit evidence', () => {
+  // reviewOf binds a reviewer run's verdict to the head it read; the drawer
+  // reads it from the digest, so it must read the same as from the full row.
+  it('a reviewer verdict and its head read the same from the digest', async () => {
+    const { reviewOf } = await import('@/lib/activity-delivery');
+    const cases = [
+      { result: { effectiveVerdict: 'request-changes', output: bulky, structuredOutput: { verdict: 'approve', notes: bulky } }, context: { headSha: 'a1b2c3d4e5', prompt: bulky } },
+      { result: { structuredOutput: { verdict: 'approve' } }, context: { headSha: 'd4e5f60718' } },
+    ];
+    for (const c of cases) {
+      expect(reviewOf(digestTaskResult(c.result), digestTaskContext(c.context))).toEqual(reviewOf(c.result, c.context));
+    }
+    expect(reviewOf(digestTaskResult(cases[0].result), digestTaskContext(cases[0].context))).toEqual({ verdict: 'request-changes', headSha: 'a1b2c3d4e5' });
+  });
+
+  it('workers carry the head they pushed', () => {
+    expect(MISSION_WORKER_COLUMNS.lastCommitSha).toBe(true);
   });
 });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -188,6 +188,80 @@ describe('GET /api/workers/[id]/sessions', () => {
       expect(res.status).toBe(502);
       const data = await res.json();
       expect(data.error).toContain('Failed to reach runner');
+    });
+  });
+
+  // An OAuth session resolves to an account its whole team shares, so the
+  // account id alone says nothing about which member claimed the worker
+  // (lib/worker-owner.ts). Only the claiming member's session owns it.
+  describe('OAuth session on a shared team account', () => {
+    const sessionAccount = (over: Record<string, unknown> = {}) => ({
+      id: 'account-1', teamId: 'team-1', sessionUserId: 'user-a', level: 'admin', ...over,
+    });
+    const sessionClaimed = {
+      id: WORKER_ID,
+      accountId: 'account-1',
+      claimedByUserId: 'user-a',
+      localUiUrl: 'http://runner:3001',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    };
+    const realFetch = globalThis.fetch;
+    const mockFetch = mock(async (..._args: any[]) => new Response(JSON.stringify({ sessions: [] }), { status: 200 }));
+    beforeEach(() => {
+      mockFetch.mockClear();
+      globalThis.fetch = mockFetch as any;
+    });
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+    });
+
+    it('lets the session that claimed the worker read its sessions', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(sessionAccount());
+      mockWorkersFindFirst
+        .mockResolvedValueOnce(sessionClaimed)
+        .mockResolvedValueOnce({ id: WORKER_ID, localUiUrl: 'http://runner:3001' });
+
+      const res = await GET(createMockRequest('oauth_token'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses another member of the same team on the same account, without proxying', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(sessionAccount({ sessionUserId: 'user-b' }));
+      mockWorkersFindFirst.mockResolvedValue(sessionClaimed);
+
+      const res = await GET(createMockRequest('oauth_token'), { params: mockParams });
+
+      expect(res.status).toBe(403);
+      expect(mockWorkersFindFirst).toHaveBeenCalledTimes(1);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses the claiming user when the session carries no team id', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(sessionAccount({ teamId: null }));
+      mockWorkersFindFirst.mockResolvedValue(sessionClaimed);
+
+      const res = await GET(createMockRequest('oauth_token'), { params: mockParams });
+
+      expect(res.status).toBe(403);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('the cookie dashboard path still reads a worker someone else claimed', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-b' });
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce(sessionClaimed)
+        .mockResolvedValueOnce({ id: WORKER_ID, localUiUrl: 'http://runner:3001' });
+
+      const res = await GET(createMockRequest(), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-b', 'ws-1');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 });

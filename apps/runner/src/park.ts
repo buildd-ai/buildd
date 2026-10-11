@@ -113,7 +113,7 @@ function tryGit(cwd: string, args: string[]): string | null {
   try { return git(cwd, args); } catch { return null; }
 }
 
-/** The base clone a setupWorktree worktree belongs to: `<clone>/.buildd-worktrees/<name>`. */
+/** The base clone of a linked worktree, or the session clone itself in cloud mode. */
 export function clonePathOf(worktreePath: string): string {
   const parent = dirname(worktreePath);
   if (basename(parent) === '.buildd-worktrees') return dirname(parent);
@@ -511,13 +511,19 @@ export function applyParkRepo(opened: OpenedPark, clonePath: string, opts: Apply
   }
   if (git(clonePath, ['rev-parse', `refs/heads/${m.branch}`]) !== m.headSha) throw new ParkRestoreError('restored branch tip does not match');
 
-  const exclude = join(clonePath, '.git', 'info', 'exclude');
-  mkdirSync(dirname(exclude), { recursive: true });
-  const ex = existsSync(exclude) ? readFileSync(exclude, 'utf-8') : '';
-  if (!ex.includes('.buildd-worktrees')) writeFileSync(exclude, `${ex}\n.buildd-worktrees\n`);
-  mkdirSync(dirname(m.worktreePath), { recursive: true });
-  if (existsSync(m.worktreePath)) throw new ParkRestoreError('the worktree path is already taken');
-  git(clonePath, ['worktree', 'add', '-q', m.worktreePath, m.branch]);
+  // The manifest records the session shape: cloud sessions own their clone,
+  // while host sessions still restore a separate linked worktree.
+  if (resolve(m.worktreePath) === resolve(clonePath)) {
+    git(clonePath, ['checkout', '-q', m.branch]);
+  } else {
+    const exclude = join(clonePath, '.git', 'info', 'exclude');
+    mkdirSync(dirname(exclude), { recursive: true });
+    const ex = existsSync(exclude) ? readFileSync(exclude, 'utf-8') : '';
+    if (!ex.includes('.buildd-worktrees')) writeFileSync(exclude, `${ex}\n.buildd-worktrees\n`);
+    mkdirSync(dirname(m.worktreePath), { recursive: true });
+    if (existsSync(m.worktreePath)) throw new ParkRestoreError('the worktree path is already taken');
+    git(clonePath, ['worktree', 'add', '-q', m.worktreePath, m.branch]);
+  }
   if (m.wipSha) {
     git(m.worktreePath, ['read-tree', '-m', '-u', 'HEAD', m.wipSha]);
     git(m.worktreePath, ['reset', '-q']);

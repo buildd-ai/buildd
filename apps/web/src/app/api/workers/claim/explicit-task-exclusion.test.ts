@@ -128,6 +128,7 @@ describe('classifyExplicitTaskExclusion', () => {
       ['runnerCooldown', 'runner_cooldown'],
       ['workspaceCap', 'workspace_cap'],
       ['workspaceExecutor', 'workspace_executor'],
+      ['workspacePaused', 'workspace_paused'],
     ];
     for (const [gate, code] of cases) {
       expect(classifyExplicitTaskExclusion(probe({ gates: { [gate]: false } }), NOW).code).toBe(code as any);
@@ -147,6 +148,23 @@ describe('classifyExplicitTaskExclusion', () => {
     expect(r.code).toBe('workspace_executor');
     expect(r.detail).toContain('gitConfig.executor');
     expect(r.detail).toContain('force: true');
+  });
+
+  it('a workspace pausing new starts → workspace_paused, saying it resumes on its own and where to resume it', () => {
+    const r = classifyExplicitTaskExclusion(probe({ gates: { workspacePaused: false } }), NOW);
+    expect(r.code).toBe('workspace_paused');
+    expect(r.detail).toContain('paused new starts');
+    expect(r.detail).toContain('Health');
+  });
+
+  it('a workspace pause with a known end says until when', () => {
+    const r = classifyExplicitTaskExclusion(
+      probe({ gates: { workspacePaused: false }, workspacePausedUntil: new Date(NOW.getTime() + 2 * 60 * 60 * 1000) }),
+      NOW,
+    );
+    expect(r.code).toBe('workspace_paused');
+    expect(r.detail).toContain(`New starts in this workspace are paused until ${new Date(NOW.getTime() + 2 * 60 * 60 * 1000).toISOString()}.`);
+    expect(r.detail).toContain('Health');
   });
 
   it('a held mission outranks the local executor (held is the pause)', () => {
@@ -412,4 +430,31 @@ describe('explicitExclusionGateEvent', () => {
       expect(explicitExclusionGateEvent({ taskId: 'task-1', exclusion: { code, detail: '' }, workspaceId: null })).toBeNull();
     }
   });
+});
+
+
+describe('browser role claim diagnostics', () => {
+  it('names the missing browser capability for a refused visual auditor', () => {
+    const result = classifyExplicitTaskExclusion(probe({ roleSlug: 'visual-auditor', gates: { role: false } }), NOW);
+    expect(result.code).toBe('role_mismatch');
+    expect(result.detail).toContain('browser capability');
+    expect(result.detail).toContain('provider');
+  });
+  it('retains the skill explanation for non-browser roles', () => {
+    const result = classifyExplicitTaskExclusion(probe({ roleSlug: 'builder', gates: { role: false } }), NOW);
+    expect(result.detail).toContain('skill match');
+    expect(result.detail).not.toContain('browser capability');
+  });
+});
+
+
+it('records a failed browser probe within the same scoped write with a minute throttle', async () => {
+  updateCalls = [];
+  selectThrows = false;
+  await stampLastClaimAttempt({ taskId: 'task-a', workspaceIds: ['ws-a'], reason: 'no_pending_tasks', exclusion: { code: 'role_mismatch', detail: 'missing browser capability' }, browserProvider: { provider: 'cloudflare', ok: false, checkedAt: NOW.toISOString(), code: 'provider_missing' }, now: NOW });
+  const context = render(updateCalls[0].set.context);
+  expect(context.sql).toContain('lastBrowserRefusal');
+  expect(context.sql).toContain('CASE WHEN');
+  expect(context.params.join(' ')).toContain('provider_missing');
+  expect(render(updateCalls[0].where!).params).toEqual(['task-a', 'ws-a']);
 });

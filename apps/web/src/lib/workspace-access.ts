@@ -7,6 +7,7 @@ import { resolveWorkspace } from '@/lib/workspace-resolver';
 import { accountReachesWorkspace, type WorkspacePermission } from '@/lib/workspace-reach';
 import { isUuid } from '@/lib/uuid';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
+import { assertGrantedWorkspace, isGrantSession, type GrantScopedAccount } from '@/lib/grant-scope';
 
 /**
  * Workspace reach, shared by every surface that lists workspaces or acts on one
@@ -21,7 +22,7 @@ import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
  * - A session user reaches every workspace of every team they belong to.
  */
 export type WorkspaceAccessCaller =
-  | { account: { id: string; teamId: string; name?: string | null; workspaceIds?: string[] | null } }
+  | { account: GrantScopedAccount & { id: string; teamId: string; name?: string | null } }
   | { userId: string };
 
 type WorkspaceRow = NonNullable<Awaited<ReturnType<typeof resolveWorkspace>>>;
@@ -42,6 +43,11 @@ export async function listReachableWorkspaceIds(
   if (!('account' in caller)) return getUserWorkspaceIds(caller.userId);
 
   const { account } = caller;
+  // A grant session reaches its granted workspaces, and only those
+  // (lib/grant-scope.ts): no link or access_mode lookup applies.
+  if (isGrantSession(account)) {
+    return (account.workspaceIds ?? []).filter(id => assertGrantedWorkspace(account, id, permission ? 'write' : 'read'));
+  }
   const [links, ownOpen] = await Promise.all([
     getAccountWorkspacePermissions(account.id),
     db.query.workspaces.findMany({
@@ -114,6 +120,9 @@ export async function resolveWorkspaceAccess(
 
   if ('account' in caller) {
     if (!tokenWorkspaceAllowed(caller.account.workspaceIds, found.id)) return noAccess();
+    if (isGrantSession(caller.account)) {
+      return assertGrantedWorkspace(caller.account, found.id, permission ? 'write' : 'read') ? { ok: true, workspace: found } : noAccess();
+    }
     const link = await db.query.accountWorkspaces.findFirst({
       where: and(
         eq(accountWorkspaces.accountId, caller.account.id),

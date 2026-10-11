@@ -11,14 +11,17 @@ import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam, notifyTeamOf } from '@/lib/notify';
-import { markHoldDue, resolveHold, type HoldResolution } from '@/lib/question-hold';
+import { markHoldDue, type HoldResolution } from '@/lib/question-hold';
+import { disposeParkedWaitingFor } from '@/lib/park-disposition';
+import { gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { emit } from '@/lib/core-emit';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
@@ -29,6 +32,7 @@ import { recordOrchestrationTouchLabel } from '@buildd/core/orchestration-ledger
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
 import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
+import { combineCostBasis, costBasisWrite, parseCostBasis, type CostBasis } from '@buildd/core/cost-basis';
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
@@ -43,7 +47,8 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
 import { onManagedWorkerTerminal } from '@/lib/entitlements/managed-runner';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
-import { enforceServerSideEscalation } from '@/lib/reviewer';
+import { enforceServerSideEscalation, applyCopyReviewGate, parseCopyFindings } from '@/lib/reviewer';
+import { copyReviewConfigOf } from '@buildd/shared';
 import {
   checkDispatch,
   guardDispatchedTask,
@@ -67,10 +72,16 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
+import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
+import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
+import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
+import { resolveDispatchedReview } from '@/lib/verdict-provenance';
+import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -79,22 +90,36 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
-import { COMPLETION_POLICIES } from '@/modules';
+import { COMPLETION_POLICIES, RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
 import { classifyReportedFailure, isConcurrencyConflictError, isModelIdRejectedError, isSilentStartShape, isUnrecognizedModelError, MODEL_REJECTION_CONTEXT_KEY, rejectedModelId, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { isReadOnlyReview } from '@/lib/read-only-review';
-import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import { schedulePrScopeReconcile, scheduleHandoffScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import { acquireObservedPaths } from '@buildd/core/path-claim';
+import {
+  parseWorkingSetDelta,
+  parseShipCheckpointReports,
+  boundedObservedSample,
+  applyWorkingSetSync,
+  fireObservationTruncated,
+  recordShipCheckpointReports,
+  handoffPrScope,
+  terminalOwnedPaths,
+} from '@/lib/working-set-sync';
 import { recordPathCollisionDeferral } from '@/lib/path-collision-deferral';
 import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
+import { formatWorkerMessages, type WorkerMessage } from '@buildd/core/worker-message-format';
+import { queueSystemInstruction } from '@/lib/system-instruction-queue';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
-import { markInstructionsDelivered } from '@/lib/worker-instructions';
+import { markInstructionsAcknowledged, markInstructionsDelivered, pendingInstructionIds } from '@/lib/worker-instructions';
+import { pauseServed } from '@/lib/worker-pause-policy';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
 import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
@@ -234,10 +259,50 @@ async function workerConflictResponse(id: string, extra?: Record<string, unknown
  *  - The write is a compare-and-swap on the status that was read, so a row
  *    moving underneath it yields a retryable conflict rather than a stale write.
  */
+/** Serve each message id once; drop blocked-on-you prompts whose sender has no live worker. */
+async function dropUnanswerableMessages<T extends { id?: string; type?: string; fromTaskId?: string }>(
+  messages: T[],
+): Promise<T[]> {
+  const seen = new Set<string>();
+  const unique = messages.filter(m => {
+    if (!m?.id) return true;
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+  const senderIds = [...new Set(unique.filter(m => m?.type === 'path_blocked_on_you' && m.fromTaskId).map(m => m.fromTaskId!))];
+  if (senderIds.length === 0) return unique;
+  try {
+    const live = await db
+      .select({ taskId: workers.taskId })
+      .from(workers)
+      .where(and(inArray(workers.taskId, senderIds), not(inArray(workers.status, [...TERMINAL_WORKER_STATUSES]))));
+    const liveIds = new Set(live.map(r => r.taskId));
+    return unique.filter(m => !(m?.type === 'path_blocked_on_you' && m.fromTaskId && !liveIds.has(m.fromTaskId)));
+  } catch (err) {
+    console.error('[worker-messages] sender liveness check failed:', err);
+    return unique;
+  }
+}
+
+/**
+ * Does this report carry usage? Only then does it say anything about the
+ * worker's cost basis (docs/specs/real-and-virtual-cost.md).
+ */
+function reportCarriesUsage(body: Record<string, any>): boolean {
+  const pos = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+  if (pos(body.costUsd) || pos(body.inputTokens) || pos(body.outputTokens)) return true;
+  const meta = body.resultMeta;
+  if (!meta || typeof meta !== 'object') return false;
+  if (meta.totalUsage && typeof meta.totalUsage === 'object') return true;
+  return !!meta.modelUsage && typeof meta.modelUsage === 'object' && Object.keys(meta.modelUsage).length > 0;
+}
+
 async function applyMetricsOnlyPatch(
   id: string,
   worker: typeof workers.$inferSelect,
   body: Record<string, any>,
+  reportedBasis: CostBasis | null,
 ) {
   if (isNonReactivatableError(worker.error)) {
     const artifactCount = await getWorkerDeliverableArtifactCount(id);
@@ -305,6 +370,13 @@ async function applyMetricsOnlyPatch(
   }
   const cost = raise(effectiveCost, Number(worker.costUsd ?? 0));
   if (cost !== null) updates.costUsd = cost.toString();
+  if (cost !== null && !(reportedCost > 0)) {
+    mergedMeta = { ...mergedMeta, costEstimated: true };
+    updates.resultMeta = mergedMeta as unknown as typeof updates.resultMeta;
+  }
+  if (reportCarriesUsage(body)) {
+    updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
+  }
   const inTokens = raise(body.inputTokens, worker.inputTokens);
   if (inTokens !== null) updates.inputTokens = inTokens;
   const outTokens = raise(body.outputTokens, worker.outputTokens);
@@ -535,6 +607,9 @@ async function recordPostSupersessionError(
 }
 
 // GET /api/workers/[id] - Get worker details
+/** The `waitingFor` fields a sensitive workspace keeps: no prose, only what Needs You admission and hold resurfacing read. */
+const SENSITIVE_PARK_FIELDS: ReadonlySet<string> = new Set(['disposition', 'dispositionBy', 'gateOutcome', 'rail', 'repairTaskId']);
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -582,7 +657,9 @@ export async function GET(
     return NextResponse.json(redacted());
   }
 
-  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
+  // Only the claiming principal: the account for a bld_ key, the session user
+  // for an OAuth session (lib/worker-owner.ts). No team fallback; fails closed.
+  if (!callerOwnsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -617,7 +694,9 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
+  // Only the claiming principal: the account for a bld_ key, the session user
+  // for an OAuth session (lib/worker-owner.ts). No team fallback; fails closed.
+  if (!callerOwnsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -670,7 +749,22 @@ export async function PATCH(
   // the agent. Captured pre-redaction for the same reason as the instruction
   // echo — these are compared against the stored queue, never persisted as text.
   const rawWorkerMessagesDelivered: unknown = body.workerMessagesDelivered;
+  // Ids of human messages / mission notes the consumer injected, and of the
+  // human messages the agent's turn has since read. Compared against stored
+  // ids only, never persisted as text.
+  const rawInstructionIdsDelivered: unknown = body.instructionIdsDelivered;
+  const rawInstructionsAcknowledged: unknown = body.instructionsAcknowledged;
   body = redactSecretsInBody(body, secretValues);
+
+  const basisParse = parseCostBasis(body.costBasis);
+  if (!basisParse.ok) {
+    return NextResponse.json({
+      error: 'invalid_cost_basis',
+      message: 'costBasis must be one of real, virtual, mixed, unknown.',
+    }, { status: 400 });
+  }
+  const reportedBasis = basisParse.basis;
+  const carriesUsage = reportCarriesUsage(body);
 
   // Metrics-only write: measurement about a session, no state transition. Must
   // be handled BEFORE the terminal guard below — a terminal worker is exactly
@@ -678,7 +772,7 @@ export async function PATCH(
   // the runner's terminal PATCH lands on an already-completed row). See
   // applyMetricsOnlyPatch for what it may and may not write.
   if (body.metricsOnly === true) {
-    return await applyMetricsOnlyPatch(id, worker, body);
+    return await applyMetricsOnlyPatch(id, worker, body, reportedBasis);
   }
 
   // Check if worker was already terminated (reassigned/failed)
@@ -808,6 +902,10 @@ export async function PATCH(
     // success exit for the 'auto' output-requirement gate below, distinct from
     // the `error` param (which marks the task failed).
     discardEdits,
+    // complete_task's claim that a pr_required task's work already landed in
+    // a merged PR it does not own. Checked against GitHub by the
+    // outputRequirement gate below, never trusted as given.
+    alreadyShippedIn,
     // SDK result metadata
     resultMeta,
     // Transient subagent progress (not persisted — forwarded via Pusher only)
@@ -829,6 +927,13 @@ export async function PATCH(
     // Runner pre-push/completion sweep: re-offer every touchedPaths entry for
     // lease, not only the ones new to observedTouches (see auto-lease below).
     checkpointSweep,
+    // Authoritative working-set delta (lib/working-set-sync.ts): the paths
+    // added to / removed from the task-owned set since the last ACK. When
+    // present it is what gets leased; touchedPaths is then only the sample.
+    workingSet: rawWorkingSet,
+    // Ship checkpoints the runner could not prove while the server was
+    // unreachable, reported on the first sync that lands.
+    shipCheckpoints: rawShipCheckpoints,
     // Enforce-mode path claims: the checkpoint collision a `Deferred:` failure
     // is based on (lib/path-collision-deferral.ts). Ignored on anything else.
     pathCollision: reportedPathCollision,
@@ -844,6 +949,10 @@ export async function PATCH(
     // Distinguishes a terminal record's outcome ('crashed') from an ordinary
     // agent-reported failure, since both arrive as status: 'failed'.
     crashReconciled,
+    // Live sibling conflict probe (lib/sibling-conflict-probe.ts): results of
+    // the merge-tree probes this runner was handed, and whether it can run them.
+    siblingProbeResults,
+    siblingProbe: supportsSiblingProbe,
   } = body;
   let status = reportedStatus;
   let error = reportedError;
@@ -861,14 +970,23 @@ export async function PATCH(
   // move the queue now:
   //
   //  - `consumeInstructions: true` — the runner's sync loop. It receives the
-  //    payload plus `instructionsAck`, injects it, and confirms with
-  //    `instructionsDelivered: <text>`; the queue is cleared on that
-  //    confirmation, never before.
+  //    payload plus `instructionsAck` (and, with `consumer: 'runner'`,
+  //    `instructionIds`), injects it, and confirms with
+  //    `instructionsDelivered: <text>` (+ `instructionIdsDelivered`); the queue
+  //    is cleared on that confirmation, never before.
+  //  - `consumer: 'agent'` — the agent's own MCP calls (receive_messages,
+  //    update_progress). A consumer ONLY on an interactive worker (runner =
+  //    'mcp'), where no runner exists. On a runner-managed worker the runner is
+  //    the sole consumer: two consumers of one queue raced, and the runner's
+  //    de-duplication only knew what it had injected itself, so the agent could
+  //    see the same text twice. Such a PATCH gets nothing at all.
   //  - a `milestones` / `appendMilestones` array and no flag — a client that
   //    predates the confirmation protocol (an older runner sync, an external
   //    worker posting progress). It gets the old drain-on-read behaviour, because
   //    it will never send a confirmation and re-serving forever would make it
-  //    re-deliver the same message on every progress update.
+  //    re-deliver the same message on every progress update. REMOVE once no
+  //    runner older than the consumeInstructions protocol checks in (every
+  //    worker row with a recent heartbeat has supportsInstructionAck = true).
   //  - anything else — receives a read-only copy (no state change), so an
   //    external worker implementation that reads `instructions` keeps working
   //    while the queue survives for the real consumer.
@@ -878,11 +996,27 @@ export async function PATCH(
   const deliveredMessageIds = Array.isArray(rawWorkerMessagesDelivered)
     ? rawWorkerMessagesDelivered.filter((v): v is string => typeof v === 'string' && v.length > 0)
     : [];
-  const declaresInstructionConsumer = body.consumeInstructions === true;
+  const stringIds = (raw: unknown): string[] => Array.isArray(raw)
+    ? raw.filter((v): v is string => typeof v === 'string' && v.length > 0).slice(0, 100)
+    : [];
+  const instructionIdsDelivered = stringIds(rawInstructionIdsDelivered);
+  const instructionIdsAcknowledged = stringIds(rawInstructionsAcknowledged);
+  const declaredConsumer = body.consumer === 'agent' || body.consumer === 'runner' ? body.consumer as 'agent' | 'runner' : null;
+  // The agent consumes only where no runner does (see above).
+  const agentIsConsumer = declaredConsumer === 'agent' && (worker as { runner?: string | null }).runner === INTERACTIVE_WORKER_RUNNER;
+  const agentExcluded = declaredConsumer === 'agent' && !agentIsConsumer;
+  // A consumer that speaks ids settles notes on ack rather than at serve time.
+  const speaksIds = declaredConsumer !== null;
+  const declaresInstructionConsumer = !agentExcluded && (body.consumeInstructions === true || agentIsConsumer);
   const legacyInstructionConsumer = !declaresInstructionConsumer
+    && !agentExcluded
+    && !declaredConsumer
     && !instructionAckText
     && (Array.isArray(milestones) || Array.isArray(appendMilestones));
   const instructionConsumer = declaresInstructionConsumer || legacyInstructionConsumer;
+  // A bare delivery/read acknowledgement carries nothing else.
+  const isBareAck = (instructionAckText || deliveredMessageIds.length > 0 || instructionIdsDelivered.length > 0 || instructionIdsAcknowledged.length > 0)
+    && status === undefined && currentAction === undefined && milestones === undefined;
 
   const updates: Partial<typeof workers.$inferInsert> = {
     updatedAt: new Date(),
@@ -897,6 +1031,7 @@ export async function PATCH(
   if (status) updates.status = status;
   if (error !== undefined) updates.error = error;
   if (typeof costUsd === 'number') updates.costUsd = costUsd.toString();
+  if (carriesUsage) updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
   if (typeof inputTokens === 'number') updates.inputTokens = inputTokens;
   if (typeof outputTokens === 'number') updates.outputTokens = outputTokens;
   if (typeof turns === 'number') updates.turns = turns;
@@ -905,28 +1040,43 @@ export async function PATCH(
   // Auto-increment turns for MCP workers that don't send explicit turn counts.
   // A bare delivery acknowledgement is bookkeeping, not a turn — counting it
   // would inflate turns (and the OAuth budget window that reads them). This
-  // covers both queues: instructionsDelivered and workerMessagesDelivered are
-  // each sent as their own PATCH carrying nothing else.
-  else if (!((instructionAckText || deliveredMessageIds.length > 0) && status === undefined && currentAction === undefined && milestones === undefined)) {
+  // covers both queues and both stages: instructionsDelivered /
+  // instructionIdsDelivered, instructionsAcknowledged and workerMessagesDelivered
+  // are each sent as their own PATCH carrying nothing else.
+  else if (!isBareAck) {
     updates.turns = sql`${workers.turns} + 1` as any;
   }
   if (localUiUrl !== undefined) updates.localUiUrl = localUiUrl;
   // Sensitive: generic state string instead of prose action description
   if (currentAction !== undefined) updates.currentAction = isSensitive ? 'working' : currentAction;
   // Sensitive: keep {type, ts} only — strip label and metadata prose
-  if (milestones !== undefined) {
-    updates.milestones = isSensitive
-      ? (milestones as any[]).map((m: any) => ({ type: m.type, ts: m.ts }))
-      : milestones;
-  }
-  // appendMilestones: merge new milestones into existing (for MCP workers)
-  if (appendMilestones && Array.isArray(appendMilestones)) {
+  if (milestones !== undefined || Array.isArray(appendMilestones)) {
     const existing = (worker.milestones as any[]) || [];
-    const toAppend = isSensitive
-      ? appendMilestones.map((m: any) => ({ type: m.type, ts: m.ts }))
-      : appendMilestones;
-    const merged = [...existing, ...toAppend];
-    updates.milestones = merged.length > 50 ? merged.slice(-50) : merged;
+    // Runner snapshots do not contain server-appended agent narration. Preserve
+    // that narration while letting the runner refresh its own action entries.
+    const incoming = milestones !== undefined
+      ? [...milestones, ...existing.filter(m => m.origin === 'agent')]
+      : [...existing];
+    if (Array.isArray(appendMilestones)) {
+      incoming.push(...appendMilestones.map((m: any) => ({
+        ...m,
+        ...((m.type === 'status' || m.type === 'plan') && { origin: 'agent' }),
+      })));
+    }
+    // Plan and status may share a timestamp, so their type is part of identity.
+    const unique = new Map<string, any>();
+    for (const m of incoming) unique.set(`${m.ts}:${m.type}:${m.event ?? ''}`, m);
+    const merged = [...unique.values()].sort((a, b) => a.ts - b.ts);
+    const cap = milestones !== undefined ? 100 : 50;
+    // Checkpoints are lifecycle facts; cap narration and actions first.
+    while (merged.length > cap) {
+      const index = merged.findIndex(m => m.type !== 'checkpoint');
+      if (index === -1) break;
+      merged.splice(index, 1);
+    }
+    updates.milestones = isSensitive
+      ? merged.map(m => ({ type: m.type, ts: m.ts, ...(m.origin === 'agent' && { origin: 'agent' }) }))
+      : merged;
   }
   // appendMcpCalls: merge new MCP tool calls into existing log
   if (appendMcpCalls && Array.isArray(appendMcpCalls)) {
@@ -1056,6 +1206,11 @@ export async function PATCH(
   if (typeof branch === 'string' && branch.length > 0) updates.branch = branch;
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
+  // §6.9 provenance: a repair attempt's reported local head joins its SHA set, so the push that
+  // carries it is recognised as this attempt's by SHA, never by commit author.
+  if (typeof lastCommitSha === 'string' && lastCommitSha && lastCommitSha !== worker.lastCommitSha && worker.taskId) {
+    await recordLocalHead(worker.taskId, lastCommitSha).catch((err) => console.error(`[workflow] recordLocalHead failed for worker ${worker.id}:`, err));
+  }
   if (typeof commitCount === 'number') updates.commitCount = commitCount;
   // Prefer non-zero existing stats over zeros from the runner: if the PR creation route
   // already recorded real diff stats and the runner reports 0 (e.g. wrong git base), keep the real values.
@@ -1072,6 +1227,8 @@ export async function PATCH(
   }
   // Set when the incoming question carries a `hold` tag; null = an ordinary ask.
   let hold: HoldResolution | null = null;
+  // Whether this PATCH's park may reach a person now (lib/park-disposition.ts).
+  let parkAdmitted = false;
   // Waiting state — sensitive: store type only, drop prompt prose
   if (waitingFor !== undefined) {
     // Contract violation: the agent stopped and asked, but stated no real
@@ -1087,33 +1244,63 @@ export async function PATCH(
     const briefed = waitingFor !== null && waitingFor?.type === 'question'
       ? withSanitizedBrief(waitingFor)
       : waitingFor;
-    // A held question (lib/question-hold.ts): the server decides whether the
-    // runner's `hold` tag stands — never on a hard rail, a sensitive
-    // workspace or with the gate off — and bounds its deadline.
+    // Needs You admission (lib/park-disposition.ts): every park is stamped
+    // with a human-attention disposition before it is stored — the gate's
+    // own (`ask`, or a `hold` lib/question-hold.ts decides whether to honour),
+    // or the server's re-check of an untagged park (an older runner, a failed
+    // gate call): hard rails, then stage 0, which routes a recoverable
+    // platform blocker to a repair task instead of a person.
     let stored = briefed;
-    if (briefed && briefed.type === 'question' && (briefed as { disposition?: unknown }).disposition === 'hold') {
-      const holdTask = worker.taskId
-        ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { pathManifest: true } })
+    if (briefed) {
+      const parkTask = worker.taskId
+        ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { title: true, pathManifest: true, missionId: true } })
         : null;
-      hold = resolveHold({
+      const gitConfig = wsForSensitivity?.gitConfig ?? null;
+      const parked = await disposeParkedWaitingFor({
         waitingFor: briefed as Record<string, unknown>,
         stored: worker.waitingFor as Record<string, unknown> | null,
+        scope: worker.taskId && wsForSensitivity?.teamId
+          ? {
+              teamId: wsForSensitivity.teamId,
+              workspaceId: worker.workspaceId,
+              accountId: worker.accountId ?? null,
+              taskId: worker.taskId,
+              missionId: parkTask?.missionId ?? null,
+              workerId: id,
+              taskTitle: parkTask?.title ?? null,
+              sensitive: isSensitive,
+              gateEnabled: gateEnabledFromGitConfig(gitConfig),
+              hardRail: { ...hardRailContextFromGitConfig(gitConfig), pathManifest: parkTask?.pathManifest ?? null },
+            }
+          : null,
+        gitConfig,
         sensitive: isSensitive,
-        gitConfig: wsForSensitivity?.gitConfig ?? null,
-        pathManifest: holdTask?.pathManifest ?? null,
+        pathManifest: parkTask?.pathManifest ?? null,
         nowMs: Date.now(),
+        repairTaskExists: async (repairId) => isUuid(repairId) && !!(await db.query.tasks.findFirst({
+          where: and(eq(tasks.id, repairId), eq(tasks.workspaceId, worker.workspaceId)),
+          columns: { id: true },
+        })),
+        deps: { fileRepair: RECOVERABLE_BLOCKER_REPAIR },
       });
-      stored = hold.waitingFor as typeof briefed;
+      hold = parked.hold;
+      parkAdmitted = parked.admitted;
+      stored = parked.waitingFor as typeof briefed;
     }
+    // Sensitive: no prose, but the disposition fields are not prose and must
+    // survive — Needs You admission reads them.
+    const sensitiveStored = stored
+      ? Object.fromEntries(Object.entries(stored).filter(([k]) => SENSITIVE_PARK_FIELDS.has(k)))
+      : null;
     updates.waitingFor = (isSensitive && waitingFor !== null)
-      ? { type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
+      ? { ...sensitiveStored, type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
       : (stored !== null && isContentlessQuestion ? { ...stored, contractViolation: true } : stored);
   }
   // Notification when agent needs input — sensitive: generic message only.
-  // Team Pushover channel + the originating chat conversation. A held question
-  // is not notified now: the resurface sweep notifies it at its deadline if it
-  // is still unanswered (lib/question-hold.ts).
-  if (waitingFor?.type === 'question' && !hold?.held) {
+  // Team Pushover channel + the originating chat conversation. Only an
+  // admitted park notifies: a held question is notified by the resurface
+  // sweep at its deadline (lib/question-hold.ts), a recovered one never.
+  if (waitingFor?.type === 'question' && parkAdmitted) {
     const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
     // Short by design: the question, one line of context, the recommended default.
     const note = questionNotificationText(
@@ -1123,7 +1310,7 @@ export async function PATCH(
     void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
       title: note.title,
       message: note.message,
-      url: `${appBaseUrl}/app/tasks/${worker.taskId}/respond`,
+      url: `${appBaseUrl}/app/tasks/${worker.taskId}?respond=1`,
       urlTitle: 'Respond',
       priority: 0,
     });
@@ -1138,6 +1325,10 @@ export async function PATCH(
   }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
+  // A pause request is spent once the worker parks or ends (lib/worker-pause.ts).
+  if (status === 'waiting_input' || status === 'completed' || status === 'failed' || status === 'error') {
+    updates.pauseRequestedAt = null;
+  }
   // A permission prompt dies with its session: the runner resolves the blocked
   // PermissionRequest hook as deny when it aborts, but reports only the terminal
   // status. Left in place, the ended worker renders a live "Allow once / Deny"
@@ -1224,6 +1415,16 @@ export async function PATCH(
   if (status === 'running' && !worker.startedAt) {
     updates.startedAt = new Date();
   }
+  // Leaving a park: a paused or question-parked worker (waiting_input, with
+  // the runner's `paused:` / `needs_input:` marker in `error`) resuming to
+  // running is no longer parked, so the marker goes. Otherwise a finished run
+  // keeps showing "paused: ..." as its error line.
+  if (
+    status === 'running' && error === undefined && worker.status === 'waiting_input'
+    && typeof worker.error === 'string' && /^(paused:|needs_input)/.test(worker.error)
+  ) {
+    updates.error = null;
+  }
   // Reactivation: clear completion state when worker resumes from completed/failed/error
   if (status === 'running' && (worker.status === 'completed' || worker.status === 'failed' || worker.status === 'error')) {
     updates.completedAt = null;
@@ -1247,6 +1448,9 @@ export async function PATCH(
   // release gate so a branch-merge workspace config does not flip the task to
   // failed because the worker branch was never pushed to the remote.
   let skipRelease = false;
+  // Set by the pr_required gate when `alreadyShippedIn` names a PR GitHub
+  // confirms merged; snapshotted onto tasks.result for audit.
+  let alreadyShipped: { prNumber: number; prUrl: string } | null = null;
   // Lifted out of the outputRequirement block below (which only runs when
   // outputReq !== 'none') so the planning-contract guard can see a PR that was
   // auto-detected from GitHub even on a task with no output requirement.
@@ -1288,6 +1492,8 @@ export async function PATCH(
         // positive cost (reportedCost > 0 means line 387 already set the right value).
         if (effectiveCost > 0 && reportedCost <= 0) {
           updates.costUsd = effectiveCost.toString();
+          const metaBase = (updates.resultMeta ?? worker.resultMeta ?? {}) as Record<string, unknown>;
+          updates.resultMeta = { ...metaBase, costEstimated: true } as unknown as typeof updates.resultMeta;
         }
 
         // Codex and tenant-credential spend are billed elsewhere, so they do
@@ -1298,6 +1504,11 @@ export async function PATCH(
           backend: poolTaskRow?.backend ?? null,
           authType: account.authType,
           tenantId: ((poolTaskRow?.context as Record<string, unknown> | null)?.tenantContext as { tenantId?: string } | undefined)?.tenantId ?? null,
+          // The basis the row holds after this report, by the same rule the
+          // SQL write applies.
+          costBasis: carriesUsage
+            ? combineCostBasis((worker.costBasis as CostBasis | null) ?? null, reportedBasis ?? 'unknown')
+            : (worker.costBasis as CostBasis | null) ?? null,
         });
 
         if (effectiveCost > 0 && countsTowardPool) {
@@ -1396,18 +1607,25 @@ export async function PATCH(
 
   const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
 
-  // §6d Passive observed-touches accumulation.
-  // On terminal status: clear. On update_progress with touchedPaths: dedup-append, cap at 500.
-  //
-  // Paths this sync actually added to the column. Feeds the auto-lease below,
-  // which must not re-offer the whole accumulated list every tick: that would
-  // put a SELECT plus an INSERT attempt for up to 500 paths on the hot sync
-  // path to discover, every time, that they are all already held.
-  const sessionObservedTouches = [...new Set([
-    ...(Array.isArray(worker.observedTouches) ? worker.observedTouches as string[] : []),
+  // §6d observed-touch SAMPLE (lib/working-set-sync.ts).
+  // On terminal status: clear. Otherwise dedup-append the paths this sync
+  // reported, bounded at OBSERVED_TOUCHES_CAP. This column is what the
+  // dashboard and explain read; it is NOT what coordination is decided on —
+  // the authoritative current set is `path_claims`, fed by `workingSet` (or,
+  // for an older runner, by every reported touch regardless of the cap).
+  const workingSetDelta = parseWorkingSetDelta(rawWorkingSet);
+  const reportedTouches = [...new Set([
     ...(Array.isArray(touchedPaths)
       ? touchedPaths.filter((path: unknown): path is string => typeof path === 'string') : []),
+    ...(workingSetDelta?.add ?? []),
   ])];
+  const sessionObservedTouches = [...new Set([
+    ...(Array.isArray(worker.observedTouches) ? worker.observedTouches as string[] : []),
+    ...reportedTouches,
+  ])];
+  // Legacy lease offer (no `workingSet` on the request): what this sync
+  // reported that the column did not already hold. Independent of the cap —
+  // a path past the sample cap is still leased.
   let newlyObservedPaths: string[] = [];
   if (isTerminalStatus) {
     // Ground truth for the task-area-prediction experiment, captured HERE
@@ -1416,10 +1634,11 @@ export async function PATCH(
     // PRs, which would silently narrow the cohort to work that landed.
     // Best-effort and awaited-but-never-thrown — see recordTaskAreaOutcome.
     if (worker.taskId) {
+      // The sample plus this sync's paths plus what the task actually holds:
+      // the leases are the complete set, the sample may be truncated.
       const observed = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
-      const finalPaths = Array.isArray(touchedPaths)
-        ? [...observed, ...touchedPaths.filter((p: unknown): p is string => typeof p === 'string')]
-        : observed;
+      const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, worker.taskId) : [];
+      const finalPaths = [...new Set([...observed, ...reportedTouches, ...owned])];
       await recordTaskAreaOutcome(worker.taskId, finalPaths);
       // Final touched-file label for orchestration decisions (conflict-aware
       // orchestration §5), from the same observation, before the clear. Writes
@@ -1440,36 +1659,18 @@ export async function PATCH(
       }
     }
     updates.observedTouches = null;
-  } else if (Array.isArray(touchedPaths) && touchedPaths.length > 0) {
+  } else if (reportedTouches.length > 0) {
     const existing = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
-    const merged = [...existing];
-    for (const p of touchedPaths) {
-      if (typeof p === 'string' && !merged.includes(p)) merged.push(p);
+    const sample = boundedObservedSample(existing, reportedTouches);
+    updates.observedTouches = sample.sample;
+    if (sample.crossedCap) {
+      // Once per worker: the diagnostic sample is truncated from here on.
+      // Coverage is unaffected — every reported path is still leased below.
+      console.log(`[Worker ${id}] observedTouches sample at its cap (${sample.dropped} more not shown); leases unaffected`);
+      fireObservationTruncated(worker, sample);
     }
-    if (merged.length > 500) {
-      console.warn(`[Worker ${id}] observedTouches cap hit (${merged.length}) — truncating to 500`);
-      updates.observedTouches = merged.slice(0, 500);
-      // A path past the cap is neither recorded nor leased: say so on the
-      // ledger, or a task over the cap loses path-claim coverage silently.
-      const dropped = merged.slice(500);
-      fireGateEvent({
-        gate: GATE_SLUGS.PATH_CLAIM,
-        surface: 'PATCH /api/workers/[id]',
-        outcome: 'warned',
-        reason: 'observed touches past the 500-path cap were not recorded or leased: path-claim enforcement degraded',
-        workspaceId: worker.workspaceId,
-        taskId: worker.taskId,
-        workerId: worker.id,
-        callerOrigin: 'worker',
-        detail: { cap: 500, dropped: dropped.length, sample: dropped.slice(0, 10) },
-      });
-    } else {
-      updates.observedTouches = merged;
-    }
-    // Diffed against the *stored* column, i.e. after the cap: a path truncated
-    // away must not become a lease nobody can see it holding.
     const existingSet = new Set(existing);
-    newlyObservedPaths = (updates.observedTouches as string[]).filter(p => !existingSet.has(p));
+    newlyObservedPaths = reportedTouches.filter(p => !existingSet.has(p));
   }
 
   // Fetch mission ownership for every terminal transition. Completion also uses
@@ -1483,7 +1684,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, dependsOn: tasks.dependsOn })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, conflictRetryHeadSha: tasks.conflictRetryHeadSha, subjectHeadSha: tasks.subjectHeadSha, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1634,6 +1835,88 @@ export async function PATCH(
       }
     }
 
+    // §9 completion gate (docs/specs/workflow-state-kernel.md): a kernel fix
+    // attempt may not report `completed` while the PR's GitHub head is still
+    // the head its review round was made on. A local commit is never delivery;
+    // without this, a fix that never pushed read as done (#3754).
+    if (isRepairRole(terminalTaskRow[0]?.deliveryRole) && worker.taskId) {
+      const refusal = await fixCompletionGate({
+        task: {
+          id: worker.taskId, workspaceId: worker.workspaceId,
+          deliveryId: terminalTaskRow[0].deliveryId ?? null, deliveryRole: terminalTaskRow[0].deliveryRole ?? null,
+          context: terminalTaskRow[0].context,
+        },
+        localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+      }).catch((err) => {
+        console.error(`[workflow] completion gate check failed for worker ${worker.id} (allowing; AttemptEnded decides):`, err);
+        return null;
+      });
+      if (refusal) {
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
+        const frictionSignature = fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: `completion refused: ${refusal.code}`,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: { code: refusal.code, boundHeadSha: refusal.boundHeadSha, liveHeadSha: refusal.liveHeadSha, localHeadSha: refusal.localHeadSha },
+        });
+        return NextResponse.json({
+          error: refusal.error,
+          hint: refusal.hint,
+          code: refusal.code,
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          frictionSignature,
+          boundHeadSha: refusal.boundHeadSha,
+          liveHeadSha: refusal.liveHeadSha,
+          localHeadSha: refusal.localHeadSha,
+        }, { status: 400 });
+      }
+    }
+
+    // The same evidence rule for a LEGACY conflict or migration retry (no
+    // delivery row): it completes only when the PR's head moved, or GitHub
+    // shows the conflict/collision already gone. Without this, attempts that
+    // started fresh from trunk and touched nothing on the PR read as success
+    // (spec workflow-state-kernel §13.11 rule 2).
+    if (worker.taskId && terminalTaskRow[0] && !terminalTaskRow[0].deliveryId && terminalTaskRow[0].conflictRetryPrNumber != null) {
+      const refusal = await legacyRepairCompletionGate({
+        task: { workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
+        localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+      }, legacyRepairGateDeps()).catch((err) => {
+        console.error(`[repair-completion] gate check failed for worker ${worker.id} (allowing):`, err);
+        return null;
+      });
+      if (refusal) {
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
+        const frictionSignature = fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: `completion refused: ${refusal.code}`,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: { code: refusal.code, boundHeadSha: refusal.boundHeadSha, liveHeadSha: refusal.liveHeadSha },
+        });
+        return NextResponse.json({
+          error: refusal.error,
+          hint: refusal.hint,
+          code: refusal.code,
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          frictionSignature,
+          boundHeadSha: refusal.boundHeadSha,
+          liveHeadSha: refusal.liveHeadSha,
+        }, { status: 400 });
+      }
+    }
+
     // A bookkeeping task (heartbeats, criteria evaluators, plan-rejection
     // replans — see packages/core/db/schema.ts taskClass) reports its outcome
     // via complete_task's summary/structuredOutput. It never ships a PR or
@@ -1713,6 +1996,7 @@ export async function PATCH(
                     taskClass: terminalTaskRow[0].taskClass,
                     missionId: terminalTaskRow[0].missionId,
                     context: terminalTaskRow[0].context,
+                    dependsOn: terminalTaskRow[0].dependsOn,
                   }
                 : null,
               head: worker.branch,
@@ -1803,7 +2087,9 @@ export async function PATCH(
               effectiveLastCommitSha && pr?.head?.sha && pr.head.sha === effectiveLastCommitSha,
             );
             if (pr?.merged || headShaMatch) {
-              // Named by the task, so it is owned unless its head is a
+              // Owned only if the task's own records link it (a retry's
+              // subject, or a PR link stamped when the task was filed; the
+              // text above only proposes candidates) and its head is not a
               // protected branch; it still needs the linked repo and the
               // mission base, like every other door.
               if (!(account as { sessionUserId?: string | null }).sessionUserId && worker.workspaceId) {
@@ -1842,6 +2128,42 @@ export async function PATCH(
         }
       }
 
+      // pr_required, already shipped: the work the task asks for landed in a
+      // merged PR the task neither owns nor names (another task got there
+      // first). The caller names it with `alreadyShippedIn`; it counts only if
+      // GitHub says it is merged in the linked repo. It is recorded on the
+      // task result, not adopted onto this worker: the PR belongs to another
+      // task, and this worker taking it over would confuse that PR's own
+      // merge, supersession and shutdown handling.
+      let alreadyShippedRefusal: string | null = null;
+      const shippedPrNumber = alreadyShippedIn == null
+        ? null
+        : Number(String(alreadyShippedIn).trim().replace(/^#/, ''));
+      if (outputReq === 'pr_required' && !hasPR && shippedPrNumber !== null) {
+        if (!Number.isInteger(shippedPrNumber) || shippedPrNumber <= 0) {
+          alreadyShippedRefusal = `alreadyShippedIn must be a PR number, got ${JSON.stringify(alreadyShippedIn)}.`;
+        } else if (!repoWithInstallation) {
+          alreadyShippedRefusal = `PR #${shippedPrNumber} cannot be verified: this workspace has no linked GitHub repo with the app installed.`;
+        } else {
+          try {
+            const pr = await githubApi(
+              repoWithInstallation.installation.installationId,
+              `/repos/${repoWithInstallation.fullName}/pulls/${shippedPrNumber}`,
+            );
+            if (pr?.merged) {
+              alreadyShipped = {
+                prNumber: shippedPrNumber,
+                prUrl: typeof pr.html_url === 'string' ? pr.html_url : `https://github.com/${repoWithInstallation.fullName}/pull/${shippedPrNumber}`,
+              };
+            } else {
+              alreadyShippedRefusal = `PR #${shippedPrNumber} in ${repoWithInstallation.fullName} is not merged, so it does not show the work shipped.`;
+            }
+          } catch {
+            alreadyShippedRefusal = `PR #${shippedPrNumber} could not be read from ${repoWithInstallation.fullName}.`;
+          }
+        }
+      }
+
       // Standing ask from the outputRequirement-rejection bug: a gate-rejected
       // completion used to discard the agent's summary/structuredOutput with
       // zero persistence — a 60-turn run's only record was a 400 in the
@@ -1857,7 +2179,7 @@ export async function PATCH(
         // refusal. `applyMetricsOnlyPatch` writes measurement only (see its own
         // doc) — it cannot resurrect this worker or rewrite its outcome, so
         // running it ahead of a hard refusal is safe.
-        await applyMetricsOnlyPatch(id, worker, body).catch(() => null);
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
 
         // The gate row and the preserved payload are written from the same
         // place on purpose: every arm of this gate refuses through here, so a
@@ -1949,7 +2271,7 @@ export async function PATCH(
         filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
         dirtyWorktree: effectiveDirtyWorktree,
         observedTouches: sessionObservedTouches,
-        hasPR, mergedAt: worker.mergedAt, discardEdits,
+        hasPR: hasPR || !!alreadyShipped, mergedAt: worker.mergedAt, discardEdits,
         summary: body.summary, summarySource: body.summarySource,
       }) && !(await hasDeliverableArtifact(true))) {
         const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
@@ -2032,17 +2354,48 @@ export async function PATCH(
 
       // pr_required: always require a PR (regardless of commits)
       if (outputReq === 'pr_required' && !hasPR && !evidenceIsDeliverable) {
-        const frictionSignature = await persistRejectedCompletionPayload('pr_required');
-        return NextResponse.json({
-          error: 'This task requires a pull request before completing. Use create_pr to open one.',
-          hint: 'create_pr',
-          // Machine-readable identity of the refusal, so the runner reports
-          // this as the output-gate decision it is instead of unwinding into
-          // its crash handler. Same slug the gate_events row above carries —
-          // one vocabulary, not two.
+        // A merged PR elsewhere does not ship this worker's own edits, so they
+        // need the same explicit discard the `auto` arm asks for.
+        const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
+        const strandsOwnEdits = (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
+        if (!alreadyShipped || strandsOwnEdits) {
+          const frictionSignature = await persistRejectedCompletionPayload('pr_required');
+          const error = alreadyShipped
+            ? `PR #${alreadyShipped.prNumber} is merged, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+            : alreadyShippedRefusal
+              ? `This task requires a pull request before completing. ${alreadyShippedRefusal}`
+              : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
+          return NextResponse.json({
+            error,
+            hint: 'create_pr',
+            // Machine-readable identity of the refusal, so the runner reports
+            // this as the output-gate decision it is instead of unwinding into
+            // its crash handler. Same slug the gate_events row above carries —
+            // one vocabulary, not two.
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            frictionSignature,
+          }, { status: 400 });
+        }
+        fireGateEvent({
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
-          frictionSignature,
-        }, { status: 400 });
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'accepted',
+          reason: 'completion accepted under pr_required: work already shipped in a merged PR',
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: {
+            outputRequirement: 'pr_required',
+            alreadyShippedIn: alreadyShipped.prNumber,
+            commits: effectiveCommits,
+            dirtyWorktree: effectiveDirtyWorktree,
+            ...(discardReason ? { discardEdits: discardReason.slice(0, 500) } : {}),
+          },
+        });
+        // Nothing of this worker's own branch is meant to ship.
+        skipRelease = true;
       }
 
       // artifact_required: require PR or artifact (regardless of commits)
@@ -2429,6 +2782,9 @@ export async function PATCH(
     : null;
   const isUnrecognizedModel = isModelIdRejected ||
     ((status === 'failed' || status === 'error') && isUnrecognizedModelError(error));
+  if (isUnrecognizedModel && !isModelIdRejected && error) {
+    void reportWorkerModelIncident(worker.taskId, error);
+  }
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       taskCancelled: taskCancelledUnderSession,
@@ -2926,6 +3282,8 @@ export async function PATCH(
   }
 
   let shouldAutoRetry = false;
+  /** A kernel review round that broke its output contract: the T27 reason T4 sends (§6.6). */
+  let kernelReviewFailure: 'prose_verdict' | 'no_verdict' | 'infra' | null = null;
   if (status === 'completed' || status === 'failed' || status === 'error') {
     updates.completedAt = new Date();
 
@@ -2952,6 +3310,7 @@ export async function PATCH(
           workerId: id,
           workerBranch: worker.branch ?? null,
           workerLastCommitSha: worker.lastCommitSha ?? null,
+          alreadyShippedPrNumber: alreadyShipped?.prNumber ?? null,
           // The runner's own completion carries evidence in the body; the
           // agent's complete_task does not, so use what the runner recorded
           // on the row before that call (see the verificationEvidence column).
@@ -3089,6 +3448,7 @@ export async function PATCH(
             ...taskCtxForRetry,
             resumeBranch: worker.branch,
             ...(worker.lastCommitSha ? { lastCommitSha: worker.lastCommitSha } : {}),
+            ...(typeof resultMeta?.recoveryRef === 'string' ? { recoveryRef: resultMeta.recoveryRef } : {}),
             failureContext: {
               // Sensitive: drop prose summary, keep errorType code only
               summary: isSensitive
@@ -3286,9 +3646,30 @@ export async function PATCH(
         ? parsedReview.reason
         : null;
 
+      // A review round of a kernel-owned delivery: the contract failure is T27
+      // (docs/specs/workflow-state-kernel.md §6.3, §6.6). A prose verdict is a
+      // failure, never a verdict, so none of the legacy handling below runs for
+      // it — no prose fallback, no same-task requeue, no legacy escalation. T4
+      // further down sends ReviewRoundFailed with this reason, and T27's
+      // bounded re-queue then ESCALATED(review_unavailable) decides what's next.
+      const kernelReviewRound = reviewContractViolation
+        ? await isKernelReviewRound({ deliveryId: reviewTaskRow?.deliveryId ?? null, context: reviewTaskCtx }).catch((err) => {
+            console.error(`[review-contract-enforcement] kernel ownership read failed for task ${worker.taskId}:`, err);
+            return false;
+          })
+        : false;
+      if (kernelReviewRound) {
+        kernelReviewFailure = isSilentStartCompletion
+          ? 'infra'
+          : !malformedVerdictReason && extractVerdictFromProse(body.summary).verdict
+            ? 'prose_verdict'
+            : 'no_verdict';
+      }
+
       // Fallback: if structured output parsing failed and it's due to missing
-      // verdict (not malformed), try to extract from prose summary.
-      if (reviewContractViolation && !malformedVerdictReason && !isSilentStartCompletion) {
+      // verdict (not malformed), try to extract from prose summary. Legacy
+      // reviews only: on a kernel round the prose fallback can only propose.
+      if (reviewContractViolation && !malformedVerdictReason && !isSilentStartCompletion && !kernelReviewRound) {
         const proseExtraction = extractVerdictFromProse(body.summary);
         if (proseExtraction.verdict) {
           const fallbackOutput = constructFallbackStructuredOutput(body.summary, proseExtraction);
@@ -3325,9 +3706,12 @@ export async function PATCH(
       const reviewInfraRetryCount =
         typeof reviewTaskCtx.infraRetryCount === 'number' ? reviewTaskCtx.infraRetryCount : 0;
       if (reviewContractViolation) {
-        const willRequeue = reviewSilentStart
-          ? reviewInfraRetryCount < MAX_INFRA_RETRIES_PATCH
-          : reviewContractRetryCount < MAX_REVIEW_CONTRACT_RETRIES;
+        // A kernel round is re-queued by T27 at the same round, never by the task's own requeue.
+        const willRequeue = kernelReviewRound
+          ? false
+          : reviewSilentStart
+            ? reviewInfraRetryCount < MAX_INFRA_RETRIES_PATCH
+            : reviewContractRetryCount < MAX_REVIEW_CONTRACT_RETRIES;
         console.error(
           `[review-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
           `overriding completed→${willRequeue ? 'pending (requeue)' : 'failed'}: review task ` +
@@ -3371,6 +3755,9 @@ export async function PATCH(
               'the task outputSchema (verdict / confidence / summary). Review the PR again ' +
               'and return the verdict as structuredOutput.',
           };
+        } else if (kernelReviewRound) {
+          // T27 owns the retry budget and the escalation (review_unavailable);
+          // a legacy reviewer_escalated note beside it would be a second authority.
         } else {
           // Retries exhausted and the reviewer contract is dead for this PR.
           // A reviewer task is dispatched only on the webhook's `opened`
@@ -3542,6 +3929,9 @@ export async function PATCH(
           ...(typeof discardEdits === 'string' && discardEdits.trim() && {
             discardedEdits: isSensitive ? 'edits discarded' : discardEdits.trim(),
           }),
+          // The merged PR the pr_required gate accepted as carrying this
+          // task's work (see `alreadyShippedIn` above).
+          ...(alreadyShipped && { alreadyShippedIn: alreadyShipped }),
         };
 
         // Snapshot unique MCP servers into task result
@@ -3921,11 +4311,36 @@ export async function PATCH(
       // BT-7/8/9: Reviewer outcome handling — runs when a reviewer task completes.
       await runStep('reviewer-outcome', async () => {
         // Skip for loop requeue — reviewer logic only applies to terminal completions.
-        if (status !== 'completed' || loop?.kind === 'hold') return;
+        // A kernel round that broke its contract has no verdict to act on (T27 below).
+        if (status !== 'completed' || loop?.kind === 'hold' || kernelReviewFailure) return;
         await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
         // AFTER the outcome is applied, so an on=merge callback sees the merge
         // this verdict may just have triggered. Single-fire and best-effort.
         await deliverReviewCallbackIfRequested(taskId, worker.workspaceId);
+      });
+
+      // Workflow kernel T4 (docs/specs/workflow-state-kernel.md §6.5): the owner
+      // or fix attempt of a kernel delivery ended. The kernel decides what is
+      // next (review round, push recovery, re-dispatch, escalation) from a live
+      // GitHub read; an infra requeue is not an attempt end (§5.7 rule 2).
+      await runStep('workflow-attempt-ended', async () => {
+        // A runner hand-off failure says `outcome: 'unproven'` (S30, §6.6); an old runner omits it.
+        const row = terminalTaskRow[0];
+        const end = attemptEndFromPatch({
+          status: (contractViolation || slotFailure ? 'failed' : status) === 'completed' ? 'completed' : 'failed',
+          outcome: body.outcome, localHeadSha: body.localHeadSha, commitCount,
+          fallbackLocalHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+          fallbackCommitCount: worker.commitCount ?? 0,
+        });
+        if (!row?.deliveryId || taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null) || loop?.kind === 'hold' || releaseHeld) return;
+        await workflowAttemptEnded({
+          task: { id: taskId, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
+          workerId: id,
+          ...end,
+          source: 'runner',
+          taskRetryBudgetLeft: shouldAutoRetry,
+          ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
+        });
       });
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
@@ -4002,11 +4417,25 @@ export async function PATCH(
   let pendingInstructions: string | null = null;
   // Echo token for the confirmation round-trip (declared consumers only).
   let instructionsAck: string | null = null;
+  // History-entry ids of the served queue (+ note ids, appended below), for a
+  // consumer that confirms by id.
+  const instructionIds: string[] = [];
+
+  if (instructionAckText || instructionIdsDelivered.length > 0 || instructionIdsAcknowledged.length > 0) {
+    // A consumer confirmed delivery: this is the ONLY place 'delivered' is
+    // written. By id when the consumer sent ids, else by the echoed text.
+    let history: unknown = worker.instructionHistory;
+    if (instructionAckText || instructionIdsDelivered.length > 0) {
+      history = markInstructionsDelivered(history, instructionAckText ?? '', instructionIdsDelivered);
+    }
+    // The agent's turn read them (runner-observed echo, or an MCP tool result).
+    if (instructionIdsAcknowledged.length > 0) {
+      history = markInstructionsAcknowledged(history, instructionIdsAcknowledged);
+    }
+    updates.instructionHistory = history as typeof updates.instructionHistory;
+  }
 
   if (instructionAckText) {
-    // A consumer confirmed delivery: this is the ONLY place 'delivered' is written.
-    updates.instructionHistory = markInstructionsDelivered(worker.instructionHistory, instructionAckText);
-
     // Clear the queue only while it still holds exactly the text that was
     // delivered. A fresh instruction may have been appended after the hand-off;
     // clearing then would destroy text nobody has seen. Atomic compare-and-set
@@ -4024,10 +4453,11 @@ export async function PATCH(
       }
     }
   } else if (queuedInstructions) {
-    pendingInstructions = queuedInstructions;
+    if (!agentExcluded) pendingInstructions = queuedInstructions;
     if (declaresInstructionConsumer) {
       // Held until confirmed. Nothing is cleared here.
       instructionsAck = queuedInstructions;
+      instructionIds.push(...pendingInstructionIds(worker.instructionHistory, queuedInstructions));
     } else if (legacyInstructionConsumer) {
       // Pre-confirmation runner: drain on read, as before. It cannot confirm, so
       // holding the queue would re-inject the same text on every 10s sync.
@@ -4066,8 +4496,9 @@ export async function PATCH(
   // worker write landed, so a conflicted PATCH records nothing. The key is per
   // question, so the runner re-sending the same waitingFor writes one row.
   // Fire-and-forget: emit never throws, and the ledger write adds no latency.
-  // A held question records nothing now; the resurface pass records it.
-  if (waitingFor?.type === 'question' && worker.taskId && !hold?.held) {
+  // Only an admitted park: a held question records nothing now (the resurface
+  // pass records it), a recovered one never.
+  if (waitingFor?.type === 'question' && worker.taskId && parkAdmitted) {
     void emit({ type: 'task.needs_input', taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt });
   }
   // A held question's deadline, for the resurface sweep's gated tick. After
@@ -4110,6 +4541,16 @@ export async function PATCH(
       summaryProvenance: body.summarySource === 'agent' || body.summarySource === 'fallback' ? body.summarySource : null,
     });
   }
+
+  // A conflict retry the runner finished itself (derived files only, no agent).
+  // After the write landed, so a refused completion is never counted.
+  const derivedMergeEvent = derivedMergeGateEvent(status, body.derivedMergeFinish, {
+    workspaceId: worker.workspaceId,
+    missionId: taskMissionId,
+    taskId: worker.taskId,
+    workerId: worker.id,
+  });
+  if (derivedMergeEvent) fireGateEvent(derivedMergeEvent);
 
   // The worker's terminal write landed. Module reactions: memory use labels
   // (lib/knowledge-subscribers.ts), scheduled after the response. The first
@@ -4162,6 +4603,21 @@ export async function PATCH(
       : status === 'completed' && hasOpenPr
         ? 'pending_merge' as const
         : 'abandoned' as const;
+    // PR handoff: the worker is gone but its PR is open. Its leases are the
+    // PR's actual changed files; promote them into the open-PR overlap
+    // surface (claim route layer 1 reads the manifest) before letting them
+    // go, or a manifest-less task's PR would be invisible to every later
+    // claim. Merge/close releases that scope with the PR.
+    if (releaseReason === 'pending_merge' && worker.workspaceId) {
+      const handoffPrNumber = (updated.prNumber ?? worker.prNumber ?? null) as number | null;
+      await handoffPrScope({
+        workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: id,
+        prNumber: handoffPrNumber,
+      });
+      // The worker is terminal now, so the reconciler may narrow the scope it
+      // just widened to the PR's diff (scheduleHandoffScopeReconcile in lib/pr-scope-reconcile-trigger).
+      await scheduleHandoffScopeReconcile({ workspaceId: worker.workspaceId, prNumber: handoffPrNumber });
+    }
     await releaseAndNotify(worker.taskId, releaseReason);
   }
 
@@ -4226,9 +4682,13 @@ export async function PATCH(
   // removal itself runs in SQL against the live column (clearWorkerMessages), so
   // an ack for an id that is not queued writes nothing and a message that
   // arrived after this snapshot is never dropped.
-  const retainedWorkerMessages = deliveredMessageIds.length > 0
+  const unackedWorkerMessages = deliveredMessageIds.length > 0
     ? pendingWorkerMessages.filter(m => !deliveredMessageIds.includes(m?.id ?? ''))
     : pendingWorkerMessages;
+  // Serve each message id once, and not a blocked-on-you prompt whose sender is
+  // already terminal: the recipient's reply to it bounces (recipient_terminal),
+  // so it only costs an interruption nobody can receive.
+  const retainedWorkerMessages = await dropUnanswerableMessages(unackedWorkerMessages);
 
   // §6d-derived lease: the observed touch is also a claim.
   //
@@ -4274,12 +4734,31 @@ export async function PATCH(
   // observedTouches without a lease, and the diff-against-column rule would
   // never offer it again — yet this is the sweep right before it ships.
   // Own leases are no-ops in acquireObservedPaths.
-  // Only recorded paths: a lease must always be visible in observedTouches,
-  // so an incoming path past the cap (warned above) is not offered.
-  const recordedTouches = new Set(Array.isArray(updates.observedTouches) ? (updates.observedTouches as string[]) : []);
-  const offeredPaths = checkpointSweep === true && Array.isArray(touchedPaths)
-    ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string' && recordedTouches.has(p)))]
-    : newlyObservedPaths;
+  // Every reported path is offered, whether or not the sample had room for
+  // it: the sample is a diagnostic, the lease is the coverage.
+  //
+  // With a `workingSet` delta on the request this legacy block is skipped:
+  // the delta is applied through lib/working-set-sync.ts below, which also
+  // releases reverted paths and records the checkpoint proof.
+  let workingSetAck: import('@buildd/shared').WorkingSetAck | null = null;
+  const offeredPaths = workingSetDelta
+    ? []
+    : checkpointSweep === true && Array.isArray(touchedPaths)
+      ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string'))]
+      : newlyObservedPaths;
+  if (workingSetDelta && worker.workspaceId && worker.taskId && !isTerminalStatus) {
+    const leaseTask = await db.query.tasks.findFirst({
+      where: eq(tasks.id, worker.taskId),
+      columns: { category: true, context: true },
+    }).catch(() => null);
+    const applied = await applyWorkingSetSync({
+      worker: { id, workspaceId: worker.workspaceId, taskId: worker.taskId },
+      delta: workingSetDelta,
+      readOnly: isReadOnlyReview(leaseTask?.category, leaseTask?.context),
+    });
+    workingSetAck = applied.ack;
+    pathCollisions = applied.collisions;
+  }
   if (offeredPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
       const leaseTask = await db.query.tasks.findFirst({
@@ -4321,11 +4800,20 @@ export async function PATCH(
     typeof reportedPathClaimDegraded === 'number' && Number.isInteger(reportedPathClaimDegraded)
     && reportedPathClaimDegraded > 0 && reportedPathClaimDegraded <= 10_000 && worker.taskId
   ) {
+    // Attributed by cause (timeout vs network/5xx) so a slow round trip is
+    // never read as a backend outage — PR #3487's distinction, kept.
+    const causes = (body.pathClaimDegradedByCause ?? {}) as Record<string, unknown>;
+    const causeCount = (k: string) => (typeof causes[k] === 'number' && Number.isFinite(causes[k]) ? Math.max(0, Math.floor(causes[k] as number)) : 0);
     recordPathDeclaration({
       result: 'degraded', provenance: 'hook', surface: 'PATCH /api/workers/[id]',
       workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: id, callerOrigin: 'worker',
       pathCount: reportedPathClaimDegraded,
+      detail: { causes: { timeout: causeCount('timeout'), error: causeCount('error') } },
     });
+  }
+  const shipReports = parseShipCheckpointReports(rawShipCheckpoints);
+  if (shipReports.length > 0 && worker.taskId) {
+    recordShipCheckpointReports({ id, workspaceId: worker.workspaceId ?? null, taskId: worker.taskId }, shipReports);
   }
 
   // Worker self-classification (Rule K2-15/K2-16).
@@ -4368,6 +4856,7 @@ export async function PATCH(
           branch: true,
           lastCommitSha: true,
           observedTouches: true,
+          runner: true,
         },
         with: {
           task: { columns: { pathManifest: true } },
@@ -4380,7 +4869,11 @@ export async function PATCH(
           : [];
       const newNotifications: Array<{ path: string; siblingTaskId: string }> = [];
 
-      for (const sibling of siblings) {
+      // A reviewer is read-only: its touches are reads of the PR it reviews, not
+      // edits, so it never blocks anyone and the PR's author must not be asked
+      // to answer for it.
+      const senderIsReviewer = Boolean(taskContext?.reviewerFor);
+      for (const sibling of senderIsReviewer ? [] : siblings) {
         if (!sibling.taskId) continue;
         const siblingTouches = Array.isArray(sibling.observedTouches) ? sibling.observedTouches as string[] : [];
         if (siblingTouches.length === 0) continue;
@@ -4436,8 +4929,24 @@ export async function PATCH(
         // One atomic append (capped in SQL): the sibling is checking in and
         // writing its own context, so a read-modify-write here loses whichever
         // of the two wrote second.
+        //
+        // That queue is read only by an interactive session (update_progress
+        // surfaces `workerMessages`); a runner-managed session never reads it,
+        // so every message to one was lost. For those the same text also goes
+        // on the instruct queue, which the runner injects at its next check-in.
+        const deliver = async (message: WorkerMessage) => {
+          await enqueueWorkerMessage(sibling.taskId!, message);
+          if (sibling.runner !== INTERACTIVE_WORKER_RUNNER) {
+            // Marker: one uncollected notice per (type, sender) — a re-detection
+            // before the runner's next check-in must not stack a copy.
+            await queueSystemInstruction(sibling.id, formatWorkerMessages([message]), {
+              marker: `(${message.type}, from task ${message.fromTaskId}`,
+            })
+              .catch(err => console.error(`[Worker ${id}] overlap instruction to ${sibling.id} failed:`, err));
+          }
+        };
         if (contended.length > 0) {
-          await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
+          await deliver(buildWorkerMessage({
             type: 'path_blocked_on_you',
             fromTaskId: worker.taskId,
             toTaskId: sibling.taskId!,
@@ -4450,7 +4959,7 @@ export async function PATCH(
           }));
         }
         if (regenerable.length > 0) {
-          await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
+          await deliver(buildWorkerMessage({
             type: 'path_regenerable_overlap',
             fromTaskId: worker.taskId,
             toTaskId: sibling.taskId!,
@@ -4606,6 +5115,25 @@ export async function PATCH(
   //
   // Only a consumer is served: a milestone-only PATCH that ignores the response
   // would otherwise mark notes delivered that nothing ever injected.
+  //
+  // A consumer that speaks ids (`consumer` declared) gets the note ids in
+  // `instructionIds` and `deliveredTo` is stamped when it echoes them back.
+  //
+  // Per-row atomic append (no read-modify-write, so two concurrent check-ins
+  // for different workers cannot clobber each other), idempotent for a
+  // repeated ack. Human-message ids in the same list match no note row.
+  const stampNotesDelivered = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    await db
+      .update(missionNotes)
+      .set({
+        deliveredTo: sql`COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) || ${JSON.stringify([id])}::jsonb`,
+      })
+      .where(and(
+        inArray(missionNotes.id, ids),
+        sql`NOT (COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) @> ${JSON.stringify([id])}::jsonb)`,
+      ));
+  };
   let noteInstructions = '';
   if (instructionConsumer && status !== 'completed' && status !== 'failed' && worker.taskId) {
     try {
@@ -4676,32 +5204,69 @@ export async function PATCH(
         noteInstructions += `\n\n**MISSION GUIDANCE:**\n${guidanceLines.join('\n')}`;
       }
 
-      // Stamp at hand-off, with a per-row atomic append (no read-modify-write, so
-      // two concurrent check-ins for different workers cannot clobber each other).
       if (servedNoteIds.length > 0) {
-        await db
-          .update(missionNotes)
-          .set({
-            deliveredTo: sql`COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) || ${JSON.stringify([id])}::jsonb`,
-          })
-          .where(inArray(missionNotes.id, servedNoteIds));
+        if (speaksIds) {
+          // Stamped on the consumer's ack (instructionIdsDelivered, above), not
+          // here: a consumer that is served but never injects must not mark a
+          // reply delivered that nobody read. Until then it is served again.
+          instructionIds.push(...servedNoteIds);
+        } else {
+          // Older consumers never echo ids: stamp at hand-off, as before.
+          await stampNotesDelivered(servedNoteIds);
+        }
       }
     } catch (err) {
       console.error(`[Worker ${id}] Note delivery failed:`, err);
     }
   }
 
+  // Ack half of note delivery. Ids that are not note ids (human-message ids)
+  // match no row, so one list carries both.
+  if (instructionIdsDelivered.length > 0) {
+    try {
+      await stampNotesDelivered(instructionIdsDelivered);
+    } catch (err) {
+      console.error(`[Worker ${id}] Note delivery ack failed:`, err);
+    }
+  }
+
   const allInstructions = [pendingInstructions, noteInstructions].filter(Boolean).join('') || undefined;
+
+  // Live sibling conflict probe: apply results, mark the workspace due on new
+  // touches, hand this runner its probes. Never throws.
+  const siblingProbes = worker.workspaceId
+    ? await siblingProbeHeartbeat({
+        workerId: id,
+        workspaceId: worker.workspaceId,
+        results: siblingProbeResults,
+        supportsProbe: supportsSiblingProbe === true,
+        touchesMoved: reportedTouches.length > 0,
+        terminal: isTerminalStatus,
+      })
+    : [];
 
   // Return worker with any pending instructions, worker-to-worker messages, and output warnings
   return jsonResponse({
     ...updated,
     instructions: allInstructions,
+    // A person paused this run: the runner stops at its next safe point. Served
+    // on every PATCH until the worker parks, so a missed push still lands.
+    ...(pauseServed(updated) ? { pauseRequested: true } : {}),
     // Echo token: the consumer sends this back as `instructionsDelivered` once
     // the text is in the agent session, which is what clears the queue.
     ...(instructionsAck ? { instructionsAck } : {}),
-    ...(retainedWorkerMessages.length > 0 ? { pendingMessages: retainedWorkerMessages } : {}),
+    // Ids for the by-id round trip: `instructionIdsDelivered` once injected,
+    // then `instructionsAcknowledged` (human-message ids) once the agent's turn
+    // read them.
+    ...(instructionIds.length > 0 ? { instructionIds } : {}),
+    // Worker→worker messages follow the same single-consumer rule as the human
+    // queue: the agent is not served them on a runner-managed worker.
+    ...(retainedWorkerMessages.length > 0 && !agentExcluded ? { pendingMessages: retainedWorkerMessages } : {}),
     ...(pathCollisions.length > 0 ? { pathCollisions } : {}),
+    // The working-set ACK: what this delta leased, released or found held,
+    // and whether coverage is complete for its generation.
+    ...(workingSetAck ? { workingSetAck } : {}),
+    ...(siblingProbes.length > 0 ? { siblingProbes } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }
 
@@ -4754,14 +5319,21 @@ async function handleReviewerOutcomeIfNeeded(
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, reviewerTaskId),
-    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true },
+    columns: { id: true, workspaceId: true, category: true, context: true, parentTaskId: true, missionId: true, title: true, createdAt: true, deliveryId: true },
   });
 
   if (!reviewerTask) return;
   const ctx = (reviewerTask.context ?? {}) as Record<string, unknown>;
 
-  // Only process tasks that are reviewer tasks (category='review' + reviewerFor in context)
+  // Only a review the review system dispatched, for a task of this workspace,
+  // acts — and only through this workspace's own repo and installation, read
+  // from its github_repos link, never from the task's context.
   if (reviewerTask.category !== 'review' || !ctx.reviewerFor) return;
+  const dispatched = await resolveDispatchedReview(reviewerTask, workspaceId);
+  if (!dispatched.ok) {
+    console.warn(`[reviewer] Task ${reviewerTaskId}: verdict not acted on (${dispatched.reason})`);
+    return;
+  }
 
   // Backstop for the contract guard in PATCH, which already failed/requeued a
   // malformed verdict: nothing below may act on one, and nothing below has to
@@ -4773,12 +5345,9 @@ async function handleReviewerOutcomeIfNeeded(
   }
   const output: ReviewerTaskOutput = parsed.output;
 
-  const originalTaskId = ctx.reviewerFor as string;
-  const prNumber = ctx.prNumber as number;
+  const { originalTaskId, prNumber, repoFullName, installationId } = dispatched;
   const prUrl = ctx.prUrl as string;
   const headSha = ctx.headSha as string;
-  const repoFullName = ctx.repoFullName as string;
-  const installationId = ctx.installationId as number;
   const workerBranch = ctx.workerBranch as string;
   const missionId = reviewerTask.missionId;
 
@@ -4898,6 +5467,46 @@ async function handleReviewerOutcomeIfNeeded(
     serverOverrideSource = 'confidence';
   }
 
+  // Copy review (gitConfig.copyReview, lib/copy-review.ts). Applied after the
+  // escalation and confidence gates, so a PR they send to a person keeps that
+  // verdict; under mode 'gate' an approval with strings to rewrite becomes
+  // request-changes carrying the rewrites, which the fix attempt applies. The
+  // feedback is persisted on the round's structured output because the kernel
+  // reads the fix brief from there, not from this handler's memory.
+  const copyReview = copyReviewConfigOf(workspace?.gitConfig);
+  const copyGate = applyCopyReviewGate({
+    verdict: effectiveVerdict,
+    mode: copyReview?.mode ?? null,
+    findings: parseCopyFindings((output as { copyFindings?: unknown }).copyFindings),
+    feedback: output.feedback,
+  });
+  if (copyGate.feedback !== output.feedback || copyGate.verdict !== effectiveVerdict) {
+    output.feedback = copyGate.feedback;
+    if (copyGate.verdict !== effectiveVerdict) {
+      console.log(`[reviewer] PR #${prNumber}: copy review turned ${effectiveVerdict} into ${copyGate.verdict}`);
+      effectiveVerdict = copyGate.verdict;
+    }
+    await db
+      .update(tasks)
+      .set({
+        result: sql`jsonb_set(COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${copyGate.reason ?? 'copy review'}::text), '{structuredOutput,feedback}', to_jsonb(${copyGate.feedback ?? ''}::text), true)`,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, reviewerTaskId))
+      .catch((err: unknown) =>
+        console.error(`[reviewer] could not persist the copy review for PR #${prNumber}:`, err),
+      );
+  }
+  if (copyGate.note) {
+    void appendPrActivity({
+      installationId,
+      repoFullName,
+      prNumber,
+      entry: { kind: 'copy_review', detail: copyReview?.mode === 'gate' ? 'required' : 'advice', note: copyGate.note },
+      workspaceId,
+    }).catch((err: unknown) => console.warn(`[reviewer] copy review note for PR #${prNumber} not posted:`, err));
+  }
+
   if (serverOverrideReason) {
     console.warn(
       `[reviewer] PR #${prNumber}: model said approve, server escalated — ${serverOverrideReason}`,
@@ -4917,6 +5526,53 @@ async function handleReviewerOutcomeIfNeeded(
       .catch((err: unknown) =>
         console.error(`[reviewer] could not persist server escalation for PR #${prNumber}:`, err),
       );
+  }
+
+  // ── Workflow kernel (docs/specs/workflow-state-kernel.md T6) ────────────
+  // A review round of a kernel delivery: the verdict is recorded against the
+  // round's own head. Only an APPLIED verdict acts; a verdict for a superseded
+  // head or round is kept on its round for audit and does nothing else (no
+  // GitHub review, no fix, no merge). The kernel's effects post the review,
+  // dispatch the fix and raise escalations; the legacy writes below do not run.
+  let kernelOwnsVerdict = false;
+  if (reviewerTask.deliveryId && ctx.workflowRoundId) {
+    kernelOwnsVerdict = true;
+    const kv = await recordReviewVerdict({
+      reviewerTask: { id: reviewerTaskId, deliveryId: reviewerTask.deliveryId, context: ctx },
+      verdict: output.verdict,
+      effectiveVerdict,
+      headSha,
+      confidence: output.confidence,
+    }).catch((err) => {
+      console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
+      void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });
+      return null;
+    });
+    if (!kv) return;
+    if (!kv.handled) {
+      kernelOwnsVerdict = false; // released to legacy (kill switch): the legacy path below decides
+    } else if (kv.result.result !== 'applied') {
+      console.log(`[reviewer] PR #${prNumber}: verdict ${output.verdict} at ${headSha.slice(0, 7)} ${kv.result.result} (${kv.result.reason}) — recorded, not applied`);
+      return;
+    }
+  }
+
+  // One authority per delivery (§14): a PR the kernel owns takes verdicts only
+  // from its own rounds, above. A reviewer outside them posts no review and
+  // lands nothing; an unreadable authority is treated as the kernel's.
+  if (!kernelOwnsVerdict) {
+    const authority = await kernelDeliveryForPr(workspaceId, repoFullName, prNumber).then(
+      (deliveryId) => ({ deliveryId }),
+      (err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }),
+    );
+    if ('error' in authority) {
+      console.error(`[reviewer] PR #${prNumber}: could not read the delivery authority, verdict not acted on: ${authority.error}`);
+      return;
+    }
+    if (authority.deliveryId) {
+      console.log(`[reviewer] PR #${prNumber}: the workflow kernel owns this PR (delivery ${authority.deliveryId}); a verdict outside its rounds is not acted on`);
+      return;
+    }
   }
 
   // ── Corrected lede ───────────────────────────────────────────────────────
@@ -4989,7 +5645,7 @@ async function handleReviewerOutcomeIfNeeded(
   // postPrReview is idempotent per (PR, head SHA, resulting state), so a forced
   // re-review that reaches the same verdict on the same commit does not stack a
   // second approval.
-  if (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes') {
+  if (!kernelOwnsVerdict && (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes')) {
     const reviewPostResult = await postPrReview({
       installationId,
       repoFullName,
@@ -5047,7 +5703,12 @@ async function handleReviewerOutcomeIfNeeded(
     door: 'PATCH /api/workers/[id] (reviewer verdict)',
     pr: { installationId, repoFullName },
   };
-  await reconcileSubjectEvent(verdictEvent);
+  if (!kernelOwnsVerdict) await reconcileSubjectEvent(verdictEvent);
+
+  // Kernel deliveries: the fix dispatch, exhaustion and escalation were the
+  // kernel's effects. Only an approval continues, into the landing doors,
+  // which stay legacy until the landing slice (§14 Slice C).
+  if (kernelOwnsVerdict && effectiveVerdict !== 'approve') return;
 
   switch (effectiveVerdict) {
     case 'approve': {
@@ -5413,4 +6074,27 @@ async function handleReviewerOutcomeIfNeeded(
       break;
     }
   }
+}
+
+/**
+ * Production reads for the legacy repair completion gate: the workspace repo,
+ * a live PR read, and the migration inspector, ignoring the PR's own recorded
+ * predecessors (spec workflow-state-kernel §13.11 rules 2 and 5).
+ */
+function legacyRepairGateDeps(): LegacyRepairGateDeps {
+  return {
+    repoFor: async (workspaceId) => (await import('@/lib/workflow/github-facts')).workspaceRepo(workspaceId),
+    readPr: async (installationId, repoFullName, prNumber) =>
+      (await import('@/lib/workflow/github-facts')).githubReader(installationId).readPr(repoFullName, prNumber),
+    collisionAt: async (p) => {
+      const { inspectPullRequestMigrations } = await import('@/lib/migration-inspector');
+      const { predecessorPrNumbers } = await import('@/lib/pr-predecessors');
+      const safety = await inspectPullRequestMigrations({
+        installationId: p.installationId, repoFullName: p.repoFullName, prNumber: p.prNumber, headSha: p.headSha, baseRef: p.baseRef,
+        files: [], ignorePrNumbers: await predecessorPrNumbers(p.workspaceId, p.prNumber),
+      });
+      if (safety.safe) return false;
+      return safety.collision ? true : null;
+    },
+  };
 }

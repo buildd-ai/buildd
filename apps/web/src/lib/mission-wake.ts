@@ -28,7 +28,9 @@ export type MissionWakeReason =
   | 'budget_raised'
   | 'pr_merged'
   | 'owner_note'
-  | 'owner_answer';
+  | 'owner_answer'
+  /** A closed PR was resolved (superseded or abandoned): the mission may now be completable. */
+  | 'pr_resolved';
 
 export type MissionWakeOutcome =
   | { woken: false; reason: 'not_found' | 'not_active' | 'manual' | 'held' | 'dependency_blocked' | 'error' }

@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { buildStageAFacts, type StageAFacts, type StageASource } from '@buildd/core/post-session-quality';
-import {
-  POST_SESSION_TRIAGE_CAPABILITY,
-  TRIAGE_UNAVAILABLE,
-  type TriageOutcome,
-} from '@buildd/core/post-session-triage';
+import { TRIAGE_UNAVAILABLE, type TriageOutcome } from '@buildd/core/post-session-triage';
+import { decisionDepsFor } from './post-session-triage-test-deps';
 import {
   triagePostSessionRun,
   type PostSessionTriageInput,
@@ -69,7 +66,7 @@ function fakeStore(input: Partial<PostSessionTriageInput> | null, opts: { fence?
   return { store, recorded, failures, get state() { return state; } };
 }
 
-function okDecide(choice: { decision: string; focus: string; reasonCode: string; confidence?: number }) {
+function okDecide(choice: { decision: string; focus: string; confidence?: number }) {
   const calls: any[] = [];
   const decide = (async (params: any) => {
     calls.push(params);
@@ -83,8 +80,7 @@ function okDecide(choice: { decision: string; focus: string; reasonCode: string;
       answers: {
         decision: { type: 'choice', choice: choice.decision, confidence: choice.confidence ?? 0.8, probabilities: {} },
         focus: { type: 'choice', choice: choice.focus, confidence: 0.6, probabilities: {} },
-        reasonCode: { type: 'choice', choice: choice.reasonCode, confidence: 0.55, probabilities: {} },
-      },
+          },
     };
   }) as any;
   return { decide, calls };
@@ -93,78 +89,91 @@ function okDecide(choice: { decision: string; focus: string; reasonCode: string;
 const failDecide = (kind: string) => (async () => ({ ok: false, error: { kind }, latencyMs: 5000, attempts: 2 })) as any;
 
 describe('triagePostSessionRun', () => {
-  it('records the model decision, typed fields, provenance and final outcome', async () => {
+  it('records the model decision, typed fields, provenance, final outcome and a ledger row', async () => {
     const s = fakeStore({});
-    const { decide, calls } = okDecide({ decision: 'analyse', focus: 'retrieval', reasonCode: 'retrieval_gap', confidence: 0.77 });
+    const { decide, calls } = okDecide({ decision: 'analyse', focus: 'retrieval', confidence: 0.77 });
     const receipts: unknown[] = [];
+    const rows: any[] = [];
     const res = await triagePostSessionRun('run-1', {
-      store: s.store, decide, now: NOW, recordReceipts: async r => { receipts.push(...r); },
+      store: s.store, now: NOW, recordReceipts: async r => { receipts.push(...r); },
+      decisionDeps: decisionDepsFor(decide, { record: async row => { rows.push(row); return 'dec-1'; } }),
     });
     expect(res).toMatchObject({ status: 'triaged', finalDecision: 'analyse', rule: 'triage', triageStatus: 'ok', hardTriggered: false });
     // Stage cost comes from the decision receipts, for the sweep readout.
     expect(res).toMatchObject({ cost: { calls: 1, usd: 0.00004 } });
     expect(s.recorded).toHaveLength(1);
     const o = s.recorded[0].outcome;
-    expect(o.triage).toMatchObject({ status: 'ok', decision: 'analyse', focus: 'retrieval', reasonCode: 'retrieval_gap', confidence: 0.77 });
-    expect(o.triage.provenance).toMatchObject({ model: 'm-1', promptVersion: 'pst1', rule: 'triage' });
+    expect(o.triage).toMatchObject({ status: 'ok', decision: 'analyse', focus: 'retrieval', reasonCode: 'focus_retrieval', confidence: 0.77 });
+    expect(o.triage.provenance).toMatchObject({ model: 'typesafe/jev-1.13', policyVersion: 'pst-2026-10-03.a', rule: 'triage', source: 'model' });
     expect(o).toMatchObject({ hardTriggered: false, hardTriggerReasons: [], finalDecision: 'analyse' });
     expect(s.state).toBe('triaged');
 
-    // Called through the team-aware decision client, with the dedicated capability and no ids in state.
-    expect(calls[0]).toMatchObject({ capability: POST_SESSION_TRIAGE_CAPABILITY, teamId: 'team-1', workspaceId: 'ws-1' });
+    // Called through the team-aware decision client, with the kind's capability and no ids in state.
+    expect(calls[0]).toMatchObject({ capability: 'post_session_triage', teamId: 'team-1', workspaceId: 'ws-1' });
     expect(JSON.stringify(calls[0].state)).not.toContain('worker-1');
     expect(receipts).toHaveLength(1);
+    // One ledger row, keyed so Stage C can label it.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      teamId: 'team-1', capability: 'buildd.post_session_triage', subjectType: 'post_session_run', subjectId: 'run-1', appliedAnswer: 'analyse',
+    });
   });
 
   it('a model skip with no hard trigger settles the run as skipped', async () => {
     const s = fakeStore({});
-    const { decide } = okDecide({ decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
-    const res = await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
+    const { decide } = okDecide({ decision: 'skip', focus: 'general' });
+    const res = await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW });
     expect(res).toMatchObject({ status: 'triaged', finalDecision: 'skip' });
     expect(s.state).toBe('skipped');
   });
 
-  it('a hard trigger overrides a model skip and is recorded', async () => {
+  it('below the kind threshold the deterministic fallback decides: skip, and the model answer is not applied', async () => {
+    const s = fakeStore({});
+    const { decide } = okDecide({ decision: 'analyse', focus: 'runtime', confidence: 0.6 });
+    const res = await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW });
+    expect(res).toMatchObject({ status: 'triaged', finalDecision: 'skip', rule: 'fail_open_skip', triageStatus: 'unavailable' });
+    expect(s.recorded[0].outcome.triage).toMatchObject({ decision: null, reasonCode: 'fallback_low_confidence' });
+  });
+
+  it('a hard trigger decides without asking the model', async () => {
     const s = fakeStore({ facts: facts({ reviews: [{ status: 'completed', verdict: 'escalate', confidence: 0.9 }] }) });
-    const { decide } = okDecide({ decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
-    const res = await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
-    expect(res).toMatchObject({ status: 'triaged', hardTriggered: true });
+    const { decide, calls } = okDecide({ decision: 'skip', focus: 'general' });
+    const res = await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW });
+    expect(res).toMatchObject({ status: 'triaged', hardTriggered: true, cost: { calls: 0 } });
+    expect(calls).toHaveLength(0);
     expect(s.recorded[0].outcome).toMatchObject({
       finalDecision: 'analyse', rule: 'hard_trigger', hardTriggered: true, hardTriggerReasons: ['reviewer_escalated'],
     });
-    // The model's own answer is still kept for later comparison.
-    expect(s.recorded[0].outcome.triage.decision).toBe('skip');
+    expect(s.recorded[0].outcome.triage).toMatchObject({ status: 'rule', decision: 'analyse', reasonCode: 'hard_trigger_reviewer_escalated' });
   });
 
   for (const kind of ['timeout', 'missing_key', 'capability_disabled', 'transport']) {
     it(`decision ${kind}: records triage_unavailable and fails open to skip`, async () => {
       const s = fakeStore({});
-      const res = await triagePostSessionRun('run-1', { store: s.store, decide: failDecide(kind), now: NOW });
+      const res = await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(failDecide(kind)), now: NOW });
       expect(res).toMatchObject({ status: 'triaged', finalDecision: 'skip', rule: 'fail_open_skip', triageStatus: 'unavailable' });
       expect(s.recorded[0].outcome.triage).toMatchObject({ status: 'unavailable', reasonCode: TRIAGE_UNAVAILABLE });
-      expect(s.recorded[0].outcome.triage.provenance?.error).toBe(kind);
     });
   }
 
-  it('a malformed answer is unavailable; hard triggers still apply', async () => {
-    const s = fakeStore({ facts: facts({ ciFixAttempts: 4 }) });
-    const { decide } = okDecide({ decision: 'maybe', focus: 'general', reasonCode: 'routine_success' });
-    const res = await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
-    expect(res).toMatchObject({ finalDecision: 'analyse', rule: 'hard_trigger', triageStatus: 'unavailable' });
-    expect(s.recorded[0].outcome.triage.provenance?.error).toBe('malformed');
+  it('a malformed answer is unavailable and skips', async () => {
+    const s = fakeStore({});
+    const { decide } = okDecide({ decision: 'maybe', focus: 'general' });
+    const res = await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW });
+    expect(res).toMatchObject({ finalDecision: 'skip', triageStatus: 'unavailable' });
   });
 
   it('a decide that throws is caught and treated as unavailable', async () => {
     const s = fakeStore({});
     const decide = (async () => { throw new Error('boom'); }) as any;
-    const res = await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
+    const res = await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW });
     expect(res).toMatchObject({ status: 'triaged', triageStatus: 'unavailable', finalDecision: 'skip' });
   });
 
   it('a sensitive workspace never calls the model', async () => {
     const s = fakeStore({ dataClass: 'sensitive' });
-    const { decide, calls } = okDecide({ decision: 'analyse', focus: 'general', reasonCode: 'routine_success' });
-    const res = await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
+    const { decide, calls } = okDecide({ decision: 'analyse', focus: 'general' });
+    const res = await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW });
     expect(calls).toHaveLength(0);
     // No call, no cost.
     expect(res).toMatchObject({ cost: { calls: 0, usd: null } });
@@ -174,9 +183,9 @@ describe('triagePostSessionRun', () => {
 
   it('a receipt write failure never changes the outcome', async () => {
     const s = fakeStore({});
-    const { decide } = okDecide({ decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
+    const { decide } = okDecide({ decision: 'skip', focus: 'general' });
     const res = await triagePostSessionRun('run-1', {
-      store: s.store, decide, now: NOW, recordReceipts: async () => { throw new Error('db'); },
+      store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW, recordReceipts: async () => { throw new Error('db'); },
     });
     expect(res).toMatchObject({ status: 'triaged', finalDecision: 'skip' });
   });
@@ -184,31 +193,31 @@ describe('triagePostSessionRun', () => {
   it('only a collected run is triaged; anything else is not_ready and the model is not called', async () => {
     for (const state of ['collecting', 'triaged', 'skipped', 'failed'] as const) {
       const s = fakeStore({ state });
-      const { decide, calls } = okDecide({ decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
-      const res = await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
+      const { decide, calls } = okDecide({ decision: 'skip', focus: 'general' });
+      const res = await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW });
       expect(res).toMatchObject({ status: 'not_ready' });
       expect(calls).toHaveLength(0);
     }
     const noFacts = fakeStore({ facts: null });
-    expect((await triagePostSessionRun('run-1', { store: noFacts.store, decide: failDecide('x'), now: NOW })).status).toBe('not_ready');
+    expect((await triagePostSessionRun('run-1', { store: noFacts.store, decisionDeps: decisionDepsFor(failDecide('x')), now: NOW })).status).toBe('not_ready');
   });
 
   it('losing the fence reports fenced (a concurrent sweep already triaged it)', async () => {
     const s = fakeStore({}, { fence: true });
-    const { decide } = okDecide({ decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
-    expect((await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW })).status).toBe('fenced');
+    const { decide } = okDecide({ decision: 'skip', focus: 'general' });
+    expect((await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW })).status).toBe('fenced');
   });
 
   it('never throws: missing run and store errors are returned statuses', async () => {
-    expect((await triagePostSessionRun('run-1', { store: fakeStore(null).store, decide: failDecide('x'), now: NOW })).status).toBe('missing');
-    const res = await triagePostSessionRun('run-1', { store: fakeStore({}, { throwOnLoad: true }).store, decide: failDecide('x'), now: NOW });
+    expect((await triagePostSessionRun('run-1', { store: fakeStore(null).store, decisionDeps: decisionDepsFor(failDecide('x')), now: NOW })).status).toBe('missing');
+    const res = await triagePostSessionRun('run-1', { store: fakeStore({}, { throwOnLoad: true }).store, decisionDeps: decisionDepsFor(failDecide('x')), now: NOW });
     expect(res).toMatchObject({ status: 'error' });
   });
 
   it('a store error after the decision is recorded on the run, not swallowed', async () => {
     const s = fakeStore({}, { throwOnRecord: true });
-    const { decide } = okDecide({ decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
-    const res = await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
+    const { decide } = okDecide({ decision: 'skip', focus: 'general' });
+    const res = await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW });
     expect(res).toMatchObject({ status: 'error', error: 'write timeout' });
     expect(s.failures).toEqual([{ runId: 'run-1', error: 'write timeout' }]);
   });
@@ -216,7 +225,7 @@ describe('triagePostSessionRun', () => {
   it('a failing failure-recorder never turns into a throw', async () => {
     const s = fakeStore({}, { throwOnRecord: true });
     s.store.recordTriageFailure = async () => { throw new Error('still down'); };
-    const { decide } = okDecide({ decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
-    expect((await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW })).status).toBe('error');
+    const { decide } = okDecide({ decision: 'skip', focus: 'general' });
+    expect((await triagePostSessionRun('run-1', { store: s.store, decisionDeps: decisionDepsFor(decide), now: NOW })).status).toBe('error');
   });
 });

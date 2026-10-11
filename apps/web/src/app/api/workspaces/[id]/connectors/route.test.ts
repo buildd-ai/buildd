@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { roleHas } from '@/lib/permission-registry';
 
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -21,6 +22,8 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
+
+mock.module('@/lib/permissions', () => ({ roleHas, getTeamPermissionOverrides: async () => ({}) }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -178,5 +181,42 @@ describe('PATCH /api/workspaces/[id]/connectors', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.success).toBe(true);
+  });
+
+  // manage_connectors (docs/specs/team-permissions.md)
+  it('refuses a team member and writes nothing', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { connectorId: 'conn-1', enabled: true }), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  for (const role of ['owner', 'admin']) {
+    it(`lets a team ${role} toggle a connector`, async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role });
+      const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { connectorId: 'conn-1', enabled: false }), { params: PARAMS });
+      expect(res.status).toBe(200);
+      expect(mockInsert).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  it('refuses a worker-level API key and writes nothing', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', scopes: null });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json', authorization: 'Bearer bld_x' }, { connectorId: 'conn-1', enabled: true }), { params: PARAMS });
+    expect(res.status).toBe(401);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('lets an admin-level API key toggle a connector', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', scopes: null });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json', authorization: 'Bearer bld_x' }, { connectorId: 'conn-1', enabled: true }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    expect(mockInsert).toHaveBeenCalledTimes(1);
   });
 });

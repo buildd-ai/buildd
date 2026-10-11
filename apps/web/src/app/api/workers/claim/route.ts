@@ -1,16 +1,20 @@
+import { ownLineage } from '@/lib/attempt-lineage';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
-import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
+import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
+import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
-import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
+import { INTERACTIVE_RUNNER, INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
+import { claimingUserId } from '@/lib/worker-owner';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -23,7 +27,10 @@ import { hasCodexCredential } from '@/lib/codex-credential';
 import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
-import { pickRoleRowForTask, resolveClaimModelInputs, type RoleModelRow } from '@buildd/core/role-model-routing';
+import { pickRoleRowForTask, resolveClaimModelInputs, roleFloorTier, type RoleModelRow } from '@buildd/core/role-model-routing';
+import { codingPolicyLoader } from '@buildd/core/coding-policy-store';
+import { codingPolicyAudit, decideCodingPolicy } from './coding-policy-gate';
+import { lazyRequester, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
 import {
   describeOauthPressure,
   learnOauthCapacity,
@@ -35,10 +42,14 @@ import {
 } from '@buildd/core/oauth-budget';
 import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
-import { readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
+import { isTaskTier, readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
+import { bandExceedsLabel, claimTierRequest, enforceModelCeiling, enforceTierCeiling } from '@buildd/core/model-tier-ceiling';
+import { tierCeilingLoader } from '@buildd/core/model-tier-ceiling-store';
+import { tierWithin, type TierCeiling } from '@buildd/shared';
 import type { TierPolicyMeta } from '@buildd/core/model-policy';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
+import { getModelCertifications } from '@buildd/core/model-certification-store';
 import {
   checkDispatchModel, guardDispatchModel, describeDispatchModelRejection, tierForModelId,
   DISPATCH_MODEL_REJECTED_PATTERN,
@@ -65,6 +76,7 @@ import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { readForceStart } from '@buildd/core/waiting-reason';
 import { consumeForceStart, recordForceStartClaim } from '@/lib/force-start';
 import { describeExplicitDeferral } from './explicit-deferral';
+import { CREDENTIAL_BLOCK_CONTEXT_KEY, credentialBlockFromDeferral, stampCredentialBlock } from '@/lib/credential-block';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { advisoryBlockingPeer, advisoryMutexApplies, findActiveClaimBlocker, producesNoFileEdits } from './coordination-gates';
 import { loadMissionCoordination, loadOpenPrTasksByWorkspace } from './coordination-snapshot';
@@ -76,10 +88,13 @@ import { roleSlugGate } from './role-gate';
 // applying it.
 import { workspaceCapGate } from './workspace-cap-gate';
 import { workspaceExecutorGate } from './workspace-executor-gate';
+import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-paused-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
+import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
+import { BudgetWalls, accountLimitRefusal, describeBudgetWalls, isoOrNull } from './claim-limits';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
@@ -87,6 +102,7 @@ import { attachQuestionGate } from './question-gate';
 import { attachRoleEnvSecrets, runRoleEnvPreFilter } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
 import {
+  attachArtifactReferences,
   attachExternalContextProviders,
   attachTaskAreaScope,
 } from './context-injection';
@@ -99,7 +115,13 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
-import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint, runnerSupportsEndpointHeaders } from './agent-endpoint-injection';
+import {
+  attachPersonalCredentials,
+  decidePersonalCredential,
+  perRequestPersonalCredentialDeps,
+  type PersonalCredentialDecision,
+} from './personal-credential-injection';
 import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } from './claude-model-route';
 import { attachGitHubCredentialModes } from './github-credential-injection';
 import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
@@ -117,22 +139,36 @@ import {
   type MissionInFlightRow,
   type PlannerSignals,
 } from './claim-plan-input';
+import { candidateLandingBase, partitionOpenPrsByLandingBase, workspaceTrunk } from './open-pr-target-base';
 import { effectiveBackendOf, fireClaimPlanRecord, fireOrderedBehind, loadPlannerSignals } from './claim-plan-store';
 import {
   ClaimHoldCollector,
   acquireGatedStartPaths,
   gatedStartApplies,
   gatedStartReachable,
+  isLiveHolderStatus,
+  openPrStartVerdict,
   releaseGatedStartPaths,
   scheduleClaimHoldShadow,
+  softOverlapStartVerdict,
+  touchesHardOverlapSurface,
   type ClaimHoldTaskContext,
+  type ClaimRiskEvidence,
 } from './hold-start-shadow';
+import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
+import { loadSoftOverlapHolders } from './soft-overlap-store';
+import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
+import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
 // the dominant burn-loop cause is fast-fail budget/auth errors that bounce in
 // <1s). Scoped per-runner so healthy runners keep picking up tasks.
 const CLAIM_COOLDOWN_MS = 60_000;
+
+// Candidate pages fetched past role-env-gapped tasks before the window is cut
+// anyway (at most 4 × candidateLimit rows). See the candidate fetch.
+const ROLE_ENV_WINDOW_MAX_PAGES = 4;
 
 
 
@@ -177,6 +213,8 @@ export async function POST(req: NextRequest) {
 
   const body: ClaimTasksInput = await req.json();
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
+  // An explicit opt-in means the literal boolean, never a truthy stand-in.
+  claimAcrossAccessible = claimAcrossAccessible === true;
 
   // A per-task token claims its own task and nothing else.
   if (account.taskScope) {
@@ -204,6 +242,15 @@ export async function POST(req: NextRequest) {
   // client-supplied and proves nothing, so without the marker it is recorded
   // as a runner id and gets every runner rule (cooldown, reaper liveness).
   const interactiveSession = verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), account.id);
+
+  // Whose seat the run will use. A verified interactive session runs on its own
+  // credentials, and so does an explicit `runner: 'mcp'` claim of one named task
+  // (an MCP client that never got the marker): neither draws on the account
+  // seat's budget or on a provider wall a runner's seat hit. Read BEFORE
+  // `runner` is rewritten to 'mcp-unverified' below. A cloud executor / task
+  // token never qualifies, and a runner with its own id stays walled.
+  const runsOnCallersSeat = !!interactiveSession
+    || (runner === 'mcp' && !!taskId && !cloudExecutor);
 
   // Admin force-claim of ONE named task: the MCP equivalent of the dashboard's
   // "Start with override" (friction cad81659). Only for an admin token, only
@@ -252,6 +299,14 @@ export async function POST(req: NextRequest) {
   let claimableWorkspaceIdsMemo: Promise<string[]> | null = null;
   const resolveClaimableWorkspaceIds = (): Promise<string[]> => {
     claimableWorkspaceIdsMemo ??= (async () => {
+      // A grant session claims only inside its granted workspaces (grant ∩
+      // current membership, this request), whatever the shared team account's
+      // open workspaces or links would allow, and a restricted workspace it was
+      // granted is claimable without a link (lib/grant-scope.ts).
+      if (isGrantSession(account)) {
+        return constrainToGranted(account, account.workspaceIds ?? [], 'write')
+          .filter((id) => !workspaceId || id === workspaceId);
+      }
       // Get workspaces this account can claim from
       // 1. Open workspaces of the account's own team ("open" = open within the team)
       // 2. Any workspace where the account has an explicit canClaim link
@@ -344,6 +399,8 @@ export async function POST(req: NextRequest) {
             reason: payload.diagnostics.reason,
             ...(deferrals ? { deferrals } : {}),
             ...(exclusion ? { exclusion } : {}),
+            browserProvider: body.environment?.browserProvider,
+            runnerGroup: body.environment?.fleet?.group,
             now: new Date(),
           });
         })
@@ -381,13 +438,15 @@ export async function POST(req: NextRequest) {
     ),
   });
 
-  if (activeWorkers.length >= account.maxConcurrentWorkers) {
+  // The account's worker limit is the slots its runners are assigned, never a
+  // cap on the person (task 69f5b7cd). A verified interactive session is not
+  // limited by it, and its workers (runner 'mcp') do not occupy a runner slot.
+  // Only the verified marker counts: 'mcp-unverified' is an ordinary runner.
+  const runnerSlotWorkers = activeWorkers.filter(w => w.runner !== INTERACTIVE_RUNNER);
+
+  if (!interactiveSession && runnerSlotWorkers.length >= account.maxConcurrentWorkers) {
     return NextResponse.json(
-      {
-        error: 'Max concurrent workers limit reached',
-        limit: account.maxConcurrentWorkers,
-        current: activeWorkers.length,
-      },
+      accountLimitRefusal({ code: 'max_concurrent_workers', limit: account.maxConcurrentWorkers, current: runnerSlotWorkers.length }),
       { status: 429 }
     );
   }
@@ -399,22 +458,14 @@ export async function POST(req: NextRequest) {
       parseFloat(account.totalCost.toString()) >= parseFloat(account.maxCostPerDay.toString())
     ) {
       return NextResponse.json(
-        {
-          error: 'Daily cost limit exceeded',
-          limit: account.maxCostPerDay,
-          current: account.totalCost,
-        },
+        accountLimitRefusal({ code: 'daily_cost_limit', limit: account.maxCostPerDay, current: account.totalCost }),
         { status: 429 }
       );
     }
   } else if (account.authType === 'oauth') {
-    if (account.maxConcurrentSessions && account.activeSessions >= account.maxConcurrentSessions) {
+    if (!interactiveSession && account.maxConcurrentSessions && account.activeSessions >= account.maxConcurrentSessions) {
       return NextResponse.json(
-        {
-          error: 'Max concurrent sessions limit reached',
-          limit: account.maxConcurrentSessions,
-          current: account.activeSessions,
-        },
+        accountLimitRefusal({ code: 'max_concurrent_sessions', limit: account.maxConcurrentSessions, current: account.activeSessions }),
         { status: 429 }
       );
     }
@@ -454,7 +505,20 @@ export async function POST(req: NextRequest) {
   // pending task across all of them (ranked/picked below). That is declared
   // intent, not the accidental ambiguity the guard targets — so allow it while
   // still rejecting silent multi-workspace claims (e.g. a misconfigured MCP).
-  if (account.authType === 'oauth' && !workspaceId && !claimAcrossAccessible) {
+  if (isGrantSession(account) && !workspaceId && !claimAcrossAccessible) {
+    // The same guard for a grant session, counted over what it was granted.
+    const granted = constrainToGranted(account, account.workspaceIds ?? [], 'write');
+    if (granted.length > 1) {
+      return NextResponse.json(
+        {
+          error: 'workspaceId required for OAuth tokens with access to multiple workspaces',
+          accessibleWorkspaces: granted.length,
+          hint: 'Pass workspaceId in the request body, or claimAcrossAccessible: true to claim across your granted workspaces only.',
+        },
+        { status: 400 },
+      );
+    }
+  } else if (account.authType === 'oauth' && !workspaceId && !claimAcrossAccessible) {
     const permissions = await getAccountWorkspacePermissions(account.id);
     const accessibleWorkspaceIds = new Set(permissions.filter((p) => p.canClaim).map((p) => p.workspaceId));
     // Also count open workspaces of the account's own team — those are
@@ -481,13 +545,15 @@ export async function POST(req: NextRequest) {
   const accountBudgetExhausted = account.authType === 'oauth'
     && isBudgetExhausted(account.budgetExhaustedAt, account.budgetResetsAt);
 
-  const availableSlots = Math.min(maxTasks, account.maxConcurrentWorkers - activeWorkers.length);
+  const availableSlots = interactiveSession
+    ? maxTasks
+    : Math.min(maxTasks, account.maxConcurrentWorkers - runnerSlotWorkers.length);
 
   if (availableSlots === 0) {
     return emptyClaim({
       diagnostics: {
         reason: 'no_slots',
-        activeWorkers: activeWorkers.length,
+        activeWorkers: runnerSlotWorkers.length,
         maxConcurrent: account.maxConcurrentWorkers,
       } satisfies ClaimDiagnostics,
     });
@@ -675,6 +741,14 @@ export async function POST(req: NextRequest) {
     claimableConditions.push(explicitTaskGates.workspaceExecutor);
   }
 
+  // Workspace "Pause new starts until <time>" (workspaces.new_starts_paused_until).
+  // Runner claims wait; a person's interactive session is never paused, and an
+  // admin force claim lifts it like the other workspace gates.
+  if (appliesWorkspacePausedGate({ interactive: !!interactiveSession, force: forceClaim })) {
+    explicitTaskGates.workspacePaused = workspaceNotPausedGate(now);
+    claimableConditions.push(explicitTaskGates.workspacePaused);
+  }
+
   // Per-runner cooldown: skip tasks where this runner recently had a worker
   // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
   // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
@@ -725,13 +799,39 @@ export async function POST(req: NextRequest) {
   // Without this, `limit: availableSlots` means the dispatch loop only ever sees
   // the highest-priority N tasks; if all N are permanently deferred (wrong
   // connector, pacing, etc.) nothing else is ever examined — race_lost forever.
+  //
+  // Role-env gaps are known before the cut, so they do not count toward the
+  // window: a page whose candidates no channel can deliver secrets to fetches
+  // the next page, until the window holds candidateLimit runnable candidates
+  // (bounded by ROLE_ENV_WINDOW_MAX_PAGES). Without this a backlog of
+  // undeliverable high-priority tasks (e.g. a role whose secrets live on
+  // another team) fills every window and the runner never sees the work
+  // behind it. Gapped tasks stay in the
+  // list so the loop still defers and reports them; the authoritative
+  // pre-filter below re-runs after backend flips.
   const candidateLimit = Math.min(Math.max(availableSlots * 5, 25), 100);
-  const claimableTasks = await db.query.tasks.findMany({
+  const fetchCandidatePage = (offset: number) => db.query.tasks.findMany({
     where: and(...claimableConditions),
     orderBy: (tasks, { desc, asc }) => [desc(tasks.priority), asc(tasks.createdAt)],
     limit: candidateLimit,
+    offset,
     with: { workspace: true },
   });
+  const claimableTasks: Awaited<ReturnType<typeof fetchCandidatePage>> = [];
+  {
+    const seen = new Set<string>();
+    let runnable = 0;
+    for (let page = 0; page < ROLE_ENV_WINDOW_MAX_PAGES; page++) {
+      const batch = await fetchCandidatePage(page * candidateLimit);
+      const fresh = batch.filter(t => !seen.has(t.id));
+      for (const t of fresh) seen.add(t.id);
+      claimableTasks.push(...fresh);
+      if (batch.length < candidateLimit || taskId) break;
+      const gaps = await runRoleEnvPreFilter(fresh, account.id);
+      runnable += fresh.length - fresh.filter(t => gaps.has(t.id)).length;
+      if (runnable >= candidateLimit) break;
+    }
+  }
 
   if (forceClaim && claimableTasks.some(t => t.id === taskId)) {
     // Which of the lifted SQL gates would have excluded the task. Same
@@ -746,6 +846,7 @@ export async function POST(req: NextRequest) {
         subject: subjectLivenessCondition(),
         workspaceCap: workspaceCapGate(),
         workspaceExecutor: workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host'),
+        workspacePaused: workspaceNotPausedGate(now),
         startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,
       },
     });
@@ -1045,7 +1146,8 @@ export async function POST(req: NextRequest) {
   //  • OAUTH_BUDGET_PACING=off — operational kill switch, no redeploy of logic
   //    needed, no settings row, no UI.
   const pacingConfig = readPacingConfig(process.env);
-  const pacingApplies = pacingConfig.enabled && !taskId;
+  // An interactive session runs on the person's own credentials, not a seat.
+  const pacingApplies = pacingConfig.enabled && !taskId && !interactiveSession;
   let oauthPressure: OauthBudgetPressure | null = null;
   let oauthSeatSlotsLeft: number | null = null; // null = uncapped
   if (account.authType === 'oauth' && pacingApplies) {
@@ -1116,7 +1218,9 @@ export async function POST(req: NextRequest) {
             : undefined,
         ),
       ),
-      columns: { slug: true, model: true, workspaceId: true, teamId: true },
+      // Personal rows ride along (team-level, workspaceId NULL); which one a
+      // task may use is decided per task by its requester below.
+      columns: { ...ROLE_VISIBILITY_COLUMNS, model: true },
     });
   }
 
@@ -1135,6 +1239,7 @@ export async function POST(req: NextRequest) {
     subject_dead: 0,
     path_overlap: 0,
     advisory_manifest: 0,
+    soft_overlap: 0,
     mission_budget: 0,
     mission_concurrent: 0,
     mission_paced: 0,
@@ -1144,6 +1249,7 @@ export async function POST(req: NextRequest) {
     routing_paused: 0,
     duplicate_worker: 0,
     sibling_retry_open: 0,
+    fix_not_needed: 0,
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
@@ -1151,16 +1257,36 @@ export async function POST(req: NextRequest) {
     ordered_behind: 0,
     managed_concurrency: 0,
     managed_runner_hours: 0,
+    hosted_runner_hours: 0,
+    no_personal_credential: 0,
+    provider_not_allowed: 0,
+    tier_policy: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
   } satisfies Required<NonNullable<ClaimDiagnostics['deferrals']>>;
+
+  // Each candidate's model-credential decision under the team's credential
+  // policy (./personal-credential-injection), keyed by task id. Teams with no
+  // policy decide `legacy` without a read beyond the team row, and the attach
+  // steps below then run exactly as they always have.
+  const personalCredentialDecisions = new Map<string, PersonalCredentialDecision>();
+  const personalCredentialDeps = perRequestPersonalCredentialDeps();
+  // Model-tier ceilings, read once per (team, workspace[, requester]) per claim.
+  const loadClaimCeiling = tierCeilingLoader();
+  // Coding provider/payment-source policy (packages/core/coding-policy.ts), and
+  // the tasks it pinned to the runner's own login (no server-held model credential).
+  const loadCodingPolicyFor = codingPolicyLoader();
+  const nativeSourceTasks = new Set<string>();
 
   // Set when the EXPLICITLY requested task (claim with `taskId`) is itself
   // deferred in the dispatch loop below. It already passed every SQL-level
   // gate (it is in `filteredTasks`), so the SQL probe never runs for it; the
   // loop knows which gate held it, so it says so (see deferTask).
   let explicitTaskExclusion: ClaimTaskExclusion | null = null;
+  // The budget and rate-limit walls this request held a task on, named in a
+  // budget_exhausted refusal (task e7e8740a).
+  const budgetWalls = new BudgetWalls();
 
   // One gate_events row per (task, reason) examined-and-not-dispatched this
   // tick — coalesced across polls by `fireDeferralEvent` so a task stuck
@@ -1174,6 +1300,10 @@ export async function POST(req: NextRequest) {
     detail?: Record<string, unknown>,
   ) => {
     deferrals[reasonKey]++;
+    // A missing key is a stated pending reason on the task, not just a counter.
+    const credBlock = credentialBlockFromDeferral(reasonKey, detail);
+    const stamped = ((task as any).context as Record<string, unknown> | null | undefined)?.[CREDENTIAL_BLOCK_CONTEXT_KEY];
+    if (credBlock && JSON.stringify(stamped) !== JSON.stringify(credBlock)) void stampCredentialBlock(task.id, credBlock);
     // The named task itself was deferred: say by what. Path overlap sets a
     // richer sentence before calling here, so keep one that is already set.
     if (taskId && task.id === taskId && !explicitTaskExclusion) {
@@ -1222,6 +1352,8 @@ export async function POST(req: NextRequest) {
   // Managed runs this batch started, per team: not yet visible to the
   // entitlement's live-worker count.
   const managedClaimedByTeam = new Map<string, number>();
+  // Hosted runner allowance per team, read once per request (cloud claims only).
+  const hostedAllowanceByTeam = new Map<string, Awaited<ReturnType<typeof checkHostedRunnerAllowance>>>();
   for (const w of activeWorkers) {
     if (!['running', 'starting', 'idle'].includes(w.status)) continue;
     activeByWorkspace.set(w.workspaceId, (activeByWorkspace.get(w.workspaceId) || 0) + 1);
@@ -1252,9 +1384,14 @@ export async function POST(req: NextRequest) {
   // (codexAuthReachesRunner — the same predicate as the capability filter), the
   // ≤1-Codex-per-workspace throttle, and an active Codex rate-limit. Shared by
   // the provider toggle and budget failover. Returns true if the flip happened.
+  // Why the last tryFlipToCodex returned false: only `no_credential` is a missing key.
+  let codexFlipFailure: 'paused' | 'slot_taken' | 'no_credential' | undefined;
   const tryFlipToCodex = async (task: any, teamId: string | undefined, wsId: string | undefined, reason: ClaimRoutingReason): Promise<boolean> => {
     const codexFree = !!wsId && !codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId);
-    if (teamId && (await teamPauses(teamId)).has('codex')) return false;
+    codexFlipFailure = undefined;
+    if (teamId && (await teamPauses(teamId)).has('codex')) { codexFlipFailure = 'paused'; return false; }
+    if (!codexFree) { codexFlipFailure = 'slot_taken'; return false; }
+    codexFlipFailure = 'no_credential';
     if (wsId && teamId && codexFree && await codexAuthReachesRunner({ teamId, workspaceId: wsId })) {
       noteRouting(task, (task.backend || 'claude') as AgentBackend, 'codex', reason);
       task.backend = 'codex';
@@ -1315,6 +1452,20 @@ export async function POST(req: NextRequest) {
     }));
   }
 
+  // Soft overlap holders (./soft-overlap-gate). Read only when a candidate
+  // carries `pathDeclaration.softOverlaps`; null = the read failed, and every
+  // soft entry then holds as unknown state (fail closed).
+  let softHolders: Map<string, SoftHolderRow> | null = new Map();
+  const softHolderIds = softOverlapHolderIds(filteredTasks as Array<{ id: string; pathDeclaration?: unknown }>);
+  if (softHolderIds.size > 0) {
+    try {
+      softHolders = await loadSoftOverlapHolders([...softHolderIds]);
+    } catch (err) {
+      softHolders = null;
+      console.warn('[claim] soft overlap holder read failed (holding every soft overlap):', err);
+    }
+  }
+
   // ── Mission-level gates (pacing, concurrency, budget) ─────────────────────────
   // Batch-fetch mission rows and active worker counts for all tasks that reference
   // a mission. Used by three claim-loop guards:
@@ -1346,9 +1497,9 @@ export async function POST(req: NextRequest) {
   // Hold/start at claim (knowledge-base: buildd/design/conflict-aware-orchestration.md §5b).
   // The collector only remembers advisory deferrals that pass every
   // deterministic rail (no I/O); the decisions run after the response. The
-  // gated START path is unreachable as shipped (shadow definition, zero
-  // applying fraction), so `holdStartGated` is false and the loop below never
-  // awaits anything new.
+  // gated START path is live (task 7eb191b9): an advisory deferral looks up an
+  // applied Jev START for its exact state, one indexed ledger read, and holds
+  // on any miss or error. `CLAIM_HOLD_APPLYING_FRACTION = 0` turns it off.
   const holdStart = new ClaimHoldCollector();
   const holdStartGated = gatedStartReachable();
   // Every hold/start call in the loop is non-throwing: the collector methods,
@@ -1383,14 +1534,40 @@ export async function POST(req: NextRequest) {
     };
   };
 
+  /** The risk evidence for an open-PR overlap, read before the synchronous collector runs. Never throws. */
+  const readOpenPrRiskEvidence = async (
+    t: any,
+    manifest: string[],
+    openPrs: Array<{ prNumber: number | null; pathManifest: string[] | null; workerStatus: string | null; branch: string | null }>,
+    ownPrs: Array<{ branch: string | null }>,
+  ): Promise<ClaimRiskEvidence> => {
+    try {
+      const overlapping = openPrs.filter(p => p.prNumber && p.pathManifest?.length && intersectPaths(manifest, p.pathManifest).length > 0);
+      // A holder with a live worker is a hard rail; its diff cannot change the answer.
+      const askable = overlapping.filter(p => !isLiveHolderStatus(p.workerStatus));
+      if (askable.length === 0 || askable.length !== overlapping.length) return {};
+      const [prScopes, probe] = await Promise.all([
+        prefetchPrDiffScopes({ workspaceId: t.workspaceId, prNumbers: askable.map(p => p.prNumber as number) }, await defaultPrDiffScopeDeps()),
+        askable.length === 1 && ownPrs.find(p => p.branch)?.branch
+          ? loadPairProbeEvidence({ workspaceId: t.workspaceId, candidate: { branch: ownPrs.find(p => p.branch)!.branch }, holder: { branch: askable[0].branch } })
+          : Promise.resolve(null),
+      ]);
+      return { prScopes, probe };
+    } catch (err) {
+      console.warn(`[claim] open-PR risk evidence unavailable for task ${t?.id} (skipped):`, (err as Error)?.message ?? err);
+      return {};
+    }
+  };
+
   // ── Claim-time batch planner (./claim-plan-input, knowledge-base: buildd/design/jev-scheduling.md §5) ──
   // Per workspace, gitConfig.claimPlanner: 'off' leaves everything below
   // exactly as it was — no extra read, no extra write, same walk. 'record'
-  // (the default when unset) plans beside the legacy walk and records both. 'apply' claims in
-  // plan order: every gate in the loop still runs on each pick, and a pick
+  // plans beside the legacy walk and records both. 'apply' (the default when
+  // unset) claims in plan order: every gate in the loop still runs on each pick, and a pick
   // that is refused or loses its race is dropped and the rest re-planned.
-  // Never for an explicit taskId claim (which includes every force claim), and
-  // never 'apply' while a gated START is reachable — that path keeps its walk.
+  // Never for an explicit taskId claim (which includes every force claim). A
+  // gated START (now live) is just another gate on each pick: it can only
+  // relax an advisory deferral the pick reaches, so 'apply' keeps its order.
   const plannerConfigs = new Map<string, ReturnType<typeof resolveClaimPlannerConfig>>();
   const plannerModeOf = (t: { workspaceId: string }): ClaimPlannerMode => {
     if (taskId) return 'off';
@@ -1402,7 +1579,7 @@ export async function POST(req: NextRequest) {
       cfg = resolveClaimPlannerConfig((t as any).workspace?.gitConfig);
       plannerConfigs.set(t.workspaceId, cfg);
     }
-    return cfg.mode === 'apply' && holdStartGated ? 'record' : cfg.mode;
+    return cfg.mode;
   };
   // A candidate a pre-filter already refuses (connector, role env) is not
   // planned: it would only hold a slot it can never take. It still walks the
@@ -1469,6 +1646,13 @@ export async function POST(req: NextRequest) {
     // Set only by a gated START that relaxed the open-PR overlap: these
     // declared paths are acquired exclusively right before the atomic claim.
     let gatedStartPaths: string[] | null = null;
+    // Soft overlaps a force claim went past: recorded with its outcome as
+    // calibration data (human force, not a model label).
+    const softOverlapForced: Array<Record<string, unknown>> = [];
+    // Soft overlaps a START went past (rule or Jev): recorded once the claim
+    // wins, so the outcome join can grade a started pair and the dashboard can
+    // say who decided.
+    const softOverlapStarted: Array<Record<string, unknown>> = [];
     // Captured before any provider-toggle/budget-failover flip below can mutate
     // (task as any).backend, so the Codex single-flight check further down tests
     // what this task WAS ASSIGNED, not what it may have just been flipped to.
@@ -1571,16 +1755,36 @@ export async function POST(req: NextRequest) {
       const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
       // Own PRs (its earlier worker's, the PR a fix attempt fixes, its subject
       // PR) and PRs stacked on them never block it — see splitOwnOpenPrs.
-      const filterOpenPrTasks = splitOwnOpenPrs(task, openPrTasks).others;
+      // A PR into a different landing base (a trunk → mission refresh, for a
+      // trunk-bound task) changes nothing this task lands on — see
+      // ./open-pr-target-base.
+      const taskMission = (task as any).missionId ? missionClaimMap.get((task as any).missionId) : null;
+      const trunk = workspaceTrunk(task.workspace?.gitConfig);
+      const filterOpenPrTasks = partitionOpenPrsByLandingBase(
+        {
+          base: candidateLandingBase({ task: task as any, mission: taskMission, trunk }), trunk, manifest: taskManifest,
+          repairsOpenPr: (task as any).taskClass === 'attempt'
+            && ((task as any).conflictRetryPrNumber ?? (task as any).ciRetryPrNumber ?? (task as any).reviewerRetryPrNumber) != null,
+        },
+        splitOwnOpenPrs(task, openPrTasks).others,
+      ).sameBase;
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
-      // Shadow-only by default: note the deferral (no I/O). A gated START
-      // (unreachable as shipped) relaxes ONLY this layer; layer 2 and every
+      // Note the deferral (no I/O). An applied gated START for this exact
+      // state relaxes ONLY this layer; layer 2 and every
       // later gate still run, and the paths are acquired exclusively below.
       const holdCtx = blocking && !forced ? holdStartContext(task, forced) : null;
-      const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId)) : null;
-      if (blocking && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
-        console.log(`[claim] gated_start: task ${task.id} past open-PR overlap (PR #${blocking.prNumber ?? blocking.prUrl}); acquiring its paths`);
-        gatedStartPaths = holdNote.candidate.concretePaths;
+      // The collector is synchronous and does no I/O, so what it needs is read
+      // here: each overlapping holder's current PR diff, and (for a candidate
+      // that already has a branch) the newest probe of that pair. A read that
+      // fails or times out is absent, which leaves the answer with Jev.
+      const holdEvidence = holdCtx
+        ? await readOpenPrRiskEvidence(task, taskManifest, filterOpenPrTasks, splitOwnOpenPrs(task, openPrTasks).own)
+        : {};
+      const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId), holdEvidence) : null;
+      const openPrVerdict = blocking && holdNote ? await openPrStartVerdict(holdNote, holdStartGated) : 'HOLD';
+      if (blocking && openPrVerdict !== 'HOLD') {
+        console.log(`[claim] ${openPrVerdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past open-PR overlap (PR #${blocking.prNumber ?? blocking.prUrl}); acquiring its paths`);
+        gatedStartPaths = holdNote!.candidate.concretePaths;
       } else if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
         const blockedByPr = { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null };
@@ -1614,7 +1818,9 @@ export async function POST(req: NextRequest) {
       // fully declared", which is no reason to discard the parts that ARE
       // declared. A manifest (or claim) that is *only* the sentinel has no
       // concrete paths left and stays advisory.
-      const leaseBlock = findActiveClaimBlocker(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId));
+      const concreteManifest = taskManifest.filter(p => p !== REPO_WIDE_SENTINEL);
+      // A fix attempt's own ancestors never block it (§13.11 rule 4).
+      const leaseBlock = findActiveClaimBlocker(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId), ownLineage(task as any).taskIds);
       if (leaseBlock) {
         const { holderTaskId: claimingTaskId, claimedPaths: concreteClaimed, overlapPaths } = leaseBlock;
         console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
@@ -1629,10 +1835,83 @@ export async function POST(req: NextRequest) {
         if (bypassOrDefer('path_overlap', { blockingTaskId: claimingTaskId, prNumber: null, prUrl: null })) {
           // The holder's lease paths, so a narrowing that gives one back
           // wakes this task too (narrow matches waiters by exact path).
-          noteDeferralWaiter(task.workspaceId, task.id, claimingTaskId, intersectPaths(concreteClaimed, taskManifest.filter(p => p !== REPO_WIDE_SENTINEL)));
+          noteDeferralWaiter(task.workspaceId, task.id, claimingTaskId, intersectPaths(concreteClaimed, concreteManifest));
           continue;
         }
       }
+
+      // Soft overlap (./soft-overlap-gate): an in-flight task whose declared
+      // scope overlaps this one's on the same file or by directory prefix, or a
+      // pre-v2 inferred edge. Never a dependsOn edge. A migration / hard-surface
+      // (serialized, generated, hotspot) / unknown-state entry holds
+      // deterministically. The rest is tiered (orchestration-claim-risk): a
+      // holder that never started, or a directory-only overlap, starts in code
+      // (`rule_start`); a same-file one holds unless an applied Jev START
+      // exists for this exact state. Either START's declared paths are then
+      // acquired exclusively before the claim (a live lease wins). Forced:
+      // bypassed and recorded.
+      const softVerdicts = softHolderIds.size > 0
+        ? evaluateSoftOverlaps(task as any, softHolders, {
+            // Only same-PR conflict/collision attempts get this exemption. Other
+            // soft evidence, active claims and genuine migration mutexes remain.
+            repairSubjectPrs: (task as any).taskClass === 'attempt' && task.conflictRetryPrNumber != null
+              ? (openPrTasksByWorkspace.get(task.workspaceId) ?? []).filter(p => p.prNumber === task.conflictRetryPrNumber)
+              : [],
+            isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, (task as any).workspace?.gitConfig ?? null),
+          })
+        : [];
+      let softHeld = false;
+      for (const v of softVerdicts) {
+        // The rule's verdict: deterministic for a hard overlap, HOLD for a
+        // same-file or prefix one until an applied Jev START says otherwise.
+        let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
+        let risk: { tier: string; rationale: string; reasons: string[]; reevaluateOn: string[] } | null =
+          v.kind === 'deterministic' ? { tier: 'hard', rationale: `Held: ${v.overlapKind.replace('_', ' ')} overlap.`, reasons: [v.overlapKind], reevaluateOn: ['holder_terminal'] } : null;
+        if (v.kind === 'advisory' && !forced) {
+          const holdCtx = holdStartContext(task, forced);
+          const candidateBranch = splitOwnOpenPrs(task, openPrTasksByWorkspace.get(task.workspaceId) ?? []).own.find(p => p.branch)?.branch ?? null;
+          const probe = holdCtx && candidateBranch
+            ? await loadPairProbeEvidence({ workspaceId: task.workspaceId, candidate: { branch: candidateBranch }, holder: { taskId: v.holderTaskId } })
+            : null;
+          const assessed = holdCtx
+            ? holdStart.assessSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, overlapKind: v.overlapKind, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId), { probe })
+            : null;
+          if (assessed) risk = assessed.risk;
+          verdict = await softOverlapStartVerdict(assessed?.note ?? null, holdStartGated);
+        }
+        if (verdict === 'START' || verdict === 'rule_start') {
+          console.log(`[claim] ${verdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past soft overlap with ${v.holderTaskId} (${risk?.tier ?? 'unknown'}); acquiring its paths`);
+          gatedStartPaths = concreteManifest;
+          softOverlapStarted.push({
+            holderTaskId: v.holderTaskId,
+            paths: v.paths.slice(0, 10),
+            overlapKind: v.overlapKind,
+            decidedBy: verdict === 'rule_start' ? 'rule' : 'jev',
+            riskTier: risk?.tier ?? null,
+            reasons: risk?.reasons.slice(0, 4) ?? [],
+          });
+          continue;
+        }
+        const detail = {
+          holderTaskId: v.holderTaskId,
+          paths: v.paths.slice(0, 10),
+          verdict,
+          overlapKind: v.overlapKind,
+          // The tier and why, for explain/the dashboard; what would change it.
+          ...(risk ? { riskTier: risk.tier, rationale: risk.rationale, reevaluateOn: risk.reevaluateOn } : {}),
+        };
+        if (forced) {
+          softOverlapForced.push(detail);
+          bypassOrDefer('soft_overlap', detail);
+          continue;
+        }
+        console.log(`[claim] soft_overlap_held: task ${task.id} deferred behind ${v.holderTaskId} (${verdict})`);
+        bypassOrDefer('soft_overlap', detail);
+        noteDeferralWaiter(task.workspaceId, task.id, v.holderTaskId, v.paths);
+        softHeld = true;
+        break;
+      }
+      if (softHeld) continue;
     }
 
     // ── Mission-level gates ──────────────────────────────────────────────────────
@@ -1750,13 +2029,18 @@ export async function POST(req: NextRequest) {
         //    guarantee a human is actually supervising concurrent work.
         if (advisoryMutexApplies(task as any) && !plannerReplacesMutex.has(task.id) && !localMissionClaim) {
           const blockingPeer = advisoryBlockingPeer(task.id, missionAdvisoryInFlight.get(taskMissionId));
-          // Shadow-only by default (see layer 1 above). A gated START relaxes
+          // Noted like layer 1 above. An applied gated START relaxes
           // only this serialization; there are no declared paths to acquire,
           // and observed touches are leased by the exclusive primitive later.
           const holdCtx = blockingPeer ? holdStartContext(task, forced) : null;
           const holdNote = holdCtx && blockingPeer ? holdStart.noteAdvisoryManifest(holdCtx, blockingPeer) : null;
           if (blockingPeer && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
             console.log(`[claim] gated_start: task ${task.id} past advisory_manifest serialization (peer ${blockingPeer})`);
+          } else if (blockingPeer && liftedByForce('advisory_manifest') && !forced) {
+            // A person's dashboard Force start lifts this serialization for
+            // this task (artifact §7.2: human force only). The admin MCP
+            // force claim above still does not.
+            if (!startForceBypassed.includes('advisory_manifest')) startForceBypassed.push('advisory_manifest');
           } else if (blockingPeer) {
             console.log(
               `[claim] advisory_manifest_serialized: task ${task.id} deferred ` +
@@ -1806,6 +2090,29 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Hosted runner allowance (teams.hostedRunnerHours, counted hours this
+    // month): cloud claims only, and only when the team has one. A host
+    // runner may still take the task. Same queued-not-failed treatment as the
+    // managed entitlement above; the hourly sweep wakes it once the month
+    // resets or the allowance grows. Running tasks are never touched.
+    if (cloudExecutor) {
+      const hostedTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (hostedTeamId) {
+        if (!hostedAllowanceByTeam.has(hostedTeamId)) {
+          hostedAllowanceByTeam.set(hostedTeamId, await checkHostedRunnerAllowance(hostedTeamId, { now }).catch((err) => {
+            console.error(`[claim] hosted runner allowance check failed for team ${hostedTeamId}:`, err);
+            return null;
+          }));
+        }
+        const block = hostedAllowanceByTeam.get(hostedTeamId) ?? null;
+        if (block) {
+          deferTask(task, entitlementDeferralKey(block), { ...block });
+          await stampEntitlementBlock(task.id, block, now);
+          continue;
+        }
+      }
+    }
+
     // Team provider toggle (reversible mask) — applied BEFORE budget logic so the
     // rest sees the effective backend. Disabling a provider here redirects matching
     // jobs to an enabled one at dispatch time, without touching stored settings;
@@ -1819,7 +2126,7 @@ export async function POST(req: NextRequest) {
       if (maskedBackend === 'codex') {
         // Claude disabled team-wide → must run on Codex. Skip (leave pending) if
         // Codex has no credential or its single per-workspace slot is taken.
-        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_disabled'))) { deferTask(task, 'provider_unavailable', { attemptedBackend: 'codex' }); continue; }
+        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_disabled'))) { deferTask(task, 'provider_unavailable', { attemptedBackend: 'codex', flipFailure: codexFlipFailure }); continue; }
         console.log(`[claim] Provider toggle: task ${task.id} → Codex (Claude disabled for team ${taskTeamId})`);
       } else {
         // Codex disabled team-wide → run on Claude.
@@ -1840,11 +2147,14 @@ export async function POST(req: NextRequest) {
     const tenantCtx = (taskContext?.tenantContext as { tenantId?: string }) || null;
     const claudeEnabledForTeam = !enabledBackends || enabledBackends.includes('claude');
     let claudePoolBlocked = false;
+    // Which walls set claudePoolBlocked, named if this task is deferred on them.
+    let claudeWall: { kind: ClaimBudgetWall['kind']; resetsAt: Date | string | null } | null = null;
 
-    if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession) {
+    if (accountBudgetExhausted && !tenantCtx?.tenantId && !runsOnCallersSeat) {
       // Account's own OAuth session/budget is exhausted. Interactive sessions
       // have their own credentials and do not consume this account budget.
       claudePoolBlocked = true;
+      claudeWall = { kind: 'account_seat', resetsAt: effectiveBudgetResetAt(account.budgetExhaustedAt!, account.budgetResetsAt) };
     } else if (tenantCtx?.tenantId) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
       if (workspaceTeamId) {
@@ -1860,14 +2170,22 @@ export async function POST(req: NextRequest) {
             await db.delete(tenantBudgets).where(eq(tenantBudgets.id, tenantBudget.id));
           } else {
             claudePoolBlocked = true;
+            claudeWall = { kind: 'tenant_budget', resetsAt: tenantBudget.budgetResetsAt };
           }
         }
       }
     }
     // Walls recorded against Claude in the pause log (e.g. a team running on a
     // managed Claude credential rather than this account's own session).
-    const pauses = await teamPauses(taskTeamId);
-    if (pauses.has('claude')) claudePoolBlocked = true;
+    // An interactive session is exempt for the same reason as the account flag
+    // above: the wall was hit by a runner's seat, and the session runs the task
+    // on its own credentials. Without this, a task whose runner just died on a
+    // session limit could not be claimed (even with force) until the reset.
+    const pauses = runsOnCallersSeat ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
+    if (pauses.has('claude')) {
+      claudePoolBlocked = true;
+      claudeWall ??= { kind: 'provider_pause', resetsAt: pauses.get('claude')!.resetsAt };
+    }
 
     // Does a Claude run of THIS task draw on that walled pool? Only when its
     // model route is the OAuth seat (./claude-model-route): a task the team
@@ -1888,8 +2206,9 @@ export async function POST(req: NextRequest) {
         (task as any).backend = 'claude';
         console.log(`[claim] Budget failover: routing task ${task.id} to Claude (Codex rate-limited until ${pauses.get('codex')!.resetsAt.toISOString()})`);
       } else {
+        budgetWalls.add('provider_pause', 'codex', pauses.get('codex')!.resetsAt);
         deferTask(task, 'budget_paused', {
-          backend: 'codex', resetsAt: pauses.get('codex')!.resetsAt.toISOString(),
+          backend: 'codex', wall: 'provider_pause', resetsAt: pauses.get('codex')!.resetsAt.toISOString(),
           ...(backendPinned ? { pinned: true } : {}),
         });
         continue;
@@ -1935,7 +2254,12 @@ export async function POST(req: NextRequest) {
       if (!backendPinned && codexEnabledForTeam && await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_seat_exhausted')) {
         console.log(`[claim] Budget failover: routing task ${task.id} to Codex (workspace ${task.workspaceId} Claude budget exhausted)`);
       } else {
-        deferTask(task, 'budget_paused', { backend: 'claude', ...(backendPinned ? { pinned: true } : {}) });
+        if (claudeWall) budgetWalls.add(claudeWall.kind, 'claude', claudeWall.resetsAt);
+        deferTask(task, 'budget_paused', {
+          backend: 'claude',
+          ...(claudeWall ? { wall: claudeWall.kind, resetsAt: isoOrNull(claudeWall.resetsAt) } : {}),
+          ...(backendPinned ? { pinned: true } : {}),
+        });
         continue;
       }
     }
@@ -2015,6 +2339,7 @@ export async function POST(req: NextRequest) {
     const taskTier = (task as any).tier as RegistryTier | null | undefined;
     const roleRow = pickRoleRowForTask(roleModelRows, {
       roleSlug, workspaceId: task.workspaceId, teamId: taskTeamId,
+      requesterUserId: slugHasPersonalRows(roleModelRows, roleSlug) ? await lazyRequester(task)() : null,
     });
     // Precedence: pin → tasks.tier → role exact id → matrix + role floor. An
     // inferred role never touches the model (role-routing.md §4.1).
@@ -2070,25 +2395,73 @@ export async function POST(req: NextRequest) {
     const modelRejections: Omit<DispatchModelRejection, 'fallback'>[] = [];
     const runnerCliVersion = body.environment?.claudeCliVersion;
     const dispatchCatalog = await getCachedOpenRouterCatalog();
+    // Central certification (model-certification.ts): floors learned by the
+    // probe, so a model certified after this build shipped is served and gated
+    // like one in the static table. Empty on any failure: the static table only.
+    const certifications = await getModelCertifications();
     // A challenger or treatment the runner cannot launch is not served; the
     // incumbent is. Same fallback accounting as a CLI-floor miss, plus a record
     // of the id so a bad arm cannot go on silently losing its draws.
     const clientCanServe = (source: DispatchModelSource) => (m: string): boolean => {
-      if (!checkModelClientCapability(m, runnerCliVersion).ok) return false;
-      const verdict = checkDispatchModel(m, dispatchCatalog);
+      if (!checkModelClientCapability(m, runnerCliVersion, certifications).ok) return false;
+      const verdict = checkDispatchModel(m, dispatchCatalog, certifications);
       if (!verdict.ok) modelRejections.push({ rejected: m, reason: verdict.reason, source });
       return verdict.ok;
     };
     const tierModelSource = (s: string | undefined): DispatchModelSource =>
       s === 'catalog' ? 'tier_catalog' : s === 'default' ? 'tier_default' : 'tier_row';
 
-    if (routingDecision.reason === 'explicit_override' && !pinTier) {
+    // Model-tier ceiling (docs/specs/model-tier-ceilings.md): the most
+    // restrictive of the team, workspace and — when the task has a known
+    // requester — that person's admin-set and own maximum for coding agents.
+    // An explicit request (pin, tasks.tier, role model) above it is held with
+    // the structured policy_denied error; the router's own pick is downgraded
+    // to it unless the team chose deny. Checked on every claim, so a lowered
+    // ceiling also holds already-queued tasks, retries and failovers (each is
+    // a task that comes through here). No ceiling: nothing below changes.
+    let ceiling: TierCeiling;
+    try {
+      ceiling = await loadClaimCeiling({ teamId: taskTeamId, workspaceId: task.workspaceId, userId: lazyRequester(task) }, 'agent');
+    } catch (err) {
+      console.error(`[claim] task ${task.id}: model-tier ceiling unreadable, holding the task`, err);
+      deferTask(task, 'tier_policy', { error: 'ceiling_unavailable', message: 'The model-tier maximum for this task could not be read.' });
+      continue;
+    }
+    const exactPinPath = routingDecision.reason === 'explicit_override' && !pinTier;
+    let ceilingTier: RegistryTier | null = null;
+    let ceilingDowngrade: { from: RegistryTier; to: RegistryTier } | null = null;
+    if (ceiling.max) {
+      const request = claimTierRequest({
+        pin: explicit,
+        exactModel: exactPinPath ? routingDecision.model : null,
+        pinTier,
+        taskTier: taskTier ?? null,
+        roleTierOverride,
+        roleFloor: roleFloorTier(roleModel),
+        routerTier: mapRouterAlias(routingDecision.model),
+      });
+      const verdict = request.kind === 'model'
+        ? enforceModelCeiling({ ceiling, model: request.model, origin: request.origin, catalog: dispatchCatalog })
+        : enforceTierCeiling({ ceiling, tier: request.tier, origin: request.origin });
+      if (!verdict.ok) {
+        deferTask(task, 'tier_policy', { ...verdict.denied });
+        continue;
+      }
+      if (request.kind === 'tier') ceilingTier = verdict.tier;
+      if (verdict.downgradedFrom) ceilingDowngrade = { from: verdict.downgradedFrom, to: verdict.tier };
+    }
+    // A model a treatment, pool arm or registry row would serve must also sit
+    // inside the ceiling by what it costs, not just by its tier label.
+    const withinCeiling = (m: string) =>
+      !ceiling.max || enforceModelCeiling({ ceiling, model: m, origin: 'auto', catalog: dispatchCatalog }).ok;
+
+    if (exactPinPath) {
       resolvedModel = routingDecision.model;
     } else {
       // Determine the tier to look up: a shorthand pin, then task.tier, then a
       // premium-plus role floor (above the router's opus ceiling), then the
-      // router alias.
-      const derivedTier = pinTier ?? taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
+      // router alias — or the ceiling, when it downgraded an automatic pick.
+      const derivedTier = ceilingTier ?? pinTier ?? taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
       guardTier = derivedTier;
 
       if (taskTeamId) {
@@ -2111,7 +2484,12 @@ export async function POST(req: NextRequest) {
             resolveTier: (t) => resolveTierEntry(t, taskTeamId, task.workspaceId, 'agent'),
             clientCanServe: clientCanServe('routing_experiment'),
           });
-          if (treatment) {
+          if (treatment && (!tierWithin(treatment.tier, ceiling.max) || !withinCeiling(treatment.model))) {
+            // The treatment arm would cross the ceiling: serve the control.
+            experimentDraw.served = false;
+            experimentDraw.assignedModel = entry.model;
+            experimentDraw.eligibility = { ...experimentDraw.eligibility, fallback: 'tier_ceiling' };
+          } else if (treatment) {
             resolvedModel = treatment.model;
             resolvedTierMeta = { tier: treatment.tier, provider: treatment.provider, source: treatment.source };
             modelSource = 'routing_experiment';
@@ -2130,7 +2508,7 @@ export async function POST(req: NextRequest) {
         if (poolDraw) {
           const served = applyAgentPoolArm(poolDraw, {
             incumbentModel: entry.model, backend: task.backend,
-            clientCanServe: clientCanServe('tier_pool_arm'),
+            clientCanServe: (m) => withinCeiling(m) && clientCanServe('tier_pool_arm')(m),
           });
           if (served) {
             resolvedModel = served.model;
@@ -2158,7 +2536,7 @@ export async function POST(req: NextRequest) {
     // rejected id and where it came from.
     {
       let fallbacks = tierEntryModel ? [tierEntryModel] : [];
-      if (!tierEntryModel && taskTeamId && !checkDispatchModel(resolvedModel, dispatchCatalog).ok) {
+      if (!tierEntryModel && taskTeamId && !checkDispatchModel(resolvedModel, dispatchCatalog, certifications).ok) {
         // A rejected pin: fall back to the workspace default for its family.
         const entry = await resolveTierEntry(guardTier, taskTeamId, task.workspaceId, 'agent', runnerCliVersion);
         fallbacks = [{ model: entry.model, source: tierModelSource(entry.source) }];
@@ -2170,6 +2548,7 @@ export async function POST(req: NextRequest) {
         tier: guardTier,
         fallbacks,
         catalog: dispatchCatalog,
+        certifications,
       });
       if (guarded.rejection) {
         modelRejections.push({ rejected: guarded.rejection.rejected, reason: guarded.rejection.reason, source: guarded.rejection.source });
@@ -2195,13 +2574,30 @@ export async function POST(req: NextRequest) {
       console.warn(`[claim] task ${task.id}: ${describeDispatchModelRejection(r)}`);
     }
 
+    // The model finally served, by what it costs. A tier label is only a name:
+    // a registry row can put a premium-priced model behind `standard`. Under a
+    // ceiling that re-map is refused here (nothing was asked for above the
+    // cap, so this is the team's own mapping crossing it); with no ceiling it
+    // is only logged.
+    if (ceiling.max) {
+      const served = enforceModelCeiling({ ceiling, model: resolvedModel, origin: 'auto', catalog: dispatchCatalog });
+      if (!served.ok) {
+        deferTask(task, 'tier_policy', { ...served.denied, labelTier: resolvedTierMeta?.tier ?? null });
+        continue;
+      }
+      if (served.unknownBand) console.warn(`[claim] task ${task.id}: model ${resolvedModel} has no known price; ceiling ${ceiling.max} checked by tier label only`);
+    } else if (resolvedTierMeta?.tier && isTaskTier(resolvedTierMeta.tier)) {
+      const over = bandExceedsLabel(resolvedModel, resolvedTierMeta.tier, dispatchCatalog);
+      if (over) console.warn(`[claim] task ${task.id}: tier ${resolvedTierMeta.tier} served ${resolvedModel}, which is priced as ${over}`);
+    }
+
     // Refuse a task whose resolved model needs a newer Claude Code client than
     // this runner reports, BEFORE a worker session starts — the API's own
     // version-gate 400 ("Claude Code X.Y.Z does not support this model;
     // version A.B.C or newer is required") is otherwise deterministic and
     // identical on every retry, burning a full worker session each time. See
     // packages/core/model-capability-requirements.ts.
-    const capabilityCheck = checkModelClientCapability(resolvedModel, body.environment?.claudeCliVersion);
+    const capabilityCheck = checkModelClientCapability(resolvedModel, body.environment?.claudeCliVersion, certifications);
     if (!capabilityCheck.ok) {
       deferTask(task, 'runner_capability', {
         model: resolvedModel,
@@ -2209,6 +2605,63 @@ export async function POST(req: NextRequest) {
         runnerVersion: body.environment?.claudeCliVersion ?? null,
       });
       continue;
+    }
+
+    // Coding provider policy: a restriction, not a redirect. The backend is
+    // final here (failover and toggles ran above), so a failover target is
+    // checked like a stored one. Denied ⇒ held with a structured error; it is
+    // never moved to another provider and never billed to a stored key.
+    // No restriction saved ⇒ allow, and everything below is unchanged.
+    if (taskTeamId) {
+      let codingPolicy;
+      try {
+        codingPolicy = await loadCodingPolicyFor({ teamId: taskTeamId, workspaceId: task.workspaceId, userId: lazyRequester(task) });
+      } catch (err) {
+        console.error(`[claim] task ${task.id}: coding policy unreadable, holding the task`, err);
+        deferTask(task, 'provider_not_allowed', { code: 'policy_unavailable' });
+        continue;
+      }
+      if (codingPolicy.restricted) {
+        const verdict = decideCodingPolicy({
+          policy: codingPolicy,
+          backend: (task as any).backend as AgentBackend,
+          claudeRoute: (task as any).backend === 'codex' ? null : await claudeRouteFor(taskTeamId, task.workspaceId),
+          cloud: cloudExecutor,
+        });
+        console.log(`[claim] ${codingPolicyAudit(task.id, (task as any).backend as AgentBackend, verdict)}`);
+        if (verdict.kind === 'refuse') {
+          deferTask(task, 'provider_not_allowed', { ...verdict.denied });
+          continue;
+        }
+        if (verdict.source === 'runner_native') nativeSourceTasks.add(task.id);
+      }
+    }
+
+    // Credential policy (provider parity): a team that set personal_only runs
+    // a task only on its requester's own key, so a task this claim cannot give
+    // one is held here, before a worker exists, with the reason named. The
+    // backend is final by now (failover and provider toggles ran above).
+    if (taskTeamId) {
+      const credentialDecision = await decidePersonalCredential({
+        task: task as any,
+        teamId: taskTeamId,
+        workspaceId: task.workspaceId,
+        accountId: account.id,
+        runnerFeatures: body.runnerFeatures,
+        cloud: cloudExecutor,
+        interactive: !!interactiveSession,
+      }, personalCredentialDeps);
+      if (credentialDecision.kind === 'refuse') {
+        deferTask(task, 'no_personal_credential', { ...credentialDecision.detail });
+        continue;
+      }
+      // A requester's own API key is a metered route: it cannot pay for a run
+      // the Coding policy pinned to the runner's own login.
+      if (credentialDecision.kind === 'personal' && nativeSourceTasks.has(task.id)) {
+        deferTask(task, 'provider_not_allowed', { code: 'payment_source_not_allowed', source: 'metered', backend: (task as any).backend });
+        continue;
+      }
+      personalCredentialDecisions.set(task.id, credentialDecision);
     }
 
     // Persist the routing decision in task context so the runner consumes it
@@ -2245,12 +2698,16 @@ export async function POST(req: NextRequest) {
       modelPinned: explicit !== null,
       routingReason: routingDecision.reason,
       ...(resolvedTierMeta ? { resolvedTier: resolvedTierMeta } : {}),
+      // Why an automatic pick ran cheaper than routed: the ceiling and who set it.
+      ...(ceilingDowngrade && ceiling.binding ? { tierCeiling: { ...ceilingDowngrade, max: ceiling.max, binding: ceiling.binding } } : {}),
     };
+    if (!ceilingDowngrade) delete (patchedContext as Record<string, unknown>).tierCeiling;
     // Why this claim's backend differs from the stored one — or nothing, so a
     // previous attempt's flip never reads as this one's.
     delete (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY];
     // Claimed: it no longer waits on an entitlement.
     delete (patchedContext as Record<string, unknown>)[ENTITLEMENT_BLOCK_CONTEXT_KEY];
+    delete (patchedContext as Record<string, unknown>)[CREDENTIAL_BLOCK_CONTEXT_KEY];
     const routing = backendRouting.get(task.id);
     if (routing && routing.backend === (task as any).backend) {
       (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY] = routing;
@@ -2307,6 +2764,35 @@ export async function POST(req: NextRequest) {
         await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
       }
       continue;
+    }
+
+    // Workflow kernel T9 (docs/specs/workflow-state-kernel.md §10.5): a review
+    // or CI fix is revalidated against a live read at claim. One whose target was
+    // resolved while it queued (approved, merged, head moved, round superseded)
+    // is cancelled as skipped — never started, and not a worker failure.
+    if (isRepairRole((task as any).deliveryRole) && (task as any).deliveryId) {
+      const fixDecision = await claimKernelFix({
+        id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: (task as any).deliveryRole, context: task.context,
+      }).catch((err): { action: 'defer'; reason: string } => {
+        console.error(`[claim] workflow kernel FixClaimed failed for task ${task.id}:`, err);
+        return { action: 'defer', reason: 'kernel_error' };
+      });
+      if (fixDecision.action !== 'proceed') {
+        if (gatedStartLeaseIds.length > 0) {
+          await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
+        }
+        if (fixDecision.action === 'cancel') {
+          console.log(`[claim] task ${task.id} skipped: ${fixDecision.reason}`);
+          await cancelSkippedTask(task.id, fixDecision.reason);
+        } else {
+          await withDispatchHint({ suppress: 'claim_rollback' }, db
+            .update(tasks)
+            .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
+            .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
+        }
+        deferTask(task, 'fix_not_needed', { reason: fixDecision.reason });
+        continue;
+      }
     }
 
     if (experimentDraw) {
@@ -2388,8 +2874,9 @@ export async function POST(req: NextRequest) {
       defaultBranch?: string;
     } | null;
 
-    // Shared mission branch (set by runMission) takes precedence — all mission
-    // tasks push to the same branch so a single PR tracks the mission's work.
+    // A pinned shared head (context.headBranch) takes precedence, except one
+    // equal to the task's own base: an integration-branch mission child bases
+    // on the mission branch and works on its own generated task head.
     //
     // The rule itself lives in @buildd/core/branch-names because approve-plan
     // has to predict this exact name when it resolves a stacked baseBranch ref;
@@ -2399,6 +2886,7 @@ export async function POST(req: NextRequest) {
       title: task.title,
       gitConfig,
       sharedHeadBranch: (patchedContext as Record<string, unknown> | null)?.headBranch,
+      baseBranch: (patchedContext as Record<string, unknown> | null)?.baseBranch,
     });
 
     // Atomic conditional insert: only creates worker if under concurrency limit
@@ -2423,11 +2911,29 @@ export async function POST(req: NextRequest) {
     // neon-http, db.batch runs as one non-interactive transaction, so the lock
     // is held exactly for this insert's duration and is safe without
     // db.transaction()'s interactive-session requirement.
+    // The authenticated OAuth session user, never the client-relayed session
+    // marker: an OAuth session acts as its team's shared account, so this is
+    // what PATCH /api/workers/[id] matches to let only the claimer act as the
+    // worker (lib/worker-owner.ts). An account-level 'agent' grant records
+    // the user who connected it: every grant session in a team shares one
+    // account, so this is what keeps one member's agent off another's claim.
+    // NULL for a bld_ key.
+    const claimedByUserId = claimingUserId(account);
+    // Same rule as the pre-check: a session is not limited, and a runner's
+    // count leaves the person's own sessions out.
+    const accountSlotPredicate = interactiveSession
+      ? sql`TRUE`
+      : sql`(
+          SELECT count(*) FROM ${workers}
+          WHERE account_id = ${account.id}
+          AND status IN ('idle', 'running', 'starting', 'waiting_input')
+          AND runner IS DISTINCT FROM ${INTERACTIVE_RUNNER}
+        ) < ${account.maxConcurrentWorkers}`;
     const [, insertResult] = await db.batch([
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),
       db.execute(sql`
-        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
-        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
+        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status, claimed_by_user_id)
+        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle', ${claimedByUserId}::uuid
         WHERE EXISTS (
           SELECT 1 FROM ${tasks} t_claim
           WHERE t_claim.id = ${task.id}
@@ -2435,11 +2941,7 @@ export async function POST(req: NextRequest) {
           AND t_claim.claimed_by = ${account.id}
           FOR UPDATE
         )
-        AND (
-          SELECT count(*) FROM ${workers}
-          WHERE account_id = ${account.id}
-          AND status IN ('idle', 'running', 'starting', 'waiting_input')
-        ) < ${account.maxConcurrentWorkers}
+        AND ${accountSlotPredicate}
         AND NOT EXISTS (
           SELECT 1 FROM ${workers} w_dup
           WHERE w_dup.task_id = ${task.id}
@@ -2514,6 +3016,22 @@ export async function POST(req: NextRequest) {
       branch,
       task: task as any,
     });
+    // A START past a soft overlap (rule or Jev): one accepted row per holder,
+    // the started half of the HOLD/START evaluation set.
+    for (const s of softOverlapStarted) {
+      fireGateEvent({
+        gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+        surface: 'POST /api/workers/claim',
+        outcome: 'accepted',
+        reason: 'soft_overlap_start',
+        taskId: task.id,
+        workspaceId: task.workspaceId,
+        missionId: (task as any).missionId ?? null,
+        workerId: worker.id,
+        callerOrigin: gateCallerOrigin({ apiAccount: account }),
+        detail: { ...s, startedAt: now.toISOString() },
+      });
+    }
     if (forced) {
       fireGateEvent({
         gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
@@ -2527,6 +3045,24 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCallerOrigin({ apiAccount: account }),
         detail: { bypassed: [...forceBypassed], accountId: account.id, userId: interactiveSession?.userId ?? null },
       });
+      // A force past a soft overlap is calibration data for the HOLD/START
+      // decision: a human START, labelled later by the same outcome join
+      // (clean, collision, conflict task) as a model START, never counted as
+      // a model answer. One row per holder it went past.
+      for (const s of softOverlapForced) {
+        fireGateEvent({
+          gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+          surface: 'POST /api/workers/claim',
+          outcome: 'bypassed',
+          reason: 'force_soft_overlap',
+          taskId: task.id,
+          workspaceId: task.workspaceId,
+          missionId: (task as any).missionId ?? null,
+          workerId: worker.id,
+          callerOrigin: gateCallerOrigin({ apiAccount: account }),
+          detail: { ...s, calibration: 'human_force', startedAt: now.toISOString() },
+        });
+      }
     }
     if (forceStartIntent) {
       recordForceStartClaim({
@@ -2619,11 +3155,19 @@ export async function POST(req: NextRequest) {
     // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
     // Exception: interactive sessions have their own credentials and do not consume
     // the account's provider budget, so they should not be blocked by accountBudgetExhausted.
-    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession;
+    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !runsOnCallersSeat;
     if (accountBudgetBlocksBackgroundRunner || deferrals.budget_paused > 0) {
+      if (accountBudgetBlocksBackgroundRunner && account.budgetExhaustedAt) {
+        budgetWalls.add('account_seat', 'claude', effectiveBudgetResetAt(account.budgetExhaustedAt, account.budgetResetsAt));
+      }
+      const walls = budgetWalls.list();
       return emptyClaim({
         budgetResetsAt: earliestFutureReset(),
-        diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
+        diagnostics: {
+          reason: 'budget_exhausted',
+          ...(walls.length > 0 ? { budgetBlock: { walls, summary: describeBudgetWalls(walls, { interactive: !!interactiveSession }) } } : {}),
+          ...(explicitTaskExclusion ? { taskExclusion: explicitTaskExclusion } : {}),
+        } satisfies ClaimDiagnostics,
       });
     }
     // Distinguish true lock-contention (race_lost) from "all candidates were
@@ -2789,10 +3333,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Prompt-context injection. ORDER IS THE CONTRACT: these six append to the
+  // Prompt-context injection. ORDER IS THE CONTRACT: these seven append to the
   // same resolvedContextProviders rail and the runner concatenates it in
   // order — external providers, mission handoff, knowledge, subject-prior-work,
-  // discrepancy, task-area scope. See ./context-injection and
+  // discrepancy, linked-artifact manifest, task-area scope. See ./context-injection and
   // ./prompt-context-pipeline for why the middle four run concurrently without
   // disturbing that order.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
@@ -2808,6 +3352,7 @@ export async function POST(req: NextRequest) {
         }
       : null,
   );
+  await attachArtifactReferences(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
@@ -2840,14 +3385,33 @@ export async function POST(req: NextRequest) {
   // instead) first (./agent-endpoint-injection): where it wins, it is the only
   // model credential attached, so the blocks below skip the backend-matching
   // ones for those workers.
+  //
+  // Before either: a requester's own key under the team's credential policy
+  // (./personal-credential-injection). Where it is attached (or, for an
+  // interactive session under personal_only, where nothing may be) it is the
+  // only model credential, so those workers are kept out of the endpoint
+  // ranking and every team model-credential attach below. Only a team that
+  // set a credential policy can produce such a worker.
+  const personalWorkers = cloudExecutor
+    ? new Set<string>()
+    : attachPersonalCredentials(claimedWorkers, personalCredentialDecisions);
+  // Workers the Coding policy pinned to the runner's own login: no endpoint, no
+  // stored key, no stored Codex/Claude credential is delivered for them.
+  const nativeWorkers = new Set(claimedWorkers.filter(cw => nativeSourceTasks.has(cw.taskId)).map(cw => cw.id));
   const endpointWorkers: ReadonlySet<string> = cloudExecutor
     ? new Set()
-    : await attachAgentEndpoints(claimedWorkers, filteredTasks, account.id, {
+    : await attachAgentEndpoints(claimedWorkers.filter(cw => !personalWorkers.has(cw.id) && !nativeWorkers.has(cw.id)), filteredTasks, account.id, {
         llmProviderOverride: body.llmProviderOverride === true,
         codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
+        runnerSupportsHeaders: runnerSupportsEndpointHeaders(body.runnerFeatures),
       });
-  if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, endpointWorkers);
+  // Workers whose model credential is already decided: no team model credential for them.
+  const modelCredentialDecided: ReadonlySet<string> = personalWorkers.size === 0 && nativeWorkers.size === 0
+    ? endpointWorkers
+    : new Set([...endpointWorkers, ...personalWorkers, ...nativeWorkers]);
+  if (cloudExecutor) await attachCloudToolSearchHint(claimedWorkers, filteredTasks, account.id);
+  if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, modelCredentialDecided);
 
   // Which GitHub credentials the agent gets: a mode marker only, gated on the
   // rollout stage and the runner declaring the feature. See ./github-credential-injection.
@@ -2872,9 +3436,9 @@ export async function POST(req: NextRequest) {
   // Codex-backend tasks get Codex creds, everything else gets Claude creds; both
   // read-only (refresh is runner-side). See ./credential-injection.
   if (!cloudExecutor) {
-    await attachCodexCredentials(claimedWorkers, filteredTasks, account.id, endpointWorkers);
-    await attachClaudeCredentials(claimedWorkers, filteredTasks, endpointWorkers);
-    await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks, endpointWorkers);
+    await attachCodexCredentials(claimedWorkers, filteredTasks, account.id, modelCredentialDecided);
+    await attachClaudeCredentials(claimedWorkers, filteredTasks, account.id, modelCredentialDecided);
+    await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks, modelCredentialDecided);
   } else {
     for (const cw of claimedWorkers) {
       const removed = stripClaimCredentials(cw as unknown as Record<string, unknown>);
@@ -2911,7 +3475,7 @@ export async function POST(req: NextRequest) {
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     // Only report partial budget exhaustion for background runners. Interactive sessions
     // have their own credentials and should not be told about account budget state.
-    ...(accountBudgetExhausted && !interactiveSession && {
+    ...(accountBudgetExhausted && !runsOnCallersSeat && {
       budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),

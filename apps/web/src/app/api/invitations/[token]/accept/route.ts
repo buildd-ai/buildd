@@ -5,6 +5,18 @@ import { and, eq } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 
+function normaliseEmail(email: string | null | undefined): string {
+  return (email ?? '').trim().toLowerCase();
+}
+
+/** `maria@acme.dev` → `m***@acme.dev`: enough to recognise, not to harvest. */
+function maskEmail(email: string): string {
+  const trimmed = email.trim();
+  const at = trimmed.lastIndexOf('@');
+  if (at < 1) return '***';
+  return `${trimmed[0]}***${trimmed.slice(at)}`;
+}
+
 // POST /api/invitations/[token]/accept — accept an invitation
 export async function POST(
   req: NextRequest,
@@ -23,6 +35,14 @@ export async function POST(
 
     if (!invitation) {
       return NextResponse.json({ error: 'Invitation not found' }, { status: 404 });
+    }
+
+    // An invite link is a capability for one address: anyone else holding it
+    // is refused before it is touched (no expiry write, no seat check).
+    if (normaliseEmail(invitation.email) !== normaliseEmail(user.email)) {
+      return NextResponse.json({
+        error: `This invitation was sent to ${maskEmail(invitation.email)}. Sign in with that address to accept it.`,
+      }, { status: 403 });
     }
 
     if (invitation.status !== 'pending') {

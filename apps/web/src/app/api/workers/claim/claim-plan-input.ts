@@ -15,6 +15,7 @@
  * concept, and two repos' `src/index.ts` are not the same file. The repo-wide
  * sentinel stays bare — the planner reads it as "undeclared", never as a path.
  */
+import { ownLineage } from '@/lib/attempt-lineage';
 import {
   CLAIM_PLANNER_CALIBRATION,
   overlapPairKey,
@@ -37,14 +38,14 @@ export interface ClaimPlannerConfig {
 const isUnit = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
 
 /**
- * The workspace's planner mode and thresholds. No mode set is `record`
- * (2026-10-04 owner decision: plans are logged by default, claim order is
- * unchanged); an explicit `off` or an unrecognised mode is `off`. Absent or
+ * The workspace's planner mode and thresholds. No mode set is `apply`
+ * (planning is soft: every hard rail still runs on each pick, so an explicit
+ * `record` or `off` is the per-workspace rollback); an explicit `off` or an unrecognised mode is `off`. Absent or
  * malformed thresholds fall back to the pinned calibration.
  */
 export function resolveClaimPlannerConfig(gitConfig: unknown): ClaimPlannerConfig {
   const g = (gitConfig && typeof gitConfig === 'object' ? gitConfig : {}) as Record<string, unknown>;
-  const mode: ClaimPlannerMode = g.claimPlanner == null ? 'record'
+  const mode: ClaimPlannerMode = g.claimPlanner == null ? 'apply'
     : g.claimPlanner === 'record' || g.claimPlanner === 'apply' ? g.claimPlanner : 'off';
   const t = g.claimPlannerThresholds as Record<string, unknown> | null | undefined;
   const thresholds = t && isUnit(t.thetaOrder) && isUnit(t.thetaSoft) && isUnit(t.thetaIdle)
@@ -66,8 +67,9 @@ export interface OpenPrEntry {
 /**
  * Split a workspace's open PRs into the ones that can block `task` and the ones
  * it is exempt from: a PR its own earlier worker opened, the PR a fix attempt
- * (conflict / review / CI) exists to fix, the PR its subject anchor names, and
- * any PR stacked on one of those. Shared by the claim loop's layer-1 backstop
+ * (conflict / review / CI) exists to fix, the PR its subject anchor names, any
+ * PR of a fix attempt's own lineage (`ownLineage`), and any PR stacked on one
+ * of those. Shared by the claim loop's layer-1 backstop
  * and the planner input so the two can never disagree about an exemption.
  */
 export function splitOwnOpenPrs<T extends OpenPrEntry>(task: any, openPrTasks: T[]): { others: T[]; own: T[] } {
@@ -77,10 +79,15 @@ export function splitOwnOpenPrs<T extends OpenPrEntry>(task: any, openPrTasks: T
   const ownSubjectPrNumber = task.subjectKind === 'pull_request'
     ? (task.subjectPrNumber as number | null | undefined)
     : null;
+  // A fix attempt's own chain (ancestor tasks, every PR the chain opened) —
+  // an unclosed predecessor PR must not defer its own retry (§13.11 rule 4).
+  const lineage = ownLineage(task);
   const isOwnPr = (pr: T) =>
     pr.taskId === task.id
     || (!!ownRetryPrNumber && pr.prNumber === ownRetryPrNumber)
-    || (!!ownSubjectPrNumber && pr.prNumber === ownSubjectPrNumber);
+    || (!!ownSubjectPrNumber && pr.prNumber === ownSubjectPrNumber)
+    || (!!pr.taskId && lineage.taskIds.has(pr.taskId))
+    || (pr.prNumber != null && lineage.prNumbers.has(pr.prNumber));
   const ownPrs = openPrTasks.filter(isOwnPr);
   const stackedOnOwn = findStackedPrs(ownPrs.map(pr => pr.branch).filter((b): b is string => !!b), openPrTasks);
   const own: T[] = [];

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { refuseWithoutTeamCredentialAccess } from '@/lib/team-credential-access';
 import { startCodexDeviceAuth } from '@/lib/codex-device-auth';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -16,6 +17,8 @@ export async function POST(_req: NextRequest, { params }: RouteContext) {
 
   const access = await verifyWorkspaceAccess(user.id, id);
   if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  const refused = await refuseWithoutTeamCredentialAccess(user.id, access.teamId);
+  if (refused) return refused;
 
   const result = await startCodexDeviceAuth();
   if (!result.ok) {

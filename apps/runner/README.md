@@ -13,6 +13,21 @@ buildd              # or: buildd service install, to run it in the background
 clone of this repo under `~/.buildd`, headless Chromium, and the `buildd`
 launcher at `~/.local/bin/buildd`.
 
+**Only using buildd from your own Claude Code, Codex or Cursor?** You don't need
+the runner. The client-only install checks out just `buildd login`, `buildd
+install` and the agent plugin, with no `bun install`, no Chromium and no service:
+
+```bash
+curl -fsSL https://buildd.dev/install.sh | bash -s -- --client
+exec $SHELL
+buildd install --global   # the installer already ran buildd login if you weren't logged in
+```
+
+Nothing runs buildd tasks on that machine; `buildd` on its own says the runner
+isn't installed. Run the installer again with `--client` to update it, or
+without it to add the runner in place. `--client` over a full install changes
+nothing (the full install already has everything).
+
 The runner is headless: it serves no local page unless started with
 `buildd --debug` (http://localhost:8766), and without a login it idles, so
 `buildd login` comes first. Running `buildd` on its own starts the runner in
@@ -132,6 +147,19 @@ environment:
 | `prefer` | The machine's login, even when a seat is stored in buildd. |
 | `off` | Never the machine's env token; a stored seat as before. |
 
+`BUILDD_MODEL_AUTH_SOURCE=runner` ("runner-managed", no automatic paid
+fallback) makes your own `claude login` / `CLAUDE_CODE_OAUTH_TOKEN` the only
+Claude Coding auth unless a paid route was deliberately selected: the team's
+agent model endpoint, this runner's `LLM_PROVIDER`, or an `ANTHROPIC_BASE_URL`
+you set. A stored team API key, an inherited `ANTHROPIC_API_KEY` /
+`ANTHROPIC_AUTH_TOKEN` and any server-delivered seat are not used. With no login
+and no selected route the run does not start ("No coding authentication
+available") and claims back off; it never retries on a paid key. The default
+(unset or `auto`) is unchanged. Not applicable to Codex, Chat/inference calls
+or hosted runners. buildd checks that a login is present, never that it is
+valid. Server-side claim deferral and the Codex backend failover are not
+covered here.
+
 Before you switch a runner that uses a stored seat to `prefer`, check the
 machine's login with one real session as the runner user, for example
 `claude -p 'reply ok'` with the same environment the runner has. A check
@@ -187,7 +215,12 @@ Codex task per login, or give Codex a team OpenAI API key.
 | `buildd status` | Show login status |
 | `buildd service install\|uninstall\|status\|logs` | Manage the background service (macOS/Linux) |
 | `buildd init <workspace-id>` | Write a per-repo `.mcp.json` for Claude Code |
-| `buildd install --global` | Register the buildd MCP server in `~/.claude.json`, and install the session presence hooks + skill for every detected client (Claude Code, Codex, Cursor) — see `plugin/README.md` |
+| `buildd install --global` | Register the buildd MCP server for your workspace folders only, across every team you are in (per folder in `~/.claude.json`; a folder in a team your login key can't reach signs in with OAuth instead; a repo with its own buildd `.mcp.json` is left alone), and install the session presence hooks + skill for every detected client (Claude Code, Codex, Cursor) — see `plugin/README.md` |
+| `buildd install --here` | Register the buildd MCP server for the current folder, workspace or not (e.g. to set up a new workspace) |
+| `buildd install --global --everywhere` | Register it for every Claude Code session instead |
+| `buildd install --global --oauth` (or `--here --oauth`) | Same folders, with no key on disk: Claude Code signs you in in the browser the first time and you pick the workspaces the connection reaches. The connection **acts as you**. On a server that does not offer one connection across workspaces yet, each folder signs in to its own workspace instead. Opt-in for now |
+| `buildd install --global --as-agent` (or `--here --as-agent`) | The same sign-in, but the connection **acts as your agent**, not as you. Use it on a shared or remote machine |
+| `buildd install --global --status` | List every buildd MCP entry in `~/.claude.json`: whether it uses the key or OAuth, and for OAuth whether it connects as you, as your agent, or is unknown until signed in (no network) |
 | `buildd install [--global] --status` / `--uninstall` | Show or remove only buildd's own hook entries; every other hook is preserved |
 
 ## Agent identity on buildd

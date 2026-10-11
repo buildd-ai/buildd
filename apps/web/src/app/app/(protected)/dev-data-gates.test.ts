@@ -78,7 +78,8 @@ describe('dev data gates: pages (reads)', () => {
     expect(gated.length).toBeGreaterThan(0);
   });
 
-  it.each(['home/page.tsx', 'tasks/page.tsx', 'workspaces/page.tsx'])('%s is among them', (f) => {
+  // The old /app/workspaces list (gated) now redirects to Settings › Workspaces.
+  it.each(['home/page.tsx', 'tasks/page.tsx'])('%s is among them', (f) => {
     expect(gated.map((g) => g.file)).toContain(f);
   });
 

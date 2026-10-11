@@ -2,6 +2,7 @@ import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
 import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import type { SegmentState } from '@/lib/task-presentation';
 import { shouldSerializeByManifest } from '@buildd/core/path-overlap';
+import type { WaitingFor } from '@buildd/shared';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -16,7 +17,7 @@ export type CondensedTaskWorker = {
   startedAt: string | null;
   currentAction: string | null;
   branch: string | null;
-  waitingFor: { type: string; prompt: string; options?: string[] } | null;
+  waitingFor: WaitingFor | null;
   /** Supersession edge (task fcaf83d5) — set only on a closed, unmerged PR. */
   supersededByPrNumber?: number | null;
   supersededByPrUrl?: string | null;

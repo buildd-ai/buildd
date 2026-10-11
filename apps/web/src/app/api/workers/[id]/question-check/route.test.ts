@@ -10,12 +10,13 @@ import { NextRequest } from 'next/server';
 const WORKER = '33333333-3333-4333-8333-333333333333';
 const ACCOUNT = '44444444-4444-4444-8444-444444444444';
 
-let authed: { id: string } | null;
+let authed: { id: string; teamId?: string | null; sessionUserId?: string | null; level?: string } | null;
 let authArgs: unknown[];
-let worker: { id: string; accountId: string; workspaceId: string; taskId: string | null } | null;
+let worker: { id: string; accountId: string; workspaceId: string; taskId: string | null; claimedByUserId?: string | null } | null;
 let workspace: { id: string; teamId: string | null; dataClass: string | null; gitConfig: unknown } | null;
 let task: { title: string; pathManifest: string[] | null; missionId: string | null } | null;
-let checked: Array<{ scope: unknown; req: unknown }>;
+let checked: Array<{ scope: unknown; req: unknown; deps?: any }>;
+const repairSlot = async () => null;
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async (...args: unknown[]) => { authArgs = args; return authed; } }));
 mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'workers.id' }, workspaces: { id: 'workspaces.id' }, tasks: { id: 'tasks.id' } }));
@@ -27,9 +28,10 @@ mock.module('@buildd/core/db', () => ({
     tasks: { findFirst: async () => task },
   } },
 }));
+mock.module('@/modules', () => ({ RECOVERABLE_BLOCKER_REPAIR: repairSlot }));
 mock.module('@/lib/question-gate-check', () => ({
-  checkQuestion: async (scope: unknown, req: unknown) => {
-    checked.push({ scope, req });
+  checkQuestion: async (scope: unknown, req: unknown, deps?: any) => {
+    checked.push({ scope, req, deps });
     return { verdict: 'pushback', outcome: 'pushback', reason: 'Not sent: ...', version: 'v', latencyMs: 3 };
   },
   gateEnabledFromGitConfig: (gc: any) => gc?.jevQuestionGate !== false,
@@ -102,10 +104,50 @@ describe('POST /api/workers/[id]/question-check', () => {
       hardRail: { pathManifest: ['infra/terraform/main.tf'], protectedPaths: ['infra/'] },
     });
     expect((checked[0].req as any).question.prompt).toBe('Local or UTC?');
+    // The recover slot comes from the composition root, so a recoverable blocker can be repaired.
+    expect(checked[0].deps?.fileRepair).toBe(repairSlot);
   });
 
   it('defaults gateEnabled true and an empty hard-rail context with no gitConfig', async () => {
     await POST(req(BODY), params());
     expect(checked[0].scope).toMatchObject({ gateEnabled: true, hardRail: { pathManifest: null } });
+  });
+});
+
+describe('POST /api/workers/[id]/question-check — OAuth session owner check', () => {
+  // Invariant: an OAuth session acts as an account its whole team shares, so the
+  // account id alone does not say who claimed the worker. Only the session user
+  // recorded as claimedByUserId owns it; any other member, an admin included, or
+  // a session with no team, gets the same 404 a stranger's worker does.
+  const session = (sessionUserId: string, extra: Record<string, unknown> = {}) =>
+    ({ id: ACCOUNT, teamId: 'team-1', sessionUserId, level: 'worker', ...extra });
+
+  beforeEach(() => {
+    worker = { id: WORKER, accountId: ACCOUNT, workspaceId: 'ws-1', taskId: 'task-1', claimedByUserId: 'user-a' };
+  });
+
+  it('the session user that claimed the worker is allowed', async () => {
+    authed = session('user-a');
+    const res = await POST(req(BODY, 'oauth-token'), params());
+    expect(res.status).toBe(200);
+    expect(checked).toHaveLength(1);
+  });
+
+  it('another member of the same team on the same account is refused, and nothing is checked', async () => {
+    authed = session('user-b');
+    expect((await POST(req(BODY, 'oauth-token'), params())).status).toBe(404);
+    expect(checked).toEqual([]);
+  });
+
+  it('an admin-level session that did not claim the worker is refused too', async () => {
+    authed = session('user-b', { level: 'admin' });
+    expect((await POST(req(BODY, 'oauth-token'), params())).status).toBe(404);
+    expect(checked).toEqual([]);
+  });
+
+  it('a session with no team id is refused even when the user matches', async () => {
+    authed = session('user-a', { teamId: null });
+    expect((await POST(req(BODY, 'oauth-token'), params())).status).toBe(404);
+    expect(checked).toEqual([]);
   });
 });

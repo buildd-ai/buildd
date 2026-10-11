@@ -1,19 +1,14 @@
 import { describe, expect, it } from 'bun:test';
 import { buildStageAFacts, type StageAFacts, type StageASource } from '../post-session-quality';
 import {
-  POST_SESSION_TRIAGE_CAPABILITY,
-  POST_SESSION_TRIAGE_PROMPT_VERSION,
-  POST_SESSION_TRIAGE_QUESTIONS,
-  TRIAGE_REASON_CODES,
   TRIAGE_UNAVAILABLE,
-  buildTriageState,
-  deriveTriageSignals,
+  buildTriageFeatures,
   evaluateHardTriggers,
-  postSessionTriagePromptHash,
-  readTriageAnswers,
   resolveTriageOutcome,
+  triageRecordFromResponse,
   unavailableTriage,
 } from '../post-session-triage';
+import { parsePostSessionTriageFeatures, postSessionTriageKind } from '../decision-kind-post-session-triage';
 import { INFERENCE_CAPABILITIES } from '../inference-policy';
 
 const NOW = new Date('2026-10-03T12:00:00Z');
@@ -55,7 +50,7 @@ const facts = (over: Parameters<typeof source>[0] = {}): StageAFacts => buildSta
 
 describe('capability', () => {
   it('is registered in the inference policy as a built-in', () => {
-    expect(INFERENCE_CAPABILITIES[POST_SESSION_TRIAGE_CAPABILITY]?.kind).toBe('built_in');
+    expect(INFERENCE_CAPABILITIES[postSessionTriageKind.binding.capability as keyof typeof INFERENCE_CAPABILITIES]?.kind).toBe('built_in');
   });
 });
 
@@ -140,93 +135,68 @@ describe('evaluateHardTriggers', () => {
   });
 });
 
-describe('deriveTriageSignals / buildTriageState', () => {
-  it('derives small booleans and counters', () => {
-    const s = deriveTriageSignals(facts({ src: { ciFixAttempts: 1, attempts: { attemptNumber: 2, totalAttempts: 2 } } }));
-    expect(s).toMatchObject({
+describe('buildTriageFeatures', () => {
+  it('derives small booleans and counters the kind accepts', () => {
+    const f = buildTriageFeatures(facts({ src: { ciFixAttempts: 1, attempts: { attemptNumber: 2, totalAttempts: 2 } } }));
+    expect(f).toMatchObject({
       sessionFailed: false, retried: true, prShipped: true, merged: false,
-      reviewRounds: 1, requestChanges: 0, ciFixAttempts: 1,
-      recallCalls: 2, learnCalls: 1, errorTotal: 0, transcriptPresent: true,
+      reviewRounds: 1, requestChanges: 0, ciFixAttempts: 1, errorTotal: 0, transcriptPresent: true, hardTriggers: [],
     });
+    expect(parsePostSessionTriageFeatures(f).ok).toBe(true);
   });
 
   it('carries null for unknowns rather than zero', () => {
-    const s = deriveTriageSignals(facts({ worker: { resultMeta: null }, src: { reviews: null, errorTraces: null } }));
-    expect(s.recallCalls).toBeNull();
-    expect(s.reviewRounds).toBeNull();
-    expect(s.errorTotal).toBeNull();
+    const f = buildTriageFeatures(facts({ src: { reviews: null, errorTraces: null } }));
+    expect(f.reviewRounds).toBeNull();
+    expect(f.errorTotal).toBeNull();
   });
 
-  it('state holds no ids, no free text, and stays small', () => {
-    const state = buildTriageState(facts());
-    const json = JSON.stringify(state);
-    for (const id of ['worker-1', 'task-1', 'ws-1', 'mission-1']) expect(json).not.toContain(id);
-    expect(json).not.toContain('SECRET');
-    expect(json).not.toContain('"prNumber"');
-    expect(Buffer.byteLength(json)).toBeLessThan(4 * 1024);
-    expect((state as any).signals).toBeDefined();
-    expect((state as any).outcome.workerStatus).toBe('completed');
+  it('holds no ids, no free text, and carries the fired hard triggers', () => {
+    const f = buildTriageFeatures(facts({ src: { reviews: [{ status: 'completed', verdict: 'escalate', confidence: 0.9 }] } }));
+    const json = JSON.stringify(f);
+    for (const id of ['worker-1', 'task-1', 'ws-1', 'mission-1', 'SECRET']) expect(json).not.toContain(id);
+    expect(f.hardTriggers).toEqual(['reviewer_escalated']);
   });
 });
 
-describe('questions', () => {
-  it('ask exactly the typed output fields, with the stable label sets', () => {
-    expect(Object.keys(POST_SESSION_TRIAGE_QUESTIONS).sort()).toEqual(['decision', 'focus', 'reasonCode']);
-    expect(Object.keys(POST_SESSION_TRIAGE_QUESTIONS.decision.criteria).sort()).toEqual(['analyse', 'skip']);
-    expect(Object.keys(POST_SESSION_TRIAGE_QUESTIONS.focus.criteria).sort())
-      .toEqual(['general', 'knowledge', 'orchestration', 'retrieval', 'review_merge', 'runtime']);
-    expect(Object.keys(POST_SESSION_TRIAGE_QUESTIONS.reasonCode.criteria).sort()).toEqual([...TRIAGE_REASON_CODES].sort());
-    expect(TRIAGE_REASON_CODES).not.toContain(TRIAGE_UNAVAILABLE);
+describe('triageRecordFromResponse', () => {
+  const base = {
+    kind: 'buildd.post_session_triage', policyVersion: 'p', model: 'm-1', latencyMs: 120, attempts: [{}], mode: 'live',
+    fallbackCause: null,
+  } as const;
+
+  it('a model answer is an ok record with its focus and confidence', () => {
+    const r = triageRecordFromResponse({ ...base, decision: 'analyse', source: 'model', confidence: 0.83, reasonCode: 'focus_retrieval' } as any);
+    expect(r).toMatchObject({ status: 'ok', decision: 'analyse', focus: 'retrieval', reasonCode: 'focus_retrieval', confidence: 0.83 });
+    expect(r.provenance).toMatchObject({ model: 'm-1', latencyMs: 120, source: 'model' });
   });
 
-  it('prompt hash is pinned to the prompt version (bump the version when the prompt changes)', () => {
-    expect(`${POST_SESSION_TRIAGE_PROMPT_VERSION}:${postSessionTriagePromptHash()}`).toBe('pst1:43768b8bbfb4');
-  });
-});
-
-describe('readTriageAnswers', () => {
-  const answers = {
-    decision: { choice: 'analyse', confidence: 0.83, probabilities: {} },
-    focus: { choice: 'retrieval', confidence: 0.6, probabilities: {} },
-    reasonCode: { choice: 'retrieval_gap', confidence: 0.55, probabilities: {} },
-  };
-
-  it('maps a well-formed answer to an ok record with the decision confidence', () => {
-    const r = readTriageAnswers(answers as any, { model: 'm-1', latencyMs: 120, attempts: 1 });
-    expect(r).toMatchObject({ status: 'ok', decision: 'analyse', focus: 'retrieval', reasonCode: 'retrieval_gap', confidence: 0.83 });
-    expect(r.provenance).toMatchObject({ promptVersion: POST_SESSION_TRIAGE_PROMPT_VERSION, model: 'm-1', latencyMs: 120 });
+  it('a hard-trigger rule is its own status, with no model confidence', () => {
+    const r = triageRecordFromResponse({ ...base, decision: 'analyse', source: 'rule', confidence: null, reasonCode: 'hard_trigger_review_fix_loop', attempts: [] } as any);
+    expect(r).toMatchObject({ status: 'rule', decision: 'analyse', focus: null, confidence: null });
   });
 
-  it('an off-vocabulary label or a bad confidence is malformed, recorded as unavailable', () => {
-    const bad = readTriageAnswers({ ...answers, focus: { choice: 'vibes', confidence: 0.9 } } as any, { model: 'm', latencyMs: 1, attempts: 1 });
-    expect(bad).toMatchObject({ status: 'unavailable', reasonCode: TRIAGE_UNAVAILABLE, decision: null });
-    expect(bad.provenance?.error).toBe('malformed');
-    const nan = readTriageAnswers({ ...answers, decision: { choice: 'skip', confidence: Number.NaN } } as any, { model: 'm', latencyMs: 1, attempts: 1 });
-    expect(nan.status).toBe('unavailable');
-    const missing = readTriageAnswers({ decision: answers.decision } as any, { model: 'm', latencyMs: 1, attempts: 1 });
-    expect(missing.status).toBe('unavailable');
+  it('a fallback applies no decision, even when a model answered below the threshold', () => {
+    const r = triageRecordFromResponse({ ...base, decision: 'skip', source: 'fallback', confidence: null, reasonCode: 'fallback_low_confidence', fallbackCause: 'low_confidence' } as any);
+    expect(r).toMatchObject({ status: 'unavailable', decision: null, focus: null, reasonCode: 'fallback_low_confidence' });
+    expect(r.provenance).toMatchObject({ fallbackCause: 'low_confidence' });
   });
 });
 
 describe('resolveTriageOutcome', () => {
-  const ok = (decision: 'skip' | 'analyse') => ({
-    status: 'ok' as const, decision, focus: 'general' as const, reasonCode: 'routine_success', confidence: 0.9,
-  });
+  const ok = { status: 'ok' as const, decision: 'skip' as const, focus: 'general' as const, reasonCode: 'focus_general', confidence: 0.9 };
 
-  it('follows the model when no hard trigger fires', () => {
-    expect(resolveTriageOutcome(ok('skip'), [])).toMatchObject({ finalDecision: 'skip', rule: 'triage', hardTriggered: false });
-    expect(resolveTriageOutcome(ok('analyse'), [])).toMatchObject({ finalDecision: 'analyse', rule: 'triage' });
-  });
-
-  it('a hard trigger overrides a model skip', () => {
-    expect(resolveTriageOutcome(ok('skip'), ['reviewer_escalated']))
+  it('names the rule that produced the final decision', () => {
+    expect(resolveTriageOutcome(ok, 'skip', [])).toMatchObject({ finalDecision: 'skip', rule: 'triage', hardTriggered: false });
+    const rule = { ...ok, status: 'rule' as const, decision: 'analyse' as const };
+    expect(resolveTriageOutcome(rule, 'analyse', ['reviewer_escalated']))
       .toMatchObject({ finalDecision: 'analyse', rule: 'hard_trigger', hardTriggered: true, hardTriggerReasons: ['reviewer_escalated'] });
   });
 
   it('unavailable triage fails open to skip, but hard triggers still apply', () => {
     const u = unavailableTriage('timeout', { latencyMs: 5000 });
     expect(u).toMatchObject({ status: 'unavailable', decision: null, reasonCode: TRIAGE_UNAVAILABLE });
-    expect(resolveTriageOutcome(u, [])).toMatchObject({ finalDecision: 'skip', rule: 'fail_open_skip' });
-    expect(resolveTriageOutcome(u, ['review_fix_loop'])).toMatchObject({ finalDecision: 'analyse', rule: 'hard_trigger' });
+    expect(resolveTriageOutcome(u, 'skip', [])).toMatchObject({ finalDecision: 'skip', rule: 'fail_open_skip' });
+    expect(resolveTriageOutcome(u, 'analyse', ['review_fix_loop'])).toMatchObject({ finalDecision: 'analyse', rule: 'hard_trigger' });
   });
 });

@@ -9,7 +9,8 @@ const ALL: DeferralReason[] = [
   'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap',
   'provider_unavailable', 'budget_paused', 'routing_paused', 'duplicate_worker',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'role_env_unsatisfied',
-  'managed_concurrency', 'managed_runner_hours',
+  'managed_concurrency', 'managed_runner_hours', 'hosted_runner_hours', 'no_personal_credential',
+  'tier_policy',
 ];
 
 describe('describeExplicitDeferral', () => {
@@ -20,6 +21,36 @@ describe('describeExplicitDeferral', () => {
       expect(r.detail.length).toBeGreaterThan(10);
       expect(r.detail).not.toMatch(/unknown|does not cover/i);
     }
+  });
+
+  it('names which wall held a named task and when it lifts', () => {
+    const seat = describeExplicitDeferral('budget_paused', { backend: 'claude', wall: 'account_seat', resetsAt: '2099-01-01T20:00:00.000Z' }).detail;
+    expect(seat).toContain("The account's Claude session limit is reached");
+    expect(seat).toContain('Jan 1, 20:00 UTC');
+    const pause = describeExplicitDeferral('budget_paused', { backend: 'codex', wall: 'provider_pause', resetsAt: '2099-01-01T20:00:00.000Z' }).detail;
+    expect(pause).toContain('Codex rate limit');
+    expect(pause).toContain('no provider to fail over to');
+    // Without a wall it still says the provider and the time.
+    const bare = describeExplicitDeferral('budget_paused', { backend: 'claude', resetsAt: '2099-01-01T20:00:00.000Z' }).detail;
+    expect(bare).toContain('claude');
+    expect(bare).toContain('2099-01-01T20:00:00.000Z');
+  });
+
+  it('says the hosted runner allowance is used, with the numbers and the way out', () => {
+    const d = describeExplicitDeferral('hosted_runner_hours', { used: 50, limit: 50, resetsAt: '2026-11-01T00:00:00.000Z' }).detail;
+    expect(d).toContain('Hosted runner allowance used');
+    expect(d).toContain('50 of 50');
+    expect(d).toContain('2026-11-01T00:00:00.000Z');
+    expect(d).toContain('runner of your own');
+  });
+
+  it('says why a personal-keys-only task was not claimed, and what to do', () => {
+    const none = describeExplicitDeferral('no_personal_credential', { cause: 'no_requester', surface: 'agent-claude' }).detail;
+    expect(none).toContain('personal keys only');
+    expect(none).toContain('not started by a person');
+    const noKey = describeExplicitDeferral('no_personal_credential', { cause: 'requester_has_no_key', surface: 'agent-codex' }).detail;
+    expect(noKey).toContain('their own OpenAI API key');
+    expect(describeExplicitDeferral('no_personal_credential', { cause: 'runner_lacks_feature' }).detail).toContain('updated runner');
   });
 
   it('carries the numbers the loop had in hand', () => {

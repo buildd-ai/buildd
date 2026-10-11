@@ -240,3 +240,31 @@ describe('TaskCard — Steer', () => {
     expect(html).not.toContain('data-testid="steer-trigger"');
   });
 });
+
+// Surface audit (phone, 320/390): the stage chip and health column sat beside
+// the title and squeezed it to a few characters. One responsive layout moves
+// that column under the title below md; nothing is rendered twice for it.
+describe('TaskCard — row density is one responsive layout', () => {
+  const html = renderToStaticMarkup(
+    <TaskCard {...baseProps({ mismatchCount: 1, prUrl: 'https://github.com/acme/widgets/pull/7', prNumber: 7 })} />,
+  );
+  const count = (needle: string) => html.split(needle).length - 1;
+
+  it('renders the health column once, full width on a phone and a side column from md', () => {
+    expect(count('data-testid="task-card-meta"')).toBe(1);
+    const cls = html.match(/data-testid="task-card-meta"[^>]*class="([^"]+)"|class="([^"]+)"[^>]*data-testid="task-card-meta"/);
+    const classes = (cls?.[1] ?? cls?.[2] ?? '').split(/\s+/);
+    expect(classes).toContain('w-full');
+    expect(classes).toContain('md:w-auto');
+    expect(classes).toContain('md:flex-col');
+    // The row itself wraps on a phone so the column can drop under the title.
+    const row = html.match(/<div class="([^"]+)" data-testid="task-card"/)?.[1].split(/\s+/) ?? [];
+    expect(row).toContain('flex-wrap');
+    expect(row).toContain('md:flex-nowrap');
+  });
+
+  it('never duplicates the mismatch chip or the PR link', () => {
+    expect(count('data-testid="task-mismatch-chip"')).toBe(1);
+    expect(count('href="https://github.com/acme/widgets/pull/7"')).toBe(1);
+  });
+});

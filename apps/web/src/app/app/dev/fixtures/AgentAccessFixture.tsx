@@ -54,7 +54,7 @@ export default function AgentAccessFixture() {
       <div className="max-w-3xl mx-auto p-4 md:p-8">
         <Frame title="Task page · something refused (opens itself)"><TaskAccessSection items={WITH_REFUSALS} /></Frame>
         <Frame title="Task page · nothing refused (collapsed)"><TaskAccessSection items={QUIET_ITEMS} /></Frame>
-        <Frame title="Health · quiet"><AgentAccessSection report={QUIET} /></Frame>
+        <Frame title="Health · quiet (renders nothing)"><AgentAccessSection report={QUIET} /></Frame>
         <Frame title="Health · problems and refusals"><AgentAccessSection report={BUSY} /></Frame>
       </div>
     </DisplayTimezoneProvider>

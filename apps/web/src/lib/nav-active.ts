@@ -7,10 +7,8 @@ export function isNavActive(pathname: string, href: string): boolean {
     return pathname === '/app/home' || pathname === '/app/dashboard';
   }
   if (href === '/app/missions') {
-    return pathname.startsWith('/app/missions');
-  }
-  if (href === '/app/initiatives') {
-    return pathname.startsWith('/app/initiatives');
+    // Releases live under Missions (no nav item of their own).
+    return ['/app/missions', '/app/releases'].some(p => pathname === p || pathname.startsWith(`${p}/`));
   }
   if (href === '/app/tasks') {
     return pathname.startsWith('/app/tasks');
@@ -29,8 +27,9 @@ export function isNavActive(pathname: string, href: string): boolean {
 
 /**
  * Account/connection pages have no bottom-nav tab — they are reached from the
- * header avatar menu, which shows the active state for them instead.
+ * header avatar menu, which shows the active state for them instead. Team
+ * (the roles page) lives under Settings too.
  */
 export function isAccountRoute(pathname: string): boolean {
-  return pathname === '/app/settings' || pathname.startsWith('/app/settings/');
+  return ['/app/settings', '/app/team'].some(p => pathname === p || pathname.startsWith(`${p}/`));
 }

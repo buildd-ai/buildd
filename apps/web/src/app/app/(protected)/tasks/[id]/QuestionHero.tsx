@@ -113,18 +113,18 @@ export default function QuestionHero({
       data-density={density}
       className={`bg-card border-2 border-accent shadow-[var(--accent-shadow)] ${d.section}`}
     >
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] uppercase tracking-[2px]">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px]">
         <span className="w-[9px] h-[9px] bg-accent shrink-0" aria-hidden="true" />
         <span data-testid="worker-needs-input-label" className="font-semibold text-accent-text">{askerLabel}</span>
-        {askedAgo && <span className="hidden md:inline text-text-muted tracking-[1px]" suppressHydrationWarning>· {askedAgo}</span>}
-        {stateNote && <span className="hidden md:inline text-text-muted tracking-[1px]">· {stateNote}</span>}
-        {aside && <span className="ml-auto normal-case tracking-[1px] text-text-muted">{aside}</span>}
+        {askedAgo && <span className="hidden md:inline text-text-muted" suppressHydrationWarning>· {askedAgo}</span>}
+        {stateNote && <span className="hidden md:inline text-text-muted">· {stateNote}</span>}
+        {aside && <span className="ml-auto text-text-muted">{aside}</span>}
       </div>
 
       {question.where && (
         <p
           data-testid="question-brief-where"
-          className="mt-3 font-mono text-[11px] md:text-[12px] tracking-[0.5px] text-text-muted [overflow-wrap:anywhere]"
+          className="mt-3 font-mono text-[11px] md:text-[12px] text-text-muted [overflow-wrap:anywhere]"
         >
           {[question.where.taskTitle, question.where.branch, question.where.file].filter(Boolean).join(' · ')}
         </p>
@@ -184,7 +184,7 @@ export default function QuestionHero({
                       {i + 1}
                     </kbd>
                   )}
-                  <span className={`block font-mono text-[11px] uppercase tracking-[2px] font-semibold ${o.recommended ? '' : 'text-text-muted'}`}>
+                  <span className={`block font-mono text-[11px] font-semibold ${o.recommended ? '' : 'text-text-muted'}`}>
                     {o.recommended ? <>Recommended<span className="hidden md:inline"> by the agent</span></> : 'Alternative'}
                   </span>
                   <span className={`block ${d.optionLabel} ${density === 'hero' && hints && enableKeys ? 'pr-0 md:pr-10' : ''} font-semibold leading-tight [overflow-wrap:anywhere]`}>

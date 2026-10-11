@@ -142,4 +142,65 @@ describe('mcp-oauth route: interactive worker liveness', () => {
     await callTool('buildd', { action: 'list_tasks', params: {} });
     expect(mockTouchInteractiveWorkers).not.toHaveBeenCalled();
   });
+
+  // Two OAuth sessions of one user must not share an identity: the busy one
+  // kept every abandoned claim of the other alive.
+  it('mints a session id, and a later request echoing it touches as that session only', async () => {
+    process.env.AUTH_SECRET = 'test-secret';
+    sessionAt('admin');
+    const first = await POST(rpc('tools/call', { name: 'buildd', arguments: { action: 'list_tasks', params: {} } }), {
+      params: Promise.resolve({ workspace: WORKSPACE_ID }),
+    });
+    const sid = first.headers.get('mcp-session-id');
+    expect(sid).toMatch(/^s1\./);
+    expect(mockTouchInteractiveWorkers.mock.calls[0][0]).toMatchObject({ sessionKey: null });
+
+    const req = rpc('tools/call', { name: 'buildd', arguments: { action: 'list_tasks', params: {} } });
+    req.headers.set('mcp-session-id', sid!);
+    await POST(req, { params: Promise.resolve({ workspace: WORKSPACE_ID }) });
+    expect(mockTouchInteractiveWorkers.mock.calls[1][0]).toMatchObject({ sessionKey: sid!.split('.')[1] });
+  });
+});
+
+// Task 11fe4d38: the internal REST calls carry the caller's bearer, so they go
+// to this server's own configured origin, never a hardcoded host.
+describe('mcp-oauth route: self-call origin', () => {
+  const KEYS = ['VERCEL_URL', 'NEXTAUTH_URL', 'AUTH_URL', 'NODE_ENV'] as const;
+  let saved: Record<string, string | undefined>;
+  let realFetch: typeof fetch;
+  let urls: string[];
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    for (const k of KEYS) delete process.env[k];
+    realFetch = globalThis.fetch;
+    urls = [];
+    globalThis.fetch = (async (url: any) => { urls.push(String(url)); return new Response('{"tasks":[]}', { status: 200 }); }) as any;
+    mockAuthenticateApiKey.mockReset();
+    sessionAt('admin');
+  });
+  const restore = () => {
+    globalThis.fetch = realFetch;
+    for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  };
+
+  it('refuses with a 500 config error and makes no outbound call when no origin is configured', async () => {
+    try {
+      process.env.NODE_ENV = 'production';
+      const { status, body } = await callTool('buildd', { action: 'list_tasks', params: {} });
+      expect(status).toBe(500);
+      expect(body.error).toBe('self_origin_unconfigured');
+      expect(urls).toEqual([]);
+    } finally { restore(); }
+  });
+
+  it('calls the NEXTAUTH_URL origin when it is set', async () => {
+    try {
+      process.env.NODE_ENV = 'production';
+      process.env.NEXTAUTH_URL = 'https://self.example';
+      const { status } = await callTool('buildd', { action: 'list_tasks', params: {} });
+      expect(status).toBe(200);
+      expect(urls.length).toBeGreaterThan(0);
+      for (const u of urls) expect(u.startsWith('https://self.example/api/')).toBe(true);
+    } finally { restore(); }
+  });
 });

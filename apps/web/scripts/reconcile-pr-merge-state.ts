@@ -6,6 +6,10 @@
  * repo's worker. That left real merges unrecorded (blocking dependent tasks
  * forever) and marked never-merged PRs as merged.
  *
+ * Facts go through recordPrFact (pr-fact-import.ts): a missed merge or close is
+ * recorded; `merged` is terminal on the fact cache, so a row wrongly stamped
+ * merged is reported by the dry run's absence of a fix, never un-merged here.
+ *
  * Dry run by default — prints the diff and writes nothing.
  *
  *   bun run apps/web/scripts/reconcile-pr-merge-state.ts
@@ -15,7 +19,7 @@
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { isNotNull, sql } from 'drizzle-orm';
-import { reconcileWorkerPrState } from '../src/lib/pr-state-reconcile';
+import { importWorkerPrFacts } from '../src/lib/pr-fact-import';
 
 const apply = process.argv.includes('--apply');
 const collisionsOnly = process.argv.includes('--collisions-only');
@@ -42,7 +46,7 @@ const rows = await db
 console.log(`${rows.length} worker PR(s) to check${collisionsOnly ? ' (colliding PR numbers only)' : ''}`);
 console.log(apply ? 'MODE: apply (writes)' : 'MODE: dry run (no writes)');
 
-const result = await reconcileWorkerPrState(rows as any, { dryRun: !apply });
+const result = await importWorkerPrFacts(rows as any, { dryRun: !apply });
 
 for (const f of result.fixes) {
   console.log(

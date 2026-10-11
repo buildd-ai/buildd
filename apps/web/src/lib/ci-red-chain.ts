@@ -90,14 +90,17 @@ export interface CiChainRow extends Omit<CiChainTask, 'workers'> {
  * attempts are the rows whose `parentTaskId` is that owner.
  */
 export function deriveCiRedChains(
-  prs: ReadonlyArray<{ taskId: string; prNumber: number | null }>,
+  prs: ReadonlyArray<{ taskId: string; prNumber: number | null; ciRed?: boolean }>,
   tasks: readonly CiChainRow[],
 ): CiRedChain[] {
   const out: CiRedChain[] = [];
   for (const pr of prs) {
     if (pr.prNumber == null) continue;
     const owner = tasks.find(t => t.id === pr.taskId);
-    const lifecycle = owner?.workers?.find(w => w.prNumber === pr.prNumber && w.prLifecycleStatus != null)?.prLifecycleStatus;
+    // `ciRed` set: the kernel's reading of a kernel-owned PR (§17.5) wins over the column.
+    const lifecycle = pr.ciRed !== undefined
+      ? (pr.ciRed ? 'ci_failed' : null)
+      : owner?.workers?.find(w => w.prNumber === pr.prNumber && w.prLifecycleStatus != null)?.prLifecycleStatus;
     const chain = deriveCiRedChain({
       pr: { taskId: pr.taskId, prNumber: pr.prNumber },
       prLifecycleStatus: lifecycle,

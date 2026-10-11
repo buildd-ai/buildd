@@ -155,6 +155,12 @@ describe('outcome-join predicates are workspace scoped', () => {
     expect(r.params[0]).toBe(WS);
   });
 
+  it('decisions: task-verdict rows share the table but never join the orchestration outcome', () => {
+    const r = render(src.decisionsWhere({ workspaceId: WS, since: SINCE, until: UNTIL }));
+    expect(r.sql).toContain('"orchestration_decisions"."capability" not in ($4)');
+    expect(r.params[3]).toBe('task_verdict');
+  });
+
   it('tasks, labels and PR workers: workspace + the task ids', () => {
     for (const [fn, table] of [[src.tasksWhere, 'tasks'], [src.labelsWhere, 'orchestration_touch_labels'], [src.prWorkersWhere, 'workers']] as const) {
       const r = render(fn({ workspaceId: WS, taskIds: [TASK] }));

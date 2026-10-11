@@ -7,7 +7,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace, type TaskScopedAccount } from '@/lib/task-token-auth';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
-import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, canCallerAdminTeam } from '@/lib/team-access';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { parseScheduleDelegationInput, type ScheduleDelegation } from '@buildd/core/token-delegation';
 
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
@@ -36,8 +37,8 @@ async function resolveAuth(
   const account: TaskScopedAccount | null = requireAdmin ? await authenticateApiKey(apiKey, req) : await authenticateTaskScopedCaller(apiKey, req);
   if (account) {
     if (requireAdmin && !hasTokenRouteAdminAccess(account, req)) return null;
-    const hasAccess = taskScopeAllowsWorkspace(account, workspaceId) && await verifyAccountWorkspaceAccess(account.id, workspaceId);
-    if (hasAccess) return { kind: 'account' as const, accountId: account.id, teamId: account.teamId as string, level: account.level as string | null };
+    const hasAccess = taskScopeAllowsWorkspace(account, workspaceId) && await verifyAccountWorkspaceAccess(account, workspaceId);
+    if (hasAccess) return { kind: 'account' as const, accountId: account.id, teamId: account.teamId as string, level: account.level as string | null, account };
   }
 
   return null;
@@ -47,8 +48,9 @@ type ScheduleAuth = NonNullable<Awaited<ReturnType<typeof resolveAuth>>>;
 
 /**
  * Validate and stamp a `delegation` write (packages/core/token-delegation.ts).
- * Granting reach is an admin act: only a team admin/owner session or an admin
- * key of the schedule's team may set it, every target must be a workspace of
+ * Granting reach needs `delegate_schedule_access` in the schedule's team (by
+ * default an owner/admin session, or an admin key of that team; the team's
+ * permission overrides apply to sessions), every target must be a workspace of
  * that same team, and the granter must itself reach each target. Clearing it
  * (null) needs the same authority. The stored row records who and when.
  */
@@ -61,7 +63,7 @@ async function resolveDelegationWrite(
   if (!parsed.ok) return { ok: false, status: 400, error: parsed.error };
   const own = await db.query.workspaces.findFirst({ where: eq(workspaces.id, scheduleWorkspaceId), columns: { teamId: true } });
   if (!own?.teamId) return { ok: false, status: 404, error: 'Workspace not found' };
-  if (!(await canCallerAdminTeam(auth, own.teamId))) {
+  if (!(await can(auth, 'delegate_schedule_access', own.teamId))) {
     return { ok: false, status: 403, error: 'Setting a schedule delegation requires team admin or owner' };
   }
   if (parsed.grants === null) return { ok: true, value: null };
@@ -74,7 +76,7 @@ async function resolveDelegationWrite(
     }
     const reaches = auth.kind === 'user'
       ? !!(await verifyWorkspaceAccess(auth.userId, target))
-      : await verifyAccountWorkspaceAccess(auth.accountId, target);
+      : await verifyAccountWorkspaceAccess(auth.account, target);
     if (!reaches) return { ok: false, status: 403, error: `you cannot grant access to workspace ${target}: you do not reach it yourself` };
   }
   return {

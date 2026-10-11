@@ -46,7 +46,7 @@ export function cloudflareState(cred: CloudflareCredentialView | null): Cloudfla
 /** The deploy step from apps/cloud-runner/README.md, for a verified token. */
 export const CLOUD_RUNNER_DEPLOY_COMMAND = [
   'export BUILDD_API_KEY=bld_...          # admin key',
-  'export BUILDD_RUNNER_API_KEY=bld_...   # worker key for the containers',
+  'export BUILDD_RUNNER_API_KEY=bld_...   # worker key for the cloud runner',
   'bun apps/cloud-runner/scripts/deploy.ts --workspace my-workspace --dry-run',
   'bun apps/cloud-runner/scripts/deploy.ts --workspace my-workspace',
 ].join('\n');

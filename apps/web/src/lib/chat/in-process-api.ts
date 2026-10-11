@@ -98,6 +98,7 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   // Team-wide reads: the route limits results to ?teamId (session path), which the guard pins.
   { pattern: '/api/explain', methods: ['GET'], load: () => import('@/app/api/explain/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/health/failures', methods: ['GET'], load: () => import('@/app/api/health/failures/route'), reach: { pinTeam: true, ...ROWS } },
+  { pattern: '/api/health/incidents', methods: ['GET'], load: () => import('@/app/api/health/incidents/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/health/budget', methods: ['GET'], load: () => import('@/app/api/health/budget/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/connectors/mounted', methods: ['GET'], load: () => import('@/app/api/connectors/mounted/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
 
@@ -107,6 +108,8 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
     reach: { unpinned: 'lists the caller\'s PRs; every row carries its workspaceId and is filtered', ...ROWS },
   },
   { pattern: '/api/github/pr', methods: ['GET'], load: () => import('@/app/api/github/pr/route'), reach: { pinTeam: true, requireQuery: ['workerId', 'workspaceId'], ...ROWS } },
+  // merge_pr from chat: the dashboard's merge route, as the signed-in person; the workspace names the repo.
+  { pattern: '/api/prs/:prNumber/merge', methods: ['POST'], load: () => import('@/app/api/prs/[prNumber]/merge/route'), reach: { requireBody: ['workspaceId'], bodyScopedPath: ['prNumber'], ...ROWS } },
   { pattern: '/api/github/pr/review', methods: ['GET'], load: () => import('@/app/api/github/pr/review/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/releases', methods: ['GET'], load: () => import('@/app/api/releases/route'), reach: { requireQuery: ['workspaceId', 'missionId'], ...ROWS } },
   { pattern: '/api/releases/status', methods: ['GET'], load: () => import('@/app/api/releases/status/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
@@ -138,6 +141,11 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
     load: () => import('@/app/api/workspaces/[id]/skills/[skillId]/route'),
     reach: { path: path(['id', 'workspace'], ['skillId', 'skill']), ...ROWS },
   },
+  // Personal roles (create_personal_role / share_personal_role): the team is
+  // pinned to the conversation's (the route takes body.teamId / ?teamId), and
+  // a role id is reach-checked by its owning team.
+  { pattern: '/api/roles', methods: ['GET', 'POST'], load: () => import('@/app/api/roles/route'), reach: { pinTeam: true, ...ROWS } },
+  { pattern: '/api/roles/:id/share', methods: ['POST'], load: () => import('@/app/api/roles/[id]/share/route'), reach: { path: path(['id', 'skill']), ...ROWS } },
   { pattern: '/api/workspaces/:id/watched-projects', methods: ['GET', 'POST'], load: () => import('@/app/api/workspaces/[id]/watched-projects/route'), reach: byWorkspace },
   { pattern: '/api/watched-projects/:id', methods: ['PATCH', 'DELETE'], load: () => import('@/app/api/watched-projects/[id]/route'), reach: { path: path(['id', 'watched_project']), ...ROWS } },
   { pattern: '/api/watched-projects/:id/run', methods: ['POST'], load: () => import('@/app/api/watched-projects/[id]/run/route'), reach: { path: path(['id', 'watched_project']), ...ROWS } },

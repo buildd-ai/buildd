@@ -1,5 +1,5 @@
 /**
- * Board · Lanes · Feed: one layout mounted at a time, tabs in the header.
+ * Overview · Flow · History: one layout mounted at a time, tabs in the header.
  */
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -8,23 +8,29 @@ import MissionLayoutShell, { MissionBoardHeader, MissionLayoutTabs } from './Mis
 const T = Date.UTC(2026, 0, 1);
 const slots = {
   board: <div data-testid="slot-board"><MissionLayoutTabs /></div>,
-  lanes: <div data-testid="slot-lanes" />,
+  flow: <div data-testid="slot-flow" />,
   feed: <div data-testid="slot-feed" />,
 };
 
 describe('MissionLayoutShell', () => {
   it('mounts only the initial layout', () => {
-    const html = renderToStaticMarkup(<MissionLayoutShell initial="lanes" {...slots} />);
-    expect(html).toContain('data-testid="slot-lanes"');
+    const html = renderToStaticMarkup(<MissionLayoutShell initial="flow" {...slots} />);
+    expect(html).toContain('data-testid="slot-flow"');
     expect(html).not.toContain('data-testid="slot-board"');
     expect(html).not.toContain('data-testid="slot-feed"');
-    expect(html).toContain('data-layout="lanes"');
+    expect(html).toContain('data-layout="flow"');
   });
 
   it('the tabs mark the current layout', () => {
     const html = renderToStaticMarkup(<MissionLayoutShell initial="board" {...slots} />);
     expect(html).toMatch(/aria-selected="true" data-layout="board"/);
-    expect(html).toMatch(/aria-selected="false" data-layout="lanes"/);
+    expect(html).toMatch(/aria-selected="false" data-layout="flow"/);
+    expect(html).toMatch(/aria-selected="false" data-layout="feed"/);
+    expect(html).toContain('>Overview<');
+    expect(html).toContain('>Flow<');
+    expect(html).toContain('>History<');
+    // Flow replaced Lanes: there is no Lanes tab.
+    expect(html).not.toContain('data-layout="lanes"');
   });
 
   it('tabs outside the shell render nothing', () => {

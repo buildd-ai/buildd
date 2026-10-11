@@ -19,7 +19,7 @@ describe('GettingStartedChecklist', () => {
     expect(html).toContain('buildd login --device');
     expect(html).not.toContain('8766');
     expect(html).toContain('Add an agent key');
-    expect(html).toContain('/app/settings/runners#agent-key');
+    expect(html).toContain('/app/settings/models#agent-key');
     expect(html).toContain('OpenRouter');
     expect(html).toContain('LiteLLM');
     expect(html).toContain('Run a first task');
@@ -51,5 +51,22 @@ describe('GettingStartedChecklist', () => {
   it('a first task still running says so instead of asking for a new one', () => {
     const html = render({ runnerConnected: true, hasAgentCredential: true, firstTask: 'open' });
     expect(html).toContain('Your first task is queued or running');
+  });
+});
+
+describe('GettingStartedChecklist — nearly done', () => {
+  it('collapses to one line naming the last step once 2 of 3 are done', () => {
+    const html = render({ runnerConnected: true, hasAgentCredential: false, firstTask: 'done' });
+    expect(html).toContain('data-collapsed="true"');
+    expect(html).toMatch(/<details[^>]*data-testid="getting-started"/);
+    expect(html).toMatch(/<summary[^>]*>.*Get started · 2 of 3.*Next: Add an agent key.*<\/summary>/);
+    // The how-to stays one click away, not gone.
+    expect(html).toContain('Add an Anthropic key');
+  });
+
+  it('stays open as a full list while fewer than 2 steps are done', () => {
+    const html = render({ runnerConnected: true, hasAgentCredential: false, firstTask: 'none' });
+    expect(html).not.toContain('data-collapsed="true"');
+    expect(html).not.toContain('<details');
   });
 });

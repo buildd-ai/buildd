@@ -14,7 +14,8 @@ import { isAttempt, isDeliverableTask, stripTaskTypePrefix } from '@buildd/core/
 import { groupTasksByPhase } from './flight-strip-nav';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { isGreenAutoMergePending } from './auto-merge-grace';
-import { derivePrDisplayState } from './pr-presentation';
+import { resolvePrDisplayState } from './pr-presentation';
+import { deliveryReading, type DeliveryDisplay, type DeliveryReadingInput, type DeliveryTone } from './workflow/delivery-display';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,12 @@ export interface MissionFeedTaskInput {
   missionPhaseLabel?: string | null;
   /** Latest worker, or null/absent when the task never ran. */
   worker?: MissionFeedWorkerInput | null;
+  /**
+   * The kernel's reading when this task OWNS a kernel-owned delivery
+   * (workflow-state-kernel §17.5): the row's state and PR state come from it,
+   * never from the worker's fact-cache columns. Absent = legacy or no PR.
+   */
+  delivery?: DeliveryDisplay | null;
 }
 
 /** Facts that live outside the task row. Every field optional: absent = "none known". */
@@ -230,18 +237,44 @@ export const PR_STATE_TOKEN: Record<FeedPrState, 'info' | 'success' | 'error'> =
   unresolvable: 'error',
 };
 
-export function deriveFeedPrState(worker: MissionFeedWorkerInput | null | undefined): { number: number; state: FeedPrState } | null {
-  if (!worker?.prNumber) return null;
-  if (worker.mergedAt) return { number: worker.prNumber, state: 'merged' };
-  // `derivePrDisplayState` (lib/pr-presentation.ts), projected: CI not yet
-  // reported or still running both mean the platform owns the next step.
-  const display = derivePrDisplayState(worker.prLifecycleStatus, worker.mergedAt);
+export function deriveFeedPrState(
+  worker: MissionFeedWorkerInput | null | undefined,
+  delivery?: Pick<DeliveryDisplay, 'prNumber' | 'prState'> | null,
+): { number: number; state: FeedPrState } | null {
+  const number = delivery?.prState ? (delivery.prNumber ?? worker?.prNumber ?? null) : (worker?.prNumber ?? null);
+  if (!number) return null;
+  // `resolvePrDisplayState` (lib/pr-presentation.ts), projected: CI not yet
+  // reported or still running both mean the platform owns the next step. A
+  // kernel-owned PR reads the delivery, never the worker columns.
+  const display = resolvePrDisplayState({ delivery, prLifecycleStatus: worker?.prLifecycleStatus, mergedAt: worker?.mergedAt });
   const state: FeedPrState =
     display === 'awaiting_ci' || display === 'ci_running' ? 'checks_running'
       : display === 'ci_passed' ? 'open'
       : display;
-  return { number: worker.prNumber, state };
+  return { number, state };
 }
+
+/**
+ * A kernel-owned delivery's feed state (§17.5). Null for `working`: the
+ * delivery waits on the owner's own attempt, so the task's execution state is
+ * the reading. A person's move (ESCALATED, an approved PR awaiting its merge) is yours; every other live state has a
+ * non-human owner and reads as moving, so a fix in flight, a review, a
+ * landing or a trunk block is never "needs you" and never FAILED (S35, S36).
+ */
+export function feedStateForDelivery(d: DeliveryReadingInput): { state: PulseState; needsYou: NeedsYouReason | null } | null {
+  const r = deliveryReading(d);
+  return r ? FEED_FOR_DELIVERY_TONE[r.tone] : null;
+}
+
+/** The feed's state per canonical delivery tone (`deliveryReading`). */
+const FEED_FOR_DELIVERY_TONE: Record<DeliveryTone, { state: PulseState; needsYou: NeedsYouReason | null }> = {
+  needs: { state: 'needs_you', needsYou: 'pr' },
+  failed: { state: 'needs_you', needsYou: 'failed' },
+  landed: { state: 'done', needsYou: null },
+  closed: { state: 'done', needsYou: null },
+  live: { state: 'moving', needsYou: null },
+  stalled: { state: 'moving', needsYou: null },
+};
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const TERMINAL = new Set<string>(TERMINAL_TASK_STATUSES);
@@ -284,6 +317,9 @@ export function deriveFeedTaskState(row: DeliverableRow, ctx: MissionFeedContext
   if (d != null) return needs('decision', ms(d));
 
   if (isMoving(task) || (openAttempt && isMoving(openAttempt))) return { state: 'moving', needsYou: null, askedAt: null };
+
+  const kernel = task.delivery && task.status !== 'cancelled' ? feedStateForDelivery(task.delivery) : null;
+  if (kernel) return kernel.state === 'needs_you' ? needs(kernel.needsYou!, fallbackAsk) : { ...kernel, askedAt: null };
 
   if (task.status === 'completed') {
     const pr = deriveFeedPrState(task.worker);

@@ -3,13 +3,16 @@
 import { useState } from 'react';
 import { useAnswerSubmit, type AnswerSubmitState } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import AnswerRecorded from './AnswerRecorded';
+import type { WaitingFor } from '@buildd/shared';
+import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 
 interface WorkerRespondInputProps {
   workerId: string;
   /** The worker's task: marks the global banner answered. */
   taskId?: string | null;
   question: string;
-  options?: string[];
+  /** The row's options as stored: option objects, or plain strings on older rows. */
+  options?: WaitingFor['options'];
   /** Question brief: the task and the exact decision. */
   context?: string;
   /**
@@ -24,7 +27,7 @@ export default function WorkerRespondInput({
   workerId,
   taskId = null,
   question,
-  options,
+  options: rawOptions,
   context,
   answer: hosted,
 }: WorkerRespondInputProps) {
@@ -33,6 +36,7 @@ export default function WorkerRespondInput({
   const own = useAnswerSubmit({ workerId, taskId, resetKey: `${workerId}:${question}` });
   const { submit, sending, outcome, error } = hosted ?? own;
   const busy = sending !== null;
+  const options = waitingForOptionLabels(rawOptions);
 
   if (outcome) return <AnswerRecorded outcome={outcome} className="mt-2" />;
 
@@ -60,7 +64,7 @@ export default function WorkerRespondInput({
       )}
 
       {/* Quick option buttons */}
-      {options && options.length > 0 && (
+      {options.length > 0 && (
         <div className="flex flex-wrap gap-1.5 ml-[18px]">
           {options.map((opt) => {
             const pending = sending === opt.trim();

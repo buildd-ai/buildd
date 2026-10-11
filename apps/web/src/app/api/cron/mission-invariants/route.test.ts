@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { taskLinksPr } from '@/lib/agent-capabilities/pr-links';
 import { NextRequest } from 'next/server';
 
 // The pure invariant module is NOT mocked — the route test runs the real
@@ -421,6 +422,10 @@ describe('staging', () => {
     );
     // The evidence a claiming agent acts on: which PR, how old, how far behind.
     expect(inserted[0].description).toContain('#7777');
+    // The remedy names a subject PR; the task must carry the server-stamped link
+    // the review door reads, or request_pr_review 403s for its own remedy.
+    expect(taskLinksPr({ context: inserted[0].context }, 7777)).toBe(true);
+    expect(taskLinksPr({ context: inserted[0].context }, 7778)).toBe(false);
     expect(inserted[0].description).toContain(`${PR_OUTPACED_DRIFT} merges into 'dev'`);
     expect(mockNotify).toHaveBeenCalledTimes(1);
   });

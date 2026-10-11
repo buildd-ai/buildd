@@ -3,7 +3,8 @@ import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { evidenceObjects, workers } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { confirmEvidenceUpload } from '@/lib/evidence-confirm';
 import type { EvidenceObjectRow } from '@/lib/evidence-read';
 
@@ -46,13 +47,13 @@ export async function POST(
   try {
     const worker = await db.query.workers.findFirst({
       where: eq(workers.id, id),
-      columns: { id: true, accountId: true, workspaceId: true, taskId: true },
+      columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true },
       with: { workspace: { columns: { teamId: true } } },
     });
     if (!worker) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
-    if (!worker.accountId || worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
+    if (!callerOwnsWorker(account, worker)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
     if (!worker.workspaceId || !worker.workspace?.teamId || worker.workspace.teamId !== account.teamId) {

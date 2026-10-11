@@ -38,6 +38,8 @@ const individual: EntitlementBlock = { kind: 'concurrency', key: 'managed_runner
 const team: EntitlementBlock = { kind: 'concurrency', key: 'managed_runner.concurrency', active: 10, limit: 10, scope: 'team' };
 const hours: EntitlementBlock = { kind: 'usage', key: 'managed_runner.hours', unit: 'runner_hours', used: 50, limit: 50, resetsAt: '2026-11-01T00:00:00.000Z', scope: 'individual' };
 
+const hosted: EntitlementBlock = { kind: 'hosted_runner', key: 'hosted_runner.hours', unit: 'counted_runner_hours', used: 50, limit: 50, resetsAt: '2026-11-01T00:00:00.000Z' };
+
 /** No error colour, no alert role, anywhere in the notice. */
 function expectNotAnError(el: HTMLElement) {
   expect(el.getAttribute('role')).toBe('status');
@@ -47,6 +49,22 @@ function expectNotAnError(el: HTMLElement) {
 }
 
 describe('EntitlementBlockedNotice', () => {
+  it('hosted runner allowance used: three choices, more hours, your own runner, or wait for the reset', () => {
+    const el = render(hosted);
+    expectNotAnError(el);
+    expect(el.dataset.kind).toBe('hosted_runner');
+    expect(el.textContent).toContain('Hosted runner allowance used');
+    expect(el.textContent).toContain('50 of 50 hours this month');
+    expect(el.textContent).toContain('Nov 1');
+    const cta = el.querySelector('[data-testid="entitlement-upgrade"]') as HTMLAnchorElement;
+    expect(cta.textContent).toBe('Add hours');
+    expect(cta.getAttribute('href')).toBe('/upgrade');
+    const own = el.querySelector('[data-testid="entitlement-alternative"]') as HTMLAnchorElement;
+    expect(own.textContent).toBe('Run on your own runner');
+    expect(own.getAttribute('href')).toBe('/app/settings/runners');
+    expect(el.querySelector('[data-action="leave_queued"]')?.textContent).toBe('Wait for the reset');
+  });
+
   it('concurrency (hosted individual): the limit, that it starts by itself, and the upgrade', () => {
     const el = render(individual);
     expect(el.dataset.kind).toBe('concurrency');

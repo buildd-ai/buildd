@@ -28,6 +28,7 @@ import {
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { memberHasRepoAccess, memberRepoAccessMessage } from '@/lib/member-repo-access';
 import {
   handleBuilddAction,
   handleMemoryAction,
@@ -48,10 +49,13 @@ import { memoryDeciderFor } from '@/lib/memory-decisions';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
+import { MCP_SESSION_ID_HEADER, mintMcpSessionId, verifyMcpSessionId } from '@/lib/interactive-session';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { scheduleInteractiveTouch } from '@/lib/interactive-worker-liveness';
 import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/interactive-session';
+import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from '@/lib/self-origin';
 import { getIssuer } from '@/lib/oauth/config';
+import { LEGACY_ENDPOINT_NOTICE, deprecationHeaders } from '@/lib/mcp-grant-session';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
 import { isUuid } from '@/lib/uuid';
 import { resolveLinkedDocsWorkspaces } from '@/lib/linked-knowledge';
@@ -74,11 +78,11 @@ function unauthorized(workspace: string) {
   });
 }
 
-/** See createApi in /api/mcp: `interactiveMarker` is the server-signed session marker. */
-function createApi(jwt: string, interactiveMarker?: string | null): ApiFn {
-  const baseUrl = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : process.env.NEXTAUTH_URL || 'https://buildd.dev';
+/**
+ * See createApi in /api/mcp: `baseUrl` is this server's own origin
+ * (lib/self-origin.ts), `interactiveMarker` the server-signed session marker.
+ */
+function createApi(baseUrl: string, jwt: string, interactiveMarker?: string | null): ApiFn {
 
   return async (endpoint, options = {}) => {
     const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -115,7 +119,7 @@ function forbiddenForLevel(action: string, level: SessionLevel) {
   };
 }
 
-function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, level: SessionLevel, isSensitive?: boolean, project?: string, linkedDocsWorkspaceIds: string[] = []) {
+function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, level: SessionLevel, isSensitive?: boolean, project?: string, linkedDocsWorkspaceIds: string[] = [], codeAccessRefusal?: () => Promise<string | null>) {
   const actions = [...allActionsList];
 
   const embedder = getVoyageEmbedder();
@@ -129,6 +133,8 @@ function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string,
     teamId: accountTeamId,
     getWorkspaceId: async () => workspaceId,
     getLevel: async () => level,
+    // An OAuth session is always a signed-in person (its personal roles).
+    principal: 'person',
     knowledgeStore: new PgVectorStore(embedder, getVoyageReranker()),
     embedder,
   };
@@ -144,7 +150,9 @@ Tools:
 - \`recall\` (read knowledge) / \`learn\` (write knowledge) — preferred over buildd_memory.
 - \`buildd_memory\`: DEPRECATED. Kept for compatibility; use recall/learn instead.
 
-Workspace is bound to this connector — pass workspaceId only when overriding (rare).`,
+Workspace is bound to this connector — pass workspaceId only when overriding (rare).
+
+${LEGACY_ENDPOINT_NOTICE}`,
     },
   );
 
@@ -250,6 +258,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
           project,
           isSensitive,
           ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}),
+          ...(codeAccessRefusal ? { codeAccessRefusal } : {}),
         });
       }
       if (name === 'recall' || name === 'learn') {
@@ -265,7 +274,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
         // No multi-workspace guard here (unlike /api/mcp): this endpoint pins the
         // workspace in its URL path and the JWT claim is checked against it, so
         // the workspace can never be ambiguous.
-        const memCtx = { ...ctx, project, isSensitive, ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}) };
+        const memCtx = { ...ctx, project, isSensitive, ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}), ...(codeAccessRefusal ? { codeAccessRefusal } : {}) };
         const memArgs = (args || {}) as Record<string, unknown>;
         return name === 'recall'
           ? await handleRecallAction(memClient, memArgs, memCtx)
@@ -297,9 +306,16 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   const level = (account.level as SessionLevel) || 'worker';
   // Liveness for this session's interactive (claim_task) workers; see
   // lib/interactive-worker-liveness.ts. After the response; best-effort.
+  // Same session echo as /api/mcp: a request carrying an id we minted is that
+  // session, so its touch reaches only its own claims; any other gets a fresh
+  // id to echo. Without this every OAuth session of a user was one identity
+  // and the busiest kept every abandoned claim alive.
+  const sessionKey = verifyMcpSessionId(req.headers.get(MCP_SESSION_ID_HEADER), account.id);
+  const sessionIdToReturn = sessionKey ? req.headers.get(MCP_SESSION_ID_HEADER) : mintMcpSessionId(account.id);
   scheduleInteractiveTouch({
     accountId: account.id,
     userId: (account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null,
+    sessionKey,
     level,
   });
 
@@ -310,9 +326,12 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   });
   if (!ws) return new Response('Workspace not found', { status: 404 });
 
-  const api = createApi(jwt, signInteractiveSession({
+  const selfOrigin = resolveSelfOrigin(req);
+  if (!selfOrigin) return selfOriginUnconfiguredResponse();
+  const api = createApi(selfOrigin, jwt, signInteractiveSession({
     accountId: account.id,
     userId: (account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null,
+    sessionKey,
   }));
   const isSensitive = (ws.dataClass as string) === 'sensitive';
   // Same project key /api/mcp resolves, so `learn` writes land in the same
@@ -330,7 +349,16 @@ async function handle(req: Request, workspace: string): Promise<Response> {
           sessionUser: !!(account as { sessionUserId?: string }).sessionUserId,
         },
       });
-  const server = createMcpServer(api, workspace, ws.teamId, level, isSensitive, project, linkedDocsWorkspaceIds);
+  // The opt-in GitHub repo check for the person behind this session
+  // (lib/member-repo-access.ts): closes the code corpus when they fail it.
+  const repoAccessUserId = (account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null;
+  const codeAccessRefusal = repoAccessUserId
+    ? async () => {
+        const r = await memberHasRepoAccess(repoAccessUserId, ws.id);
+        return r.allowed ? null : memberRepoAccessMessage(r);
+      }
+    : undefined;
+  const server = createMcpServer(api, workspace, ws.teamId, level, isSensitive, project, linkedDocsWorkspaceIds, codeAccessRefusal);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -339,7 +367,11 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   await server.connect(transport);
 
   try {
-    return await transport.handleRequest(req);
+    const res = await transport.handleRequest(req);
+    const headers = new Headers(res.headers);
+    for (const [k, v] of Object.entries(deprecationHeaders())) headers.set(k, v);
+    if (sessionIdToReturn) headers.set(MCP_SESSION_ID_HEADER, sessionIdToReturn);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   } finally {
     await transport.close();
     await server.close();

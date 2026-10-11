@@ -23,6 +23,12 @@ describe('routeReachProblems (the checker itself can fail)', () => {
     expect(routeReachProblems({ pattern: '/api/x/:id', methods: ['GET'], reach: { pinTeam: true, result: 'rows' } }))
       .toContain('/api/x/:id: path param :id has no reach target');
   });
+  it('a body-scoped path param (a PR number) is allowed only when the body pins the workspace', () => {
+    expect(routeReachProblems({ pattern: '/api/x/:n/go', methods: ['POST'], reach: { requireBody: ['workspaceId'], bodyScopedPath: ['n'], result: 'rows' } })).toEqual([]);
+    const bare = routeReachProblems({ pattern: '/api/x/:n/go', methods: ['POST'], reach: { pinTeam: true, bodyScopedPath: ['n'], result: 'rows' } });
+    expect(bare).toContain('/api/x/:n/go: path param :n has no reach target');
+    expect(bare).toContain('/api/x/:n/go: bodyScopedPath needs requireBody to pin the scope');
+  });
   it('flags a route nothing pins', () => {
     expect(routeReachProblems({ pattern: '/api/x', methods: ['GET'], reach: { result: 'rows' } })[0]).toContain('nothing pins its scope');
   });

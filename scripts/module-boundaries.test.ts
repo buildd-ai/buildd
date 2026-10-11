@@ -185,9 +185,22 @@ describe('the guard sees the files it polices', () => {
     expect(moduleOf('apps/web/src/lib/subscriptions.ts')).toBe('notifications');
     expect(moduleOf('apps/web/src/lib/path-claim-release.ts')).toBe('core');
     expect(moduleOf('apps/web/src/lib/credential-health.ts')).toBe('core');
+    // Trace parsing and task-page error presentation belong to the core run record,
+    // rather than the knowledge retrieval or health analytics modules.
+    expect(moduleOf('packages/core/bash-failure-trace.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts')).toBe('core');
     // Ops paging is core infrastructure every layer uses, not the health module.
     expect(moduleOf('packages/core/report-ops.ts')).toBe('core');
     expect(moduleOf('apps/web/src/app/api/cron/maintenance/route.ts')).toBe('core');
+    // The hosted-runner allowance gates the claim, so its store is core; usage analytics is not.
+    expect(moduleOf('apps/web/src/lib/hosted-runner-usage-store.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/lib/usage-stats.ts')).toBe('health-quality');
+    // The question gate is core; the repair filer it recovers through is a decisions module behind a slot.
+    expect(moduleOf('apps/web/src/lib/question-gate-check.ts')).toBe('core');
+    expect(moduleOf('apps/web/src/lib/recoverable-blocker-repair.ts')).toBe('jev-decisions');
+    // An agent's brokered decide call is a Jev decision, reached by its own route, not by core.
+    expect(moduleOf('apps/web/src/lib/capability-model-inference.ts')).toBe('jev-decisions');
+    expect(moduleOf('apps/web/src/app/api/agent-capabilities/model-inference/route.ts')).toBe('jev-decisions');
   });
 
   test('the scan finds the hot spot it exists to shrink', () => {
@@ -224,4 +237,9 @@ describe('scanner mechanics', () => {
     const now: Baseline = { backend: { a: { m1: 'missions' }, b: { m3: 'chat' } }, ui: {} };
     expect(prune(base, now)).toEqual({ backend: { a: { m1: 'missions' } }, ui: {} });
   });
+});
+
+test('run lifecycle facts belong to coordination core, not stored knowledge', () => {
+  expect(moduleOf('packages/core/run-evidence.ts')).toBe('core');
+  expect(moduleOf('packages/core/evidence-chunker.ts')).toBe('knowledge');
 });

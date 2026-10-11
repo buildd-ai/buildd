@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { verifyWorkspaceAccess, getUserTeamIds } from '@/lib/team-access';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { refuseWithoutTeamCredentialAccess } from '@/lib/team-credential-access';
+import { ROTATING_CREDENTIAL_ALL_TEAMS_ERROR } from '@/lib/rotating-credential-scope';
 import { exchangeClaudeOAuthCode } from '@/lib/claude-oauth-login';
 import { storeClaudeCredential, getClaudeStatus, type ClaudeScope } from '@/lib/claude-credential';
 import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
@@ -23,33 +25,23 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
 
   const access = await verifyWorkspaceAccess(user.id, id);
   if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  const refused = await refuseWithoutTeamCredentialAccess(user.id, access.teamId);
+  if (refused) return refused;
 
   const body = await req.json().catch(() => ({}));
   const { code, verifier, state, scope: scopeParam } = body as { code?: string; verifier?: string; state?: string; scope?: string };
   if (!code || !verifier) {
     return NextResponse.json({ error: 'code and verifier are required' }, { status: 400 });
   }
+  // Refused before the exchange so the one-time code is not spent. Copies of a
+  // rotating refresh token across team rows die on the first refresh.
+  if (scopeParam === 'all_teams') {
+    return NextResponse.json({ error: ROTATING_CREDENTIAL_ALL_TEAMS_ERROR }, { status: 400 });
+  }
 
   const result = await exchangeClaudeOAuthCode(code, verifier, typeof state === 'string' ? state : '');
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 400 });
-  }
-
-  // All-teams fan-out: one approval → store the same credential team-wide to every
-  // team the caller manages (parity with the paste flow's "All my teams").
-  if (scopeParam === 'all_teams') {
-    const teamIds = await getUserTeamIds(user.id);
-    let stored = 0;
-    for (const tid of teamIds) {
-      try {
-        await storeClaudeCredential({ teamId: tid }, result.credential);
-        await requeueAuthFailedTasks(tid).catch(() => {});
-        stored++;
-      } catch (err) {
-        console.warn(`[claude-oauth] fan-out store failed for team ${tid}:`, err);
-      }
-    }
-    return NextResponse.json({ status: 'connected', teams: stored, totalTeams: teamIds.length });
   }
 
   const scope = buildScope(access.teamId, id, typeof scopeParam === 'string' ? scopeParam : null);

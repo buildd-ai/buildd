@@ -105,6 +105,18 @@ mock.module('./subject-sweep', () => ({
   sweepSubjectAnchoredTasks: mock(() => Promise.resolve({ anchored: 0, reconciled: 0 })),
 }));
 
+// The PR fact funnel: the one writer of prLifecycleStatus. Terminal-wins is
+// proven on real Postgres (apps/web/tests/db/pr-facts.test.ts); here we assert
+// the fact this door hands over. drizzle-orm is stubbed above, so the real
+// module is not spread in (it builds raw SQL at import).
+const recordedFacts: Array<{ target: unknown; fact: unknown; opts?: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w-loser', taskId: 't-loser', workspaceId: 'ws-1', previousStatus: 'pr_open' }];
+  },
+}));
+
 // ── Import after mocks ────────────────────────────────────────────────────────
 
 import { shutdownDeadBuilddPrs } from './dead-pr-shutdown';
@@ -174,6 +186,7 @@ function resetMocks() {
   mockMissionNotesFindFirst.mockImplementation(() => null);
   mockGithubApi.mockReset();
   mockGithubApi.mockImplementation(() => Promise.resolve({ id: 1 }));
+  recordedFacts.length = 0;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -246,9 +259,30 @@ describe('shutdownDeadBuilddPrs', () => {
       ([, path]) => path.includes(`/pulls/${LOSER_PR}`),
     );
     expect(closeCall).toBeDefined();
+
+    // Worker stamped closed through the fact funnel
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w-loser' }, fact: { kind: 'closed' }, opts: undefined }]);
   });
 
   // ── Tier 2: conflict-dead + green successor ─────────────────────────────────
+
+  it('never auto-closes a mission ship PR that merely shares a subject with the merged PR', async () => {
+    mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace());
+    mockWorkersFindFirst.mockImplementation(() => makeEventWorker());
+    mockTasksFindFirst.mockImplementation(() => makeEventTask());
+    mockTasksFindMany.mockImplementation(() => [
+      { ...makeLoserTask(), title: 'Ship mission: Failure Pattern Sentinel', taskClass: 'bookkeeping' },
+    ]);
+    mockWorkersFindMany.mockImplementation(() => [
+      makeLoserWorker({ updatedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) }),
+    ]);
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toHaveLength(0);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    expect(recordedFacts).toHaveLength(0);
+  });
 
   it('Tier 2: closes a conflict-dead loser PR after conflictDeadDays when winner merges', async () => {
     // conflictDetectedAt = 8 days ago (> 7 day threshold)
@@ -476,6 +510,8 @@ describe('shutdownDeadBuilddPrs', () => {
     // PR NOT in closed list (failure → skipped)
     expect(result.closedPrNumbers).toHaveLength(0);
     expect(result.skippedPrNumbers).toContain(LOSER_PR);
+    // No closed fact handed to the funnel
+    expect(recordedFacts).toHaveLength(0);
   });
 
   // ── Idempotency ─────────────────────────────────────────────────────────────

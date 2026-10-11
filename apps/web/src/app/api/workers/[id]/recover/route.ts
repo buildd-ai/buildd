@@ -5,6 +5,7 @@ import { workers } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { isNonReactivatableError } from '@/lib/worker-termination';
@@ -54,9 +55,10 @@ export async function POST(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  // Verify access
+  // Verify access: a bearer caller must be the principal that claimed the worker
+  // (lib/worker-owner.ts); the dashboard session path checks workspace membership
   if (account) {
-    if (worker.accountId !== account.id) {
+    if (!callerOwnsWorker(account, worker)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
   } else if (user) {

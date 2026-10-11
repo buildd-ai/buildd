@@ -100,6 +100,35 @@ export class CredentialCache {
 }
 
 /**
+ * Whether a claim's model credential belongs to this one worker rather than to
+ * the team (`credentialDecision` on the claim, packages/shared ClaimTasksResponse).
+ *
+ * `personal`: the requester's own key. `none`: the claim deliberately carries
+ * no model credential (personal_only, run on the person's own login). Either
+ * way the per-team cache is neither written from this claim nor read for it:
+ * a personal key cached per team would reach the next task of that team, and
+ * a cached team key would displace the "only this person's key" decision.
+ *
+ * Absent (an older server, or a team with no credential policy) or `team`:
+ * today's per-team caching. A decision with an unknown scope is treated as
+ * worker-scoped, the side that cannot leak.
+ */
+export function isWorkerScopedCredential(decision: unknown): boolean {
+  if (!decision || typeof decision !== 'object') return false;
+  return (decision as { scope?: unknown }).scope !== 'team';
+}
+
+/**
+ * Whether this machine's own model credentials (its Claude seat, Codex login,
+ * per-machine LLM provider, inherited API keys) may be used for the worker.
+ * Only an explicit `runnerLocalAllowed: false` says no; absent means yes.
+ */
+export function runnerLocalCredentialsAllowed(decision: unknown): boolean {
+  if (!decision || typeof decision !== 'object') return true;
+  return (decision as { runnerLocalAllowed?: unknown }).runnerLocalAllowed !== false;
+}
+
+/**
  * Exponential backoff for the auth-failure burn-loop guard.
  *
  * A runner with neither local nor valid server credentials would otherwise

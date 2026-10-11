@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { displayTaskTitle } from '@/lib/task-title';
 import { deriveTaskEyebrow, taskEyebrowText, type TaskEyebrow } from '@/lib/task-eyebrow';
 
 interface ChainTask {
@@ -122,8 +123,8 @@ function ChainNode({
       </div>
 
       {/* Title */}
-      <div className="text-[12px] font-medium text-text-primary leading-tight line-clamp-2">
-        {task.title}
+      <div className="text-[12px] font-medium text-text-primary leading-tight line-clamp-2" title={task.title}>
+        {displayTaskTitle(task.title)}
       </div>
 
       {/* Status + artifacts row */}
@@ -162,7 +163,7 @@ function ChainNode({
 export default function PlanChainView({ currentTaskId, tasks, roleMap, onlineRunners = 0 }: PlanChainViewProps) {
   return (
     <div className="mb-6">
-      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-3">
+      <div className="section-label pb-2 border-b border-border-default mb-3">
         Execution Plan · {tasks.length} phase{tasks.length !== 1 ? 's' : ''}
       </div>
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1">

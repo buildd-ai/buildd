@@ -89,7 +89,31 @@ describe('classifyMigrationSql', () => {
       safe: false,
       operationClass: 'CONTRACT',
       reason: 'runs data migration UPDATE on workspace_skills',
+      kind: 'data',
     });
+  });
+
+  it('tags every data-moving statement kind as data, so callers route on kind not on reason text', () => {
+    for (const stmt of [
+      'UPDATE "tasks" SET "status" = \'pending\' WHERE "status" IS NULL;',
+      'INSERT INTO "roles" ("slug") VALUES (\'x\');',
+      'DELETE FROM "tasks" WHERE "id" IS NULL;',
+      'MERGE INTO "tasks" USING "t2" ON true WHEN MATCHED THEN DO NOTHING;',
+    ]) {
+      const r = classifyMigrationSql(stmt);
+      expect(r.safe).toBe(false);
+      expect(r.safe ? null : r.kind).toBe('data');
+    }
+  });
+
+  it('a backfill next to additive DDL in one file is data', () => {
+    const r = classifyMigrationSql('ALTER TABLE "tasks" ADD COLUMN "x" text;\nUPDATE "tasks" SET "x" = \'a\';');
+    expect(r.safe ? null : r.kind).toBe('data');
+  });
+
+  it('a data statement before destructive DDL in the same file is still destructive, not data', () => {
+    const r = classifyMigrationSql('UPDATE "tasks" SET "x" = \'a\';\nALTER TABLE "tasks" DROP COLUMN "legacy";');
+    expect(r).toEqual({ safe: false, operationClass: 'CONTRACT', reason: 'drops column tasks.legacy' });
   });
 
   it("unwraps drizzle's idempotent DO-block FK wrapper and classifies the inner statement (migration 0019)", () => {
@@ -198,6 +222,7 @@ describe('classifyPullRequestMigrations', () => {
       safe: false,
       operationClass: 'CONTRACT',
       reason: 'could not inspect generated migration packages/core/drizzle/0094_missing.sql',
+      kind: 'uninspectable',
     });
   });
 
@@ -248,6 +273,7 @@ describe('classifyPullRequestMigrations', () => {
       reason:
         'migration number collision: 0093_safe.sql conflicts with open PR #100 migration 0093_other.sql',
       collision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 100 },
+      kind: 'collision',
     });
   });
 
@@ -278,6 +304,37 @@ describe('classifyPullRequestMigrations', () => {
         100,
       ),
     ).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('a data-only migration whose number collides is a collision first: the renumber is mechanical', () => {
+    const r = classifyPullRequestMigrations(
+      [{ filename: 'packages/core/drizzle/0093_fix.sql', content: 'UPDATE "tasks" SET "x" = 1;' }],
+      [{ path: 'packages/core/drizzle/0093_other.sql', prNumber: 100 }],
+      200,
+    );
+    expect(r.safe ? null : r.kind).toBe('collision');
+    expect(r.safe ? null : r.collision).toEqual({ file: '0093_fix.sql', otherFile: '0093_other.sql', otherPrNumber: 100 });
+  });
+
+  it('a data-only PR with no collision keeps the data kind', () => {
+    const r = classifyPullRequestMigrations(
+      [{ filename: 'packages/core/drizzle/0093_fix.sql', content: 'UPDATE "tasks" SET "x" = 1;' }],
+      [],
+      200,
+    );
+    expect(r).toEqual({ safe: false, operationClass: 'CONTRACT', reason: 'runs data migration UPDATE on tasks', kind: 'data' });
+  });
+
+  it('a data file next to a destructive file reports the destructive one', () => {
+    const r = classifyPullRequestMigrations(
+      [
+        { filename: 'packages/core/drizzle/0093_fix.sql', content: 'UPDATE "tasks" SET "x" = 1;' },
+        { filename: 'packages/core/drizzle/0094_drop.sql', content: 'DROP TABLE "legacy";' },
+      ],
+      [],
+      200,
+    );
+    expect(r).toEqual({ safe: false, operationClass: 'CONTRACT', reason: 'drops table legacy' });
   });
 
   it('a collision with destructive SQL still escalates as plain CONTRACT, no collision field', () => {

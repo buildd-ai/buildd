@@ -45,3 +45,10 @@ export type BackendEvent =
   | { type: 'turn_complete'; usage?: { inputTokens: number; outputTokens: number }; structuredOutput?: unknown }
   | { type: 'complete'; summary: string; structuredOutput?: unknown }
   | { type: 'error'; error: string }
+  /**
+   * Codex only: a message from the multi-turn input stream was just taken as
+   * the next turn's prompt (Codex has no mid-turn injection; this is its turn
+   * boundary). `uuids` are the SDKUserMessage uuids it carried — how the runner
+   * acknowledges a steering message as read.
+   */
+  | { type: 'input_consumed'; uuids: string[] }

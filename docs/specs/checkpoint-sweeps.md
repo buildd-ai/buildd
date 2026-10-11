@@ -2,13 +2,13 @@
 title: Checkpoint Sweeps and Edit-Claim Enforcement
 status: active
 owner: max
-last_verified: 2026-10-01
+last_verified: 2026-10-07
 summary: Runners MUST sweep worktree changes against the resolved PR base at checkpoints and offer them for exclusive acquisition; under enforcement a confirmed collision MUST deny or defer.
 domain: runners
-surfaces: [apps/runner/src/path-claim-enforcement.ts, apps/runner/src/path-collision-defer.ts, apps/runner/src/hook-factory.ts, apps/web/src/lib/path-collision-deferral.ts]
+surfaces: [apps/runner/src/path-claim-enforcement.ts, apps/runner/src/ship-checkpoint.ts, apps/runner/src/hook-factory.ts, apps/web/src/lib/path-collision-deferral.ts]
 related: [path-claim-ownership, worker-sandbox-isolation]
 keywords: [pathClaimEnforcement, enforce, advisory, PreToolUse, checkpoint, sweep, untracked, Bash writes, codex, deferred]
-verified_by: [apps/runner/__tests__/unit/path-claim-enforcement.test.ts, apps/runner/__tests__/unit/path-claim-hook.test.ts, apps/runner/__tests__/unit/path-collision-defer.test.ts, apps/runner/__tests__/unit/worker-sync-path-sweep.test.ts]
+verified_by: [apps/runner/__tests__/unit/path-claim-enforcement.test.ts, apps/runner/__tests__/unit/path-claim-hook.test.ts, apps/runner/__tests__/unit/path-collision-defer.test.ts, apps/runner/__tests__/unit/ship-checkpoint.test.ts, apps/runner/__tests__/unit/worker-sync-path-sweep.test.ts]
 assertions:
   - id: "sweep-worktree"
     type: "symbol"
@@ -29,7 +29,7 @@ assertions:
   - id: "checkpoint-runs-sweep"
     type: "symbol_reachable"
     symbol: "sweepWorktreeChanges"
-    entry: "apps/runner/src/path-collision-defer.ts"
+    entry: "apps/runner/src/ship-checkpoint.ts"
     as: "call"
   - id: "enforcement-test"
     type: "test_file"
@@ -67,6 +67,12 @@ are always on. Denial and collision deferral apply only when the workspace sets
   commands, writes a checkpoint commit (with a fallback identity when none is
   configured), reports a deferral and ends the session. The server requeues the
   task without charging a retry. No agent waits for a lease.
+- A ship checkpoint (pre-push, `create_pr`, successful `complete_task`) is
+  the full working-set reconciliation of path-claim-ownership
+  (`runShipCheckpoint`), not a best-effort offer: in enforce mode coverage the
+  coordinator could not confirm after bounded retries refuses the ship
+  (fail closed, retryable, no deferral). The sync tick sends only the
+  working-set delta, never the cumulative sweep.
 - A backend without a pre-write seam is told at session start that only
   checkpoint enforcement applies (`describeEnforcement`).
 
@@ -85,14 +91,19 @@ are always on. Denial and collision deferral apply only when the workspace sets
   checkpoint runs THEN the session ends with a deferral and a checkpoint commit.
 - AC-6: GIVEN advisory mode WHEN the same collision is found THEN the edit is
   not denied.
+- AC-7: GIVEN enforce mode and a coordinator that does not answer a ship
+  checkpoint WHEN retries are exhausted THEN the push, `create_pr` or
+  completion is refused, naming the cause.
 
 **Code surface**:
 
 - `apps/runner/src/path-claim-enforcement.ts`: `resolvePathClaimMode`,
   `backendEnforcement`, `describeEnforcement`, `normalizeWorktreePath`,
   `sweepWorktreeChanges`, `resolvePrBaseRef`, `refreshBaseRef`.
-- `apps/runner/src/path-collision-defer.ts`: `runCheckpointSweep`,
-  `writeCollisionCheckpoint`, `deferOnPathCollision`.
+- `apps/runner/src/path-collision-defer.ts`: `writeCollisionCheckpoint`,
+  `deferOnPathCollision`.
+- `apps/runner/src/ship-checkpoint.ts`: `runShipCheckpoint` (the checkpoint
+  sweep and its fail-closed reconciliation).
 - `apps/runner/src/hook-factory.ts`: `PATH_CLAIM_HOOK_DEADLINE_MS`,
   `denyPreToolUse`.
 - Server: `apps/web/src/lib/path-collision-deferral.ts`

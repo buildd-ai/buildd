@@ -1,37 +1,27 @@
 import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
-import { MOBILE_TAB_LIMIT, NAV_ITEMS, WORKSPACE_FILTERED_PAGES, mobileBackHref, mobilePageTitle, navItemsFor, showsWorkspaceFilter } from './nav-config';
+import { MOBILE_TAB_LIMIT, NAV_ITEMS, WORKSPACE_FILTERED_PAGES, mobileBackHref, mobilePageTitle, showsWorkspaceFilter } from './nav-config';
+import { SETTINGS_ROUTE_MOVES } from '../../next.config.mjs';
 
 describe('NAV_ITEMS', () => {
-  it('defines the primary surfaces in spec order (unified-app-ia §D.2)', () => {
-    expect(NAV_ITEMS.map((i) => i.href)).toEqual([
-      '/app/home',
-      '/app/chat',
-      '/app/missions',
-      '/app/releases',
-      '/app/initiatives',
-      '/app/tasks',
-      '/app/team',
-      '/app/health',
-    ]);
-    expect(NAV_ITEMS.map((i) => i.label)).toEqual([
-      'Home',
-      'Chat',
-      'Missions',
-      'Releases',
-      'Initiatives',
-      'Activity',
-      'Team',
-      'Health',
-    ]);
+  // Owner decision (Oct 9): five primary destinations, the same on a phone and
+  // on desktop. Releases and Initiatives live under Missions, Team under Settings.
+  it('is the five primary surfaces, in order', () => {
+    expect(NAV_ITEMS.map((i) => i.href)).toEqual(['/app/home', '/app/missions', '/app/tasks', '/app/health', '/app/chat']);
+    expect(NAV_ITEMS.map((i) => i.label)).toEqual(['Home', 'Missions', 'Activity', 'Health', 'Chat']);
+    expect(NAV_ITEMS.length).toBe(MOBILE_TAB_LIMIT);
   });
 
-  it('marks only Releases and Initiatives desktop-only (kept off the mobile bottom bar)', () => {
-    expect(NAV_ITEMS.filter((i) => i.desktopOnly).map((i) => i.href)).toEqual([
-      '/app/releases',
-      '/app/initiatives',
-    ]);
+  it('Releases and Team leave the nav but their pages still resolve', () => {
+    // Team resolves through a redirect into Settings › Roles (next.config SETTINGS_ROUTE_MOVES).
+    const redirected = new Map(SETTINGS_ROUTE_MOVES.map((m) => [m.source, m.destination]));
+    expect(NAV_ITEMS.map((i) => i.href)).not.toContain('/app/initiatives');
+    for (const href of ['/app/releases', '/app/team']) {
+      expect(NAV_ITEMS.map((i) => i.href)).not.toContain(href);
+      const target = redirected.get(href) ?? href;
+      expect(`${href}: ${existsSync(resolve(import.meta.dir, `../app/app/(protected)${target.replace('/app', '')}/page.tsx`))}`).toBe(`${href}: true`);
+    }
   });
 
   it('Chat is a plain nav item, gated on nothing (chat is always on)', () => {
@@ -71,7 +61,8 @@ describe('HealthClient viewport parity', () => {
     expect(healthClientSrc).toContain('data-testid="health-section-trend"');
     // … plus the panels nested inside them.
     expect(healthClientSrc).toContain('data-testid="health-section-runners"');
-    expect(healthClientSrc).toContain('data-testid="health-section-schedules"');
+    // Schedules live on /app/schedules, not on Health.
+    expect(healthClientSrc).not.toContain('data-testid="health-section-schedules"');
     expect(healthClientSrc).toContain('data-testid="health-section-task-outcomes"');
   });
 
@@ -83,14 +74,20 @@ describe('HealthClient viewport parity', () => {
 });
 
 describe('mobilePageTitle', () => {
+  it('names the billing page the way its sub-nav entry does: Budgets while billing is off', () => {
+    expect(mobilePageTitle('/app/settings/billing', { billing: true })).toBe('Billing and budgets');
+    expect(mobilePageTitle('/app/settings/billing', { billing: false })).toBe('Budgets');
+    expect(mobilePageTitle('/app/settings/integrations', { billing: false })).toBe('Integrations');
+  });
+
   it('titles every primary nav surface so the mobile header renders there', () => {
     expect(mobilePageTitle('/app/home')).toBe('Home');
     expect(mobilePageTitle('/app/dashboard')).toBe('Home');
     expect(mobilePageTitle('/app/chat')).toBe('Chat');
     expect(mobilePageTitle('/app/chat/abc')).toBeNull();
     expect(mobilePageTitle('/app/missions')).toBe('Missions');
+    expect(mobilePageTitle('/app/missions/plan')).toBe('Plan');
     expect(mobilePageTitle('/app/releases')).toBe('Releases');
-    expect(mobilePageTitle('/app/initiatives')).toBe('Initiatives');
     expect(mobilePageTitle('/app/tasks')).toBe('Activity');
     expect(mobilePageTitle('/app/team')).toBe('Team');
     expect(mobilePageTitle('/app/health')).toBe('Health');
@@ -100,7 +97,7 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/settings')).toBe('Settings');
     expect(mobilePageTitle('/app/settings/account')).toBe('Profile');
     expect(mobilePageTitle('/app/settings/runners')).toBe('Runners');
-    expect(mobilePageTitle('/app/settings/models')).toBe('Model tiers');
+    expect(mobilePageTitle('/app/settings/models')).toBe('Models');
     expect(mobilePageTitle('/app/settings/workspace/ws-1')).toBe('Workspaces');
   });
 
@@ -111,9 +108,13 @@ describe('mobilePageTitle', () => {
     expect(mobileBackHref('/app/home')).toBeNull();
   });
 
+  it('titles the workspace Memory page and links back to the workspace', () => {
+    expect(mobilePageTitle('/app/workspaces/ws-1/memory')).toBe('Memory');
+    expect(mobileBackHref('/app/workspaces/ws-1/memory')).toBe('/app/workspaces/ws-1');
+  });
+
   it('returns null on detail pages so they render their own headers', () => {
     expect(mobilePageTitle('/app/missions/abc-123')).toBeNull();
-    expect(mobilePageTitle('/app/initiatives/abc-123')).toBeNull();
     expect(mobilePageTitle('/app/tasks/abc-123')).toBeNull();
     expect(mobilePageTitle('/app/workspaces/abc-123/config')).toBeNull();
   });
@@ -123,7 +124,7 @@ describe('showsWorkspaceFilter', () => {
   // Paths with no page.tsx: next.config.mjs redirects them before any page renders.
   const REDIRECT_ONLY = new Set(['/app/dashboard']);
   // Top-level pages with a mobile header that ignore the param — a filter there is a no-op control.
-  const IGNORES_PARAM = ['/app/settings', '/app/settings/account', '/app/settings/runners', '/app/artifacts', '/app/initiatives', '/app/workspaces', '/app/team'];
+  const IGNORES_PARAM = ['/app/settings', '/app/settings/account', '/app/settings/runners', '/app/artifacts', '/app/workspaces', '/app/team'];
 
   it('shows on every allowlisted path', () => {
     for (const path of WORKSPACE_FILTERED_PAGES) expect(showsWorkspaceFilter(path)).toBe(true);
@@ -146,35 +147,5 @@ describe('showsWorkspaceFilter', () => {
     expect(checked.length).toBeGreaterThan(0);
     const nextConfig = readFileSync(resolve(import.meta.dir, '../../next.config.mjs'), 'utf8');
     for (const path of REDIRECT_ONLY) expect(nextConfig).toContain(`source: '${path}'`);
-  });
-});
-
-describe('navItemsFor', () => {
-  const hrefs = (items: { href: string }[]) => items.map(i => i.href);
-
-  it('the Chat entry is always present, for every audience, on both surfaces', () => {
-    for (const audience of ['member', 'operator'] as const) {
-      for (const surface of ['desktop', 'mobile'] as const) {
-        expect(hrefs(navItemsFor({ audience }, surface))).toContain('/app/chat');
-      }
-    }
-  });
-
-  it('a member gets Chat first, desktop and phone', () => {
-    expect(navItemsFor({ audience: 'member' }, 'desktop')[0].href).toBe('/app/chat');
-    expect(navItemsFor({ audience: 'member' }, 'mobile')[0].href).toBe('/app/chat');
-  });
-
-  it('an operator keeps Home (the fleet) first, Chat right after', () => {
-    expect(hrefs(navItemsFor({ audience: 'operator' }, 'desktop')).slice(0, 2)).toEqual(['/app/home', '/app/chat']);
-  });
-
-  it('the phone tab bar never exceeds its limit; Team steps off, the rail keeps it', () => {
-    for (const audience of ['member', 'operator'] as const) {
-      const mobile = navItemsFor({ audience }, 'mobile');
-      expect(mobile.length).toBeLessThanOrEqual(MOBILE_TAB_LIMIT);
-      expect(hrefs(mobile)).not.toContain('/app/team');
-      expect(hrefs(navItemsFor({ audience }, 'desktop'))).toContain('/app/team');
-    }
   });
 });

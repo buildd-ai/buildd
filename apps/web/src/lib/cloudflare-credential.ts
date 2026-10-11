@@ -31,7 +31,7 @@ export async function findCloudflareSecret(teamId: string) {
     ),
     orderBy: desc(secrets.updatedAt),
     columns: {
-      id: true, teamId: true, encryptedValue: true, healthStatus: true,
+      id: true, teamId: true, label: true, encryptedValue: true, healthStatus: true,
       lastVerifiedAt: true, lastVerificationError: true, createdAt: true, updatedAt: true,
     },
   });

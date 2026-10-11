@@ -55,7 +55,7 @@ describe('GET /api/github/install', () => {
     expect(response.status).toBe(307);
     expect(response.headers.get('content-type') ?? '').not.toContain('application/json');
     const location = new URL(response.headers.get('location')!);
-    expect(location.pathname).toBe('/app/settings/github');
+    expect(location.pathname).toBe('/app/settings/integrations');
     expect(location.searchParams.get('github')).toBe('unavailable');
   });
 
@@ -79,7 +79,7 @@ describe('GET /api/github/install', () => {
     const decoded = JSON.parse(Buffer.from(state.split('.')[0], 'base64url').toString());
 
     expect(decoded.uid).toBe('user-1');
-    expect(decoded.returnUrl).toBe('/app/workspaces');
+    expect(decoded.returnUrl).toBe('/app/settings/workspaces');
   });
 
   it('encodes returnUrl in state parameter', async () => {
@@ -111,6 +111,6 @@ describe('GET /api/github/install', () => {
     const response = await GET(createRequest({ returnUrl: 'https://elsewhere.example/x' }));
     const state = new URL(response.headers.get('location')!).searchParams.get('state')!;
     const decoded = JSON.parse(Buffer.from(state.split('.')[0], 'base64url').toString());
-    expect(decoded.returnUrl).toBe('/app/workspaces');
+    expect(decoded.returnUrl).toBe('/app/settings/workspaces');
   });
 });

@@ -15,6 +15,8 @@ import {
 } from '@/lib/mcp-oauth';
 import { randomBytes } from 'crypto';
 import { isUuid } from '@/lib/uuid';
+import { canManageTeamConnectors } from '@/lib/connector-team-auth';
+import { checkConnectorBlocked, blockedBody } from '@/lib/connector-access-policy';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -64,6 +66,15 @@ export async function POST(
     return NextResponse.json({ error: 'Connector not found' }, { status: 404 });
   }
 
+  // Connecting stores ONE credential the whole team's agents use (spec §6), so
+  // it is a team-admin act, like creating the connector.
+  if (auth.type === 'session' && !(await canManageTeamConnectors(auth.user.id, connector.teamId))) {
+    return NextResponse.json(
+      { error: 'forbidden', message: 'Only a team admin can connect or reconnect a team connector.' },
+      { status: 403 },
+    );
+  }
+
   if (connector.authMode !== 'oauth') {
     return NextResponse.json({ error: 'Connector does not use OAuth' }, { status: 400 });
   }
@@ -96,6 +107,9 @@ export async function POST(
     );
   }
   const user = auth.user;
+
+  const block = await checkConnectorBlocked(connector, connector.teamId);
+  if (block) return NextResponse.json(blockedBody(block), { status: 403 });
 
   try {
     const codeVerifier = generateCodeVerifier();

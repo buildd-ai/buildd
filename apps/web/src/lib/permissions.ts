@@ -18,8 +18,8 @@
  * all — and token-scope route policy (`token-route-policy.ts`), which decides
  * which routes a scoped token may call. Both run before a permission check.
  *
- * Imports no app module at runtime: team-access.ts builds its admin-tier
- * helpers on this file, and many route tests replace team-access wholesale.
+ * Imports no app module at runtime: team-access.ts builds on this file, and
+ * many route tests replace team-access wholesale.
  * The registry and the pure checks live in permission-registry.ts (no runtime
  * imports at all) and are re-exported here.
  * The schema is a namespace import for the same reason: route tests mock it
@@ -35,7 +35,6 @@ import {
   sanitizeOverrides,
   holds,
   keyHolds,
-  OWNER_ADMIN,
   PERMISSIONS,
   type ApiKeyLevel,
   type Permission,
@@ -148,15 +147,4 @@ export async function teamIdsWhere(caller: TeamScopeCaller, permission: Permissi
 export async function can(caller: TeamScopeCaller, permission: Permission, teamId: string): Promise<boolean> {
   if (!teamId) return false;
   return (await teamIdsWhere(caller, permission)).includes(teamId);
-}
-
-/**
- * The pre-registry "admin tier": owner/admin role, or an admin-level key of the
- * team. team-access's getCallerAdminTeamIds / canCallerAdminTeam resolve
- * through this until their call sites move to a named permission.
- */
-export const ADMIN_TIER: Grant = { roles: () => OWNER_ADMIN, minKeyLevel: 'admin' };
-
-export async function teamIdsWithAdminTier(caller: TeamScopeCaller): Promise<string[]> {
-  return teamIdsGranted(caller, ADMIN_TIER);
 }

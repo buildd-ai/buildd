@@ -135,6 +135,20 @@ describe('WorkspacesTable', () => {
     expect([...host.querySelectorAll('h3')].map((h) => h.textContent)).toEqual(['Team A', 'Team B']);
   });
 
+  it('a team whose name cannot be resolved gets no heading, never "Unknown team"', () => {
+    render([...ROWS, base({ id: 'ws-5', name: 'example-orphan', teamId: 'team-gone', teamName: null })]);
+    expect([...host.querySelectorAll('h3')].map((h) => h.textContent)).toEqual(['Team A']);
+    expect(host.textContent).toContain('example-orphan');
+    expect(host.textContent).not.toContain('Unknown team');
+  });
+
+  it('draws differs and health tags as tone pills, not outlined chips', () => {
+    render();
+    const api = rows()[0];
+    expect(api.querySelector('[data-testid="workspace-differs-mergePolicy"] [data-tone="q"]')?.textContent).toBe('Agent review');
+    expect(api.querySelector('[data-testid="workspace-health-red"] [data-tone="bad"]')).not.toBeNull();
+  });
+
   it('the row menu offers Open always, and Move to team… only where a move is possible', async () => {
     render();
     const open = async (row: HTMLElement) => {

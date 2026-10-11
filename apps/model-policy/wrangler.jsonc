@@ -6,9 +6,15 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
-  // No account_id: bind a wrangler profile to this directory
-  // (`bunx wrangler auth activate <profile> apps/model-policy`), so a deploy
-  // can never land on whichever account the shell happens to be logged in to.
+  // No account_id. The usual deploy is scripts/deploy.ts: buildd uploads the
+  // bundle server-side with the team's stored Cloudflare credential, so the
+  // account is the credential's and no token reaches the deploying machine.
+  // Deploying with wrangler directly, bind a wrangler profile to this
+  // directory (`bunx wrangler auth activate <profile> apps/model-policy`), so
+  // a deploy can never land on whichever account the shell is logged in to.
+  //
+  // "name" is the deploy action's project; compatibility_date/flags are sent
+  // with the upload.
   //
   // Served on a Custom Domain in the same account's zone, like Dispatch.
   // buildd is the first consumer (its web app points at this host). workers.dev stays

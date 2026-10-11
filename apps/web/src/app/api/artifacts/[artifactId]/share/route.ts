@@ -33,7 +33,7 @@ async function authorizeShare(
     const isOwner = artifact.worker?.accountId === account.id;
     if (isOwner) return { ok: true };
     if (artifact.workspaceId) {
-      const hasAccess = await verifyAccountWorkspaceAccess(account.id, artifact.workspaceId);
+      const hasAccess = await verifyAccountWorkspaceAccess(account, artifact.workspaceId);
       if (hasAccess) return { ok: true };
     }
     return { response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) };

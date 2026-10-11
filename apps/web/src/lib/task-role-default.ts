@@ -57,7 +57,7 @@ export function kindDefaultRole(input: KindDefaultInput): string | null {
  */
 export function kindDefaultCandidates(rows: readonly RoleRow[], task: CandidateTask): Array<{ slug: string }> {
   // Workspace override wins over the team default, as for the decision model.
-  const effective = resolveEffectiveRoles(rows, task.workspaceId);
+  const effective = resolveEffectiveRoles(rows, task.workspaceId, task.requesterUserId ?? null);
   const needsWrite = !task.emitsPlan && (task.outputRequirement === 'pr_required' || task.pathManifestIsConcrete);
   return effective
     .filter(r => r.isRole && r.enabled && !EXPLICIT_ROLE_SLUGS.includes(r.slug))

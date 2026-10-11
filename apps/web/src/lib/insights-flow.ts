@@ -36,6 +36,9 @@
 
 import type { InsightsUsageRow } from '../../../../packages/shared/src/insights';
 import { LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { basisOfRow } from './cost-basis-split';
+import { executorOf } from './executor';
+import { MAX_UNENDED_RUN_MS } from './fleet-occupancy';
 
 export type FlowWindow = '7d' | '30d';
 export const FLOW_WINDOWS: readonly FlowWindow[] = ['7d', '30d'];
@@ -61,6 +64,10 @@ export interface FlowWorkerRow {
   inputTokens?: number;
   outputTokens?: number;
   costUsd?: number;
+  /** `workers.cost_basis`; null when the worker recorded no usage. */
+  costBasis?: string | null;
+  /** `workers.runner`, for the interactive / runner split. */
+  runner?: string | null;
   tier?: string | null;
   workerId: string;
   taskId: string | null;
@@ -183,8 +190,8 @@ const LOST_TASK = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'comp
 
 interface Interval { from: number; to: number; role?: string }
 
-/** Longest a finished worker with no recorded end is counted as running. */
-export const MAX_UNENDED_RUN_MS = 8 * HOUR;
+/** Longest a finished worker with no recorded end is counted as running (shared with fleet occupancy). */
+export { MAX_UNENDED_RUN_MS };
 
 function overlap(a0: number, a1: number, b0: number, b1: number): number {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
@@ -405,6 +412,8 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       tokens: w.startedAt! >= window.from ? (w.inputTokens ?? 0) + (w.outputTokens ?? 0) : 0,
       costUsd: w.startedAt! >= window.from ? w.costUsd ?? 0 : 0,
       hours: overlap(w.startedAt!, runEnd(w, now), window.from, window.to) / HOUR,
+      basis: basisOfRow(w.costBasis, w),
+      executor: executorOf(w.runner),
     })),
     buckets,
     releases: windowReleases.map(r => ({ at: r.at, version: r.version, state: r.state })),

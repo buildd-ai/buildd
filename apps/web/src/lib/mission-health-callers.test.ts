@@ -69,8 +69,8 @@ describe('deriveMissionHealth call sites', () => {
   }
 });
 
-describe('team role page counts live agents from worker statuses', () => {
-  const src = readFileSync(join(APP_ROOT, 'app', '(protected)', 'team', '[slug]', 'page.tsx'), 'utf8');
+describe('role page counts live agents from worker statuses', () => {
+  const src = readFileSync(join(APP_ROOT, 'app', '(protected)', 'settings', 'roles', '[slug]', 'page.tsx'), 'utf8');
 
   it("never counts a task status 'running' (tasks have no such status)", () => {
     expect(src).not.toMatch(/\.filter\(\s*t\s*=>\s*t\.status\s*===\s*'running'/);

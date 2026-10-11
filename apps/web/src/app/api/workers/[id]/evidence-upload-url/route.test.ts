@@ -371,4 +371,52 @@ describe('POST /api/workers/[id]/evidence-upload-url', () => {
       expect(mockGenerateEvidenceUploadUrl).not.toHaveBeenCalled();
     });
   });
+
+  // Invariant: an OAuth session acts as an account its whole team shares, so
+  // only the session user that claimed the worker may sign evidence uploads for
+  // it (lib/worker-owner.ts). A teammate on the same account, an admin-level
+  // session that did not claim, and a session with no team id are refused
+  // before any backend is resolved, URL signed or pointer row inserted.
+  describe('POST /api/workers/[id]/evidence-upload-url — OAuth session owner check', () => {
+    const session = (over: Record<string, unknown> = {}) =>
+      ({ id: ACCOUNT, teamId: TEAM, sessionUserId: 'user-a', level: 'worker', ...over });
+
+    beforeEach(() => {
+      mockWorkersFindFirst.mockResolvedValue(standardWorker({ claimedByUserId: 'user-a' }));
+    });
+
+    const expectNothingWritten = () => {
+      expect(mockResolveEvidenceBackend).not.toHaveBeenCalled();
+      expect(mockGenerateEvidenceUploadUrl).not.toHaveBeenCalled();
+      expect(inserted).toHaveLength(0);
+    };
+
+    it('lets the session that claimed the worker sign an upload', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session());
+      const res = await POST(req(ok), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(inserted).toHaveLength(1);
+    });
+
+    it('403s a same-team member on the shared account and writes nothing', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session({ sessionUserId: 'user-b' }));
+      const res = await POST(req(ok), { params: mockParams });
+      expect(res.status).toBe(403);
+      expectNothingWritten();
+    });
+
+    it('403s an admin-level session that did not claim the worker', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session({ sessionUserId: 'user-b', level: 'admin' }));
+      const res = await POST(req(ok), { params: mockParams });
+      expect(res.status).toBe(403);
+      expectNothingWritten();
+    });
+
+    it('403s a session with no team id, even as the claimer', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(session({ teamId: null }));
+      const res = await POST(req(ok), { params: mockParams });
+      expect(res.status).toBe(403);
+      expectNothingWritten();
+    });
+  });
 });

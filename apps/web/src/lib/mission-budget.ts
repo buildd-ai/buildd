@@ -4,7 +4,9 @@ import { eq, and, sql } from 'drizzle-orm';
 import { notifyTeamOf } from '@/lib/notify';
 
 /**
- * Compute total USD spend for all workers across all tasks in a mission.
+ * Compute USD spend for all workers across all tasks in a mission. Virtual
+ * (plan) usage is excluded: the budget guards money, and `unknown`/`mixed`
+ * count so real spend cannot slip past it (`countsTowardMissionBudget`).
  * Returns 0 when the mission has no workers or no recorded spend.
  */
 export async function getMissionSpendUsd(missionId: string): Promise<number> {
@@ -12,7 +14,7 @@ export async function getMissionSpendUsd(missionId: string): Promise<number> {
     .select({ spend: sql<string>`COALESCE(SUM(${workers.costUsd}), '0')` })
     .from(workers)
     .innerJoin(tasks, eq(tasks.id, workers.taskId))
-    .where(eq(tasks.missionId, missionId));
+    .where(and(eq(tasks.missionId, missionId), sql`${workers.costBasis} IS DISTINCT FROM ${'virtual'}`));
   return parseFloat(result[0]?.spend ?? '0');
 }
 

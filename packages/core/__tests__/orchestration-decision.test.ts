@@ -6,6 +6,7 @@ import {
   candidateDigest,
   contentFreeLabel,
   runOrchestrationDecision,
+  RULE_DECIDED,
   type OrchestrationDecisionDeps,
   type OrchestrationDecisionRow,
 } from '../orchestration-decision';
@@ -289,6 +290,14 @@ describe('runOrchestrationDecision', () => {
     expect(await runOrchestrationDecision(base(empty, SHADOW, { buildState: async () => null })))
       .toMatchObject({ effective: 'HOLD', status: 'fallback', reason: 'no_candidates' });
     expect(thrown.counts().calls + empty.counts().calls).toBe(0);
+  });
+
+  it('evidence that settles the question in code records rule_decided and makes no call', async () => {
+    const h = harness();
+    const out = await runOrchestrationDecision(base(h, GATED, { cohort: { fraction: 1 }, buildState: async () => RULE_DECIDED }));
+    expect(out).toMatchObject({ effective: 'HOLD', applied: false, status: 'fallback', reason: 'rule_decided' });
+    expect(h.counts().calls).toBe(0);
+    expect(h.rows[0]).toMatchObject({ status: 'fallback', reason: 'rule_decided', applied: false });
   });
 
   it('a ledger write that throws never changes the outcome', async () => {

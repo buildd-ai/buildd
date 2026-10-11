@@ -10,6 +10,8 @@
  */
 
 import { describe, test, expect, beforeAll, beforeEach, mock, afterAll, afterEach } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 import { WAITING_WORKTREE_TTL_MS } from '../../src/worktree-utils';
 import { __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
@@ -57,13 +59,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -193,17 +195,30 @@ describe('waiting worker worktree reclamation', () => {
     mockExistsSync = () => false;
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     mockCleanupWorktree.mockClear();
     mockExistsSync = (p: string) => p === worktreePath;
   });
 
-  test('retains the worktree of a recently-waiting worker (before 24h TTL)', () => {
+  test('retains the worktree of a recently-waiting worker (before 24h TTL)', async () => {
     manager = new WorkerManager(makeConfig());
     const worker = makeWorker({ worktreePath, lastActivity: Date.now() - 60_000 }); // 1 min ago
     inject(manager, worker);
 
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
 
     // Not cleaned, record still present, worktreePath preserved.
     expect(mockCleanupWorktree).not.toHaveBeenCalled();
@@ -212,7 +227,7 @@ describe('waiting worker worktree reclamation', () => {
     expect(workers.get('w-wait-1')!.worktreePath).toBe(worktreePath);
   });
 
-  test('reclaims the worktree after the 24h TTL but keeps the worker record', () => {
+  test('reclaims the worktree after the 24h TTL but keeps the worker record', async () => {
     manager = new WorkerManager(makeConfig());
     const worker = makeWorker({
       worktreePath,
@@ -221,6 +236,7 @@ describe('waiting worker worktree reclamation', () => {
     inject(manager, worker);
 
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
 
     // Worktree cleaned, from the correct repo root; record retained for history.
     expect(mockCleanupWorktree).toHaveBeenCalledTimes(1);
@@ -231,7 +247,7 @@ describe('waiting worker worktree reclamation', () => {
     expect(workers.get('w-wait-1')!.worktreePath).toBeUndefined(); // cleared, no repeat attempts
   });
 
-  test('does not attempt cleanup twice once worktreePath is cleared', () => {
+  test('does not attempt cleanup twice once worktreePath is cleared', async () => {
     manager = new WorkerManager(makeConfig());
     const worker = makeWorker({
       worktreePath,
@@ -240,7 +256,9 @@ describe('waiting worker worktree reclamation', () => {
     inject(manager, worker);
 
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
     (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0)); // removal awaits the archive step
 
     expect(mockCleanupWorktree).toHaveBeenCalledTimes(1);
   });
@@ -258,11 +276,11 @@ describe('waiting worker worktree reclamation', () => {
 describe('shouldPreserveWorktreeOnSessionEnd', () => {
   const base = { isEphemeralBranch: false, bwrapRetryPending: false };
 
-  test('preserves the worktree of a worker parked on a question', () => {
+  test('preserves the worktree of a worker parked on a question', async () => {
     expect(shouldPreserveWorktreeOnSessionEnd({ ...base, status: 'waiting' })).toBe(true);
   });
 
-  test('preserves the worktree of a completed worker for follow-ups', () => {
+  test('preserves the worktree of a completed worker for follow-ups', async () => {
     expect(shouldPreserveWorktreeOnSessionEnd({ ...base, status: 'done' })).toBe(true);
   });
 
@@ -273,7 +291,7 @@ describe('shouldPreserveWorktreeOnSessionEnd', () => {
     },
   );
 
-  test('always cleans up an ephemeral e2e branch, even when parked', () => {
+  test('always cleans up an ephemeral e2e branch, even when parked', async () => {
     expect(shouldPreserveWorktreeOnSessionEnd({
       status: 'waiting',
       isEphemeralBranch: true,
@@ -281,7 +299,7 @@ describe('shouldPreserveWorktreeOnSessionEnd', () => {
     })).toBe(false);
   });
 
-  test('preserves the worktree for a pending bwrap retry regardless of status', () => {
+  test('preserves the worktree for a pending bwrap retry regardless of status', async () => {
     expect(shouldPreserveWorktreeOnSessionEnd({
       status: 'error',
       isEphemeralBranch: true,

@@ -9,4 +9,11 @@ export interface InsightsUsageRow {
   costUsd: number;
   /** Run time overlapping the window, including workers already active. */
   hours: number;
+  /**
+   * How this worker's tokens and cost were charged (docs/specs/real-and-virtual-cost.md).
+   * Null when the worker recorded no usage. Absent on rows built before the split.
+   */
+  basis?: 'real' | 'virtual' | 'mixed' | 'unknown' | null;
+  /** Who ran it: an interactive session, a runner, or a placeholder worker. */
+  executor?: 'interactive' | 'runner' | 'other';
 }

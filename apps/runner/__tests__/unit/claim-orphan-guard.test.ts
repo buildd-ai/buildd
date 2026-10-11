@@ -13,7 +13,9 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/claim-orphan-guard.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -64,14 +66,14 @@ mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
     resolve: (ws: any) => {
       if (ws?.name === 'boom-workspace') throw new Error('EACCES: cannot stat projects root');
-      return '/tmp/test-workspace';
+      return getTestWorkspace();
     },
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -145,7 +147,19 @@ function claimedWorker(id: string, workspaceName: string) {
 describe('claim batch start failures', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     mockUpdateWorker.mockReset();
     mockUpdateWorker.mockImplementation(async () => ({}));
     mockClaimTask.mockReset();

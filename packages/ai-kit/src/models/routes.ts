@@ -12,6 +12,11 @@
  * Each route is one `ROUTES` entry. A new gateway (another proxy, a cloud
  * AI gateway) is a new entry, not a new branch at every call site.
  *
+ * Cloudflare AI Gateway is not a `ROUTES` entry yet: it serves decision calls
+ * only (Jev through its OpenRouter path, Clef through Workers AI), and its
+ * credential is the team's Cloudflare one, not an inference key. The URL
+ * helpers are at the bottom of this file.
+ *
  * Subscription seats (OAuth) are not routes: they are anchored to a runner and
  * never serve a server-side call.
  */
@@ -51,6 +56,12 @@ export interface RouteSpec {
     placeholder: string;
     consoleUrl: string;
     envVar: string;
+    /**
+     * @deprecated Storage facts live in the provider registry
+     * (`./provider-registry`); `PROVIDER_KEY_CAPABILITIES` no longer reads
+     * this. Kept for one release so consumers do not break; a test holds it
+     * equal to the registry's chat-read legacy purposes.
+     */
     legacyPurposes?: readonly string[];
     rejectedPrefixes?: readonly string[];
   };
@@ -154,4 +165,47 @@ export function routeAttributionHeaders(route: RouteId, app: { appName?: string;
   if (app.appName) h['X-Title'] = app.appName;
   if (app.appUrl) h['HTTP-Referer'] = app.appUrl;
   return h;
+}
+
+// ── Cloudflare AI Gateway ────────────────────────────────────────────────────
+
+/** AI Gateway's root; a gateway's URL is `<root>/<accountId>/<gatewayId>/<provider>`. */
+export const CLOUDFLARE_AI_GATEWAY_ROOT = 'https://gateway.ai.cloudflare.com/v1';
+/** Cloudflare's REST API root, where Workers AI answers without a gateway. */
+export const CLOUDFLARE_API_ROOT = 'https://api.cloudflare.com/client/v4';
+
+/** Where a Cloudflare call goes: the account, and the gateway when there is one. */
+export interface CloudflareGatewayRef {
+  accountId: string;
+  gatewayId?: string | null;
+}
+
+/** The AI Gateway provider paths buildd uses. `openrouter` proxies OpenRouter (Jev's System One API). */
+export type CloudflareGatewayProvider = 'openrouter' | 'workers-ai';
+
+// Account IDs are 32 hex characters; gateway IDs are dashboard slugs.
+const CF_ACCOUNT_RE = /^[0-9a-f]{32}$/;
+const CF_GATEWAY_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+function checkRef(ref: CloudflareGatewayRef): void {
+  if (!CF_ACCOUNT_RE.test(ref.accountId)) throw new Error('Cloudflare accountId must be the 32-character hex account ID');
+  if (ref.gatewayId != null && !CF_GATEWAY_RE.test(ref.gatewayId)) throw new Error('Cloudflare gatewayId must be a gateway slug');
+}
+
+/** A gateway's root for one provider, no trailing slash. Throws without a gateway, or on a malformed id. */
+export function cloudflareGatewayURL(ref: CloudflareGatewayRef, provider: CloudflareGatewayProvider): string {
+  checkRef(ref);
+  if (!ref.gatewayId) throw new Error('cloudflareGatewayURL needs a gatewayId');
+  return `${CLOUDFLARE_AI_GATEWAY_ROOT}/${ref.accountId}/${ref.gatewayId}/${provider}`;
+}
+
+/**
+ * The Workers AI root a model path is appended to: through the gateway when
+ * the ref names one (logged, cached, rate-limited there), else the REST API.
+ */
+export function cloudflareWorkersAiURL(ref: CloudflareGatewayRef): string {
+  checkRef(ref);
+  return ref.gatewayId
+    ? cloudflareGatewayURL(ref, 'workers-ai')
+    : `${CLOUDFLARE_API_ROOT}/accounts/${ref.accountId}/ai/run`;
 }

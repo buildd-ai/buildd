@@ -43,6 +43,7 @@ mock.module('drizzle-orm', () => ({
   eq: (f: any, v: any) => ({ __eq: [f, v] }),
   or: (...c: any[]) => ({ __or: c }),
   isNull: (f: any) => ({ __isNull: f }),
+  desc: (f: any) => ({ __desc: f }),
   sql: (s: any) => ({ __sql: s }),
 }));
 
@@ -706,6 +707,88 @@ describe('decisionCall with a team decision model', () => {
     expect((await decisionCall(params({ fetcher }))).ok).toBe(true);
   });
 
+});
+
+describe('decisionCall via Cloudflare', () => {
+  const ACCOUNT = '0123456789abcdef0123456789abcdef';
+  const CF_TOKEN = 'cf-token-abcdefghijklmnopqrstuvwxyz';
+  const cfRow = (value: Record<string, unknown>, over: Record<string, unknown> = {}) => secretRow({
+    id: 's-cf', purpose: 'cloudflare_token', label: null, userId: null,
+    encryptedValue: `enc:${JSON.stringify(value)}`, ...over,
+  });
+  const CLEF_BODY = { success: true, errors: [], result: { model: 'clef', answers: { is_bug: { type: 'noul', noul: 0.88 } }, usage: { input_tokens: 90 } } };
+
+  it('asks Clef through the AI Gateway with the Cloudflare token', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } };
+    secretRows = [cfRow({ apiToken: CF_TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' })];
+    const seen: { url: string; headers: Headers; body: any }[] = [];
+    const fetcher = mock(async (url: string, init?: RequestInit) => {
+      seen.push({ url, headers: new Headers(init?.headers), body: JSON.parse(init!.body as string) });
+      return jsonResponse(CLEF_BODY);
+    });
+    const res = await decisionCall(params({ fetcher, questions: NOUL }));
+    expect(res.ok).toBe(true);
+    expect(seen[0].url).toBe(`https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/buildd/workers-ai/@cf/cloudflare/clef`);
+    expect(seen[0].headers.get('authorization')).toBe(`Bearer ${CF_TOKEN}`);
+    expect(seen[0].headers.get('cf-aig-authorization')).toBe(`Bearer ${CF_TOKEN}`);
+    expect(seen[0].body).toMatchObject({ model: 'clef', questions: NOUL });
+    if (res.ok) expect(res.answers.is_bug.noul).toBe(0.88);
+  });
+
+  it('asks Clef on Workers AI directly when there is no gateway', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'systemone', model: 'clef-flash', via: 'cloudflare' } };
+    secretRows = [cfRow({ apiToken: CF_TOKEN, accountId: ACCOUNT })];
+    const seen: string[] = [];
+    const fetcher = mock(async (url: string) => { seen.push(url); return jsonResponse(CLEF_BODY); });
+    expect((await decisionCall(params({ fetcher, questions: NOUL }))).ok).toBe(true);
+    expect(seen[0]).toBe(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/ai/run/@cf/cloudflare/clef-flash`);
+  });
+
+  it('sends Jev through the gateway on the OpenRouter key, with the gateway token header', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'systemone', model: DEFAULT_DECISION_MODEL, via: 'cloudflare' } };
+    secretRows = [secretRow(), cfRow({ apiToken: CF_TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' })];
+    const seen: { url: string; headers: Headers }[] = [];
+    const fetcher = mock(async (url: string, init?: RequestInit) => { seen.push({ url, headers: new Headers(init?.headers) }); return jsonResponse(OK_BODY); });
+    const res = await decisionCall(params({ fetcher }));
+    expect(res.ok).toBe(true);
+    expect(seen[0].url).toBe(`https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/buildd/openrouter/v1/systemone`);
+    expect(seen[0].headers.get('authorization')).toBe('Bearer sk-or-team');
+    expect(seen[0].headers.get('cf-aig-authorization')).toBe(`Bearer ${CF_TOKEN}`);
+  });
+
+  it("spends the acting person's minted run token before the team's, and the team's before the team credential", async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } };
+    const minted = (id: string, token: string, userId: string | null) => secretRow({
+      id, purpose: 'cloudflare_gateway_token', label: null, userId,
+      encryptedValue: `enc:${JSON.stringify({ token, tokenId: `tok${id}000000`, accountId: ACCOUNT, expiresOn: '2099-01-01T00:00:00Z' })}`,
+    });
+    const cf = cfRow({ apiToken: CF_TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' });
+    const auth = async (rows: any[], userId?: string) => {
+      secretRows = rows;
+      let seen = '';
+      const fetcher = mock(async (_u: string, init?: RequestInit) => { seen = new Headers(init?.headers).get('authorization') ?? ''; return jsonResponse(CLEF_BODY); });
+      expect((await decisionCall(params({ fetcher, questions: NOUL, ...(userId ? { userId } : {}) }))).ok).toBe(true);
+      return seen;
+    };
+    const PERSONAL = 'personal-run-token-abcdefghijk';
+    const TEAM = 'team-run-token-abcdefghijklmnop';
+    expect(await auth([cf, minted('p', PERSONAL, 'u-1'), minted('t', TEAM, null)], 'u-1')).toBe(`Bearer ${PERSONAL}`);
+    expect(await auth([cf, minted('p', PERSONAL, 'u-2'), minted('t', TEAM, null)], 'u-1')).toBe(`Bearer ${TEAM}`);
+    expect(await auth([cf, minted('p', PERSONAL, 'u-1')])).toBe(`Bearer ${CF_TOKEN}`);
+  });
+
+  it('returns missing_key, with no request, without a Cloudflare credential, a gateway for Jev, or a live row', async () => {
+    const fetcher = mock(async () => jsonResponse(CLEF_BODY));
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } };
+    secretRows = [secretRow()];
+    expect((r => !r.ok && r.error.kind)(await decisionCall(params({ fetcher, questions: NOUL })))).toBe('missing_key');
+    secretRows = [cfRow({ apiToken: CF_TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' }, { healthStatus: 'revoked' })];
+    expect((r => !r.ok && r.error.kind)(await decisionCall(params({ fetcher, questions: NOUL })))).toBe('missing_key');
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'systemone', model: DEFAULT_DECISION_MODEL, via: 'cloudflare' } };
+    secretRows = [secretRow(), cfRow({ apiToken: CF_TOKEN, accountId: ACCOUNT })];
+    expect((r => !r.ok && r.error.kind)(await decisionCall(params({ fetcher })))).toBe('missing_key');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });
 
 // ── buildd's platform decision key (billing) ─────────────────────────────────

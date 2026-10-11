@@ -20,7 +20,7 @@ import Link from 'next/link';
 import { createPortal } from 'react-dom';
 import { MOBILE_TOP_BAR_SLOT_ID } from '@/components/MobileTopBar';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
-import type { ChatTierName } from '@buildd/shared';
+import type { ChatDraftAttachment, ChatTierName } from '@buildd/shared';
 import BottomSheet from '@/components/BottomSheet';
 import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract';
 import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions, type OpenVisualReview } from './ChatActions';
@@ -48,7 +48,8 @@ export interface ChatWorkspaceProps {
   error?: string | null;
   /** Shown under the feed: the setup card when a turn was refused for want of a key. */
   notice?: ReactNode;
-  onSend(text: string): void;
+  /** `attachments`: the long pastes the message carries (Living Specs C2). */
+  onSend(text: string, attachments?: ChatDraftAttachment[]): void;
   onStop?: () => void;
   onApproval(approvalId: string, approved: boolean, reason?: string): void;
   /** Override how a question is answered (fixtures). Default: the respond route. */
@@ -166,6 +167,28 @@ function replyAfterApproval(root: Element, approvalId: string, before: ReadonlyS
   return textsAfterApproval(root, approvalId).find(t => !before.has(t)) ?? null;
 }
 
+/** Regions of a turn that hold the reader's place more finely than its message (kit `compose="turn"`). */
+const NESTED_BLOCK = /\bkit-(phase|phase-results|turn-work)\b/;
+
+/**
+ * The block the reader is on: the first message reaching below the
+ * scroller's top edge, then the first of its regions that does, down through
+ * a turn's phases and results. Null before the thread has any.
+ */
+function readerBlock(root: Element | null, top: number): Element | null {
+  const thread = root?.querySelector('.kit-thread');
+  const first = (parent: Element) => [...parent.children].find(c => c.getBoundingClientRect().bottom > top) ?? null;
+  let block = thread ? first(thread) : null;
+  let inner = block?.classList.contains('kit-msg') ? block : null;
+  while (inner) {
+    const next = first(inner);
+    if (!next) break;
+    block = next;
+    inner = NESTED_BLOCK.test(String(next.className)) ? next : null;
+  }
+  return block;
+}
+
 /** Desktop is 1024px and up: the docked panel. Below it, phone and tablet share the phone layout. */
 const isDesktop = () => typeof window !== 'undefined' && window.matchMedia?.('(min-width: 1024px)').matches;
 
@@ -210,6 +233,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   }, []);
   const wide = useMinWidth(1280);
   const [ownDraft, setOwnDraft] = useState('');
+  // The draft's long pastes (Living Specs C2), and what was last sent, so a
+  // refused send puts the whole draft back, the same attachment ids included.
+  const [attachments, setAttachments] = useState<ChatDraftAttachment[]>([]);
+  const lastSent = useRef<{ text: string; attachments: ChatDraftAttachment[] } | null>(null);
   const draft = props.draft ?? ownDraft;
   const setDraft = props.onDraftChange ?? setOwnDraft;
   // The overline's date, fixed at mount (the server's clock may differ: suppressHydrationWarning below).
@@ -286,15 +313,47 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const lastLen = useRef(0);
   const wasBusy = useRef(false);
   const busy = status === 'submitted' || status === 'streaming';
+  // A send refused before any reply (a 400, a 409, a 429): the draft comes back
+  // unless the person has started a new one.
+  useEffect(() => {
+    if (status !== 'error' || !lastSent.current) return;
+    if (messages.at(-1)?.role !== 'user') return;
+    const back = lastSent.current;
+    lastSent.current = null;
+    if (draft || attachments.length > 0) return;
+    setDraft(back.text);
+    setAttachments(back.attachments);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on the transition to error only
+  }, [status]);
   // The scrollTop that puts the anchored line at the top, once it exists.
   const anchorTop = (el: HTMLElement): number | null => {
     const f = follow.current;
     const target = f.mode === 'anchor' ? f.find() : null;
     return target ? Math.max(0, el.scrollTop + target.getBoundingClientRect().top - el.getBoundingClientRect().top - ANCHOR_GAP) : null;
   };
+  // Free: the block the reader is on and its offset from the scroller's top.
+  // Growth above it (a card loading, a line folding) is paid back in scrollTop.
+  const held = useRef<{ el: Element; offset: number } | null>(null);
+  const holdReader = (el: HTMLElement) => {
+    const top = el.getBoundingClientRect().top;
+    const block = readerBlock(content.current, top);
+    held.current = block ? { el: block, offset: block.getBoundingClientRect().top - top } : null;
+  };
   const settle = useCallback(() => {
     const el = scroller.current;
     if (!el) return;
+    if (follow.current.mode === 'free') {
+      const h = held.current;
+      if (h && h.el.isConnected) {
+        const drift = h.el.getBoundingClientRect().top - el.getBoundingClientRect().top - h.offset;
+        if (Math.abs(drift) >= 1) {
+          el.scrollTop += drift;
+          ourTop.current = el.scrollTop;
+        }
+      }
+      holdReader(el);
+      return;
+    }
     const top = follow.current.mode === 'bottom' ? el.scrollHeight : anchorTop(el);
     if (top === null) return;
     el.scrollTop = top;
@@ -339,6 +398,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     ourTop.current = null;
     // The reader scrolled: back at the bottom it follows again; anywhere else it stays put.
     follow.current = { mode: el.scrollHeight - el.scrollTop - el.clientHeight < 80 ? 'bottom' : 'free' };
+    if (follow.current.mode === 'free') holdReader(el);
   };
 
   // Confirm or Discard: what to read next is the reply that follows the card,
@@ -352,9 +412,11 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     onApproval(approvalId, approved, reason);
   }, [onApproval]);
 
-  const send = (text: string) => {
-    onSend(text);
+  const send = (text: string, sentAttachments: ChatDraftAttachment[] = []) => {
+    onSend(text, sentAttachments);
+    lastSent.current = { text, attachments: sentAttachments };
     setDraft('');
+    setAttachments([]);
     follow.current = { mode: 'bottom' };
   };
 
@@ -594,7 +656,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         ref={scroller}
         onScroll={onScroll}
         data-testid="chat-scroller"
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,#000_28px)]"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none] [mask-image:linear-gradient(to_bottom,transparent,#000_28px)]"
       >
         <div ref={content} data-testid="chat-voice-column" className={`mx-auto px-4 py-6 ${anchoredPhone && !missionEmpty ? 'max-lg:flex max-lg:min-h-full max-lg:flex-col' : ''} ${anchoredDesk && !missionEmpty ? 'lg:flex lg:min-h-full lg:flex-col' : ''} ${overlay ? 'lg:px-6' : 'max-w-[820px] lg:max-w-[720px] lg:px-0'}`}>
           {missionEmpty && missionSheet ? (
@@ -607,7 +669,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           {messages.length === 0 && emptyState && historyOpen && (
             <div data-testid="chat-empty-state" className="lg:hidden">{emptyState}</div>
           )}
-          <ChatFeed messages={messages} agent={agent} status={status} error={error} />
+          <ChatFeed messages={messages} agent={agent} status={status} error={error} conversationId={conversationId ?? null} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>
@@ -619,6 +681,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             value={draft}
             onChange={setDraft}
             onSend={send}
+            attachments={attachments}
+            onAttachmentsChange={setAttachments}
             onStop={onStop}
             busy={busy}
             placeholder={composerPlaceholder ?? (pin ? 'Ask about this, or anything else…' : messages.length === 0 ? canvasPlaceholder(suggestions) : undefined)}

@@ -337,6 +337,159 @@ export const HANDOFF_PART_TYPE = 'data-handoff' as const;
 export const EVENT_PART_TYPE = 'data-event' as const;
 export const STEER_PART_TYPE = 'data-steer' as const;
 export const TURN_ERROR_PART_TYPE = 'data-turn-error' as const;
+export const ATTACHMENT_PART_TYPE = 'data-attachment' as const;
+
+/**
+ * A paste longer than this many characters becomes an attachment in the
+ * composer (0.25.0). Presentation only: a message is never refused for
+ * crossing it; the composer's `maxLength` still caps text and attachments
+ * together.
+ */
+export const PASTE_ATTACHMENT_CHARS = 8_000;
+
+/**
+ * A long paste, as the composer sends it: the text itself under an id the
+ * client chose when the paste happened. A retry sends the same id, so the
+ * server keeps one attachment per paste however often it is sent.
+ */
+export interface AttachmentDraft {
+  id: string;
+  title: string;
+  text: string;
+}
+
+/**
+ * A stored attachment: what a saved message keeps instead of the text. The
+ * body lives once, behind `artifactId` at `revision`, hashed as `sha256`.
+ */
+export interface AttachmentRef {
+  artifactId: string;
+  revision: number;
+  /** sha256 hex of the UTF-8 text. */
+  sha256: string;
+  /** Length in characters (UTF-16 code units, as `String.length` counts). */
+  chars: number;
+  title: string;
+}
+
+/** Either form: a draft on its way to the server, or the stored reference. */
+export type AttachmentData = AttachmentDraft | AttachmentRef;
+
+export function isAttachmentPart(part: ChatPart): part is { type: typeof ATTACHMENT_PART_TYPE; data: AttachmentData } {
+  if (part.type !== ATTACHMENT_PART_TYPE) return false;
+  const d = (part as { data?: Partial<AttachmentDraft & AttachmentRef> }).data;
+  if (!d || typeof d.title !== 'string') return false;
+  return (typeof d.id === 'string' && typeof d.text === 'string')
+    || (typeof d.artifactId === 'string' && typeof d.sha256 === 'string' && typeof d.chars === 'number' && typeof d.revision === 'number');
+}
+
+export function isAttachmentDraft(d: AttachmentData): d is AttachmentDraft {
+  return typeof (d as AttachmentDraft).text === 'string';
+}
+
+/** Characters an attachment carries, either form. */
+export function attachmentChars(d: AttachmentData): number {
+  return isAttachmentDraft(d) ? d.text.length : d.chars;
+}
+
+/** The id that names an attachment, either form: the draft's id is its artifact id. */
+export function attachmentId(d: AttachmentData): string {
+  return isAttachmentDraft(d) ? d.id : d.artifactId;
+}
+
+/** A title for a paste: its first non-blank line, shortened. */
+export function pasteTitle(text: string, max = 60): string {
+  const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? 'Pasted text';
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/**
+ * An image or file attached to a message (0.26.0): the original bytes are
+ * uploaded first (the app's `onUploadFile`), then the message carries a
+ * `data-file` part naming the uploaded artifact. Only a verified, ready upload
+ * is ever sent; an upload still running, failed or cancelled never is.
+ */
+export const FILE_PART_TYPE = 'data-file' as const;
+
+/** The file types a message may carry, by media type. */
+export const FILE_MEDIA_TYPES = [
+  'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+  'application/pdf',
+  'text/plain', 'text/markdown', 'text/csv', 'application/json',
+] as const;
+export type FileMediaType = (typeof FILE_MEDIA_TYPES)[number];
+
+/** Largest file a message may carry, in bytes. */
+export const MAX_FILE_BYTES = 20 * 1024 * 1024;
+
+/** `Image/PNG; x=y` -> `image/png`, or null when it is not one a message may carry. */
+export function fileMediaType(type: string | null | undefined): FileMediaType | null {
+  const t = (type ?? '').split(';')[0]!.trim().toLowerCase();
+  return (FILE_MEDIA_TYPES as readonly string[]).includes(t) ? t as FileMediaType : null;
+}
+
+export const isImageMediaType = (type: string): boolean => type.startsWith('image/');
+
+/**
+ * A file as the composer sends it: the id of its uploaded, verified artifact.
+ * `previewUrl` is a browser-local thumbnail and never leaves the client.
+ */
+export interface FileDraft {
+  kind: 'file';
+  id: string;
+  name: string;
+  mediaType: string;
+  sizeBytes: number;
+  previewUrl?: string;
+}
+
+/** A stored file: what a saved message keeps. The bytes live once, behind `artifactId`. */
+export interface FileRef {
+  artifactId: string;
+  revision: number;
+  /** sha256 hex of the original bytes. */
+  sha256: string;
+  name: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
+export type FileData = FileDraft | FileRef;
+
+export function isFilePart(part: ChatPart): part is { type: typeof FILE_PART_TYPE; data: FileData } {
+  if (part.type !== FILE_PART_TYPE) return false;
+  const d = (part as { data?: Partial<FileDraft & FileRef> }).data;
+  if (!d || typeof d.name !== 'string' || typeof d.mediaType !== 'string' || typeof d.sizeBytes !== 'number') return false;
+  return typeof d.id === 'string' || (typeof d.artifactId === 'string' && typeof d.sha256 === 'string' && typeof d.revision === 'number');
+}
+
+export function isFileDraft(d: FileData | AttachmentData): d is FileDraft {
+  return (d as FileDraft).kind === 'file' && typeof (d as FileDraft).id === 'string';
+}
+
+/** The id that names a file, either form. */
+export function fileId(d: FileData): string {
+  return isFileDraft(d) ? d.id : d.artifactId;
+}
+
+/** What a draft message may carry besides its text: long pastes and uploaded files. */
+export type DraftAttachment = AttachmentDraft | FileDraft;
+
+/** `1.4 MB`, `820 KB`, `312 bytes`. */
+export function fileSizeLabel(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} bytes`;
+}
+
+/** A short type label for a file card: `PNG`, `PDF`, `CSV`. */
+export function fileKindLabel(mediaType: string): string {
+  const sub = mediaType.split('/')[1] ?? 'file';
+  if (sub === 'jpeg') return 'JPG';
+  if (sub === 'plain') return 'TXT';
+  if (sub === 'markdown') return 'MD';
+  return sub.slice(0, 4).toUpperCase();
+}
 
 /**
  * Why a turn that had started streaming failed. `insufficient_credit`: the

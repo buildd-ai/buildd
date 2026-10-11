@@ -137,10 +137,10 @@ export async function loadVisualReview(
   let runnerOnline: boolean | null = null;
   if (mission.workspaceId && auditAwaitingRunner(tasks, now)) {
     const [ws] = await db
-      .select({ id: workspaces.id, teamId: workspaces.teamId, accessMode: workspaces.accessMode })
+      .select({ id: workspaces.id, teamId: workspaces.teamId, accessMode: workspaces.accessMode, gitConfig: workspaces.gitConfig, webhookConfig: workspaces.webhookConfig })
       .from(workspaces)
       .where(eq(workspaces.id, mission.workspaceId))
-      .limit(1) as Array<{ id: string; teamId: string; accessMode: string | null }>;
+      .limit(1) as Array<{ id: string; teamId: string; accessMode: string | null; gitConfig: { executor?: unknown } | null; webhookConfig: { enabled?: unknown; events?: unknown } | null }>;
     const hbs = ws ? await loadBrowserRunnerHeartbeats(ws, now) : null;
     runnerOnline = hbs ? browserRunnerOnline(hbs, mission.workspaceId, now) : null;
   }

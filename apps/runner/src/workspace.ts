@@ -48,7 +48,8 @@ export function ensureIsolatedClone(
     fetchOrigin: (p) => fetchOriginWithRetry(p),
     log: (m) => console.log(m),
   })) {
-    hooks?.afterClone(clonePath);
+    if (hooks?.afterSeed) hooks.afterSeed(clonePath);
+    else hooks?.afterClone(clonePath);
     return clonePath;
   }
 

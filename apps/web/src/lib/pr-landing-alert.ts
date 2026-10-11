@@ -180,7 +180,7 @@ export interface LandingAlertDeps {
   hasPagedHead: (taskId: string, headPrefix: string) => Promise<boolean>;
   /** Atomic claim: true for exactly one caller per key. */
   claimKey: (taskId: string, key: string) => Promise<boolean>;
-  send: (subject: { workspaceId: string; taskId: string }, payload: PagePayload) => Promise<void>;
+  send: (subject: { workspaceId: string; taskId: string; prNumber?: number }, payload: PagePayload) => Promise<void>;
   appUrl: () => string;
 }
 
@@ -330,11 +330,12 @@ export async function alertOnLanding(input: LandingAlertInput, deps: LandingAler
       checks: checksFor(input),
       quietMs: reason === 'invariant' ? quietMs : null,
     });
-    const base = `${deps.appUrl().replace(/\/$/, '')}/app/prs/${input.prNumber}/act`;
+    // The PR's action sheet over Home (the old /app/prs/:n/act redirects there).
+    const base = `${deps.appUrl().replace(/\/$/, '')}/app/home?pr=${input.prNumber}`;
     if (plan.primary === 'review_on_github') {
       // Nothing for buildd to run: one tap should open the diff itself.
       await deps.send(
-        { workspaceId: input.workspaceId, taskId },
+        { workspaceId: input.workspaceId, taskId, prNumber: input.prNumber },
         { ...copy, url: githubFilesUrl(input.repoFullName, input.prNumber), urlTitle: LANDING_ACTION_LABELS.review_on_github, priority },
       );
       return;
@@ -344,10 +345,10 @@ export async function alertOnLanding(input: LandingAlertInput, deps: LandingAler
       nowMs,
     );
     await deps.send(
-      { workspaceId: input.workspaceId, taskId },
+      { workspaceId: input.workspaceId, taskId, prNumber: input.prNumber },
       {
         ...copy,
-        url: token ? `${base}?t=${encodeURIComponent(token)}` : base,
+        url: token ? `${base}&t=${encodeURIComponent(token)}` : base,
         urlTitle: LANDING_ACTION_LABELS[plan.primary],
         priority,
       },

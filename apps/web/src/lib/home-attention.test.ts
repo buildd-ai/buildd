@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { deriveHomeAttention as derive, homeAttentionCopy } from './home-attention';
+import { deriveHomeAttention as derive, homeAttentionCopy, homeQuestionView } from './home-attention';
 import { isActionableChip } from './action-queue';
 import { deriveHomeNeedsYou } from './home-needs-you';
 const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
@@ -19,6 +19,16 @@ describe('phone Home attention', () => {
     expect(items).toEqual([]);
     expect(homeAttentionCopy(items)).toEqual({ count: 0, headline: 'Nothing needs you.', subline: 'The fleet is working without you.' });
   });
+  // Surface audit: a team with no runner was told "The fleet is working without you."
+  it('with no runner connected, the empty sub-line says so instead of claiming the fleet is working', () => {
+    const copy = homeAttentionCopy([], { runnerConnected: false });
+    expect(copy.headline).toBe('Nothing needs you.');
+    expect(copy.subline).not.toContain('working without you');
+    expect(copy.subline).toBe('No runner is connected yet, so nothing is running.');
+    expect(homeAttentionCopy([], { runnerConnected: true }).subline).toBe('The fleet is working without you.');
+    // Something to act on: the counts lead, whatever the capacity.
+    expect(homeAttentionCopy([one({})[0]], { runnerConnected: false }).subline).toBe('1 merge');
+  });
   it('suppresses an older merge ask when a fix owns the same PR, in either order', () => {
     for (const queue of [[pr('ready'), pr('fix', undefined, 'FIXING_CI')], [pr('fix', undefined, 'FIXING_CI'), pr('ready')]]) {
       expect(deriveHomeAttention({ queue, missions: [], questions: [], held: [] })).toEqual([]);
@@ -31,7 +41,7 @@ describe('phone Home attention', () => {
     expect(items[0].primary?.label).toBe('Check PR');
   });
   it('shows a parked question once and counts stranded missions once', () => {
-    const q = { workerId: 'worker-a', taskId: 'task-a', href: '/app/tasks/task-a', label: 'Builder', runnerName: null, askedAt: null, prompt: 'Which direction?', options: [] };
+    const q = { workerId: 'worker-a', taskId: 'task-a', href: '/app/tasks/task-a', label: 'Builder', runnerName: null, askedAt: null, question: { headline: 'Which direction?', body: null, options: [], noteId: null } };
     const strand = { missionId: 'mission-a', quietMs: 7200000, taskId: 'task-b', claimable: 1, blockedReason: null, order: 'runner-first' as const };
     const mission = { view: { id: 'mission-a', title: 'Navigation', href: '/app/missions/mission-a' }, model: { strand } } as any;
     const items = deriveHomeAttention({ queue: [{ subjectKey: 'q', chip: 'QUESTION', taskId: 'task-a' }], questions: [q, q], missions: [mission, mission], held: [] });
@@ -43,6 +53,42 @@ describe('phone Home attention', () => {
     const items = deriveHomeAttention({ queue: [{ ...pr('doc'), docFixTaskId: 'doc-task' }], missions: [], questions: [], held: [] });
     expect(items[0].sentence).toContain('doc back in line');
     expect(homeAttentionCopy(items).headline).toBe('1 thing needs you.');
+  });
+});
+
+describe('Home question cards are never context-free', () => {
+  // The exact regression: the agent's explanation lived in the brief (or only in its
+  // needs_input error) and Home rendered "How should I proceed?" with a generic line.
+  const ERROR = 'needs_input: Visual QA cannot boot the app: the mission migration is below the migration high-water mark. How should I proceed?';
+  const card = (question: NonNullable<ReturnType<typeof homeQuestionView>>) => deriveHomeAttention({
+    queue: [], missions: [], held: [],
+    questions: [{ workerId: 'w', taskId: 't', href: '/app/tasks/t', label: 'Surface audit', runnerName: null, askedAt: null, question }],
+  })[0];
+
+  it('keeps the brief context, structured options and recommendation', () => {
+    const view = homeQuestionView({
+      waitingFor: { type: 'question', prompt: 'How should I proceed?', context: 'Visual QA cannot boot: a migration is below the high-water mark.', options: [{ label: 'Skip visual QA', description: 'Ships without screenshots', recommended: true }, 'Wait'] },
+      error: ERROR, taskTitle: 'Surface audit',
+    })!;
+    expect(view.options.map(o => o.label)).toEqual(['Skip visual QA', 'Wait']);
+    const item = card(view);
+    expect(item.title).toBe('How should I proceed?');
+    expect(item.sentence).toContain('high-water mark');
+    expect(item.sentence).not.toBe('An agent needs your answer to continue.');
+  });
+
+  it('fails open to the worker error when the stored question lost its brief', () => {
+    const view = homeQuestionView({ waitingFor: { type: 'question', prompt: 'How should I proceed?' }, error: ERROR, taskTitle: 'Surface audit' })!;
+    expect(card(view).sentence).toContain('high-water mark');
+  });
+
+  it('with nothing else, still says which task asked', () => {
+    const view = homeQuestionView({ waitingFor: { type: 'question', prompt: 'How should I proceed?' }, error: null, taskTitle: 'Surface audit' })!;
+    expect(card(view).sentence).toBe('Asked while working on "Surface audit".');
+  });
+
+  it('a row with no question is not a card', () => {
+    expect(homeQuestionView({ waitingFor: null, error: ERROR, taskTitle: 'x' })).toBeNull();
   });
 });
 
@@ -72,7 +118,7 @@ describe('Needs You card contract', () => {
       [{ chip: 'QUESTION', question: 'Which direction?' }, 'Answer', 'answer'],
       [{ chip: 'DECIDE', missionId: 'm1', escalationReason: 'Pick a rollout order' }, 'Choose…', 'decide'],
       [{ chip: 'APPROVE' }, 'Approve…', 'approve'],
-      [{ chip: 'RECONNECT', connectorName: 'Source host', fixHref: '/app/settings/connectors' }, 'Reconnect', 'reconnect'],
+      [{ chip: 'RECONNECT', connectorName: 'Source host', fixHref: '/app/settings/connections' }, 'Reconnect', 'reconnect'],
       [{ chip: 'DISCREPANCY', direction: 'spec_ahead', specPath: 'docs/specs/a.md' }, 'Resolve…', 'resolve'],
       [{ chip: 'BLOCKED', escalationReason: 'Needs a rollout choice' }, 'Resolve…', 'resolve'],
       [{ chip: 'STALE', prUrl: 'https://example.test/pull/1' }, 'Check PR', 'check'],
@@ -105,13 +151,49 @@ describe('Needs You card contract', () => {
     }
   });
   it('replays a real human decision as exactly one concrete card', () => {
-    const items = deriveHomeAttention({ queue: [pr('a', undefined, 'REVIEW'), { ...pr('b', undefined, 'REVIEW'), prNumber: 43, prUrl: 'https://example.test/pull/43' }].map(i => ({ ...i, humanReview: { reason: 'Review required · protected migration paths', label: 'Review PR' } as any })), missions: [], questions: [], held: [] });
+    const items = deriveHomeAttention({ queue: [pr('a', undefined, 'REVIEW'), { ...pr('b', undefined, 'REVIEW'), prNumber: 43, prUrl: 'https://example.test/pull/43' }].map(i => ({ ...i, humanReview: { reason: 'Protected migration paths changed. The full reasoning follows.', decision: 'Approve the migration.', blockers: [], label: 'Review PR' } as any })), missions: [], questions: [], held: [] });
     expect(items).toHaveLength(2);
-    expect(items[0].sentence).toBe('Review required · protected migration paths');
+    // The card's sentence is the decision line, never the full reasoning.
+    expect(items[0].sentence).toBe('Approve the migration.');
     expect(items[0].primary?.href).toBe('https://example.test/o/r/pull/42/files');
   });
   it('summarises mixed action types instead of calling everything a merge', () => {
     const items = deriveHomeAttention({ queue: [pr('a', undefined, 'REVIEW'), { ...pr('b'), prNumber: 2 }, { ...pr('c'), prNumber: 3 }].map(i => i.chip === 'REVIEW' ? { ...i, verdictSummary: 'Protected paths changed.' } : i), missions: [], questions: [], held: [] });
     expect(homeAttentionCopy(items).subline).toBe('1 review · 2 merges');
+  });
+});
+
+describe('auto-recovery and systemic failures', () => {
+  const failed = (taskId: string, title: string): ActionQueueItem => ({ subjectKey: `failed:${taskId}`, chip: 'FAILED', taskId, taskTitle: title, failureMessage: 'The agent has no working model key.', fixHref: '/app/settings/providers', fixLabel: 'Fix key' });
+  it('a red PR with a fix or CI run in flight, or a conflict retry with attempts left, never needs you', () => {
+    const blocked = (over: Partial<ActionQueueItem>): ActionQueueItem => ({ ...pr(`b${Math.random()}`, 'workspace-a', 'BLOCKED'), failureMessage: 'Tests are failing.', ...over });
+    expect(deriveHomeAttention({ queue: [blocked({ ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 't', taskTitle: null, fixKind: 'ci' } })], missions: [], questions: [], held: [] })).toEqual([]);
+    expect(deriveHomeAttention({ queue: [blocked({ ciGate: { kind: 'running', label: 'CI running' } })], missions: [], questions: [], held: [] })).toEqual([]);
+    expect(deriveHomeAttention({ queue: [blocked({ mergeConflict: true, conflictRetryTaskId: 'retry-1' })], missions: [], questions: [], held: [] })).toEqual([]);
+    // Exhausted retries are a person's problem again.
+    expect(deriveHomeAttention({ queue: [blocked({ mergeConflict: true, conflictRetryTaskId: 'retry-1', deadZoneExhausted: true })], missions: [], questions: [], held: [] })).toHaveLength(1);
+  });
+  it('the same failure on several tasks is one systemic card, counted once', () => {
+    const items = deriveHomeAttention({ queue: [failed('t1', 'Alpha'), failed('t2', 'Beta'), failed('t3', 'Gamma'), failed('t4', 'Delta')], missions: [], questions: [], held: [] });
+    expect(items).toHaveLength(1);
+    expect(items[0].systemic?.count).toBe(4);
+    expect(items[0].title).toBe('The agent has no working model key.');
+    expect(items[0].sentence).toBe('Seen on Alpha, Beta and 2 more.');
+    expect(items[0].primary?.href).toBe('/app/settings/providers');
+    expect(homeAttentionCopy(items).count).toBe(1);
+  });
+  it('a single failure stays a per-task card; per-PR fixes are never folded together', () => {
+    expect(deriveHomeAttention({ queue: [failed('t1', 'Alpha')], missions: [], questions: [], held: [] })[0].systemic).toBeUndefined();
+    const red = (n: number): ActionQueueItem => ({ subjectKey: `r${n}`, chip: 'BLOCKED', workspaceId: 'w', prNumber: n, taskTitle: `PR ${n}`, prUrl: `https://example.test/o/r/pull/${n}`, ciGate: { kind: 'blocked', reason: 'x', recommendation: null } });
+    expect(deriveHomeAttention({ queue: [red(1), red(2)], missions: [], questions: [], held: [] })).toHaveLength(2);
+  });
+});
+
+describe('a Sentinel incident the gate gave to the owner', () => {
+  it('is one Needs You item that opens the incident', () => {
+    const items = one({ subjectKey: 'incident:i1', chip: 'INCIDENT', taskTitle: undefined, taskId: undefined, incidentId: 'i1', incidentTitle: 'Retry forks across 3 tasks', failureMessage: 'A critical platform incident: the owner is told once, whatever else is running.', fixHref: '/app/incidents/i1', fixLabel: 'Open incident' });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ label: 'incident', tone: 'error', title: 'Retry forks across 3 tasks', actionType: 'incident', primary: { label: 'Open incident', href: '/app/incidents/i1' } });
+    expect(homeAttentionCopy(items).subline).toBe('1 incident');
   });
 });

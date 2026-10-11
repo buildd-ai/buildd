@@ -18,7 +18,7 @@ describe('chat semantic palette', () => {
     for (const label of ['Awaiting verification', 'Stalled']) {
       const html = renderToStaticMarkup(<StateChip label={label} tone={missionTone(label, 'active')} />);
       expect(html).toContain('text-status-warning');
-      expect(html).not.toContain('accent');
+      expect(html).not.toContain('text-accent');
     }
     for (const inPane of [true, false]) {
       const html = renderToStaticMarkup(<OpenButton inPane={inPane} onOpen={() => {}} />);
@@ -28,8 +28,10 @@ describe('chat semantic palette', () => {
   });
   it('the About card uses status tokens for warning and error chips', () => {
     const source = readFileSync(new URL('./MissionSheet.tsx', import.meta.url), 'utf8');
-    expect(source).toContain("attention: 'border-status-warning text-status-warning'");
-    expect(source).toContain("bad: 'border-status-error text-status-error'");
+    // The badge is the shared pill: attention is the decision tone, bad the error tone.
+    expect(source).toContain('<StateChip');
+    expect(renderToStaticMarkup(<StateChip label="x" tone="bad" />)).toContain('text-status-error');
+    expect(renderToStaticMarkup(<StateChip label="x" tone="attention" />)).toContain('text-status-warning');
   });
   it('Buildd uses inverse ink tokens even when its role provides purple', () => {
     const html = renderToStaticMarkup(<AgentAvatar agent={{ name: 'buildd', color: '#6366F1' }} />);

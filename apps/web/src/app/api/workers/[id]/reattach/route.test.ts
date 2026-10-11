@@ -14,11 +14,12 @@ const WORKER = '33333333-3333-4333-8333-333333333333';
 const ACCOUNT = '44444444-4444-4444-8444-444444444444';
 const OTHER_ACCOUNT = '55555555-5555-4555-8555-555555555555';
 
-type Row = { id: string; accountId: string; taskId: string; status: string; parkedUntil: Date | null; updatedAt: Date };
+type Row = { id: string; accountId: string; workspaceId: string; claimedByUserId: string | null; taskId: string; status: string; parkedUntil: Date | null; updatedAt: Date };
 let row: Row;
 const inserts: unknown[] = [];
 const updateWheres: unknown[] = [];
-let authed: { id: string; level?: string; taskScope?: { taskId: string; workspaceId: string; expiresAt: number } } | null;
+let authed: { id: string; level?: string; teamId?: string | null; sessionUserId?: string; taskScope?: { taskId: string; workspaceId: string; expiresAt: number } } | null;
+type Caller = NonNullable<typeof authed>;
 /** Yield between read and write inside the fake UPDATE, so concurrent calls interleave. */
 let yieldInsideUpdate = false;
 
@@ -27,7 +28,7 @@ mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuth }));
 
 mock.module('@/lib/worker-park', () => ({
   // Recorded, and evaluated by the fake below with the same semantics.
-  reattachWhere: (id: string, accountId: string, now: Date, taskId?: string) => ({ id, accountId, now, taskId, kind: 'reattach' }),
+  reattachWhere: (id: string, caller: Caller, now: Date) => ({ id, caller, now, kind: 'reattach' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'workers.id', taskId: 'workers.task_id', status: 'workers.status' } }));
@@ -37,11 +38,11 @@ mock.module('@buildd/core/db', () => ({
     insert: () => { inserts.push(1); throw new Error('reattach must never insert'); },
     update: () => ({
       set: (values: Partial<Row>) => ({
-        where: (w: { id: string; accountId: string; now: Date; taskId?: string }) => ({
+        where: (w: { id: string; caller: Caller; now: Date }) => ({
           returning: async () => {
             updateWheres.push(w);
-            const matches = row.id === w.id && row.accountId === w.accountId
-              && (!w.taskId || row.taskId === w.taskId)
+            // ownedByCaller (lib/worker-park.ts) is the SQL form of callerOwnsWorker.
+            const matches = row.id === w.id && callerOwnsWorker(w.caller as never, row)
               && (row.status === 'waiting_input' || row.status === 'running')
               && row.parkedUntil !== null && row.parkedUntil.getTime() > w.now.getTime();
             if (yieldInsideUpdate) await new Promise(r => setTimeout(r, 5));
@@ -58,6 +59,7 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 import { POST } from './route';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 
 function req(apiKey: string | null = 'bld_runner') {
   return new NextRequest(`http://localhost/api/workers/${WORKER}/reattach`, {
@@ -68,7 +70,7 @@ function req(apiKey: string | null = 'bld_runner') {
 const params = (id = WORKER) => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
-  row = { id: WORKER, accountId: ACCOUNT, taskId: 'task-1', status: 'waiting_input', parkedUntil: new Date(Date.now() + 60 * 60 * 1000), updatedAt: new Date(0) };
+  row = { id: WORKER, accountId: ACCOUNT, workspaceId: 'ws-1', claimedByUserId: null, taskId: 'task-1', status: 'waiting_input', parkedUntil: new Date(Date.now() + 60 * 60 * 1000), updatedAt: new Date(0) };
   inserts.length = 0;
   updateWheres.length = 0;
   authed = { id: ACCOUNT, level: 'worker' };
@@ -118,7 +120,7 @@ describe('POST /api/workers/[id]/reattach', () => {
     authed = { id: OTHER_ACCOUNT, level: 'worker' };
     expect((await POST(req(), params())).status).toBe(409);
     expect(row.parkedUntil).not.toBeNull();
-    expect((updateWheres[0] as { accountId: string }).accountId).toBe(OTHER_ACCOUNT);
+    expect((updateWheres[0] as { caller: Caller }).caller.id).toBe(OTHER_ACCOUNT);
   });
 
   it('a per-task token re-attaches its own worker only', async () => {
@@ -137,6 +139,35 @@ describe('POST /api/workers/[id]/reattach', () => {
     authed = { id: ACCOUNT, level: 'worker' };
     expect((await POST(req(), params('not-a-uuid'))).status).toBe(404);
     expect(updateWheres).toHaveLength(0);
+  });
+});
+
+// An OAuth session resolves to an account its whole team shares; only the
+// session user that claimed the worker may take it over.
+describe('reattach: OAuth session owner check', () => {
+  const session = (userId: string, extra: Record<string, unknown> = {}) =>
+    ({ id: ACCOUNT, teamId: 'team-1', level: 'worker', sessionUserId: userId, ...extra });
+
+  beforeEach(() => { row.claimedByUserId = 'user-a'; });
+
+  it('the session that claimed re-attaches', async () => {
+    authed = session('user-a');
+    expect((await POST(req(), params())).status).toBe(200);
+    expect(row.parkedUntil).toBeNull();
+  });
+
+  it('another member of the same team, on the shared account, is refused', async () => {
+    authed = session('user-b');
+    expect((await POST(req(), params())).status).toBe(409);
+    expect(row.parkedUntil).not.toBeNull();
+  });
+
+  it('an admin session or a bld_ key on the shared account is refused too (no admin path here)', async () => {
+    authed = session('user-b', { level: 'admin' });
+    expect((await POST(req(), params())).status).toBe(409);
+    authed = { id: ACCOUNT, level: 'admin' };
+    expect((await POST(req(), params())).status).toBe(409);
+    expect(row.parkedUntil).not.toBeNull();
   });
 });
 

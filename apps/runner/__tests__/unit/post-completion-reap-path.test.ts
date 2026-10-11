@@ -17,7 +17,9 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/post-completion-reap-path.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 
 // ─── Mocks (same shape as terminal-metrics-patch.test.ts) ────────────────────
@@ -99,13 +101,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -204,6 +206,12 @@ describe('post-completion reap does not report a failure', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
   beforeEach(resetAll);
+  afterAll(() => {
+
+    cleanupTestWorkspace();
+
+  });
+
   afterEach(() => { manager?.destroy(); });
 
   for (const status of ['done', 'error'] as const) {

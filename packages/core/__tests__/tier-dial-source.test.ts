@@ -274,6 +274,8 @@ describe('whatRan', () => {
     expect(m1.mergedRate).toBeCloseTo(0.75, 6);
     expect(m1.costPerRunUsd).toBe(2);
     expect(m1.recentRuns.length).toBeLessThanOrEqual(5);
+    expect(m1.mergedGraded).toBe(4);
+    expect(m1.recentRuns[0]).toHaveProperty('title');
   });
 });
 

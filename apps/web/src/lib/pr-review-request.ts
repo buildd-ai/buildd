@@ -20,10 +20,13 @@
  */
 
 import { db } from '@buildd/core/db';
+import { recordPrFact } from '@buildd/core/pr-facts';
 import { tasks, workers, workspaceSkills } from '@buildd/core/db/schema';
+import { personalRoleVisibleSql } from '@buildd/core/role-visibility';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { fetchSplitPrStats } from './supersession-check';
 import { conformanceManifest } from './path-declaration';
+import { scheduleFailurePatternSentinel } from './failure-pattern-sentinel-trigger';
 import {
   derivePrReviewStatus,
   MAX_REVIEW_WAIT_SECONDS,
@@ -167,7 +170,6 @@ export async function insertPrOwnerWorker(params: {
   // Adoption only ever sees an open PR; an attach may land on one that already
   // merged or closed, and mission completion reads exactly these two fields.
   const merged = pr.merged === true || Boolean(pr.merged_at);
-  const lifecycle = merged ? 'merged' : pr.state === 'closed' ? 'closed' : 'pr_open';
 
   const [row] = await db
     .insert(workers)
@@ -182,8 +184,6 @@ export async function insertPrOwnerWorker(params: {
       status: 'completed',
       prNumber,
       prUrl: pr.html_url,
-      prLifecycleStatus: lifecycle,
-      ...(merged ? { mergedAt: pr.merged_at ? new Date(pr.merged_at) : new Date() } : {}),
       ...(typeof pr.base?.sha === 'string' ? { prOpenedBaseSha: pr.base.sha } : {}),
       ...(typeof pr.base?.ref === 'string' ? { prBaseRef: pr.base.ref } : {}),
       ...(split ? { linesAdded: split.reviewable.additions } : {}),
@@ -191,7 +191,13 @@ export async function insertPrOwnerWorker(params: {
       ...(split ? { filesChanged: split.reviewable.files } : {}),
     })
     .returning({ id: workers.id });
-  return row?.id ? { id: row.id } : null;
+  if (!row?.id) return null;
+  // What GitHub says about the PR is a fact on the fact cache (recordPrFact).
+  await recordPrFact(
+    { workerId: row.id },
+    merged ? { kind: 'merged', mergedAt: pr.merged_at ?? new Date() } : pr.state === 'closed' ? { kind: 'closed' } : { kind: 'open' },
+  );
+  return { id: row.id };
 }
 
 /**
@@ -330,6 +336,9 @@ export async function listWorkspaceRoles(
         eq(workspaceSkills.teamId, teamId),
         eq(workspaceSkills.isRole, true),
         sql`(${workspaceSkills.workspaceId} IS NULL OR ${workspaceSkills.workspaceId} = ${workspaceId})`,
+        // A review task is system-filed (no requester): someone's private role
+        // is not a reviewer it could run under.
+        personalRoleVisibleSql(null),
       ),
     );
   return rows;
@@ -456,6 +465,11 @@ export async function deliverPrReviewCallback(params: {
       waitFor: callback.on,
     });
     if (!status.terminal) return 'skipped';
+
+    // Bounded, deferred — never waits on and never fails this callback. See
+    // failure-pattern-sweep.ts for why duplicate coverage with the 30-minute
+    // cron backstop is safe.
+    scheduleFailurePatternSentinel(params.workspaceId);
 
     if (!(await claimReviewCallback(reviewTask.id))) return 'already';
 

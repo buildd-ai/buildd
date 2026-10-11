@@ -84,6 +84,8 @@ const triageKind = defineBuilddDecisionKind(POST_SESSION_TRIAGE_CONFIG, {
 });
 const scoutKind = defineBuilddDecisionKind(SCOUT_PROBE_SELECTION_CONFIG, {
   ...SCOUT_PROBE_SELECTION_BINDING,
+  // The shipped binding is live; this suite needs one shadow kind to show applied-vs-shadow truth.
+  mode: 'shadow',
   escalation: { via: 'openrouter', endpoint: 'chat', model: RICH },
   measuredModels: [RICH],
 });

@@ -146,7 +146,7 @@ describe('GET /api/explain — scoping', () => {
     mockVerifyAccountWorkspaceAccess.mockImplementation(async () => false);
     const res = await GET(req(`missionId=${MISSION}`));
     expect(res.status).toBe(404);
-    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('acct-1', WS);
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'acct-1' }), WS);
     expect(mockExplainMission).not.toHaveBeenCalled();
   });
 
@@ -215,7 +215,7 @@ describe('GET /api/explain — restricted workspace (API key with no link)', () 
   it('404s a task there, as GET /api/tasks/[id] does, and never builds its evidence list', async () => {
     const res = await GET(req(`taskId=${TASK}`));
     expect(res.status).toBe(404);
-    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('acct-1', WS);
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'acct-1' }), WS);
     expect(mockExplainTask).not.toHaveBeenCalled();
   });
 

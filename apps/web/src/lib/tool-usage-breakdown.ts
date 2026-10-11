@@ -9,8 +9,41 @@ import type { ToolEntry } from './usage-stats';
 import type { BashBucketsBlock } from './usage-breakdowns';
 import { BASH_BUCKET_HINTS } from './usage-breakdowns';
 import { shortToolName } from './usage-drilldown';
+import { LEGACY_BUILDD_ACTION_TOOL, isBuilddActionTool } from '@buildd/shared';
 
-export const BUILDD_TOOL = 'mcp__buildd__buildd';
+/**
+ * The one row every buildd action tool is counted under. Sessions call the
+ * group tools (`mcp__buildd__buildd_<group>`); older histograms and runners
+ * that predate them carry the legacy `mcp__buildd__buildd`. Folding both under
+ * the legacy name keeps the buildd row continuous across the switch, and its
+ * actions breakdown (per-call events, keyed by action) already spans both.
+ */
+export const BUILDD_TOOL = LEGACY_BUILDD_ACTION_TOOL;
+
+/**
+ * `tools` with every buildd action tool folded into one BUILDD_TOOL row, in
+ * call order. Calls and shares add. `tasks`/`exactTasks` take the largest
+ * member: a task that called two of them would be counted twice by a sum, and
+ * the per-task sets are not available here, so the row reports a floor.
+ */
+export function foldBuilddActionTools<T extends ToolEntry>(tools: readonly T[]): T[] {
+  const members = tools.filter(t => isBuilddActionTool(t.name));
+  if (members.length === 0 || (members.length === 1 && members[0].name === BUILDD_TOOL)) return [...tools];
+  const folded = {
+    ...members[0],
+    name: BUILDD_TOOL,
+    calls: members.reduce((a, t) => a + t.calls, 0),
+    share: members.reduce((a, t) => a + t.share, 0),
+    tasks: Math.max(...members.map(t => t.tasks)),
+    exactCalls: members.reduce((a, t) => a + t.exactCalls, 0),
+    exactTasks: Math.max(...members.map(t => t.exactTasks)),
+  } as T;
+  // The folded row takes its first member's place; then re-rank by calls
+  // (Array.prototype.sort is stable, so ties keep the input order).
+  return tools
+    .flatMap(t => (t === members[0] ? [folded] : isBuilddActionTool(t.name) ? [] : [t]))
+    .sort((a, b) => b.calls - a.calls);
+}
 
 /** Shell buckets that a dedicated tool already does better. */
 const DEDICATED_TOOL: Record<string, string> = {
@@ -93,7 +126,7 @@ function childrenFor(tool: ToolEntry, input: ToolBreakdownInput): Pick<ToolBreak
 }
 
 export function buildToolBreakdown(input: ToolBreakdownInput): ToolBreakdownRow[] {
-  return input.tools.map(tool => ({
+  return foldBuilddActionTools(input.tools).map(tool => ({
     name: tool.name,
     label: shortToolName(tool.name),
     calls: tool.calls,

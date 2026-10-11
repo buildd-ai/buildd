@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
+import { finalizeArtifactUpload } from '@/lib/artifact-upload';
 
 // GET /api/artifacts/[artifactId]/download - Redirect to presigned download URL
 export async function GET(
@@ -68,7 +69,7 @@ export async function GET(
       const isOwner = artifact.worker?.accountId === account.id;
       if (!isOwner) {
         const hasAccess = artifact.workspaceId
-          ? await verifyAccountWorkspaceAccess(account.id, artifact.workspaceId)
+          ? await verifyAccountWorkspaceAccess(account, artifact.workspaceId)
           : false;
         if (!hasAccess) {
           return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
@@ -81,6 +82,18 @@ export async function GET(
       if (!hasAccess) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
+    }
+  }
+
+  // An upload is served only once its bytes are verified: a pending one is
+  // finalized by this read; a failed one stays failed and reports why.
+  if (artifact.uploadState === 'pending' || artifact.uploadState === 'failed') {
+    const upload = await finalizeArtifactUpload(artifact.id);
+    if (upload.state !== 'ready') {
+      return NextResponse.json(
+        { error: upload.state === 'failed' ? `Upload failed: ${upload.reason}` : 'Upload not finished: the file has not arrived yet', uploadState: upload.state },
+        { status: 409 },
+      );
     }
   }
 

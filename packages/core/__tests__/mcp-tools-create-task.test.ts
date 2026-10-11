@@ -301,7 +301,8 @@ describe('create_task — parentTaskId support', () => {
     );
 
     expect(result.content[0].text).not.toContain('Status: pending');
-    expect(result.content[0].text).toContain('Queued');
+    expect(result.content[0].text).toContain('Created and queued; pickup is asynchronous');
+    expect(result.content[0].text).not.toMatch(/no runner has claimed|next poll/i);
     expect(result.content[0].text).toContain('get_task');
     expect(result.content[0].text).toContain('task-new');
   });
@@ -759,6 +760,16 @@ describe('create_task — kind/complexity routing inputs', () => {
     }
   });
 
+  it.each([['feature'], ['test']])('rejects a category value (%s) passed as kind', async (kind) => {
+    await expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Task', description: 'd', kind },
+      createMockContext(),
+    )).rejects.toThrow(/kind must be one of/);
+    expect(mockApi).not.toHaveBeenCalled();
+  });
+
   it('rejects an invalid kind instead of silently dropping it', async () => {
     await expect(handleBuilddAction(
       mockApi as unknown as ApiFn,
@@ -940,5 +951,40 @@ describe('create_task — short display label', () => {
 
   it('documents label in the create_task params description', () => {
     expect(buildParamsDescription(['create_task'])).toContain('label?');
+  });
+});
+
+describe('create_task — mission inheritance for friction reports', () => {
+  const callerApi = () => {
+    const api = mock(async (endpoint: string) =>
+      endpoint.startsWith('/api/workers/')
+        ? { task: { missionId: 'mission-1' } }
+        : { id: 'task-new' });
+    return api;
+  };
+  const postBody = (api: ReturnType<typeof mock>) =>
+    JSON.parse(api.mock.calls.find(([e]) => e === '/api/tasks')![1].body);
+  const ctx = () => createMockContext({ workerId: 'worker-1' });
+
+  it('still inherits the caller mission for ordinary tasks', async () => {
+    const api = callerApi();
+    await handleBuilddAction(api as unknown as ApiFn, 'create_task', { title: 'Do work', description: 'd' }, ctx());
+    expect(postBody(api).missionId).toBe('mission-1');
+  });
+
+  it('does not inherit the mission for a [friction] title (PR base stays trunk)', async () => {
+    const api = callerApi();
+    await handleBuilddAction(api as unknown as ApiFn, 'create_task', { title: '[friction] broken thing', description: 'd' }, ctx());
+    const body = postBody(api);
+    expect(body.missionId).toBeUndefined();
+    expect(body.context.relatedMissionId).toBe('mission-1');
+  });
+
+  it('does not inherit the mission when context.frictionSignature is set', async () => {
+    const api = callerApi();
+    await handleBuilddAction(api as unknown as ApiFn, 'create_task', { title: 'x', description: 'd', context: { frictionSignature: 'sig' } }, ctx());
+    const body = postBody(api);
+    expect(body.missionId).toBeUndefined();
+    expect(body.context.frictionSignature).toBe('sig');
   });
 });

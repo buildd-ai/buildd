@@ -34,27 +34,61 @@ export type ModuleId =
 export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
   ['workspace-migration', /\/migrate\/|migration-slot|workspace-migration|migrate-access|migration-(inspector|outcomes|safety)/],
   ['intake-integrations', /linear|\/webhooks\/ingest|subject-intake/],
-  ['connectors', /\/connectors|connector-|mcp-connector|required-connectors|cross-app|assertion/],
+  // settings/connections is Connected apps: the team's MCP connectors live there.
+  ['connectors', /\/connectors|settings\/connections\/|connector-|mcp-connector|required-connectors|cross-app|assertion|capability-grants|\/api\/mcp\/c\/|\/agent-capabilities\/(requests|policy)\//],
   ['spec-conformance', /spec-(conformance|discrepancy|doc-fix|recheck)|discrepanc|doc-fix/],
   ['visual-qa', /visual-(qa|review|audit|fix)|surface-audit|mcp-visual-review|page-source/],
   ['onboarding', /onboarding|workspace-readiness|\/readiness\//],
   ['experiments', /prompt-evals|experiment|readout|shadow-harness|health-experiments|\/api\/experiments|tier-explore/],
-  ['jev-decisions', /decision|prompted-decision|\/api\/decisions|question-gate-decision|strand-choice|inference-(client|route|policy|key)|\/api\/inference-keys/],
+  ['jev-decisions', /decision|recoverable-blocker|prompted-decision|\/api\/decisions|question-gate-decision|strand-choice|inference-(client|route|policy|key)|\/api\/inference-keys|model-inference/],
   ['chat', /\/chat|chat-|conversation-title|\/api\/ai\/|\/lib\/ai\/|\/share\//],
   ['releases', /(?<!path-claim-)release|\/api\/deploy-identity|health-watcher-vercel|deploy-identity/],
-  ['missions', /(?<!per)mission|initiative|heartbeat-(triage|prepass|wait|circuit)|approve-plan|goal-criteri|criteria-|orchestrat|loop-(dispatcher|webhook|config)|mission-loop|plan-first|surface-ordering|change-intent|action-queue|action-card|action-events|coordination-intent|subject-(intake|sweep|anchor|gate-contract)/],
+  ['missions', /(?<!per)mission|initiative|heartbeat-(triage|prepass|wait|circuit)|approve-plan|goal-criteri|criteria-|orchestrat|loop-(dispatcher|webhook|config)|mission-loop|plan-first|surface-ordering|change-intent|action-queue|action-card|action-events|coordination-intent|subject-(intake|sweep|anchor|gate-contract)|flow-timeline/],
   ['knowledge', /knowledge|memory|evidence|linked-knowledge|retrieval|feedback-digest|\/api\/feedback|recall|learn|embed|entity-|scip|prior-work|insight/],
-  ['notifications', /notif|pushover|away-delivery|subscription|watch-|watched-project|artifact-notify|presence|stall-notify|connector-block-notify|personal-workspace-links/],
+  // `presence-token` is the agent plugin hooks' auth credential (core), not chat/notification presence.
+  ['notifications', /notif|NotificationsSection|pushover|away-delivery|subscription|watch-|watched-project|artifact-notify|presence(?!-token)|stall-notify|connector-block-notify|personal-workspace-links/],
   ['schedules', /schedule/],
-  ['roles-skills', /role-(config|colors|outcomes|tool-scope|routing|env)|default-roles|effective-roles|task-role|delegate-options|\/api\/roles|\/skills|role-gate|skill-and-role|role-model-routing|\/team\//],
+  ['roles-skills', /role-(config|colors|outcomes|tool-scope|routing|env)|default-roles|effective-roles|task-role|delegate-options|\/api\/roles|\/skills|role-gate|skill-and-role|role-model-routing|\/team\/|\/settings\/roles\//],
   ['reviews-merge', /reviewer-evidence|(?<!p)review|merge-policy|auto-merge|pr-landing|landing-action|ci-red|ci-failure|ci-retry|ci-drift|ci-gate|ci-lifecycle|ci-job-log|failed-checks|conflict-retry|dead-zone|dead-pr|supersession|pr-re-review|stale-approval|pr-lede-correction|pr-activity|dependency-bot|pr-attention|pr-branch-update|base-refresh|pr-scope-reconcile|spec-|discrepanc|doc-fix|migration-collision|\/prs\//],
-  ['health-quality', /(?<!credential-)health|post-session|quality-scout|scout-capabilit|failure-|error-pattern|error-traces|explain|insights|usage-|gate-analytics|coordination-stats|\/stats|spend-summary|fleet-view|queue-stall|mission-invariant|role-outcomes|cron-health|routing-calibration|routing-analytics|silent-completion|stranded|pacing-stall|workspace-error-traces|subagent-time|scheduling-metrics|model-quality|\/admin|platform-admin|task-category|dispatch-health|signal-registry|derived-metric|terminal-record|friction|bash-failure-trace/],
+  ['health-quality', /(?<!credential-)health|post-session|quality-scout|scout-capabilit|failure-|error-pattern|error-traces|explain|insights|(?<!runner-)usage-|gate-analytics|coordination-stats|\/stats|spend-summary|fleet-view|queue-stall|mission-invariant|role-outcomes|cron-health|routing-calibration|routing-analytics|silent-completion|stranded|pacing-stall|workspace-error-traces|subagent-time|scheduling-metrics|model-quality|\/admin|platform-admin|task-category|dispatch-health|signal-registry|derived-metric|terminal-record|friction|bash-failure-trace/],
   ['model-tiers', /tier-|model-tier|\/settings\/models\/|\/api\/model-tiers|tier-weights|openrouter-rankings|litellm/],
 ];
 
 export type Owner = ModuleId | 'core';
 
+/** Core run-record helpers whose names also match broader module heuristics. */
+const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
+  'packages/core/bash-failure-trace.ts',
+  'apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts',
+  // The team credential policy (teams.credentialPolicy): it governs agent runs
+  // and every provider (packages/core/providers/policy.ts), not just decision
+  // and inference calls, so `inference-(…policy…)` misfiles it.
+  'packages/core/inference-key-policy.ts',
+  // Load escalation gate verdicts for missions: server-side core logic that
+  // matches the mission module naming pattern but is core coordination.
+  'packages/core/mission-verdicts.ts',
+  // Model-credential storage and resolution for every surface (provider
+  // registry, packages/core/providers): the chat-key resolver, and the LiteLLM
+  // gateway credential and its settings. `inference-(…key…)` and `litellm`
+  // misfile them as the decision and model-tier modules; the one provider write
+  // path (apps/web/src/lib/providers/write-path.ts) is core and writes them.
+  'packages/core/inference-keys.ts',
+  'packages/core/litellm-gateway.ts',
+  'apps/web/src/lib/litellm-gateway-settings.ts',
+  // Model-tier ceilings (docs/specs/model-tier-ceilings.md): an authorization
+  // and spend control the claim route, task routes, chat turn and inference
+  // client all enforce, not part of the tier-mapping module. `tier-` misfiles
+  // them as model-tiers.
+  'packages/shared/src/model-tier-ceiling.ts',
+  'packages/core/model-tier-ceiling.ts',
+  'packages/core/model-tier-ceiling-store.ts',
+  'apps/web/src/lib/tier-ceiling-check.ts',
+]);
+
 export function moduleOf(path: string): Owner {
+  // Lifecycle progress is a core coordination fact, not stored knowledge evidence.
+  if (path === 'packages/core/run-evidence.ts') return 'core';
+  if (CORE_RUN_RECORD_FILES.has(path)) return 'core';
   const q = '/' + path;
   for (const [id, re] of MODULE_RULES) if (re.test(q)) return id;
   return 'core';

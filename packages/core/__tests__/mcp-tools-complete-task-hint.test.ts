@@ -181,6 +181,21 @@ describe('MCP update_progress — self-reported cost', () => {
     expect(body.outputTokens).toBe(100);
     expect(body.costUsd).toBe(0.05);
   });
+
+  // docs/specs/real-and-virtual-cost.md: a self-report may say how it was charged.
+  it('forwards costBasis on both usage actions, and omits it when not given', async () => {
+    for (const [action, params] of [
+      ['update_progress', { progress: 50, inputTokens: 500, costBasis: 'real' }],
+      ['complete_task', { summary: 'done', inputTokens: 500, costBasis: 'virtual' }],
+    ] as const) {
+      const api = mock(async () => ({ status: 'running', turns: 1 }));
+      await handleBuilddAction(api as unknown as ApiFn, action, params, context);
+      expect(patchBody(api).costBasis).toBe(params.costBasis);
+    }
+    const api = mock(async () => ({ turns: 1 }));
+    await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done', inputTokens: 5 }, context);
+    expect(patchBody(api).costBasis).toBeUndefined();
+  });
 });
 
 describe('MCP complete_task — 409 on a worker the server already finished', () => {

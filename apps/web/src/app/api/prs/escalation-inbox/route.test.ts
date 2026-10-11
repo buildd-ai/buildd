@@ -8,6 +8,7 @@ const mockWorkersFindMany = mock(() => [] as any[]);
 const mockMissionNotesFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockTasksFindMany = mock(() => [] as any[]);
+const mockHandoffRows = mock(() => [] as any[]);
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -39,6 +40,7 @@ mock.module('@/lib/task-presentation', () => ({
 
 mock.module('@buildd/core/db', () => ({
   db: {
+    select: () => ({ from: () => ({ where: () => mockHandoffRows() }) }),
     query: {
       workers: { findMany: mockWorkersFindMany },
       tasks: { findMany: mockTasksFindMany },
@@ -109,6 +111,8 @@ describe('GET /api/prs/escalation-inbox', () => {
     mockWorkspacesFindMany.mockReset();
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
+    mockHandoffRows.mockReset();
+    mockHandoffRows.mockResolvedValue([]);
   });
 
   it('returns 401 when unauthenticated', async () => {

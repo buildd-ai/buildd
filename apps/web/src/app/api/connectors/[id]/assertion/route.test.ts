@@ -8,6 +8,9 @@ const mockWorkersQuery = mock(() => null as any);
 const mockTasksQuery = mock(() => null as any);
 const mockConnectorsQuery = mock(() => null as any);
 const mockConnectorWorkspacesQuery = mock(() => null as any);
+const mockWorkspacesQuery = mock(() => null as any);
+const mockSharesQuery = mock(() => null as any);
+const mockCheckBlocked = mock(async (_c: any, _team: string) => null as any);
 const mockGetActiveSigningKey = mock(() => null as any);
 const mockSignAssertion = mock(() => Promise.resolve('header.payload.sig') as any);
 
@@ -22,6 +25,8 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findFirst: mockTasksQuery },
       connectors: { findFirst: mockConnectorsQuery },
       connectorWorkspaces: { findFirst: mockConnectorWorkspacesQuery },
+      workspaces: { findFirst: mockWorkspacesQuery },
+      connectorShares: { findFirst: mockSharesQuery },
     },
   },
 }));
@@ -36,6 +41,13 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: 'tasks_table',
   connectors: 'connectors_table',
   connectorWorkspaces: 'connector_workspaces_table',
+  workspaces: 'workspaces_table',
+  connectorShares: 'connector_shares_table',
+}));
+
+mock.module('@/lib/connector-access-policy', () => ({
+  checkConnectorBlocked: mockCheckBlocked,
+  blockedBody: (b: any) => ({ error: 'blocked_by_policy', slug: b.slug, message: 'blocked' }),
 }));
 
 mock.module('@/lib/signing-keys', () => ({
@@ -89,8 +101,14 @@ describe('POST /api/connectors/[id]/assertion', () => {
     mockConnectorWorkspacesQuery.mockReset();
     mockGetActiveSigningKey.mockReset();
     mockSignAssertion.mockReset();
+    mockWorkspacesQuery.mockReset();
+    mockSharesQuery.mockReset();
+    mockCheckBlocked.mockReset();
 
     // Default happy path
+    mockWorkspacesQuery.mockResolvedValue({ teamId: 'team-1' });
+    mockSharesQuery.mockResolvedValue(undefined);
+    mockCheckBlocked.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue(account);
     mockWorkersQuery.mockResolvedValue(worker);
     mockTasksQuery.mockResolvedValue(task);
@@ -163,6 +181,31 @@ describe('POST /api/connectors/[id]/assertion', () => {
     mockConnectorWorkspacesQuery.mockResolvedValue({ enabled: false });
     const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(403);
+  });
+
+  // Cross-team isolation: the task's team must own the connector or hold a share.
+  it("returns 404 for another team's connector that is not shared to the task's team", async () => {
+    mockConnectorsQuery.mockResolvedValue({ ...connector, teamId: 'team-OTHER' });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
+    expect(res.status).toBe(404);
+    expect(mockSignAssertion).not.toHaveBeenCalled();
+  });
+
+  it("mints for another team's connector that IS shared to the task's team", async () => {
+    mockConnectorsQuery.mockResolvedValue({ ...connector, teamId: 'team-OTHER' });
+    mockSharesQuery.mockResolvedValue({ connectorId: connector.id });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
+    expect(res.status).toBe(200);
+  });
+
+  // Mid-session revocation: every mint re-checks team catalog policy.
+  it('returns 403 blocked_by_policy once the team blocks the catalog entry', async () => {
+    mockCheckBlocked.mockResolvedValue({ slug: 'cue', name: 'Cue', blockedByTeamId: 'team-1' });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('blocked_by_policy');
+    expect(mockCheckBlocked.mock.calls[0][1]).toBe('team-1');
+    expect(mockSignAssertion).not.toHaveBeenCalled();
   });
 
   it('allows minting when no connectorWorkspaces row (missing = enabled)', async () => {

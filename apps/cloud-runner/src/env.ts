@@ -11,6 +11,8 @@ import type { WorkerAgent, WorkerAgentLarge } from './worker-agent';
  * are in EgressEnv (outbound.ts), the telemetry ones in OtelEgressEnv (otel.ts).
  */
 export interface Env extends EgressEnv, OtelEgressEnv {
+  BROWSER_BRIDGE?: string;
+  BROWSER?: import('./browser-binding').BrowserBinding;
   /** Standard-size task agents (container class standard-1). */
   WorkerAgent: DurableObjectNamespace<WorkerAgent>;
   /** Large-size task agents (container class standard-3; runner-class.ts). */

@@ -146,7 +146,13 @@ function showToast(task: WaitingTask, router: ReturnType<typeof useRouter>) {
     const n = new Notification('Task needs input', {
       // The question, one line of context, the recommended default (question brief).
       body: task.waitingFor?.prompt
-        ? questionNotificationText({ ...task.waitingFor, where: { taskTitle: task.title } }).message
+        ? questionNotificationText({
+            prompt: task.waitingFor.prompt,
+            options: task.waitingFor.options,
+            context: task.waitingFor.context,
+            recommended: task.waitingFor.recommended,
+            where: { taskTitle: task.title },
+          }).message
         : task.title,
       icon: '/favicon.ico',
       tag: `waiting-input-${task.id}`,

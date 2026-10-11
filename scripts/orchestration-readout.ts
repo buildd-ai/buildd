@@ -122,6 +122,9 @@ async function main(): Promise<void> {
         if (e) console.error(`  ${g.key.candidatePolicyVersion}: lease ${e.lease.verdict}, ordering ${e.ordering.verdict}`);
       }
     }
+    for (const c of readout.softOverlapStarts ?? []) {
+      console.error(`soft-overlap starts decided by ${c.decidedBy}: ${c.starts} started, unsafe rate ${c.unsafeStartRate === null ? 'n/a' : c.unsafeStartRate.toFixed(3)}, sibling probe conflicts ${c.siblingProbe.conflict}/${c.siblingProbe.probed}`);
+    }
     console.error(`promotion: ${readout.promotion.status}; readout written (private, do not commit)`);
   } else {
     process.stdout.write(`${json}\n`);

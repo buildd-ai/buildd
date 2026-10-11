@@ -20,7 +20,7 @@ describe('mission board visual fixture', () => {
 
   it('parses phase, reason, layout and complete, falling back on unknown values', () => {
     expect(parseMissionBoardVisualParams(new URLSearchParams(''))).toMatchObject({ phase: 'needs_you', layout: 'board', complete: false, options: { needsYou: 'unsure' } });
-    expect(parseMissionBoardVisualParams(new URLSearchParams('phase=capturing&layout=lanes'))).toMatchObject({ phase: 'capturing', layout: 'lanes' });
+    expect(parseMissionBoardVisualParams(new URLSearchParams('phase=capturing&layout=feed'))).toMatchObject({ phase: 'capturing', layout: 'feed' });
     expect(parseMissionBoardVisualParams(new URLSearchParams('phase=off&layout=nope'))).toMatchObject({ phase: 'needs_you', layout: 'board' });
     expect(parseMissionBoardVisualParams(new URLSearchParams('phase=reviewed&complete=1')).complete).toBe(true);
     // The audit task's own surfaces (task sheet and task page), e.g. before its first screen.

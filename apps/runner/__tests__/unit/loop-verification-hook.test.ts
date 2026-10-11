@@ -73,6 +73,12 @@ describe('createLoopVerificationHook', () => {
     expect(out).toEqual({});
   });
 
+  test('complete_task on the group tool buildd_work is verified too', async () => {
+    await run(preToolUse('mcp__buildd__buildd_work', { action: 'complete_task', params: { summary: 'Done.' } }));
+    expect(mockCollect).toHaveBeenCalledTimes(1);
+    expect(mockUpdateWorker).toHaveBeenCalledWith('w1', { verificationEvidence: EVIDENCE });
+  });
+
   test('other buildd actions are ignored', async () => {
     await run(preToolUse('mcp__buildd__buildd', { action: 'create_pr', params: {} }));
     await run(preToolUse('mcp__buildd__buildd', { action: 'update_progress', params: {} }));

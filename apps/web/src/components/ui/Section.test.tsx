@@ -18,7 +18,9 @@ describe('Section', () => {
         <p>row</p>
       </Section>,
     );
-    expect(html).toMatch(/Running<span class="ml-2 text-text-muted">3<\/span>/);
+    // Counts are mono (design-system.md §1.1), beside a muted sans label.
+    expect(html).toMatch(/Running<span class="ml-2 font-mono font-normal">3<\/span>/);
+    expect(html).toContain('text-text-muted');
     expect(html).toContain('<a href="/all">All</a>');
   });
 

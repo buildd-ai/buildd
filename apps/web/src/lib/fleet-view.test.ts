@@ -37,7 +37,7 @@ describe('buildFleetSnapshot', () => {
   const snap = buildFleetSnapshot(
     [hb('h1', 'http://atlas.local:8766'), hb('h2', 'http://birch.local:8766')],
     [
-      worker('export', 'http://atlas.local:8766', { progress: 25 }),
+      worker('export', 'http://atlas.local:8766', { phase: 'Pushed' }),
       worker('money', 'http://atlas.local:8766', { status: 'completed', startedAt: min(40), completedAt: min(20), prNumber: 412 }),
       worker('checkout', 'http://birch.local:8766', { status: 'waiting_input', waitingFor: { prompt: 'Per line or total?' } }),
       worker('ghost', 'http://gone.local:1', { status: 'completed', startedAt: min(30), completedAt: min(25) }),
@@ -52,8 +52,33 @@ describe('buildFleetSnapshot', () => {
     expect(atlas.slots[0].lane.bars.map(b => b.scope)).toEqual(['money', 'export']);
     expect(atlas.slots[0].lane.bars.map(b => b.label)).toEqual(['something', 'something']);
     expect(atlas.slots[0].lane.bars[0].title).toBe('feat(money): something');
-    expect(atlas.slots[0].worker).toMatchObject({ label: 'export', progress: 25, roleColor: '#123456', roleName: 'Builder' });
+    expect(atlas.slots[0].worker).toMatchObject({ label: 'export', phase: 'Pushed', roleColor: '#123456', roleName: 'Builder' });
     expect(atlas.slots[1].worker).toBeNull();
+  });
+
+  it('each bar says how its run stands or ended, and carries its task id', () => {
+    const s = buildFleetSnapshot(
+      [hb('h1', 'http://atlas.local:8766', 3)],
+      [
+        worker('live', 'http://atlas.local:8766'),
+        worker('stopped', 'http://atlas.local:8766', {
+          status: 'failed', startedAt: min(50), completedAt: min(45),
+          error: "You've hit your session limit [work preserved: origin/x@1]", taskMergedPr: 4235,
+        }),
+        worker('merged', 'http://atlas.local:8766', { status: 'completed', startedAt: min(40), completedAt: min(30), prNumber: 9, mergedAt: min(29) }),
+      ],
+      { now: NOW },
+    );
+    const bars = s.runners[0].slots.flatMap(sl => sl.lane.bars);
+    const by = (id: string) => bars.find(b => b.id === id)!;
+    expect(by('live').endReason).toBe('Working');
+    expect(by('stopped').endReason).toBe('Stopped: session limit · work kept · merged as #4235');
+    expect(by('merged').endReason).toBe('Done · merged as #9');
+    expect(by('merged').taskId).toBe('t-merged');
+  });
+
+  it('each bar carries its task\'s mission, so the lanes chart can light a mission up', () => {
+    expect(snap.runners[0].slots[0].lane.bars.map(b => b.missionId)).toEqual(['m1', 'm1']);
   });
 
   it('never gives an adopted PR\'s placeholder worker a slot or a role-less bar', () => {
@@ -185,6 +210,51 @@ describe('buildFleetSnapshot', () => {
     );
     const lanes = s2.runners[0].slots.map(sl => sl.lane.bars.map(b => b.scope));
     expect(lanes).toEqual([['a', 'c'], ['b']]);
+  });
+});
+
+describe('interactive sessions on the fleet board', () => {
+  // A claim_task worker from a person's own coding session (runner 'mcp') is
+  // not a runner and holds no runner slot: it gets its own lane, apart from
+  // fleet.runners, and never counts against runner capacity.
+  const hb: FleetHeartbeatRow = { id: 'h1', accountId: 'acct', localUiUrl: 'http://atlas.local:8766', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000) };
+  const w = (id: string, runner: string, over: Partial<FleetWorkerRow> = {}): FleetWorkerRow => ({
+    id, accountId: 'acct', runner, status: 'running', startedAt: min(10),
+    task: { id: `t-${id}`, title: `feat(${id}): something`, roleSlug: 'builder', missionId: null }, ...over,
+  });
+
+  it('live session claims get their own lane, not a runner; runner counts and capacity are untouched', () => {
+    const snap = buildFleetSnapshot([hb], [
+      w('runner-job', 'http://atlas.local:8766'),
+      w('mine', 'mcp', { startedAt: min(5) }),
+      w('mine-sub', 'mcp', { startedAt: min(2) }),
+      w('done-earlier', 'mcp', { status: 'completed', startedAt: min(40), completedAt: min(30) }),
+    ], { now: NOW, sessionsOnline: 3 });
+    expect(snap.runners.map(r => r.name)).toEqual(['atlas']);
+    expect(snap.capacity).toBe(2);
+    expect(snap.live).toBe(1);
+    expect(snap.sessions).not.toBeNull();
+    expect(snap.sessions!.interactive).toEqual({ running: 2, online: 3 });
+    expect(snap.sessions!.slots.map(s => s.worker?.label)).toEqual(['mine', 'mine-sub']);
+    expect(snap.sessions!.online).toBe(true);
+    expect(fleetLabel(snap)).toBe('Runners · 1 runner × 2 slots');
+    expect(fleetSummary(snap)).toMatchObject({ busy: 1, slots: 2, runnerNames: ['atlas'] });
+  });
+
+  it('no live session claim, no lane (a finished one leaves nothing behind)', () => {
+    const snap = buildFleetSnapshot([hb], [w('done', 'mcp', { status: 'completed', startedAt: min(40), completedAt: min(30) })], { now: NOW, sessionsOnline: 5 });
+    expect(snap.sessions).toBeNull();
+    expect(snap.runners).toHaveLength(1);
+  });
+
+  it('a live session claim with no start time is still a working row, never an empty "idle" slot', () => {
+    const snap = buildFleetSnapshot([], [w('nostart', 'mcp', { startedAt: null, updatedAt: min(3) })], { now: NOW });
+    expect(snap.runners).toEqual([]);
+    expect(snap.sessions!.slots).toHaveLength(1);
+    expect(snap.sessions!.slots[0].worker?.label).toBe('nostart');
+    expect(snap.sessions!.slots[0].lane.bars[0].start).toBe(min(3).getTime());
+    // Online count unknown: the lane does not claim one.
+    expect(snap.sessions!.interactive).toEqual({ running: 1, online: null });
   });
 });
 
@@ -428,7 +498,7 @@ describe('fleet online window', () => {
   it('is the window Home and Settings load the fleet with', async () => {
     const src = await Bun.file(new URL('./home-fleet.ts', import.meta.url)).text();
     expect(src).not.toMatch(/onlineThresholdMs:\s*RUNNER_ONLINE_THRESHOLD_MS/);
-    expect(src.match(/onlineThresholdMs:\s*FLEET_ONLINE_WINDOW_MS/g)?.length).toBe(3);
+    expect(src.match(/onlineThresholdMs:\s*FLEET_ONLINE_WINDOW_MS/g)?.length).toBe(4);
   });
 });
 

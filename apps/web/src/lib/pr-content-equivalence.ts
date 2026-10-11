@@ -111,3 +111,54 @@ function sameFiles(from: CompareFile[], to: CompareFile[]): boolean {
   }
   return true;
 }
+
+/**
+ * A retarget's evidence (24e1cfad): does `sha` bring the same change into
+ * `toBase` as into `fromBase`? For each base, the PR's diff (`base...sha`) less
+ * the files whose content at `sha` that base's tip already holds (a squash- or
+ * merge-landed parent PR, for a stacked PR retargeted onto trunk). The two sets
+ * must match file for file, patch for patch. The head is one commit, so blob
+ * SHAs at the head cannot tell the two diffs apart; patches can. Fails closed:
+ * an unreadable or truncated compare (a deleted old base) is "not equivalent".
+ */
+export async function isBaseDiffEquivalent(params: {
+  installationId: number;
+  repoFullName: string;
+  fromBase: string;
+  toBase: string;
+  sha: string;
+  api?: Api;
+}): Promise<{ equivalent: boolean; reason: string }> {
+  const api = params.api ?? githubApi;
+  const compare = async (base: string, head: string): Promise<CompareFile[] | null> => {
+    const data = (await api(
+      params.installationId,
+      `/repos/${params.repoFullName}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+    )) as { files?: CompareFile[] } | null;
+    return Array.isArray(data?.files) ? data.files : null;
+  };
+  /** The PR's change into `base` that the base does not already carry. */
+  const novel = async (base: string): Promise<CompareFile[] | null> => {
+    const [pr, onBase] = await Promise.all([compare(base, params.sha), compare(params.sha, base)]);
+    if (!pr || !onBase || pr.length >= COMPARE_FILE_LIMIT || onBase.length >= COMPARE_FILE_LIMIT) return null;
+    const baseHas = new Map(onBase.filter((f) => f.status !== 'removed' && f.sha).map((f) => [f.filename, f.sha]));
+    return pr.filter((f) => !(f.status !== 'removed' && f.sha && baseHas.get(f.filename) === f.sha));
+  };
+  let from: CompareFile[] | null;
+  let to: CompareFile[] | null;
+  try {
+    [from, to] = await Promise.all([novel(params.fromBase), novel(params.toBase)]);
+  } catch (err) {
+    return { equivalent: false, reason: `could not compare: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (!from || !to) return { equivalent: false, reason: 'could not compare (unreadable, malformed or truncated)' };
+  if (from.length !== to.length) return { equivalent: false, reason: 'PR diff changed' };
+  const byName = new Map(to.map((f) => [f.filename, f]));
+  for (const a of from) {
+    const b = byName.get(a.filename);
+    if (!b || a.status !== b.status || (a.previous_filename ?? '') !== (b.previous_filename ?? '')) return { equivalent: false, reason: 'PR diff changed' };
+    if (typeof a.patch !== 'string' || typeof b.patch !== 'string') return { equivalent: false, reason: 'patch unavailable' };
+    if (normalizePatch(a.patch) !== normalizePatch(b.patch)) return { equivalent: false, reason: 'PR diff changed' };
+  }
+  return { equivalent: true, reason: 'PR diff unchanged' };
+}

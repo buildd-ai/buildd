@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/lib/task-presentation.ts, apps/web/src/lib/approve-plan.ts, apps/web/src/lib/mission-feed-groups.ts, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx"]
 related: [mission-feed, mission-structure-view, timeline-dependency-geometry, mission-task-lifecycle]
 keywords: [phase, work kind, role slug, glyph, reviewer role, unassigned, swimlane, phase header, approve_plan, usage stats]
-verified_by: [apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/task-presentation.test.ts, apps/web/src/components/TaskCard.test.tsx, apps/web/src/lib/condensed-timeline-rail.test.ts, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx", "apps/web/src/components/missions/MissionTaskRow.test.tsx", "apps/web/src/app/app/(protected)/missions/[id]/StructureView.test.tsx"]
+verified_by: [apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/task-presentation.test.ts, apps/web/src/components/TaskCard.test.tsx, apps/web/src/lib/condensed-timeline-rail.test.ts, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx", "apps/web/src/components/missions/MissionTaskRow.test.tsx"]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 # 2026-09-23: §4's mobile surface moved from the retired rail to the mission
@@ -16,6 +16,8 @@ supersedes: []
 # (`mission-phase-header`) and the kind glyph in MissionTaskRow, both through
 # the same stored phase fields and deriveWorkKind. The render-test assertion
 # follows them; §1–§3 are unchanged.
+# 2026-10-09: the Structure canvas was removed (mission-flow-timeline.md
+# replaced it), so §4.7 and AC-19 are retired and its assertions dropped.
 assertions:
   - id: "work-kind-derivation"
     type: "symbol"
@@ -29,10 +31,6 @@ assertions:
     type: "symbol_reachable"
     symbol: "deriveWorkKind"
     entry: "apps/web/src/components/TaskCard.tsx"
-  - id: "structure-glyph-reads-work-kind"
-    type: "symbol_reachable"
-    symbol: "deriveWorkKind"
-    entry: "apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx"
   - id: "feed-phase-render-tests"
     type: "test_file"
     path: "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx"
@@ -40,9 +38,6 @@ assertions:
     type: "symbol_reachable"
     symbol: "deriveWorkKind"
     entry: "apps/web/src/components/missions/MissionTaskRow.tsx"
-  - id: "structure-glyph-render-tests"
-    type: "test_file"
-    path: "apps/web/src/app/app/(protected)/missions/[id]/StructureView.test.tsx"
   - id: "rail-phase-model-tests"
     type: "test_file"
     path: "apps/web/src/lib/condensed-timeline-rail.test.ts"
@@ -86,7 +81,7 @@ shared derivation that never sees a task's title.
 | 15 | Review trigger | Already exists (`agent-review` tier, PR-open). No second trigger is designed | §3.3 |
 | 16 | Phase header geometry | 34px row, square node, `{index} · {label}`, `SegmentStrip` rollup on the right | §4.2 |
 | 17 | Day ticks under phases | Suppressed. Only the `now` tick survives | §4.3 |
-| 18 | Structure canvas | Glyph column: yes. Phase swimlanes: **explicitly nothing**, with a named precondition | §4.7 |
+| 18 | Structure canvas | Retired: the canvas was removed when Flow replaced it (`mission-flow-timeline.md`) | §4.7 |
 
 ### 0.1 The observed baseline
 
@@ -156,8 +151,8 @@ it identically:**
 
 1. **Both readers already hold the task array and nothing else.** `buildRail`
    (`condensed-timeline.ts:550`) is a pure function over `RailGroups<T>`, and
-   `computeStructureLayout` (`apps/web/src/lib/structure-layout.ts`) is a pure
-   function over `StructureTask[]` + `ChainUnit[]`. Neither takes a database
+   the Structure canvas's layout (since removed) was a pure function over its
+   task and chain arrays. Neither takes a database
    handle. A `mission_phases` table forces a second fetch and a join into both
    call sites, and forces `buildRail` to accept a phase map as a new parameter
    whose staleness is now a thing that can differ between the two surfaces.
@@ -329,7 +324,6 @@ nothing else. The complete list of mounts:
 | Surface | File | Where |
 |---|---|---|
 | Mobile rail node | `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` | glyph column, §4.4 |
-| Structure canvas node | `apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx` | `StructureNodeView`, §4.7 |
 | Activity row | `apps/web/src/components/TaskCard.tsx` | `TaskTypeBadge`, mounted from `apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx` |
 
 **Rule K2-4**: `TaskTypeBadge` (`TaskCard.tsx:171`) is rewritten as a thin
@@ -827,32 +821,12 @@ desktop already has the Structure tab for shape questions, and a second
 full-DAG renderer on the same viewport reopens the ambiguity that spec argues
 against.
 
-### 4.7 Structure canvas — glyphs yes, swimlanes no
+### 4.7 Structure canvas — retired
 
-**Rule R4-21**: `StructureNodeView`
-(`apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx:123`) renders
-the §2.4 glyph from `deriveWorkKind`, the same helper and the same vocabulary as
-the rail. `StructureTask` (`apps/web/src/lib/structure-layout.ts:18`) gains the
-three input fields the helper needs.
-
-**Rule R4-22**: The canvas renders **no phase swimlanes, no phase bands, and no
-phase labels.** Explicitly nothing, not "later".
-
-Justified: `computeStructureLayout` assigns x by Sugiyama dependency rank. A
-swimlane requires its members to be rank-contiguous, and phases are **not
-guaranteed** to be — two phases share a rank whenever a later-phase task has no
-edge into an earlier one, which is precisely what `approvePlan` produces when
-the planner labels phases but declares no edge between them (`phase` and
-`dependsOn` are independent fields on `PlanStep`, and nothing cross-validates
-them). Drawing a band over a non-contiguous set either misstates the layout or
-forces a re-rank, and a re-rank breaks `mission-structure-view.md` §2.2's
-stability invariant — the reason that spec's layout is hand-rolled in the first
-place.
-
-**Named precondition for revisiting**: a phase band becomes drawable once
-`computeStructureLayout` gains a rank-constraint pass that can require
-same-phase nodes to occupy contiguous ranks without violating §2.2. That pass
-is out of scope here and is not designed by this spec.
+The Structure canvas this section governed (Rules R4-21, R4-22) was removed
+when the Flow tab replaced it (`mission-flow-timeline.md`). Flow draws no
+work-kind glyph and no phase band; the rules here no longer apply to any
+surface.
 
 ### 4.8 Reference layouts (360px)
 
@@ -1116,10 +1090,7 @@ examined after creation, THEN no code path has written it by inference from
 `PlanStep.roleSlug`, or the merge policy's reviewer slug (Rule R3-3, Rule
 R3-5).
 
-**AC-19 (rejection)**: GIVEN a mission with phases, WHEN the Structure tab
-renders on desktop, THEN NO swimlane band, phase background, or phase label
-appears on the canvas, and `computeStructureLayout`'s output is identical to
-its pre-change output for the same input (Rule R4-22).
+**AC-19**: Retired with the Structure canvas (§4.7).
 
 **AC-20**: GIVEN a mission with phases in which one task has
 `missionPhaseIndex IS NULL`, WHEN the rail renders, THEN that task's node
@@ -1168,10 +1139,6 @@ at the same offset as in the pre-change rendering (Rule R4-19).
   `SegmentShape` doc comment changes, Rule R4-6)
 - `apps/web/src/components/TaskCard.tsx` — `TaskTypeBadge`
   (rewritten over `deriveWorkKind`, Rule K2-4; the old per-type glyph table it read is removed)
-- `apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx` —
-  `StructureNodeView` (glyph only, Rule R4-21)
-- `apps/web/src/lib/structure-layout.ts` — `StructureTask` (three new input
-  fields); `computeStructureLayout` unchanged (Rule R4-22)
 - `apps/web/src/lib/reviewer.ts` — `createReviewerTask` (adds `kind`, inherits
   phase, Rule R3-1/P1-7)
 - `apps/web/src/app/api/github/pr/route.ts` — the `agent-review` PR-open hook

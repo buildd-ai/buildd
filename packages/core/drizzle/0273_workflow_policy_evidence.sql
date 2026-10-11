@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_deliveries" ADD COLUMN "policy_evidence" jsonb;

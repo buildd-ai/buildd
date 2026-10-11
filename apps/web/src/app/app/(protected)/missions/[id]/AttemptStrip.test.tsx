@@ -88,15 +88,13 @@ describe('mission detail wiring', () => {
   const page = readFileSync(join(dir, 'page.tsx'), 'utf8');
   const timeline = readFileSync(join(dir, 'CondensedTimeline.tsx'), 'utf8');
 
-  it('assembles strips with the canonical grouping API, not a local regroup', () => {
-    expect(page).toContain('buildAttemptStrips');
-    expect(page).toMatch(/from\s+['"]@\/lib\/attempt-strip['"]/);
-  });
-
-  it('partitions the footer so attempts stop being filed as orchestrator runs', () => {
-    expect(page).toContain('partitionBookkeeping');
-    // The old blanket predicate treated every non-work task as footer material.
+  it('never regroups attempts locally, and files no orchestrator footer: runs are History events', () => {
+    // The page no longer assembles strips (the Structure graph that drew them
+    // is gone, mission-flow-timeline.md) and no longer lists orchestrator runs
+    // in a footer row; History › Everything shows each run.
+    expect(page).not.toMatch(/attachAttempts\(/);
     expect(page).not.toMatch(/const isBookkeeping\s*=.*taskClass\s*!==\s*'work'/);
+    expect(page).not.toContain('mission-orchestrator-row');
   });
 
   it('mounts the strip inside the timeline task row', () => {

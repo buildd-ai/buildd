@@ -7,7 +7,6 @@
  * Model: lib/fleet-view.ts (`FleetSnapshot`, `fleetLabel`), loaded by
  * `loadFleetSnapshot` in lib/home-fleet.ts from the same heartbeats Home reads.
  */
-import Link from 'next/link';
 import RunnerInstallSteps from '@/components/RunnerInstallSteps';
 import type { ReactNode } from 'react';
 import type { FleetRunner, FleetSnapshot } from '@buildd/shared';
@@ -16,16 +15,28 @@ import { fleetLabel, type HeadlinePart } from '@/lib/fleet-view';
 import SettingsSection from '../SettingsSection';
 import { StatusChip } from '../_components/ConnectionRow';
 
-/** "3 of 8 slots busy." / "No agents working. 8 slots free." plus "1 offline." */
+const busyOn = (r: FleetRunner) => r.slots.filter(s => s.worker).length;
+const runs = (n: number) => `${n} run${n === 1 ? '' : 's'}`;
+
+/**
+ * "3 of 8 slots busy." / "No agents working. 8 slots free." plus "1 offline."
+ * Busy counts online runners only, the same set capacity counts: an offline
+ * runner's last heartbeat can still list workers, and those are said apart.
+ */
 export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | null): HeadlinePart[] {
-  const offline = fleet.runners.filter(r => !r.online).length;
-  const tail: HeadlinePart[] = offline > 0 ? [{ text: ` ${offline} offline.` }] : [];
   // Another team's runner can be online, so say whose fleet is empty.
   if (fleet.runners.length === 0) return [{ text: teamName ? `No runners online for ${teamName}.` : 'No runners online.' }];
-  if (fleet.capacity === 0 && fleet.live === 0) return [{ text: 'All runners offline.' }];
-  if (fleet.live > 0) {
-    return [{ text: `${fleet.live} of ${fleet.capacity}`, tone: 'accent' }, { text: ' slots busy.' }, ...tail];
+  const offline = fleet.runners.filter(r => !r.online);
+  const busy = fleet.runners.filter(r => r.online).reduce((n, r) => n + busyOn(r), 0);
+  const stale = offline.reduce((n, r) => n + busyOn(r), 0);
+  if (offline.length === fleet.runners.length) {
+    if (stale === 0) return [{ text: 'All runners offline.' }];
+    const where = offline.length === 1 ? 'it at its' : 'them at their';
+    return [{ text: `All runners offline. ${runs(stale)} ${stale === 1 ? 'was' : 'were'} on ${where} last check-in.` }];
   }
+  const tail: HeadlinePart[] = offline.length === 0 ? []
+    : [{ text: stale > 0 ? ` ${offline.length} offline, with ${runs(stale)} at ${offline.length === 1 ? 'its' : 'their'} last check-in.` : ` ${offline.length} offline.` }];
+  if (busy > 0) return [{ text: `${busy} of ${fleet.capacity} slots busy.` }, ...tail];
   return [{ text: `No agents working. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...tail];
 }
 
@@ -41,10 +52,10 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
     >
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span title={runner.name} className="min-w-0 truncate font-mono text-[13px] font-semibold text-text-primary">{runner.name}</span>
+          <span title={runner.name} className="min-w-0 truncate text-sm font-semibold text-text-primary">{runner.name}</span>
           <StatusChip tone={runner.online ? 'ok' : 'warn'}>{runner.online ? 'Online' : 'Offline'}</StatusChip>
         </div>
-        <div className="mt-1 truncate font-mono text-[11px] text-text-muted">
+        <div className="mt-0.5 truncate text-xs text-text-muted">
           {runner.machine ?? 'Host runner'}
           {waiting > 0 && <span className="text-status-warning"> · {waiting} need input</span>}
         </div>
@@ -72,15 +83,14 @@ export default function FleetOverview({ fleet, cloud, teamName }: { fleet: Fleet
     <SettingsSection
       title={fleetLabel(fleet)}
       bare
-      action={fleet.runners.length > 0 ? <Link href="/app/home" className="btn btn-quiet">Live slots on Home ›</Link> : undefined}
     >
       <div data-testid="runners-fleet" className="space-y-3">
-        <p data-testid="runners-fleet-headline" className="font-mono text-[18px] font-semibold leading-tight tracking-[-0.3px] text-text-primary md:text-[20px]">
+        <p data-testid="runners-fleet-headline" className="text-base font-semibold text-text-primary">
           {headline.map((p, i) => <span key={i} className={p.tone === 'accent' ? 'text-accent-text' : undefined}>{p.text}</span>)}
         </p>
         {/* The one install instruction (lib/runner-install.ts). */}
         {fleet.runners.length === 0 && (
-          <div data-testid="fleet-runner-empty" className="border border-dashed border-border-strong px-4 py-4 text-text-secondary md:px-5">
+          <div data-testid="fleet-runner-empty" className="py-2 text-text-secondary">
             <p className="text-body mb-3">Start a runner on any machine:</p>
             <RunnerInstallSteps />
           </div>

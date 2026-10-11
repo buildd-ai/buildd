@@ -10,7 +10,9 @@
  * explicit delegation, packages/core/token-delegation.ts),
  * a direct read of `.taskScope`, or `authorizeWorkerPrCapability`, which
  * applies `taskScopeAllowsWorker` itself and is tested for it in
- * lib/agent-capabilities/worker-pr.test.ts), and each exported handler that calls it
+ * lib/agent-capabilities/worker-pr.test.ts, or `callerOwnsWorker`, which
+ * applies `taskScopeAllowsWorker` itself and is tested for it in
+ * lib/worker-owner.test.ts), and each exported handler that calls it
  * directly must do so in its own body. The set of opted-in routes is pinned
  * too, so a new one is a reviewed decision rather than a side effect.
  */
@@ -20,11 +22,23 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 
 const REPO = join(import.meta.dir, '../../../..');
-const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask|MissionTaskRead|Delegated)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
+const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask|MissionTaskRead|Delegated)\(|\.taskScope\b|authorizeWorkerPrCapability\(|callerOwnsWorker\(|(?:park|unpark|reattach)Where\(/; // the park predicates apply it via ownedByCaller (lib/worker-park.ts)
 
 const OPTED_IN = [
+  // Its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); spend also needs a live model.inference grant.
+  'apps/web/src/app/api/agent-capabilities/model-inference/route.ts',
+  // Governed outcomes: confined to the workspace of its task (taskScopeAllowsWorkspace); lib/specs/outcome.ts lets it read its own task and record only on its parent, never itself.
+  'apps/web/src/app/api/specs/outcomes/[taskId]/route.ts',
+  // Finalize an upload: only the token's own worker's artifact (taskScopeAllowsWorkspace + taskScopeAllowsWorker).
+  'apps/web/src/app/api/artifacts/[artifactId]/finalize/route.ts',
+  // Typed links: the route passes the token taskScope to the link caller, and lib/artifact-links.ts confines every artifact and subject to that workspace.
+  'apps/web/src/app/api/artifacts/[artifactId]/links/route.ts',
+  // POST only: its own worker (taskScopeAllowsWorker + taskScopeAllowsWorkspace) asks for a capability; deciding is session-only.
+  'apps/web/src/app/api/agent-capabilities/requests/route.ts',
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
+  'apps/web/src/app/api/artifacts/linked/route.ts',
   'apps/web/src/app/api/artifacts/upload-url/route.ts',
+  'apps/web/src/app/api/connectors/capabilities/route.ts',
   'apps/web/src/app/api/connectors/mounted/route.ts',
   'apps/web/src/app/api/decisions/route.ts',
   'apps/web/src/app/api/discrepancies/[id]/route.ts',
@@ -40,13 +54,19 @@ const OPTED_IN = [
   'apps/web/src/app/api/github/pr/supersede/route.ts',
   'apps/web/src/app/api/health/dispatch/route.ts',
   'apps/web/src/app/api/health/failures/route.ts',
+  'apps/web/src/app/api/health/incidents/route.ts',
   'apps/web/src/app/api/initiatives/[id]/artifacts/route.ts',
+  // Connector gateway: its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); every tools/call re-checked per call.
+  'apps/web/src/app/api/mcp/c/[connectorId]/route.ts',
   'apps/web/src/app/api/mcp/route.ts',
   'apps/web/src/app/api/missions/[id]/artifacts/route.ts',
   'apps/web/src/app/api/missions/[id]/evaluate/route.ts',
   'apps/web/src/app/api/missions/[id]/notes/route.ts',
   'apps/web/src/app/api/missions/[id]/route.ts',
   'apps/web/src/app/api/prs/route.ts',
+  // Read-only for a task token (list, explain), its own workspace via taskScopeAllowsWorkspace; every write refuses it.
+  'apps/web/src/app/api/providers/explain/route.ts',
+  'apps/web/src/app/api/providers/route.ts',
   'apps/web/src/app/api/releases/[id]/route.ts',
   'apps/web/src/app/api/releases/route.ts',
   'apps/web/src/app/api/stats/coordination/route.ts',
@@ -60,6 +80,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/tasks/[id]/route.ts',
   'apps/web/src/app/api/tasks/route.ts',
   'apps/web/src/app/api/workers/[id]/artifacts/route.ts',
+  'apps/web/src/app/api/workers/[id]/deployments/route.ts',
   'apps/web/src/app/api/workers/[id]/error-traces/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence/[evidenceId]/confirm/route.ts',

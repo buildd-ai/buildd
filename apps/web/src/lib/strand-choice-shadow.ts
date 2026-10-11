@@ -3,9 +3,9 @@
  * rendered (lib/strand-choice-decision.ts), from the rows the page already
  * loaded.
  *
- * In `shadow` mode (today) it runs after the response, so it can never slow or
- * fail a render, and the cards keep today's order. In `gated` mode it awaits
- * the (cached, deadline-bound) pick and sets each card's button order — the
+ * In `shadow` mode it runs after the response, so it can never slow or
+ * fail a render, and the cards keep today's order. In `gated` mode it uses
+ * cached picks and schedules misses after the response — button order is the
  * only thing a pick may ever change.
  */
 import { after } from 'next/server';
@@ -16,6 +16,7 @@ import {
   adviseStrandChoice,
   strandButtonOrder,
   strandChoiceFacts,
+  peekStrandChoiceCache,
   type StrandChoiceDeps,
 } from './strand-choice-decision';
 
@@ -58,6 +59,17 @@ export async function applyStrandChoice(
     return;
   }
 
-  const picks = await Promise.all(looks.map(l => adviseStrandChoice(l.facts, opts.deps)));
+  // Gated mode: peek cache for each card. Render fallback order now, schedule API calls for misses.
+  const picks = looks.map(l => {
+    const hit = peekStrandChoiceCache(l.facts, opts.deps?.cache);
+    if (hit) return hit; // Cache hit; use immediately
+    // Cache miss; schedule the call in the background via after() or provided scheduler
+    try {
+      (opts.schedule ?? after)(() => adviseStrandChoice(l.facts, opts.deps));
+    } catch {
+      void adviseStrandChoice(l.facts, opts.deps);
+    }
+    return null; // Render fallback order now
+  });
   looks.forEach((l, i) => { l.card.strand.order = strandButtonOrder(picks[i], 'gated'); });
 }

@@ -5,6 +5,7 @@ import { resolveBuilddHome } from './buildd-home';
 import type { LocalWorker, CheckpointEventType } from './types';
 import { teardownStableCodexHome } from './codex-auth';
 import { sessionLog } from './session-logger';
+import { gatewayConnectorsOnly } from './mcp-json';
 
 /**
  * Best-effort terminal teardown of a Codex worker's stable CODEX_HOME when its
@@ -53,16 +54,22 @@ const PERSISTED_FIELDS = [
   // So a resume after a runner restart keeps the model the session ran on.
   'sessionModel',
   'messages', 'milestones', 'toolCalls', 'commits',
-  'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
+  'output', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
   // Read by history-store's backfill so an archived session keeps its usage,
   // model and PR URL. Not restored onto live workers by loadAllWorkers.
   'resultMeta', 'prUrl', 'reportedModel',
+  // So a restored worker's reconciliation report keeps its cost basis.
+  'costBasis',
   // Enforce-mode path claims: the collision a deferral was based on, kept with
   // the record so the local history shows why the session ended.
   'pathClaimMode', 'pathCollision',
   // The refs a checkpoint sweep measures against. Without them a restored
   // worker sweeps with an empty committed half.
   'worktreeBaseRef', 'prBaseRef',
+  // Authoritative working set: what the server acknowledged holding for this
+  // session, so a restart replays deltas instead of starting from nothing.
+  // Bounded by the task's own change set, never the repo.
+  'workingSet', 'pendingShipReports',
 ] as const;
 
 // Bounds to keep files reasonable
@@ -136,6 +143,12 @@ function truncateToolCalls(toolCalls: Array<{ name: string; timestamp: number; i
   });
 }
 
+/** Gateway connectors from a persisted record, re-validated on the way in. */
+function restoredConnectors(data: PersistedWorker): { mcpConnectors?: ReturnType<typeof gatewayConnectorsOnly> } {
+  const list = gatewayConnectorsOnly(data.mcpConnectors);
+  return list.length > 0 ? { mcpConnectors: list } : {};
+}
+
 /** Save a worker's state to disk (atomic write) */
 export function saveWorker(worker: LocalWorker): void {
   ensureDir();
@@ -152,6 +165,14 @@ export function saveWorker(worker: LocalWorker): void {
       data[field] = value;
     }
   }
+
+  // Claim connectors, gateway entries only: they carry no credential, and a
+  // restored or park-adopted worker needs them to resume with its connectors
+  // (the session re-mounts them with a freshly minted agent token, and the
+  // gateway re-checks every call, so no grant goes stale). A direct mount's
+  // headers or a stdio env never reach disk.
+  const gatewayConnectors = gatewayConnectorsOnly((worker as { mcpConnectors?: unknown }).mcpConnectors);
+  if (gatewayConnectors.length > 0) data.mcpConnectors = gatewayConnectors;
 
   // Apply bounds
   if (data.messages && Array.isArray(data.messages)) {
@@ -280,12 +301,12 @@ export function loadAllWorkers(): LocalWorker[] {
         toolCalls: (data.toolCalls as LocalWorker['toolCalls']) || [],
         commits: (data.commits as LocalWorker['commits']) || [],
         output: (data.output as LocalWorker['output']) || [],
-        teamState: data.teamState as LocalWorker['teamState'],
         worktreePath: data.worktreePath as string | undefined,
         worktreeBaseRef: data.worktreeBaseRef as string | undefined,
         prBaseRef: data.prBaseRef as string | undefined,
         promptSuggestions: data.promptSuggestions as string[] | undefined,
         lastAssistantMessage: data.lastAssistantMessage as string | undefined,
+        ...restoredConnectors(data),
         // Transient defaults
         hasNewActivity: false,
         currentAction: '',
@@ -352,12 +373,12 @@ export function loadWorker(workerId: string): LocalWorker | null {
       toolCalls: (data.toolCalls as LocalWorker['toolCalls']) || [],
       commits: (data.commits as LocalWorker['commits']) || [],
       output: (data.output as LocalWorker['output']) || [],
-      teamState: data.teamState as LocalWorker['teamState'],
       worktreePath: data.worktreePath as string | undefined,
       worktreeBaseRef: data.worktreeBaseRef as string | undefined,
       prBaseRef: data.prBaseRef as string | undefined,
       promptSuggestions: data.promptSuggestions as string[] | undefined,
       lastAssistantMessage: data.lastAssistantMessage as string | undefined,
+      ...restoredConnectors(data),
       hasNewActivity: false,
       currentAction: '',
       subagentTasks: [],

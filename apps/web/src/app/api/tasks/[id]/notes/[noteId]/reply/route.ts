@@ -38,7 +38,7 @@ export async function POST(
 
   const hasAccess = user
     ? await verifyWorkspaceAccess(user.id, task.workspaceId)
-    : await verifyAccountWorkspaceAccess(apiAccount!.id, task.workspaceId);
+    : await verifyAccountWorkspaceAccess(apiAccount!, task.workspaceId);
   if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 
   // Identify the parent by (note, task) only. Requiring `missionId IS NULL` here

@@ -8,14 +8,32 @@
 
 import { execSync } from 'child_process';
 import * as fs from 'fs';
-import { resolveBuilddHome } from './buildd-home';
+import { isTestRuntime, resolveBuilddHome } from './buildd-home';
 import { join } from 'path';
 import { readFileSync } from 'fs';
 import type { RunnerUpdateSnapshot } from '@buildd/shared';
 
 // Resolved per call (default params included) so a test runtime without a temp
 // BUILDD_HOME fails closed (see buildd-home.ts) instead of resetting the real install.
-const installDirDefault = () => resolveBuilddHome();
+// The git checkout is where this code is loaded from, which is not necessarily
+// BUILDD_HOME (a runner whose home holds only data has no .git there, and every
+// git call fails with "not a git repository"). Prefer the code root when it is a
+// checkout; fall back to the home. Tests keep the home so they never reset the
+// checkout they run from.
+const installDirDefault = () => {
+  const home = resolveBuilddHome();
+  if (isTestRuntime()) return home;
+  const codeRoot = join(import.meta.dir, '..', '..', '..');
+  return fs.existsSync(join(codeRoot, '.git')) ? codeRoot : home;
+};
+
+// An inherited GIT_DIR / GIT_WORK_TREE overrides cwd discovery and points git at
+// the wrong repo (or none); the update must act on its own install dir.
+const gitEnv = () => {
+  const env = { ...process.env };
+  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[k];
+  return env;
+};
 
 /**
  * The branch this install tracks. Every update path resets to
@@ -61,6 +79,7 @@ export function getCurrentCommit(): string | null {
   try {
     return execSync('git rev-parse HEAD', {
       cwd: installDirDefault(),
+      env: gitEnv(),
       encoding: 'utf-8',
       timeout: 5000,
     }).trim();
@@ -200,6 +219,7 @@ export function hasTrackedChanges(installDir: string = installDirDefault()): boo
   try {
     const status = execSync('git status --porcelain --untracked-files=no', {
       cwd: installDir,
+      env: gitEnv(),
       encoding: 'utf-8',
       timeout: 5000,
     }).trim();
@@ -224,7 +244,7 @@ export interface UpdateResult {
 // /health endpoint, for the whole `bun install` window. Bun.spawn does not
 // block the loop while the child runs.
 async function gitAsync(args: string[], cwd: string, timeoutMs = 10_000): Promise<string> {
-  const proc = Bun.spawn(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const proc = Bun.spawn(['git', ...args], { cwd, env: gitEnv(), stdout: 'pipe', stderr: 'pipe' });
   const timer = setTimeout(() => { try { proc.kill(); } catch { /* already gone */ } }, timeoutMs);
   try {
     const output = await new Response(proc.stdout).text();

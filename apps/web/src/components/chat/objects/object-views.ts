@@ -8,6 +8,7 @@ import type { MissionBoardModel } from '@/lib/mission-board';
 import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import type { NowState } from '@/app/app/(protected)/tasks/[id]/task-activity';
 import type { StrandCta } from '@/lib/mission-list-card';
+import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
 
 export interface MissionObjectView {
   kind: 'mission';
@@ -76,6 +77,12 @@ export interface TaskObjectView {
   } | null;
   /** The task page's Now strip state (deriveNow over the live worker's milestones); null unless live. */
   now: NowState | null;
+  /**
+   * The kernel's reading when this task owns a kernel-owned delivery
+   * (workflow-state-kernel §17.5). The tile, pane and dock read their state
+   * from it instead of `worker.mergedAt` / `prLifecycleStatus`. Absent: legacy.
+   */
+  delivery?: DeliveryDisplay | null;
   /** Agent runs on this task so far (the desktop dock's TRIES cell). */
   attempts?: number;
   /** What the waiting worker asked (workers.waitingFor.prompt). */

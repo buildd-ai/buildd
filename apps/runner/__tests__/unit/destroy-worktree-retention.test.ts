@@ -16,6 +16,8 @@
  */
 
 import { describe, test, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 import { __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
 
@@ -50,13 +52,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -198,7 +200,19 @@ const removedPaths = () =>
 describe('WorkerManager.destroy() worktree teardown', () => {
   let manager: any;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     syncCmds = [];
     rmPaths = [];
     unpushedCount = '0';

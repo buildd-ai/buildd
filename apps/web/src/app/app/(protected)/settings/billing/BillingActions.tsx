@@ -77,7 +77,7 @@ export function SeatsForm({ teamId, paidSeats, used }: { teamId: string; paidSea
     setMessage(null);
     try {
       await postBilling(teamId, 'seats', { seats });
-      setMessage({ ok: true, text: `Seats set to ${seats}. The total updates once Stripe confirms.` });
+      setMessage({ ok: true, text: `Members set to ${seats}. The total updates once Stripe confirms.` });
       router.refresh();
     } catch (err) {
       setMessage({ ok: false, text: (err as Error).message });
@@ -90,7 +90,7 @@ export function SeatsForm({ teamId, paidSeats, used }: { teamId: string; paidSea
     <form onSubmit={save} className="border border-border-default bg-card p-4 space-y-3" data-testid="billing-seats-form">
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1">
-          <span className="field-label">Seats</span>
+          <span className="field-label">Members</span>
           <input
             type="number"
             inputMode="numeric"
@@ -103,7 +103,7 @@ export function SeatsForm({ teamId, paidSeats, used }: { teamId: string; paidSea
           />
         </label>
         <button type="submit" className="btn btn-lg h-11 md:h-10" disabled={pending || seats === paidSeats || seats < min}>
-          {pending ? 'Saving' : 'Update seats'}
+          {pending ? 'Saving' : 'Update members'}
         </button>
       </div>
       <p className="text-meta text-text-muted">At least {min}. Changes are prorated on the next invoice.</p>

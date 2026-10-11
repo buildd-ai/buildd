@@ -84,7 +84,7 @@ export default function MissionInlineEdit({ missionId, initialTitle }: MissionIn
               setEditing(false);
             }
           }}
-          className="min-h-11 w-full border border-border-default bg-surface-2 px-2 text-[14px] text-text-primary outline-none focus:border-accent-text"
+          className="min-h-11 w-full border border-border-default bg-surface-2 px-2 text-[14px] text-text-primary outline-none focus:border-border-strong"
         />
       </div>
     );
@@ -100,7 +100,7 @@ export default function MissionInlineEdit({ missionId, initialTitle }: MissionIn
           setDraft(title);
           setEditing(true);
         }}
-        className="inline-flex min-h-11 items-center font-mono text-[12px] text-accent-text hover:underline disabled:opacity-60"
+        className="inline-flex min-h-11 items-center text-body text-text-primary underline underline-offset-4 disabled:opacity-60 md:min-h-0"
       >
         {saving ? 'Renaming…' : 'Rename mission'}
       </button>

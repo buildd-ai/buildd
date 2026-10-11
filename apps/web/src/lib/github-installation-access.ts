@@ -12,7 +12,8 @@
 import { db } from '@buildd/core/db';
 import { githubInstallations, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
-import { getUserTeamIds, getUserAdminTeamIds } from '@/lib/team-access';
+import { getUserTeamIds } from '@/lib/team-access';
+import { teamIdsWhere } from '@/lib/permissions';
 
 export async function getInstallationOwnerTeamIds(installationDbId: string): Promise<string[]> {
   const installation = await db.query.githubInstallations.findFirst({
@@ -41,12 +42,12 @@ export async function getInstallationOwnerTeamIds(installationDbId: string): Pro
 export interface InstallationAccess {
   /** A member of an owning team, or the installer. */
   canView: boolean;
-  /** An admin/owner of an owning team, or the installer. */
+  /** Holds manage_github_installation in an owning team, or is the installer. */
   canManage: boolean;
   /**
-   * Teams with a workspace on this installation that the user does not
-   * administer. Disconnecting would cut those workspaces off, so it is refused
-   * while this is non-empty.
+   * Teams with a workspace on this installation in which the user does not
+   * hold manage_github_installation. Disconnecting would cut those workspaces
+   * off, so it is refused while this is non-empty.
    */
   otherTeamsUsingIt: string[];
 }
@@ -55,10 +56,10 @@ export async function getInstallationAccessForUser(
   userId: string,
   installation: { id: string; installedByUserId: string | null },
 ): Promise<InstallationAccess> {
-  const [ownerTeamIds, userTeamIds, adminTeamIds, direct] = await Promise.all([
+  const [ownerTeamIds, userTeamIds, managerTeamIds, direct] = await Promise.all([
     getInstallationOwnerTeamIds(installation.id),
     getUserTeamIds(userId),
-    getUserAdminTeamIds(userId),
+    teamIdsWhere({ kind: 'user', userId }, 'manage_github_installation'),
     db.query.workspaces.findMany({
       where: eq(workspaces.githubInstallationId, installation.id),
       columns: { teamId: true },
@@ -67,7 +68,7 @@ export async function getInstallationAccessForUser(
   const isInstaller = installation.installedByUserId === userId;
   return {
     canView: isInstaller || ownerTeamIds.some(t => userTeamIds.includes(t)),
-    canManage: isInstaller || ownerTeamIds.some(t => adminTeamIds.includes(t)),
-    otherTeamsUsingIt: [...new Set(direct.map(w => w.teamId))].filter(t => !adminTeamIds.includes(t)),
+    canManage: isInstaller || ownerTeamIds.some(t => managerTeamIds.includes(t)),
+    otherTeamsUsingIt: [...new Set(direct.map(w => w.teamId))].filter(t => !managerTeamIds.includes(t)),
   };
 }

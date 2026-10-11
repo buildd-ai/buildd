@@ -13,9 +13,19 @@ describe('tierUsedBy', () => {
   it('says which surfaces can run a tier, from its provider', () => {
     expect(tierUsedBy('anthropic')).toBe('agent runs, chat');
     expect(tierUsedBy('openrouter')).toBe('agent runs, chat');
-    // A Codex seat only signs in a runner; an OpenAI API key only serves chat.
+    // A Codex seat only signs in a runner.
     expect(tierUsedBy('openai-codex')).toBe('agent runs only');
-    expect(tierUsedBy('openai')).toBe('chat only');
+    // An OpenAI API key serves chat AND agent runs: tier-pool maps an agent
+    // `openai` tier to runner:codex, and Codex runs on an OpenAI API key.
+    expect(tierUsedBy('openai')).toBe('agent runs, chat');
+    // Unknown provider keeps the old default.
+    expect(tierUsedBy('something-else')).toBe('agent runs, chat');
+  });
+
+  it('notes never tell an OpenAI API key holder that runners cannot use it', () => {
+    const openai = TIER_PROVIDER_OPTIONS.find((p) => p.id === 'openai');
+    expect(openai?.note).not.toMatch(/runners cannot/i);
+    expect(openai?.note).toMatch(/Codex/);
   });
 });
 

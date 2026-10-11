@@ -6,11 +6,16 @@ const ACCOUNT = '0123456789abcdef0123456789abcdef';
 
 const mockAuth = mock((_key: string | null) => Promise.resolve(null as any));
 const mockFind = mock((_teamId: string) => Promise.resolve(null as any));
+const mockAudit = mock((_row: any) => Promise.resolve('audit-1'));
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuth }));
 mock.module('@/lib/cloudflare-credential', () => ({
   findCloudflareSecret: mockFind,
   decodeCloudflareValue: (v: string) => JSON.parse(v),
+}));
+mock.module('@/lib/deployments/store', () => ({
+  recordDeploymentAudit: mockAudit,
+  credentialRefOf: (label: string | null, provider: string) => label?.trim().toLowerCase() || provider,
 }));
 
 import { POST } from './route';
@@ -25,6 +30,8 @@ describe('POST /api/cloudflare/credential/reveal', () => {
   beforeEach(() => {
     mockAuth.mockReset();
     mockFind.mockReset();
+    mockAudit.mockReset();
+    mockAudit.mockResolvedValue('audit-1');
     mockFind.mockResolvedValue({ id: 's1', healthStatus: 'healthy', encryptedValue: JSON.stringify({ apiToken: TOKEN, accountId: ACCOUNT }) });
   });
 
@@ -80,6 +87,32 @@ describe('POST /api/cloudflare/credential/reveal', () => {
     });
     await POST(r);
     expect(mockFind).toHaveBeenCalledWith('team-1');
+  });
+
+  it('audits the reveal as elevated secrets:reveal, naming the reference and never the value', async () => {
+    mockAuth.mockResolvedValue({ id: 'a1', teamId: 'team-1', level: 'admin' });
+    mockFind.mockResolvedValue({ id: 's1', label: 'Cloudflare-Prod', healthStatus: 'healthy', encryptedValue: JSON.stringify({ apiToken: TOKEN, accountId: ACCOUNT }) });
+    const res = await POST(req('Bearer bld_x'));
+    expect(res.status).toBe(200);
+    expect(mockAudit).toHaveBeenCalledTimes(1);
+    const row = mockAudit.mock.calls[0][0];
+    expect(row).toMatchObject({ teamId: 'team-1', accountId: 'a1', principal: 'admin', operation: 'reveal', capabilities: ['secrets:reveal'], elevated: true, credentialRef: 'cloudflare-prod' });
+    expect(JSON.stringify(row)).not.toContain(TOKEN);
+    expect(JSON.stringify(row)).not.toContain(ACCOUNT);
+  });
+
+  it('refuses to reveal when the audit row cannot be written', async () => {
+    mockAuth.mockResolvedValue({ id: 'a1', teamId: 'team-1', level: 'admin' });
+    mockAudit.mockRejectedValue(new Error('db down'));
+    const res = await POST(req('Bearer bld_x'));
+    expect(res.status).toBe(503);
+    expect(JSON.stringify(await res.json())).not.toContain(TOKEN);
+  });
+
+  it('does not audit a refused caller', async () => {
+    mockAuth.mockResolvedValue({ id: 'a1', teamId: 'team-1', level: 'worker' });
+    await POST(req('Bearer bld_x'));
+    expect(mockAudit).not.toHaveBeenCalled();
   });
 
   it('404 when nothing is stored', async () => {

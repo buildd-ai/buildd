@@ -59,7 +59,8 @@ export interface ChipProps {
 
 /**
  * The one way to show a state word (docs/design/design-system.md §4 Chip):
- * square, 1px border, mono uppercase, optional leading square dot.
+ * 1px border on the 4px pill radius, mono in the case it was written, optional
+ * leading square dot.
  */
 export default function Chip({
   tone,
@@ -74,7 +75,7 @@ export default function Chip({
 }: ChipProps) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 px-2 py-[3px] border font-mono text-chip font-semibold uppercase tracking-[0.5px] ${TONE[tone][variant]} ${className}`}
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 px-2 py-[3px] border rounded font-mono text-chip font-semibold ${TONE[tone][variant]} ${className}`}
       data-tone={tone}
       data-testid={testId}
       title={title}

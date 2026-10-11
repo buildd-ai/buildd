@@ -28,8 +28,6 @@ const TOKEN_EXEMPT: Array<{ file: string; context: string; why: string }> = [
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[9px] transition-transform duration-200', why: 'disclosure chevron glyph' },
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[9px] rotate-90 inline-block">▶', why: 'disclosure chevron glyph' },
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[10px]">▶</span>', why: 'disclosure chevron glyph' },
-  { file: 'components/MissionsSidebar.tsx', context: 'text-[9px] font-bold rounded-full', why: 'desktop-only rail (hidden md:flex)' },
-  { file: 'components/TeamSwitcherRail.tsx', context: 'text-[7px] font-mono uppercase', why: 'desktop-only rail (hidden md:flex)' },
 ];
 
 /** A text-[Npx] token with its full variant chain, e.g. `dark:hover:text-[9px]`. */
@@ -183,9 +181,10 @@ describe('mobile type floor (globals.css)', () => {
     expect([...small].filter(x => !lifted.has(x))).toEqual([]);
   });
 
-  it('includes the section label and pills named in the mobile QA pass', () => {
+  it('includes the pills named in the mobile QA pass', () => {
     const lifted = floorSelectors();
-    for (const cls of ['section-label-missions', 'status-pill', 'health-pill', 'field-label', 'type-label']) {
+    // .section-label-missions left the list when it moved to --type-eyebrow (13px everywhere).
+    for (const cls of ['status-pill', 'health-pill', 'field-label', 'type-label']) {
       expect(lifted.has(`.${cls}`)).toBe(true);
     }
   });

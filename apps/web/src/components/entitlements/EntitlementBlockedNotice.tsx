@@ -14,6 +14,7 @@
 import { useState } from 'react';
 import type { EntitlementBlock } from '@buildd/shared';
 import Chip from '@/components/ui/Chip';
+import Link from 'next/link';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import { describeEntitlementBlock } from '@/lib/entitlements/presentation';
 
@@ -59,13 +60,18 @@ export default function EntitlementBlockedNotice({ block, onLeaveQueued, upgrade
         <PrimaryAction href={upgradeHref} fullWidthOnMobile data-testid="entitlement-upgrade">
           {copy.upgradeLabel}
         </PrimaryAction>
+        {copy.alternative && (
+          <Link href={copy.alternative.href} data-testid="entitlement-alternative" className="btn min-h-11 w-full md:w-auto">
+            {copy.alternative.label}
+          </Link>
+        )}
         <button
           type="button"
           data-action="leave_queued"
           onClick={() => (onLeaveQueued ? onLeaveQueued() : setCollapsed(true))}
           className="btn btn-quiet min-h-11 w-full md:w-auto"
         >
-          Leave queued
+          {copy.waitLabel}
         </button>
       </div>
       <p className="text-eyebrow text-text-muted">{copy.footnote}</p>

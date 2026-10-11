@@ -23,7 +23,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { isUuid } from '@/lib/uuid';
 import { parkWhere, parkedUntilFor, unparkWhere } from '@/lib/worker-park';
 
@@ -48,17 +49,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    columns: { id: true, accountId: true, taskId: true, status: true },
+    columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true, status: true },
     with: { task: { columns: { missionId: true } } },
   });
-  if (!worker || worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) return notFound();
+  if (!worker || !callerOwnsWorker(account, worker)) return notFound();
 
   const now = new Date();
   const until = parkedUntilFor(now, !!(worker as { task?: { missionId?: string | null } | null }).task?.missionId);
   const [parked] = await db
     .update(workers)
     .set({ parkedUntil: until, updatedAt: now })
-    .where(parkWhere(id, account.id, account.taskScope?.taskId))
+    .where(parkWhere(id, account))
     .returning({ id: workers.id, parkedUntil: workers.parkedUntil });
   if (!parked) return NextResponse.json({ error: 'not_parkable', status: worker.status }, { status: 409 });
   return NextResponse.json({ parkedUntil: until.toISOString() });
@@ -72,7 +73,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const [cleared] = await db
     .update(workers)
     .set({ parkedUntil: null })
-    .where(unparkWhere(id, auth.account.id, auth.account.taskScope?.taskId))
+    .where(unparkWhere(id, auth.account))
     .returning({ id: workers.id });
   if (!cleared) return notFound();
   return NextResponse.json({ ok: true });

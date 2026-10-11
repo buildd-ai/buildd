@@ -11,7 +11,7 @@
  */
 import { describe, expect, mock, test } from 'bun:test';
 import { HookFactory } from '../../src/hook-factory';
-import { holdTagged, questionFromToolInput, questionPayload, runQuestionGate, worktreeRelative } from '../../src/question-gate';
+import { gateTagged, questionFromToolInput, questionPayload, runQuestionGate, worktreeRelative } from '../../src/question-gate';
 import { buildPromptWithComposition } from '../../src/prompt-builder';
 import { RUNNER_DENIAL_MARKER } from '../../src/runner-denial';
 import type { LocalWorker } from '../../src/types';
@@ -190,14 +190,29 @@ describe('runQuestionGate', () => {
   });
 });
 
-describe('holdTagged', () => {
-  test('tags a `hold` reply onto the parked question; anything else passes it through unchanged', () => {
-    const w = makeWorker();
-    const q = questionFromToolInput(w, BARE);
-    expect(holdTagged(q, HELD)).toMatchObject({ disposition: 'hold', holdReason: HELD.holdReason, resurfaceAt: HELD.resurfaceAt });
-    expect(holdTagged(q, SEND)).toBe(q);
-    expect(holdTagged(q, null)).toBe(q);
-    expect(holdTagged(q, undefined)).toBe(q);
+describe('gateTagged', () => {
+  test('tags a `hold` reply with its hold fields', () => {
+    const q = questionFromToolInput(makeWorker(), BARE);
+    expect(gateTagged(q, HELD)).toMatchObject({ disposition: 'hold', holdReason: HELD.holdReason, resurfaceAt: HELD.resurfaceAt });
+  });
+
+  test('tags every other send as an `ask`, with the gate outcome and any rail, so the server admits it as the gate said', () => {
+    const q = questionFromToolInput(makeWorker(), BARE);
+    expect(gateTagged(q, SEND)).toMatchObject({ disposition: 'ask', gateOutcome: 'asked' });
+    expect(gateTagged(q, { ...SEND, outcome: 'hard_rail', rail: 'migration' })).toMatchObject({ disposition: 'ask', gateOutcome: 'hard_rail', rail: 'migration' });
+    expect(questionPayload(gateTagged(q, SEND))).toMatchObject({ disposition: 'ask', gateOutcome: 'asked' });
+  });
+
+  test('tags a recovered reply with its repair task', () => {
+    const q = questionFromToolInput(makeWorker(), BARE);
+    const recovered = { verdict: 'decide' as const, outcome: 'recovered' as const, disposition: 'decide' as const, repairTaskId: 'r-1', reason: 'x', version: null, latencyMs: 1 };
+    expect(questionPayload(gateTagged(q, recovered))).toMatchObject({ disposition: 'recovered', repairTaskId: 'r-1' });
+  });
+
+  test('no reply (no gate, or the call failed) leaves it untagged for the server to re-check', () => {
+    const q = questionFromToolInput(makeWorker(), BARE);
+    expect(gateTagged(q, null)).toBe(q);
+    expect(gateTagged(q, undefined)).toBe(q);
   });
 });
 

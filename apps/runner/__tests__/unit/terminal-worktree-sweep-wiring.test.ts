@@ -10,7 +10,9 @@
  *
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/terminal-worktree-sweep-wiring.test.ts
  */
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
@@ -39,13 +41,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -110,7 +112,19 @@ const wt = (name: string) => `/repo/.buildd-worktrees/${name}`;
 describe('WorkerManager.sweepTerminalWorktreesOnDisk', () => {
   let manager: any;
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     disk = [
       { id: 'd-removed', status: 'done', worktreePath: wt('a'), lastActivity: OLD },
       { id: 'd-archived', status: 'error', worktreePath: wt('b'), lastActivity: OLD },

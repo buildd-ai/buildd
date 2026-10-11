@@ -35,16 +35,68 @@ export interface PrShipInput {
   prLifecycleStatus?: string | null;
   supersededByPrNumber?: number | null;
   abandonedAt?: string | Date | null;
+  /**
+   * The workflow kernel's delivery for this PR, when the kernel owns it
+   * (docs/specs/workflow-state-kernel.md §17.3). It is the authority; the
+   * columns above are its projection and may lag. Absent for a legacy PR.
+   */
+  delivery?: { state: string } | null;
+  /** Set by `deriveLineageSupersession`: the edge is a read-time proof, not a stored one. */
+  supersessionDerived?: true;
+}
+
+/** A kernel delivery's state as a ship state; null = the delivery has no PR to judge (FAILED). */
+function deliveryShipState(w: PrShipInput, state: string): PrShipState | null {
+  switch (state) {
+    case 'MERGED': return 'merged';
+    case 'SUPERSEDED': return 'superseded';
+    case 'ABANDONED': return 'abandoned';
+    // A closed PR's edge exists only once T20 moved the delivery to SUPERSEDED,
+    // unless it was derived from the attempt lineage at read time.
+    case 'CLOSED_UNMERGED': return w.supersessionDerived && w.supersededByPrNumber ? 'superseded' : 'closed_unsuperseded';
+    case 'FAILED': return null;
+    default: return 'open';
+  }
 }
 
 export function prShipState(w: PrShipInput | null | undefined): PrShipState {
   if (!w?.prUrl) return 'no_pr';
+  const fromDelivery = w.delivery ? deliveryShipState(w, w.delivery.state) : null;
+  if (fromDelivery) return fromDelivery;
   if (w.mergedAt) return 'merged';
   // `recordPrSupersession` verifies the target is merged at write time, and a
   // merge is permanent — a stored edge is trusted without a GitHub round-trip.
   if (w.supersededByPrNumber) return 'superseded';
   if (w.prLifecycleStatus === 'closed') return w.abandonedAt ? 'abandoned' : 'closed_unsuperseded';
   return 'open';
+}
+
+/** What a kernel delivery says about its PR, for the readers that feed `prShipState`. */
+export interface DeliveryShip {
+  state: string;
+  supersededByPr?: number | null;
+  supersededByUrl?: string | null;
+  supersededReason?: string | null;
+  /** ABANDONED: the reason a person gave. */
+  stateReason?: string | null;
+}
+
+/**
+ * The row a mission reader judges, with the kernel's delivery as the authority
+ * (docs/specs/workflow-state-kernel.md §17.3, Slice D): `delivery` set, and the
+ * edge's own fields taken from the delivery when its projection onto the row
+ * has not run yet. No delivery: the row unchanged.
+ */
+export function withDeliveryShip<W extends LineageWorker & { abandonedReason?: string | null }>(w: W, d: DeliveryShip | null | undefined): W {
+  if (!d) return w;
+  const out: W = { ...w, delivery: { state: d.state } };
+  if (d.state === 'SUPERSEDED' && d.supersededByPr != null) {
+    out.supersededByPrNumber = d.supersededByPr;
+    out.supersededByPrUrl = d.supersededByUrl ?? w.supersededByPrUrl ?? null;
+    out.supersededReason = d.supersededReason ?? w.supersededReason ?? null;
+  }
+  if (d.state === 'ABANDONED') out.abandonedReason = d.stateReason ?? w.abandonedReason ?? null;
+  return out;
 }
 
 // ─── Unverified supersession suggestions ─────────────────────────────────────
@@ -152,7 +204,7 @@ export function deriveLineageSupersession<W extends LineageWorker>(
   const byId = new Map(tasks.map(t => [t.id, t]));
   const mergedByRoot = new Map<string, Array<{ n: number; url: string | null }>>();
   for (const w of workers) {
-    if (!w.taskId || !w.prUrl || !w.mergedAt) continue;
+    if (!w.taskId || !w.prUrl || prShipState(w) !== 'merged') continue;
     const n = prNumberOf(w);
     if (n == null) continue;
     const root = lineageRoot(w.taskId, byId);

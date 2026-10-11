@@ -222,6 +222,12 @@ describe('the owner\'s examples', () => {
     expect(writes).toEqual([`PATCH /api/tasks/${T_GUIDE.slice(0, 8)} {"status":"cancelled"}`]);
   });
 
+  it('"Cancel the Stripe task" while an agent runs it → the card says the run is lost; approving sends abort: true', async () => {
+    const { preview } = await proposeAndApprove('update_task', { taskId: 'stripe checkout', status: 'cancelled' });
+    expect(preview.note).toContain('stopped mid-run');
+    expect(writes).toEqual([`PATCH /api/tasks/${T_STRIPE.slice(0, 8)} {"status":"cancelled","abort":true}`]);
+  });
+
   it('"…add a JPY e2e test instead" → New task in the mission, after the Stripe task, filed as dashboard work', async () => {
     const { preview } = await proposeAndApprove('create_task', {
       title: 'JPY e2e test', description: 'Cover zero-decimal JPY through checkout.', dependsOn: ['stripe checkout'],

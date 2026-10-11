@@ -85,3 +85,38 @@ describe('TaskEvidenceCard', () => {
     expect(renderToStaticMarkup(<TaskEvidenceCard status="completed" result={null} />)).toBe('');
   });
 });
+
+describe('TaskEvidenceCard: a red-check mismatch', () => {
+  // The shape a run left before exploration noise was filtered at the source:
+  // an exploratory grep as the "last failing command", its output as key lines.
+  const stale = {
+    errorClass: 'test_failure',
+    keyLines: ['grep: apps/web/tests: No such file or directory', '(fail) not really'],
+    lastFailingCommand: { command: 'grep -rn "expect(" apps/web/tests 2>/dev/null', exitCode: 2 },
+    ciChecks: [{ name: 'check', state: 'failed', url: 'https://example.test/job/9' }, { name: 'build', state: 'passed', url: null }],
+    diff: { files: 3, added: 10, removed: 2 },
+    links: {},
+    keyLinesSource: 'traces',
+    capturedAt: '2026-01-01T00:00:00.000Z',
+  };
+  const mismatch = [{ kind: 'success_with_red_check', detail: 'Reported success while a check was failing: check.' }];
+
+  it('shows the check row and its key line, never the bash trace, and is labelled by what it shows', () => {
+    const html = renderToStaticMarkup(
+      <TaskEvidenceCard
+        status="completed"
+        result={{ evidence: stale, mismatch }}
+        failingChecks={[{ name: 'check', state: 'failed', url: 'https://example.test/job/9', line: 'PR body lint: body contains a full UUID' }]}
+      />,
+    );
+    expect(html).toContain('data-testid="task-evidence-checks"');
+    expect(html).toContain('✗ check');
+    expect(html).toContain('PR body lint: body contains a full UUID');
+    expect(html).toContain('Evidence · failing check');
+    expect(html).not.toContain('test failure');
+    expect(html).not.toContain('grep -rn');
+    expect(html).not.toContain('No such file or directory');
+    // Only red checks, not the whole list.
+    expect(html).not.toContain('✓ build');
+  });
+});

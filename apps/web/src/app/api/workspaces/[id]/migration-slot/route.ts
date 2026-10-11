@@ -40,7 +40,7 @@ export async function POST(
 
   // The update below targets the path param verbatim, so the account has to be
   // scoped to this workspace or any valid key could bump another tenant's counter.
-  const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
+  const hasAccess = await verifyAccountWorkspaceAccess(account, workspaceId);
   if (!hasAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }

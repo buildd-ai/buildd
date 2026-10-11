@@ -6,9 +6,12 @@
  * enablement, role opt-in and sharing all work unchanged.
  *
  * Inclusion bar: the URL must complete buildd's OAuth discovery + DCR
- * (`discoverOAuthMetadata` in lib/mcp-oauth.ts) or serve anonymously. Servers
- * that fail discovery today (e.g. needing a pre-registered client) stay out
- * until the connect flow supports them.
+ * (`discoverOAuthMetadata` in lib/mcp-oauth.ts) or serve anonymously. The one
+ * exception is an official server whose vendor admits only MCP clients it has
+ * reviewed: it stays listed with `clientSupport` saying so, because hiding it
+ * reads as "buildd doesn't know about Vercel" when the truth is "Vercel hasn't
+ * approved buildd yet". Install still runs the real DCR and fails with
+ * `needs_approved_client`; it never borrows another client's identity.
  *
  * These are the BUILT-IN entries. The live catalog a team sees is these merged
  * with platform and team rows from `connector_catalog_entries` and the team's
@@ -27,11 +30,36 @@ export interface ConnectorCatalogEntry {
   description: string;
   category: ConnectorCatalogCategory;
   iconUrl: string;
+  /**
+   * Set when the provider does not (yet) let buildd register as an OAuth
+   * client. Verified against the live provider; see the entry's comment.
+   */
+  clientSupport?: ConnectorClientSupport;
+}
+
+export interface ConnectorClientSupport {
+  status: 'needs_approved_client';
+  /** One plain sentence for the admin: what is blocked and by whom. */
+  detail: string;
+  /** Where the owner goes to fix it (the vendor's client-approval process). */
+  actionLabel: string;
+  actionUrl: string;
 }
 
 export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
+  // Vercel admits only MCP clients it has reviewed: its DCR endpoint answers
+  // buildd's web callback with `invalid_redirect_uri` ("not approved for use by
+  // this authorization server"), probed 2026-10-08. Loopback callbacks are
+  // accepted, which is how desktop clients connect; a server-side runner has
+  // no loopback to offer.
   { slug: 'vercel', name: 'Vercel', url: 'https://mcp.vercel.com', authMode: 'oauth', category: 'deploy',
-    description: 'Deployments, build logs, projects and domains.', iconUrl: 'https://vercel.com/favicon.ico' },
+    description: 'Deployments, build logs, projects and domains.', iconUrl: 'https://vercel.com/favicon.ico',
+    clientSupport: {
+      status: 'needs_approved_client',
+      detail: 'Vercel only lets MCP clients it has reviewed sign in, and buildd is not on its list yet, so agents cannot use Vercel through buildd.',
+      actionLabel: 'Vercel client review',
+      actionUrl: 'https://vercel.com/docs/agent-resources/vercel-mcp#connecting-to-vercel-mcp',
+    } },
   { slug: 'neon', name: 'Neon', url: 'https://mcp.neon.tech/mcp', authMode: 'oauth', category: 'database',
     description: 'Serverless Postgres: projects, branches, SQL and migrations.', iconUrl: 'https://neon.com/favicon/favicon.ico' },
   { slug: 'supabase', name: 'Supabase', url: 'https://mcp.supabase.com/mcp', authMode: 'oauth', category: 'database',
@@ -77,7 +105,23 @@ function normalize(url: string): string | null {
   }
 }
 
-const BY_URL = new Map(CONNECTOR_CATALOG.map(e => [normalize(e.url)!, e]));
+/**
+ * The server a connector URL points at, for catalog-policy matching: the
+ * lowercased hostname, trailing dot dropped. Scheme, port, path, query and
+ * case are ignored on purpose — `/mcp`, `/sse` and `/` on one host are the
+ * same provider, so a block must not be side-stepped by respelling the URL.
+ * Install/reuse matching stays on the exact `normalizeConnectorUrl` key.
+ */
+export function connectorHostKey(url: string): string | null {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+    return host || null;
+  } catch {
+    return null;
+  }
+}
+
+const BY_URL =new Map(CONNECTOR_CATALOG.map(e => [normalize(e.url)!, e]));
 
 export function catalogEntryForUrl(url: string): ConnectorCatalogEntry | null {
   const key = normalize(url);

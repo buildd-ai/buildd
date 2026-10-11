@@ -42,7 +42,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'workspaceId (a full UUID) is required' }, { status: 400 });
   }
   const allowed = apiAccount
-    ? taskScopeAllowsWorkspace(apiAccount, workspaceId) && await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
+    ? taskScopeAllowsWorkspace(apiAccount, workspaceId) && await verifyAccountWorkspaceAccess(apiAccount, workspaceId)
     : !!(await verifyWorkspaceAccess(user!.id, workspaceId));
   if (!allowed) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
 

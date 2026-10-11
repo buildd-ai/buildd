@@ -60,7 +60,7 @@ export default function MissionTaskStripFixture() {
     <div className="min-h-screen bg-surface-1 text-text-primary">
       <header className="border-b-2 border-border-strong px-4 py-4 md:px-8">
         <p className="section-label">Dev fixtures</p>
-        <h1 className="mt-1 font-mono text-[18px] font-semibold">{`Mission Landed strip: ${variant}`}</h1>
+        <h1 className="mt-1 font-mono text-heading font-semibold">{`Mission Landed strip: ${variant}`}</h1>
         <nav aria-label="Fixture states" className="-mx-4 mt-3 flex gap-1.5 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:px-0">
           {missionTaskStripLinks().map(l => (
             <a key={l.href} href={l.href} className="shrink-0 border border-border-default bg-surface-2 px-2.5 py-1.5 font-mono text-meta text-text-secondary hover:border-border-strong hover:text-text-primary">
@@ -75,6 +75,7 @@ export default function MissionTaskStripFixture() {
           missionId={MISSION_ID}
           workspaceId={WORKSPACE_ID}
           executor={fixture.executor}
+          deliveries={fixture.deliveries ?? null}
           stripFocus={situation && openTask ? { taskId: openTask, reason: situation.headline } : null}
           notice={situation ? <MissionSituationBlock missionId={MISSION_ID} situation={situation} because={[]} /> : null}
           completionText={variant === 'all-landed' ? 'Shipped the runner and checked it end to end.' : null}

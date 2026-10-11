@@ -36,8 +36,8 @@ describe('missionInsight', () => {
   });
 
   it('something waits on the viewer: disagrees (copper), counts it', () => {
-    expect(missionInsight(state({ needsYou: 2 }))).toEqual({ text: '2 tasks need input.', disagrees: true });
-    expect(missionInsight(state({ needsYou: 1 }))?.text).toBe('1 task needs input.');
+    expect(missionInsight(state({ needsYou: 2 }))).toEqual({ text: '2 tasks need you.', disagrees: true });
+    expect(missionInsight(state({ needsYou: 1 }))?.text).toBe('1 task needs you.');
   });
 
   it('agreeing states: a plain line, no copper square', () => {

@@ -18,6 +18,10 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
 }));
 
+// Writes need manage_team_credentials; that gate is covered in
+// ../credential-write-permission.test.ts. Here the caller holds it.
+mock.module('@/lib/permissions', () => ({ can: async () => true }));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     insert: mockDbInsert,

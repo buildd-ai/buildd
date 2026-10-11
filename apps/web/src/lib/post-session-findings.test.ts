@@ -38,6 +38,7 @@ class FakeStore implements PostSessionFindingStore {
       workerId: `worker-${id}`,
       taskId: `task-${id}`,
       workspaceId: 'ws-1',
+      teamId: 'team-1',
       missionId: 'mission-1',
       policyVersion: 'psq-v1',
       mode: 'propose',
@@ -270,6 +271,37 @@ describe('recordPostSessionFindings — aggregation', () => {
     expect(store.findings[0].occurrenceCount).toBe(2);
     expect(store.tasks.size).toBe(1);
     expect(store.notes).toHaveLength(1);
+  });
+});
+
+describe('recordPostSessionFindings — triage outcome label', () => {
+  const run = async (findings: PostSessionQualityFinding[], runOver: Partial<FindingRunRow> = {}, labelOutcome?: any) => {
+    const store = new FakeStore();
+    store.addRun({ id: 'run-1', ...runOver });
+    const labels: any[] = [];
+    const res = await recordPostSessionFindings('run-1', analysis(findings), {
+      store, now: NOW, labelOutcome: labelOutcome ?? (async (l: any) => { labels.push(l); return { ok: true }; }),
+    });
+    return { res, labels };
+  };
+
+  it('labels the triage decision actionable when the analysis found something', async () => {
+    const { labels } = await run([finding()]);
+    expect(labels).toEqual([{
+      teamId: 'team-1', capability: 'buildd.post_session_triage', subject: { type: 'post_session_run', id: 'run-1' },
+      source: 'post_session_analysis', label: 'actionable', observedAt: NOW,
+    }]);
+  });
+
+  it('labels it not_actionable when the only finding is no_action', async () => {
+    const { labels } = await run([finding({ class: 'no_action', severity: 'low', proposedAction: 'observe_only' })]);
+    expect(labels[0]).toMatchObject({ label: 'not_actionable' });
+  });
+
+  it('a run with no team has no decision to label, and a failing label never fails the record', async () => {
+    expect((await run([finding()], { teamId: null })).labels).toEqual([]);
+    const { res } = await run([finding()], {}, async () => { throw new Error('db down'); });
+    expect(res.status).toBe('recorded');
   });
 });
 

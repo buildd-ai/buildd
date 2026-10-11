@@ -118,7 +118,6 @@ const SUMMARY_MAX = 220;
  * be `status: draft`, which is the honest state for a contract with no guard.
  */
 export const VERIFIED_BY_DEBT = new Set([
-  'auth-oauth-boundaries',
   'codex-backend-spec',
   'db-migration-gates',
   'external-cron-triggers',

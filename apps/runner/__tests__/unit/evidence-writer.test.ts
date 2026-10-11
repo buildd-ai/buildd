@@ -298,7 +298,7 @@ describe('size cap keeps head and tail', () => {
     expect(stored).toContain('TAIL-MARK last line');
     expect(stored).toContain('bytes omitted by the buildd evidence writer');
     expect(logged.some(l => l.event === 'evidence_truncated')).toBe(true);
-  });
+  }, 120_000);
 
   test('an incompressible text over the gzip ceiling is shrunk to fit, not skipped', async () => {
     const b64 = randomBytes(12 * 1024 * 1024).toString('base64').replace(/(.{76})/g, '$1\n');
@@ -311,7 +311,7 @@ describe('size cap keeps head and tail', () => {
     const stored = gunzipText(puts[0].body);
     expect(stored).toContain('HEAD-MARK');
     expect(stored).toContain('TAIL-MARK');
-  });
+  }, 120_000);
 
   test('an oversized test report keeps its head and tail too', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'evidence-writer-'));
@@ -331,7 +331,7 @@ describe('size cap keeps head and tail', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 120_000); // builds and gzips a multi-MB report; slow when the machine is compiling
 });
 
 describe('confirming an upload', () => {
@@ -567,10 +567,42 @@ describe('secret channel coverage', () => {
         modelEndpoint: { kind: 'gateway', baseUrl: 'https://proxy.example', authToken: `seed-${field}`, authHeader: 'authorization', models: {} },
         roleInstructions: { slug: 'builder', name: 'Builder', content: `seed-${field}` },
         skillBundles: [{ slug: 'demo', name: 'Demo', content: `seed-${field}` }],
+        mcpConnectors: [{ name: 'axiom', transport: 'http', url: 'https://mcp.example', headers: { Authorization: `seed-${field}` } }],
       };
       const worker = { [field]: seeded[field] ?? `seed-${field}` };
       const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);
       expect(values).toContain(`seed-${field}`);
     }
+  });
+});
+
+describe('model endpoint headers are redacted', () => {
+  test('an AI Gateway token is on the redactor list, whole and without its Bearer scheme', () => {
+    const worker = {
+      modelEndpoint: {
+        kind: 'cloudflare', baseUrl: 'https://gateway.example', authToken: 'upstream-key', authHeader: 'x-api-key', models: {},
+        headers: { 'cf-aig-authorization': 'Bearer gw-run-token-value' },
+      },
+    };
+    const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);
+    expect(values).toContain('Bearer gw-run-token-value');
+    expect(values).toContain('gw-run-token-value');
+  });
+});
+
+describe('directly mounted connector credentials are redacted', () => {
+  test('header tokens (whole and bare) and stdio env values are on the redactor list; gateway entries add nothing', () => {
+    const worker = {
+      mcpConnectors: [
+        { name: 'linear', transport: 'http', url: 'https://mcp.example', headers: { Authorization: 'Bearer conn-provider-token' } },
+        { name: 'local', transport: 'stdio', command: 'npx', env: { API_KEY: 'stdio-env-secret' } },
+        { id: 'c1', name: 'axiom', transport: 'http', gateway: true, gatewayPath: '/api/mcp/c/c1' },
+      ],
+    };
+    const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);
+    expect(values).toContain('Bearer conn-provider-token');
+    expect(values).toContain('conn-provider-token');
+    expect(values).toContain('stdio-env-secret');
+    expect(values).not.toContain('/api/mcp/c/c1');
   });
 });

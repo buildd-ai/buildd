@@ -17,8 +17,14 @@ const HEURISTIC_MAX_WORDS = 4;
 const SCOPE_MAX_LENGTH = 24;
 const FALLBACK_LABEL = 'untitled';
 
-const CONVENTIONAL_RE =
-  /^(feat|fix|chore|docs?|refactor|tests?|ci|perf|build|style|revert|hotfix|release|deps)(?:\(([^)]*)\))?!?:\s*/i;
+/**
+ * A leading conventional-commit `type(scope)!:` prefix: group 1 the type,
+ * group 2 the scope. The one definition: the web app's display title
+ * (`displayTaskTitle`) and task page header read this same pattern.
+ */
+export const CONVENTIONAL_PREFIX_RE =
+  /^(feat|fix|chore|docs?|refactor|tests?|ci|perf|build|style|revert|hotfix|release|deps|polish|design|research)(?:\(([^)]*)\))?!?:\s*/i;
+const CONVENTIONAL_RE = CONVENTIONAL_PREFIX_RE;
 
 /** `[builder · after CI #1]`, `[CI Retry]`, `[friction]` … */
 const BRACKET_PREFIX_RE = /^\s*\[[^\]]*\]\s*/;

@@ -7,8 +7,14 @@ describe('Eyebrow', () => {
     const html = renderToStaticMarkup(<Eyebrow>Missions</Eyebrow>);
     expect(html).toMatch(/^<span /);
     expect(html).toContain('text-eyebrow');
-    expect(html).toContain('uppercase');
     expect(html).toContain('text-text-primary');
+  });
+
+  it('is a quiet sans label in the case it was written, not a tracked all-caps mono header', () => {
+    const html = renderToStaticMarkup(<Eyebrow>Needs you</Eyebrow>);
+    expect(html).toContain('font-sans');
+    expect(html).toContain('font-semibold');
+    for (const c of ['uppercase', 'font-mono', 'tracking-']) expect(html).not.toContain(c);
   });
 
   it('renders as a heading when asked', () => {

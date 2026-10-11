@@ -14,6 +14,12 @@ describe('outputRequirementNudge', () => {
       .toBeNull();
   });
 
+  test('create_artifact on the group tool satisfies artifact_required', () => {
+    const call = { name: 'mcp__buildd__buildd_work', input: { action: 'create_artifact' } };
+    expect(outputRequirementNudge({ outputRequirement: 'artifact_required', roleSlug: null, hasPR: false, toolCalls: [call] }))
+      .toBeNull();
+  });
+
   test('upload_artifact satisfies artifact_required', () => {
     expect(outputRequirementNudge({ outputRequirement: 'artifact_required', roleSlug: null, hasPR: false, toolCalls: [buildd('upload_artifact')] }))
       .toBeNull();

@@ -34,11 +34,11 @@ function Row({ view, model, timeZone }: HomeMissionRow & { timeZone?: string | n
     <div
       data-testid="home-mission-row"
       data-status={model.status.label.toLowerCase().replace(/\s+/g, '_')}
-      className="grid grid-cols-1 items-center gap-x-6 gap-y-2 border-b border-border-default px-4 py-3.5 last:border-b-0 md:grid-cols-[minmax(0,260px)_minmax(0,1fr)_auto] md:px-6"
+      className="grid grid-cols-1 items-center gap-x-6 gap-y-2 border-b border-border-default px-4 py-3.5 last:border-b-0 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)_auto] md:px-6"
     >
       <div className="min-w-0">
         <StatusWord {...status} />
-        <Link href={view.href} className="mt-1 block truncate font-mono text-[14px] font-semibold text-text-primary hover:underline md:text-[15px]">
+        <Link href={view.href} className="mt-1 line-clamp-2 [overflow-wrap:anywhere] font-mono text-[14px] font-semibold text-text-primary hover:underline md:text-[15px]">
           {view.title}
         </Link>
       </div>

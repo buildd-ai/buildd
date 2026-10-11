@@ -59,7 +59,7 @@ function Action({ children, subtitle, suggested }: { children: ReactNode; subtit
     <div className="min-w-0 max-w-full" data-recommended={suggested ? 'true' : undefined}>
       <div className="flex flex-wrap items-center gap-2">
         {children}
-        {suggested && <span className="text-[11px] font-semibold uppercase tracking-wide text-status-warning">Suggested</span>}
+        {suggested && <span className="text-meta font-semibold text-accent-text">Suggested</span>}
       </div>
       <p className={SUBTITLE}>{subtitle}</p>
     </div>
@@ -254,7 +254,7 @@ export default function MissionDecisionSheet({
       {surfaceAudit && (
         <div className="min-w-0 space-y-2" data-testid="surface-audit-decision">
           {showLabels && (
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Visual audit</p>
+            <p className="text-body font-semibold text-text-primary">Visual audit</p>
           )}
 
           {surfaceAudit.paths.length > 0 && (
@@ -366,7 +366,7 @@ export default function MissionDecisionSheet({
       {criteriaUnmet && (
         <div className="min-w-0 space-y-2" data-testid="criteria-decision">
           {showLabels && (
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Goal criteria</p>
+            <p className="text-body font-semibold text-text-primary">Goal criteria</p>
           )}
 
           <Action subtitle="Create a task for what is missing, then come back to this decision.">

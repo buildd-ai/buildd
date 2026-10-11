@@ -9,7 +9,9 @@
  * Owned, in order (cheapest first; the async lineage walk runs last):
  *   own_branch      head is the worker's own branch
  *   retry_subject   the task is a retry attempt bound to this PR number
- *   task_names_pr   the task's title, description or context names #N
+ *   linked_pr       the task's own records link #N: a PR link stamped on it
+ *                   when it was filed (`context.prReach`, see
+ *                   lib/pr-reach-grant.ts) or a person's landing grant
  *   stacked_base    head is the task's context.baseBranch / headBranch
  *                   (stacked phases and a mission's shared working branch)
  *   depends_on      head carries the short id of a task this one depends on
@@ -19,6 +21,12 @@
  *                   branch (workers.runner === INTERACTIVE_RUNNER, see
  *                   interactive-session.ts), when no OTHER worker already
  *                   holds that exact name live or with a PR of its own
+ *
+ * Having the right base proves nothing about a head. A mission task's head is
+ * its own generated branch (claim never hands out a pinned head equal to the
+ * task's base — see `pinnedHeadBranch` in @buildd/core/branch-names), so
+ * there is no "cut from the integration branch" basis: ownership is
+ * established at claim, not inferred at create_pr.
  *
  * A protected head (trunk, release branches, the repo's default branch) is
  * owned only as the worker's own branch: naming a release PR in a task does
@@ -39,11 +47,13 @@
  */
 import type { WorkerPrActor } from './worker-pr';
 import { isLiveWorkerStatus } from './principal';
+import { linkedPrNumbers, retrySubject } from './pr-links';
+export { prNumbersNamedAtFiling, readPrReachGrant, taskLinksPr, type PrReachGrant } from './pr-links';
 
 export type PrOwnershipBasis =
   | 'own_branch'
   | 'retry_subject'
-  | 'task_names_pr'
+  | 'linked_pr'
   | 'stacked_base'
   | 'depends_on'
   | 'task_lineage'
@@ -95,8 +105,8 @@ export interface PrOwnershipInput {
    */
   interactiveWorker?: boolean;
   /**
-   * Other workers already recorded on `head` — only consulted when
-   * `interactiveWorker` is true and no cheaper basis matched. Fetch with one
+   * Other workers already recorded on `head` — only consulted for
+   * `interactive_head`, when no cheaper basis matched. Fetch with one
    * branch-equality query in the same workspace; omit otherwise.
    */
   otherHeadHolders?: readonly InteractiveHeadHolder[];
@@ -112,23 +122,6 @@ export function branchCarriesTaskId(branch: string, taskId: string): boolean {
   return new RegExp(`(?:^|[/_-])${id8}(?:[/_-]|$)`).test(branch.toLowerCase());
 }
 
-/**
- * The task names this PR: in its title, description or context, or as the
- * PR its retry attempt is bound to. "Fix review on #42", "land PR #42".
- */
-export function taskNamesPr(task: PrOwnershipTask | null | undefined, prNumber: number): boolean {
-  if (!task) return false;
-  const subject = task.reviewerRetryPrNumber ?? task.ciRetryPrNumber ?? task.conflictRetryPrNumber ?? null;
-  return subject === prNumber || namesPr(task, prNumber);
-}
-
-function namesPr(task: PrOwnershipTask, prNumber: number): boolean {
-  const text = `${task.title ?? ''}\n${task.description ?? ''}`;
-  if (new RegExp(`(?:#|/pull/)${prNumber}(?!\\d)`).test(text)) return true;
-  const ctx = task.context;
-  return !!ctx && typeof ctx === 'object' && Object.values(ctx as Record<string, unknown>).some(v => v === prNumber);
-}
-
 /** The other worker, if any, that makes `head` unavailable for an interactive session to claim as its own. */
 function claimingHolder(
   holders: readonly InteractiveHeadHolder[],
@@ -137,13 +130,21 @@ function claimingHolder(
   return holders.find(h => isLiveWorkerStatus(h.status) || (h.hasPr && h.taskId !== selfTaskId)) ?? null;
 }
 
+function headClaimed(head: string, holder: InteractiveHeadHolder): PrOwnershipVerdict {
+  return {
+    owned: false,
+    reasonCode: 'head_claimed',
+    error: `Refusing to record a PR whose head '${head}' is already in use by another worker${holder.taskId ? ` (task ${holder.taskId.slice(0, 8)})` : ''}. Push to a branch name nobody else is using, or use the branch claim_task assigned this worker.`,
+  };
+}
+
 function refuse(reasonCode: 'protected_head' | 'head_not_owned', head: string): PrOwnershipVerdict {
   return {
     owned: false,
     reasonCode,
     error: reasonCode === 'protected_head'
       ? `Refusing to record a PR whose head is the protected branch '${head}' on this task's worker. Open the PR from the task's own branch.`
-      : `Refusing to record a PR whose head '${head}' is not this task's branch, a retry or dependency of it, or a PR the task names. Open the PR from the task's own branch.`,
+      : `Refusing to record a PR whose head '${head}' is not this task's branch, a retry or dependency of it, or a PR the task's own records link. Open the PR from the task's own branch.`,
   };
 }
 
@@ -154,9 +155,8 @@ export async function verifyPrOwnership(input: PrOwnershipInput, loadLineage: Lo
   if (!task) return refuse('head_not_owned', head);
 
   if (prNumber != null) {
-    const subject = task.reviewerRetryPrNumber ?? task.ciRetryPrNumber ?? task.conflictRetryPrNumber ?? null;
-    if (subject === prNumber) return { owned: true, basis: 'retry_subject' };
-    if (namesPr(task, prNumber)) return { owned: true, basis: 'task_names_pr' };
+    if (retrySubject(task) === prNumber) return { owned: true, basis: 'retry_subject' };
+    if (linkedPrNumbers(task).includes(prNumber)) return { owned: true, basis: 'linked_pr' };
   }
 
   const ctx = (task.context && typeof task.context === 'object') ? task.context as Record<string, unknown> : {};
@@ -171,11 +171,7 @@ export async function verifyPrOwnership(input: PrOwnershipInput, loadLineage: Lo
   if (input.interactiveWorker) {
     const holder = claimingHolder(input.otherHeadHolders ?? [], task.id);
     if (!holder) return { owned: true, basis: 'interactive_head' };
-    return {
-      owned: false,
-      reasonCode: 'head_claimed',
-      error: `Refusing to record a PR whose head '${head}' is already in use by another worker${holder.taskId ? ` (task ${holder.taskId.slice(0, 8)})` : ''}. Push to a branch name nobody else is using, or use the branch claim_task assigned this worker.`,
-    };
+    return headClaimed(head, holder);
   }
 
   return refuse('head_not_owned', head);

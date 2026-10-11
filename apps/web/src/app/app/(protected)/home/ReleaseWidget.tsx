@@ -8,10 +8,19 @@ function daysAgo(isoDate: string): number {
   return Math.floor((Date.now() - new Date(isoDate).getTime()) / 86400000);
 }
 
-export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
-  const visible = items.filter(
+function visibleReleaseItems(items: ReleaseReadinessItem[]): ReleaseReadinessItem[] {
+  return items.filter(
     (item) => computeReleaseWidgetDecision(item.queueDepth, item.ciState, item.commitsAheadAtDispatch) !== 'hide',
   );
+}
+
+/** True when ReleaseWidget renders anything for these items. */
+export function releaseWidgetShows(items: ReleaseReadinessItem[]): boolean {
+  return visibleReleaseItems(items).length > 0;
+}
+
+export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
+  const visible = visibleReleaseItems(items);
 
   if (visible.length === 0) return null;
 

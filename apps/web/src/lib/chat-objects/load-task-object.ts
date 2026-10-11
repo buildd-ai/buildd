@@ -1,3 +1,4 @@
+import type { RunEvidenceInput } from '@buildd/core/run-evidence';
 /**
  * A task as a live chat object: its Board label, role, and the latest worker's
  * live state (runner, current action, PR).
@@ -12,6 +13,7 @@ import { findTaskRole } from '@/app/app/(protected)/tasks/[id]/role-lookup';
 import { deriveNow, type Milestone } from '@/app/app/(protected)/tasks/[id]/task-activity';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import type { TaskObjectView } from '@/components/chat/objects/object-views';
+import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
 
 const epoch = (v: Date | string | null | undefined): number | null => {
   if (!v) return null;
@@ -23,12 +25,13 @@ const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 
 /** The task page's Now strip state for a live worker (as RealTimeWorkerView derives it); null otherwise. Pure. */
 export function taskNowState(
-  worker: { status: string; currentAction: string | null; prUrl: string | null; startedAt: number | null; milestones: unknown } | null,
+  worker: RunEvidenceInput & { status: string; currentAction: string | null; prUrl: string | null; startedAt: number | null; milestones: unknown } | null,
   nowMs: number,
 ): TaskObjectView['now'] {
   if (!worker || !LIVE.has(worker.status)) return null;
   const milestones = Array.isArray(worker.milestones) ? (worker.milestones as Milestone[]) : [];
   return deriveNow(milestones, {
+    ...worker,
     status: worker.status,
     currentAction: worker.currentAction,
     prUrl: worker.prUrl,
@@ -64,7 +67,7 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
   });
   if (!task) return null;
 
-  const [access, latest, role, runs] = await Promise.all([
+  const [access, latest, role, runs, deliveries] = await Promise.all([
     verifyWorkspaceAccess(userId, task.workspaceId),
     db.query.workers.findFirst({
       where: eq(workers.taskId, taskId),
@@ -72,17 +75,21 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
       columns: {
         id: true, status: true, runner: true, startedAt: true, completedAt: true, currentAction: true,
         waitingFor: true, prNumber: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, milestones: true,
-        turns: true, updatedAt: true, error: true,
+        turns: true, updatedAt: true, error: true, createdAt: true, dirtyWorktree: true, observedTouches: true, commitCount: true, lastCommitSha: true, filesChanged: true, prIsDraft: true,
       },
     }),
     findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as { teamId?: string } | null)?.teamId, slug: task.roleSlug }),
     db.select({ n: count() }).from(workers).where(eq(workers.taskId, taskId)).then(r => Number(r[0]?.n ?? 0)).catch(() => null),
+    // §17.5: a kernel-owned delivery's reading, not the worker's PR columns.
+    getOwnerDeliveryDisplays([taskId]),
   ]);
   if (!access) return null;
 
   const { scope, label } = boardTaskLabel({ title: task.title, label: (task as { label?: string | null }).label ?? null });
   const renderedAt = Date.now();
   const now = latest ? taskNowState({
+    ...latest,
+    outputRequirement: task.outputRequirement,
     status: latest.status,
     currentAction: latest.currentAction ?? null,
     prUrl: latest.prUrl ?? null,
@@ -117,6 +124,7 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
       updatedAt: epoch(latest.updatedAt),
     } : null,
     now,
+    delivery: deliveries.get(task.id) ?? null,
     attempts: runs ?? (latest ? 1 : 0),
     waitingPrompt: latest?.waitingFor?.prompt ?? null,
     error: latest?.error ?? null,

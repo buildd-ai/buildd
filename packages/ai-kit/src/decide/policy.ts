@@ -56,7 +56,7 @@ import {
   DECIDE_ENGINE_VERSION,
   DEFAULT_DECIDE_TIMEOUT_MS,
   DEFAULT_MIN_RETRY_BUDGET_MS,
-  JEV_MODEL,
+  defaultDecisionModel,
   type DecideError,
   type DecideParams,
   type DecideResult,
@@ -410,7 +410,7 @@ export function decideRoute(
 ): DecisionRoute {
   const { provider, isMeasured, ...rest } = params;
   const ep = resolveDecisionEndpoint(rest.endpoint);
-  const model = rest.model ?? (ep.ok && ep.kind === 'chat' ? '' : JEV_MODEL);
+  const model = rest.model ?? defaultDecisionModel(ep.ok ? ep.kind : undefined);
   return {
     provider: provider ?? (ep.ok ? ep.provider : 'unknown'),
     model,

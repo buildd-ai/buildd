@@ -59,6 +59,7 @@ import {
   type ClaimHoldGroupSummary,
   type ClaimHoldReadoutInput,
 } from './orchestration-claim-readout';
+import { summarizeSoftStartReadout, type SoftStartCohortSummary, type SoftStartReadoutInput } from './orchestration-soft-start-readout';
 import {
   buildPickDecision,
   candidateLabel,
@@ -755,6 +756,8 @@ export interface OrchestrationReadout {
   window: { since: string; until: string; laterFrom: string };
   minLabelledPerSplit: number;
   capabilities: CapabilityReadout[];
+  /** Soft-overlap STARTs by who decided (rule or Jev), same labeller; present when the loader supplied them. */
+  softOverlapStarts?: SoftStartCohortSummary[];
   /** `blocked` unless some group is eligible; even then a reviewer commits the evidence. */
   promotion: { status: 'blocked' | 'reviewable'; eligible: PromotionEvidence[] };
 }
@@ -768,7 +771,7 @@ function rollUp(capability: GroupReadout['capability'], groups: GroupReadout[]):
 }
 
 export async function buildOrchestrationReadout(input: {
-  claim: { rows: readonly ClaimReadoutRow[]; hold: ClaimHoldReadoutInput; links: ReadonlyMap<string, readonly string[]> };
+  claim: { rows: readonly ClaimReadoutRow[]; hold: ClaimHoldReadoutInput; softStarts?: SoftStartReadoutInput; links: ReadonlyMap<string, readonly string[]> };
   manifest: { predictions: readonly ManifestReadoutPrediction[]; links: ReadonlyMap<string, readonly string[]> };
   window: { since: Date; until: Date };
   plan: SplitPlan;
@@ -777,7 +780,8 @@ export async function buildOrchestrationReadout(input: {
   now?: () => Date;
 }): Promise<OrchestrationReadout> {
   const minN = input.minN ?? READOUT_MIN_LABELLED_PER_SPLIT;
-  const claim = await buildClaimReadout({ ...input.claim, plan: input.plan, minN, thresholds: input.thresholds });
+  const { softStarts, ...claimInput } = input.claim;
+  const claim = await buildClaimReadout({ ...claimInput, plan: input.plan, minN, thresholds: input.thresholds });
   const manifest = await buildManifestReadout({ ...input.manifest, plan: input.plan, minN, thresholds: input.thresholds });
   const capabilities = [rollUp('orchestration_manifest', manifest), rollUp('orchestration_claim', claim)];
   const eligible = [...manifest, ...claim].map(promotionEvidenceDraft).filter((e): e is PromotionEvidence => e !== null);
@@ -786,6 +790,9 @@ export async function buildOrchestrationReadout(input: {
     window: { since: input.window.since.toISOString(), until: input.window.until.toISOString(), laterFrom: input.plan.laterFrom.toISOString() },
     minLabelledPerSplit: minN,
     capabilities,
+    // Rule STARTs and Jev STARTs past a soft overlap, graded by one labeller:
+    // the same unsafe-start measure for both cohorts.
+    ...(softStarts ? { softOverlapStarts: summarizeSoftStartReadout(softStarts) } : {}),
     promotion: { status: eligible.length > 0 ? 'reviewable' : 'blocked', eligible },
   };
 }

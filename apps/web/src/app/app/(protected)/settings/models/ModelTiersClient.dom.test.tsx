@@ -19,6 +19,7 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ModelTiersClient } = await import('./ModelTiersClient');
 const { CELLS_BODY, MODELS, POOLS_BODY } = await import('./model-tiers-fixtures');
+const { formControls } = await import('../_lib/form-controls');
 
 const requests: Array<{ url: string; method: string; body: any }> = [];
 beforeEach(() => {
@@ -140,6 +141,15 @@ describe('ModelTiersClient: the table', () => {
     await click(cell);
     expect(q('[data-testid="cell-editor"]')).toBeNull();
   });
+
+  it('a member can only open views: History and what ran, nothing that edits', async () => {
+    await mount(false);
+    const ids = formControls(host).map((el) => el.getAttribute('data-testid') ?? '');
+    expect(ids.length).toBeGreaterThan(0);
+    expect(ids.every((id) => id === 'tiers-history' || id.startsWith('tier-name-'))).toBe(true);
+    expect(host.querySelector('[aria-haspopup="dialog"]')).toBeNull();
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this/);
+  });
 });
 
 describe('ModelTiersClient: the cell editor', () => {
@@ -160,23 +170,21 @@ describe('ModelTiersClient: the cell editor', () => {
     const ed = q('[data-testid="cell-editor"]')!;
     expect(ed.querySelector('[data-testid="cell-primary-picker"]')!.getAttribute('data-value')).toBe("anthropic::claude-opus-5");
     expect([...ed.querySelectorAll('[data-testid="cell-alternate"]')].map((li) => li.textContent)).toEqual(['claude-sonnet-5Remove']);
+    expect(ed.querySelector('[data-testid="cell-dial-3"]')).toBeNull();
+    await click(ed.querySelector('[data-testid="cell-advanced-toggle"]'));
     expect(ed.querySelector('[data-testid="cell-dial-3"]')!.getAttribute('aria-pressed')).toBe('true');
     expect(ed.querySelector('[data-testid="cell-learning"]')!.textContent).toContain('12 of 40 graded runs');
     expect(ed.querySelector('input[type="number"]')).toBeNull();
-    expect(ed.textContent).not.toContain('%');
+    expect(ed.querySelector('input')).toBeNull();
   });
 
-  it('dial 1 greys out may-also-use', async () => {
+  it('passes the cell surface to the picker so a Codex runner is not disabled in a coding cell', async () => {
     await mount();
     await click(q('[data-testid="cell-agent-premium"]'));
-    const alts = () => q('[data-testid="cell-alternates"]')!;
-    expect(alts().getAttribute('aria-disabled')).toBeNull();
-    expect((alts().querySelector('[data-testid="cell-alternate-remove"]') as HTMLButtonElement).disabled).toBe(false);
-    await click(q('[data-testid="cell-dial-1"]'));
-    expect(alts().getAttribute('aria-disabled')).toBe('true');
-    expect(alts().className).toContain('opacity-50');
-    expect((alts().querySelector('[data-testid="cell-alternate-remove"]') as HTMLButtonElement).disabled).toBe(true);
-    expect((alts().querySelector('[data-testid="cell-alternate-add"]') as HTMLButtonElement).disabled).toBe(true);
+    await click(q('[data-testid="cell-primary-picker"]'));
+    const rows = [...document.querySelectorAll('[role="option"]')];
+    const codex = rows.filter((r) => r.getAttribute('data-key')?.startsWith('runner:codex::'));
+    for (const r of codex) expect(r.getAttribute('aria-disabled')).toBeNull();
   });
 
   it('Save sets the dial against the pool\'s latest version; Cancel writes nothing', async () => {
@@ -188,6 +196,7 @@ describe('ModelTiersClient: the cell editor', () => {
     expect(requests.filter((r) => r.method !== 'GET')).toEqual([]);
 
     await click(q('[data-testid="cell-agent-premium"]'));
+    await click(q('[data-testid="cell-advanced-toggle"]'));
     await click(q('[data-testid="cell-dial-5"]'));
     await click(q('[data-testid="cell-save"]'));
     const writes = requests.filter((r) => r.method !== 'GET');
@@ -208,13 +217,13 @@ describe('ModelTiersClient: the cell editor', () => {
     await mount();
     await click(q('[data-testid="cell-agent-premium-plus"]'));
     expect(q('[data-testid="cell-alternates"]')).toBeNull();
-    expect(q('[data-testid="cell-dial-3"]')).toBeNull();
+    expect(q('[data-testid="cell-routing"]')).toBeNull();
     expect(q('[data-testid="cell-learning"]')!.textContent).toBe('Premium-plus always uses its primary.');
   });
 });
 
 describe('ModelTiersClient: what ran and history', () => {
-  it('a routing tier\'s name opens what ran with share, merged, review ok and cost per run', async () => {
+  it('a routing tier\'s name opens what ran with share, changes merged, passed review and cost per run', async () => {
     await mount();
     expect(q('[data-testid="tier-name-premium-plus"]')!.tagName).toBe('SPAN');
     await click(q('[data-testid="tier-name-standard"]'));
@@ -225,7 +234,18 @@ describe('ModelTiersClient: what ran and history', () => {
     expect(rows[0].textContent).toContain('60%');
     expect(rows[0].textContent).toContain('80%');
     expect(rows[0].textContent).toContain('$0.42');
-    expect(sheet.querySelector('[data-testid="what-ran-recent"]')!.textContent).toContain('merged');
+    expect(rows[0].textContent).toContain('80% (20 of 25)');
+    expect(rows[0].textContent).toContain('$0.42 per run');
+    // too few graded runs for a percentage: counts, not 75%
+    expect(rows[1].textContent).toContain('Changes merged3 of 4');
+    expect(rows[1].textContent).toContain('Passed reviewnot measured');
+    expect(sheet.querySelector('[data-testid="what-ran-denominator"]')!.textContent).toContain('Share of 50 runs');
+    const recent = sheet.querySelector('[data-testid="what-ran-recent"]')!;
+    expect(recent.textContent).toContain('Add retry to webhook sender');
+    expect(recent.textContent).toContain('Changes merged');
+    expect(recent.textContent).toContain('Not merged');
+    expect(recent.textContent).not.toContain('not graded');
+    expect(recent.querySelector('a')!.getAttribute('href')).toBe('/app/tasks/task-b');
   });
 
   it('the chat variant shows satisfied, thumbs, re-asked and cost per conversation', async () => {
@@ -233,7 +253,7 @@ describe('ModelTiersClient: what ran and history', () => {
     await click(q('[data-testid="tier-name-premium"]'));
     const chat = q('[data-testid="what-ran-chat"]')!;
     expect(chat.textContent).toContain('Satisfied');
-    expect(chat.textContent).toContain('$/conversation');
+    expect(chat.textContent).toContain('per conversation');
     expect(chat.textContent).toContain('9 up · 1 down');
     expect(chat.textContent).not.toContain('Merged');
   });
@@ -242,10 +262,32 @@ describe('ModelTiersClient: what ran and history', () => {
     await mount();
     await click(q('[data-testid="tiers-history"]'));
     const list = q('[data-testid="history-changes"]')!;
-    expect(list.textContent).toContain('Back to primary');
+    expect(list.textContent).toContain('Returned to primary');
     expect(list.textContent).toContain('merged rate 40% vs primary 75% over 30 runs');
-    expect(list.textContent).toContain('Dial changed · 4');
+    expect(list.textContent).toContain('Changed how far traffic may move');
+    expect(list.textContent).not.toContain('system:succession');
     await click(q('[data-testid="history-what-ran-standard"]'));
     expect(q('[data-testid="what-ran-sheet"]')).not.toBeNull();
+  });
+});
+
+describe('ModelTiersClient: load failure', () => {
+  it('says what happened and offers Retry instead of a bare status code', async () => {
+    const ok = globalThis.fetch;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/model-tiers/cells')) return new Response('oops', { status: 500 });
+      return ok(url, init);
+    }) as unknown as typeof fetch;
+    await mount();
+    const err = q('[data-testid="load-error"]')!;
+    expect(err).not.toBeNull();
+    expect(err.textContent).toContain("Couldn't load the model tiers.");
+    expect(err.textContent).toContain('Retry');
+    // Never a raw status code, not even folded.
+    expect(err.textContent).not.toContain('HTTP');
+    expect(err.textContent).not.toContain('500');
+    globalThis.fetch = ok;
+    await click([...err.querySelectorAll('button')].find((b) => b.textContent === 'Retry'));
+    expect(q('[data-testid="load-error"]')).toBeNull();
   });
 });

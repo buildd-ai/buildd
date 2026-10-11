@@ -1,9 +1,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 // Team-scoped access: a workspace's `accessMode: 'open'` widens access to the
-// members and accounts of the workspace's OWN team, never to other teams; and
-// the admin-scope helpers only ever return teams where the caller holds
-// admin/owner (or, for an API key, the key's own team at admin level).
+// members and accounts of the workspace's OWN team, never to other teams.
 
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockTeamMembersFindFirst = mock(() => null as any);
@@ -24,13 +22,8 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-const {
-  verifyWorkspaceAccess,
-  verifyAccountWorkspaceAccess,
-  getUserAdminTeamIds,
-  getCallerAdminTeamIds,
-  canCallerAdminTeam,
-} = await import('./team-access');
+const teamAccess = await import('./team-access');
+const { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } = teamAccess;
 
 beforeEach(() => {
   for (const m of [
@@ -82,37 +75,24 @@ describe('verifyAccountWorkspaceAccess — open workspaces', () => {
   });
 });
 
-describe('getUserAdminTeamIds', () => {
-  it('returns only teams where the user is admin or owner, plus their personal team', async () => {
-    mockTeamMembersFindMany.mockResolvedValue([
-      { teamId: 'team-owner', role: 'owner' },
-      { teamId: 'team-admin', role: 'admin' },
-      { teamId: 'team-member', role: 'member' },
-    ]);
-    mockTeamsFindFirst.mockResolvedValue({ id: 'team-personal' });
-    const ids = await getUserAdminTeamIds('user-admin-scope');
-    expect(ids.sort()).toEqual(['team-admin', 'team-owner', 'team-personal']);
-  });
-});
+describe('team-wide admin-tier helpers are gone', () => {
+  // Every team-scoped decision names its permission (can / teamIdsWhere in
+  // lib/permissions.ts), so a team's permission overrides apply to it. A
+  // hard-coded owner/admin helper would ignore them; none may come back.
+  const removed = ['getUserAdmin', 'getCallerAdmin', 'canCallerAdmin'].map(p => `${p}${p.startsWith('can') ? 'Team' : 'TeamIds'}`);
 
-describe('getCallerAdminTeamIds / canCallerAdminTeam', () => {
-  it('an admin-level key administers only its own team', async () => {
-    const caller = { kind: 'account' as const, accountId: 'a1', teamId: 'team-k', level: 'admin' };
-    expect(await getCallerAdminTeamIds(caller)).toEqual(['team-k']);
-    expect(await canCallerAdminTeam(caller, 'team-k')).toBe(true);
-    expect(await canCallerAdminTeam(caller, 'team-x')).toBe(false);
+  it('team-access no longer exports them', () => {
+    for (const name of removed) expect(name in teamAccess).toBe(false);
   });
 
-  it('a worker-level key administers nothing', async () => {
-    const caller = { kind: 'account' as const, accountId: 'a2', teamId: 'team-k', level: 'worker' };
-    expect(await getCallerAdminTeamIds(caller)).toEqual([]);
-    expect(await canCallerAdminTeam(caller, 'team-k')).toBe(false);
-  });
-
-  it('a session member of a team cannot administer it', async () => {
-    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'team-m', role: 'member' }]);
-    const caller = { kind: 'user' as const, userId: 'user-member-only' };
-    expect(await canCallerAdminTeam(caller, 'team-m')).toBe(false);
+  it('no source file under apps/web/src calls or stubs them', async () => {
+    const root = new URL('..', import.meta.url).pathname;
+    const hits: string[] = [];
+    for await (const file of new Bun.Glob('**/*.{ts,tsx}').scan({ cwd: root })) {
+      const text = await Bun.file(root + file).text();
+      for (const name of removed) if (text.includes(name)) hits.push(`${file}: ${name}`);
+    }
+    expect(hits).toEqual([]);
   });
 });
 

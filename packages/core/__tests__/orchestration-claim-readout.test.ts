@@ -193,4 +193,14 @@ describe('summarizeClaimHoldReadout: wait, stranded, throughput', () => {
     const [g] = summarizeClaimHoldReadout(input({ decisions: [decision({ suggested: null, status: 'fallback', reason: 'deadline' })] }));
     expect(g.suggestions).toEqual({ HOLD: 0, START: 0, none: 1 });
   });
+
+  it('keeps a code decision, an unapplied answer and a model failure apart', () => {
+    const [g] = summarizeClaimHoldReadout(input({ decisions: [
+      decision({ id: 'd1', suggested: null, status: 'fallback', reason: 'rule_decided' }),
+      decision({ id: 'd2', suggested: 'START', status: 'suggested', reason: 'below_threshold' }),
+      decision({ id: 'd3', suggested: null, status: 'fallback', reason: 'deadline' }),
+      decision({ id: 'd4', suggested: 'HOLD', status: 'applied', reason: null, applied: true }),
+    ] }));
+    expect(g.outcomes).toEqual({ 'fallback:rule_decided': 1, 'suggested:below_threshold': 1, 'fallback:deadline': 1, 'applied:-': 1 });
+  });
 });

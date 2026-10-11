@@ -57,3 +57,35 @@ it('builds usage from worker rows once, preserving retry roles and all recorded 
   expect(groups[1].role).toBe('reviewer');
   expect(groups[1].tokens).toBe(120);
 });
+
+// docs/specs/real-and-virtual-cost.md: real and virtual dollars are separate
+// columns; mixed and unknown are kept out of both.
+it('splits each role and tier into real and virtual cost', () => {
+  const rows = [
+    { role: 'builder', tier: 'standard', tokens: 10, costUsd: 2, hours: 1, basis: 'real' as const, executor: 'runner' as const },
+    { role: 'builder', tier: 'standard', tokens: 10, costUsd: 5, hours: 1, basis: 'virtual' as const, executor: 'interactive' as const },
+    { role: 'builder', tier: 'standard', tokens: 10, costUsd: 1, hours: 1, basis: 'unknown' as const, executor: 'runner' as const },
+  ];
+  const [g] = usageByRole(rows);
+  expect(g).toMatchObject({ realUsd: 2, virtualUsd: 5, costUsd: 8 });
+  expect(g.tiers[0]).toMatchObject({ realUsd: 2, virtualUsd: 5 });
+});
+it('carries each worker\'s basis and executor from the fold', async () => {
+  const { buildFlowSeries } = await import('@/lib/insights-flow');
+  const from = 0, to = 7 * 86400000;
+  const base = {
+    parentTaskId: null, roleSlug: 'builder', tier: 'standard', taskTitle: 'x', taskStatus: 'completed', workspaceId: 'ws', missionId: null,
+    status: 'completed', startedAt: 3600000, completedAt: 7200000, updatedAt: 7200000,
+    prNumber: null, mergedAt: null, prLifecycleStatus: null, prLastCheckedAt: null, prSupersededAt: null, prAbandonedAt: null,
+    inputTokens: 100, outputTokens: 20, costUsd: 1,
+  };
+  const s = buildFlowSeries({ window: { from, to }, now: to, bucketMs: 3600000,
+    workers: [
+      { ...base, workerId: 'a', taskId: 'a', costBasis: 'real', runner: 'http://localhost:8766' },
+      { ...base, workerId: 'b', taskId: 'b', costBasis: 'virtual', runner: 'mcp' },
+      { ...base, workerId: 'c', taskId: 'c', costBasis: null, runner: null },
+    ],
+    releases: [], releaseTasks: [], releaseWorkspaceIds: [],
+  });
+  expect(s.usage!.map(u => [u.basis, u.executor]).sort()).toEqual([['real', 'runner'], ['unknown', 'runner'], ['virtual', 'interactive']]);
+});

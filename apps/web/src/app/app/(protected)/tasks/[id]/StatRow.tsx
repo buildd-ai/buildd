@@ -1,4 +1,4 @@
-import { derivePrLifecycle } from '@/lib/pr-presentation';
+import { PR_PILL, type PrDisplayState } from '@/lib/pr-presentation';
 
 export function formatTokens(n: number): string | null {
   if (!n || n <= 0) return null;
@@ -12,9 +12,9 @@ function Tile({ testId, value, unit, label }: { testId?: string; value: React.Re
     <div data-testid={testId} className="px-3 py-2.5 md:px-4 md:py-3 border-r border-b md:border-b-0 border-border-default last:border-r-0 min-w-0">
       <div className="font-mono text-[20px] md:text-[24px] font-semibold tracking-[-0.5px] leading-tight tabular-nums truncate">
         {value}
-        {unit && <small className="ml-1 text-[12px] font-normal tracking-normal text-text-muted">{unit}</small>}
+        {unit && <small className="ml-1 text-[12px] font-normal text-text-muted">{unit}</small>}
       </div>
-      <div className="mt-1 font-mono text-[11px] md:text-[10px] uppercase tracking-[1.8px] text-text-muted truncate">{label}</div>
+      <div className="mt-1 font-mono text-meta text-text-muted truncate">{label}</div>
     </div>
   );
 }
@@ -35,20 +35,24 @@ export default function StatRow({
 }: {
   elapsed: string | null;
   turns: number;
-  tokens: number;
-  pr: { url: string; number: number | null; lifecycle: string | null } | null;
+  /** Null hides the tile: a figure the run did not report is not a 0. */
+  tokens: number | null;
+  /** `state` is `resolvePrDisplayState`'s: the delivery's for a kernel-owned PR, else the columns'. */
+  pr: { url: string; number: number | null; state: PrDisplayState } | null;
   filesTouched: number;
   added: number | null;
   removed: number | null;
 }) {
-  const tok = formatTokens(tokens);
-  const lifecycle = pr ? derivePrLifecycle(pr.lifecycle, true) : null;
+  const tok = tokens == null ? null : formatTokens(tokens);
+  const lifecycle = pr ? PR_PILL[pr.state] : null;
   const hasDiff = (added ?? 0) > 0 || (removed ?? 0) > 0;
   return (
-    <div data-testid="worker-stats" className="grid grid-cols-2 md:grid-cols-5 border-2 border-border-strong bg-card mt-4 md:mt-5">
+    <div data-testid="worker-stats" className={`grid grid-cols-2 ${tokens == null ? 'md:grid-cols-4' : 'md:grid-cols-5'} border-2 border-border-strong bg-card mt-4 md:mt-5`}>
       <Tile value={<span suppressHydrationWarning>{elapsed ?? <span className="text-text-muted">0</span>}</span>} label="Elapsed" />
       <Tile value={turns} label="Turns" />
-      <Tile value={tok ? tok.replace(/[kM]$/, '') : <span className="text-text-muted">0</span>} unit={tok?.match(/[kM]$/)?.[0]} label="Tokens" />
+      {tokens != null && (
+        <Tile testId="worker-stat-tokens" value={tok ? tok.replace(/[kM]$/, '') : <span className="text-text-muted">0</span>} unit={tok?.match(/[kM]$/)?.[0]} label="Tokens" />
+      )}
       {pr ? (
         <Tile
           testId="worker-stat-pr"

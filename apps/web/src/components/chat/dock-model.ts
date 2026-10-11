@@ -8,6 +8,8 @@ import type { BuilddObjectRef } from './chat-contract';
 import type { TaskObjectView } from './objects/object-views';
 import type { BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
 import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
+import { derivePrDisplayState } from '@/lib/pr-presentation';
+import { deliveryReading, type DeliveryReadingInput, type DeliveryTone } from '@/lib/workflow/delivery-display';
 
 export type DockMode = KitDockMode;
 export type DockChoice = KitDockChoice<BuilddObjectRef>;
@@ -41,9 +43,10 @@ export type DockTone = 'needs' | 'live' | 'landed' | 'idle';
 export interface DockAction {
   label: string;
   primary: boolean;
-  /** `answer`: open the question in the panel. `send`: say `text` in the chat. */
-  kind: 'answer' | 'send';
+  /** `answer`: open the question in the panel. `send`: say `text` in the chat. `open`: open task `taskId` in the panel. */
+  kind: 'answer' | 'send' | 'open';
   text?: string;
+  taskId?: string;
 }
 
 export interface TaskDockModel {
@@ -63,14 +66,43 @@ export interface TaskDockModel {
 
 const MAX_TRIES = 6;
 
-function taskTone(view: TaskObjectView): { label: string; tone: DockTone; stopped: boolean } {
+const LIVE_WORKER = new Set(['running', 'starting', 'idle']);
+
+/** The dock's palette per canonical delivery tone (`deliveryReading`). */
+const DOCK_FOR_DELIVERY_TONE: Record<DeliveryTone, { tone: DockTone; stopped: boolean }> = {
+  needs: { tone: 'needs', stopped: false },
+  live: { tone: 'live', stopped: false },
+  stalled: { tone: 'needs', stopped: false },
+  landed: { tone: 'landed', stopped: false },
+  closed: { tone: 'idle', stopped: false },
+  failed: { tone: 'needs', stopped: true },
+};
+
+/**
+ * A kernel-owned delivery's badge (§17.5): the delivery's canonical label and
+ * tone. Null for `working`: the owner's own attempt is the reading.
+ */
+export function dockToneForDelivery(d: DeliveryReadingInput): { label: string; tone: DockTone; stopped: boolean } | null {
+  const r = deliveryReading(d);
+  return r ? { label: r.label, ...DOCK_FOR_DELIVERY_TONE[r.tone] } : null;
+}
+
+function taskTone(view: TaskObjectView): { label: string; tone: DockTone; stopped: boolean; kernel?: boolean } {
   const w = view.worker;
+  // A worker's own question stays a question (§13.2 dev. 3).
   if (w?.waiting || w?.status === 'waiting_input') return { label: 'Needs you', tone: 'needs', stopped: false };
-  if (w?.mergedAt || view.status === 'completed') return { label: 'Landed', tone: 'landed', stopped: false };
+  const kernel = view.delivery ? dockToneForDelivery(view.delivery) : null;
+  if (kernel) return { ...kernel, kernel: true };
+  // Legacy-owned: the one fact-cache mapping. A completed task whose PR is
+  // still open is in review, not landed (§17.5: "Landed" is no longer
+  // `mergedAt || status === 'completed'`).
+  const pr = w?.prNumber ? derivePrDisplayState(w.prLifecycleStatus, w.mergedAt) : null;
+  if (pr === 'merged' || (!pr && view.status === 'completed')) return { label: 'Landed', tone: 'landed', stopped: false };
   if (view.status === 'failed' || w?.status === 'failed' || w?.status === 'error') return { label: 'Stopped', tone: 'needs', stopped: true };
-  if (w?.prLifecycleStatus === 'ci_failed') return { label: 'CI failed', tone: 'needs', stopped: true };
-  if (w && ['running', 'starting', 'idle'].includes(w.status)) return { label: 'Running', tone: 'live', stopped: false };
-  if (w?.prNumber) return { label: 'In review', tone: 'live', stopped: false };
+  if (pr === 'ci_failed') return { label: 'CI failed', tone: 'needs', stopped: true };
+  if (w && LIVE_WORKER.has(w.status)) return { label: 'Running', tone: 'live', stopped: false };
+  if (pr === 'closed' || pr === 'unresolvable') return { label: 'Closed', tone: 'idle', stopped: false };
+  if (pr) return { label: 'In review', tone: 'live', stopped: false };
   return { label: 'Queued', tone: 'idle', stopped: false };
 }
 
@@ -83,21 +115,34 @@ export function taskDockModel(view: TaskObjectView): TaskDockModel {
   const segs: DockTone[] = Array.from({ length: shown }, (_, i) => (i === shown - 1 ? last : 'needs'));
 
   const w = view.worker;
-  const insight = t.tone === 'needs' && !t.stopped
-    ? (view.waitingPrompt ? { text: view.waitingPrompt, flag: true } : null)
-    : t.stopped
-      ? { text: view.error?.trim() || (t.label === 'CI failed' ? 'The pull request’s checks failed.' : 'The agent stopped before it finished.'), flag: true }
-      : t.tone === 'live' && w?.currentAction
-        ? { text: w.currentAction, flag: false }
-        : null;
+  // A kernel-owned delivery's own evidence for where it stands (§17.5),
+  // never generic copy; a live worker's current action still leads.
+  const kernelLine = t.kernel && t.tone !== 'landed' && view.delivery
+    ? { text: view.delivery.detail ? `${view.delivery.headline}: ${view.delivery.detail}` : view.delivery.headline, flag: view.delivery.needsYou }
+    : null;
+  const insight = kernelLine
+    ?? (t.tone === 'needs' && !t.stopped
+      ? (view.waitingPrompt ? { text: view.waitingPrompt, flag: true } : null)
+      : t.stopped
+        ? { text: view.error?.trim() || (t.label === 'CI failed' ? 'The pull request’s checks failed.' : 'The agent stopped before it finished.'), flag: true }
+        : t.tone === 'live' && w?.currentAction
+          ? { text: w.currentAction, flag: false }
+          : null);
 
   const happened: TaskDockModel['happened'] = [...(view.happened ?? [])];
-  if (t.tone === 'needs') happened.push({ ts: null, text: t.stopped ? 'Stopped. Needs input.' : 'Needs input.', needs: true });
+  if (t.tone === 'needs') {
+    const text = t.kernel && view.delivery ? `${view.delivery.headline}.` : t.stopped ? 'Stopped. Needs input.' : 'Needs input.';
+    happened.push({ ts: null, text, needs: true });
+  }
 
   const title = taskHeading({ title: view.title, label: view.label || null }, null).heading;
   // Mid-sentence the heading reads lower-case (an acronym such as CSV keeps its capitals).
   const label = /^\p{Lu}\p{Ll}/u.test(title) ? title.charAt(0).toLowerCase() + title.slice(1) : title;
-  const actions: DockAction[] = t.tone !== 'needs'
+  // S37: a stalled remediation offers the same next move Home's card does.
+  const deliveryAction = t.kernel && view.delivery ? deliveryReading(view.delivery)?.action ?? null : null;
+  const actions: DockAction[] = deliveryAction
+    ? [{ label: deliveryAction.label, primary: true, kind: 'open', taskId: deliveryAction.taskId }]
+    : t.tone !== 'needs'
     ? []
     : t.stopped
       ? [
@@ -130,6 +175,11 @@ const ORDER: Record<DockTone, number> = { needs: 0, live: 1, landed: 2, idle: 3 
 export function atWorkRows(board: Pick<MissionBoardModel, 'phases' | 'tasks'>, max = 5): AtWorkRow[] {
   const all = board.phases.flatMap(p => p.taskIds).map(id => board.tasks[id]).filter((t): t is BoardTask => !!t);
   const rows = all.flatMap(t => {
+    // A kernel-owned delivery says its canonical words in its canonical tone.
+    if (t.delivery) {
+      const d = DOCK_FOR_DELIVERY_TONE[t.delivery.tone];
+      return [{ t, row: { id: t.id, label: t.label, state: t.delivery.label.toLowerCase(), tone: d.tone } }];
+    }
     const w = WORDS[t.status];
     return w ? [{ t, row: { id: t.id, label: t.label, state: w[0], tone: w[1] } }] : [];
   });

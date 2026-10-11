@@ -10,7 +10,7 @@ import type { VisualReviewCell, VisualReviewModel } from '@buildd/shared';
 
 export const BTN_BASE =
   'inline-flex items-center justify-center gap-2 border-2 font-mono font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary';
-export const BTN_SIZE = 'min-h-10 px-3.5 text-[13px]';
+export const BTN_SIZE = 'min-h-11 md:min-h-10 px-3.5 text-[13px]';
 /** The one orange: the primary action of a surface. */
 export const BTN_PRIMARY = 'border-accent bg-accent text-white hover:bg-primary-hover hover:border-primary-hover';
 export const BTN_SECONDARY = 'border-border-strong bg-surface-3 text-text-primary hover:bg-surface-4';

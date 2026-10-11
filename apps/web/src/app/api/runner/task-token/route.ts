@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
   if (
     !task ||
     !tokenWorkspaceAllowed(account.workspaceIds, task.workspaceId) ||
-    !(await verifyAccountWorkspaceAccess(account.id, task.workspaceId, 'canClaim'))
+    !(await verifyAccountWorkspaceAccess(account, task.workspaceId, 'canClaim'))
   ) {
     void recordCapabilityDecision({ capability: 'task_token.mint', decision: 'refused', accountId: account.id, resource: `task:${taskId}`, reasonCode: 'not_found' });
     return NextResponse.json({ error: 'Task not found' }, { status: 404 });
@@ -107,5 +107,5 @@ export async function POST(req: NextRequest) {
   }
 
   void recordCapabilityDecision({ capability: 'task_token.mint', decision: 'allowed', accountId: account.id, workspaceId: task.workspaceId, taskId, expiresAt: new Date(minted.expiresAt), ...(level === 'admin' ? { reasonCode: 'admin_level' } : {}) });
-  return NextResponse.json({ token: minted.token, taskId, expiresAt: new Date(minted.expiresAt).toISOString(), level });
+  return NextResponse.json({ token: minted.token, taskId, roleSlug: task.roleSlug ?? null, expiresAt: new Date(minted.expiresAt).toISOString(), level });
 }

@@ -4,7 +4,7 @@
 //   1. Codex OAuth tokens expiring within 1 hour (OpenAI rotates refresh token on each use)
 //   2. Claude OAuth tokens (claude_credential) expiring within 1 hour (Anthropic rotates refresh token on each use)
 //   3. MCP connector OAuth tokens due within this cron's own cadence (standard OAuth 2.1 refresh)
-//   4. Claude credentials (oauth_token / anthropic_api_key) — cheap GET /v1/models ping
+//   4. Claude credentials (oauth_token / the Anthropic API key, canonical or legacy) — cheap GET /v1/models ping
 //      to catch out-of-band revocations between spawns
 //
 // Auth: Bearer CRON_SECRET, via withCronRun. The only accepted credential —
@@ -36,6 +36,7 @@ import { refreshCodexCredential } from '@/lib/codex-credential';
 import { refreshClaudeCredential, verifyClaudeCredential } from '@/lib/claude-credential';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { recordCredentialAuthSuccess } from '@/lib/credential-health';
+import { CLAUDE_CREDENTIAL_PURPOSES, isTeamClaudeCredential } from '@/lib/claude-credential-rows';
 import { notifyTeam } from '@/lib/notify';
 import { sweepLookaheadMinutes } from '@/lib/cron-cadence';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
@@ -240,13 +241,14 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // ── Claude credential verification (active liveness ping) ──────────────────
   // Catch out-of-band revocations (e.g. user logged out from another device)
   // that would otherwise only surface at next worker spawn failure.
-  const claudeCreds = await db.query.secrets.findMany({
-    where: or(
-      eq(secrets.purpose, 'oauth_token'),
-      eq(secrets.purpose, 'anthropic_api_key'),
-    ),
-    columns: { id: true, purpose: true },
-  });
+  // A team's Anthropic API key is read by agent runs from canonical storage
+  // (`inference_key` + label `anthropic`) as well as the legacy purpose, so
+  // both are pinged. That purpose also holds other providers' and personal
+  // keys, which are dropped.
+  const claudeCreds = (await db.query.secrets.findMany({
+    where: or(...CLAUDE_CREDENTIAL_PURPOSES.map((p) => eq(secrets.purpose, p))),
+    columns: { id: true, purpose: true, label: true, userId: true },
+  })).filter(isTeamClaudeCredential);
 
   const claudeVerifyResults: Record<string, { verified: boolean; error: string | null }> = {};
   let claudeVerified = 0;

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 
@@ -20,7 +20,9 @@ const UNIT_TEST_ROOTS = [
   'apps/responder/src/',
   'apps/cloud-runner/src/',
   'apps/dispatch/src/',
+  'apps/control-plane/src/',
   'apps/model-policy/src/',
+  'apps/model-policy/scripts/',
   'packages/core/',
   'packages/ai-kit/',
   'packages/dispatch-contract/',
@@ -472,7 +474,21 @@ export async function runTestFile(
   // when they read it, and needs no change to 800+ test files. Without it the
   // suite wrote fixture records into the operator's real ~/.buildd/workers,
   // where they were counted as fleet data.
-  const testHome = mkdtempSync(join(tmpdir(), 'buildd-test-home-'));
+  let testHome: string;
+  try {
+    testHome = mkdtempSync(join(tmpdir(), 'buildd-test-home-'));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOSPC') {
+      throw new Error(
+        `No space left on ${tmpdir()} while creating a per-file test home. ` +
+          'Point TMPDIR at a directory with free space (e.g. an ignored directory inside your worktree) and re-run.',
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+  const buildHome = join(testHome, 'home');
+  mkdirSync(buildHome);
   const startedAt = performance.now();
   const elapsed = (): number => Math.round(performance.now() - startedAt);
   try {
@@ -480,7 +496,11 @@ export async function runTestFile(
     const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), file], {
       stdout: 'pipe',
       stderr: 'pipe',
-      env: { ...process.env, BUILDD_HOME: testHome },
+      // TMPDIR is the throwaway dir and BUILDD_HOME a child of it (the home
+      // guard requires BUILDD_HOME strictly inside tmpdir()). Whatever the file
+      // mkdtemp()s and forgets to remove is deleted with testHome instead of
+      // accumulating in the shared /tmp across runs.
+      env: { ...process.env, BUILDD_HOME: buildHome, TMPDIR: testHome },
     });
     const [exitCode, stdout, stderr] = await Promise.all([
       child.exited,

@@ -97,7 +97,7 @@ export default function MaxConcurrentWorkersEditor({
       <button
         onClick={handleSave}
         disabled={saving}
-        className="px-2 py-0.5 text-chip font-medium bg-accent text-white hover:bg-accent/80 transition-colors disabled:opacity-50"
+        className="btn btn-primary btn-sm"
       >
         {saving ? '…' : '✓'}
       </button>

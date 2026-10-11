@@ -59,6 +59,17 @@ mock.module('next/headers', () => ({
     }),
 }));
 
+// ─── Mock session, team-admin and catalog-policy gates ─────────────────────────
+
+const mockGetCurrentUser = mock(async () => ({ id: 'user-1' }) as any);
+const mockCanManage = mock(async (_u: string, _t: string) => true);
+const mockCheckBlocked = mock(async (_c: any, _t: string) => null as any);
+mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
+mock.module('@/lib/connector-team-auth', () => ({ canManageTeamConnectors: mockCanManage }));
+mock.module('@/lib/connector-access-policy', () => ({ checkConnectorBlocked: mockCheckBlocked }));
+const mockScheduleAuthedIconRefresh = mock((_c: any, _token: string) => {});
+mock.module('@/lib/connector-icon-refresh', () => ({ scheduleAuthedIconRefresh: mockScheduleAuthedIconRefresh }));
+
 // ─── Import after mocks ───────────────────────────────────────────────────────
 
 import { signOAuthState } from '@/lib/mcp-oauth';
@@ -108,9 +119,56 @@ describe('GET /api/connectors/callback', () => {
     mockEncrypt.mockImplementation((v: string) => `enc:${v}`);
     mockDecrypt.mockImplementation((v: string) => v.replace('enc:', ''));
     mockUpdateSet.mockReturnValue({ where: mock(() => Promise.resolve()) });
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockCanManage.mockReset();
+    mockCanManage.mockResolvedValue(true);
+    mockCheckBlocked.mockReset();
+    mockCheckBlocked.mockResolvedValue(null);
   });
 
-  it('redirects to /app/settings/connectors?error=missing_code_or_state when code absent', async () => {
+  /** A valid state cookie for mockConnector, started by `userId`. */
+  async function stageValidState(userId = 'user-1') {
+    const stateCookie = await signOAuthState({
+      state: 'my-state', connectorId: 'conn-uuid-1', codeVerifier: 'verifier', userId,
+    });
+    mockCookiesGet.mockReturnValue({ value: stateCookie });
+    mockConnectorsFindFirst.mockResolvedValue(mockConnector);
+    fetchSpy = spyOn(globalThis, 'fetch');
+  }
+
+  // The callback is where the team credential is written, so the team binding
+  // is re-checked here, not only when the flow started.
+  describe('team binding at the callback', () => {
+    it('rejects a callback completed in a different signed-in session than the one that started it', async () => {
+      await stageValidState('user-1');
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-2' });
+      const res = await GET(makeRequest({ code: 'code', state: 'my-state' }));
+      expect(res.headers.get('location')).toContain('error=session_mismatch');
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the initiator is no longer an admin of the connector team', async () => {
+      await stageValidState();
+      mockCanManage.mockResolvedValue(false);
+      const res = await GET(makeRequest({ code: 'code', state: 'my-state' }));
+      expect(res.headers.get('location')).toContain('error=forbidden');
+      expect(mockCanManage).toHaveBeenCalledWith('user-1', 'team-uuid-1');
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('stores nothing when the team blocked the connector mid-flow', async () => {
+      await stageValidState();
+      mockCheckBlocked.mockResolvedValue({ slug: 'axiom', name: 'Axiom', blockedByTeamId: 'team-uuid-1' });
+      const res = await GET(makeRequest({ code: 'code', state: 'my-state' }));
+      expect(res.headers.get('location')).toContain('error=blocked_by_policy');
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+  });
+
+  it('redirects to /app/settings/connections?error=missing_code_or_state when code absent', async () => {
     const req = makeRequest({ state: 'abc' });
     const res = await GET(req);
     expect(res.status).toBe(307);
@@ -175,7 +233,7 @@ describe('GET /api/connectors/callback', () => {
       state,
       connectorId: 'conn-uuid-1',
       codeVerifier: 'pkce-verifier-value',
-      userId: 'user-uuid-1',
+      userId: 'user-1', // the signed-in session user (see beforeEach)
     });
     mockCookiesGet.mockReturnValue({ value: stateCookie });
     mockConnectorsFindFirst.mockResolvedValue(mockConnector);
@@ -201,14 +259,17 @@ describe('GET /api/connectors/callback', () => {
     const req = makeRequest({ code: 'authcode123', state });
     const res = await GET(req);
 
-    // Should redirect to /app/settings/connectors?connected=...
+    // Should redirect to /app/settings/connections?connected=...
     expect(res.status).toBe(307);
     const loc = res.headers.get('location') ?? '';
-    expect(loc).toContain('/app/settings/connectors');
+    expect(loc).toContain('/app/settings/connections');
     expect(loc).toContain('connected=conn-uuid-1');
 
     // Token exchange was called
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // The fresh bearer is used to read the server's own serverInfo.icons.
+    expect(mockScheduleAuthedIconRefresh.mock.calls.at(-1)?.[1]).toBe(fakeAccessToken);
     const [tokenUrl, tokenOpts] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(tokenUrl).toBe('https://auth.example.com/token');
     const body = new URLSearchParams(tokenOpts.body as string);

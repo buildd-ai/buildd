@@ -17,6 +17,7 @@ import { db } from './db/client';
 import { gateEvents, orchestrationDecisions, orchestrationManifestPredictions, orchestrationTouchLabels, tasks, workers } from './db/schema';
 import type { ClaimReadoutRow, ManifestReadoutPrediction, RecordedPick } from './orchestration-readout';
 import type { ClaimHoldReadoutInput } from './orchestration-claim-readout';
+import type { SoftStartReadoutInput } from './orchestration-soft-start-readout';
 import { GATE_SLUGS } from './gate-events';
 import { pathsOverlap } from './path-overlap';
 import { isoWeekStart, weekKey, type AgentBackend, type ClaimPlanSample, type WeeklySchedulingRawInput } from './scheduling-metrics';
@@ -136,6 +137,7 @@ async function loadTaskLinks(workspaceId: string, taskIds: string[], linkMission
 export async function loadClaimReadoutInput(opts: ReadoutWindow & { linkMissions?: boolean }): Promise<{
   rows: ClaimReadoutRow[];
   hold: ClaimHoldReadoutInput;
+  softStarts: SoftStartReadoutInput;
   links: Map<string, string[]>;
 }> {
   const rows = (await db.select({
@@ -159,9 +161,10 @@ export async function loadClaimReadoutInput(opts: ReadoutWindow & { linkMissions
     createdAt: orchestrationDecisions.createdAt,
   }).from(orchestrationDecisions).where(claimReadoutRowsWhere(opts)).limit(READOUT_MAX_ROWS)) as ClaimReadoutRow[];
   const { loadClaimHoldReadoutInput } = await import('./orchestration-claim-source');
-  const hold = await loadClaimHoldReadoutInput(opts);
+  const { loadSoftStartReadoutInput } = await import('./orchestration-claim-source');
+  const [hold, softStarts] = await Promise.all([loadClaimHoldReadoutInput(opts), loadSoftStartReadoutInput(opts)]);
   const taskIds = [...new Set(rows.map(r => r.taskId).filter((t): t is string => !!t))];
-  return { rows, hold, links: await loadTaskLinks(opts.workspaceId, taskIds, opts.linkMissions ?? true) };
+  return { rows, hold, softStarts, links: await loadTaskLinks(opts.workspaceId, taskIds, opts.linkMissions ?? true) };
 }
 
 export async function loadManifestReadoutInput(opts: ReadoutWindow & { linkMissions?: boolean }): Promise<{

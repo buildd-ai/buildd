@@ -1,0 +1,322 @@
+/**
+ * DeliveryView (docs/specs/workflow-state-kernel.md §4, §17.5): one owner of
+ * the next move per state, recoverable blockers stay platform-owned with
+ * their evidence, replacement chains read current (S35), and a conflicted PR
+ * with an existing remediation offers Run/Repair instead of a second fix (S37).
+ */
+import { describe, expect, test } from 'bun:test';
+import { attemptFailureCounts, attemptLine, deriveDeliveryView, landingEscalationCopy, ownerOfNextMove, type DeliveryViewInput } from './projections';
+import { replacedFailedTaskIds } from './delivery-display';
+
+describe('attemptLine (§5.7 rule 4)', () => {
+  test('family-labelled, 1-based, only the families the ledger has', () => {
+    expect(attemptLine({ ci: { n: 1, m: 3 }, review_fix: { n: 2, m: 3 } })).toBe('CI 1 of 3 · review 2 of 3');
+    expect(attemptLine({ conflict: { n: 1, m: 2 } })).toBe('conflict 1 of 2');
+    expect(attemptLine({})).toBeNull();
+  });
+});
+import { DELIVERY_STATES, type AttemptSnapshot, type DeliverySnapshot, type DeliveryState, type KernelView, type RoundSnapshot } from './types';
+
+const D = (o: Partial<DeliverySnapshot> = {}): DeliverySnapshot => ({
+  id: 'd1', workspaceId: 'w1', ownerTaskId: 't1', repoFullName: 'acme/widgets', prNumber: 7, baseRef: 'dev',
+  state: 'WORKING', stateReason: null, version: 5, currentHeadSha: 'H1abcdef', currentRound: 0, maxRounds: 3,
+  boundAttemptId: null, resumeState: null, trunkIncidentId: null, approvedHeads: [], approvalBasis: null,
+  compositionHeads: [], ci: null, ciHeadSha: null, mergeable: null, mergeableHeadSha: null, mergedAt: null,
+  mergeCommitSha: null, supersededByPr: null, ...o,
+});
+const R = (o: Partial<RoundSnapshot> = {}): RoundSnapshot => ({
+  id: 'r1', round: 1, headSha: 'H1abcdef', kind: 'full', status: 'queued', verdict: null, effectiveVerdict: null, failureCount: 0, ...o,
+});
+const A = (o: Partial<AttemptSnapshot> = {}): AttemptSnapshot => ({
+  id: 'a1', family: 'review_fix', attemptNo: 1, mode: 'agent', boundHeadSha: 'H1abcdef', triggerReason: 'r1', taskId: 'ft1',
+  status: 'queued', outcome: null, maxAttempts: 3, reportedShas: [], ...o,
+});
+const V = (d: DeliverySnapshot, rounds: RoundSnapshot[] = [], attempts: AttemptSnapshot[] = []): KernelView => ({ delivery: d, rounds, attempts });
+const view = (input: Partial<DeliveryViewInput> & { view: KernelView }) => deriveDeliveryView(input as DeliveryViewInput)!;
+
+describe('owner of the next move (§4)', () => {
+  test('every non-terminal state has exactly one owner; terminal states have none', () => {
+    const terminal = new Set<DeliveryState>(['MERGED', 'SUPERSEDED', 'ABANDONED', 'FAILED']);
+    for (const s of DELIVERY_STATES) {
+      const o = ownerOfNextMove(s);
+      if (terminal.has(s)) expect(o).toBe('none');
+      else expect(o).not.toBe('none');
+    }
+  });
+
+  test('only ESCALATED is a person: needsYou never comes from a worker ending', () => {
+    for (const s of DELIVERY_STATES) {
+      const v = view({ view: V(D({ state: s })) });
+      expect(v.needsYou).toBe(s === 'ESCALATED');
+    }
+  });
+
+  test('AWAITING_PUSH is platform-owned and keeps its evidence', () => {
+    const v = view({ view: V(D({ state: 'AWAITING_PUSH', currentHeadSha: 'abc1234deadbeef' })) });
+    expect(v.owner).toBe('platform');
+    expect(v.needsYou).toBe(false);
+    expect(v.headline).toBe('Waiting for the fix to reach GitHub');
+    expect(v.detail).toContain('abc1234');
+  });
+
+  test('an escalation carries the transition evidence, not generic copy', () => {
+    const v = view({
+      view: V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })),
+      lastTransition: { command: 'ReviewVerdictRecorded', fromState: 'AWAITING_REVIEW', toState: 'ESCALATED', evidence: { reason: 'touches the auth boundary' }, createdAt: '2026-10-06T00:00:00Z' },
+    });
+    expect(v.owner).toBe('human');
+    expect(v.headline).toBe('The reviewer escalated this PR');
+    expect(v.detail).toBe('touches the auth boundary');
+  });
+
+  test('a review round that is being reviewed reads Reviewing, a queued one Review queued', () => {
+    expect(view({ view: V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R({ status: 'reviewing' })]) }).headline).toBe('Reviewing');
+    expect(view({ view: V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R()]) }).headline).toBe('Review queued');
+  });
+});
+
+describe('release composition', () => {
+  test('APPROVED on a composition basis reads "Release composition verified"', () => {
+    const v = view({ view: V(D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'] })) });
+    expect(v.compositionVerified).toBe(true);
+    expect(v.headline).toBe('Release composition verified');
+    expect(v.owner).toBe('landing');
+    expect(v.needsYou).toBe(false);
+  });
+
+  test('S33: a composition approved through its delta round says the review covered only the delta', () => {
+    const delta = R({ id: 'r2', round: 2, kind: 'delta', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', scope: { composition: true, novelDeltaPaths: ['a.sql', 'b.ts'] } });
+    const v = view({ view: V(D({ state: 'APPROVED', currentRound: 2, approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }), [R({ status: 'superseded' }), delta]) });
+    expect(v.compositionVerified).toBe(true);
+    expect(v.headline).toBe('Release-only changes approved');
+    expect(v.headline).not.toBe('Approved');
+    expect(v.detail).toBe('every other change was reviewed at its own head; this review covered only 2 new paths');
+  });
+
+  test('a composition head that is no longer current claims nothing', () => {
+    const v = view({ view: V(D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['OLD'] })) });
+    expect(v.compositionVerified).toBe(false);
+    expect(v.headline).toBe('Approved · awaiting merge');
+  });
+});
+
+describe('task-page state vocabulary (docs/specs/task-page.md, State mapping)', () => {
+  test('AC-2: a mechanical base refresh reads Updating branch, never Repairing', () => {
+    const v = view({ view: V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', triggerReason: 'behind', taskId: null })]) });
+    expect(v.headline).toBe('Updating branch');
+    expect(v.headline).not.toContain('Repairing');
+  });
+
+  test('an approved PR reads Approved · awaiting merge until the merge fact', () => {
+    expect(view({ view: V(D({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] })) }).headline).toBe('Approved · awaiting merge');
+    expect(view({ view: V(D({ state: 'MERGED' })) }).headline).toBe('Merged');
+  });
+
+  test('the view carries the rounds and the attempt ledger for the checks list', () => {
+    const v = view({ view: V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R()], [A()]) });
+    expect(v.rounds.map(r => r.id)).toEqual(['r1']);
+    expect(v.ledger.map(a => a.id)).toEqual(['a1']);
+  });
+});
+
+describe('S35: replacement chains read current, not FAILED', () => {
+  const tasks = [
+    { taskId: 'fix1', role: 'fix', status: 'failed', createdAt: '2026-10-06T01:00:00Z' },
+    { taskId: 'fix2', role: 'fix', status: 'in_progress', createdAt: '2026-10-06T02:00:00Z' },
+    { taskId: 't1', role: 'owner', status: 'completed', createdAt: '2026-10-06T00:00:00Z' },
+  ];
+  const v = view({
+    view: V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a2' }), [R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })], [
+      A({ id: 'a1', taskId: 'fix1', status: 'ended', outcome: 'failed' }),
+      A({ id: 'a2', attemptNo: 2, taskId: 'fix2', status: 'running' }),
+    ]),
+    attemptTasks: tasks,
+  });
+
+  test('the delivery projects its current attempt', () => {
+    expect(v.stage).toBe('fixing');
+    expect(v.currentAttempt?.taskId).toBe('fix2');
+    expect(v.attempts.review_fix).toEqual({ n: 2, m: 3 });
+  });
+
+  test('the failed predecessor stays auditable, marked superseded', () => {
+    expect(v.history.find((h) => h.taskId === 'fix1')).toEqual({ taskId: 'fix1', role: 'fix', status: 'failed', superseded: true });
+    expect(v.history.find((h) => h.taskId === 'fix2')?.superseded).toBe(false);
+  });
+
+  test('a failed attempt counts as a failure only when the delivery itself FAILED', () => {
+    expect(attemptFailureCounts(v, 'fix1')).toBe(false);
+    const merged = view({ view: V(D({ state: 'MERGED' })), attemptTasks: tasks });
+    expect(attemptFailureCounts(merged, 'fix1')).toBe(false);
+    const failed = view({ view: V(D({ state: 'FAILED', prNumber: null })), attemptTasks: [{ taskId: 't1', role: 'owner', status: 'failed', createdAt: '2026-10-06T00:00:00Z' }] });
+    expect(attemptFailureCounts(failed, 't1')).toBe(true);
+  });
+});
+
+describe('replacedFailedTaskIds: filters failed tasks by kernel delivery state', () => {
+  const tasks = [
+    { taskId: 'fix1', role: 'fix', status: 'failed', createdAt: '2026-10-06T01:00:00Z' },
+    { taskId: 'fix2', role: 'fix', status: 'in_progress', createdAt: '2026-10-06T02:00:00Z' },
+    { taskId: 't1', role: 'owner', status: 'completed', createdAt: '2026-10-06T00:00:00Z' },
+  ];
+
+  test('a failed attempt of a live delivery (FIXING) is replaced', () => {
+    const v = view({
+      view: V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a2' }), [R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })], [
+        A({ id: 'a1', taskId: 'fix1', status: 'ended', outcome: 'failed' }),
+        A({ id: 'a2', attemptNo: 2, taskId: 'fix2', status: 'running' }),
+      ]),
+      attemptTasks: tasks,
+    });
+    const views = new Map([['fix1', v]]);
+    const replaced = replacedFailedTaskIds(views, ['fix1']);
+    expect(replaced.has('fix1')).toBe(true);
+  });
+
+  test('a failed attempt of a merged delivery is replaced', () => {
+    const v = view({ view: V(D({ state: 'MERGED' })), attemptTasks: tasks });
+    const views = new Map([['fix1', v]]);
+    const replaced = replacedFailedTaskIds(views, ['fix1']);
+    expect(replaced.has('fix1')).toBe(true);
+  });
+
+  test('a failed owner task of a FAILED delivery is not replaced', () => {
+    const v = view({
+      view: V(D({ state: 'FAILED', prNumber: null })),
+      attemptTasks: [{ taskId: 't1', role: 'owner', status: 'failed', createdAt: '2026-10-06T00:00:00Z' }],
+    });
+    const views = new Map([['t1', v]]);
+    const replaced = replacedFailedTaskIds(views, ['t1']);
+    expect(replaced.has('t1')).toBe(false);
+  });
+
+  test('a legacy task (no delivery view) stays as a failure', () => {
+    const views = new Map();
+    const replaced = replacedFailedTaskIds(views, ['legacy-task']);
+    expect(replaced.has('legacy-task')).toBe(false);
+  });
+
+  test('multiple failed tasks: some replaced, some not', () => {
+    const fixingV = view({
+      view: V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a2' }), [], [
+        A({ id: 'a1', taskId: 'fix1', status: 'ended', outcome: 'failed' }),
+        A({ id: 'a2', attemptNo: 2, taskId: 'fix2', status: 'running' }),
+      ]),
+      attemptTasks: tasks,
+    });
+    const failedV = view({
+      view: V(D({ state: 'FAILED', prNumber: null })),
+      attemptTasks: [{ taskId: 'failed-owner', role: 'owner', status: 'failed', createdAt: '2026-10-06T00:00:00Z' }],
+    });
+    const views = new Map([
+      ['fix1', fixingV],
+      ['failed-owner', failedV],
+    ]);
+    const replaced = replacedFailedTaskIds(views, ['fix1', 'failed-owner']);
+    expect(replaced.has('fix1')).toBe(true);
+    expect(replaced.has('failed-owner')).toBe(false);
+  });
+});
+
+describe('S37: conflict remediation already exists', () => {
+  const conflicted = D({ state: 'AWAITING_REVIEW', mergeable: 'dirty', mergeableHeadSha: 'H1abcdef', currentRound: 1 });
+
+  test('no remediation → "Merge conflict" with Resolve conflicts', () => {
+    const v = view({ view: V(conflicted, [R()]) });
+    expect(v.headline).toBe('Merge conflict');
+    expect(v.cta).toEqual({ action: 'create_conflict_fix', label: 'Resolve conflicts' });
+    expect(v.owner).toBe('platform');
+    expect(v.needsYou).toBe(false);
+  });
+
+  test('a stalled pending remediation → "Conflict fix stalled" with Run fix on that task', () => {
+    const v = view({ view: V(conflicted, [R()]), remediation: { taskId: 'cf1', family: 'conflict', taskStatus: 'pending', stalled: true, stallReason: 'pending for 40m with no runner claim' } });
+    expect(v.headline).toBe('Conflict fix stalled');
+    expect(v.detail).toBe('pending for 40m with no runner claim');
+    expect(v.cta).toEqual({ action: 'repair_remediation', label: 'Run fix', taskId: 'cf1' });
+    expect(v.owner).toBe('platform');
+  });
+
+  test('a stalled claimed remediation offers Repair', () => {
+    const v = view({ view: V(conflicted, [R()]), remediation: { taskId: 'cf1', family: 'conflict', taskStatus: 'assigned', stalled: true } });
+    expect(v.cta).toEqual({ action: 'repair_remediation', label: 'Repair', taskId: 'cf1' });
+  });
+
+  test('a live remediation is worker-owned with no CTA', () => {
+    const v = view({ view: V(conflicted, [R()]), remediation: { taskId: 'cf1', family: 'conflict', taskStatus: 'in_progress', stalled: false } });
+    expect(v.headline).toBe('Resolving conflicts');
+    expect(v.owner).toBe('worker');
+    expect(v.cta).toBeNull();
+  });
+
+  test('a conflict fact on an older head is not a conflict now', () => {
+    const v = view({ view: V(D({ state: 'AWAITING_REVIEW', mergeable: 'dirty', mergeableHeadSha: 'OLD', currentRound: 1 }), [R()]) });
+    expect(v.cta).toBeNull();
+    expect(v.headline).toBe('Review queued');
+  });
+
+  test('a merged delivery never shows a conflict CTA', () => {
+    const v = view({ view: V(D({ state: 'MERGED', mergeable: 'dirty', mergeableHeadSha: 'H1abcdef' })) });
+    expect(v.cta).toBeNull();
+    expect(v.headline).toBe('Merged');
+  });
+});
+
+describe('Slice F: the view carries the PR ending get_pr and list_prs report', () => {
+  test('merged_at and the T20 record come from the delivery row', () => {
+    const v = view({ view: V(D({ state: 'MERGED', mergedAt: '2026-10-01T00:00:00.000Z' })) });
+    expect(v.mergedAt).toBe('2026-10-01T00:00:00.000Z');
+    expect(v.supersededBy).toBeNull();
+    const s = view({ view: V(D({ state: 'SUPERSEDED', supersededByPr: 12, supersededByUrl: 'https://github.com/acme/widgets/pull/12', supersededReason: 'reopened' })) });
+    expect(s.supersededBy).toEqual({ prNumber: 12, url: 'https://github.com/acme/widgets/pull/12', reason: 'reopened' });
+  });
+});
+
+describe('ownerOfNextMove: APPROVED follows the merge policy', () => {
+  test('landing unless the policy leaves the merge to a person', () => {
+    expect(ownerOfNextMove('APPROVED')).toBe('landing');
+    expect(ownerOfNextMove('APPROVED', { approvedNeedsPerson: false })).toBe('landing');
+    expect(ownerOfNextMove('APPROVED', { approvedNeedsPerson: true })).toBe('human');
+    expect(ownerOfNextMove('LANDING', { approvedNeedsPerson: true })).toBe('landing');
+  });
+});
+
+describe('policy evidence (T28) in the view', () => {
+  test('ESCALATED(policy_human) is the human\'s and carries the finding as its detail', () => {
+    const v = view({
+      view: V(D({ state: 'ESCALATED', stateReason: 'policy_human' })),
+      lastTransition: { command: 'PolicyEvidenceRecorded', fromState: 'AWAITING_REVIEW', toState: 'ESCALATED', evidence: { reason: 'drops column a.b' }, createdAt: '2026-10-08T00:00:00Z' },
+    });
+    expect(v.owner).toBe('human');
+    expect(v.needsYou).toBe(true);
+  });
+
+  test('a safe split under repair is the platform\'s: not needsYou', () => {
+    const v = view({ view: V(D({ state: 'REPAIRING', stateReason: 'migration', boundAttemptId: 'a1' }), [], [A({ family: 'migration', status: 'running' })]) });
+    expect(v.owner).not.toBe('human');
+    expect(v.needsYou).toBe(false);
+  });
+});
+
+describe('landing_needs_human says which refusal it was (88318f31)', () => {
+  const t = (command: string, evidence: Record<string, unknown>) => ({ command, fromState: 'APPROVED', toState: 'ESCALATED', evidence, createdAt: '2026-10-09T00:00:00Z' });
+
+  test('the base keeps changing what the PR changes: names the files', () => {
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_unsafe', files: ['src/a.ts', 'bun.lock'] })))
+      .toEqual({ headline: 'Landing held: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts, bun.lock' });
+  });
+
+  test('the base only kept moving: the refresh count and the gap', () => {
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_exhausted', behindBy: 25 })))
+      .toEqual({ headline: 'Landing held: the base kept moving faster than CI', detail: 'refreshed 3 times, 25 commits behind' });
+    // An escalation recorded before the base delta was read is the same kind.
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3 })).headline).toBe('Landing held: the base kept moving faster than CI');
+  });
+
+  test('GitHub refusing the merge and a refresh that kept failing are each named', () => {
+    expect(landingEscalationCopy(t('MergeCallResult', { outcome: 'refused', detail: 'Required review missing' })))
+      .toEqual({ headline: 'GitHub refused the merge; a person has to land it', detail: 'Required review missing' });
+    expect(landingEscalationCopy(t('MechanicalRepairFailed', { reason: 'update-branch: 422' })).headline).toBe('Updating the branch kept failing; a person has to land it');
+    expect(landingEscalationCopy(null).headline).toBe('Merge refused; a person has to land it');
+  });
+});

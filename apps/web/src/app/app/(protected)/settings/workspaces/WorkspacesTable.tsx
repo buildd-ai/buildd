@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from 'react';
 import Link from 'next/link';
-import Chip from '@/components/ui/Chip';
+import { TonePill } from '@/components/ui/StatePill';
 import Disclosure from '@/components/ui/Disclosure';
 import { useMoveToTeam, type MoveTeam } from '@/components/MoveToTeamDialog';
 import { groupWorkspaceRows, type WorkspaceRow } from './list-groups';
@@ -86,7 +86,7 @@ function RowMenu({ row, onMove }: { row: WorkspaceRow; onMove: () => void }) {
             </button>
           )}
           <Link
-            href={`/app/workspaces/${row.id}/config`}
+            href={`/app/settings/workspace/${row.id}`}
             className="flex items-center w-full min-h-11 md:min-h-9 px-3 text-body text-text-primary hover:bg-surface-3 whitespace-nowrap"
           >
             Settings
@@ -105,12 +105,12 @@ function HealthChips({ row }: { row: WorkspaceRow }) {
     <>
       {redPrs > 0 && (
         <Link href={href} className="relative z-10 inline-flex" data-testid="workspace-health-red">
-          <Chip tone="error">{redPrs === 1 ? '1 red PR' : `${redPrs} red PRs`}</Chip>
+          <TonePill tone="bad">{redPrs === 1 ? '1 red PR' : `${redPrs} red PRs`}</TonePill>
         </Link>
       )}
       {stuckTasks > 0 && (
         <Link href={href} className="relative z-10 inline-flex" data-testid="workspace-health-stuck">
-          <Chip tone="warning">{`${stuckTasks} stuck`}</Chip>
+          <TonePill tone="act">{`${stuckTasks} stuck`}</TonePill>
         </Link>
       )}
     </>
@@ -136,7 +136,7 @@ function Row({ row, now, onMove }: { row: WorkspaceRow; now: Date; onMove: (row:
           <div className="flex flex-wrap gap-1.5 mt-1.5">
             {row.differs.map((d) => (
               <Link key={d.key} href={d.href} className="relative z-10 inline-flex" data-testid={`workspace-differs-${d.key}`}>
-                <Chip tone="muted" dot={false}>{d.label}</Chip>
+                <TonePill tone="q">{d.label}</TonePill>
               </Link>
             ))}
             <HealthChips row={row} />
@@ -176,7 +176,7 @@ function ColumnLabels() {
 
 function RowList({ rows, now, onMove }: { rows: WorkspaceRow[]; now: Date; onMove: (row: WorkspaceRow) => void }) {
   return (
-    <ul className="card p-0 divide-y divide-border-default">
+    <ul className="divide-y divide-border-default border-y border-border-default">
       {rows.map((row) => <Row key={row.id} row={row} now={now} onMove={onMove} />)}
     </ul>
   );
@@ -215,8 +215,8 @@ export default function WorkspacesTable({
       </p>
       <div className="space-y-6">
         {groups.map((g, i) => (
-          <section key={g.teamId} aria-label={showTeamHeadings ? g.teamName : undefined} data-testid="workspace-team-group">
-            {showTeamHeadings && <h3 className="section-label mb-2">{g.teamName}</h3>}
+          <section key={g.teamId} aria-label={showTeamHeadings ? g.teamName ?? undefined : undefined} data-testid="workspace-team-group">
+            {showTeamHeadings && g.teamName && <h3 className="section-label mb-2">{g.teamName}</h3>}
             {/* Column labels once, under the first team heading; md and up only. */}
             {i === 0 && g.active.length > 0 && <ColumnLabels />}
             {g.active.length > 0 && <RowList rows={g.active} now={now} onMove={onMove} />}

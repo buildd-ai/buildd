@@ -36,7 +36,7 @@ export function MergeBlockerCard({ item, view, links }: { item: ActionQueueItem;
       <div className="flex items-center justify-between gap-2">
         <span
           data-testid="merge-blocker-state"
-          className={`min-w-0 inline-flex items-center gap-1 text-[11px] font-mono font-medium tracking-wide uppercase truncate ${view.needsYou ? 'text-status-error' : 'text-text-muted'}`}
+          className={`min-w-0 inline-flex items-center gap-1 text-meta font-mono font-medium tracking-wide uppercase truncate ${view.needsYou ? 'text-status-error' : 'text-text-muted'}`}
         >
           {!view.needsYou && <Spinner size="xs" aria-label="In progress" />}
           {view.state}
@@ -45,20 +45,20 @@ export function MergeBlockerCard({ item, view, links }: { item: ActionQueueItem;
           {action.kind === 'view_task' && links.action && (
             <Link
               href={links.action}
-              className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline"
+              className="inline-flex items-center min-h-11 md:min-h-0 text-meta font-medium text-accent-text hover:underline"
             >
               {action.label}
             </Link>
           )}
           {action.kind === 'fixing' && (
-            <span className="text-[12px] text-text-muted">{action.label}</span>
+            <span className="text-meta text-text-muted">{action.label}</span>
           )}
           {action.kind === 'fix_conflict' && item.prUrl && (
             <a
               href={item.prUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] font-medium text-accent-text hover:underline"
+              className="inline-flex items-center min-h-11 md:min-h-0 text-meta font-medium text-accent-text hover:underline"
             >
               {action.label}
             </a>
@@ -67,7 +67,7 @@ export function MergeBlockerCard({ item, view, links }: { item: ActionQueueItem;
       </div>
 
       {item.taskTitle && (
-        <div className="text-[13px] font-medium text-text-primary truncate">
+        <div className="text-body font-medium text-text-primary truncate">
           {links.task ? (
             <Link href={links.task} className="hover:underline">
               {item.taskTitle}
@@ -75,15 +75,15 @@ export function MergeBlockerCard({ item, view, links }: { item: ActionQueueItem;
           ) : item.taskTitle}
         </div>
       )}
-      <p data-testid="merge-blocker-reason" className="text-[12px] text-text-secondary truncate">
+      <p data-testid="merge-blocker-reason" className="text-meta text-text-secondary truncate">
         {view.reason}
       </p>
 
       <details data-testid="merge-blocker-details" className="mt-1">
-        <summary className="inline-flex items-center min-h-11 md:min-h-0 cursor-pointer text-[11px] text-text-muted hover:text-text-secondary list-none">
+        <summary className="inline-flex items-center min-h-11 md:min-h-0 cursor-pointer text-meta text-text-muted hover:text-text-secondary list-none">
           Details
         </summary>
-        <div className="mt-1 space-y-1 text-[11px] text-text-secondary [overflow-wrap:anywhere]">
+        <div className="mt-1 space-y-1 text-meta text-text-secondary [overflow-wrap:anywhere]">
           {view.details.map((line, i) => (
             <p key={i}>{line}</p>
           ))}

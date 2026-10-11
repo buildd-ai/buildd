@@ -150,11 +150,12 @@ describe('call sites read the live value', () => {
   });
 
   it('buildCIRetryTask stops at maxCiRetries when the workspace sets none', () => {
-    const at = (iteration: number) => buildCIRetryTask({
-      originalTask: { id: 't', title: 'T', description: null, workspaceId: 'w', context: { iteration }, missionId: null },
+    const at = (attemptsUsed: number) => buildCIRetryTask({
+      originalTask: { id: 't', title: 'T', description: null, workspaceId: 'w', context: {}, missionId: null },
       worker: { id: 'wk', branch: 'b', prNumber: 1 },
       failureContext: 'boom',
       repoFullName: 'o/r',
+      attemptsUsed,
     } as never);
     expect(at(POLICY_DEFAULTS.maxCiRetries)).toBeNull();
     installPolicyOverrides({ values: { maxCiRetries: OVERRIDE.maxCiRetries }, roles: {} });

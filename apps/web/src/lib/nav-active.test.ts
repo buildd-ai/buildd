@@ -24,6 +24,15 @@ describe('isNavActive', () => {
     it('matches nested /app/missions/abc', () => {
       expect(isNavActive('/app/missions/abc-123', '/app/missions')).toBe(true);
     });
+
+    // Releases left the nav for Missions (owner decision, Oct 9).
+    it.each(['/app/releases', '/app/releases/r-1'])('owns %s', (p) => {
+      expect(isNavActive(p, '/app/missions')).toBe(true);
+    });
+
+    it('does not own a look-alike path', () => {
+      expect(isNavActive('/app/releasesx', '/app/missions')).toBe(false);
+    });
   });
 
   describe('/app/tasks (Activity)', () => {
@@ -83,11 +92,16 @@ describe('isNavActive', () => {
 describe('isAccountRoute', () => {
   // Settings (Profile included) is reached from the header avatar, not a tab;
   // the avatar carries the "you are here" state for them.
-  it.each(['/app/settings', '/app/settings/account', '/app/settings/workspace/ws-1', '/app/settings/connectors'])('%s is an account route', (p) => {
+  it.each(['/app/settings', '/app/settings/account', '/app/settings/workspace/ws-1', '/app/settings/connections'])('%s is an account route', (p) => {
     expect(isAccountRoute(p)).toBe(true);
   });
 
-  it.each(['/app/home', '/app/team', '/app/settingsx', '/app/youth'])('%s is not', (p) => {
+  // Team left the nav for Settings (owner decision, Oct 9): the avatar owns it.
+  it.each(['/app/team', '/app/team/builder'])('%s belongs to Settings', (p) => {
+    expect(isAccountRoute(p)).toBe(true);
+  });
+
+  it.each(['/app/home', '/app/teams', '/app/settingsx', '/app/youth'])('%s is not', (p) => {
     expect(isAccountRoute(p)).toBe(false);
   });
 });

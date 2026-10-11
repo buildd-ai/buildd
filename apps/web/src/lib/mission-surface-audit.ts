@@ -18,7 +18,9 @@ import {
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
+import { resolveVisualQaConfig } from '@buildd/core/visual-qa-page-source';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
+import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 
 export interface EnsureSurfaceAuditParams {
@@ -39,6 +41,8 @@ export interface EnsureSurfaceAuditParams {
     webhookConfig?: WorkspaceWebhookConfig | null;
     githubInstallationId?: string | null;
     githubRepoId?: string | null;
+    /** Read for `visualQa.designRules` / `visualQa.reference`; absent leaves both off. */
+    gitConfig?: unknown;
   };
   /**
    * Who filed `createdTask`, for a `[surface fix]`: the pipeline (`auto`, the
@@ -116,10 +120,16 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     // Rule 3: any later builder task extends the existing audit's dependsOn
     // (not just UI-touching ones — the audit reviews the mission's whole
     // shipped surface, which a backend-only task can still change).
+    // The rewrite also drops a dependency that has left the mission since it
+    // was added (an unlink that predates detachTaskFromMissionSurfaceAudits),
+    // so the stored list is current membership, not a filing-time record.
     const currentDeps = Array.isArray(existingAudit.dependsOn) ? existingAudit.dependsOn : [];
-    if (!currentDeps.includes(createdTask.id)) {
+    const members = await missionMemberIds(missionId, currentDeps);
+    const nextDeps = members.includes(createdTask.id) ? members : [...members, createdTask.id];
+    const changed = nextDeps.length !== currentDeps.length || nextDeps.some((d, i) => d !== currentDeps[i]);
+    if (changed) {
       await db.update(tasks)
-        .set({ dependsOn: [...currentDeps, createdTask.id], updatedAt: new Date() })
+        .set({ dependsOn: nextDeps, updatedAt: new Date() })
         .where(eq(tasks.id, existingAudit.id));
     }
     return;
@@ -153,6 +163,7 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
       missionTitle: mission.title,
       scopedPaths,
       requiredRoutes: visualQaRequiredRoutes(scopedPaths),
+      visualQa: auditVisualQa(targetWorkspace),
     }),
     taskClass: 'work',
     // Looking, not building: the work-kind glyph and the model router read it.
@@ -267,6 +278,7 @@ export async function requestMissionSurfaceAudit(missionId: string): Promise<Req
       missionTitle: mission.title,
       scopedPaths,
       requiredRoutes,
+      visualQa: auditVisualQa(targetWorkspace),
     }),
     taskClass: 'work',
     kind: 'observation',
@@ -285,6 +297,12 @@ export async function requestMissionSurfaceAudit(missionId: string): Promise<Req
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** The workspace's design rules and reference for the audit description (each null when unset). */
+function auditVisualQa(workspace: { gitConfig?: unknown }): { designRules: string | null; reference: string | null } {
+  const { designRules, reference } = resolveVisualQaConfig(isRecord(workspace.gitConfig) ? workspace.gitConfig.visualQa : undefined);
+  return { designRules, reference };
 }
 
 function frozenRoutes(context: unknown): string[] {
@@ -393,6 +411,7 @@ async function followUpSurfaceFix(opts: {
       requiredRoutes: [...new Set([...requiredRoutes, ...visualQaRequiredRoutes(scopedPaths)])].sort(),
       round: plan.round,
       trigger: origin,
+      visualQa: auditVisualQa(targetWorkspace),
     }),
     taskClass: 'work',
     kind: 'observation',

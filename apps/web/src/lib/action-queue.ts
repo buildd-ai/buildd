@@ -1,7 +1,11 @@
 import type { HumanPrReview } from './reviewer-gate';
 import type { CiGate } from './ci-gate';
+import type { MergeAdviceSlot } from './merge-advice';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 import { explainProviderAuthFailure } from './provider-auth-failure';
+import { readGithubAccessBlock, repoAccessSettingsPath } from './github-repo-access';
+import { attemptFailureCounts, type DeliveryView } from './workflow/projections';
+import { isMissionPrTask } from '@buildd/core/mission-integration';
 
 /**
  * ── The queue freshness rule ────────────────────────────────────────────────
@@ -36,12 +40,12 @@ import { explainProviderAuthFailure } from './provider-auth-failure';
  */
 
 export type ActionChip =
-  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
+  | 'INCIDENT' | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'ACCESS' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
   | 'RESOLVING' | 'FIXING_CI' | 'FIXING_REVIEW' | 'CI_RUNNING' | 'REVIEW_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
 
 /** docs/design/spec-conformance.md §8 — which way a discrepancy's gap runs. */
-export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
+export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted' | 'conflict';
 
 /**
  * Chips an agent is already handling. They stay visible (a stuck fix must not
@@ -123,6 +127,21 @@ function describeReviewMachineState(item: EscalationRawItem, now: Date): string 
   if (item.ciGate?.kind === 'fixing') return item.ciGate.fixKind === 'review' ? 'Review fix queued' : 'CI fix queued';
   if (item.ciGate?.kind === 'blocked' || item.prLifecycleStatus === 'ci_failed') return 'CI failing';
   return describePendingGates({ ci: pendingCiState({ ...item, now }), review: item.reviewInFlight ?? null }) || null;
+}
+
+/**
+ * Buildd is still acting on a PR that also waits on a human review: a conflict
+ * repair is live, a CI or review fix is in flight, checks or a reviewer agent
+ * are running. The review waits for that to settle; Home names it in its quiet
+ * "also in progress" line instead of asking for it now. A repair that gave up,
+ * a plain conflict or red CI with no fix running is the person's again.
+ */
+export function reviewMachineActing(item: Pick<EscalationRawItem, 'deadZoneExhausted' | 'conflictRetryTaskId' | 'ciGate' | 'reviewInFlight' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt'>, now: Date): boolean {
+  if (item.deadZoneExhausted) return false;
+  if (item.conflictRetryTaskId) return true;
+  if (item.ciGate?.kind === 'fixing' || item.ciGate?.kind === 'running') return true;
+  if (item.reviewInFlight) return true;
+  return pendingCiState({ ...item, now }) === 'running';
 }
 
 function pendingCiState(input: Pick<MergeChipInput, 'ciGate' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt' | 'now'>): PendingCiState {
@@ -235,7 +254,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'incident' | 'access';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -251,8 +270,19 @@ export interface WaitingOnYouRawItem {
   /** kind === 'reconnect' — the connector whose credential needs re-authorising. */
   connectorId?: string;
   connectorName?: string;
-  /** kind === 'failed' — why it failed and the fix, in plain words (buildFailedTaskItems). */
+  /** kind === 'failed' — why it failed and the fix, in plain words (buildFailedTaskItems). kind === 'incident' — the gate's reason. */
   failureMessage?: string;
+  /** kind === 'incident' — a Sentinel incident the escalation gate gave to the owner (lib/failure-incident-escalation.ts). */
+  incidentId?: string;
+  incidentTitle?: string;
+  /** kind === 'access' — a pending capability request the escalation gate gave to a person (lib/capability-grants-needs-you.ts). */
+  accessRequestId?: string;
+  /** kind === 'access' — what the agent asked to do, in plain words ("Query Axiom · production"). */
+  accessAsk?: string;
+  /** kind === 'access' — the lease the agent asked for; approval can only narrow it. */
+  accessTtlSeconds?: number;
+  /** kind === 'access' — the approve button's words, lease included ("Approve for 1 hour"). */
+  accessApproveLabel?: string;
   fixHref?: string;
   fixLabel?: string;
   /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
@@ -335,7 +365,20 @@ export interface WaitingOnYouRawItem {
   workspaceName?: string | null;
 }
 
+/** The escalation gate's verdict on a PR (lib/escalation-gate-check.ts), as a card reads it. */
+export interface EscalationGateMark {
+  owner: 'person' | 'buildd';
+  /** One line: the rail that makes it the person's, or the step Buildd is taking. */
+  reason: string;
+  /** The rail that made it the person's (a policy rail batches into a digest). */
+  rail?: string | null;
+  /** The tenant the verdict was read for; a digest never spans two. */
+  teamId?: string | null;
+}
+
 export interface EscalationRawItem {
+  /** The escalation gate's verdict: a Buildd-owned PR is never a Needs You card. */
+  gate?: EscalationGateMark | null;
   /** Canonical current-head reviewer approval; a review action still takes precedence. */
   reviewApproved?: boolean;
   humanReview?: HumanPrReview | null;
@@ -403,6 +446,8 @@ export interface EscalationRawItem {
    * generic line.
    */
   conflictReason?: string | null;
+  /** S37: why the live conflict fix for this PR has stalled; null when it has not. */
+  remediationStalled?: string | null;
   /**
    * Persisted lifecycle value. `'unresolvable'` is terminal and drops the row
    * out of the queue entirely — it belongs on the health/orphans surface, not
@@ -447,11 +492,23 @@ export interface EscalationRawItem {
   reviewInFlight?: 'queued' | 'reviewing' | null;
   /** `workers.updatedAt` — bounds the `pr_open` "awaiting CI" reading, see AWAITING_CI_WINDOW_MS. */
   prLifecycleUpdatedAt?: Date | null;
+  /**
+   * Which of a mission's two bookkeeping PRs this is, from structured markers
+   * only: `'ship'` is the mission's own integration PR (`isMissionPrTask`),
+   * `'refresh'` a conflict task merging trunk into the integration branch
+   * (`context.refreshTrunk`, mission-branch-refresh.ts). When both are queued
+   * for one mission they fold into the ship card — see {@link ActionQueueItem.refreshFirst}.
+   */
+  missionPrRole?: 'ship' | 'refresh' | null;
 }
 
 export interface ActionQueueItem {
   humanReview?: HumanPrReview | null;
   machineStatus?: string | null;
+  /** A human review whose PR Buildd is still repairing or checking (`reviewMachineActing`). */
+  machineActing?: boolean;
+  /** The escalation gate's verdict, when the PR went through it. */
+  gate?: EscalationGateMark | null;
   subjectKey: string;
   // Set on Home when the item's mission belongs to an initiative — drives the
   // initiative filter chips (scoping only; buildActionQueue itself never sets it).
@@ -476,8 +533,20 @@ export interface ActionQueueItem {
   unblockMissionTitle?: string | null;
   waitingMinutes?: number | null;
   escalationReason?: string | null;
-  /** See {@link EscalationRawItem.hasEscalationNote} — carried through unchanged. */
+  /**
+   * See {@link EscalationRawItem.hasEscalationNote} — carried through, and also
+   * true when a kernel-owned delivery is ESCALATED by a reviewer verdict
+   * (see `reviewerEscalated`): the kernel round is the escalation, so the card
+   * must offer the escalation actions, not the no-verdict set.
+   */
   hasEscalationNote?: boolean;
+  /**
+   * True when the PR's delivery is kernel-owned and ESCALATED by the reviewer
+   * (review_escalated / review_exhausted). On those deliveries the verdict lives
+   * in the kernel round, so the legacy `verdictSummary` / note fields are null
+   * even though a reviewer did decide — the card reads this instead.
+   */
+  reviewerEscalated?: boolean;
   workerId?: string;
   question?: string;
   /** Set when the card is CI-gated — drives FIXING_CI / CI_RUNNING / CI BLOCKED copy. */
@@ -509,11 +578,21 @@ export interface ActionQueueItem {
   mergeConflict?: boolean;
   /** See {@link EscalationRawItem.conflictReason}. */
   conflictReason?: string | null;
+  /** S37: why the live conflict fix for this PR has stalled; null when it has not. */
+  remediationStalled?: string | null;
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
-  /** Set when chip === 'FAILED' — the plain cause and the setting that fixes it. */
+  /** Set when chip === 'FAILED' — the plain cause and the setting that fixes it. INCIDENT: the gate's reason. */
   failureMessage?: string;
+  /** Set when chip === 'INCIDENT' — the incident and its title. */
+  incidentId?: string;
+  incidentTitle?: string;
+  /** Set when chip === 'ACCESS' — the capability request, the ask and the lease asked for. */
+  accessRequestId?: string;
+  accessAsk?: string;
+  accessTtlSeconds?: number;
+  accessApproveLabel?: string;
   fixHref?: string;
   fixLabel?: string;
   /** Set when chip === 'DECIDE' — the escalation note this card links back to. */
@@ -569,6 +648,27 @@ export interface ActionQueueItem {
   missionMergeBlockedReason?: string | null;
   /** Set when chip === 'CI_RUNNING' / 'REVIEW_RUNNING' — what exactly is pending. See resolveMergeChip. */
   pendingGates?: PendingGates | null;
+  /**
+   * Set when the PR's delivery is kernel-owned: the canonical owner of the
+   * next move, its headline and evidence (workflow-state-kernel §17.5). The
+   * card's chip was taken from it, not from raw worker/reviewer columns.
+   */
+  delivery?: Pick<DeliveryView, 'owner' | 'state' | 'stage' | 'headline' | 'detail' | 'cta' | 'compositionVerified'> | null;
+  /**
+   * Set on a mission's ship card when the same mission's refresh PR is also
+   * queued: the refresh lands first (the ship PR cannot ship while its
+   * integration branch is behind trunk), so the two read as one card with
+   * one ordered next step instead of two cards explaining the same blocker.
+   */
+  refreshFirst?: { prNumber: number | null; prUrl: string | null; taskId: string | null; chip: ActionChip } | null;
+  /** Carried from {@link EscalationRawItem.missionPrRole}; drives the fold above. */
+  missionPrRole?: 'ship' | 'refresh' | null;
+  /**
+   * Human-review cards only: Jev's stored "can this merge now?" answer and the
+   * token to ask for one (merge-advice-server.ts `attachMergeAdvice`). Advice
+   * only; nothing in the queue reads it.
+   */
+  mergeAdvice?: MergeAdviceSlot | null;
 }
 
 // Chip display order: lower index = shown first.
@@ -594,8 +694,12 @@ export interface ActionQueueItem {
 // dies must not take the finding with it — but never counts as actionable.
 // FAILED sits with RECONNECT: both are a credential the owner has to supply
 // before anything else can run.
+// INCIDENT leads: the escalation gate hands a Sentinel incident to the owner
+// only when it is critical, or nothing is fixing it.
+// ACCESS sits with QUESTION: a live agent run is waiting on a person's
+// approve or deny, and the request closes itself when the run ends.
 const CHIP_ORDER: ActionChip[] = [
-  'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
+  'INCIDENT', 'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'ACCESS', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
   'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'REVIEW_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ];
@@ -622,7 +726,63 @@ export interface BuildActionQueueOptions {
    * an expiry check the caller already ran a moment earlier.
    */
   snoozedSubjectKeys?: ReadonlySet<string>;
+  /**
+   * taskId → DeliveryView for tasks whose delivery the workflow kernel owns
+   * (`getDeliveryViewsForTasks`). For those, the chip is the kernel's owner of
+   * the next move, never an inference from worker/reviewer/task columns; a
+   * task absent from the map keeps today's projection (§14 cutover).
+   */
+  deliveryViews?: ReadonlyMap<string, DeliveryView>;
 }
+
+/**
+ * The chip a kernel-owned delivery projects. Landing (APPROVED/LANDING) keeps
+ * the legacy merge chip, because the merge rails stay legacy until Slice C;
+ * every other state is decided by who owns the next move, so a recoverable
+ * blocker (AWAITING_PUSH, a stalled conflict fix) is agent-handled, and only
+ * a human-owned state (ESCALATED) asks for a person.
+ */
+export function chipForDelivery(v: DeliveryView, legacyChip: ActionChip): ActionChip {
+  // Landing: the kernel holds an approval and the effective merge policy has
+  // the landing path merge it, so a legacy merge CTA (REVIEW: no reviewer-task
+  // approve on record; MERGE) is the auto-merge in flight it actually is, the
+  // same "merging" the board, list, strip and chat read. Every other legacy
+  // gate (BLOCKED, CI, conflict) stands.
+  if (v.owner === 'landing') return legacyChip === 'REVIEW' || legacyChip === 'MERGE' ? 'AUTO_MERGE' : legacyChip;
+  // An approved PR a person merges (human tier, approve-only, open handoff,
+  // the mission-PR gate) is the merge it actually is.
+  if (v.owner === 'human' && v.state === 'APPROVED' && legacyChip === 'REVIEW') return 'MERGE';
+  if (v.owner === 'human') return legacyChip === 'MERGE' || legacyChip === 'BLOCKED' || legacyChip === 'REVIEW' ? legacyChip : 'REVIEW';
+  if (v.cta?.action === 'repair_remediation' || v.cta?.action === 'create_conflict_fix' || v.headline === 'Resolving conflicts') return 'RESOLVING';
+  switch (v.state) {
+    case 'AWAITING_REVIEW': return 'REVIEW_RUNNING';
+    case 'REPAIRING': return v.stateReason === 'ci' ? 'FIXING_CI' : 'RESOLVING';
+    case 'BLOCKED_ON_TRUNK': return 'FIXING_CI';
+    default: return 'FIXING_REVIEW';
+  }
+}
+
+/**
+ * S36: Needs You membership for a task whose delivery the kernel owns is the
+ * kernel's `needsYou`, never the legacy reviewer gate / note / tier predicate
+ * (that only restyles rows the kernel already admits). Landing keeps the
+ * legacy predicate because the merge rails stay legacy until Slice C. A task
+ * with no view keeps today's predicate untouched.
+ */
+export function kernelInboxMembership(view: DeliveryView | undefined, legacyIncluded: boolean): boolean {
+  if (!view) return legacyIncluded;
+  if (view.owner === 'landing') return legacyIncluded;
+  return view.needsYou;
+}
+
+/** ESCALATED because a reviewer decided (escalate, or rounds spent without an approval). */
+const REVIEWER_ESCALATION_REASONS: ReadonlySet<string> = new Set(['review_escalated', 'review_exhausted']);
+const isKernelReviewerEscalation = (v: DeliveryView): boolean =>
+  v.state === 'ESCALATED' && v.stateReason != null && REVIEWER_ESCALATION_REASONS.has(v.stateReason);
+
+const deliveryCard = (v: DeliveryView): NonNullable<ActionQueueItem['delivery']> => ({
+  owner: v.owner, state: v.state, stage: v.stage, headline: v.headline, detail: v.detail, cta: v.cta, compositionVerified: v.compositionVerified,
+});
 
 /** Mission statuses under which a DECIDE card may still be a live ask. */
 const LIVE_MISSION_STATUSES = new Set(['active', 'paused']);
@@ -702,6 +862,9 @@ export interface FailedTaskCandidate {
   workerError: string | null;
   missionId: string | null;
   missionTitle: string | null;
+  workspaceId?: string | null;
+  /** `tasks.context` — carries `githubAccessBlock` when a PR door refused for GitHub access. */
+  context?: unknown;
 }
 
 /**
@@ -711,10 +874,30 @@ export interface FailedTaskCandidate {
  * the queue as soon as it is pending again. A failure with no owner-fixable
  * cause stays on the task page; Home only asks for what the owner can act on.
  */
-export function buildFailedTaskItems(candidates: FailedTaskCandidate[]): WaitingOnYouRawItem[] {
+export function buildFailedTaskItems(
+  candidates: FailedTaskCandidate[],
+  opts: {
+    /**
+     * Workspaces whose GitHub access this person can fix (manage_workspace_settings).
+     * A task waiting on GitHub access is shown only to them — once per
+     * workspace, however many tasks are waiting — so the ask lands on the
+     * responsible admin instead of on everyone, once per task. Omitted: none.
+     */
+    githubAccessFixableWorkspaceIds?: ReadonlySet<string>;
+  } = {},
+): WaitingOnYouRawItem[] {
   const items: WaitingOnYouRawItem[] = [];
+  const accessWaiting = new Map<string, { first: FailedTaskCandidate; repo: string | null; count: number }>();
   for (const c of candidates) {
     if (c.status !== 'failed') continue;
+    const block = readGithubAccessBlock(c.context);
+    if (block && !block.resumedAt && c.workspaceId) {
+      if (!opts.githubAccessFixableWorkspaceIds?.has(c.workspaceId)) continue;
+      const cur = accessWaiting.get(c.workspaceId);
+      if (cur) cur.count++;
+      else accessWaiting.set(c.workspaceId, { first: c, repo: block.repo, count: 1 });
+      continue;
+    }
     const cause = explainProviderAuthFailure(c.workerError, c.backend);
     if (!cause) continue;
     items.push({
@@ -726,6 +909,19 @@ export function buildFailedTaskItems(candidates: FailedTaskCandidate[]): Waiting
       failureMessage: cause.message,
       fixHref: cause.href,
       fixLabel: cause.linkLabel,
+    });
+  }
+  for (const [workspaceId, { first, repo, count }] of accessWaiting) {
+    const what = count > 1 ? `${count} tasks are` : 'This task is';
+    items.push({
+      kind: 'failed',
+      taskId: first.taskId,
+      taskTitle: first.title,
+      missionId: first.missionId,
+      missionTitle: first.missionTitle,
+      failureMessage: `Buildd can’t reach ${repo ?? 'this workspace’s GitHub repository'}. ${what} waiting for GitHub access and will resume on their own once it is granted.`,
+      fixHref: repoAccessSettingsPath(workspaceId),
+      fixLabel: 'Fix GitHub access',
     });
   }
   return items;
@@ -976,6 +1172,8 @@ const DISCREPANCY_DIRECTION_RANK: Record<DiscrepancyDirection, number> = {
   contradicted: 0,
   spec_ahead: 1,
   code_ahead: 2,
+  // Advisory: two Living Spec criteria disagree. Shown last; only Accept applies.
+  conflict: 3,
 };
 
 /** §12: cap the queue to the top 10 DISCREPANCY cards (specs) per workspace. */
@@ -1229,7 +1427,10 @@ export function buildActionQueue(
           now,
         })
       : null;
-    const chip: ActionChip = staleGate ? 'STALE' : baseChip;
+    const kernelView = item.taskId ? options.deliveryViews?.get(item.taskId) : undefined;
+    const chip: ActionChip = kernelView
+      ? (() => { const c = chipForDelivery(kernelView, baseChip); return c === baseChip && staleGate ? 'STALE' : c; })()
+      : staleGate ? 'STALE' : baseChip;
     // Which RESOLVING/BLOCKED readings come from a conflict, not from red CI.
     const mergeConflict =
       (chip === 'RESOLVING' || chip === 'BLOCKED')
@@ -1240,6 +1441,8 @@ export function buildActionQueue(
       subjectKey: key,
       humanReview: item.humanReview,
       machineStatus: item.humanReview ? describeReviewMachineState(item, now) : null,
+      machineActing: item.humanReview ? reviewMachineActing(item, now) : false,
+      gate: item.gate ?? null,
       chip,
       staleGate,
       cardAgeHours: staleGate?.ageHours
@@ -1274,9 +1477,21 @@ export function buildActionQueue(
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
       deadZoneExhausted: item.deadZoneExhausted ?? undefined,
       deadZoneLastRetryTaskId: item.deadZoneLastRetryTaskId ?? undefined,
-      ...(mergeConflict ? { mergeConflict: true, conflictReason: item.conflictReason ?? null } : {}),
+      ...(mergeConflict ? { mergeConflict: true, conflictReason: item.conflictReason ?? null, remediationStalled: item.remediationStalled ?? null } : {}),
       missionMergeBlockedReason: item.missionMergeBlockedReason ?? null,
+      missionPrRole: item.missionPrRole ?? null,
       pendingGates,
+      ...(kernelView ? {
+        delivery: deliveryCard(kernelView),
+        // The card's reason line is the kernel's evidence, not a raw column.
+        ...(kernelView.owner !== 'landing' || kernelView.compositionVerified
+          ? { escalationReason: kernelView.detail ? `${kernelView.headline} · ${kernelView.detail}` : kernelView.headline }
+          : {}),
+        ...(kernelView.cta?.action === 'repair_remediation' ? { mergeConflict: true, conflictReason: kernelView.detail, conflictRetryTaskId: kernelView.cta.taskId, remediationStalled: kernelView.detail } : {}),
+        // A reviewer verdict that escalated lives in the kernel round, not in a
+        // legacy note: the card has a verdict to dispatch against or merge past.
+        ...(isKernelReviewerEscalation(kernelView) ? { hasEscalationNote: true, reviewerEscalated: true } : {}),
+      } : {}),
     });
   }
 
@@ -1353,8 +1568,49 @@ export function buildActionQueue(
           connectorName: item.connectorName,
         });
       }
+    } else if (item.kind === 'incident') {
+      const key = `incident:${item.incidentId}`;
+      if (item.incidentId && !map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'INCIDENT',
+          incidentId: item.incidentId,
+          incidentTitle: item.incidentTitle,
+          workspaceName: item.workspaceName ?? undefined,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
+        });
+      }
+    } else if (item.kind === 'access') {
+      // One card per request: the store already keeps one open row per (worker, target, exact ask).
+      const key = `access:${item.accessRequestId}`;
+      if (item.accessRequestId && !map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'ACCESS',
+          accessRequestId: item.accessRequestId,
+          accessAsk: item.accessAsk,
+          accessTtlSeconds: item.accessTtlSeconds,
+          accessApproveLabel: item.accessApproveLabel,
+          taskId: item.taskId,
+          taskTitle: item.taskTitle,
+          workspaceId: item.workspaceId,
+          workspaceName: item.workspaceName ?? undefined,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
+        });
+      }
     } else if (item.kind === 'failed') {
       const key = `task:${item.taskId}`;
+      // S35: a failed attempt of a kernel-owned delivery that is still live,
+      // or already shipped, is history, not a failure that needs you. Use
+      // attemptFailureCounts: it returns true only for the current/owner task
+      // in a FAILED delivery; past attempts or any task in a live/shipped
+      // delivery return false.
+      const fv = item.taskId ? options.deliveryViews?.get(item.taskId) : undefined;
+      if (fv && item.taskId && !attemptFailureCounts(fv, item.taskId)) continue;
       if (!map.has(key)) {
         map.set(key, {
           subjectKey: key,
@@ -1447,8 +1703,9 @@ export function buildActionQueue(
   }
 
   const snoozed = options.snoozedSubjectKeys;
-  return [...map.values()]
-    .filter((item) => !snoozed?.has(item.subjectKey))
+  // Fold after the snooze filter: snoozing the ship card must not take the
+  // refresh PR (a separate decision) off the queue with it.
+  return foldMissionRefreshes([...map.values()].filter((item) => !snoozed?.has(item.subjectKey)))
     .sort((a, b) => {
     const chipDiff = CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip);
     if (chipDiff !== 0) return chipDiff;
@@ -1479,6 +1736,42 @@ export function buildActionQueue(
     }
     return 0;
   });
+}
+
+/** {@link EscalationRawItem.missionPrRole} for a PR's owning task. */
+export function missionPrRoleOf(task: {
+  title?: string | null;
+  taskClass?: string | null;
+  missionId?: string | null;
+  context?: unknown;
+}): 'ship' | 'refresh' | null {
+  if (!task.missionId) return null;
+  if (isMissionPrTask(task)) return 'ship';
+  const ctx = task.context as Record<string, unknown> | null | undefined;
+  return typeof ctx?.refreshTrunk === 'string' ? 'refresh' : null;
+}
+
+/**
+ * A mission's refresh PR (trunk → integration branch) and its ship PR
+ * (integration branch → trunk) are one decision in sequence, not two: fold the
+ * refresh into the ship card as `refreshFirst`. Only within one workspace and
+ * mission, only on the structural `missionPrRole` marker; a refresh with no
+ * ship card queued stays a card of its own.
+ */
+function foldMissionRefreshes(items: ActionQueueItem[]): ActionQueueItem[] {
+  const shipKey = (i: ActionQueueItem) => `${i.workspaceId ?? ''}:${i.missionId}`;
+  const ships = new Map<string, ActionQueueItem>();
+  for (const i of items) if (i.missionPrRole === 'ship' && i.missionId) ships.set(shipKey(i), i);
+  if (ships.size === 0) return items;
+  const folded = new Set<ActionQueueItem>();
+  for (const i of items) {
+    if (i.missionPrRole !== 'refresh' || !i.missionId) continue;
+    const ship = ships.get(shipKey(i));
+    if (!ship) continue;
+    folded.add(i);
+    ship.refreshFirst ??= { prNumber: i.prNumber ?? null, prUrl: i.prUrl ?? null, taskId: i.taskId ?? null, chip: i.chip };
+  }
+  return folded.size ? items.filter((i) => !folded.has(i)) : items;
 }
 
 export interface ActionQueueAgeMetrics {

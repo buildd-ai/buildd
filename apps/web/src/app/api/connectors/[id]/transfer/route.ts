@@ -1,14 +1,14 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { connectors, connectorShares, secrets, teamMembers } from '@buildd/core/db/schema';
+import { connectors, connectorShares, secrets } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { isUuid } from '@/lib/uuid';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { canManageTeamConnectors } from '@/lib/connector-team-auth';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -32,19 +32,6 @@ async function authenticateRequest(req: NextRequest) {
   return null;
 }
 
-/**
- * Same team-admin gate as connector create (spec §6): a plain `member` is
- * rejected; absence of a team_members row means a personal team => allowed.
- */
-async function isTeamAdmin(userId: string, teamId: string): Promise<boolean> {
-  const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)),
-    columns: { role: true },
-  });
-  // No row = the caller's personal team, which they own.
-  if (!membership) return true;
-  return roleHas(membership.role, 'manage_connectors', await getTeamPermissionOverrides(teamId));
-}
 
 /**
  * POST /api/connectors/[id]/transfer — reassign connector ownership (spec §1b).
@@ -83,7 +70,7 @@ export async function POST(
   }
 
   // Admin of the CURRENT owner team (§1b).
-  if (auth.type === 'session' && !(await isTeamAdmin(auth.user.id, connector.teamId))) {
+  if (auth.type === 'session' && !(await canManageTeamConnectors(auth.user.id, connector.teamId))) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -106,7 +93,7 @@ export async function POST(
     return NextResponse.json({ error: 'Target team not found' }, { status: 404 });
   }
   // ...and one the actor administers (§1b: "another team the actor administers").
-  if (auth.type === 'session' && !(await isTeamAdmin(auth.user.id, targetTeamId))) {
+  if (auth.type === 'session' && !(await canManageTeamConnectors(auth.user.id, targetTeamId))) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 

@@ -151,6 +151,10 @@ async function fileViolation(
     'or its threshold there; do not silence the sweep.',
   ].join('\n');
 
+  const subjectPr = violation.entityKind === 'pull_request' && /^\d+$/.test(violation.entityId)
+    ? Number(violation.entityId)
+    : null;
+
   const inserted = await db
     .insert(tasks)
     .values({
@@ -169,6 +173,9 @@ async function fileViolation(
         missionInvariantKey: result.key,
         missionInvariantEntityId: violation.entityId,
         missionInvariantEntityKind: violation.entityKind,
+        // The sweep is the server, so it may link the subject PR it names: the
+        // remedy ("request review", "rebase") is otherwise a 403 for a task token.
+        ...(subjectPr ? { prReach: { prNumbers: [subjectPr], grantedBy: 'system:mission-invariants', grantedAt: now.toISOString() } } : {}),
       },
     })
     .returning({ id: tasks.id });

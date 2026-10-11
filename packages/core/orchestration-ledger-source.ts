@@ -9,7 +9,7 @@
  *
  * Everything here is best-effort and never throws into a request path.
  */
-import { and, desc, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, lt, notInArray } from 'drizzle-orm';
 import { db } from './db/client';
 import {
   gateEvents,
@@ -104,12 +104,20 @@ export function decidedTaskWhere(opts: { taskId: string; workspaceId: string }) 
   return and(eq(orchestrationDecisions.taskId, opts.taskId), eq(orchestrationDecisions.workspaceId, opts.workspaceId));
 }
 
+/**
+ * The task-verdict rows (apps/web/src/lib/task-verdict-decision.ts) share this
+ * ledger so `get_decision_stats` shows them, but they are not orchestration
+ * decisions and have no place in the conflict outcome join.
+ */
+export const NON_ORCHESTRATION_CAPABILITIES = ['task_verdict'] as const;
+
 export function decisionsWhere(opts: { workspaceId: string; since: Date; until: Date; decisionId?: string }) {
   return and(
     eq(orchestrationDecisions.workspaceId, opts.workspaceId),
     gte(orchestrationDecisions.createdAt, opts.since),
     lt(orchestrationDecisions.createdAt, opts.until),
     ...(opts.decisionId ? [eq(orchestrationDecisions.decisionId, opts.decisionId)] : []),
+    notInArray(orchestrationDecisions.capability, [...NON_ORCHESTRATION_CAPABILITIES]),
   );
 }
 
@@ -167,7 +175,18 @@ export async function loadOrchestrationOutcomeInput(opts: {
     .from(orchestrationDecisions)
     .where(decisionsWhere(opts))
     .limit(OUTCOME_JOIN_MAX_DECISIONS)) as OutcomeJoinInput['decisions'];
+  return loadOutcomeJoinFor(decisions, opts);
+}
 
+/**
+ * The outcome-join input for decisions the caller already has: a ledger row,
+ * or any other recorded start (a `soft_overlap_start` gate event is shaped
+ * into a `DecisionForJoin`), so every cohort is graded by the same labeller.
+ */
+export async function loadOutcomeJoinFor(
+  decisions: OutcomeJoinInput['decisions'],
+  opts: { workspaceId: string; since: Date },
+): Promise<OutcomeJoinInput> {
   const empty: OutcomeJoinInput = { decisions, tasks: [], labels: [], prs: [], conflictTasks: [], gateEvents: [] };
   const taskIds = [...new Set(decisions.map(d => d.taskId).filter((t): t is string => !!t))];
   if (taskIds.length === 0) return empty;

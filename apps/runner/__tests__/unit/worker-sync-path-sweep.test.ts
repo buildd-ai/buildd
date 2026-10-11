@@ -1,11 +1,12 @@
 /**
- * The sync tick's observed-touch report is the base-pinned checkpoint sweep
- * (conflict-aware-orchestration.md §2), not committed-only `origin/HEAD`/`dev`
- * observation:
+ * The sync tick's working-set report (path-claim-ownership.md) is the
+ * base-pinned sweep (conflict-aware-orchestration.md §2) sent as a DELTA since
+ * the server's last ACK, not committed-only `origin/HEAD`/`dev` observation:
  *  - measured against the worker's resolved base (a mission branch here), so
  *    the integration branch's own history is never reported as this task's
  *  - staged, unstaged and untracked files (Bash writes) are included
- *  - a collision the server reports stops the task in enforce mode (handed to
+ *  - the steady state sends nothing; a reverted file is a removal
+ *  - a holder the server reports stops the task in enforce mode (handed to
  *    onPathCollision) and is only logged in advisory mode
  *
  * Real git in a throwaway repo.
@@ -43,6 +44,7 @@ const updateWorker = mock(async (_id: string, u: any) => { payloads.push(u); ret
 beforeEach(() => {
   payloads.length = 0;
   response = {};
+  updateWorker.mockImplementation(async (_id: string, u: any) => { payloads.push(u); return response; });
   tmp = mkdtempSync(join(tmpdir(), 'wsps-'));
   const origin = join(tmp, 'origin.git');
   work = join(tmp, 'work');
@@ -94,31 +96,86 @@ function makeSync(worker: any, onPathCollision = mock((_w: any, _c: any) => {}))
   return { sync: new WorkerSync(ctx), onPathCollision };
 }
 
-describe('sync sweep', () => {
-  test('reports committed + untracked changes against the mission base, not trunk', async () => {
+/** A server answering the working-set protocol: leases everything, blocks `held`. */
+function ackAll(held: Record<string, string> = {}) {
+  updateWorker.mockImplementation(async (_id: string, u: any) => {
+    payloads.push(u);
+    const d = u.workingSet;
+    if (!d) return response;
+    const blocked = d.add.filter((p: string) => held[p]).map((p: string) => ({ path: p, blockingTaskId: held[p], blockingTaskTitle: 'Other', blockingPath: 'src' }));
+    return {
+      ...response,
+      workingSetAck: {
+        generation: d.generation, acquired: d.add.filter((p: string) => !held[p]), blocked, released: d.remove,
+        heldCount: 0, applied: true, coverage: blocked.length ? 'blocked' : d.complete ? 'complete' : 'partial',
+      },
+    };
+  });
+}
+
+describe('sync sweep → working-set delta', () => {
+  test('reports committed + untracked changes against the mission base, not trunk, as a delta the server leases', async () => {
+    ackAll();
     const worker = makeWorker();
     await makeSync(worker).sync.syncWorkerToServer(worker);
+    expect(payloads[0].workingSet).toMatchObject({ generation: 1, add: ['src/from-bash.ts', 'src/mine.ts'], remove: [], complete: true, includeHeld: true });
+    // The same paths double as the (bounded) observed sample for older servers and the dashboard.
     expect(payloads[0].touchedPaths).toEqual(['src/from-bash.ts', 'src/mine.ts']);
+    expect(payloads[0].pendingPaths).toBeUndefined();
+    expect(worker.workingSet.acked).toEqual(['src/from-bash.ts', 'src/mine.ts']);
+  });
+
+  test('the steady state resends nothing: the next tick carries no paths at all', async () => {
+    ackAll();
+    const worker = makeWorker();
+    const { sync } = makeSync(worker);
+    await sync.syncWorkerToServer(worker);
+    await sync.syncWorkerToServer(worker);
+    expect(payloads[1].workingSet).toBeUndefined();
+    expect(payloads[1].touchedPaths).toBeUndefined();
+  });
+
+  test('a reverted file goes out as a removal once, and only when the sweep could see the whole set', async () => {
+    ackAll();
+    const worker = makeWorker();
+    const { sync } = makeSync(worker);
+    await sync.syncWorkerToServer(worker);
+    rmSync(join(work, 'src/from-bash.ts'));
+    await sync.syncWorkerToServer(worker);
+    expect(payloads[1].workingSet).toMatchObject({ add: [], remove: ['src/from-bash.ts'], complete: true });
+    expect(worker.workingSet.acked).toEqual(['src/mine.ts']);
+    await sync.syncWorkerToServer(worker);
+    expect(payloads[2].workingSet).toBeUndefined();
   });
 
   test('measures against the PR base even when the worktree was cut from another ref (a resume)', async () => {
+    ackAll();
     // The worktree base names the resume branch == HEAD here; the PR base is the mission branch.
     const worker = makeWorker({ worktreeBaseRef: 'HEAD', prBaseRef: 'origin/mission/m-1' });
     await makeSync(worker).sync.syncWorkerToServer(worker);
-    expect(payloads[0].touchedPaths).toEqual(['src/from-bash.ts', 'src/mine.ts']);
-    // A plain sync offers only what is new; the re-offer is for checkpoints.
+    expect(payloads[0].workingSet.add).toEqual(['src/from-bash.ts', 'src/mine.ts']);
     expect(payloads[0].checkpointSweep).toBeUndefined();
   });
 
   test('no resolved base: only uncommitted changes, never a trunk fallback', async () => {
+    ackAll();
     const worker = makeWorker({ worktreeBaseRef: undefined, prBaseRef: undefined });
     await makeSync(worker).sync.syncWorkerToServer(worker);
-    expect(payloads[0].touchedPaths).toEqual(['src/from-bash.ts']);
-    expect(payloads[0].touchedPaths).not.toContain('src/sibling.ts');
+    expect(payloads[0].workingSet.add).toEqual(['src/from-bash.ts']);
+    expect(payloads[0].workingSet.add).not.toContain('src/sibling.ts');
   });
 
-  test('enforce: a server-reported collision stops the task', async () => {
-    response = { pathCollisions: [{ path: 'src/from-bash.ts', blockingTaskId: BLOCKER, blockingTaskTitle: 'Other', blockingPath: 'src' }] };
+  test('an older server that does not ACK leaves the delta pending: it is offered again, never assumed held', async () => {
+    const worker = makeWorker();
+    const { sync } = makeSync(worker);
+    await sync.syncWorkerToServer(worker);
+    await sync.syncWorkerToServer(worker);
+    expect(payloads[1].workingSet.add).toEqual(['src/from-bash.ts', 'src/mine.ts']);
+    expect(worker.workingSet.acked).toEqual([]);
+  });
+
+  test('enforce: a holder in the ACK stops the task', async () => {
+    ackAll({ 'src/from-bash.ts': BLOCKER });
     const worker = makeWorker({ pathClaimMode: 'enforce' });
     const { sync, onPathCollision } = makeSync(worker);
     await sync.syncWorkerToServer(worker);
@@ -127,13 +184,33 @@ describe('sync sweep', () => {
     expect(worker.pathCollision).toMatchObject({ path: 'src/from-bash.ts' });
   });
 
+  test('enforce: a legacy pathCollisions answer still stops the task', async () => {
+    response = { pathCollisions: [{ path: 'src/from-bash.ts', blockingTaskId: BLOCKER, blockingTaskTitle: 'Other', blockingPath: 'src' }] };
+    const worker = makeWorker({ pathClaimMode: 'enforce' });
+    const { sync, onPathCollision } = makeSync(worker);
+    await sync.syncWorkerToServer(worker);
+    expect(onPathCollision).toHaveBeenCalledTimes(1);
+  });
+
   test('advisory: a reported collision is not enforced', async () => {
-    response = { pathCollisions: [{ path: 'src/from-bash.ts', blockingTaskId: BLOCKER }] };
+    ackAll({ 'src/from-bash.ts': BLOCKER });
     const worker = makeWorker();
     const { sync, onPathCollision } = makeSync(worker);
     await sync.syncWorkerToServer(worker);
     expect(onPathCollision).not.toHaveBeenCalled();
     expect(worker.pathCollision).toBeUndefined();
+  });
+
+  test('unproven ship checkpoints are reported on the next sync that lands, and kept when it does not', async () => {
+    const worker = makeWorker({ pendingShipReports: [{ source: 'pre_push', result: 'unknown', cause: 'timeout', refused: true, attempts: 3, at: 1 }] });
+    const { sync } = makeSync(worker);
+    updateWorker.mockImplementationOnce(async () => { throw new Error('offline'); });
+    await sync.syncWorkerToServer(worker).catch(() => {});
+    expect(worker.pendingShipReports).toHaveLength(1);
+    ackAll();
+    await sync.syncWorkerToServer(worker);
+    expect(payloads.at(-1).shipCheckpoints).toEqual([{ source: 'pre_push', result: 'unknown', cause: 'timeout', refused: true, attempts: 3, at: 1 }]);
+    expect(worker.pendingShipReports).toEqual([]);
   });
 });
 

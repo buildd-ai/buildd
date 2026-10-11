@@ -1,5 +1,5 @@
 /**
- * The Feed layout: the Board's band, then a chronological event feed by day.
+ * The History layout: a chronological event feed by day, two filters, retries nested.
  * Static markup from fixture models (no database).
  */
 import { describe, expect, it, mock } from 'bun:test';
@@ -25,15 +25,22 @@ const html = renderToStaticMarkup(
 );
 
 describe('MissionFeedLayout', () => {
-  it('opens with the same band as the Board', () => {
-    expect(html).toContain('data-testid="mission-band"');
-    expect(html).toContain('data-testid="goal-band"');
+  it('has no band: the Overview owns the counts', () => {
+    expect(html).not.toContain('data-testid="mission-band"');
+  });
+
+  it('offers Changes and Everything, Changes first', () => {
+    expect(html).toContain('data-testid="segmented"');
+    expect(html).toMatch(/aria-checked="true"[^>]*>Changes</);
+    expect(html).toMatch(/aria-checked="false"[^>]*>Everything</);
   });
 
   it('lists events by day, oldest first, with glyphs and task links', () => {
     expect(html).toContain('data-testid="mission-event-feed"');
     expect(html.split('data-testid="feed-day"').length - 1).toBeGreaterThan(2);
     expect(html).toContain('data-kind="question"');
+    // Changes hides plain claims.
+    expect(html).not.toContain('data-kind="claim"');
     expect(html).toContain('escalated to you: Retry for 4 hours or 24?');
     expect(html).toMatch(/href="\/app\/missions\/mission-1\?task=retry"[^>]*data-task-id="retry"/);
   });

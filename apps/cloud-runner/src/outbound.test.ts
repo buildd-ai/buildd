@@ -14,6 +14,7 @@ import {
   modelEndpointRequest,
   needsServerModelEndpoint,
   parseServerModelEndpoint,
+  parseEndpointHeaders,
   mapEndpointModel,
   rewriteModelInBody,
   isClaudeModelId,
@@ -1303,5 +1304,43 @@ describe('owner seat route', () => {
   test('model paths still apply: a non-model path is refused before the seat is touched', () => {
     const d = rewriteOutbound({ url: 'https://api.anthropic.com/api/oauth/profile', method: 'GET', headers: hostileHeaders() }, { model: resolveModelRoute(seatEnv, null), github: null });
     expect(d.action).toBe('reject');
+  });
+});
+
+describe('team endpoint behind a Cloudflare AI Gateway', () => {
+  const GW = 'https://gateway.ai.cloudflare.com/v1/0123456789abcdef0123456789abcdef/buildd';
+  const server = (o: Record<string, unknown> = {}) => parseServerModelEndpoint({
+    kind: 'cloudflare', upstream: 'anthropic', baseUrl: `${GW}/anthropic`, key: 'sk-ant-team', authHeader: 'x-api-key', models: {},
+    headers: { 'cf-aig-authorization': 'Bearer gw-run-token' }, ...o,
+  });
+
+  test('parses the upstream and headers', () => {
+    expect(server()).toMatchObject({ kind: 'cloudflare', upstream: 'anthropic', headers: { 'cf-aig-authorization': 'Bearer gw-run-token' } });
+  });
+
+  test('refuses a header the egress owns, a bad name, or a value with a line break', () => {
+    expect(() => parseEndpointHeaders({ authorization: 'Bearer x' })).toThrow();
+    expect(() => parseEndpointHeaders({ 'bad name': 'x' })).toThrow();
+    expect(() => parseEndpointHeaders({ 'cf-aig-authorization': 'Bearer x\r\nx-evil: 1' })).toThrow();
+    expect(parseEndpointHeaders(undefined)).toBeUndefined();
+  });
+
+  test('forwards to the gateway with the upstream key and the gateway header', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: hostileHeaders() },
+      { model: resolveModelRoute({}, server()) },
+    ));
+    expect(d.url).toBe(`${GW}/anthropic/v1/messages`);
+    expect(d.headers.get('x-api-key')).toBe('sk-ant-team');
+    expect(d.headers.get('cf-aig-authorization')).toBe('Bearer gw-run-token');
+    expectNoContainerCredential(d.headers);
+  });
+
+  test('an OpenRouter upstream gets OpenRouter model names; an alias still wins', () => {
+    expect(mapEndpointModel({ kind: 'cloudflare', upstream: 'openrouter' }, 'claude-haiku-4-5-20251001')).toBe('anthropic/claude-haiku-4.5');
+    expect(mapEndpointModel({ kind: 'cloudflare', upstream: 'openrouter', models: { 'claude-x': 'mine' } }, 'claude-x')).toBe('mine');
+    expect(mapEndpointModel({ kind: 'cloudflare', upstream: 'anthropic' }, 'claude-sonnet-5')).toBe('claude-sonnet-5');
+    const route = resolveModelRoute({}, server({ upstream: 'openrouter', authHeader: 'authorization' }));
+    expect(route.kind === 'proxy' && route.mapModel?.('claude-haiku-4-5-20251001')).toBe('anthropic/claude-haiku-4.5');
   });
 });

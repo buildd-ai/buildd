@@ -6,7 +6,7 @@ describe('explainProviderAuthFailure: a provider sign-in failure reads as a plai
     const out = explainProviderAuthFailure('Not logged in · Please run /login', 'claude');
     expect(out).not.toBeNull();
     expect(out!.href).toBe(AGENT_CREDENTIAL_HREF);
-    expect(out!.href).toBe('/app/settings/runners#agent-key');
+    expect(out!.href).toBe('/app/settings/models#agent-key');
     // Plain words: no CLI slash command, nothing telling a web user to run /login.
     expect(out!.message).not.toContain('/login');
     expect(out!.message.toLowerCase()).toContain('key');
@@ -34,7 +34,7 @@ describe('explainProviderAuthFailure: a provider sign-in failure reads as a plai
     expect(out).not.toBeNull();
     // The Codex row, not the Claude key field the Claude failure lands on.
     expect(out!.href).toBe(CODEX_CREDENTIAL_HREF);
-    expect(out!.href).toBe('/app/settings/runners#agent-backends');
+    expect(out!.href).toBe('/app/settings/models#sign-ins');
     expect(out!.message).toContain('Codex');
     expect(out!.message).not.toContain('Anthropic');
   });

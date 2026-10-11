@@ -63,7 +63,7 @@ mock.module('@buildd/core/db', () => ({
     }),
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
+        leftJoin: () => ({
           where: (where: unknown) => {
             sweepWheres.push(where);
             if (sweepThrows) throw new Error('db down');
@@ -127,6 +127,21 @@ describe('completed task + live local session', () => {
     expect(n).toBe(1);
     expect(LIVE.has(workerRow!.status)).toBe(false);
     expect(account.activeSessions).toBe(0);
+  });
+});
+
+describe('deleted task + live local session', () => {
+  it('the sweep detaches the orphaned worker and books it as bookkeeping', async () => {
+    workerRow = { ...workerRow!, taskId: null };
+    taskRow = null;
+    sweepRows = [{ id: 'w-leak', taskStatus: null }];
+    const n = await detachInteractiveWorkersOfEndedTasks({});
+
+    expect(n).toBe(1);
+    expect(LIVE.has(workerRow!.status)).toBe(false);
+    expect(workerRow!.status).toBe('failed');
+    expect(account.activeSessions).toBe(0);
+    expect(mockReleaseAndNotify).not.toHaveBeenCalled();
   });
 });
 
@@ -225,6 +240,25 @@ describe('the ended-task sweep scope', () => {
     const q = render({ now: new Date(), graceMs: 30_000, accountId: 'acct-1' });
     expect(q.sql).toContain('sibling.team_id');
     expect(q.params).toContain('acct-1');
+  });
+
+  it('also matches a live mcp worker whose task row was deleted, after the grace window', () => {
+    const now = new Date('2026-10-05T12:00:00Z');
+    const q = render({ now, graceMs: 30_000 });
+    expect(q.sql).toMatch(/"workers"\."task_id" is null/i);
+    expect(q.sql).toMatch(/"workers"\."updated_at" </i);
+    expect(q.params).toContain(new Date(now.getTime() - 30_000).toISOString());
+  });
+
+  it('the event door (one named task) never takes the deleted-task arm', () => {
+    const q = render({ now: new Date(), graceMs: 0, taskId: 't-done' });
+    expect(q.sql).not.toMatch(/is null/i);
+  });
+
+  it('a zero-grace sweep still waits the default grace before detaching an orphan', () => {
+    const now = new Date('2026-10-05T12:00:00Z');
+    const q = render({ now, graceMs: 0 });
+    expect(q.params).toContain(new Date(now.getTime() - 30_000).toISOString());
   });
 
   it('never throws: a failing lookup reports 0', async () => {

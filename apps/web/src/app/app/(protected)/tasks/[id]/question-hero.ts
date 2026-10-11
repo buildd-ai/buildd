@@ -8,6 +8,7 @@
  * the options.
  */
 import type { WaitingForOption } from '@buildd/core/db/schema';
+import { fallbackQuestionContext } from '@buildd/core/human-attention';
 
 export interface QuestionOption {
   label: string;
@@ -134,12 +135,33 @@ function withConsequences(options: QuestionOption[], body: string | null | undef
   return { options: out, body: cleaned };
 }
 
+/**
+ * What the worker already reported beside its question. A `needs_input:` error
+ * carries the full question text, framing included, so a question whose brief
+ * was lost (or never derived, on an older runner) still shows what failed.
+ */
+export interface WorkerQuestionFacts {
+  workerError?: string | null;
+  /** Only where the surface does not already show the task. */
+  taskTitle?: string | null;
+}
+
+/**
+ * The one normalized question every surface renders: task detail, Home's
+ * Needs-you card, chat. Never context-free when anything is known — see
+ * `fallbackQuestionContext` in @buildd/core/human-attention.
+ */
 export function unifyWorkerQuestion(
   waitingFor: BriefedWaitingFor,
   note: QuestionNoteLike | null,
+  facts: WorkerQuestionFacts = {},
 ): UnifiedQuestion {
   const options = withRecommendation(normalizeOptions(waitingFor.options ?? [], note?.defaultChoice), waitingFor.recommended);
   const brief = briefOf(waitingFor);
+  if (!brief.context && !note?.body?.trim()) {
+    const context = fallbackQuestionContext({ prompt: waitingFor.prompt, workerError: facts.workerError, taskTitle: facts.taskTitle });
+    if (context) brief.context = context;
+  }
   if (!note) return { headline: waitingFor.prompt, body: null, options, noteId: null, ...brief };
   const withC = withConsequences(
     options.length ? options : note.defaultChoice ? [{ label: note.defaultChoice, recommended: true }] : [],

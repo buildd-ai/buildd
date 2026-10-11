@@ -39,6 +39,16 @@ mock.module('@buildd/core/db/schema', () => ({
   },
 }));
 
+// The terminal status goes through the PR fact funnel; assert the fact handed
+// over (its SQL is covered on real Postgres by tests/db/pr-facts.test.ts).
+const recordedFacts: Array<{ target: unknown; fact: unknown; opts?: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w1', taskId: 't1', workspaceId: 'ws1', previousStatus: null }];
+  },
+}));
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 import { POST } from './route';
@@ -83,6 +93,7 @@ describe('POST /api/admin/backfill-merged-prs', () => {
     mockRefreshWorkerMergeStateIfStale.mockReset();
     mockExecute.mockReset();
     mockSet.mockClear();
+    recordedFacts.length = 0;
     mockExecute.mockResolvedValue({ rows: [] });
   });
 
@@ -212,9 +223,11 @@ describe('POST /api/admin/backfill-merged-prs', () => {
 
     expect(data.unresolvable).toBe(1);
     expect(mockRefreshWorkerMergeStateIfStale).not.toHaveBeenCalled();
-    expect(mockSet).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'unresolvable' }),
-    );
+    expect(recordedFacts).toEqual([
+      { target: { workerId: 'w1' }, fact: { kind: 'unresolvable', reason: expect.any(String) }, opts: undefined },
+    ]);
+    // Bookkeeping still advances in its own write, without the guarded column.
+    expect(mockSet).toHaveBeenCalledWith({ prLastCheckedAt: expect.any(Date), prCheckFailureCount: 6 });
   });
 
   it('counts, but does not retire, a young row with no reachable installation', async () => {
@@ -236,8 +249,7 @@ describe('POST /api/admin/backfill-merged-prs', () => {
 
     expect(data.unresolvable).toBe(0);
     expect(data.skipped).toBe(1);
-    expect(mockSet).toHaveBeenCalledWith(
-      expect.not.objectContaining({ prLifecycleStatus: 'unresolvable' }),
-    );
+    expect(recordedFacts).toEqual([]);
+    expect(mockSet).toHaveBeenCalledWith({ prLastCheckedAt: expect.any(Date), prCheckFailureCount: 1 });
   });
 });

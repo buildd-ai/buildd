@@ -70,7 +70,7 @@ export async function POST(
       isWorkspaceOwner = await holdsInWorkspace(user.id, task.workspaceId, 'force_reassign_task');
     } else if (apiAccount) {
       // API accounts with workspace access can force reassign (they are service accounts)
-      isWorkspaceOwner = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);
+      isWorkspaceOwner = await verifyAccountWorkspaceAccess(apiAccount, task.workspaceId);
     }
 
     // Check if task is stale (expiresAt is in the past)

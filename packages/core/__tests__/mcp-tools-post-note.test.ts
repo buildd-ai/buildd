@@ -49,6 +49,23 @@ describe('post_note', () => {
     expect(api).not.toHaveBeenCalled();
   });
 
+  it('tells the agent when its question was routed to a repair task instead of a person', async () => {
+    const api = mock(async (endpoint: string) => {
+      if (endpoint === '/api/workers/worker-1') return { taskId: 'task-1', task: { id: 'task-1', missionId: null } };
+      return { id: 'note-1', gate: { disposition: 'recovered', repairTaskId: 'r-1', reason: 'Not sent to a person: repair task r-1 was filed.' } };
+    });
+    const res = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'post_note',
+      { type: 'question', title: 'CI is already failing on dev, unrelated. Wait?' },
+      context(),
+    );
+    const out = JSON.stringify(res);
+    expect(out).toContain('not shown to a person');
+    expect(out).toContain('repair task r-1 was filed');
+    expect(out).not.toContain('User reply will be delivered');
+  });
+
   it('posts to the mission feed when the current task has a mission', async () => {
     const api = mock(async (endpoint: string) => {
       if (endpoint === '/api/workers/worker-1') {

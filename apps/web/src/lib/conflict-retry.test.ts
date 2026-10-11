@@ -71,6 +71,7 @@ mock.module('drizzle-orm', () => ({
   or: (...args: any[]) => ({ or: args }),
   sql: (strings: any, ...values: any[]) => ({ sql: strings, values }),
   isNotNull: (field: any) => ({ isNotNull: field }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ sql: strings.join('?'), values }),
 }));
 
 // Keep real path-overlap for meaningful overlap tests
@@ -107,11 +108,28 @@ mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mockFireGateEvent,
 }));
 
+// The workflow kernel's door (spec §6.7): off by default here (no kernel delivery), so the
+// legacy cases below run exactly as before; the kernel block turns it on.
+const mockKernelDeliveryForPr = mock(async (..._a: unknown[]) => null as string | null);
+const realAuthority = await import('@/lib/workflow/authority');
+mock.module('@/lib/workflow/authority', () => ({ ...realAuthority, kernelDeliveryForPr: mockKernelDeliveryForPr }));
+const mockObserveConflict = mock(async (_p: any) => ({ handled: false }) as any);
+const realSeam = await import('@/lib/workflow/seam');
+mock.module('@/lib/workflow/seam', () => ({ ...realSeam, observeConflict: mockObserveConflict }));
+
+// GitHub reads: by default every call fails (as with no credentials), so the
+// dispatch path degrades exactly as before; one test answers the PR read.
+const mockGithubApi = mock(async (..._a: unknown[]) => { throw new Error('no github in tests'); }) as any;
+const realGithub = await import('@/lib/github');
+mock.module('@/lib/github', () => ({ ...realGithub, githubApi: (...a: unknown[]) => mockGithubApi(...a) }));
+
 import {
   classifyMergeFailure,
+  kernelConflictOutcome,
   isAutoResolveMergeConflictsEnabled,
   buildConflictRetryTask,
   dispatchConflictRetry,
+  classifyConflictFix,
   DEFAULT_MAX_CONFLICT_ITERATIONS,
 } from './conflict-retry';
 import type { ConflictRetryInput } from './conflict-retry';
@@ -209,6 +227,59 @@ function makeInput(overrides?: Partial<ConflictRetryInput>): ConflictRetryInput 
 }
 
 describe('buildConflictRetryTask', () => {
+  // Spec workflow-state-kernel §13.11 rule 1: the attempt resumes on the PR's
+  // exact GitHub head, so the runner can tell it apart from a runaway prior
+  // attempt and never starts fresh from trunk.
+  describe('repair target (exact remote head)', () => {
+    it('resumes on the GitHub-reported head and stamps repairTarget', () => {
+      const result = buildConflictRetryTask(makeInput({
+        worker: { id: 'worker-xyz', branch: 'buildd/abc-old', prNumber: 42 },
+        targetRefs: { headRef: 'mission/x-1234abcd', baseRef: 'dev' },
+      }));
+      expect(result!.context.resumeBranch).toBe('mission/x-1234abcd');
+      expect(result!.context.baseBranch).toBe('mission/x-1234abcd');
+      expect(result!.context.repairTarget).toEqual({ prNumber: 42, headRef: 'mission/x-1234abcd', headSha: 'abc123def456', baseRef: 'dev' });
+    });
+
+    it('without a GitHub head keeps the worker branch and claims no target', () => {
+      const result = buildConflictRetryTask(makeInput());
+      expect(result!.context.resumeBranch).toBe('feat/dark-mode');
+      expect(result!.context).not.toHaveProperty('repairTarget');
+    });
+  });
+
+  describe('context.prBase (the PR\'s real base, read by the runner\'s pre-merge)', () => {
+    it('is stamped when the PR base is known', () => {
+      const result = buildConflictRetryTask(makeInput({ prBase: 'dev' }));
+      expect(result!.context.prBase).toBe('dev');
+    });
+
+    it('is the trunk for a mission ship PR whose head is the integration branch', () => {
+      const result = buildConflictRetryTask(makeInput({
+        worker: { id: 'worker-xyz', branch: 'mission/x-1234abcd', prNumber: 42 },
+        prBase: 'dev',
+      }));
+      expect(result!.context.resumeBranch).toBe('mission/x-1234abcd');
+      expect(result!.context.prBase).toBe('dev');
+    });
+
+    it('falls back to the PR refs the migration path already reads', () => {
+      const result = buildConflictRetryTask(makeInput({ prRefs: { headRef: 'feat/dark-mode', baseRef: 'main' } }));
+      expect(result!.context.prBase).toBe('main');
+    });
+
+    it('is absent when unknown: never guessed', () => {
+      expect(buildConflictRetryTask(makeInput())!.context).not.toHaveProperty('prBase');
+      expect(buildConflictRetryTask(makeInput({ prBase: null }))!.context).not.toHaveProperty('prBase');
+    });
+
+    it('is absent when the name is not a plain branch name', () => {
+      for (const bad of ['--upload-pack=x', 'origin/../x', 'a b', '', ' dev']) {
+        expect(buildConflictRetryTask(makeInput({ prBase: bad }))!.context).not.toHaveProperty('prBase');
+      }
+    });
+  });
+
   it('returns a retry task on the first iteration', () => {
     const result = buildConflictRetryTask(makeInput());
     expect(result).not.toBeNull();
@@ -396,6 +467,75 @@ describe('buildConflictRetryTask', () => {
       expect(result!.description).not.toContain('merge conflicts with the base branch');
     });
 
+    it('describes a slot taken on the base as a renumber past the base, with no other PR', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: { file: '0093_safe.sql', otherFile: '0093_landed.sql', otherPrNumber: null, against: 'base' },
+      }));
+      expect(result!.title).toBe('[builder · migration collision #1] feat: add dark mode');
+      expect(result!.description).toContain('its base already has `0093_landed.sql`');
+      expect(result!.description).toContain('bun run migrations:renumber --base=origin/dev');
+      expect(result!.description).not.toContain('PR #null');
+      expect(result!.description).not.toContain('/pull/null');
+      expect((result!.context.failureContext as any).summary).toContain('already on its base');
+    });
+
+    it('names the bound PR head up front when it differs from the worker branch', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: collision,
+        prRefs: { headRef: 'mission/m-1', baseRef: 'dev' },
+      }));
+      expect(result!.description).toContain('Bound PR lineage');
+      expect(result!.description).toContain('Push to `mission/m-1`');
+      expect(result!.description).toContain('409');
+    });
+
+    it('generic conflict brief routes the push to the bound PR head, not create_pr', () => {
+      const result = buildConflictRetryTask(makeInput({
+        prRefs: { headRef: 'mission/m-1', baseRef: 'dev' },
+      }));
+      expect(result!.description).toContain('Bound PR lineage');
+      expect(result!.description).toContain('Push the resolved merge to `mission/m-1`');
+      expect(result!.description).toContain('409');
+    });
+
+    it('generic conflict brief is unchanged when the PR head is the worker branch', () => {
+      const result = buildConflictRetryTask(makeInput({
+        prRefs: { headRef: 'feat/dark-mode', baseRef: 'dev' },
+      }));
+      expect(result!.description).not.toContain('Bound PR lineage');
+    });
+
+    it('omits the lineage note when the PR head is the worker branch', () => {
+      const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
+      expect(result!.description).not.toContain('Bound PR lineage');
+      expect(result!.description).toContain('Push to the existing branch');
+    });
+
+    it('runs the renumber command past the open PR slot instead of a hand recipe', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: collision,
+        prRefs: { headRef: 'feat/dark-mode', baseRef: 'dev' },
+      }));
+      expect(result!.description).toContain('bun run migrations:renumber --base=origin/dev --min-index=94');
+      expect(result!.description).toContain('bun run migrations:index-check --base=origin/dev');
+    });
+
+    it('renumbers a base collision against the PR base with no index floor', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: { file: '0093_safe.sql', otherFile: '0093_landed.sql', otherPrNumber: null, against: 'base' },
+        prRefs: { headRef: 'feat/dark-mode', baseRef: 'main' },
+      }));
+      expect(result!.description).toContain('git merge origin/main');
+      expect(result!.description).toContain('bun run migrations:renumber --base=origin/main\n');
+      expect(result!.description).not.toContain('--min-index');
+    });
+
+    it('tells a plain conflict retry to regenerate drizzle metadata conflicts, not merge them', () => {
+      const result = buildConflictRetryTask(makeInput({}));
+      expect(result!.description).toContain('migrations:renumber');
+      expect(result!.description).toContain('migration-index collision, not text to merge');
+    });
+
     it('sets errorType to migration_collision in failureContext', () => {
       const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
       expect((result!.context.failureContext as any).errorType).toBe('migration_collision');
@@ -478,6 +618,34 @@ describe('dispatchConflictRetry', () => {
     capturedUpdateWhere = null;
   });
 
+  describe('context.prBase from the PR read', () => {
+    it('stamps the base GitHub reports for the PR', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+      mockGithubApi.mockImplementation(async (_inst: unknown, path: unknown) => {
+        if (String(path).endsWith('/pulls/99')) {
+          return { head: { ref: 'mission/x-1234abcd', repo: { full_name: 'acme/app' } }, base: { ref: 'dev' } };
+        }
+        throw new Error('unexpected github call');
+      });
+      // The re-check against the base tip confirms a real conflict, so a retry is filed.
+      mockUpdateBehindPrBranch.mockResolvedValueOnce({ kind: 'conflict', reason: '422 merge conflict' });
+      try {
+        await dispatchConflictRetry(BASE_PARAMS);
+        expect(capturedInsertValues?.context?.prBase).toBe('dev');
+      } finally {
+        mockGithubApi.mockImplementation(async () => { throw new Error('no github in tests'); });
+      }
+    });
+
+    it('leaves it absent when the PR read fails', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+      mockUpdateBehindPrBranch.mockResolvedValueOnce({ kind: 'conflict', reason: '422 merge conflict' });
+      await dispatchConflictRetry(BASE_PARAMS);
+      expect(capturedInsertValues?.context).toBeDefined();
+      expect(capturedInsertValues.context).not.toHaveProperty('prBase');
+    });
+  });
+
   // A retry that ended without pushing leaves the PR head unchanged, so it
   // keeps the (PR, head) dedupe key. Every later dispatch for the still-dirty
   // head hit the unique index and filed nothing, yet callers read that as
@@ -536,6 +704,68 @@ describe('dispatchConflictRetry', () => {
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
+  // S37: the existing remediation is canonical. A stalled one is recovered in
+  // place (keyed by the task + a throttle window), never shadowed by a second.
+  describe('S37 — a stalled live conflict fix is recovered, not duplicated', () => {
+    const OLD = new Date(Date.now() - 45 * 60_000);
+    const pendingStalled = { id: 'live-retry', conflictRetryHeadSha: 'sha-older', status: 'pending', createdAt: OLD, claimedAt: null, updatedAt: OLD, context: {} };
+
+    it('re-dispatches a pending fix no runner claimed, and files nothing new', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue(pendingStalled);
+      mockUpdateReturning.mockResolvedValueOnce([{ id: 'live-retry' }]);
+      const result = await dispatchConflictRetry({ ...BASE_PARAMS, humanInitiated: true });
+      expect(result).toMatchObject({ dispatched: false, inFlightTaskId: 'live-retry', remediationStalled: true, remediationRecovery: 'redispatch' });
+      expect(mockInsert).not.toHaveBeenCalled();
+      expect(mockWakeTask).toHaveBeenCalledWith('live-retry', 'conflict.retry');
+      expect(capturedUpdateSet.context.conflictRecovery.action).toBe('redispatch');
+      expect(capturedUpdateSet.status).toBeUndefined();
+    });
+
+    it('repairs a claimed fix whose worker already ended: back to pending, then woken', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue({ ...pendingStalled, status: 'assigned', claimedAt: OLD });
+      mockWorkerFindFirst.mockResolvedValue({ status: 'failed', updatedAt: OLD });
+      mockUpdateReturning.mockResolvedValueOnce([{ id: 'live-retry' }]);
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result.remediationRecovery).toBe('repair');
+      expect(capturedUpdateSet.status).toBe('pending');
+      expect(capturedUpdateSet.claimedAt).toBeNull();
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+
+    it('a concurrent caller that loses the compare-and-set applies nothing (duplicate sweep/click/webhook)', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue(pendingStalled);
+      mockUpdateReturning.mockResolvedValueOnce([]);
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result).toMatchObject({ dispatched: false, inFlightTaskId: 'live-retry', remediationStalled: true, remediationRecovery: 'none' });
+      expect(mockWakeTask).not.toHaveBeenCalled();
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+
+    it('a fix re-dispatched a minute ago is waiting again, not stalled: no second recovery', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue({ ...pendingStalled, context: { conflictRecovery: { at: new Date(Date.now() - 60_000).toISOString() } } });
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result).toEqual({ dispatched: false, inFlightTaskId: 'live-retry' });
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+    });
+
+    it('a fresh pending fix is left alone', async () => {
+      const now = new Date();
+      mockLiveConflictRetryProbe.mockResolvedValue({ ...pendingStalled, createdAt: now, updatedAt: now });
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+      expect(result).toEqual({ dispatched: false, inFlightTaskId: 'live-retry' });
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it('classifyConflictFix: a silent live worker is stalled but never raced', () => {
+      const now = Date.now();
+      expect(classifyConflictFix({ status: 'in_progress', createdAt: OLD, workerStatus: 'running', workerUpdatedAt: new Date(now - 30 * 60_000) }, now))
+        .toMatchObject({ stalled: true, action: 'none' });
+      expect(classifyConflictFix({ status: 'in_progress', createdAt: OLD, workerStatus: 'running', workerUpdatedAt: new Date(now - 60_000) }, now))
+        .toEqual({ stalled: false, reason: null, action: 'none' });
+    });
+  });
+
   it('scopes the in-flight probe to this workspace, this PR and live statuses', async () => {
     await dispatchConflictRetry(BASE_PARAMS);
 
@@ -586,9 +816,9 @@ describe('dispatchConflictRetry', () => {
     });
 
     it.each([
-      [{ kind: 'deferred', failure: 'rate_limit', attempts: 1, reason: '429' }, { refreshDeferred: true, refreshFailure: 'rate_limit' }],
-      [{ kind: 'deferred', failure: 'transient', attempts: 2, reason: '502' }, { refreshDeferred: true, refreshFailure: 'transient' }],
-      [{ kind: 'exhausted', failure: 'auth', attempts: 3, reason: '403' }, { refreshExhausted: true, refreshFailure: 'auth' }],
+      [{ kind: 'deferred', failure: 'rate_limit', attempts: 1, reason: '429' }, { refreshDeferred: true, refreshFailure: 'rate_limit', refreshReason: '429' }],
+      [{ kind: 'deferred', failure: 'transient', attempts: 2, reason: '502' }, { refreshDeferred: true, refreshFailure: 'transient', refreshReason: '502' }],
+      [{ kind: 'exhausted', failure: 'auth', attempts: 3, reason: '403' }, { refreshExhausted: true, refreshFailure: 'auth', refreshReason: '403' }],
       [{ kind: 'head_changed', reason: 'moved' }, { headChanged: true }],
       [{ kind: 'in_flight' }, { refreshInFlight: true }],
       [{ kind: 'semantic_deferred', rechecks: 1, reason: 'no index' }, { semanticDeferred: true }],
@@ -630,6 +860,119 @@ describe('dispatchConflictRetry', () => {
       expect(capturedInsertValues.description).toContain('src/a.ts::computeTotal');
       expect(capturedInsertValues.description).toContain('mission/m-1');
       expect(capturedInsertValues.description).not.toMatch(/rebase|force/i);
+    });
+  });
+
+  // A "dirty" PR is a hint, not a verdict: GitHub computes mergeability lazily
+  // and the flag is often stale right after the base moves. Before an agent is
+  // filed, GitHub's own server-side merge against the CURRENT base tip decides.
+  describe('conflict claim is re-verified against the current base tip', () => {
+    beforeEach(() => {
+      mockUpdateBehindPrBranch.mockReset();
+      mockFireGateEvent.mockClear();
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+    });
+
+    it('stale dirty flag + clean merge: no task, the branch is updated mechanically', async () => {
+      mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'updated' });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, branchUpdated: true, conflictFalsePositive: true });
+      expect(mockUpdateBehindPrBranch).toHaveBeenCalledTimes(1);
+      expect(mockUpdateBehindPrBranch.mock.calls[0][0]).toMatchObject({
+        installationId: 5, repoFullName: 'acme/app', prNumber: 99, headSha: 'sha-abc123', taskId: 'task-id',
+      });
+      expect(mockInsert).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+      const gate = mockFireGateEvent.mock.calls.map((c) => c[0]).find((e) => e.reason === 'conflict_false_positive');
+      expect(gate).toMatchObject({
+        gate: 'base_refresh',
+        surface: 'conflict-retry',
+        workspaceId: 'ws-1',
+        taskId: 'task-id',
+        detail: { prNumber: 99, headSha: 'sha-abc123', recheck: 'updated' },
+      });
+    });
+
+    it('stale dirty flag + head already contains the base: no task, recorded as a false positive', async () => {
+      mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'up_to_date', reason: '422 no new commits' });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: false, alreadyUpToDate: true, conflictFalsePositive: true });
+      expect(mockInsert).not.toHaveBeenCalled();
+      expect(mockFireGateEvent.mock.calls.some((c) => c[0].reason === 'conflict_false_positive')).toBe(true);
+    });
+
+    it('no GitHub installation: the recheck cannot run, so the agent is dispatched as today', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: null });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, taskId: 'new-task-id' });
+      expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+    });
+
+    it('a real textual conflict dispatches the conflict agent as today', async () => {
+      mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'conflict', reason: '422 merge conflict' });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, taskId: 'new-task-id' });
+      expect(capturedInsertValues.context.failureContext.errorType).toBe('merge_conflict');
+      expect(mockWakeTask.mock.calls).toEqual([['new-task-id', 'conflict.retry']]);
+      expect(mockFireGateEvent.mock.calls.some((c) => c[0].reason === 'conflict_false_positive')).toBe(false);
+    });
+
+    it.each([
+      ['a thrown recheck', () => Promise.reject(new Error('GitHub API error: 502 Bad Gateway'))],
+      ['an operational failure', () => Promise.resolve({ kind: 'deferred', failure: 'transient', attempts: 1, reason: '502' })],
+      ['exhausted refresh attempts', () => Promise.resolve({ kind: 'exhausted', failure: 'auth', attempts: 3, reason: '403' })],
+      ['a moved head', () => Promise.resolve({ kind: 'head_changed', reason: 'moved' })],
+      ['a refresh already in flight', () => Promise.resolve({ kind: 'in_flight' })],
+      ['unknown semantic coverage', () => Promise.resolve({ kind: 'semantic_unverified', rechecks: 3, reason: 'no index' })],
+      ['no answer at all', () => Promise.resolve(undefined)],
+    ])('%s fails toward today\'s behaviour: the agent is dispatched, never dropped', async (_label, impl) => {
+      mockUpdateBehindPrBranch.mockImplementation(impl as any);
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result).toEqual({ dispatched: true, taskId: 'new-task-id' });
+      expect(capturedInsertValues.context.failureContext.errorType).toBe('merge_conflict');
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('a verified same-symbol edit dispatches a semantic conflict review', async () => {
+      mockUpdateBehindPrBranch.mockResolvedValue({
+        kind: 'semantic_conflict',
+        assessment: { verdict: 'same_symbol', reason: 'both edit f', baseRef: 'dev', evidence: [{ path: 'src/a.ts', symbols: ['src/a.ts::f'] }] },
+      });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(result.dispatched).toBe(true);
+      expect(capturedInsertValues.context.failureContext.errorType).toBe('semantic_conflict');
+    });
+
+    it('a migration-number collision is not re-checked: git cannot see it, so the renumber task is filed', async () => {
+      const result = await dispatchConflictRetry({
+        ...BASE_PARAMS,
+        migrationCollision: { file: '0100_a.sql', otherFile: '0100_b.sql', otherPrNumber: 7 } as any,
+      });
+
+      expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+      expect(result.dispatched).toBe(true);
+      expect(capturedInsertValues.context.failureContext.errorType).toBe('migration_collision');
+    });
+
+    it('without a GitHub installation there is nothing to re-check with: dispatched as today', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: null });
+
+      const result = await dispatchConflictRetry(BASE_PARAMS);
+
+      expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+      expect(result).toEqual({ dispatched: true, taskId: 'new-task-id' });
     });
   });
 
@@ -704,6 +1047,8 @@ describe('dispatchConflictRetry', () => {
     expect(mockSchedulePrScopeReconcile).not.toHaveBeenCalled();
 
     mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+    // The pre-dispatch recheck confirms a real conflict.
+    mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'conflict', reason: '422 merge conflict' });
     const installed = await dispatchConflictRetry(BASE_PARAMS);
     expect(installed.dispatched).toBe(true);
     expect(mockSchedulePrScopeReconcile).toHaveBeenCalledWith({
@@ -743,10 +1088,10 @@ describe('dispatchConflictRetry', () => {
     const pathManifest = ['packages/core/drizzle'];
     mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
     mockTaskFindMany.mockResolvedValue([
-      { id: 'task-id', pathManifest },
-      { id: 'same-pr-attempt', pathManifest, subjectPrNumber: 99 },
-      { id: 'same-pr-conflict', pathManifest, conflictRetryPrNumber: 99 },
-      { id: 'unrelated-sibling', pathManifest, subjectPrNumber: 80 },
+      { status: 'in_progress', id: 'task-id', pathManifest },
+      { status: 'in_progress', id: 'same-pr-attempt', pathManifest, subjectPrNumber: 99 },
+      { status: 'in_progress', id: 'same-pr-conflict', pathManifest, conflictRetryPrNumber: 99 },
+      { status: 'in_progress', id: 'unrelated-sibling', pathManifest, subjectPrNumber: 80 },
     ]);
     const result = await dispatchConflictRetry({
       ...BASE_PARAMS,
@@ -756,22 +1101,62 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.dependsOn).toEqual(['unrelated-sibling']);
   });
 
-  it('populates dependsOn when a sibling task has an overlapping pathManifest', async () => {
+  it('a migration-only overlap with a not-yet-started task on another branch is not a dependsOn edge', async () => {
+    const pathManifest = ['packages/core/drizzle'];
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
+    mockTaskFindMany.mockResolvedValue([
+      { status: 'pending', id: 'schema-feature', pathManifest: ['packages/core/db/schema.ts'], subjectPrNumber: null },
+      { status: 'in_progress', id: 'colliding-pr-task', pathManifest, subjectPrNumber: 80 },
+    ]);
+    const result = await dispatchConflictRetry({
+      ...BASE_PARAMS,
+      migrationCollision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 80 },
+    });
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toEqual(['colliding-pr-task']);
+  });
+
+  it('a prefix-only overlap with a sibling is soft evidence, never a dependsOn edge', async () => {
     mockTaskFindFirst.mockResolvedValue({
       ...MOCK_TASK,
-      // Exact directory prefix — pathsOverlap does literal prefix matching, not glob expansion
       pathManifest: ['apps/web/src/lib'],
       missionId: 'mission-1',
     });
-    // Sibling declares a file inside that directory — prefix overlap fires
+    // Sibling declares a file inside that directory — prefix overlap only
     mockTaskFindMany.mockResolvedValue([
-      { id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { status: 'in_progress', id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
 
     expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toBeUndefined();
+    expect(capturedInsertValues.pathDeclaration).toMatchObject({
+      overlapPolicy: 'v2',
+      softOverlaps: [{ taskId: 'sibling-task-id', kind: 'prefix' }],
+    });
+  });
+
+  it('a sibling declaring the same file is soft same_file evidence, decided at claim', async () => {
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['apps/web/src/lib/foo.ts'], missionId: 'mission-1' });
+    mockTaskFindMany.mockResolvedValue([{ status: 'in_progress', id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] }]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toBeUndefined();
+    expect(capturedInsertValues.pathDeclaration).toMatchObject({ overlapPolicy: 'v2', softOverlaps: [{ taskId: 'sibling-task-id', kind: 'same_file' }] });
+  });
+
+  it('populates dependsOn when a sibling task declares the same migration file', async () => {
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['packages/core/drizzle/0400_x.sql'], missionId: 'mission-1' });
+    mockTaskFindMany.mockResolvedValue([{ status: 'in_progress', id: 'sibling-task-id', pathManifest: ['packages/core/drizzle/0400_x.sql'] }]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
     expect(capturedInsertValues.dependsOn).toEqual(['sibling-task-id']);
+    expect(capturedInsertValues.pathDeclaration).toMatchObject({ inferredDependsOn: ['sibling-task-id'], overlapPolicy: 'v2' });
   });
 
   it('does not populate dependsOn when no sibling tasks overlap', async () => {
@@ -782,7 +1167,7 @@ describe('dispatchConflictRetry', () => {
     });
     // Sibling is in a completely separate area — no overlap
     mockTaskFindMany.mockResolvedValue([
-      { id: 'other-task-id', pathManifest: ['apps/runner/src/workers.ts'] },
+      { status: 'in_progress', id: 'other-task-id', pathManifest: ['apps/runner/src/workers.ts'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -844,8 +1229,8 @@ describe('dispatchConflictRetry', () => {
     //
     // MOCK_TASK already has: pathManifest: null, missionId: 'mission-1'
     mockTaskFindMany.mockResolvedValue([
-      { id: 'sibling-mission-task', pathManifest: ['**'] },
-      { id: 'sibling-concrete-task', pathManifest: ['apps/web/src/lib/other.ts'] },
+      { status: 'in_progress', id: 'sibling-mission-task', pathManifest: ['**'] },
+      { status: 'in_progress', id: 'sibling-concrete-task', pathManifest: ['apps/web/src/lib/other.ts'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -860,12 +1245,12 @@ describe('dispatchConflictRetry', () => {
   it('conflict retry with a concrete manifest ignores wildcard siblings but keeps real overlaps', async () => {
     mockTaskFindFirst.mockResolvedValue({
       ...MOCK_TASK,
-      pathManifest: ['apps/web/src/lib'],
+      pathManifest: ['packages/core/drizzle/0400_x.sql'],
       missionId: 'mission-1',
     });
     mockTaskFindMany.mockResolvedValue([
-      { id: 'wildcard-sibling', pathManifest: ['**'] },
-      { id: 'overlapping-sibling', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { status: 'in_progress', id: 'wildcard-sibling', pathManifest: ['**'] },
+      { status: 'in_progress', id: 'overlapping-sibling', pathManifest: ['packages/core/drizzle/0400_x.sql'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -875,23 +1260,53 @@ describe('dispatchConflictRetry', () => {
   });
 
   it('does not depend on a task that is already downstream of the original task, directly or transitively, but still depends on an unrelated overlapping task', async () => {
-    const pathManifest = ['apps/web/src/lib'];
+    // Migration files: a hard overlap, so the edges are real dependsOn candidates.
+    const pathManifest = ['packages/core/drizzle/foo.sql', 'packages/core/drizzle/bar.sql', 'packages/core/drizzle/baz.sql'];
     mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
     mockTaskFindMany.mockResolvedValue([
-      { id: 'task-id', pathManifest, dependsOn: [] },
+      { status: 'in_progress', id: 'task-id', pathManifest, dependsOn: [] },
       // S: overlaps and already depends directly on the original task.
-      { id: 'downstream-direct', pathManifest: ['apps/web/src/lib/foo.ts'], dependsOn: ['task-id'] },
+      { status: 'in_progress', id: 'downstream-direct', pathManifest: ['packages/core/drizzle/foo.sql'], dependsOn: ['task-id'] },
       // S2: overlaps and depends on the original task transitively, through X.
-      { id: 'downstream-transitive', pathManifest: ['apps/web/src/lib/bar.ts'], dependsOn: ['intermediate'] },
-      { id: 'intermediate', pathManifest: null, dependsOn: ['task-id'] },
+      { status: 'in_progress', id: 'downstream-transitive', pathManifest: ['packages/core/drizzle/bar.sql'], dependsOn: ['intermediate'] },
+      { status: 'in_progress', id: 'intermediate', pathManifest: null, dependsOn: ['task-id'] },
       // U: overlaps but has no relationship to the original task.
-      { id: 'unrelated-overlap', pathManifest: ['apps/web/src/lib/baz.ts'], dependsOn: [] },
+      { status: 'in_progress', id: 'unrelated-overlap', pathManifest: ['packages/core/drizzle/baz.sql'], dependsOn: [] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
 
     expect(result.dispatched).toBe(true);
     expect(capturedInsertValues.dependsOn).toEqual(['unrelated-overlap']);
+  });
+
+  for (const collision of [false, true]) {
+    it(`excludes pending work blocked by the subject PR without a stored dependency (collision=${collision})`, async () => {
+      const pathManifest = ['packages/core/db/schema.ts', 'packages/core/drizzle'];
+      mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest, dependsOn: ['caller-edge'] });
+      mockTaskFindMany.mockResolvedValue([
+        { id: 'pending-holder', status: 'pending', pathManifest: ['packages/core/drizzle/0400_x.sql'], dependsOn: [] },
+        { id: 'running-holder', status: 'in_progress', pathManifest: ['packages/core/drizzle/0401_y.sql'], dependsOn: [] },
+      ]);
+      const result = await dispatchConflictRetry({
+        ...BASE_PARAMS,
+        ...(collision ? { migrationCollision: { file: '0400_x.sql', otherFile: '0400_y.sql', otherPrNumber: 80 } } : {}),
+      });
+      expect(result.dispatched).toBe(true);
+      expect(capturedInsertValues.dependsOn).toEqual(['running-holder']);
+      expect(capturedInsertValues.pathDeclaration.inferredDependsOn).toEqual(['running-holder']);
+      expect(capturedInsertValues.pathDeclaration.softOverlaps).toBeUndefined();
+    });
+  }
+
+  it('does not store even soft evidence against pending work held by the subject PR', async () => {
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['apps/web/src/lib'] });
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'pending-holder', status: 'pending', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ]);
+    await dispatchConflictRetry(BASE_PARAMS);
+    expect(capturedInsertValues.dependsOn).toBeUndefined();
+    expect(capturedInsertValues.pathDeclaration.softOverlaps).toBeUndefined();
   });
 
   it('returns dispatched=false when workspace is not found', async () => {
@@ -975,6 +1390,25 @@ describe('dispatchConflictRetry', () => {
       expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
+    it('reconciles a pending v2 repair in place before waking it, preserving explicit and active-work edges', async () => {
+      mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['packages/core/drizzle'] });
+      mockLiveConflictRetryProbe.mockResolvedValue({
+        id: 'pending-repair', taskClass: 'attempt', status: 'pending', conflictRetryPrNumber: 99,
+        dependsOn: ['pending-holder', 'running-holder', 'explicit-holder'],
+        pathDeclaration: { overlapPolicy: 'v2', inferredDependsOn: ['pending-holder', 'running-holder'] },
+      });
+      mockTaskFindMany.mockResolvedValue([
+        { id: 'pending-holder', status: 'pending', pathManifest: ['packages/core/drizzle/0400_x.sql'] },
+        { id: 'running-holder', status: 'in_progress', pathManifest: ['packages/core/drizzle/0401_y.sql'] },
+        { id: 'explicit-holder', status: 'pending', pathManifest: ['packages/core/drizzle/0402_z.sql'] },
+      ]);
+      expect(await dispatchConflictRetry(BASE_PARAMS)).toEqual({ dispatched: false, inFlightTaskId: 'pending-repair' });
+      expect(capturedUpdateSet.dependsOn).toEqual(['running-holder', 'explicit-holder']);
+      expect(capturedUpdateSet.pathDeclaration.inferredDependsOn).toEqual(['running-holder']);
+      expect(mockWakeTask).toHaveBeenCalledWith('pending-repair', 'conflict.retry');
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+
     it('wakes a conflict repair that is still waiting to start instead of filing another', async () => {
       mockLiveConflictRetryProbe.mockResolvedValue({ id: 'pending-repair', status: 'pending', conflictRetryPrNumber: 99 });
       const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -982,5 +1416,111 @@ describe('dispatchConflictRetry', () => {
       expect(mockWakeTask.mock.calls).toEqual([['pending-repair', 'conflict.retry']]);
       expect(mockInsert).not.toHaveBeenCalled();
     });
+  });
+});
+
+
+// ── The kernel owns the conflict family for its PRs (Slice B part 2, §6.7) ────
+
+describe('dispatchConflictRetry for a kernel-owned PR', () => {
+  const KERNEL_WS = { id: 'ws-k', repo: 'acme/widgets', gitConfig: {}, githubInstallation: { installationId: 42 } };
+  const params = { workerId: 'w1', taskId: 't1', prNumber: 7, headSha: 'H1', repoFullName: 'acme/widgets', workspaceId: 'ws-k' };
+  const applied = (toState: string, stateReason: string | null, attempt: Record<string, unknown> | null) => ({
+    handled: true, mergeable: 'dirty', after: { state: toState, stateReason, headSha: 'H1' }, attempt,
+    result: { result: 'applied', transitionId: 'tr', deliveryId: 'd1', version: 2, decision: { toState, patch: { stateReason }, attempts: [] } },
+  });
+  beforeEach(() => {
+    mockWorkspaceFindFirst.mockReset();
+    mockWorkspaceFindFirst.mockResolvedValue(KERNEL_WS);
+    mockTaskFindFirst.mockReset();
+    mockTaskFindFirst.mockResolvedValue(null); // no live legacy retry; owner context empty
+    mockInsert.mockClear();
+    mockUpdate.mockClear();
+    mockUpdateBehindPrBranch.mockClear();
+    mockObserveConflict.mockReset();
+    mockKernelDeliveryForPr.mockReset();
+    mockKernelDeliveryForPr.mockResolvedValue('d1');
+  });
+
+  it('asks the kernel, and the legacy decision (counter, key release, behind refresh, insert) never runs', async () => {
+    mockObserveConflict.mockResolvedValue(applied('REPAIRING', 'conflict', { id: 'g1', family: 'conflict', mode: 'agent', status: 'queued', outcome: null, taskId: 'g1' }));
+    const res = await dispatchConflictRetry({ ...params, behindOnly: true });
+    expect(res).toMatchObject({ dispatched: true, taskId: 'g1' });
+    expect(mockObserveConflict.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-k', prNumber: 7, installationId: 42, hint: 'behind', isDependencyBot: false });
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+  });
+
+  it('a disabled workspace still lets the platform refresh, but gives agents no budget', async () => {
+    mockWorkspaceFindFirst.mockResolvedValue({ ...KERNEL_WS, gitConfig: { autoResolveMergeConflicts: false } });
+    mockObserveConflict.mockResolvedValue(applied('ESCALATED', 'conflict_exhausted', null));
+    expect(await dispatchConflictRetry(params)).toMatchObject({ dispatched: false, exhausted: true });
+    expect(mockObserveConflict.mock.calls[0][0].maxAgentAttempts).toBe(0);
+  });
+
+  it('a migration collision is handed over as the repair subject', async () => {
+    mockObserveConflict.mockResolvedValue(applied('REPAIRING', 'migration', { id: 'm1', family: 'migration', mode: 'mechanical', status: 'ended', outcome: 'delivered', taskId: null }));
+    const collision = { file: '0007_a.sql', otherFile: '0007_b.sql', otherPrNumber: 3 };
+    expect(await dispatchConflictRetry({ ...params, migrationCollision: collision })).toMatchObject({ dispatched: true, branchUpdated: true });
+    expect(mockObserveConflict.mock.calls[0][0].migrationCollision).toEqual(collision);
+  });
+
+  it('not kernel-owned: the kernel is not asked', async () => {
+    mockKernelDeliveryForPr.mockResolvedValue(null);
+    await dispatchConflictRetry(params).catch(() => null);
+    expect(mockObserveConflict).not.toHaveBeenCalled();
+  });
+});
+
+describe('kernelConflictOutcome', () => {
+  const seen = (result: Record<string, unknown>, attempt: Record<string, unknown> | null = null, state: string | null = null) =>
+    ({ handled: true, mergeable: 'dirty', after: state ? { state, stateReason: null, headSha: 'H1' } : null, attempt, result }) as never;
+  const rej = (reason: string) => ({ result: 'rejected', reason, current: { state: 'REPAIRING', version: 3, head: 'H1', round: 1 } });
+  it('maps the kernel answer onto the shape the doors understand', () => {
+    expect(kernelConflictOutcome(seen(rej('not_conflicting')))).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+    expect(kernelConflictOutcome(seen(rej('dependency_bot_pr')))).toMatchObject({ dispatched: false, dependencyBot: true });
+    expect(kernelConflictOutcome(seen({ result: 'stale', reason: 'head_not_current', current: null }))).toMatchObject({ dispatched: false, headChanged: true });
+    expect(kernelConflictOutcome(seen(rej('fix_in_flight'), { id: 'g1', mode: 'agent', taskId: 'g1' }))).toMatchObject({ dispatched: false, inFlightTaskId: 'g1' });
+    expect(kernelConflictOutcome(seen(rej('fix_in_flight'), { id: 'm1', mode: 'mechanical', taskId: null }))).toMatchObject({ dispatched: false, refreshInFlight: true });
+    const esc = (reason: string) => ({ result: 'applied', decision: { toState: 'ESCALATED', patch: { stateReason: reason }, attempts: [] } });
+    expect(kernelConflictOutcome(seen(esc('landing_needs_human')))).toMatchObject({ dispatched: false, refreshExhausted: true });
+    expect(kernelConflictOutcome(seen(esc('conflict_exhausted')))).toMatchObject({ dispatched: false, exhausted: true });
+    const rep = { result: 'applied', decision: { toState: 'REPAIRING', patch: { stateReason: 'behind' }, attempts: [] } };
+    expect(kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'queued', outcome: null }))).toMatchObject({ dispatched: false, refreshQueued: true });
+    expect(kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'skipped', outcome: 'noop' }))).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+  });
+
+  // A queued mechanical refresh already ran (or is running): it is not an
+  // operational failure, and nothing downstream may render it as one.
+  it('a queued mechanical refresh is refreshQueued, never refreshDeferred', () => {
+    const rep = { result: 'applied', decision: { toState: 'REPAIRING', patch: { stateReason: 'behind' }, attempts: [] } };
+    const out = kernelConflictOutcome(seen(rep, { mode: 'mechanical', status: 'queued', outcome: null }));
+    expect(out.refreshQueued).toBe(true);
+    expect(out.refreshDeferred).toBeUndefined();
+  });
+
+  it('the treadmill escalation carries its refresh count and the kernel detail', () => {
+    const treadmill = {
+      result: 'applied',
+      decision: {
+        toState: 'ESCALATED', patch: { stateReason: 'landing_needs_human' }, attempts: [],
+        effects: [{ kind: 'notify', dedupeKey: 'n', payload: { event: 'landing_needs_human', detail: 'base moved 3 times under the approved PR' } }],
+        evidence: { repairKind: 'behind', headSha: 'H1', refreshes: 3 },
+      },
+    };
+    expect(kernelConflictOutcome(seen(treadmill))).toMatchObject({
+      dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshReason: 'base moved 3 times under the approved PR',
+    });
+  });
+
+  it('a mechanical refresh that ended failed and escalated names the delivery reason', () => {
+    const rep = { result: 'applied', decision: { toState: 'REPAIRING', patch: { stateReason: 'behind' }, attempts: [] } };
+    const out = kernelConflictOutcome(
+      ({ handled: true, mergeable: 'behind', after: { state: 'ESCALATED', stateReason: 'landing_needs_human', headSha: 'H1' }, attempt: { mode: 'mechanical', status: 'ended', outcome: 'failed' }, result: rep }) as never,
+    );
+    expect(out).toMatchObject({ dispatched: false, refreshExhausted: true });
+    expect(out.refreshReason).toContain('landing_needs_human');
+    expect(out.refreshTreadmill).toBeUndefined();
   });
 });

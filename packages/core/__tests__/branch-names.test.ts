@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { generateMissionBranchName, generateTaskBranchName, sanitizeBranchTitle } from '../branch-names';
+import { generateMissionBranchName, generateTaskBranchName, pinnedHeadBranch, sanitizeBranchTitle } from '../branch-names';
 import { MISSION_BRANCH_PREFIX } from '../mission-integration';
 
 /**
@@ -70,11 +70,49 @@ describe('generateTaskBranchName', () => {
     })).toBe('mission/delivery-arc-1a2b3c4d');
   });
 
+  it('a shared head equal to the task base is not a head: the task gets its own branch', () => {
+    // A PR cannot have head === base. A task pinned to the branch it also bases
+    // on (an integration-branch mission child) works on a generated task head
+    // cut from that base — never on the mission branch itself.
+    expect(generateTaskBranchName({
+      taskId: TASK_ID,
+      title: 'Add schema migration',
+      sharedHeadBranch: 'mission/delivery-arc-1a2b3c4d',
+      baseBranch: 'mission/delivery-arc-1a2b3c4d',
+    })).toBe(`buildd/${ID8}-add-schema-migration`);
+  });
+
+  it('a shared head distinct from the task base still wins', () => {
+    expect(generateTaskBranchName({
+      taskId: TASK_ID,
+      title: 'Add schema migration',
+      sharedHeadBranch: 'feat/shared-work',
+      baseBranch: 'mission/delivery-arc-1a2b3c4d',
+    })).toBe('feat/shared-work');
+  });
+
   it('ignores an empty or non-string sharedHeadBranch', () => {
     const expected = `buildd/${ID8}-add-schema-migration`;
     expect(generateTaskBranchName({ taskId: TASK_ID, title: 'Add schema migration', sharedHeadBranch: '' })).toBe(expected);
     expect(generateTaskBranchName({ taskId: TASK_ID, title: 'Add schema migration', sharedHeadBranch: 42 })).toBe(expected);
     expect(generateTaskBranchName({ taskId: TASK_ID, title: 'Add schema migration', sharedHeadBranch: null })).toBe(expected);
+  });
+});
+
+describe('pinnedHeadBranch', () => {
+  it('reads context.headBranch', () => {
+    expect(pinnedHeadBranch({ headBranch: 'feat/shared-work' })).toBe('feat/shared-work');
+  });
+
+  it('is null when the pinned head is the task base', () => {
+    expect(pinnedHeadBranch({ headBranch: 'mission/m-1a2b3c4d', baseBranch: 'mission/m-1a2b3c4d' })).toBeNull();
+  });
+
+  it('is null for a missing, empty or non-string head', () => {
+    expect(pinnedHeadBranch(null)).toBeNull();
+    expect(pinnedHeadBranch({})).toBeNull();
+    expect(pinnedHeadBranch({ headBranch: '' })).toBeNull();
+    expect(pinnedHeadBranch({ headBranch: 7 })).toBeNull();
   });
 });
 

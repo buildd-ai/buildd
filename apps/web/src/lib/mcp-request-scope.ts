@@ -3,7 +3,8 @@
 // resolved only within the authenticated account's reach before any tool runs.
 
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, workspaces, workers } from '@buildd/core/db/schema';
+import { accountWorkspaces, workerHeartbeats, workspaces, workers } from '@buildd/core/db/schema';
+import { CAPABILITY_MCP_GROUP_TOOLS } from '@buildd/shared';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { getLinkedWorkspaceIds } from '@/lib/workspace-resolver';
 
@@ -59,6 +60,36 @@ export async function isWorkerInCallerScope(workerId: string, account: McpAccoun
   if (account.workspaceIds != null && !account.workspaceIds.includes(worker.workspaceId)) return false;
   if (worker.accountId === account.id) return true;
   return (worker as { workspace?: { teamId?: string } | null }).workspace?.teamId === account.teamId;
+}
+
+/**
+ * Whether the runner running `workerId` advertised CAPABILITY_MCP_GROUP_TOOLS
+ * on its heartbeat, i.e. it recognises buildd actions on the group tools. The
+ * runner is the heartbeat row with the worker's account and local UI URL (the
+ * runner registers that URL on the worker before its agent session starts).
+ * Anything unknown (no worker, no URL yet, no heartbeat, a lookup error) is
+ * false: a runner that cannot be shown to support group tools keeps the
+ * legacy tool, because serving group tools to one that predates them breaks
+ * its PR detection. Call only after isWorkerInCallerScope.
+ * LEGACY: remove with the legacy MCP surface.
+ */
+export async function workerRunnerSupportsGroupTools(workerId: string): Promise<boolean> {
+  if (!UUID_RE.test(workerId)) return false;
+  try {
+    const worker = await db.query.workers.findFirst({
+      where: eq(workers.id, workerId),
+      columns: { accountId: true, localUiUrl: true },
+    });
+    if (!worker?.accountId || !worker.localUiUrl) return false;
+    const heartbeat = await db.query.workerHeartbeats.findFirst({
+      where: and(eq(workerHeartbeats.accountId, worker.accountId), eq(workerHeartbeats.localUiUrl, worker.localUiUrl)),
+      columns: { environment: true },
+    });
+    const envKeys = (heartbeat?.environment as { envKeys?: unknown } | null | undefined)?.envKeys;
+    return Array.isArray(envKeys) && envKeys.includes(CAPABILITY_MCP_GROUP_TOOLS);
+  } catch {
+    return false;
+  }
 }
 
 /**

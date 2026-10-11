@@ -43,6 +43,13 @@ describe('attemptIdentityFrom', () => {
     });
   });
 
+  it('normalizes a category-valued parent kind instead of copying it onto the retry', () => {
+    // A parent stored with kind='feature' would otherwise replicate the value
+    // the model router cannot index onto every retry row.
+    expect(attemptIdentityFrom({ kind: 'feature' as any }).kind).toBe('engineering');
+    expect(attemptIdentityFrom({ kind: 'docs' as any }).kind).toBe('writing');
+  });
+
   it('drops a half-set phase instead of violating the paired-phase check', () => {
     const identity = attemptIdentityFrom({ backend: 'claude', missionPhaseIndex: 1, missionPhaseLabel: null });
     expect(identity.missionPhaseIndex).toBeNull();

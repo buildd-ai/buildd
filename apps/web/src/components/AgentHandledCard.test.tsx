@@ -107,3 +107,25 @@ describe('AgentHandledCard — pending CI / review gates', () => {
     expect(html).not.toContain('Retry');
   });
 });
+
+// S37 / §17.5: a kernel-owned card states the kernel's headline and evidence,
+// and a stalled conflict fix offers to run that fix, not to file a new one.
+describe('AgentHandledCard — kernel DeliveryView', () => {
+  it('shows the headline, the evidence and the repair CTA on the existing fix', () => {
+    const html = renderToStaticMarkup(
+      <AgentHandledCard item={item({ chip: 'RESOLVING', delivery: { owner: 'platform', state: 'AWAITING_REVIEW', headline: 'Conflict fix stalled', detail: 'the conflict fix has waited 45m with no runner claim', cta: { action: 'repair_remediation', label: 'Run fix', taskId: 'cf-1' }, compositionVerified: false } })} />,
+    );
+    expect(html).toContain('Conflict fix stalled');
+    expect(html).toContain('waited 45m');
+    expect(html).toContain('/app/tasks/cf-1');
+    expect(html).toContain('Run fix');
+    expect(html).not.toContain('Agent working');
+  });
+  it('a platform-owned blocker with no CTA reads as handled, with no repair link', () => {
+    const html = renderToStaticMarkup(
+      <AgentHandledCard item={item({ chip: 'FIXING_REVIEW', delivery: { owner: 'platform', state: 'AWAITING_PUSH', headline: 'Waiting for the fix to reach GitHub', detail: 'PR #2054 is still at abc1234', cta: null, compositionVerified: false } })} />,
+    );
+    expect(html).toContain('Waiting for the fix to reach GitHub');
+    expect(html).not.toContain('agent-handled-repair-cta');
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveReviewerGate, deriveStoredVerdictFallback, gateReachesActionQueue } from './reviewer-gate';
+import { resolveReviewerGate, deriveStoredVerdictFallback, gateReachesActionQueue, reviewFactsForAdvice } from './reviewer-gate';
 import type { ReviewerGateInput } from './reviewer-gate';
 import { resolvePolicy, isMissionIntegrationBase } from './merge-policy';
 import { buildActionQueue, isActionableChip } from './action-queue';
@@ -539,6 +539,42 @@ describe('reviewer stall facts', () => {
 // verdict directly off the reviewer task row — the SAME row `get_pr_review`
 // reads — whenever no note supplied one.
 // ─────────────────────────────────────────────────────────────────────────────
+describe('reviewFactsForAdvice — why a person was asked', () => {
+  const HEAD = 'b'.repeat(40);
+  const task = (output: Record<string, unknown>, result: Record<string, unknown> = {}) => ({
+    status: 'completed' as const,
+    result: { structuredOutput: { confidence: 0.9, summary: 'ok', ...output }, ...result },
+    context: { headSha: HEAD },
+  });
+
+  it('a model approve the server escalated is policy', () => {
+    const r = reviewFactsForAdvice({
+      reviewerTask: task({ verdict: 'approve' }, { effectiveVerdict: 'escalate', effectiveVerdictReason: 'touches a protected path' }),
+      inFlight: false,
+    });
+    expect(r).toMatchObject({ review: 'escalated', escalationCause: 'policy' });
+  });
+
+  it('an escalation whose only reasons are policy gates is policy; any other reason is the reviewer', () => {
+    expect(reviewFactsForAdvice({
+      reviewerTask: task({ verdict: 'escalate', blockers: [{ kind: 'policy_gate', text: 'schema path' }] }),
+      inFlight: false,
+    }).escalationCause).toBe('policy');
+    expect(reviewFactsForAdvice({
+      reviewerTask: task({ verdict: 'escalate', blockers: [{ kind: 'policy_gate', text: 'schema path' }, { kind: 'security', text: 'token handling' }] }),
+      inFlight: false,
+    }).escalationCause).toBe('reviewer');
+    expect(reviewFactsForAdvice({ reviewerTask: task({ verdict: 'escalate' }), inFlight: false }).escalationCause).toBe('reviewer');
+  });
+
+  it('an approved review under a human tier is policy; otherwise nobody escalated', () => {
+    expect(reviewFactsForAdvice({ reviewerTask: task({ verdict: 'approve' }), inFlight: false, policyTier: 'human' }).escalationCause).toBe('policy');
+    expect(reviewFactsForAdvice({ reviewerTask: task({ verdict: 'approve' }), inFlight: false, policyTier: 'agent-review' }).escalationCause).toBe('none');
+    expect(reviewFactsForAdvice({ reviewerTask: task({ verdict: 'request-changes' }), inFlight: false }).escalationCause).toBe('reviewer');
+    expect(reviewFactsForAdvice({ reviewerTask: null, inFlight: true }).escalationCause).toBe('none');
+  });
+});
+
 describe('deriveStoredVerdictFallback — the mission-less "no recorded verdict" gap', () => {
   const HEAD_SHA = 'a'.repeat(40);
 

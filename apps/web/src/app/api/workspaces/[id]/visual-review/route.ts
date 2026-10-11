@@ -47,7 +47,7 @@ export async function GET(
   if (!ws || !teamIds.includes(ws.teamId)) return notFound();
   const reaches = user
     ? (await verifyWorkspaceAccess(user.id, ws.id)) !== null
-    : await verifyAccountWorkspaceAccess(apiAccount!.id, ws.id);
+    : await verifyAccountWorkspaceAccess(apiAccount!, ws.id);
   if (!reaches) return notFound();
 
   const { missions, more } = await loadWorkspaceAwaitingReview(ws.id, teamIds);

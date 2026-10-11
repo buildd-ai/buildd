@@ -32,6 +32,17 @@ mock.module('../model-catalog-cache', () => ({
   getCachedOpenRouterCatalog: mockGetCachedOpenRouterCatalog,
 }));
 
+// Certification records and the team's upgrade policy are the other two
+// DB-backed inputs to the catalog step; tests set them directly.
+let mockCertifications = new Map<string, any>();
+let mockUpgradePolicy: any = { policy: { mode: 'latest-compatible' }, source: 'default' };
+mock.module('../model-certification-store', () => ({
+  getModelCertifications: () => Promise.resolve(mockCertifications),
+}));
+mock.module('../model-upgrade-policy-store', () => ({
+  loadUpgradePolicy: () => Promise.resolve(mockUpgradePolicy),
+}));
+
 // ── import after mocks are in place ───────────────────────────────────────
 const {
   pickRegistryRow,
@@ -290,6 +301,103 @@ describe('resolveTierEntry — catalog fallback', () => {
 
     const entry = await resolveTierEntry('premium-plus', TEAM_A, null, 'agent', undefined);
     expect(entry.model).toBe('claude-fable-5-1');
+  });
+});
+
+// ── catalog step: central certification × team upgrade policy ─────────────
+//
+// Haiku 5.5 is the first real model released through this path: newer than
+// every row in MODEL_MIN_CLI_VERSION, so before certification it needed a deploy.
+
+describe('resolveTierEntry — certified releases and upgrade policy', () => {
+  const DAY = 86_400;
+  const ANCHOR = 1_780_000_000; // claude-sonnet-5-5's release (the floor table's newest row)
+  const HAIKU_55_RELEASE = ANCHOR + 30 * DAY;
+  const catalog = () => [
+    catalogEntry({ id: 'claude-sonnet-5-5', created: ANCHOR, input: 3 }),
+    catalogEntry({ id: 'claude-haiku-4-5', created: ANCHOR - 200 * DAY, input: 1 }),
+    catalogEntry({ id: 'claude-haiku-5-5', created: HAIKU_55_RELEASE, input: 1 }),
+  ];
+  const certified = (certifiedAt: string, extra: Record<string, unknown> = {}) => ({
+    model: 'claude-haiku-5-5',
+    state: 'certified',
+    certifiedAt,
+    minVerifiedCliVersion: '2.1.290',
+    probe: { attempts: 1 },
+    ...extra,
+  });
+
+  beforeEach(() => {
+    mockFindMany.mockResolvedValue([]);
+    mockGetCachedOpenRouterCatalog.mockReturnValue(Promise.resolve(catalog()));
+    mockCertifications = new Map();
+    mockUpgradePolicy = { policy: { mode: 'latest-compatible' }, source: 'default' };
+  });
+
+  it('an uncertified new release is held back: budget stays on the previous in-band model', async () => {
+    const entry = await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300');
+    expect(entry.model).toBe('claude-haiku-4-5');
+  });
+
+  it('latest-compatible adopts a certified release with no code change', async () => {
+    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date(Date.now() - 3_600_000).toISOString())]]);
+    const entry = await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300');
+    expect(entry.model).toBe('claude-haiku-5-5');
+    expect(entry.source).toBe('catalog');
+  });
+
+  it('a runner below the certified floor gets the previous in-band model, not a deferral', async () => {
+    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date().toISOString(), { minCliVersion: '2.1.295' })]]);
+    expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.290')).model).toBe('claude-haiku-4-5');
+    expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.295')).model).toBe('claude-haiku-5-5');
+  });
+
+  it('a runner that reports no CLI version is not handed a certified-only model', async () => {
+    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date().toISOString())]]);
+    expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', undefined)).model).toBe('claude-haiku-4-5');
+  });
+
+  it('a failed or incompatible certification never serves the model', async () => {
+    for (const state of ['failed', 'incompatible', 'probing']) {
+      mockCertifications = new Map([['claude-haiku-5-5', { ...certified(new Date().toISOString()), state }]]);
+      expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300')).model).toBe('claude-haiku-4-5');
+    }
+  });
+
+  it('manual teams stay on what they had when they chose manual', async () => {
+    const setAt = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date(Date.now() - 3_600_000).toISOString())]]);
+    mockUpgradePolicy = { policy: { mode: 'manual', adoptedThrough: setAt, setAt }, source: 'team' };
+    expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300')).model).toBe('claude-haiku-4-5');
+
+    // Adopting moves the line forward.
+    mockUpgradePolicy = { policy: { mode: 'manual', adoptedThrough: new Date().toISOString() }, source: 'team' };
+    expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300')).model).toBe('claude-haiku-5-5');
+  });
+
+  it('soak teams adopt only after the soak window, restarted by a compatibility incident', async () => {
+    mockUpgradePolicy = { policy: { mode: 'soak', soakHours: 48 }, source: 'workspace' };
+    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date(Date.now() - 24 * 3_600_000).toISOString())]]);
+    expect((await resolveTierEntry('budget', TEAM_A, WS_A, 'agent', '2.1.300')).model).toBe('claude-haiku-4-5');
+
+    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date(Date.now() - 72 * 3_600_000).toISOString())]]);
+    expect((await resolveTierEntry('budget', TEAM_A, WS_A, 'agent', '2.1.300')).model).toBe('claude-haiku-5-5');
+
+    mockCertifications = new Map([['claude-haiku-5-5', certified(
+      new Date(Date.now() - 72 * 3_600_000).toISOString(),
+      { lastIncidentAt: new Date(Date.now() - 3_600_000).toISOString() },
+    )]]);
+    expect((await resolveTierEntry('budget', TEAM_A, WS_A, 'agent', '2.1.300')).model).toBe('claude-haiku-4-5');
+  });
+
+  it('a registry pin is never moved by the policy or by certification', async () => {
+    mockFindMany.mockResolvedValue([
+      { teamId: TEAM_A, workspaceId: null, tier: 'budget', provider: 'anthropic', model: 'claude-haiku-4-5', surface: null },
+    ]);
+    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date(Date.now() - 3_600_000).toISOString())]]);
+    const entry = await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300');
+    expect(entry.model).toBe('claude-haiku-4-5');
+    expect(entry.source).toBe('team');
   });
 });
 

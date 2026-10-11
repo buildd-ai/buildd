@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from 'next/server';
+import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { isChatTierName, type ChatTurnRequest, type GetConversationResponse, type UpdateConversationRequest } from '@buildd/shared';
 import {
   getOwnConversation,
@@ -29,6 +30,7 @@ import { checkChatLimits } from '@/lib/chat/limits';
 import { resolveDecisionAccess } from '@buildd/core/decision-client';
 import { createInProcessApi } from '@/lib/chat/in-process-api';
 import { loadChatReach } from '@/lib/chat/reach';
+import { assertMemberRepoAccess } from '@/lib/member-repo-access';
 import { autoTitleConversation } from '@/lib/chat/auto-title';
 import { handleTopicVerdict } from '@/lib/chat/retitle';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
@@ -90,6 +92,19 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     if (await isSensitiveWorkspace(ws.id)) {
       return NextResponse.json({ error: 'sensitive_workspace', message: 'This workspace is marked sensitive, so its data is not sent to a chat model.' }, { status: 403 });
     }
+    const repoAccessRefusal = await assertMemberRepoAccess(r.caller.user.id, ws.id);
+    if (repoAccessRefusal) return repoAccessRefusal;
+  }
+  if (body.tier) {
+    // Pinning above the person's tier maximum is refused; the turn re-checks.
+    const nextWs = body.workspaceId !== undefined ? body.workspaceId : r.conversation.workspaceId;
+    const ceilingRejection = await rejectOverCeiling({
+      subject: { teamId: r.conversation.teamId, workspaceId: nextWs, userId: r.caller.user.id },
+      surface: 'chat',
+      request: { tier: body.tier, tierOrigin: 'chat_pin' },
+      gate: { surface: 'PATCH /api/chat/[id]', workspaceId: nextWs, callerOrigin: 'dashboard' },
+    });
+    if (ceilingRejection) return ceilingRejection;
   }
   if (body.tier !== undefined) {
     await setConversationTier(r.conversation.id, body.tier);
@@ -126,7 +141,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const [user, workspace, reach, allowedToolGroups] = await Promise.all([
     turnUserFor(r.caller.user, conv.teamId, settings.timezone),
     workspaceForConversation(conv.workspaceId, conv.teamId),
-    loadChatReach(conv.teamId),
+    loadChatReach(conv.teamId, r.caller.user.id),
     // The caller's own "Allow" choices; empty (ask for everything) on failure.
     loadAllowedToolGroups(conv.teamId, r.caller.user.id),
   ]);
@@ -159,6 +174,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         // A session can see several workspaces: ambiguous actions must name one.
         authType: 'oauth' as const,
         surface: 'chat' as const,
+        // A signed-in person: create_personal_role writes a role they own.
+        principal: 'person' as const,
         getWorkspaceId: async () => def,
         knowledgeStore,
         embedder,

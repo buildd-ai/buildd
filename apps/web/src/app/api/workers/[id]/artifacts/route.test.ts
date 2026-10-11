@@ -27,6 +27,12 @@ const mockWorkersUpdate = mock(() => ({
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockShouldNotifyOnArtifact = mock(async () => false);
 const mockNotifyArtifactReady = mock(async () => {});
+const mockRecordRunnerUsage = mock(async (_input: any) => true);
+
+mock.module('@/lib/hosted-runner-usage-store', () => ({
+  isRunReportKey: (key: unknown) => typeof key === 'string' && key.startsWith('cloud-run-report:'),
+  recordRunnerUsageFromReport: mockRecordRunnerUsage,
+}));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -319,6 +325,32 @@ describe('POST /api/workers/[id]/artifacts', () => {
     expect(data.error).toContain('url is required for link artifacts');
   });
 
+  it('a cloud run report records the attempt\'s hosted runner time', async () => {
+    mockRecordRunnerUsage.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1', task: { id: 'task-1' } });
+    const report = { attempt: 1, runnerSize: { size: 'large', runnerSeconds: 60, weightedRunnerSeconds: 120 } };
+
+    const res = await POST(createMockPostRequest(
+      { type: 'data', title: 'Cloud run report', key: `cloud-run-report:${WORKER_ID}`, metadata: { kind: 'cloud-run-report', report } },
+      'bld_test',
+    ), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockRecordRunnerUsage).toHaveBeenCalledTimes(1);
+    expect(mockRecordRunnerUsage.mock.calls[0][0]).toEqual({ workspaceId: 'ws-1', workerId: WORKER_ID, taskId: 'task-1', report });
+  });
+
+  it('any other artifact records no runner time', async () => {
+    mockRecordRunnerUsage.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1', task: { id: 'task-1' } });
+
+    await POST(createMockPostRequest({ type: 'data', title: 'Other', key: 'summary', metadata: {} }, 'bld_test'), { params: mockParams });
+
+    expect(mockRecordRunnerUsage).not.toHaveBeenCalled();
+  });
+
   it('creates artifact successfully', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
@@ -599,6 +631,83 @@ describe('POST /api/workers/[id]/artifacts — notification dedup', () => {
     mockShouldNotifyOnArtifact.mockResolvedValue(true);
   });
 
+  describe('a task token re-creating by key', () => {
+    const tokenAccount = { id: 'account-1', level: 'worker', taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 } };
+    const ownWorker = { id: WORKER_ID, accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1', task: { id: 'task-1' } };
+    const updateSpy = () => {
+      const set = mock((vals: any) => ({ where: mock(() => ({ returning: mock(() => [{ id: 'artifact-1', ...vals }]) })) }));
+      mockArtifactsUpdate.mockReturnValue({ set });
+      return set;
+    };
+
+    it("cannot take over another task's artifact", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(tokenAccount);
+      mockWorkersFindFirst.mockResolvedValueOnce(ownWorker).mockResolvedValueOnce({ taskId: 'task-other', task: { scheduleId: 'sched-other', missionId: 'm-other' } });
+      mockArtifactsFindFirst.mockResolvedValue({ id: 'artifact-1', workerId: 'other-worker', content: 'theirs' });
+      const set = updateSpy();
+      const res = await POST(createMockPostRequest({ type: 'content', title: 'T', key: 'plan', content: 'mine' }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(409);
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it('cannot take over a mission-level artifact', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(tokenAccount);
+      mockWorkersFindFirst.mockResolvedValue(ownWorker);
+      mockArtifactsFindFirst.mockResolvedValue({ id: 'artifact-1', workerId: null, missionId: 'm-1', content: 'organizer plan' });
+      const set = updateSpy();
+      const res = await POST(createMockPostRequest({ type: 'content', title: 'T', key: 'plan', content: 'mine' }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(409);
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it('may update the stable key an earlier run of its own schedule wrote, and one of its own mission', async () => {
+      for (const ownerTask of [{ scheduleId: 'sched-1', missionId: null }, { scheduleId: null, missionId: 'm-1' }]) {
+        mockAuthenticateApiKey.mockResolvedValue(tokenAccount);
+        mockWorkersFindFirst
+          .mockResolvedValueOnce({ ...ownWorker, task: { id: 'task-1', scheduleId: 'sched-1', missionId: 'm-1' } })
+          .mockResolvedValueOnce({ taskId: 'task-earlier-run', task: ownerTask });
+        mockArtifactsFindFirst.mockResolvedValue({ id: 'artifact-1', workerId: 'earlier-run-worker', content: 'yesterday', title: 'T' });
+        const set = updateSpy();
+        const res = await POST(createMockPostRequest({ type: 'report', title: 'T', key: 'daily-digest', content: 'today' }, 'bld_test'), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalled();
+      }
+    });
+
+    it("may re-create an earlier attempt's artifact on its own task", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(tokenAccount);
+      mockWorkersFindFirst.mockResolvedValueOnce(ownWorker).mockResolvedValueOnce({ taskId: 'task-1' });
+      mockArtifactsFindFirst.mockResolvedValue({ id: 'artifact-1', workerId: 'earlier-attempt', content: 'v1', title: 'T' });
+      const set = updateSpy();
+      const res = await POST(createMockPostRequest({ type: 'content', title: 'T', key: 'report', content: 'v2' }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalled();
+    });
+  });
+
+  it('a keyed re-create that sends no content keeps the stored body', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' });
+    const existing = { id: 'artifact-1', content: 'Original body', title: 'Old title', shareToken: null };
+    mockArtifactsFindFirst.mockResolvedValue(existing);
+    let setVals: any = null;
+    mockArtifactsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        setVals = vals;
+        return { where: mock(() => ({ returning: mock(() => [{ ...existing, ...vals }]) })) };
+      }),
+    });
+
+    const res = await POST(
+      createMockPostRequest({ type: 'content', title: 'New title', key: 'my-artifact' }, 'bld_test'),
+      { params: mockParams },
+    );
+
+    expect(res.status).toBe(200);
+    expect(setVals.content).toBe('Original body');
+    expect(setVals.title).toBe('New title');
+  });
+
   it('does not notify on upsert when content and title are unchanged', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
@@ -721,5 +830,116 @@ describe('POST /api/workers/[id]/artifacts — notification dedup', () => {
 
     expect(res.status).toBe(200);
     expect(mockNotifyArtifactReady).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Invariant: an OAuth session resolves to an account its whole team shares, so
+// the account id alone does not say who claimed the worker. Only the session
+// user recorded as claimedByUserId owns it. Neither handler has an admin path,
+// so an admin-level member who did not claim the worker is refused too.
+const SESSION_WORKER = {
+  id: WORKER_ID,
+  accountId: 'account-1',
+  workspaceId: 'ws-1',
+  taskId: 'task-1',
+  claimedByUserId: 'user-a',
+  task: { id: 'task-1' },
+};
+const sessionOf = (sessionUserId: string, extra: Record<string, unknown> = {}) =>
+  ({ id: 'account-1', teamId: 'team-1', sessionUserId, level: 'worker', ...extra });
+
+describe('POST /api/workers/[id]/artifacts — OAuth session owner check', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockArtifactsFindFirst.mockReset();
+    mockArtifactsInsert.mockReset();
+    mockArtifactsUpdate.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTriggerEvent.mockReset();
+    mockArtifactsFindFirst.mockResolvedValue(null);
+    mockTasksFindFirst.mockResolvedValue({ missionId: null });
+    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard' });
+    mockArtifactsInsert.mockReturnValue({
+      values: mock((vals: any) => ({
+        returning: mock(() => [{ id: 'artifact-1', shareToken: null, type: 'content', title: 'Test', ...vals }]),
+      })),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+  });
+
+  const body = { type: 'content', title: 'Test', content: 'x' };
+
+  it('allows the OAuth session that claimed the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-a'));
+    const res = await POST(createMockPostRequest(body, 'oauth_a'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockArtifactsInsert).toHaveBeenCalled();
+  });
+
+  it('refuses another same-team OAuth member on the shared account and writes nothing', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-b'));
+    const res = await POST(createMockPostRequest(body, 'oauth_b'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockArtifactsInsert).not.toHaveBeenCalled();
+    expect(mockArtifactsUpdate).not.toHaveBeenCalled();
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('refuses an admin-level member who did not claim the worker (no admin path)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-b', { level: 'admin' }));
+    const res = await POST(createMockPostRequest(body, 'oauth_b_admin'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockArtifactsInsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses a session with no team id, even as the claiming user', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-a', { teamId: null }));
+    const res = await POST(createMockPostRequest(body, 'oauth_noteam'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockArtifactsInsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/workers/[id]/artifacts — OAuth session owner check', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockArtifactsFindMany.mockReset();
+    mockArtifactsFindMany.mockResolvedValue([{ id: 'art-1', type: 'content', title: 'Test' }]);
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+  });
+
+  it('allows the OAuth session that claimed the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-a'));
+    const res = await GET(createMockGetRequest('oauth_a'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect((await res.json()).artifacts).toHaveLength(1);
+  });
+
+  it('refuses another same-team OAuth member on the shared account and reads nothing', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-b'));
+    const res = await GET(createMockGetRequest('oauth_b'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockArtifactsFindMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses an admin-level member who did not claim the worker (no admin path)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-b', { level: 'admin' }));
+    const res = await GET(createMockGetRequest('oauth_b_admin'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockArtifactsFindMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses a session with no team id, even as the claiming user', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-a', { teamId: null }));
+    const res = await GET(createMockGetRequest('oauth_noteam'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockArtifactsFindMany).not.toHaveBeenCalled();
   });
 });

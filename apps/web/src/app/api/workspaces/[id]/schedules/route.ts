@@ -46,7 +46,7 @@ async function resolveAuth(
   const account: TaskScopedAccount | null = requireAdmin ? await authenticateApiKey(apiKey, req) : await authenticateTaskScopedCaller(apiKey, req);
   if (account) {
     if (requireAdmin && !hasTokenRouteAdminAccess(account, req)) return { ok: false, status: 403 };
-    const hasAccess = taskScopeAllowsWorkspace(account, workspaceId) && await verifyAccountWorkspaceAccess(account.id, workspaceId);
+    const hasAccess = taskScopeAllowsWorkspace(account, workspaceId) && await verifyAccountWorkspaceAccess(account, workspaceId);
     if (hasAccess) return { ok: true, accountId: account.id };
     authenticatedButOutOfScope = true;
   }

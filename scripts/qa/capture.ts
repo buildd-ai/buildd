@@ -31,9 +31,14 @@
  *   QA_PLAN                         — a capture plan: a path to a JSON file, or the JSON itself when it
  *                                     starts with `[`. `[{ route, states?: [{ key, steps }] }]`, steps
  *                                     from a closed list (click, hover, fill, press, select, waitFor,
- *                                     waitMs). Steps never commit: a write needs `commit: true`, which
+ *                                     waitMs, assertLayout). Steps never commit: a write needs `commit: true`, which
  *                                     only QA_PAGE_SOURCE=sandbox honours, and every other write is
- *                                     aborted in the browser. Not combinable with QA_ROUTES.
+ *                                     aborted in the browser. Not combinable with QA_ROUTES. A failed
+ *                                     assertLayout (overflow, a tap target under 44px below md) exits 4
+ *                                     after every shot is written.
+ *                                     A route whose document is 5xx or whose page threw a module-load
+ *                                     error (the app did not boot) is a FAIL, recorded as `bootFailure`,
+ *                                     and exits 5 after every shot is written.
  *   QA_TASK_ID                      — resolves `/app/tasks/:id` in the manifest
  *   QA_MISSION_ID                   — resolves `/app/missions/:id` in the manifest
  *   VISUAL_QA_STORAGE_STATE_PATH    — Playwright storageState JSON for remote auth
@@ -50,15 +55,22 @@
  *   QA_SIGN_IN_PATHS                — comma-separated app sign-in paths (default: /login,/signin,…)
  *   QA_NO_LOGIN                     — skip the dev-auto-login POST (dev server bypasses auth already)
  *   QA_KEEP_DEV_OVERLAY             — keep the Next.js dev error overlay in shots (default: hide it)
+ *   QA_TEAM_ID                      — render as this team (sets the `buildd-team` cookie)
  *   QA_VIEWPORT                     — "mobile" (390x844 touch phone), "desktop", or WIDTHxHEIGHT (default: 1280x900)
+ *   QA_THEME                        — "light" or "dark": emulates prefers-color-scheme, so any app that
+ *                                     follows the OS theme renders in it, and also seeds buildd's own
+ *                                     `buildd-theme` key. Recorded on every capture as `theme` (copy into
+ *                                     the shot's metadata.qa.theme). Unset keeps the app default and
+ *                                     records no theme.
  */
 
-import { chromium } from 'playwright';
+import { connectReviewBrowser, exposeService } from './browser-provider';
 import type { BrowserContextOptions } from 'playwright';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
-import { resolveViewport } from './viewport';
+import { resolveTheme, resolveViewport, type QaTheme } from './viewport';
+import { bootFailure, isModuleLoadError } from './boot';
 import { describeStep, guardWrites, parsePlan, planText, runSteps, type BlockedWrite, type PlanRoute, type Step, type StepFailure } from './steps';
 import {
   classifyPageLoad,
@@ -73,8 +85,10 @@ import {
 // non-fatal warning, and leave the Capture step hanging with a live browser
 // and nothing left to await.
 let contextOptions: BrowserContextOptions;
+let QA_THEME: QaTheme | null;
 try {
   contextOptions = resolveViewport(process.env.QA_VIEWPORT);
+  QA_THEME = resolveTheme(process.env.QA_THEME);
 } catch (err) {
   console.error(`[capture] ${(err as Error).message}`);
   process.exit(1);
@@ -201,14 +215,22 @@ if (plan) {
 // --- Browser + context ---
 // A rejected top-level await lands in the swallow handlers above and the
 // process exits 0 with nothing captured: a silent pass. No browser is fatal.
-let browser: Awaited<ReturnType<typeof chromium.launch>>;
+let browser: Awaited<ReturnType<typeof connectReviewBrowser>>['browser'];
+let browserMetadata: { provider: string; handle?: string; probe: Record<string, unknown> };
 try {
-  browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-  });
+  if (process.env.BUILDD_BROWSER_PROVIDER === 'cloudflare') {
+    const local = new URL(BASE_URL);
+    if (['127.0.0.1', 'localhost'].includes(local.hostname)) await exposeService({ port: Number(local.port || 80) });
+  }
+  const connected = await connectReviewBrowser();
+  browser = connected.browser;
+  browserMetadata = { provider: connected.provider, handle: connected.handle, probe: connected.probe };
 } catch (err) {
-  console.error(`[capture] browser did not launch: ${(err as Error).message.split('\n')[0]}`);
+  const providerError = process.env.BUILDD_BROWSER_PROVIDER === 'cloudflare'
+    ? ((err as Error).message.includes('service_') ? (err as Error).message : 'provider_handshake_failed')
+    : 'provider_missing';
+  writeFileSync(join(OUTPUT_DIR, 'captures.json'), JSON.stringify(routes.map(route => ({ id: route.id, path: route.path, providerError, error: providerError, capturedAt: new Date().toISOString(), browser: { provider: process.env.BUILDD_BROWSER_PROVIDER ?? 'local', probe: { ok: false } } })), null, 2));
+  console.error(`[capture] browser did not launch: ${providerError}`);
   process.exit(1);
 }
 
@@ -221,13 +243,22 @@ if (STORAGE_STATE_PATH && existsSync(STORAGE_STATE_PATH)) {
   console.log(storageStateFromSecret ? '[capture] using storage state from VISUAL_QA_STORAGE_STATE' : `[capture] using storage state from ${STORAGE_STATE_PATH}`);
 }
 
+// QA_THEME=light|dark emulates prefers-color-scheme, which is how most apps
+// pick a theme. Unset keeps the app default.
+if (QA_THEME) contextOptions.colorScheme = QA_THEME;
 const context = await browser.newContext(contextOptions);
-// QA_THEME=light|dark seeds the theme the app's boot script reads, before any
-// page script runs. Unset keeps the app default (dark).
-const QA_THEME = process.env.QA_THEME?.trim();
+// ...and also seeds buildd's own stored choice, which its boot script reads
+// before the media query, before any page script runs.
 if (QA_THEME) {
   await context.addInitScript((t) => localStorage.setItem('buildd-theme', t), QA_THEME);
   console.log(`[capture] theme ${QA_THEME}`);
+}
+// QA_TEAM_ID renders as that team: the same `buildd-team` cookie the team switcher
+// sets (lib/active-team-client.ts). Unset keeps the user's default team.
+const QA_TEAM_ID = process.env.QA_TEAM_ID?.trim();
+if (QA_TEAM_ID) {
+  await context.addCookies([{ name: 'buildd-team', value: encodeURIComponent(QA_TEAM_ID), url: BASE_URL }]);
+  console.log('[capture] team set from QA_TEAM_ID');
 }
 const page = await context.newPage();
 // Hydration mismatches and other client errors land in the run log, so a shot
@@ -235,8 +266,10 @@ const page = await context.newPage();
 // Counted per route as well (reset before each navigation) and recorded on the
 // capture, so a consumer can tell "rendered" from "rendered but threw".
 let pageErrors = 0;
+let moduleErrors: string[] = [];
 page.on('pageerror', (err) => {
   pageErrors++;
+  if (isModuleLoadError(err.message)) moduleErrors.push(err.message);
   console.warn(`[capture] page error on ${page.url()}: ${err.message}`);
 });
 page.on('console', (msg) => {
@@ -301,6 +334,8 @@ type Capture = {
   status?: number | null;
   /** Uncaught page errors between navigation and the shot. */
   pageErrors?: number;
+  /** Why the app did not boot (5xx document, module-load error): the shot is blank. */
+  bootFailure?: string;
   screenshotFile?: string;
   a11yFile?: string;
   redirected?: boolean;
@@ -309,6 +344,8 @@ type Capture = {
   source: string;
   /** A QA_PLAN state key: copy into the shot's metadata.qa.state. Absent on the base shot. */
   state?: string;
+  /** light | dark from QA_THEME: copy into the shot's metadata.qa.theme. Absent when QA_THEME was unset. */
+  theme?: QaTheme;
   /** The step that did not settle. The shot was still taken, at that point. */
   stepFailed?: StepFailure;
   /** Writes the page tried during the steps, aborted by the guard. */
@@ -319,6 +356,7 @@ type Capture = {
   skipped?: boolean;
   skipReason?: string;
   error?: string;
+  providerError?: string;
   capturedAt: string;
 };
 
@@ -326,11 +364,12 @@ const captures: Capture[] = [];
 
 for (const route of routes) {
   // Present only on a state shot, so a QA_ROUTES run's entries are unchanged.
-  const stateField = route.state ? { state: route.state } : {};
+  // The theme rides along the same way: present only when QA_THEME was set.
+  const shotFields = { ...(route.state ? { state: route.state } : {}), ...(QA_THEME ? { theme: QA_THEME } : {}) };
   if (route.skipReason) {
     captures.push({
       source: PAGE_SOURCE,
-      ...stateField,
+      ...shotFields,
       id: route.id,
       path: route.path,
       url: `${BASE_URL}${route.path}`,
@@ -348,6 +387,7 @@ for (const route of routes) {
   let guard: Awaited<ReturnType<typeof guardWrites>> | null = null;
   try {
     pageErrors = 0;
+    moduleErrors = [];
     const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
     const navStatus = response?.status() ?? null;
 
@@ -363,7 +403,7 @@ for (const route of routes) {
       if (wall.kind === 'config_error') {
         captures.push({
           source: PAGE_SOURCE,
-          ...stateField,
+          ...shotFields,
           id: route.id,
           path: route.path,
           url,
@@ -390,7 +430,9 @@ for (const route of routes) {
         beforeStep: (step) => g.allow(step.commit === true && PAGE_SOURCE === 'sandbox'),
         afterStep: () => g.allow(false),
       });
-      if (stepFailed) {
+      if (stepFailed?.assertion) {
+        console.error(`[capture] LAYOUT ${route.id}: ${stepFailed.error}`);
+      } else if (stepFailed) {
         console.warn(`[capture] STEP  ${route.id}: steps[${stepFailed.index}] (${describeStep(route.steps[stepFailed.index])}) failed: ${stepFailed.error}; shooting the page as it stands`);
       }
     }
@@ -440,15 +482,17 @@ for (const route of routes) {
     );
 
     const finalUrl = page.url();
+    const boot = bootFailure(navStatus, moduleErrors);
     captures.push({
       source: PAGE_SOURCE,
-      ...stateField,
+      ...shotFields,
       id: route.id,
       path: route.path,
       url,
       finalUrl,
       status: navStatus,
       pageErrors,
+      ...(boot ? { bootFailure: boot } : {}),
       screenshotFile,
       a11yFile,
       redirected: finalUrl !== url && !finalUrl.startsWith(url),
@@ -457,16 +501,18 @@ for (const route of routes) {
       ...(guard?.blocked.length ? { blockedWrites: [...guard.blocked] } : {}),
       capturedAt: new Date().toISOString(),
     });
-    console.log(`[capture] OK    ${route.id} → ${finalUrl}${devOverlay ? ' [dev-overlay hidden]' : ''}`);
+    if (boot) console.error(`[capture] FAIL  ${route.id}: app did not boot (${boot})`);
+    else console.log(`[capture] OK    ${route.id} → ${finalUrl}${devOverlay ? ' [dev-overlay hidden]' : ''}`);
   } catch (err) {
     console.error(`[capture] FAIL  ${route.id}: ${(err as Error).message}`);
     captures.push({
       source: PAGE_SOURCE,
-      ...stateField,
+      ...shotFields,
       id: route.id,
       path: route.path,
       url,
       error: (err as Error).message,
+      ...(browserMetadata.provider === 'cloudflare' ? { providerError: /BlockedByClient|ERR_BLOCKED_BY_CLIENT/.test((err as Error).message) ? 'destination_blocked' : 'session_lost' } : {}),
       capturedAt: new Date().toISOString(),
     });
   } finally {
@@ -474,7 +520,7 @@ for (const route of routes) {
   }
 }
 
-writeFileSync(join(OUTPUT_DIR, 'captures.json'), JSON.stringify(captures, null, 2));
+writeFileSync(join(OUTPUT_DIR, 'captures.json'), JSON.stringify(captures.map(c => ({ ...c, browser: browserMetadata })), null, 2));
 await browser.close();
 console.log(`[capture] done — ${captures.length} routes → ${OUTPUT_DIR}`);
 
@@ -485,3 +531,24 @@ if (walls.length > 0) {
   for (const w of walls) console.error(`[capture] CONFIG ERROR ${w}: ${CONFIG_ERROR_MESSAGES[w]}`);
   process.exit(3);
 }
+
+// A layout gate also fails when a prerequisite or measurement failed: it
+// never passes without checking the requested scenario. Screenshots and
+// metadata are written before the nonzero exit.
+const layoutFailures = captures.filter((c) => c.stepFailed?.assertion);
+if (layoutFailures.length > 0) {
+  for (const c of layoutFailures) console.error(`[capture] LAYOUT FAILED ${c.id}: ${c.stepFailed!.error}`);
+  process.exit(4);
+}
+
+// The app never booted on these routes: the shots are blank pages. Fail the
+// run (shots and metadata are already written) instead of passing silently.
+const bootFailures = captures.filter((c) => c.bootFailure);
+if (bootFailures.length > 0) {
+  for (const c of bootFailures) console.error(`[capture] BOOT FAILED ${c.id}: ${c.bootFailure}`);
+  // Annotation, so the boot failure shows on the run even where the step is report-only.
+  if (process.env.GITHUB_ACTIONS) console.log(`::error title=Visual QA: app did not boot::${bootFailures.map((c) => c.id).join(", ")}`);
+  process.exit(5);
+}
+
+if (captures.some(c => c.providerError)) process.exit(1);

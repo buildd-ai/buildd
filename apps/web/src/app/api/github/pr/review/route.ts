@@ -12,12 +12,12 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { constrainToGranted, type GrantScopedAccount } from '@/lib/grant-scope';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missions, githubRepos } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace, type TaskScope } from '@/lib/task-token-auth';
-import { taskNamesPr } from '@/lib/agent-capabilities/pr-ownership';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace, taskScopeTaskLinksPr, type TaskScope } from '@/lib/task-token-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
@@ -27,6 +27,7 @@ import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/li
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { requestReview as requestKernelReview } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import {
@@ -42,8 +43,11 @@ import {
   MAX_REVIEW_WAIT_SECONDS,
   type PrReviewWaitFor,
 } from '@/lib/pr-review-status';
+import { requestingPerson } from '@/lib/request-person';
 
-type Account = { id: string; teamId: string; taskScope?: TaskScope };
+type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
+
+const FORCE_NEEDS_PERSON = 'force re-reviews a head that already has a verdict, which is a person\'s call: ask the owner, or re-review from the dashboard. Without force, a review is requested once the PR head moves.';
 
 /**
  * Which workspaces a caller may resolve a PR in. An API key reaches its own
@@ -66,7 +70,8 @@ function accountScope(account: Account): TargetScope {
   }
   return {
     teamIds: [account.teamId],
-    workspaceIds: () => getTeamWorkspaceIds(account.teamId),
+    // A grant session or a workspace-restricted key: only what it may reach.
+    workspaceIds: async () => constrainToGranted(account, await getTeamWorkspaceIds(account.teamId)),
     foreignWorkspace: 'forbidden',
   };
 }
@@ -109,6 +114,9 @@ async function resolveTarget(
         ? { error: 'Workspace belongs to a different team', status: 403 }
         : { error: `Workspace '${workspaceIdInput}' not found`, status: 404 };
     }
+    // In the team is necessary, not sufficient: a grant session or a
+    // workspace-restricted key reaches only its own list.
+    if (!(await scope.workspaceIds()).includes(ws.id)) return { error: `Workspace '${workspaceIdInput}' not found`, status: 404 };
     return { workspace: ws as ResolvedTarget['workspace'] };
   }
 
@@ -136,31 +144,6 @@ async function resolveTarget(
     status: 400,
     candidates: linked.map((w) => w.name),
   };
-}
-
-/**
- * Does the task token's OWN task name this PR — in its title, description or
- * context, or as a retry attempt's subject? Mirrors the fallback `pr/route.ts`
- * already applies to close/merge via `agentRunMayActOnPr`: a coordination or
- * cleanup task that never opened a PR of its own may still act on one its
- * brief explicitly names (e.g. "resolve conflicts on #3492").
- */
-async function taskScopeNamesPr(scope: TaskScope, prNumber: number): Promise<boolean> {
-  const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, scope.taskId),
-    columns: {
-      id: true,
-      title: true,
-      description: true,
-      context: true,
-      workspaceId: true,
-      reviewerRetryPrNumber: true,
-      ciRetryPrNumber: true,
-      conflictRetryPrNumber: true,
-    },
-  });
-  if (!task || task.workspaceId !== scope.workspaceId) return false;
-  return taskNamesPr(task, prNumber);
 }
 
 /** The GitHub repo + installation behind a workspace. */
@@ -249,12 +232,78 @@ export async function POST(req: NextRequest) {
 
   const existingWorker = await findPrOwningWorker(workspace.id, prNumber);
   const ownsViaWorker = !!existingWorker && taskScopeAllowsWorkerPr(account, { ...existingWorker, prNumber }, prNumber);
-  if (account.taskScope && !ownsViaWorker && !(await taskScopeNamesPr(account.taskScope, prNumber))) {
-    return bad('A task token may request review only of its own PR, or one its task names', 403);
+  // Or a PR the token's OWN task's records link (a coordination task repairing a PR it never opened),
+  // never one the owner's task links (§17.1 of docs/specs/workflow-state-kernel.md).
+  if (account.taskScope && !ownsViaWorker && !(await taskScopeTaskLinksPr(account, { workspaceId: account.taskScope.workspaceId, prNumber }))) {
+    return bad('A task token may request review only of its own PR, or one its task\'s records link', 403);
+  }
+
+  // A PR the workflow kernel owns is reviewed only in kernel rounds: the request
+  // is T5 (ReviewRequested) against the live head. `force` re-reviews a head
+  // that already has a verdict; it never stacks a second reviewer on a round.
+  const person = requestingPerson(null, account);
+  const kernel = await requestKernelReview({
+    workspaceId: workspace.id, repoFullName: repo.fullName, prNumber, installationId: repo.installationId,
+    forced: body.force === true, actor: person ? `human:${person}` : `agent:${account.id}`,
+  }).catch((err) => {
+    console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
+    return null;
+  });
+  if (kernel?.handled) {
+    const r = kernel.result;
+    const accepted = r.result === 'applied'
+      || (r.result === 'rejected' && (r.reason === 'review_in_flight' || r.reason === 'head_already_reviewed'));
+    if (!accepted) {
+      return bad(`Review not requested: ${r.reason}`, 409, {
+        code: r.reason, current: r.current, kernel: true,
+        ...(r.reason === 'force_requires_human' ? { hint: FORCE_NEEDS_PERSON } : {}),
+        ...(r.reason === 'escalation_needs_human' ? { hint: 'this PR is escalated to a person for a reason another review does not answer; the owner resolves it from the dashboard' } : {}),
+      });
+    }
+    // §8.1: the reviewer that answers is the round's at the live head, never the
+    // newest reviewer row of the PR number (§14 Slice A retired that rule here).
+    const latest = kernel.reviewTaskId
+      ? (await db.query.tasks.findFirst({
+          where: eq(tasks.id, kernel.reviewTaskId),
+          columns: { id: true, status: true, result: true, context: true },
+        })) ?? null
+      : null;
+    if (latest && callbackUrl && r.result === 'applied') {
+      await db.update(tasks)
+        .set({ context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('reviewCallback', ${JSON.stringify({ url: callbackUrl, on: callbackOn })}::jsonb)` })
+        .where(eq(tasks.id, latest.id));
+    }
+    const kernelPolicy = await resolveEffectivePolicy(workspace, null);
+    return NextResponse.json({
+      ok: true,
+      kernel: true,
+      alreadyRequested: r.result !== 'applied',
+      ...(r.result === 'rejected' && r.reason === 'head_already_reviewed'
+        ? { hint: person ? 'this head already has a verdict; pass force to re-review' : 'this head already has a verdict; a new round starts when the PR head moves (a forced re-review is a person\'s call)' }
+        : {}),
+      prNumber,
+      reviewTaskId: latest?.id ?? null,
+      taskId: existingWorker?.taskId ?? null,
+      autoMergeExpected: autoMergeExpectedFor(kernelPolicy),
+      callback: callbackUrl && r.result === 'applied' ? { url: callbackUrl, on: callbackOn } : null,
+      status: latest
+        ? derivePrReviewStatus({ reviewTask: latest, worker: existingWorker ?? null, autoMergeExpected: autoMergeExpectedFor(kernelPolicy) })
+        : null,
+    }, { status: r.result === 'applied' ? 201 : 200 });
   }
   const existingReview = await findReviewTaskForPr(workspace.id, prNumber);
   const inFlight = existingReview?.status === 'pending' || existingReview?.status === 'in_progress';
   const force = body.force === true;
+
+  // A forced re-review of the head that already has a verdict is a person's
+  // call here too. An agent may force a review of a head nobody has judged yet
+  // (the head moved, or the last reviewer left no verdict).
+  if (force && !person && !inFlight) {
+    const prior = resolvePriorVerdict(existingReview);
+    if (prior && prior.headSha === (pr.head?.sha ?? '')) {
+      return bad('Review not requested: force_requires_human', 409, { code: 'force_requires_human', hint: FORCE_NEEDS_PERSON });
+    }
+  }
 
   // Idempotency: one reviewer per PR at a time. `force` re-reviews a finished
   // review but never stacks a second agent onto a running one — two reviewers
@@ -406,7 +455,15 @@ export async function POST(req: NextRequest) {
     ...(deltaPriorVerdict ? { priorVerdict: deltaPriorVerdict } : {}),
   });
 
-  if (!reviewerTask?.id) return bad('Could not create the reviewer task', 500);
+  if (!reviewerTask?.id) {
+    // This may occur if a concurrent caller (e.g., create_pr's auto-review
+    // request and the explicit review request in the same milliseconds) both
+    // tried to create a reviewer task for the same PR. The first wins due to
+    // the DB constraint; if the winner was not found by the fallback lookup,
+    // escalate with context for diagnosis.
+    console.error(`[pr-review] Failed to create or find reviewer task for PR #${prNumber} in workspace ${workspace.id}`);
+    return bad('Could not create the reviewer task (or find concurrent writer; see logs)', 500);
+  }
 
   // A live reviewer task already owns this PR generation — return it rather than
   // putting a second agent on the same commit. Dispatch and the PR activity

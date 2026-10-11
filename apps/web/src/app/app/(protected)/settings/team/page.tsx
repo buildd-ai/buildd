@@ -1,3 +1,4 @@
+import WarmHandoverSection from '@/components/WarmHandoverSection';
 import Link from 'next/link';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
@@ -5,59 +6,120 @@ import { eq } from 'drizzle-orm';
 import SettingsPage from '../_components/SettingsPage';
 import TimezoneSection from '../TimezoneSection';
 import TeamPermissionsSection from './TeamPermissionsSection';
-import TeamDetailClient from '../../teams/[id]/TeamDetailClient';
+import TeamDetailClient from './TeamDetailClient';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { roleHas } from '@/lib/permission-registry';
+import PrimaryAction from '@/components/ui/PrimaryAction';
 import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
+import { pickShownTeam } from './shown-team';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { settingsReadOnly } from '@/lib/settings-nav';
+import { NO_PERMISSIONS, settingsPermissions } from '../_lib/settings-permissions';
+import UrlSheet from '@/components/UrlSheet';
+import NewTeamForm from './NewTeamForm';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Team → Members: the active team's people, the team timezone, and
- * who can do what (team permission overrides).
- * Other teams stay reachable from Profile → Your teams (/app/teams/[id]).
+ * Settings › Team › Members: a team's people, its timezone, and who can do what (team
+ * permission overrides). Shows the active team, or `?team=<id>` when the
+ * person is a member of it, so a link to another team (the old
+ * /app/teams/[id]) lands on that team's members.
+ * `?new=1` opens the New team sheet (the old /app/settings/team/new redirects here).
  * `?state=multi-member` (dev server only) adds a synthetic member row — see ./qa-state.ts.
  */
 export default async function TeamSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ state?: string | string[] }>;
+  searchParams: Promise<{ state?: string | string[]; team?: string | string[]; new?: string | string[] }>;
 }) {
-  const qaState = resolveTeamQaState((await searchParams).state);
+  const params = await searchParams;
+  const newTeamSheet = params.new === '1' && (
+    <UrlSheet title="New team" keys={['new']} testId="new-team-sheet">
+      <NewTeamForm />
+    </UrlSheet>
+  );
+  // Keeps ?team= so the sheet opens over the team being looked at.
+  const newTeamHref = `/app/settings/team?${new URLSearchParams({ ...(typeof params.team === 'string' ? { team: params.team } : {}), new: '1' })}`;
+  const qaState = resolveTeamQaState(params.state);
   const { user, teams: userTeams, currentTeam } = await loadSettingsContext();
+  const shown = pickShownTeam(userTeams, params.team, currentTeam);
 
-  if (!currentTeam) {
+  if (!shown) {
     return (
       <SettingsPage title="Members">
-        <div className="card p-6 text-center">
-          <p className="text-sm text-text-secondary mb-3">Not on a team.</p>
-          <Link href="/app/teams/new" className="btn btn-primary">Create a team</Link>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm text-text-muted">Not on a team.</p>
+          <PrimaryAction href={newTeamHref}>Create a team</PrimaryAction>
         </div>
+        {newTeamSheet}
       </SettingsPage>
     );
   }
 
   const [team, members] = await Promise.all([
     db.query.teams.findFirst({
-      where: eq(teams.id, currentTeam.id),
+      where: eq(teams.id, shown.id),
       columns: { id: true, name: true, slug: true, createdAt: true },
     }).catch(() => null),
     db.query.teamMembers.findMany({
-      where: eq(teamMembers.teamId, currentTeam.id),
+      where: eq(teamMembers.teamId, shown.id),
       with: { user: true },
     }).catch(() => []),
   ]);
 
-  const role = currentTeam.role as 'owner' | 'admin' | 'member';
+  const role = shown.role as 'owner' | 'admin' | 'member';
+  const permissionOverrides = team ? await getTeamPermissionOverrides(team.id) : null;
+  const otherTeams = userTeams.filter((t) => t.id !== shown.id);
+  // The shown team's flags (it can differ from the active team via ?team=).
+  // A failed overrides read holds nothing, as loadSettingsContext does.
+  const perms = permissionOverrides ? settingsPermissions({ role, slug: team?.slug ?? shown.slug }, user.id, permissionOverrides) : NO_PERMISSIONS;
+
+  const sections = (
+    <>
+      <WarmHandoverSection teamId={shown.id} canEdit={roleHas(role, 'manage_team_settings', permissionOverrides)} />
+
+      {/* This team only: another team's timezone is on its own Members page. */}
+      <TimezoneSection teams={[{ id: shown.id, name: shown.name }]} currentTeamId={shown.id} />
+
+      {/* A personal team has one member, its owner: there is nothing to grant. */}
+      {team && !team.slug.startsWith('personal-') && <TeamPermissionsSection teamId={team.id} />}
+    </>
+  );
 
   return (
-    <SettingsPage
-      title="Members"
-      description={<><Link href="/app/team" className="underline hover:text-text-primary">Agent roles</Link> are on the Team page.</>}
-    >
+    <SettingsPage title="Members" readOnly={settingsReadOnly('team', perms)}>
+      {newTeamSheet}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        {otherTeams.length > 0 ? (
+          <details data-testid="team-switcher" className="group min-w-0 flex-1 text-sm">
+            <summary className="flex min-h-11 md:min-h-0 cursor-pointer list-none items-center gap-1.5 text-text-secondary">
+              <span className="text-text-muted">Team:</span>
+              <span className="font-medium text-text-primary">{shown.name}</span>
+              <span aria-hidden="true">·</span>
+              <span className="underline underline-offset-2 hover:text-text-primary">Switch</span>
+            </summary>
+            <div className="mt-2 divide-y divide-border-default border-y border-border-default">
+              {otherTeams.map((t) => (
+                <Link
+                  key={t.id}
+                  href={`/app/settings/team?team=${encodeURIComponent(t.id)}`}
+                  className="flex min-h-11 items-center justify-between gap-3 py-2 hover:bg-surface-3 transition-colors"
+                >
+                  <span className="truncate font-medium text-text-primary">{t.name}</span>
+                  <span className="shrink-0 text-text-muted">{t.role}</span>
+                </Link>
+              ))}
+            </div>
+          </details>
+        ) : <span />}
+        <Link href={newTeamHref} scroll={false} data-testid="new-team-link" className="btn btn-sm h-11 md:h-8 shrink-0">New team</Link>
+      </div>
+
       {team ? (
         <TeamDetailClient
+          // Remount on a team switch: the rename draft and invite form belong to one team.
+          key={team.id}
           team={{ id: team.id, name: team.name, slug: team.slug, createdAt: team.createdAt.toISOString() }}
           members={withQaFixtureMembers(members.map((m) => ({
             userId: m.userId,
@@ -70,19 +132,17 @@ export default async function TeamSettingsPage({
           currentUserRole={role}
           currentUserId={user.id}
           isPersonal={team.slug.startsWith('personal-')}
-          canManage={roleHas(role, 'manage_team_members', await getTeamPermissionOverrides(team.id))}
-        />
+          canManage={roleHas(role, 'manage_team_members', permissionOverrides)}
+          permissionOverrides={permissionOverrides}
+        >
+          {sections}
+        </TeamDetailClient>
       ) : (
-        <p className="text-sm text-text-secondary">Could not load the team.</p>
+        <>
+          <p className="text-sm text-text-muted">Could not load the team.</p>
+          {sections}
+        </>
       )}
-
-      <TimezoneSection
-        teams={userTeams.map((t) => ({ id: t.id, name: t.name }))}
-        currentTeamId={currentTeam.id}
-      />
-
-      {/* A personal team has one member, its owner: there is nothing to grant. */}
-      {team && !team.slug.startsWith('personal-') && <TeamPermissionsSection teamId={team.id} />}
     </SettingsPage>
   );
 }

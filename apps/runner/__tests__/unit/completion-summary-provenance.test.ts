@@ -14,7 +14,9 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/completion-summary-provenance.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 
 // ─── Mocks (same shape as session-model-cost.test.ts / terminal-metrics-patch.test.ts) ──
@@ -94,13 +96,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -173,7 +175,13 @@ async function runSession(
   const task = { ...makeTask(), ...overrides };
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 300));
+  // Poll for the completion update rather than a fixed sleep: a loaded CI
+  // shard can take well over 300ms to finish the session.
+  const deadline = Date.now() + 5000;
+  while (!completionCall() && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+  await new Promise(r => setTimeout(r, 50));
 }
 
 /** An assistant turn with a single text block — no tool use, nothing that reads as complete_task. */
@@ -212,6 +220,12 @@ describe('completion summary provenance', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
   beforeEach(resetAll);
+  afterAll(() => {
+
+    cleanupTestWorkspace();
+
+  });
+
   afterEach(() => { manager?.destroy(); });
 
   for (const [shape, overrides] of Object.entries({

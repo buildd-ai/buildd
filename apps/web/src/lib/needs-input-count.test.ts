@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test';
 
-const ask = { type: 'question', prompt: 'Ship the change?' };
+const ask = { type: 'question', prompt: 'Ship the change?', disposition: 'ask' };
 const rows = [
   { taskId: 'live', status: 'waiting_input', workspaceId: 'workspace', waitingFor: ask },
   { taskId: 'done', status: 'waiting_input', workspaceId: 'workspace', waitingFor: ask },

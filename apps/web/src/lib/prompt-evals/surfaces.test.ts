@@ -8,7 +8,6 @@ import { SURFACE_AUDIT_ADVICE_PROMPT_ID } from '../surface-audit-advice';
 import { GOAL_QUALITY_PROMPT_ID } from '../goal-criteria-quality-decision';
 import { ENDPOINT_MODEL_SUGGEST_PROMPT_ID } from '../endpoint-model-suggest';
 import { TASK_CATEGORY_PROMPT_ID } from '../task-category-decision';
-import { HEARTBEAT_TRIAGE_PROMPT_ID } from '../heartbeat-triage';
 import { TASK_ROLE_PROMPT_ID } from '../task-role-decision';
 import { CHAT_PROMPT_IDS, DECISION_PROMPT_IDS, promptSurface } from './surfaces';
 
@@ -32,7 +31,7 @@ describe('promptSurface', () => {
   });
 
   it('a benchmarked prompt is a decision prompt (every set calls decisionCall)', () => {
-    for (const id of [TASK_CATEGORY_PROMPT_ID, HEARTBEAT_TRIAGE_PROMPT_ID, TASK_ROLE_PROMPT_ID]) expect(promptSurface(id)).toBe('decision');
+    for (const id of [TASK_CATEGORY_PROMPT_ID, TASK_ROLE_PROMPT_ID]) expect(promptSurface(id)).toBe('decision');
   });
 
   it('the chat system prompt is a chat prompt; agent-side text is neither', () => {

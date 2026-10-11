@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { INITIAL_STATE, MAX_DEFERRED_RETRIES, buildContainerEnv, type RunState } from './lifecycle';
+import { INITIAL_STATE, MAX_DEFERRED_RETRIES, buildContainerEnv, CLOUD_MODEL_AUTH_CONTAINER_ENV, type RunState } from './lifecycle';
 import { TaskSupervisor, type ContainerPort, type ProcessPort, type ScheduledDispatchPayload, type SchedulerPort, type SupervisorDeps } from './supervisor';
 
 const TASK_ID = 'task-abc123';
@@ -82,7 +82,7 @@ function fakeScheduler() {
   return { port, scheduled, cancelled };
 }
 
-function harness(opts: { unattachable?: boolean; config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response>; now?: () => number; ownerSeat?: SupervisorDeps['ownerSeat'] } = {}) {
+function harness(opts: { unattachable?: boolean; config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response>; now?: () => number; ownerSeat?: SupervisorDeps['ownerSeat']; plannedModelAuth?: SupervisorDeps['plannedModelAuth'] } = {}) {
   let state: RunState = opts.initial ?? INITIAL_STATE;
   const sched = fakeScheduler();
   const fc = fakeContainer({ unattachable: opts.unattachable });
@@ -121,6 +121,7 @@ function harness(opts: { unattachable?: boolean; config?: Partial<SupervisorDeps
     }) as unknown as typeof fetch,
     scheduler: sched.port,
     ...(opts.ownerSeat ? { ownerSeat: opts.ownerSeat } : {}),
+    ...(opts.plannedModelAuth ? { plannedModelAuth: opts.plannedModelAuth } : {}),
     now: opts.now ?? (() => Date.now()),
     sleep: () => new Promise(r => setTimeout(r, 1)),
     log: (m) => logs.push(m),
@@ -183,6 +184,26 @@ describe('dispatch', () => {
     expect(env!.BUILDD_EXECUTOR).toBe('cloud');
   });
 
+  // docs/specs/real-and-virtual-cost.md: the container holds only a
+  // placeholder key, so the run's model route is handed to the runner as a
+  // hint, and the runner reports the matching cost basis.
+  test('the container is told the model route its egress will take', async () => {
+    const h = harness({ plannedModelAuth: async () => 'owner_seat' });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    expect(h.fc.starts[0]!.env[CLOUD_MODEL_AUTH_CONTAINER_ENV]).toBe('owner_seat');
+    expect(h.fc.execEnvs[0]![CLOUD_MODEL_AUTH_CONTAINER_ENV]).toBe('owner_seat');
+  });
+
+  test('no route known (or the lookup fails) means no hint, and the run still starts', async () => {
+    for (const plannedModelAuth of [async () => null, async () => { throw new Error('lookup failed'); }]) {
+      const h = harness({ plannedModelAuth });
+      h.sup.dispatch();
+      await h.until(() => h.state.status === 'running');
+      expect(h.fc.starts[0]!.env[CLOUD_MODEL_AUTH_CONTAINER_ENV]).toBeUndefined();
+    }
+  });
+
   test('a failed mint starts no container', async () => {
     const h = harness({ mintFails: true });
     h.sup.dispatch();
@@ -192,11 +213,11 @@ describe('dispatch', () => {
     expect(h.state.error).toContain('task-token');
   });
 
-  test('telemetry: no OTLP endpoint means the container env is exactly buildContainerEnv (pinned)', async () => {
+  test('telemetry: no OTLP endpoint adds only the warm handover policy to buildContainerEnv', async () => {
     const h = harness({ config: { OTEL_LOG_TOOL_DETAILS: '1', OTEL_TRACES_BETA: '1', OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json' } });
     h.sup.dispatch();
     await h.until(() => h.state.status === 'running');
-    expect(h.fc.starts[0]!.env).toEqual(buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9' }, 'bldt_test_task_token'));
+    expect(h.fc.starts[0]!.env).toEqual({ ...buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9' }, 'bldt_test_task_token'), BUILDD_WARM_HANDOVER: 'off' });
   });
 
   test('telemetry: an OTLP endpoint adds the Claude Code vars with this dispatch\'s task and attempt, never auth', async () => {
@@ -585,6 +606,9 @@ describe('run report', () => {
       'BUILDD_WORKER_ID=worker-42',
       'BUILDD_PHASE=clone_start 1000',
       'BUILDD_PHASE=clone_end 3000',
+      'BUILDD_WORKTREE_MODE=clone',
+      'BUILDD_PHASE=worktree_start 3000',
+      'BUILDD_PHASE=worktree_end 3500',
       'BUILDD_PHASE=install_start 4000',
       'BUILDD_PHASE=install_end 9000',
     ]);
@@ -607,7 +631,8 @@ describe('run report', () => {
       taskId: TASK_ID, attempt: 1, workerId: 'worker-42', outcome: 'done', exitCode: 0,
       instanceType: 'standard-1', containerInstanceId: 'do0123abcd', runLabel: `${TASK_ID}.1`,
       runnerPhases: { clone_start: 1000, clone_end: 3000, install_start: 4000, install_end: 9000 },
-      durationsMs: { clone: 2000, install: 5000 },
+      durationsMs: { clone: 2000, worktree: 500, install: 5000 },
+      worktreeMode: 'clone',
       delivery: 'sent',
     });
     expect(r.timestamps.dispatchReceivedAt).toBe(h.state.startedAt!);
@@ -660,7 +685,8 @@ describe('run report', () => {
     expect(r.repo).toEqual({
       source: 'warm', fallbackReason: null, snapshotAgeMs: 7_200_000, warmUploadSkipReason: null,
       cacheSkipped: { part: 'pnpm-store', bytes: 2_100_000_000, cap: 1_073_741_824 },
-      bytes: { clone: null, restore: 5000, fetch: 64, cache: null, cacheRaw: null, upload: null, warmRepo: null },
+      warmUploadDeferred: false, reuseFetchSkipped: null,
+      bytes: { clone: null, restore: 5000, fetch: 64, reuseFetch: null, cache: null, cacheRaw: null, upload: null, warmRepo: null },
     });
     expect(r.durationsMs).toMatchObject({ restoreWarm: 400, fetch: 100, clone: null, restoreCache: 250 });
   });

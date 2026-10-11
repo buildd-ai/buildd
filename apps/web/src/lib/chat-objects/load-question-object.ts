@@ -1,7 +1,7 @@
 /**
- * A waiting-input question as a live chat object — and the loader the
- * `/tasks/[id]/respond` page renders from, so the feed card and the deep link
- * show one question the same way (knowledge-base: buildd/design/agent-chat.md, "The respond page
+ * A waiting-input question as a live chat object — and the loader an answer
+ * link (`/app/tasks/[id]?respond=1`) reads to decide whether the question
+ * opens in chat, so the feed card and the deep link show one question the same way (knowledge-base: buildd/design/agent-chat.md, "The respond page
  * folds in").
  */
 import { isOpenAsk } from '@/lib/open-ask';
@@ -32,6 +32,7 @@ export interface QuestionWorkerRow {
   id: string;
   waitingFor: unknown;
   status?: string | null;
+  error?: string | null;
   updatedAt?: Date | string | null;
 }
 
@@ -79,7 +80,7 @@ export function shapeQuestion(input: {
     return {
       open: true,
       workerId: pending.id,
-      question: unifyWorkerQuestion(pending.waitingFor as WorkerWaitingFor, note),
+      question: unifyWorkerQuestion(pending.waitingFor as WorkerWaitingFor, note, { workerError: pending.error }),
       askedAt: epoch(note?.createdAt) ?? epoch(pending.updatedAt),
       answer: null,
       awaitingAgent: false,
@@ -114,8 +115,8 @@ export interface QuestionContext {
 
 /**
  * The task, its question and who is asking, for a user with access to the
- * task's workspace; null otherwise. The respond page and the chat object route
- * both read this.
+ * task's workspace; null otherwise. The task page's answer link (?respond=1)
+ * and the chat object route both read this.
  */
 export async function loadQuestionContext(taskId: string, userId: string): Promise<QuestionContext | null> {
   const task = await db.query.tasks.findFirst({
@@ -132,7 +133,7 @@ export async function loadQuestionContext(taskId: string, userId: string): Promi
     db.query.workers.findMany({
       where: eq(workers.taskId, taskId),
       orderBy: desc(workers.createdAt),
-      columns: { id: true, waitingFor: true, status: true, updatedAt: true },
+      columns: { id: true, waitingFor: true, status: true, updatedAt: true, error: true },
     }),
     db
       .select({

@@ -126,6 +126,33 @@ describe('computeGateAnalytics', () => {
     expect(out.truncatedGates).toBe(3);
     expect(out.totals.distinctGates).toBe(5);
   });
+
+  it('splits path-coordination rows into signals so cap advisories and blocked claims never read as an outage', () => {
+    const events = [
+      ...Array.from({ length: 300 }, () => ev({
+        gate: 'path_claim', outcome: 'warned',
+        reason: normalizeErrorSignature('observed-touch sample truncated at its cap; coverage unaffected, leases are authoritative'),
+      })),
+      ...Array.from({ length: 40 }, () => ev({
+        gate: 'path_claim', outcome: 'deferred',
+        reason: normalizeErrorSignature('paths overlap an active claim held by another task'),
+      })),
+      ev({
+        gate: 'path_declaration', outcome: 'warned',
+        reason: normalizeErrorSignature('path declaration degraded: coordination unavailable, edits proceeded'),
+      }),
+    ];
+    const out = computeGateAnalytics({ window: '7d', now: NOW, events });
+    expect(out.pathCoordination.counts.observation_truncated).toBe(300);
+    expect(out.pathCoordination.counts.claim_blocked).toBe(40);
+    expect(out.pathCoordination.counts.coordination_unavailable).toBe(1);
+    expect(out.pathCoordination.incident).toBe(true);
+    expect(out.pathCoordination.severity).toBe('degraded');
+
+    const quiet = computeGateAnalytics({ window: '7d', now: NOW, events: events.slice(0, 340) });
+    expect(quiet.pathCoordination.incident).toBe(false);
+    expect(quiet.pathCoordination.severity).toBe('advisory');
+  });
 });
 
 describe('bypassRatePct', () => {

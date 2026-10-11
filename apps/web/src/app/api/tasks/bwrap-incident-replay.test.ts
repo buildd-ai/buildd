@@ -28,6 +28,13 @@ mock.module('@buildd/core/gate-events', () => ({
   recordGateEvent: async () => null,
   recordOrCoalesceDeferral: async () => null,
 }));
+// The task.created subscriber schedules a category decision that writes through
+// the same table-agnostic db.update mock as friction deduplication. Keep those
+// unrelated writes out of this replay; task-category-decision.test.ts covers
+// categorization, and route.test.ts covers when it is scheduled.
+mock.module('@/lib/task-category-decision', () => ({
+  scheduleTaskCategorize: () => {},
+}));
 import { NextRequest } from 'next/server';
 import { findBlockingPr } from '@buildd/core/path-overlap';
 
@@ -328,7 +335,7 @@ describe('Incident replay: bwrap_namespace_denied — three workers, one fix PR'
 
   // ── Phase 4: Inferred manifest + auto-dependsOn ───────────────────────────
 
-  it('phase 4 — overlapping fix task T2 gets auto-dependsOn edge to T1', async () => {
+  it('phase 4 — overlapping fix task T2 records T1 as a same-file soft overlap (decided at claim, not an edge)', async () => {
     // T1 is pending in the workspace with the bwrap manifest
     mockTasksFindFirst.mockResolvedValue(null); // separate friction task check
     mockTasksFindMany.mockResolvedValue([
@@ -356,8 +363,12 @@ describe('Incident replay: bwrap_namespace_denied — three workers, one fix PR'
     );
     expect(response.status).toBe(200);
 
-    // T2 automatically depends on T1 (overlapping path: env-scan.ts)
-    expect(capturedValues.dependsOn).toContain('task-T1');
+    // T2 records T1 (overlapping path: env-scan.ts) as same-file soft evidence:
+    // the claim's HOLD/START decides, and phase 5's open-PR check still holds it.
+    expect(capturedValues.dependsOn ?? []).not.toContain('task-T1');
+    expect(capturedValues.pathDeclaration.softOverlaps).toContainEqual(
+      expect.objectContaining({ taskId: 'task-T1', kind: 'same_file' }),
+    );
   });
 
   // ── Phase 5: Claim-time blocking when T1's PR is open ─────────────────────

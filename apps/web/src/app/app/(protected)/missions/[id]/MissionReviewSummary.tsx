@@ -48,15 +48,15 @@ export default function MissionReviewSummary({ tasks, missionId }: MissionReview
   const openPrCount = completedWithPr.filter(t => !t.prMerged && !t.prClosed).length;
 
   return (
-    <div className="card p-4 mb-4 border-l-2 border-status-success/40">
-      <h3 className="text-[11px] md:text-[10px] font-semibold tracking-wider text-text-muted uppercase mb-3">
+    <div data-testid="mission-review-summary">
+      <h3 className="mb-2 text-title font-semibold text-text-primary">
         Outcome summary
       </h3>
 
       {completedWithPr.length > 0 && (
         <div className="mb-3">
           <div className="flex items-center gap-2 mb-1.5">
-            <span className="text-[11px] font-semibold text-text-secondary">Pull Requests</span>
+            <span className="text-body font-semibold text-text-secondary">Pull requests</span>
             <span className="text-[11px] md:text-[10px] font-mono text-text-muted">
               {mergedCount} merged{openPrCount > 0 ? ` · ${openPrCount} open` : ''}
             </span>

@@ -1,11 +1,10 @@
 /**
- * Checkpoint enforcement hand-off (conflict-aware-orchestration.md §2):
- *  - the checkpoint sweep offers the base-pinned worktree changes (Bash and
- *    untracked writes included) and reads the server's collision answer
- *  - an unreachable server is bounded fail-open, recorded as degraded
+ * Checkpoint collision hand-off (conflict-aware-orchestration.md §2):
  *  - a collision persists state, checkpoints the worktree, reports a
  *    `Deferred:` failure the server requeues on, and ends the session — no
  *    agent is kept alive waiting for the lease
+ * The ship checkpoint that finds the collision lives in ship-checkpoint.ts
+ * and is covered by ship-checkpoint.test.ts (it fails closed, not open).
  *
  * Real git in throwaway repos; the buildd client is a stub.
  *
@@ -17,10 +16,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  runCheckpointSweep,
   writeCollisionCheckpoint,
   deferOnPathCollision,
-  CHECKPOINT_SYNC_DEADLINE_MS,
 } from '../../src/path-collision-defer';
 import type { PathCollision } from '../../src/path-claim-enforcement';
 
@@ -95,71 +92,6 @@ function makeWorker(overrides: Record<string, unknown> = {}): any {
 const collision: PathCollision = {
   path: 'src/from-bash.ts', blockingTaskId: BLOCKER, blockingTaskTitle: 'Other', blockingPath: 'src', source: 'sync', detectedAt: 1,
 };
-
-describe('runCheckpointSweep', () => {
-  test('offers Bash/untracked writes measured against the resolved base, and returns the server collision', async () => {
-    const updateWorker = mock(async (_id: string, _u: any) => ({
-      pathCollisions: [{ path: 'src/from-bash.ts', blockingTaskId: BLOCKER, blockingTaskTitle: 'Other', blockingPath: 'src' }],
-    }));
-    const worker = makeWorker();
-
-    const found = await runCheckpointSweep(worker, 'pre_push', { buildd: { updateWorker } as any, addMilestone: () => {} });
-
-    expect(updateWorker).toHaveBeenCalledTimes(1);
-    // pre_push re-offers the whole sweep, not only what is new to the server.
-    expect(updateWorker.mock.calls[0][1]).toEqual({ touchedPaths: ['src/from-bash.ts'], checkpointSweep: true });
-    expect(found).toMatchObject({ path: 'src/from-bash.ts', blockingTaskId: BLOCKER, source: 'pre_push' });
-  });
-
-  test('measures the committed half against the PR base, not the resume branch the worktree was cut from', async () => {
-    // A prior attempt committed a.ts on the resume branch; this attempt resumed from it.
-    writeFileSync(join(work, 'src/a.ts'), 'edited in attempt 1\n');
-    sh(work, `git add src/a.ts && git ${GIT} commit -q -m attempt-1 && git push -q origin buildd/task-1`);
-    const updateWorker = mock(async (_id: string, _u: any) => ({}));
-    const worker = makeWorker({ worktreeBaseRef: 'origin/buildd/task-1', prBaseRef: 'origin/dev' });
-    await runCheckpointSweep(worker, 'completion', { buildd: { updateWorker } as any, addMilestone: () => {} });
-    expect(updateWorker.mock.calls[0][1].touchedPaths).toEqual(['src/a.ts', 'src/from-bash.ts']);
-  });
-
-  test('no collision reported: null', async () => {
-    const updateWorker = mock(async () => ({}));
-    expect(await runCheckpointSweep(makeWorker(), 'completion', { buildd: { updateWorker } as any, addMilestone: () => {} })).toBeNull();
-  });
-
-  test('a hung server is bounded: returns null within the deadline and records degraded enforcement', async () => {
-    const updateWorker = mock(() => new Promise(() => {}));
-    const worker = makeWorker();
-    const milestones: any[] = [];
-    const started = Date.now();
-
-    const found = await runCheckpointSweep(worker, 'pre_push', {
-      buildd: { updateWorker } as any,
-      addMilestone: (_w, m) => milestones.push(m),
-      deadlineMs: 150,
-    });
-
-    expect(found).toBeNull();
-    expect(Date.now() - started).toBeLessThan(1000);
-    expect(worker.pathClaimDegraded).toBe(1);
-    expect(milestones.some(m => String(m.label).includes('degraded'))).toBe(true);
-    expect(CHECKPOINT_SYNC_DEADLINE_MS).toBeGreaterThan(0);
-  });
-
-  test('a failing server is fail-open too', async () => {
-    const updateWorker = mock(async () => { throw new Error('ECONNREFUSED'); });
-    const worker = makeWorker();
-    expect(await runCheckpointSweep(worker, 'pre_push', { buildd: { updateWorker } as any, addMilestone: () => {} })).toBeNull();
-    expect(worker.pathClaimDegraded).toBe(1);
-  });
-
-  test('no worktree, or nothing changed: no server call', async () => {
-    const updateWorker = mock(async () => ({}));
-    expect(await runCheckpointSweep(makeWorker({ worktreePath: undefined }), 'pre_push', { buildd: { updateWorker } as any, addMilestone: () => {} })).toBeNull();
-    rmSync(join(work, 'src/from-bash.ts'));
-    expect(await runCheckpointSweep(makeWorker(), 'pre_push', { buildd: { updateWorker } as any, addMilestone: () => {} })).toBeNull();
-    expect(updateWorker).not.toHaveBeenCalled();
-  });
-});
 
 describe('writeCollisionCheckpoint', () => {
   test('commits the dirty worktree and pushes the task branch so a later attempt can resume', () => {

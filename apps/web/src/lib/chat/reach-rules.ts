@@ -44,6 +44,12 @@ export interface RouteReach {
   requireQuery?: readonly string[];
   /** A write addressed only by its body; at least one of these fields must be present (and is reach-checked). */
   requireBody?: readonly string[];
+  /**
+   * Path params that are not ids on their own (a PR number exists once per
+   * repo), meaningful only inside the workspace `requireBody` pins: the route
+   * resolves them within that workspace. Allowed only with `requireBody`.
+   */
+  bodyScopedPath?: readonly string[];
   /** Why this GET needs no request-side pin (rows self-scoped, or no team data). */
   unpinned?: string;
   /**
@@ -78,8 +84,10 @@ export function routeReachProblems(route: { pattern: string; methods: readonly s
   if (!r) return [`${route.pattern}: no reach declaration`];
   const params = route.pattern.split('/').filter(s => s.startsWith(':')).map(s => s.slice(1));
   for (const p of params) {
-    if (!r.path?.some(t => t.param === p)) out.push(`${route.pattern}: path param :${p} has no reach target`);
+    const bodyScoped = !!r.bodyScopedPath?.includes(p) && (r.requireBody?.length ?? 0) > 0;
+    if (!bodyScoped && !r.path?.some(t => t.param === p)) out.push(`${route.pattern}: path param :${p} has no reach target`);
   }
+  if (r.bodyScopedPath?.length && !(r.requireBody?.length)) out.push(`${route.pattern}: bodyScopedPath needs requireBody to pin the scope`);
   for (const t of r.path ?? []) {
     if (!params.includes(t.param)) out.push(`${route.pattern}: reach names :${t.param}, which the pattern lacks`);
   }

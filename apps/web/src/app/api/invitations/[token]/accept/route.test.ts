@@ -1,7 +1,8 @@
 /**
- * POST /api/invitations/[token]/accept — the plan member limit. A full team
- * refuses the join and leaves the invitation pending; someone already in the
- * team takes no new seat and is never refused.
+ * POST /api/invitations/[token]/accept — only the invited address may accept,
+ * and the plan member limit. A full team refuses the join and leaves the
+ * invitation pending; someone already in the team takes no new seat and is
+ * never refused.
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
@@ -10,9 +11,11 @@ const TEAM = '11111111-1111-4111-8111-111111111111';
 const memberInserts: any[] = [];
 const invitationUpdates: any[] = [];
 let existingMember: any = undefined;
+let sessionEmail = 'joiner@example.com';
+let invitedEmail = 'joiner@example.com';
 
 mock.module('@/lib/auth-helpers', () => ({
-  requireSessionUser: async () => ({ user: { id: 'joiner' } }),
+  requireSessionUser: async () => ({ user: { id: 'joiner', email: sessionEmail } }),
 }));
 
 let capacity: any = { ok: true };
@@ -39,7 +42,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       teamInvitations: {
         findFirst: async () => ({
-          id: 'inv', teamId: TEAM, role: 'member', status: 'pending',
+          id: 'inv', teamId: TEAM, email: invitedEmail, role: 'member', status: 'pending',
           expiresAt: new Date(Date.now() + 86_400_000),
         }),
       },
@@ -64,6 +67,29 @@ beforeEach(() => {
   existingMember = undefined;
   capacity = { ok: true };
   capacityCalls.length = 0;
+  sessionEmail = 'joiner@example.com';
+  invitedEmail = 'joiner@example.com';
+});
+
+describe('POST /api/invitations/[token]/accept — only the invited address', () => {
+  it('matches the address case-insensitively and ignoring surrounding space', async () => {
+    invitedEmail = ' Joiner@Example.com ';
+    const res = await accept();
+    expect(res.status).toBe(200);
+    expect(memberInserts).toHaveLength(1);
+  });
+
+  it('403s a signed-in user whose address differs, naming the masked invited address', async () => {
+    sessionEmail = 'someone-else@example.com';
+    invitedEmail = 'maria@acme.dev';
+    const res = await accept();
+    expect(res.status).toBe(403);
+    const { error } = await res.json();
+    expect(error).toContain('m***@acme.dev');
+    expect(error).not.toContain('maria@acme.dev');
+    expect(memberInserts).toHaveLength(0);
+    expect(invitationUpdates).toHaveLength(0);
+  });
 });
 
 describe('POST /api/invitations/[token]/accept — plan member limit', () => {

@@ -365,7 +365,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     );
   });
 
-  it('does not trigger Pusher when no priority is set', async () => {
+  it('a queued message wakes the runner with a text-free deliver_pending, whatever the priority', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -383,10 +383,37 @@ describe('POST /api/workers/[id]/instruct', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);
-    expect(data.message).toContain('queued for delivery');
+    expect(data.message).toContain('Queued');
 
-    // Pusher should NOT be called for non-urgent instructions
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    // Delivery no longer waits for the worker to happen to be syncing: the
+    // runner is woken to collect from the queue. The text never rides Pusher.
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    const [, event, payload] = (mockTriggerEvent.mock.calls[0] as unknown) as [string, string, any];
+    expect(event).toBe('worker:command');
+    expect(payload.action).toBe('deliver_pending');
+    expect(payload.text).toBeUndefined();
+  });
+
+  it('B-5: urgent to an ack-capable runner pushes deliver_pending with no text', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: WORKER_ID,
+      status: 'running',
+      workspace: { teamId: 'team-1', dataClass: 'standard' },
+      instructionHistory: [],
+      pendingInstructions: null,
+      supportsInstructionAck: true,
+    });
+
+    const res = await POST(createMockRequestWithAuth({ message: 'secret-ish text', priority: 'urgent' }, 'bld_admin'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    const payload = (mockTriggerEvent.mock.calls[0] as any)[2];
+    expect(payload).toMatchObject({ action: 'deliver_pending' });
+    expect(JSON.stringify(payload)).not.toContain('secret-ish text');
+    const data = await res.json();
+    expect(typeof data.messageId).toBe('string');
   });
 
   it('allows instructing waiting_input workers', async () => {
@@ -500,6 +527,7 @@ describe('POST /api/workers/[id]/instruct', () => {
       // Queued as a fallback: a Pusher event that reaches nobody is recoverable.
       expect(capturedSet.pendingInstructions).toBe('Stop and pivot');
       expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+      expect((mockTriggerEvent.mock.calls[0] as any)[2].text).toBeUndefined();
     });
 
     // Runners that predate the confirmation protocol would inject the Pusher copy
@@ -698,6 +726,44 @@ describe('POST /api/workers/[id]/instruct', () => {
 
       expect(res.status).toBe(200);
       expect(capturedSet.instructionHistory[0].message).toBe('Use JWT tokens');
+    });
+  });
+
+  // Not an owner route: steering is a role, and an admin of the worker's team
+  // may steer a worker another member's session claimed. The owner rule in
+  // lib/worker-owner.ts must not leak in here.
+  describe("— role path acts on another member's session-claimed worker", () => {
+    const claimedByA = () => ({
+      id: WORKER_ID,
+      status: 'running',
+      accountId: 'account-1',
+      claimedByUserId: 'user-a',
+      workspaceId: 'ws-1',
+      workspace: { teamId: 'team-1', dataClass: 'standard' },
+      instructionHistory: [],
+      pendingInstructions: null,
+    });
+
+    it('an admin-level OAuth session of the team instructs a worker user-a claimed', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin', sessionUserId: 'user-b', scopes: null });
+      mockWorkersFindFirst.mockResolvedValue(claimedByA());
+
+      const res = await POST(createMockRequestWithAuth({ message: 'Rebase' }, 'oauth_token'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockWorkersUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('a worker-level OAuth session of the same team is refused, queueing nothing', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'worker', sessionUserId: 'user-b', scopes: null });
+      mockWorkersFindFirst.mockResolvedValue(claimedByA());
+
+      const res = await POST(createMockRequestWithAuth({ message: 'Rebase' }, 'oauth_token'), { params: mockParams });
+
+      expect(res.status).toBe(401);
+      expect(mockWorkersUpdate).not.toHaveBeenCalled();
     });
   });
 });

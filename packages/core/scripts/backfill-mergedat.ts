@@ -17,6 +17,7 @@
 
 import { db } from '../db/index';
 import { workers, workspaces, githubInstallations, githubRepos } from '../db/schema';
+import { recordPrFact } from '../pr-facts';
 import { and, isNull, isNotNull, eq } from 'drizzle-orm';
 import { createSign, createPrivateKey } from 'crypto';
 
@@ -154,17 +155,13 @@ async function main() {
 
         if (pr.merged && pr.merged_at) {
           if (!DRY_RUN) {
-            await db.update(workers)
-              .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', updatedAt: new Date() })
-              .where(eq(workers.id, worker.id));
+            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: pr.merged_at });
           }
           console.log(`  PR #${worker.prNumber}: merged at ${pr.merged_at}${DRY_RUN ? ' [dry]' : ' ✓'}`);
           counts.stamped++;
         } else if (pr.state === 'closed') {
           if (!DRY_RUN) {
-            await db.update(workers)
-              .set({ prLifecycleStatus: 'closed', updatedAt: new Date() })
-              .where(eq(workers.id, worker.id));
+            await recordPrFact({ workerId: worker.id }, { kind: 'closed' });
           }
           console.log(`  PR #${worker.prNumber}: closed (no merge)${DRY_RUN ? ' [dry]' : ' ✓'}`);
           counts.closed++;

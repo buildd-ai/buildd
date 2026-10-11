@@ -79,7 +79,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const canAccess = async (workspaceId: string): Promise<boolean> =>
     apiAccount
       ? tokenWorkspaceAllowed(apiAccount.workspaceIds, workspaceId) && taskScopeAllowsWorkspace(apiAccount, workspaceId)
-        && verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
+        && verifyAccountWorkspaceAccess(apiAccount, workspaceId)
       : !!(await verifyWorkspaceAccess(user!.id, workspaceId));
 
   const run = await loadScoutRunScope(id);

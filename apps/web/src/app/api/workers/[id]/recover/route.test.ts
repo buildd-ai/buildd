@@ -200,3 +200,70 @@ describe('POST /api/workers/[id]/recover', () => {
     });
   });
 });
+
+describe('POST /api/workers/[id]/recover — OAuth session owner check', () => {
+  // Invariant: a bearer caller may recover only a worker it claimed. An OAuth
+  // session shares its account with the whole team, so ownership is the session
+  // user recorded at claim (claimedByUserId), not the account. Recovering a
+  // teammate's worker goes through the dashboard cookie path, which checks
+  // workspace membership instead.
+  const oauthWorker = { ...baseWorker, workspaceId: 'workspace-1', claimedByUserId: 'user-a' };
+  const session = (sessionUserId: string, extra: Record<string, unknown> = {}) =>
+    ({ id: 'account-1', teamId: 'team-1', sessionUserId, level: 'admin', ...extra });
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockTriggerEvent.mockClear();
+    mockUpdate.mockClear();
+    mockUpdateSet.mockClear();
+    mockUpdateWhere.mockClear();
+    mockUpdateReturning.mockClear();
+
+    mockUpdateReturning.mockReturnValue([{ id: WORKER_ID }]);
+    mockUpdateWhere.mockReturnValue({ returning: mockUpdateReturning });
+    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
+    mockUpdate.mockReturnValue({ set: mockUpdateSet });
+
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    mockWorkersFindFirst.mockResolvedValue({ ...oauthWorker });
+  });
+
+  it('the session user that claimed the worker is allowed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session('user-a'));
+    const res = await POST(createRequest({ mode: 'diagnose' }, 'oauth-token'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockUpdateSet).toHaveBeenCalledTimes(1);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('another member of the same team on the same account is refused, and nothing is written', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session('user-b'));
+    // A dashboard cookie for the same person must not rescue the bearer path.
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-b' });
+    const res = await POST(createRequest({ mode: 'diagnose' }, 'oauth-token'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it("the dashboard cookie session still recovers a teammate's worker via workspace access", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-b' });
+    const res = await POST(createRequest({ mode: 'diagnose' }), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-b', 'workspace-1');
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('a session with no team id is refused even when the user matches', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session('user-a', { teamId: null }));
+    const res = await POST(createRequest({ mode: 'diagnose' }, 'oauth-token'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+});

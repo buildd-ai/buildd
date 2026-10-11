@@ -26,9 +26,9 @@ export default function Section({ title, count, action, id, children, className 
   return (
     <section id={id} aria-labelledby={headingId} className={`py-4 ${className}`}>
       <div className="mb-3 flex items-center justify-between gap-3">
-        <Eyebrow as="h2" id={headingId}>
+        <Eyebrow as="h2" id={headingId} tone="muted">
           {title}
-          {count != null && <span className="ml-2 text-text-muted">{count}</span>}
+          {count != null && <span className="ml-2 font-mono font-normal">{count}</span>}
         </Eyebrow>
         {action}
       </div>

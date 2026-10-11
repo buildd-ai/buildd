@@ -202,7 +202,7 @@ describe('runPromptEval: no eval set, never a fake score', () => {
   it('an unchanged set whose id is not in the run writes no row at all', async () => {
     const { deps: d, rec } = deps();
     await runPromptEval({ trigger: 'push', ref: 'abc' }, d);
-    // task_role and heartbeat_triage are not in the pushed text: nothing to say about them.
+    // task_role is not in the pushed text: nothing to say about it.
     expect(rec.results.map(r => r.promptId)).toEqual([TASK_CATEGORY_PROMPT_ID]);
   });
 });

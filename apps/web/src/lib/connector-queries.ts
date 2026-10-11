@@ -2,8 +2,10 @@ import { db } from '@buildd/core/db';
 import { workspaces, connectors, connectorShares, connectorWorkspaces, secrets } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
 
-export type ConnectorLiveStatus = 'ok' | 'auth_expired' | 'unreachable' | 'disabled';
+/** 'blocked' = the team's catalog policy forbids agents from using it (connector and credential kept). */
+export type ConnectorLiveStatus = 'ok' | 'auth_expired' | 'unreachable' | 'disabled' | 'blocked';
 
 export interface MountedConnectorSummary {
   id: string;
@@ -57,9 +59,10 @@ export async function listMountedConnectors(
   const mountedIds = cwRows.map(r => r.connectorId);
   const connectorRows = await db.query.connectors.findMany({
     where: inArray(connectors.id, mountedIds),
-    columns: { id: true, name: true, authMode: true, teamId: true },
+    columns: { id: true, name: true, authMode: true, teamId: true, url: true },
   });
   const connectorMap = new Map(connectorRows.map(c => [c.id, c]));
+  const blockedCatalogs = await loadBlockedCatalogs([teamId, ...connectorRows.map(c => c.teamId)]);
 
   // Fetch credential secrets for auth-mode connectors (keyed on owner team)
   const ownerTeamIds = [...new Set(connectorRows.map(c => c.teamId).filter(Boolean))] as string[];
@@ -83,6 +86,8 @@ export async function listMountedConnectors(
     let status: ConnectorLiveStatus;
     if (!cw.enabled) {
       status = 'disabled';
+    } else if (connectorBlock(connector, teamId, blockedCatalogs)) {
+      status = 'blocked';
     } else if (connector.authMode === 'none') {
       status = 'ok';
     } else {

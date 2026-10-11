@@ -1,5 +1,7 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, it, expect } from 'bun:test';
-import { insightsStats } from './InsightsStats';
+import { InsightsStats, insightsStats } from './InsightsStats';
 import { readoutIndex } from './FlowChart';
 
 const base = {
@@ -48,4 +50,10 @@ describe('readoutIndex', () => {
   it('shows nothing when there are no buckets', () => {
     expect(readoutIndex(null, null, -1)).toBeNull();
   });
+});
+
+it('stat labels use sentence case without tracked caps', () => {
+  const html = renderToStaticMarkup(createElement(InsightsStats, { headline: base as any }));
+  expect(html).not.toMatch(/upper[c]ase/);
+  expect(html).not.toMatch(/tracking\x2d\[2px\]/);
 });

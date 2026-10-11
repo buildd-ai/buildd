@@ -7,7 +7,7 @@ import type { FirstTaskState, GettingStartedChecklist as Checklist, GettingStart
 import { AGENT_CREDENTIAL_HREF } from '@/lib/provider-auth-failure';
 
 /** Settings → Model providers → Agent model endpoint (OpenRouter, LiteLLM). */
-export const AGENT_ENDPOINT_HREF = '/app/settings/providers#agent-endpoint-h';
+export const AGENT_ENDPOINT_HREF = '/app/settings/models#agent-endpoint-h';
 
 const TITLES: Record<GettingStartedStepId, string> = {
   runner: 'Connect a runner',
@@ -67,58 +67,84 @@ function StepBody({ id, taskState }: { id: GettingStartedStepId; taskState?: Fir
 /**
  * Home's one getting-started list (lib/getting-started.ts): runner, agent key,
  * a first task that succeeded, in order. A done step folds to its title and a Done chip; the
- * current step shows how. The host renders nothing once `visible` is false.
+ * current step shows how. Once 2 of 3 are done the whole list folds to one line
+ * naming the last step, with the steps one click away. The host renders nothing
+ * once `visible` is false.
  */
-export default function GettingStartedChecklist({ checklist, chatSetupHref }: { checklist: Checklist; chatSetupHref?: string | null }) {
+export default function GettingStartedChecklist({ checklist, chatSetupHref, headingId = 'getting-started-h' }: {
+  checklist: Checklist; chatSetupHref?: string | null;
+  /** Unique per instance: Home renders a phone and a desktop copy in one document. */
+  headingId?: string;
+}) {
   const total = checklist.steps.length;
+  const current = checklist.steps.find((s) => s.current);
+  const steps = (
+    <ol className="divide-y divide-border-default border-t border-border-default">
+      {checklist.steps.map((step, i) => (
+        <li
+          key={step.id}
+          data-testid={`getting-started-${step.id}`}
+          data-done={step.done ? 'true' : 'false'}
+          aria-current={step.current ? 'step' : undefined}
+          className="flex items-start gap-3 px-4 py-3 md:px-5"
+        >
+          <span
+            aria-hidden="true"
+            className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center border font-mono text-meta ${
+              step.done
+                ? 'border-status-success text-status-success'
+                : step.current
+                  ? 'border-primary text-accent-text'
+                  : 'border-border-default text-text-muted'
+            }`}
+          >
+            {step.done ? '✓' : i + 1}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`text-title ${step.done ? 'text-text-secondary' : 'text-text-primary'}`}>{TITLES[step.id]}</span>
+              {step.done && <Chip tone="success" variant="soft">Done</Chip>}
+            </div>
+            {!step.done && (
+              <div className="mt-1">
+                <StepBody id={step.id} taskState={step.taskState} />
+              </div>
+            )}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+  const footer = chatSetupHref && (
+    <p className="border-t border-border-default px-4 py-3 md:px-5 text-meta text-text-muted">
+      Chat with your agent uses a model key too.{' '}
+      <Link href={chatSetupHref} className="text-accent-text hover:underline">Model providers</Link>
+    </p>
+  );
+
+  if (checklist.doneCount >= 2 && current) {
+    return (
+      <details className="card group mb-6 p-0" data-testid="getting-started" data-collapsed="true" aria-labelledby={headingId}>
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 px-4 py-2 md:px-5 [&::-webkit-details-marker]:hidden">
+          <Eyebrow as="h2" id={headingId} tone="accent" className="shrink-0">Get started · {checklist.doneCount} of {total}</Eyebrow>
+          <span className="min-w-0 flex-1 truncate text-body text-text-primary">Next: {TITLES[current.id]}</span>
+          <span aria-hidden="true" className="shrink-0 font-mono text-meta text-text-muted transition-transform group-open:rotate-90">›</span>
+        </summary>
+        {steps}
+        {footer}
+      </details>
+    );
+  }
+
   return (
-    <section className="card mb-8 p-0" data-testid="getting-started" aria-labelledby="getting-started-h">
+    <section className="card mb-8 p-0" data-testid="getting-started" aria-labelledby={headingId}>
       <div className="px-4 pt-4 pb-3 md:px-5">
-        <Eyebrow as="h2" id="getting-started-h" tone="accent">
+        <Eyebrow as="h2" id={headingId} tone="accent">
           Get started · {checklist.doneCount} of {total}
         </Eyebrow>
       </div>
-      <ol className="divide-y divide-border-default border-t border-border-default">
-        {checklist.steps.map((step, i) => (
-          <li
-            key={step.id}
-            data-testid={`getting-started-${step.id}`}
-            data-done={step.done ? 'true' : 'false'}
-            aria-current={step.current ? 'step' : undefined}
-            className="flex items-start gap-3 px-4 py-3 md:px-5"
-          >
-            <span
-              aria-hidden="true"
-              className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center border font-mono text-meta ${
-                step.done
-                  ? 'border-status-success text-status-success'
-                  : step.current
-                    ? 'border-primary text-accent-text'
-                    : 'border-border-default text-text-muted'
-              }`}
-            >
-              {step.done ? '✓' : i + 1}
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={`text-title ${step.done ? 'text-text-secondary' : 'text-text-primary'}`}>{TITLES[step.id]}</span>
-                {step.done && <Chip tone="success" variant="soft">Done</Chip>}
-              </div>
-              {!step.done && (
-                <div className="mt-1">
-                  <StepBody id={step.id} taskState={step.taskState} />
-                </div>
-              )}
-            </div>
-          </li>
-        ))}
-      </ol>
-      {chatSetupHref && (
-        <p className="border-t border-border-default px-4 py-3 md:px-5 text-meta text-text-muted">
-          Chat with your agent uses a model key too.{' '}
-          <Link href={chatSetupHref} className="text-accent-text hover:underline">Model providers</Link>
-        </p>
-      )}
+      {steps}
+      {footer}
     </section>
   );
 }

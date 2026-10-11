@@ -138,6 +138,28 @@ mock.module('@/lib/pr-merge-stamp', () => ({
   noRowOfPrMerged: () => ({ op: 'noRowOfPrMerged' }),
 }));
 
+// PR fact funnel: every lifecycle/merge fact goes through `recordPrFact` (its
+// terminal-wins SQL is covered on real Postgres by tests/db/pr-facts.test.ts);
+// only bookkeeping clocks go through `db.update(workers).set(...)`. Tests
+// assert the fact handed over plus the bookkeeping write.
+type RecordedFact = { target: any; fact: any; opts?: any };
+const recordedFacts: RecordedFact[] = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w1', taskId: 't1', workspaceId: 'ws1', previousStatus: null }];
+  },
+}));
+
+// Kernel import on merge/close is best-effort; no real kernel code runs here.
+const mockObservePrState = mock(async (_input: any) => false);
+mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState }));
+
+beforeEach(() => {
+  recordedFacts.length = 0;
+  mockObservePrState.mockClear();
+});
+
 // ─── Import after mocks ───────────────────────────────────────────────────────
 
 import {
@@ -197,6 +219,7 @@ describe('refreshWorkerMergeStateIfStale', () => {
   });
 
   it('calls GitHub API and stamps mergedAt when PR is merged', async () => {
+    mockStampPrMergedOnAllRows.mockClear();
     mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
     const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
     mockWorkersUpdate.mockReturnValue({ set: setMock });
@@ -208,9 +231,16 @@ describe('refreshWorkerMergeStateIfStale', () => {
 
     expect(result).toBe(true);
     expect(mockGithubApi).toHaveBeenCalledWith(456, '/repos/owner/repo/pulls/55');
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'merged' }),
-    );
+    // The merge fact (GitHub's merged_at) goes through the funnel via the stamp;
+    // the row's own write carries bookkeeping only.
+    expect(mockStampPrMergedOnAllRows).toHaveBeenCalledTimes(1);
+    expect(mockStampPrMergedOnAllRows.mock.calls[0][0].mergedAt).toBe('2026-03-01T10:00:00Z');
+    expect(setMock).toHaveBeenCalledWith({
+      prLastCheckedAt: expect.any(Date),
+      prLastVerifiedAt: expect.any(Date),
+      prCheckFailureCount: 0,
+      updatedAt: expect.any(Date),
+    });
   });
 
   it('stamps the merge on every other row carrying the PR (read-through tier)', async () => {
@@ -226,7 +256,7 @@ describe('refreshWorkerMergeStateIfStale', () => {
     expect(mockStampPrMergedOnAllRows).toHaveBeenCalledWith(expect.objectContaining({
       prUrl: 'https://github.com/owner/repo/pull/55',
       prNumber: 55,
-      mergedAt: new Date('2026-03-01T10:00:00Z'),
+      mergedAt: '2026-03-01T10:00:00Z',
     }));
   });
 
@@ -357,9 +387,19 @@ describe('reconcileStalePrWorkers', () => {
     expect(result.stamped).toBe(1);
     expect(result.closed).toBe(0);
     expect(result.skipped).toBe(0);
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'merged' }),
-    );
+    // The merge fact goes through the funnel (via the stamp, GitHub's merged_at);
+    // the row's own write is bookkeeping only.
+    expect(mockStampPrMergedOnAllRows).toHaveBeenCalledWith(expect.objectContaining({ mergedAt: '2026-01-01T00:00:00Z' }));
+    expect(setMock).toHaveBeenCalledWith({
+      prLastCheckedAt: expect.any(Date),
+      prLastVerifiedAt: expect.any(Date),
+      prCheckFailureCount: 0,
+      updatedAt: expect.any(Date),
+    });
+    // A lost webhook: the kernel-owned delivery imports the same fact.
+    expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 42, installationId: 123, source: 'sweep:pr-reconcile',
+    }));
   });
 
   it('stamps the merge on every other row carrying the PR (cron tier)', async () => {
@@ -376,7 +416,7 @@ describe('reconcileStalePrWorkers', () => {
     expect(mockStampPrMergedOnAllRows).toHaveBeenCalledWith(expect.objectContaining({
       prUrl: 'https://github.com/owner/repo/pull/42',
       prNumber: 42,
-      mergedAt: new Date('2026-01-01T00:00:00Z'),
+      mergedAt: '2026-01-01T00:00:00Z',
     }));
   });
 
@@ -411,12 +451,13 @@ describe('reconcileStalePrWorkers', () => {
 
     expect(result.closed).toBe(1);
     expect(result.stamped).toBe(0);
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'closed' }),
-    );
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: undefined }]);
     // AC-4: closed is a confirmed GitHub answer too — both clocks advance.
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.prLastCheckedAt).toBeInstanceOf(Date);
     expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
+    expect(written.prLifecycleStatus).toBeUndefined();
+    expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 99, source: 'sweep:pr-reconcile' }));
   });
 
   it('leaves an open PR open, recording only that it was checked', async () => {
@@ -438,6 +479,7 @@ describe('reconcileStalePrWorkers', () => {
     expect(written.prLastCheckedAt).toBeInstanceOf(Date);
     expect(written.prLifecycleStatus).toBeUndefined();
     expect(written.mergedAt).toBeUndefined();
+    expect(recordedFacts).toEqual([]);
     // AC-2/AC-4: a confirmed-still-open answer is a real GitHub answer, so the
     // verification clock advances too — this row is NOT the failure case.
     expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
@@ -468,9 +510,11 @@ describe('reconcileStalePrWorkers', () => {
 
     expect(result.conflictsDetected).toBe(1);
     expect(result.skipped).toBe(1);
+    // The funnel sets prLifecycleStatus=conflict and a first-seen conflictDetectedAt.
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'conflict' }, opts: undefined }]);
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
-    expect(written.prLifecycleStatus).toBe('conflict');
-    expect(written.conflictDetectedAt).toBeInstanceOf(Date);
+    expect(written.prLifecycleStatus).toBeUndefined();
+    expect(written.conflictDetectedAt).toBeUndefined();
     // A real GitHub answer — the verification clock advances too.
     expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
   });
@@ -489,6 +533,7 @@ describe('reconcileStalePrWorkers', () => {
     const result = await reconcileStalePrWorkers();
 
     expect(result.conflictsDetected).toBe(0);
+    expect(recordedFacts).toEqual([]);
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
     expect(written.conflictDetectedAt).toBeUndefined();
     expect(written.prLifecycleStatus).toBeUndefined();
@@ -507,6 +552,7 @@ describe('reconcileStalePrWorkers', () => {
     const result = await reconcileStalePrWorkers();
 
     expect(result.conflictsDetected).toBe(0);
+    expect(recordedFacts).toEqual([]);
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
     expect(written.conflictDetectedAt).toBeUndefined();
     expect(written.prLifecycleStatus).toBeUndefined();
@@ -601,9 +647,12 @@ describe('reconcileStalePrWorkers', () => {
     const result = await reconcileStalePrWorkers();
 
     expect(result.unresolvable).toBe(1);
+    expect(recordedFacts).toHaveLength(1);
+    expect(recordedFacts[0].target).toEqual({ workerId: 'w1' });
+    expect(recordedFacts[0].fact.kind).toBe('unresolvable');
+    expect(recordedFacts[0].fact.reason).toContain('Not Found');
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
-    expect(written.prLifecycleStatus).toBe('unresolvable');
-    expect(written.prUnresolvableReason).toContain('Not Found');
+    expect(written.prLifecycleStatus).toBeUndefined();
     expect(written.prCheckFailureCount).toBe(UNRESOLVABLE_FAILURE_THRESHOLD);
     // AC-2/AC-5: going terminal is buildd giving up, not GitHub confirming
     // anything — the verification clock must stay untouched even here.
@@ -631,6 +680,7 @@ describe('reconcileStalePrWorkers', () => {
     // A GitHub incident must not condemn a PR that opened an hour ago.
     expect(result.unresolvable).toBe(0);
     expect((setMock.mock.calls[0][0] as Record<string, unknown>).prLifecycleStatus).toBeUndefined();
+    expect(recordedFacts).toEqual([]);
   });
 
   it('clears the failure streak when a row resolves again', async () => {
@@ -1343,9 +1393,12 @@ describe('reconcileStalePrWorkers repo resolution', () => {
 
     expect(mockGithubApi).toHaveBeenCalledWith(789, '/repos/owner/repo/pulls/58');
     expect(result.stamped).toBe(1);
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'merged' }),
-    );
+    expect(mockStampPrMergedOnAllRows).toHaveBeenCalledWith(expect.objectContaining({
+      prUrl: 'https://github.com/owner/repo/pull/58',
+      prNumber: 58,
+      mergedAt: '2026-06-05T22:43:47Z',
+    }));
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ prLastVerifiedAt: expect.any(Date) }));
   });
 
   it('records a failure, not a clean check, when no repo resolves from either source', async () => {

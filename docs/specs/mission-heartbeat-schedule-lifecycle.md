@@ -178,19 +178,15 @@ completes to fire that trigger via the existing task-completion-driven path
   rescheduling `nextRunAt`. *(Implemented — PR #2277/#2300, regression-tested
   by `apps/web/src/app/api/cron/schedules/route.test.ts`.)*
 - AC-4: [GIVEN a `task_schedules` row with `enabled=false`] WHEN it is
-  rendered on Health, the Schedules page, or mission detail THEN its
+  rendered on Health, a workspace's schedules, or mission detail THEN its
   `lastError` (if any) MUST NOT be rendered as an active/current warning —
   it can only be from before the row was disabled. *(Implemented —
   `isScheduleErrorLive` in `apps/web/src/lib/schedule-health.ts`, gating
-  `HealthClient.tsx`, `SchedulesUnified.tsx`, and `ScheduleList.tsx`; see
-  slice 4.)*
-- AC-5: [GIVEN the Schedules page's existing `type` classification
-  (`heartbeat` / `cron-mission` / `workspace-schedule`)] WHEN the page loads
-  with no explicit filter THEN heartbeat-type rows are grouped separately
-  from user-owned rows by default, matching Health's existing collapsed
-  subgroup — not merged into one flat list requiring a manual filter click.
-  *(Implemented — collapsed heartbeat group in `SchedulesUnified.tsx`; see
-  slice 3.)*
+  `HealthClient.tsx` and `ScheduleList.tsx`; see slice 4.)*
+- AC-5: *(Retired 2026-10 with the cross-workspace Schedules page. A schedule
+  is shown where it is configured: a heartbeat or mission cron on its
+  mission, a workspace schedule on the workspace's schedules; `/app/schedules`
+  redirects there. There is no mixed list left to group.)*
 
 - AC-6: [GIVEN an auto mission with a heartbeat schedule whose prepass
   reports `invoke_llm`] WHEN its cron tick fires THEN the organizer is

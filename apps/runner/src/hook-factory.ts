@@ -4,10 +4,11 @@ import { isPathDeniedByReadJail, resolveToolPath } from './read-jail.js';
 import { findWorktreeEscape, findWriteEscape } from './worktree-confinement.js';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS, classifyArtifactToolCall, isClaudeAiArtifactTool, type ClaudeAiArtifactAccess } from '@buildd/shared';
 import { readFileSync } from 'fs';
+import { looksLikeMergeCommand, reportAgentMerges } from './merge-drivers';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
 import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js';
-import { BUILDD_MCP_TOOL_NAME } from './action-events';
+import { isBuilddActionTool } from '@buildd/shared';
 import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 import { runnerDenial } from './runner-denial.js';
 import { questionFromToolInput, runQuestionGate } from './question-gate.js';
@@ -25,8 +26,20 @@ import {
   type CollisionSource,
 } from './path-claim-enforcement.js';
 
+import type { ShipCheckpointResult } from './ship-checkpoint';
+
 /** Re-exported: the hook's backstop deadline lives beside the request timeout it must exceed. */
 export { PATH_CLAIM_HOOK_DEADLINE_MS };
+
+/** One line on why a ship checkpoint could not prove coverage. */
+function describeUnknown(r: Extract<ShipCheckpointResult, { kind: 'unknown' }>): string {
+  const cause = r.cause === 'sweep_incomplete'
+    ? 'the task-owned file set could not be computed from git'
+    : r.cause === 'server_rejected'
+      ? 'the coordinator did not acknowledge the file set'
+      : `the coordinator was unreachable: ${r.cause}`;
+  return `${cause}${r.attempts > 0 ? ` after ${r.attempts} attempt(s)` : ''}${r.detail ? `; ${r.detail}` : ''}`;
+}
 
 /**
  * Deny-reason parts once a checkpoint collision is recorded, spread into
@@ -256,6 +269,11 @@ export class HookFactory {
   private recordDegraded(worker: LocalWorker, paths: string[], reason: string) {
     const first = !worker.pathClaimDegraded;
     worker.pathClaimDegraded = (worker.pathClaimDegraded ?? 0) + 1;
+    // Attributed by cause so the ledger can tell a timeout from a network/5xx
+    // error (PR #3487's distinction) instead of one "unavailable" bucket.
+    const byCause = worker.pathClaimDegradedByCause ?? { timeout: 0, error: 0 };
+    byCause[reason === 'timeout' ? 'timeout' : 'error'] += 1;
+    worker.pathClaimDegradedByCause = byCause;
     console.log(`[Worker ${worker.id}] Path-claim unavailable (${reason}) for ${paths.join(', ')} — queued; enforcement degraded`);
     if (first) {
       this.ctx.addMilestone(worker, {
@@ -267,48 +285,92 @@ export class HookFactory {
   }
 
   /**
-   * Checkpoint guard (enforce mode, Claude only): before a ship — `git push`,
-   * `gh pr create`, buildd `create_pr` or a non-error `complete_task` — sweep
-   * the worktree against the task's PR base and offer it to the server. A
-   * collision found there refuses the ship and starts the deferral; a sweep
-   * that could not reach the server lets it through (bounded fail-open).
+   * Ship checkpoint guard (Claude only, both modes): before a ship — `git
+   * push`, `gh pr create`, buildd `create_pr` or a non-error `complete_task` —
+   * recompute the task's whole owned file set and reconcile it with the server
+   * (ship-checkpoint.ts). The ship goes ahead only on a server ACK proving
+   * complete coverage.
+   *
+   * Enforce mode fails CLOSED: a blocked path refuses the ship and starts the
+   * deferral; coverage the server could not confirm (timeout, network error,
+   * an unresolvable base) refuses the ship too, with the cause, and the agent
+   * retries once coordination is back. Nothing ships on unknown coverage.
+   *
+   * Advisory mode still reconciles — the leases it leaves behind are what
+   * protect every sibling — but reports rather than refuses: a blocked path is
+   * logged, unknown coverage is recorded as `coverage_unknown_at_ship` on the
+   * ledger via the next sync.
    *
    * This is checkpoint enforcement, not a pre-edit guarantee: a Bash write is
    * found here after it happened.
    */
   createPathCheckpointGuardHook(
     worker: LocalWorker,
-    sweep: (worker: LocalWorker, source: CollisionSource) => Promise<PathCollision | null>,
+    checkpoint: (worker: LocalWorker, source: CollisionSource) => Promise<ShipCheckpointResult>,
   ): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
-      if (worker.pathClaimMode !== 'enforce') return {};
       const toolName = (input as any).tool_name as string;
       const toolInput = ((input as any).tool_input ?? {}) as Record<string, any>;
+      const enforce = worker.pathClaimMode === 'enforce';
 
       let source: CollisionSource | null = null;
       let what = '';
       if (toolName === 'Bash' && isShipCommand(toolInput.command)) {
         source = 'pre_push'; what = 'this push';
-      } else if (toolName === BUILDD_MCP_TOOL_NAME) {
+      } else if (isBuilddActionTool(toolName)) {
         if (toolInput.action === 'create_pr') { source = 'pre_push'; what = 'create_pr'; }
         else if (toolInput.action === 'complete_task' && !toolInput.params?.error) { source = 'completion'; what = 'complete_task'; }
       }
       if (!source) return {};
 
-      if (!worker.pathCollision) {
-        let found: PathCollision | null = null;
-        try {
-          found = await sweep(worker, source);
-        } catch (err) {
-          console.warn(`[Worker ${worker.id}] Checkpoint sweep failed (${source}) — allowing: ${err instanceof Error ? err.message : String(err)}`);
+      if (enforce && worker.pathCollision) {
+        return denyPreToolUse(runnerDenial(...collisionDenial(worker.pathCollision, what)));
+      }
+
+      let result: ShipCheckpointResult;
+      try {
+        result = await checkpoint(worker, source);
+      } catch (err) {
+        // A checkpoint that crashed proved nothing. Same as unreachable.
+        result = { kind: 'unknown', cause: 'error', attempts: 1, detail: err instanceof Error ? err.message.split('\n')[0] : String(err) };
+      }
+
+      if (result.kind === 'complete') return {};
+
+      if (result.kind === 'blocked') {
+        if (!enforce) {
+          console.log(`[Worker ${worker.id}] Ship checkpoint advisory (${source}): ${result.collision.path} is held by ${result.collision.blockingTaskId}`);
           return {};
         }
-        if (!found) return {};
-        worker.pathCollision = found;
-        this.ctx.onPathCollision?.(worker, found);
+        worker.pathCollision = result.collision;
+        this.ctx.onPathCollision?.(worker, result.collision);
+        return denyPreToolUse(runnerDenial(...collisionDenial(worker.pathCollision, what)));
       }
-      return denyPreToolUse(runnerDenial(...collisionDenial(worker.pathCollision, what)));
+
+      // Coverage unknown. Record it for the server (it was unreachable, so the
+      // next sync that lands carries the report), milestone it once per cause,
+      // and in enforce mode refuse the ship — fail closed.
+      const checkpointSource = source === 'completion' ? 'completion' : 'pre_push';
+      worker.pendingShipReports = [
+        ...(worker.pendingShipReports ?? []).slice(-19),
+        { source: checkpointSource, result: 'unknown', cause: result.cause, refused: enforce, attempts: result.attempts, at: Date.now() },
+      ];
+      const label = `Ship checkpoint: path coverage unknown (${result.cause}) — ${enforce ? 'ship refused until coordination answers' : 'allowed; advisory mode'}`;
+      worker.shipCoverageMilestones ??= [];
+      if (!worker.shipCoverageMilestones.includes(label)) {
+        worker.shipCoverageMilestones.push(label);
+        this.ctx.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+      }
+      storeSaveWorker(worker);
+      if (!enforce) {
+        console.log(`[Worker ${worker.id}] ${label}`);
+        return {};
+      }
+      return denyPreToolUse(runnerDenial(
+        `${what} is refused: buildd could not confirm that every file this task changed is coordinated (${describeUnknown(result)}). Nothing ships on unknown coverage`,
+        'wait a moment and retry the same call; the runner re-checks with the coordinator each time. Do not work around it with --no-verify or by skipping create_pr',
+      ));
     };
   }
 
@@ -338,7 +400,7 @@ export class HookFactory {
   ): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
-      if ((input as any).tool_name !== BUILDD_MCP_TOOL_NAME) return {};
+      if (!isBuilddActionTool((input as any).tool_name)) return {};
       const toolInput = ((input as any).tool_input ?? {}) as { action?: string; params?: Record<string, unknown> };
       if (toolInput.action !== 'complete_task') return {};
       if (toolInput.params?.error) return {};
@@ -605,9 +667,9 @@ export class HookFactory {
     };
   }
 
-  // Create a PostToolUse hook that captures team events (TeamCreate, SendMessage, Task).
+  // Create a PostToolUse hook that records tool completion as activity.
   // Purely observational — returns {} and never blocks or modifies tool execution.
-  createTeamTrackingHook(worker: LocalWorker): HookCallback {
+  createToolActivityHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PostToolUse') return {};
 
@@ -615,54 +677,29 @@ export class HookFactory {
       worker.lastActivity = Date.now();
       worker.toolInFlight = false;
 
-      const toolName = (input as any).tool_name;
-      const toolInput = (input as any).tool_input as Record<string, unknown>;
-
-      if (toolName === 'TeamCreate') {
-        const teamName = (toolInput.team_name as string) || 'unnamed';
-        worker.teamState = {
-          teamName,
-          members: [],
-          messages: [],
-          createdAt: Date.now(),
-        };
-        this.ctx.addMilestone(worker, { type: 'status', label: `Team created: ${teamName}`, ts: Date.now() });
-        console.log(`[Worker ${worker.id}] Team created: ${teamName}`);
-      }
-
-      if (toolName === 'SendMessage' && worker.teamState) {
-        const msg = {
-          from: (toolInput.sender as string) || 'leader',
-          to: (toolInput.recipient as string) || (toolInput.type === 'broadcast' ? 'broadcast' : 'unknown'),
-          content: (toolInput.content as string) || '',
-          summary: (toolInput.summary as string) || undefined,
-          timestamp: Date.now(),
-        };
-        worker.teamState.messages.push(msg);
-        // Cap at 200 messages
-        if (worker.teamState.messages.length > 200) {
-          worker.teamState.messages.shift();
-        }
-        // Only emit milestone for broadcasts (avoid noise from DMs)
-        if (toolInput.type === 'broadcast') {
-          this.ctx.addMilestone(worker, { type: 'status', label: `Broadcast: ${msg.summary || msg.content.slice(0, 40)}`, ts: Date.now() });
-        }
-      }
-
-      if (toolName === 'Task' && worker.teamState) {
-        const agentName = (toolInput.name as string) || (toolInput.description as string) || 'subagent';
-        const agentType = (toolInput.subagent_type as string) || undefined;
-        worker.teamState.members.push({
-          name: agentName,
-          role: agentType,
-          status: 'active',
-          spawnedAt: Date.now(),
-        });
-        this.ctx.addMilestone(worker, { type: 'status', label: `Subagent: ${agentName}`, ts: Date.now() });
-        console.log(`[Worker ${worker.id}] Subagent spawned: ${agentName}`);
-      }
-
       return {};
+    };
+  }
+
+  // Create a PostToolUse hook that reports what mergiraf did in a merge the
+  // agent ran itself (merge-drivers.ts ledger): a milestone for the record and,
+  // when it resolved code, an instruction to review those files and run their
+  // tests. A non-merge Bash call, or a worker with no drivers, returns {}.
+  createMergeLedgerHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PostToolUse') return {};
+      if ((input as any).tool_name !== 'Bash') return {};
+      const command = (input as any).tool_input?.command;
+      if (typeof command !== 'string' || !looksLikeMergeCommand(command)) return {};
+      try {
+        const context = reportAgentMerges(worker, (label) =>
+          this.ctx.addMilestone(worker, { type: 'status', label, ts: Date.now() }));
+        if (!context) return {};
+        return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: context } };
+      } catch (err) {
+        console.warn(`[Worker ${worker.id}] mergiraf ledger read failed: ${err instanceof Error ? err.message : String(err)}`);
+        return {};
+      }
     };
   }
 
@@ -738,30 +775,6 @@ export class HookFactory {
       }
 
       return {};
-    };
-  }
-
-  // Create a TeammateIdle hook that updates team member status when a teammate goes idle.
-  // Purely observational — emits events for dashboard/Pusher visibility.
-  createTeammateIdleHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'TeammateIdle') return {};
-
-      const teammateName = (input as any).teammate_name as string;
-      const teamName = (input as any).team_name as string;
-
-      // Update team member status if we're tracking team state
-      if (worker.teamState) {
-        const member = worker.teamState.members.find(m => m.name === teammateName);
-        if (member) {
-          member.status = 'idle';
-        }
-      }
-
-      this.ctx.addMilestone(worker, { type: 'status', label: `Teammate idle: ${teammateName}`, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Teammate idle: ${teammateName} (team: ${teamName})`);
-
-      return { async: true };
     };
   }
 
@@ -975,8 +988,8 @@ export class HookFactory {
     };
   }
 
-  // Create a TaskCompleted hook that logs task completions within agent teams.
-  // Emits milestones and updates team state for dashboard visibility.
+  // Create a TaskCompleted hook that logs task-list completions.
+  // Emits milestones for dashboard visibility.
   createTaskCompletedHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'TaskCompleted') return {};
@@ -985,14 +998,6 @@ export class HookFactory {
       const taskSubject = (input as any).task_subject as string;
       const teammateName = (input as any).teammate_name as string | undefined;
       const teamName = (input as any).team_name as string | undefined;
-
-      // Update team member status if completed by a known teammate
-      if (worker.teamState && teammateName) {
-        const member = worker.teamState.members.find(m => m.name === teammateName);
-        if (member) {
-          member.status = 'done';
-        }
-      }
 
       const label = teammateName
         ? `Task done (${teammateName}): ${taskSubject.slice(0, 50)}`
@@ -1005,7 +1010,7 @@ export class HookFactory {
   }
 
   // Create a SubagentStart hook that tracks subagent spawning.
-  // Updates team state and emits milestones for dashboard visibility.
+  // Emits milestones for dashboard visibility.
   createSubagentStartHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'SubagentStart') return {};
@@ -1016,14 +1021,6 @@ export class HookFactory {
       const agentId = (input as any).agent_id as string;
       const agentType = (input as any).agent_type as string;
 
-      // Update team member status if we're tracking team state
-      if (worker.teamState) {
-        const member = worker.teamState.members.find(m => m.name === agentId);
-        if (member) {
-          member.status = 'active';
-        }
-      }
-
       this.ctx.addMilestone(worker, { type: 'status', label: `Subagent started: ${agentType}`, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Subagent started: ${agentType} (id: ${agentId})`);
 
@@ -1032,7 +1029,7 @@ export class HookFactory {
   }
 
   // Create a SubagentStop hook that tracks subagent completion.
-  // Updates team state and emits milestones for dashboard visibility.
+  // Emits milestones for dashboard visibility.
   createSubagentStopHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'SubagentStop') return {};

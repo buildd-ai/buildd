@@ -77,3 +77,7 @@ describe('milestoneLabel', () => {
     expect(milestoneLabel({ type: 'action', label: '  Read file  ' })).toBe('Read file');
   });
 });
+
+test('withheld agent plans still have a type label', () => {
+  expect(milestoneLabel({ type:'plan' })).toBe('Plan');
+});

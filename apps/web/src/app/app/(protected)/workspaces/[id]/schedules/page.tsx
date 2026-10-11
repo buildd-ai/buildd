@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { ScheduleList } from './ScheduleList';
 import { ScheduleForm } from './ScheduleForm';
+import PrimaryAction from '@/components/ui/PrimaryAction';
 
 export default async function SchedulesPage({
   params,
@@ -24,10 +25,8 @@ export default async function SchedulesPage({
 
   if (isDev) {
     return (
-      <main className="min-h-screen p-8">
-        <div className="max-w-4xl mx-auto">
-          <p className="text-text-muted">Development mode · no database</p>
-        </div>
+      <main className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+        <p className="text-text-muted">Development mode · no database</p>
       </main>
     );
   }
@@ -54,38 +53,27 @@ export default async function SchedulesPage({
   });
 
   return (
-    <main className="min-h-screen p-4 md:p-8">
-      <div className="max-w-4xl mx-auto">
-        <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
-          &larr; {workspace.name}
-        </Link>
-
-        <div className="flex flex-wrap justify-between items-start sm:items-center gap-3 mb-8">
+    <main className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+      <div className="max-w-4xl space-y-8">
+        <header className="flex flex-wrap justify-between items-start gap-3">
           <div className="min-w-0">
-            <h1 className="text-2xl md:text-3xl font-bold">Schedules</h1>
-            <p className="text-sm md:text-base text-text-muted mt-1 [overflow-wrap:anywhere]">
-              {schedules.length} schedule{schedules.length !== 1 ? 's' : ''} in {workspace.name}
-              {' · '}
-              <Link href="/app/schedules" className="text-primary hover:underline">
-                View all automation →
+            <h1 className="hidden md:block text-xl font-semibold text-text-primary">Schedules</h1>
+            <p className="text-sm text-text-secondary md:mt-1.5 [overflow-wrap:anywhere]">
+              <span className="font-mono">{schedules.length}</span> schedule{schedules.length !== 1 ? 's' : ''} in{' '}
+              <Link href={`/app/workspaces/${id}`} className="underline hover:text-text-primary">{workspace.name}</Link>.{' '}
+              <Link href="/app/schedules" className="underline hover:text-text-primary">
+                See all automation
               </Link>
             </p>
           </div>
           {!showNew && (
-            <Link
-              href={`/app/workspaces/${id}/schedules?new=1`}
-              className="shrink-0 whitespace-nowrap px-3 py-2 md:px-4 text-sm md:text-base bg-primary text-white hover:bg-primary-hover rounded-lg"
-            >
-              + New Schedule
-            </Link>
+            <PrimaryAction href={`/app/workspaces/${id}/schedules?new=1`} className="shrink-0">
+              New schedule
+            </PrimaryAction>
           )}
-        </div>
+        </header>
 
-        {showNew && (
-          <div className="mb-8">
-            <ScheduleForm workspaceId={id} />
-          </div>
-        )}
+        {showNew && <ScheduleForm workspaceId={id} />}
 
         <ScheduleList workspaceId={id} initialSchedules={JSON.parse(JSON.stringify(schedules))} />
       </div>

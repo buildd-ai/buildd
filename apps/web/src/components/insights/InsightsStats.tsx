@@ -49,11 +49,11 @@ export function InsightsStats({ headline }: { headline: FlowSeries['headline'] }
   return (
     <section
       data-testid="insights-headline"
-      className="card grid grid-cols-2 md:grid-cols-4 md:divide-x divide-border-default [&>*:nth-child(-n+2)]:border-b [&>*:nth-child(-n+2)]:border-border-default md:[&>*:nth-child(-n+2)]:border-b-0"
+      className="border-y border-border-default grid grid-cols-2 md:grid-cols-4 md:divide-x divide-border-default [&>*:nth-child(-n+2)]:border-b [&>*:nth-child(-n+2)]:border-border-default md:[&>*:nth-child(-n+2)]:border-b-0"
     >
       {stats.map(s => (
         <div key={s.id} data-testid={`insights-stat-${s.id}`} className="flex min-w-0 flex-col gap-1 px-4 py-3.5 md:px-5 md:py-4">
-          <span className="text-eyebrow font-bold uppercase tracking-[2px] text-text-muted">{s.label}</span>
+          <span className="text-meta font-medium text-text-muted">{s.label}</span>
           <span className="text-display font-semibold text-text-primary" style={{ fontVariantNumeric: 'tabular-nums' }}>{s.value}</span>
           <span className="truncate text-meta text-text-muted">{s.detail}</span>
         </div>

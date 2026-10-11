@@ -150,6 +150,20 @@ mock.module('@/lib/github', () => ({
   },
 }));
 
+// The PR fact funnel: terminal-wins is proven on real Postgres in
+// tests/db/pr-facts.test.ts; here we assert the fact each write hands over.
+// Not spread from the real module: drizzle-orm above is a partial surface
+// (no `sql`), so the real pr-facts cannot load in this process.
+const recordedFacts: Array<{ target: any; fact: any; opts?: unknown }> = [];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return [{ id: 'w1', taskId: 't1', workspaceId: 'ws1', previousStatus: null }];
+  },
+  recordPrFactSql: () => null,
+  prFactApplies: () => true,
+}));
+
 const {
   MISSION_PR_TASK_PREFIX,
   describeMissionIntegrationTopology,
@@ -193,6 +207,7 @@ beforeEach(() => {
   missionNoteRows = [];
   inserts.length = 0;
   updates.length = 0;
+  recordedFacts.length = 0;
   githubCalls.length = 0;
   githubResponses = {};
   githubThrows = {};
@@ -626,6 +641,11 @@ describe('openMissionIntegrationPr — mission PR body topology', () => {
     expect(ownerUpdate!.setValues.filesChanged).toBe(2);
     expect(ownerUpdate!.setValues.linesAdded).toBe(17);
     expect(ownerUpdate!.setValues.linesRemoved).toBe(3);
+    // The PR's state is a fact on the fact cache, never a bare column write.
+    expect(ownerUpdate!.setValues).not.toHaveProperty('prLifecycleStatus');
+    expect(recordedFacts).toHaveLength(1);
+    expect(recordedFacts[0].fact).toEqual({ kind: 'open' });
+    expect(typeof recordedFacts[0].target.workerId).toBe('string');
   });
 
   it('files the owner task as role-less bookkeeping — a placeholder, not work (role-routing §1 row 9)', async () => {
@@ -830,8 +850,12 @@ describe('openMissionIntegrationPr — owner state', () => {
     expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
     // The owner row records the merge, so every surface reads "merged".
     const stamped = updates.find(u => u.setValues?.prNumber === 71)?.setValues;
-    expect(stamped?.prLifecycleStatus).toBe('merged');
-    expect(stamped?.mergedAt).toEqual(new Date('2026-09-27T10:00:00Z'));
+    expect(stamped).toBeDefined();
+    expect(stamped).not.toHaveProperty('prLifecycleStatus');
+    expect(stamped).not.toHaveProperty('mergedAt');
+    expect(recordedFacts).toHaveLength(1);
+    expect(recordedFacts[0].fact).toEqual({ kind: 'merged', mergedAt: new Date('2026-09-27T10:00:00Z') });
+    expect(typeof recordedFacts[0].target.workerId).toBe('string');
     expect(inserts.some(i => i.values?.taskClass === 'bookkeeping')).toBe(true);
   });
 
@@ -909,6 +933,86 @@ describe('openMissionIntegrationPr — owner state', () => {
 
     expect((r as { reason: string }).reason).toBe("no_commits");
     expect(githubCalls.some(c => c.path.includes("state=closed"))).toBe(false);
+  });
+});
+
+describe('openMissionIntegrationPr — nothing delivered to the branch', () => {
+  // The regression: a research-only mission whose sole task completed with an
+  // artifact and no PR. A mission-branch refresh had merged trunk into the
+  // integration branch, so GitHub reported it one commit ahead — a merge commit
+  // with zero changed files — and the opener, fired on task completion, opened
+  // an empty mission PR, created its bookkeeping owner, and summoned a reviewer.
+
+  it('does not open a PR when no deliverable task landed on the integration branch', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker()]; // completed, artifact only, no PR
+    githubResponses['/compare/'] = { ahead_by: 1, files: [] };
+    githubResponses['/pulls?state=open'] = [];
+    githubResponses['/pulls?state=closed'] = [];
+    githubResponses['/pulls'] = { number: 9, html_url: 'pr-9', base: { ref: 'dev' } };
+
+    const r = await openMissionIntegrationPr(MISSION_ID, { assumeCompletedTaskIds: ['t-1'] });
+
+    expect((r as { reason: string }).reason).toBe('no_commits');
+    expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
+    expect(githubCalls.some(c => c.path.includes('/compare/'))).toBe(false);
+    // No synthetic owner task/worker, no "PR opened" note.
+    expect(inserts).toEqual([]);
+  });
+
+  it('does not open a PR when nothing landed even if the branch has real-looking commits ahead', async () => {
+    // Commits ahead are not proof of deliverable content.
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker()];
+    githubResponses['/compare/'] = { ahead_by: 3, files: [{ filename: 'x.ts' }] };
+    githubResponses['/pulls?state=closed'] = [];
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect((r as { reason: string }).reason).toBe('no_commits');
+    expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
+    expect(inserts).toEqual([]);
+  });
+
+  it('still adopts a mission PR a human opened and merged, even with nothing landed through buildd', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker()];
+    githubResponses['/pulls?state=closed'] = [
+      { number: 74, html_url: 'pr-74', merged_at: '2026-09-27T10:00:00Z', base: { ref: 'dev' } },
+    ];
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect(r).toEqual({ ok: true, prNumber: 74, prUrl: 'pr-74', created: false, merged: true });
+    expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
+  });
+
+  it('does not open a PR when the branch is ahead only by commits that change no files', async () => {
+    // Landed work whose content already reached trunk another way, plus a
+    // refresh merge: commits ahead, empty tree diff. Nothing to review.
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+    githubResponses['/compare/'] = { ahead_by: 2, files: [] };
+    githubResponses['/pulls?state=closed'] = [];
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect((r as { reason: string }).reason).toBe('no_commits');
+    expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
+    expect(inserts).toEqual([]);
+  });
+
+  it('opens the PR for landed work with a real diff', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+    githubResponses['/compare/'] = { ahead_by: 2, files: [{ filename: 'docs/specs/foo.md' }] };
+    githubResponses['/pulls?state=open'] = [];
+    githubResponses['/pulls?state=closed'] = [];
+    githubResponses['/pulls'] = { number: 9, html_url: 'pr-9', base: { ref: 'dev' } };
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect(r).toEqual({ ok: true, prNumber: 9, prUrl: 'pr-9', created: true });
   });
 });
 

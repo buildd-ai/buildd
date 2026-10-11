@@ -145,6 +145,11 @@ describe('POST /api/runner/github-token', () => {
       expect((await (await POST(req())).json()).pushableBranches).toEqual(['buildd/task0001-fix-thing']);
     });
 
+    it("never includes a pinned head that is the task's own base (a mission's integration branch)", async () => {
+      mockTasksFindFirst.mockResolvedValue(taskRow({ context: { headBranch: 'mission/m-abcd1234', baseBranch: 'mission/m-abcd1234' } }));
+      expect((await (await POST(req())).json()).pushableBranches).toEqual(['buildd/task0001-fix-thing']);
+    });
+
     it('never includes a protected branch, even when the task pins one', async () => {
       mockTasksFindFirst.mockResolvedValue(taskRow({ context: { headBranch: 'main' } }));
       expect((await (await POST(req())).json()).pushableBranches).toEqual(['buildd/task0001-fix-thing']);

@@ -1,26 +1,22 @@
 /**
- * Checkpoint enforcement and the collision hand-off
+ * The collision hand-off
  * (knowledge-base: buildd/design/conflict-aware-orchestration.md §2).
  *
- * `runCheckpointSweep` is the pre-push / completion sweep: the worktree's
- * changes against the task's resolved PR base (Bash and untracked writes
- * included) go to the server's exclusive acquisition through the ordinary
- * worker PATCH, and any path another live task holds comes back as a
- * collision. Bounded fail-open: an unreachable server records degraded
- * enforcement and lets the ship through.
+ * The pre-push / completion sweep itself moved to ship-checkpoint.ts, where it
+ * became the fail-closed full reconciliation of the authoritative working set
+ * (docs/specs/path-claim-ownership.md). What stays here is what a confirmed
+ * collision does:
  *
- * `deferOnPathCollision` is what a confirmed collision does in enforce mode:
- * persist the state, write a checkpoint commit, report a `Deferred:` failure
- * (the server requeues that without charging a retry, and records the
- * collision so the claim route holds the task until the holder releases), and
- * end the session. No agent stays alive waiting for a lease.
+ * `deferOnPathCollision` is the enforce-mode response: persist the state,
+ * write a checkpoint commit, report a `Deferred:` failure (the server requeues
+ * that without charging a retry, and records the collision so the claim route
+ * holds the task until the holder releases), and end the session. No agent
+ * stays alive waiting for a lease.
  */
 import * as childProcess from 'child_process';
 import type { BuilddClient } from './buildd';
 import type { LocalWorker, Milestone } from './types';
 import {
-  sweepWorktreeChanges,
-  refreshBaseRef,
   toCollision,
   collisionDeferralError,
   shortTaskId,
@@ -28,87 +24,7 @@ import {
   type PathCollision,
 } from './path-claim-enforcement';
 
-/** Ceiling on the sweep's server round trip at a checkpoint. */
-export const CHECKPOINT_SYNC_DEADLINE_MS = 10_000;
-/** Ceiling on refreshing the base ref before a checkpoint sweep. */
-export const CHECKPOINT_FETCH_DEADLINE_MS = 15_000;
-
-export interface CheckpointSweepDeps {
-  buildd: Pick<BuilddClient, 'updateWorker'>;
-  addMilestone: (worker: LocalWorker, milestone: Milestone) => void;
-  /** Override for tests. */
-  deadlineMs?: number;
-  /** Fetch the base before sweeping (pre-push/completion). Default false. */
-  refreshBase?: boolean;
-}
-
-function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([
-    p.finally(() => { if (timer) clearTimeout(timer); }),
-    new Promise<typeof TIMED_OUT>(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), ms); }),
-  ]);
-}
-const TIMED_OUT = Symbol('timed-out');
-
-function markDegraded(worker: LocalWorker, deps: CheckpointSweepDeps, why: string) {
-  const first = !worker.pathClaimDegraded;
-  worker.pathClaimDegraded = (worker.pathClaimDegraded ?? 0) + 1;
-  console.log(`[Worker ${worker.id}] Checkpoint sweep could not reach the server (${why}) — allowing; enforcement degraded`);
-  if (first) {
-    deps.addMilestone(worker, {
-      type: 'status',
-      label: `Path-claim checkpoint unavailable (${why}): continuing — enforcement degraded`,
-      ts: Date.now(),
-    } as Milestone);
-  }
-}
-
-/**
- * Sweep the worktree and offer it to the server. Returns the first collision
- * the server reports, or null (nothing changed, nothing held, or the server
- * could not be reached in time).
- */
-export async function runCheckpointSweep(
-  worker: LocalWorker,
-  source: CollisionSource,
-  deps: CheckpointSweepDeps,
-): Promise<PathCollision | null> {
-  const root = worker.worktreePath;
-  if (!root) return null;
-
-  if (deps.refreshBase) {
-    await refreshBaseRef(root, worker.prBaseRef, CHECKPOINT_FETCH_DEADLINE_MS);
-  }
-  // The PR base, not the worktree base: on a resume the worktree was cut from
-  // the prior attempt's branch, and measuring against that drops every file
-  // earlier attempts committed (see resolvePrBaseRef).
-  const sweep = sweepWorktreeChanges(root, worker.prBaseRef);
-  if (sweep.paths.length === 0) return null;
-
-  let response: unknown;
-  try {
-    const result = await withDeadline(
-      Promise.resolve().then(() => deps.buildd.updateWorker(worker.id, {
-        touchedPaths: sweep.paths,
-        // Re-offer the whole sweep, not only paths new to the server: a path
-        // observed earlier whose acquisition failed or was lost is otherwise
-        // never offered again, and this is the last chance before it ships.
-        ...(source === 'pre_push' || source === 'completion' ? { checkpointSweep: true } : {}),
-      })),
-      deps.deadlineMs ?? CHECKPOINT_SYNC_DEADLINE_MS,
-    );
-    if (result === TIMED_OUT) {
-      markDegraded(worker, deps, 'timeout');
-      return null;
-    }
-    response = result;
-  } catch (err) {
-    markDegraded(worker, deps, err instanceof Error ? err.message.split('\n')[0] : 'error');
-    return null;
-  }
-  return firstCollision(response, source);
-}
+export { CHECKPOINT_SYNC_DEADLINE_MS, CHECKPOINT_FETCH_DEADLINE_MS } from './ship-checkpoint';
 
 /** The first well-formed entry of a PATCH response's `pathCollisions`. */
 export function firstCollision(response: unknown, source: CollisionSource): PathCollision | null {

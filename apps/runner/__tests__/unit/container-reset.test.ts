@@ -37,6 +37,7 @@ import {
   type ResetDeps,
   type ResetPaths,
 } from '../../src/container-reset';
+import { captureDependencyManifest } from '../../src/dependency-manifest';
 import type { ProcInfo } from '../../src/run-once';
 
 const OLD_TOKEN = 'bldt_previous-task-token-PLANTED';
@@ -159,7 +160,7 @@ function makeWorld(): World {
   };
 
   return {
-    paths: { home, isolationRoot, cacheDir, skeletonDirs: [builddHome, join(home, 'work')], scratchDirs: [scratch] },
+    paths: { home, warmHandover: 'repo', isolationRoot, cacheDir, skeletonDirs: [builddHome, join(home, 'work')], scratchDirs: [scratch] },
     origin, clone, marker,
     mainPid: main.pid!,
     taskPids: [runner.pid!, daemonPid],
@@ -296,6 +297,28 @@ describe('seedCloneFromKept', () => {
     expect(existsSync(kept!)).toBe(false);
   });
 
+  test('reset after an in-clone task seeds only the remote default with no task state', () => {
+    const w = makeWorld();
+    // Disable the planted executable settings before simulating task commits.
+    git(w.clone, 'config', '--unset', 'core.fsmonitor');
+    rmSync(join(w.clone, '.git', 'hooks', 'post-checkout'));
+    rmSync(join(w.clone, '.git', 'objects', 'info', 'alternates'));
+    git(w.clone, 'checkout', '-q', '-B', 'buildd/task-example', 'origin/main');
+    writeFileSync(join(w.clone, 'task-only.txt'), 'task work\n');
+    git(w.clone, 'add', 'task-only.txt');
+    git(w.clone, '-c', 'user.name=t', '-c', 'user.email=t@e', 'commit', '-q', '-m', 'task work');
+    expect(resetContainer(w.paths, deps(w)).ok).toBe(true);
+    const kept = keptDirForClone({ BUILDD_EXECUTOR: 'cloud', HOME: w.paths.home }, w.clone)!;
+    expect(seedCloneFromKept(w.clone, `file://${w.origin}`, kept, { defaultBranch: 'main', fetchOrigin, log: () => {} })).toBe(true);
+    expect(git(w.clone, 'branch', '--show-current')).toBe('main');
+    expect(git(w.clone, 'branch', '--format=%(refname:short)')).toBe('main');
+    expect(git(w.clone, 'rev-parse', 'HEAD')).toBe(git(w.origin, 'rev-parse', 'HEAD'));
+    expect(git(w.clone, 'status', '--porcelain')).toBe('');
+    expect(existsSync(join(w.clone, 'task-only.txt'))).toBe(false);
+    expect(existsSync(join(w.clone, 'uncommitted.txt'))).toBe(false);
+    expect(existsSync(join(w.clone, '.buildd-worktrees'))).toBe(false);
+  });
+
   test('a tampered pack is refused: nothing is left and the caller clones instead', () => {
     const w = makeWorld();
     expect(resetContainer(w.paths, deps(w)).ok).toBe(true);
@@ -315,7 +338,8 @@ describe('seedCloneFromKept', () => {
     const w = makeWorld();
     expect(resetContainer(w.paths, deps(w)).ok).toBe(true);
     const kept = keptDirForClone({ BUILDD_EXECUTOR: 'cloud', HOME: w.paths.home }, w.clone)!;
-    expect(seedCloneFromKept(w.clone, `file://${w.origin}`, kept, { defaultBranch: 'main', fetchOrigin: () => 'offline', log: () => {} })).toBe(false);
+    // Origin unreachable: ls-remote cannot show its tip is kept, so the fetch runs, and fails.
+    expect(seedCloneFromKept(w.clone, `file://${w.origin}-gone`, kept, { defaultBranch: 'main', fetchOrigin: () => 'offline', log: () => {} })).toBe(false);
     expect(existsSync(w.clone)).toBe(false);
   });
 
@@ -339,3 +363,65 @@ describe('readTipHint', () => {
     expect(readTipHint(g)).toBeNull();
   });
 });
+
+ describe('verified dependency handover', () => {
+  test('keeps verified dependency entries through reset and seed', () => {
+    const w = makeWorld();
+    const packageDir = join(w.clone, 'node_modules', 'tiny');
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(join(packageDir, 'index.js'), 'module.exports = 1;');
+    const manifest = captureDependencyManifest(w.clone);
+    writeFileSync(join(w.clone, '.buildd-deps-manifest.json'), JSON.stringify(manifest));
+    w.paths.warmHandover = 'deps';
+    w.paths.expectedDigest = manifest.digest;
+    const reset = resetContainer(w.paths, deps(w));
+    expect(reset.ok).toBe(true);
+    expect(reset.handover?.fellBack).toBe(false);
+    const kept = keptDirForClone({ BUILDD_EXECUTOR: 'cloud', HOME: w.paths.home }, w.clone)!;
+    expect(seedCloneFromKept(w.clone, `file://${w.origin}`, kept, { defaultBranch: 'main', fetchOrigin: () => null, log: () => {} })).toBe(true);
+    expect(readFileSync(join(packageDir, 'index.js'), 'utf8')).toBe('module.exports = 1;');
+  });
+
+  test('a digest planted on disk never replaces the expected digest from the supervisor', () => {
+    const w = makeWorld();
+    mkdirSync(join(w.clone, 'node_modules'), { recursive: true });
+    writeFileSync(join(w.clone, 'node_modules', 'planted.js'), 'evil');
+    const manifest = captureDependencyManifest(w.clone);
+    writeFileSync(join(w.clone, '.buildd-deps-manifest.json'), JSON.stringify(manifest));
+    w.paths.warmHandover = 'deps';
+    w.paths.expectedDigest = '0'.repeat(64);
+    const reset = resetContainer(w.paths, deps(w));
+    expect(reset.ok).toBe(true);
+    expect(reset.handover?.fellBack).toBe(true);
+    expect(existsSync(join(w.paths.home, KEEP_DIRNAME, 'git', 'ws_a', 'deps'))).toBe(false);
+  });
+});
+
+ test('off keeps neither repository packs nor dependency cache', () => {
+  const w = makeWorld();
+  w.paths.warmHandover = 'off';
+  const reset = resetContainer(w.paths, deps(w));
+  expect(reset.ok).toBe(true);
+  expect(reset.keptPacks).toBe(0);
+  expect(reset.keptCache).toBe(false);
+  expect(existsSync(w.paths.cacheDir)).toBe(false);
+ });
+
+ test('origin tracked fixtures named node_modules survive reset and seed', () => {
+  const w = makeWorld();
+  const fixturePath = 'fixtures/node_modules/tiny/index.js';
+  mkdirSync(join(w.origin, 'fixtures/node_modules/tiny'), { recursive: true });
+  writeFileSync(join(w.origin, fixturePath), 'tracked fixture');
+  git(w.origin, 'add', fixturePath);
+  git(w.origin, '-c', 'user.name=t', '-c', 'user.email=t@e', 'commit', '-q', '-m', 'fixture');
+  git(w.clone, '-c', 'core.fsmonitor=false', 'fetch', 'origin');
+  git(w.clone, '-c', 'core.fsmonitor=false', 'reset', '--hard', 'origin/main');
+  const manifest = captureDependencyManifest(w.clone);
+  writeFileSync(join(w.clone, '.buildd-deps-manifest.json'), JSON.stringify(manifest));
+  w.paths.warmHandover = 'deps';
+  w.paths.expectedDigest = manifest.digest;
+  expect(resetContainer(w.paths, deps(w)).ok).toBe(true);
+  const kept = keptDirForClone({ BUILDD_EXECUTOR: 'cloud', HOME: w.paths.home }, w.clone)!;
+  expect(seedCloneFromKept(w.clone, `file://${w.origin}`, kept, { defaultBranch: 'main', fetchOrigin: path => { git(path, 'fetch', 'origin'); return null; }, log: () => {} })).toBe(true);
+  expect(readFileSync(join(w.clone, fixturePath), 'utf8')).toBe('tracked fixture');
+ });

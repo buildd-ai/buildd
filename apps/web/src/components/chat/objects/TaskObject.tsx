@@ -7,19 +7,42 @@
 import Link from 'next/link';
 import { taskPageHref } from '@/lib/mission-task-href';
 import { formatAge } from '@/lib/mission-board';
+import { derivePrDisplayState } from '@/lib/pr-presentation';
+import { deliveryReading, type DeliveryDisplay, type DeliveryReadingInput, type DeliveryTone } from '@/lib/workflow/delivery-display';
 import NowStrip from '@/app/app/(protected)/tasks/[id]/NowStrip';
 import { RunnerAvatar, ScopeChip, useNow } from '@/app/app/(protected)/missions/[id]/MissionBoardParts';
 import type { BuilddObjectRef } from '../chat-contract';
 import { useChatActions } from '../ChatActions';
 import type { TaskObjectView } from './object-views';
-import { Eyebrow, OpenButton, StateChip, type Tone } from './parts';
+import FocusCard from '@/components/ui/FocusCard';
+import { OpenButton, StateChip, toneState, type Tone } from './parts';
+
+/**
+ * A kernel-owned delivery's words for the tile (§17.5). Null for `working`:
+ * the owner's own attempt is the reading.
+ */
+export function taskStateForDelivery(d: DeliveryReadingInput & Pick<DeliveryDisplay, 'prNumber'>): { label: string; tone: Tone; live: boolean } | null {
+  const r = deliveryReading(d);
+  if (!r) return null;
+  const pr = d.prNumber != null ? `#${d.prNumber} ` : '';
+  return { label: `${pr}${r.label}`, tone: TILE_TONE_FOR_DELIVERY[r.tone], live: false };
+}
+
+/** The tile's palette per canonical delivery tone (`deliveryReading`). */
+const TILE_TONE_FOR_DELIVERY: Record<DeliveryTone, Tone> = {
+  needs: 'attention', live: 'live', stalled: 'neutral', landed: 'ok', closed: 'idle', failed: 'bad',
+};
 
 /** The tile's words for where a task is: the worker's state wins over the task row's. */
 export function taskState(view: TaskObjectView): { label: string; tone: Tone; live: boolean } {
   const w = view.worker;
   if (w?.waiting) return { label: 'needs input', tone: 'attention', live: false };
-  if (w?.mergedAt) return { label: `#${w.prNumber} merged`, tone: 'ok', live: false };
-  if (w?.prLifecycleStatus === 'ci_failed') return { label: `#${w.prNumber} CI failed`, tone: 'bad', live: false };
+  const kernel = view.delivery ? taskStateForDelivery(view.delivery) : null;
+  if (kernel) return kernel;
+  // Legacy-owned: the one fact-cache mapping.
+  const pr = w?.prNumber ? derivePrDisplayState(w.prLifecycleStatus, w.mergedAt) : null;
+  if (pr === 'merged') return { label: `#${w!.prNumber} merged`, tone: 'ok', live: false };
+  if (pr === 'ci_failed') return { label: `#${w!.prNumber} CI failed`, tone: 'bad', live: false };
   if (w && ['running', 'starting', 'idle'].includes(w.status)) return { label: 'running', tone: 'live', live: true };
   if (w?.prNumber && view.status !== 'completed') return { label: `#${w.prNumber} in review`, tone: 'ok', live: false };
   switch (view.status) {
@@ -52,7 +75,7 @@ export function TaskCard({ objRef, view }: { objRef: BuilddObjectRef; view: Task
       data-testid="object-card"
       data-kind="task"
       data-in-pane={inPane ? 'true' : undefined}
-      className={`relative border-2 bg-card pl-5 pr-4 py-3 before:absolute before:inset-y-0 before:left-0 before:w-[5px] ${EDGE[st.tone]} ${inPane ? 'border-accent shadow-[var(--accent-shadow)]' : 'border-border-strong'}`}
+      className={`relative overflow-hidden rounded-[var(--radius-card)] border bg-card pl-5 pr-4 py-3 before:absolute before:inset-y-0 before:left-0 before:w-[3px] ${EDGE[st.tone]} ${inPane ? 'border-text-primary' : 'border-border-default'}`}
     >
       <div className="flex min-w-0 items-center gap-2.5">
         <ScopeChip scope={view.scope} />
@@ -81,27 +104,28 @@ export function TaskPane({ view, variant = 'pane' }: { view: TaskObjectView; var
   const href = taskPageHref({ taskId: view.id, missionId: view.missionId });
   return (
     <div data-testid="object-pane" data-kind="task" className={variant === 'pane' ? 'px-6 pb-10 pt-5' : 'pb-6'}>
-      <Eyebrow className="text-text-muted">{view.missionTitle ? `Task · ${view.missionTitle}` : 'Task'}</Eyebrow>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        <ScopeChip scope={view.scope} />
-        <h2 className="min-w-0 font-mono text-[20px] font-semibold text-text-primary [overflow-wrap:anywhere]">{view.label}</h2>
-        <StateChip label={st.label} tone={st.tone} pulse={st.live} />
-      </div>
-      <p className="mt-1 font-mono text-[12.5px] text-text-muted [overflow-wrap:anywhere]">{view.title}</p>
-      <div className="mt-5">
+      <FocusCard
+        focused={false}
+        meta={<>{view.missionTitle ? `Task · ${view.missionTitle}` : 'Task'} · <ScopeChip scope={view.scope} /></>}
+        title={<>{view.label} <StateChip label={st.label} tone={st.tone} pulse={st.live} /></>}
+        state={toneState(st.tone)}
+        next={view.title}
+        footer={
+          <Link href={href} className="inline-flex min-h-10 items-center self-start rounded-[var(--radius-card)] border border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
+            Open task →
+          </Link>
+        }
+      >
         {view.now && st.live ? (
           <NowStrip now={view.now} nowMs={nowMs} />
         ) : (
-          <div className="border-2 border-border-default bg-surface-2 px-4 py-3 font-mono text-[12.5px] text-text-secondary">
+          <div className="rounded-[var(--radius-card)] border border-border-default bg-surface-2 px-4 py-3 font-mono text-[12.5px] text-text-secondary">
             {view.worker?.prUrl
               ? <a href={view.worker.prUrl} target="_blank" rel="noreferrer" className="text-accent-text hover:underline">{`PR #${view.worker.prNumber} ↗`}</a>
               : 'No agent is on this task right now.'}
           </div>
         )}
-      </div>
-      <Link href={href} className="mt-5 inline-flex min-h-10 items-center border-2 border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
-        Open task →
-      </Link>
+      </FocusCard>
     </div>
   );
 }

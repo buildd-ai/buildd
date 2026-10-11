@@ -24,13 +24,11 @@ const CALL_SITES = [
   'components/WaitingOnYouReviewCard.tsx',
   'components/AgentHandledCard.tsx',
   'components/MissionProgressBar.tsx',
-  'components/MissionProgress.tsx',
   'components/FlightDetailSheet.tsx',
   'components/missions/MissionCard.tsx',
   'app/app/(protected)/home/page.tsx',
   'app/app/(protected)/home/HomeMissions.tsx',
   'app/app/(protected)/home/ActionQueueCard.tsx',
-  'app/app/(protected)/home/FleetStrip.tsx',
   'app/app/(protected)/home/ActivityTicker.tsx',
   'app/app/(protected)/home/NeedsYouCards.tsx',
   'lib/fleet-view.ts',
@@ -40,8 +38,7 @@ const CALL_SITES = [
   'app/app/(protected)/missions/MissionGrid.tsx',
   'app/app/(protected)/missions/page.tsx',
   'app/app/(protected)/tasks/[id]/page.tsx',
-  'app/app/(protected)/tasks/[id]/respond/page.tsx',
-  'app/app/(protected)/tasks/[id]/respond/RespondForm.tsx',
+  'lib/chat/answer-link.ts',
 ];
 
 const HAND_BUILT_TASK_LINK = /`\/app\/tasks\/\$\{/;

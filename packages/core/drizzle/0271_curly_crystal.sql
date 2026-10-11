@@ -1,0 +1,1 @@
+ALTER TABLE "workers" ADD COLUMN "claimed_by_user_id" uuid;

@@ -53,6 +53,7 @@ const DAY_MS = 86_400_000;
 
 interface RunRow {
   task_id: string;
+  title: string | null;
   at: string | Date;
   tier: string | null;
   model: string | null;
@@ -72,7 +73,7 @@ export async function loadTeamCodingRuns(teamId: string, since: Date): Promise<C
   const sinceIso = since.toISOString();
   const [runs, verdicts] = await Promise.all([
     db.execute(sql`
-      SELECT t.id AS task_id, o.created_at AS at,
+      SELECT t.id AS task_id, t.title, o.created_at AS at,
         COALESCE(t.context->'resolvedTier'->>'tier', t.tier) AS tier,
         COALESCE(o.actual_model, o.predicted_model) AS model,
         o.outcome, o.exit_cause, o.total_cost_usd AS cost,
@@ -113,6 +114,7 @@ export async function loadTeamCodingRuns(teamId: string, since: Date): Promise<C
     const cost = r.cost != null ? Number(r.cost) : null;
     return {
       taskId: r.task_id,
+      title: r.title,
       at: new Date(r.at),
       tier: r.tier,
       model: r.model,
@@ -443,10 +445,12 @@ export function whatRan(runs: readonly CodingRun[]): ModelPolicyCellRun[] {
         runs: list.length,
         mergedRate: rate('merged'),
         reviewOkRate: rate('reviewOk'),
+        mergedGraded: e.rates.merged.n,
+        reviewOkGraded: e.rates.reviewOk.n,
         costPerRunUsd: e.costPerRunUsd,
         recentRuns: [...list].sort((a, b) => b.at.getTime() - a.at.getTime()).slice(0, RECENT_RUNS).map(r => {
           const g = gradeRun(r, INFRA_EXIT_CAUSES);
-          return { taskId: r.taskId, at: r.at.toISOString(), merged: g.merged, reviewOk: g.reviewOk };
+          return { taskId: r.taskId, title: r.title ?? null, at: r.at.toISOString(), merged: g.merged, reviewOk: g.reviewOk };
         }),
       };
     })
@@ -531,7 +535,9 @@ export async function buildModelPolicyCells(
       const cell: ModelPolicyCell = {
         tier,
         surface,
-        primary: { provider: entry.provider, model: incumbent?.model ?? entry.model },
+        // The registry row is the authority: it is what the claim route and chat serve.
+        // The incumbent arm only mirrors it, and may lag a save until synced.
+        primary: { provider: entry.provider, model: entry.model },
         alternates: alternates.map(a => ({ provider: a.route, model: a.model })),
         dial,
         state,

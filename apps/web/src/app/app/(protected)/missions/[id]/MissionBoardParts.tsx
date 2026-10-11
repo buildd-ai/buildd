@@ -158,11 +158,8 @@ const STRIP_CELL_CLASS: Record<StripState, string> = {
   queued: 'border-2 border-[var(--fleet-border-mid)] fleet-hatch-future',
 };
 
-const STRIP_OUTLINE: Record<StripTone, string> = {
-  ok: 'outline-status-success',
-  error: 'outline-status-error',
-  open: 'outline-accent',
-};
+/** Selection is orthogonal to state: one high-contrast ring for every tone; the fill keeps the lifecycle state. */
+const STRIP_SELECTED = 'outline outline-2 outline-offset-2 outline-text-primary';
 
 /**
  * The tone's text and dot colour, shared by the tick row here and the drawer
@@ -173,17 +170,23 @@ const STRIP_OUTLINE: Record<StripTone, string> = {
 export const TONE_BORDER: Record<StripTone, string> = {
   ok: 'border-status-success',
   error: 'border-status-error',
-  open: 'border-accent',
+  active: 'border-accent',
+  open: 'border-border-strong',
+  held: 'border-[var(--fleet-border-mid)]',
 };
 export const TONE_BG: Record<StripTone, string> = {
   ok: 'bg-status-success',
   error: 'bg-status-error',
-  open: 'bg-accent',
+  active: 'bg-accent',
+  open: 'bg-border-strong',
+  held: 'bg-[var(--fleet-border-mid)]',
 };
 export const TONE_TEXT: Record<StripTone, string> = {
   ok: 'text-status-success',
   error: 'text-status-error',
-  open: 'text-accent-text',
+  active: 'text-accent-text',
+  open: 'text-text-secondary',
+  held: 'text-text-muted',
 };
 
 const STATUS_WORDS: Record<StripState, string> = {
@@ -307,7 +310,7 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
               state={s.state}
               selected={i === sel}
               tall={!compact}
-              label={`Cell ${i + 1} of ${n}${level}, ${STATUS_WORDS[s.state]}: ${t.title}`}
+              label={`Cell ${i + 1} of ${n}${level}, ${t.delivery && s.state !== 'landed' ? t.delivery.label.toLowerCase() : STATUS_WORDS[s.state]}: ${t.title}`}
               onSelect={onSelect}
             />
           );
@@ -368,7 +371,7 @@ const StripCell = memo(function StripCell({ id, state, selected, tall, label, on
       tabIndex={selected ? 0 : -1}
       onClick={() => onSelect(id)}
       className={`block h-11 min-w-0 flex-1 basis-0 cursor-pointer p-0 transition-transform duration-150 motion-reduce:transition-none ${tall ? 'md:h-14' : ''} ${STRIP_CELL_CLASS[state]} ${
-        selected ? `-translate-y-1 outline outline-2 outline-offset-2 ${STRIP_OUTLINE[stripTone(state)]}` : 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary'
+        selected ? `-translate-y-1 ${STRIP_SELECTED}` : 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary'
       }`}
     />
   );

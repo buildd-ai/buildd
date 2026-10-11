@@ -1,17 +1,18 @@
 /**
- * Unit tests for Agent Teams and Skills-as-Subagents features.
+ * Unit tests for Skills-as-Subagents.
  *
  * Tests:
- * 1. CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS env var is set
- * 2. useSkillAgents flag converts skill bundles to agent definitions
- * 3. useSkillAgents disables Skill tool scoping and system prompt append
- * 4. Stale timeout is 300s (not 120s)
- * 5. Backwards compatibility: tasks without useSkillAgents behave as before
+ * 1. useSkillAgents flag converts skill bundles to agent definitions
+ * 2. useSkillAgents disables Skill tool scoping and system prompt append
+ * 3. Stale timeout is 300s (not 120s)
+ * 4. Backwards compatibility: tasks without useSkillAgents behave as before
  *
  * Run: bun test apps/runner/__tests__/unit/agent-teams.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, mock, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 import type { SkillBundle } from '@buildd/shared';
 
@@ -75,13 +76,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -207,20 +208,38 @@ async function startWorkerWithTask(
   }] }));
 
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 200));
+  // Poll for the SDK query to be issued instead of a fixed sleep; a loaded CI
+  // runner can take longer than 200ms to get there.
+  const deadline = Date.now() + 5000;
+  while (!lastQueryOpts && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+  await new Promise(r => setTimeout(r, 50));
   return manager.getWorker(workerId);
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe('Agent Teams — env configuration', () => {
+describe('Query env configuration', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
   afterEach(() => {
     manager?.destroy();
   });
 
+  afterAll(() => {
+
+
+    cleanupTestWorkspace();
+
+
+  });
+
+
   beforeEach(() => {
+
+
+    initTestWorkspace();
     lastQueryOpts = null;
     mockMessages = [];
     mockUpdateWorker.mockClear();
@@ -230,31 +249,13 @@ describe('Agent Teams — env configuration', () => {
     mockSyncSkillToLocal.mockClear();
   });
 
-  test('sets CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in query env', async () => {
-    manager = new WorkerManager(makeConfig());
-    await startWorkerWithTask(manager);
-
-    expect(lastQueryOpts).toBeDefined();
-    const env = lastQueryOpts.options.env;
-    expect(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1');
-  });
-
-  test('sets teams env even when no skills assigned', async () => {
-    manager = new WorkerManager(makeConfig());
-    await startWorkerWithTask(manager, { context: {} });
-
-    const env = lastQueryOpts.options.env;
-    expect(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1');
-  });
-
-  test('sets teams env alongside OpenRouter provider config', async () => {
+  test('sets OpenRouter provider config in query env', async () => {
     manager = new WorkerManager(makeConfig({
       llmProvider: { provider: 'openrouter', baseUrl: 'https://openrouter.ai/api', apiKey: 'or-key' },
     }));
     await startWorkerWithTask(manager);
 
     const env = lastQueryOpts.options.env;
-    expect(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1');
     expect(env.ANTHROPIC_BASE_URL).toBe('https://openrouter.ai/api');
   });
 });

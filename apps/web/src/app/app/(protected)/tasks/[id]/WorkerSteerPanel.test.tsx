@@ -19,6 +19,55 @@ const render = (props: Partial<Parameters<typeof WorkerSteerPanel>[0]>) =>
     <WorkerSteerPanel workerId="w1" status="running" hasUnansweredQuestion={false} instructionHistory={[]} {...props} />,
   );
 
+describe('WorkerSteerPanel — message delivery states (B-12)', () => {
+  const history = [
+    { id: 'a', type: 'instruction' as const, message: 'queued one', timestamp: 1, deliveryState: 'pending' as const },
+    { id: 'b', type: 'instruction' as const, message: 'in session', timestamp: 2, deliveryState: 'delivered' as const, deliveredAt: 3, awaitsAck: true as const },
+    { id: 'c', type: 'instruction' as const, message: 'was read', timestamp: 4, deliveryState: 'acknowledged' as const, acknowledgedAt: 5 },
+    { type: 'response' as const, message: 'ok', timestamp: 6 },
+  ];
+
+  test('every human message shows its state as text, not colour alone', () => {
+    const html = render({ instructionHistory: history });
+    expect(html).toContain('data-state="queued"');
+    expect(html).toContain('data-state="delivered"');
+    expect(html).toContain('data-state="acknowledged"');
+    expect(html).toContain('Queued');
+    expect(html).toContain('Delivered');
+    expect(html).toContain('Read by the agent');
+    // The agent's own reply carries no delivery chip.
+    expect((html.match(/data-testid="message-delivery-state"/g) ?? []).length).toBe(3);
+    expect(html).not.toContain('Pending delivery');
+  });
+
+  test('undelivered messages from the earlier run show Not delivered and a 44px Resend', () => {
+    const html = render({
+      earlierRun: {
+        workerId: 'w0',
+        status: 'failed',
+        history: [{ id: 'z', type: 'instruction' as const, message: 'never read', timestamp: 1, deliveryState: 'pending' as const }],
+      },
+    });
+    expect(html).toContain('data-testid="earlier-run-undelivered"');
+    expect(html).toContain('data-state="undelivered"');
+    expect(html).toContain('Not delivered');
+    expect(html).toContain('never read');
+    expect(html).toContain('data-testid="message-resend"');
+    expect(html).toMatch(/data-testid="message-resend"[^>]*min-h-11|min-h-11[^>]*data-testid="message-resend"/);
+  });
+
+  test('no earlier-run section when nothing was left undelivered', () => {
+    const html = render({
+      earlierRun: {
+        workerId: 'w0',
+        status: 'completed',
+        history: [{ id: 'z', type: 'instruction' as const, message: 'read', timestamp: 1, deliveryState: 'acknowledged' as const, acknowledgedAt: 2 }],
+      },
+    });
+    expect(html).not.toContain('earlier-run-undelivered');
+  });
+});
+
 describe('WorkerSteerPanel', () => {
   test('an active worker with no pending question shows the steer form and stop', () => {
     const html = render({});
@@ -58,6 +107,17 @@ describe('WorkerSteerPanel', () => {
     expect(html).toContain('border-2');
     expect(html).toContain('Task ended');
     expect(html).not.toContain('worker-instruct-form');
+  });
+
+  test('a running runner-backed agent can be paused instead of stopped', () => {
+    const html = render({ runner: 'runner-abc', status: 'running' });
+    expect(html).toContain('worker-pause-btn');
+    expect(html).toContain('>Pause<');
+  });
+
+  test('no Pause for a local session, or an agent already waiting', () => {
+    expect(render({ runner: 'mcp' })).not.toContain('worker-pause-btn');
+    expect(render({ runner: 'runner-abc', status: 'waiting_input' })).not.toContain('worker-pause-btn');
   });
 
   test('an idle local session still holds a slot, so it still gets Release slot', () => {

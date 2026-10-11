@@ -1,10 +1,10 @@
 {
-  "description": "buildd presence: session start/touch/end and claim binding. Fails open; sends no content.",
+  "description": "buildd presence: session start/touch/end, claim binding and a turn-boundary nudge when a message waits. Fails open; sends no content.",
   "hooks": {
     "SessionStart": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/buildd-hook.mjs\" claude", "timeout": 5, "async": true }] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/buildd-hook.mjs\" claude", "timeout": 5 }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/buildd-hook.mjs\" claude", "timeout": 5, "async": true }] }],
-    "PostToolUse": [{ "matcher": "mcp__.*buildd.*", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/buildd-hook.mjs\" claude", "timeout": 5, "async": true }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/buildd-hook.mjs\" claude", "timeout": 5 }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/buildd-hook.mjs\" claude", "timeout": 5 }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/buildd-hook.mjs\" claude", "timeout": 5 }] }]
   }
 }

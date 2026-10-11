@@ -75,7 +75,7 @@ export async function POST(
 
   const reviewerTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, worker.taskId),
-    columns: { id: true, category: true, context: true },
+    columns: { id: true, category: true, context: true, workspaceId: true, deliveryId: true, deliveryRole: true },
   });
 
   if (reviewerTask?.category !== 'review') {
@@ -134,9 +134,36 @@ export async function POST(
   // nothing this worker was doing landed.
   await releaseAndNotify(worker.taskId, 'abandoned');
 
+  // A review round of a kernel-owned delivery (spec §6.3 T27, §18.1): the
+  // kernel decides what the takeover means. The round fails through the seam
+  // with `human_takeover`, which is never re-queued: the delivery goes
+  // ESCALATED(review_unavailable) and surfaces as needs-you from there. No
+  // legacy note: that would be a second authority on the same PR. A failed
+  // ownership read falls back to the legacy note, as WID's T27 does.
+  // Lazy: the seam loads the effect handlers, which load half the app.
+  const seam = await import('@/lib/workflow/seam');
+  const kernelRound = await seam.isKernelReviewRound(reviewerTask).catch(() => false);
+  if (kernelRound) {
+    await seam.attemptEnded({
+      task: {
+        id: reviewerTask.id,
+        workspaceId: reviewerTask.workspaceId ?? worker.workspaceId,
+        deliveryId: reviewerTask.deliveryId ?? null,
+        deliveryRole: reviewerTask.deliveryRole ?? null,
+        context: reviewerTask.context,
+      },
+      workerId: id,
+      status: 'failed',
+      localHeadSha: null,
+      commitCount: 0,
+      source: 'human:interrupt',
+      reviewFailure: 'human_takeover',
+    }).catch((err) => console.error(`[interrupt] workflow kernel ReviewRoundFailed failed for task ${reviewerTask.id}:`, err));
+  }
+
   // Post a reviewer_escalated note on the original task so the PR surfaces in
   // the human queue with a clear reason ("Agent review interrupted").
-  if (originalTaskId) {
+  if (originalTaskId && !kernelRound) {
     const originalTask = await db.query.tasks.findFirst({
       where: eq(tasks.id, originalTaskId),
       columns: { missionId: true },

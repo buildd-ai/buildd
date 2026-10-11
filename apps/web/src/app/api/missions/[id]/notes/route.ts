@@ -12,6 +12,8 @@ import {
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isUuid } from '@/lib/uuid';
+import { disposeQuestionNote, gatedNoteResponse } from '@/lib/note-question-disposition';
+import { RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import type { MissionNoteType, MissionNoteAuthorType, MissionNoteStatus } from '@buildd/shared';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
@@ -204,6 +206,13 @@ export async function POST(
         ));
     }
 
+    // Needs You admission (lib/note-question-disposition.ts): an agent's
+    // question passes the gate's deterministic half before anyone sees it.
+    const gated = await disposeQuestionNote(
+      { type, authorType: effectiveAuthorType, title, bodyText, defaultChoice, workspaceId: access.mission.workspaceId ?? null, missionId: id, taskId: taskId || null, workerId: workerId || null },
+      { fileRepair: RECOVERABLE_BLOCKER_REPAIR },
+    );
+
     const [note] = await db.insert(missionNotes).values({
       missionId: id,
       taskId: taskId || null,
@@ -214,7 +223,9 @@ export async function POST(
       body: effectiveBody,
       replyTo: replyTo || null,
       defaultChoice: defaultChoice || null,
-      status: effectiveStatus,
+      // A recovered question is settled by its repair task, not a person.
+      status: gated.disposition === 'recovered' ? 'answered' : effectiveStatus,
+      disposition: gated.disposition,
     }).returning();
 
     // Trigger real-time event — on the task channel too when the note is pinned
@@ -240,7 +251,7 @@ export async function POST(
       wakeMissionAfterResponse(id, note.replyTo ? 'owner_answer' : 'owner_note');
     }
 
-    return NextResponse.json(note, { status: 201 });
+    return NextResponse.json(gatedNoteResponse(note, gated), { status: 201 });
   } catch (error) {
     console.error('Create mission note error:', error);
     return NextResponse.json({ error: 'Failed to create note' }, { status: 500 });

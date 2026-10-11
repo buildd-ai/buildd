@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { isGrantSession } from '@/lib/grant-scope';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, workspaces, accounts } from '@buildd/core/db/schema';
@@ -8,6 +9,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from '@/lib/stale-workers';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { kernelDeliveryById } from '@/lib/workflow/authority';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -152,6 +154,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // A grant session is one person's consent for named workspaces, acting as
+  // the team's SHARED session account: an account-wide stale-worker sweep would
+  // reach every member's workers in every workspace, so it is refused.
+  if (apiAccount && isGrantSession(apiAccount)) {
+    return NextResponse.json({ error: 'Not available to a workspace-granted MCP connection' }, { status: 403 });
+  }
+
   // An admin key acts as its account; otherwise the session user acts.
   const scope = await resolveCleanupScope(
     hasAdminToken ? null : user,
@@ -248,7 +257,12 @@ export async function POST(req: NextRequest) {
 
     // Check if any worker completed or has deliverables (PR, artifacts, structured output, commits)
     let completedWorker = taskWorkers.find(w => w.status === 'completed');
-    if (!completedWorker) {
+    // A workflow-kernel attempt (docs/specs/workflow-state-kernel.md §9, AC-10) is never promoted to
+    // `completed` from a dead worker's local commits: a local commit is not delivery. The kernel hears
+    // the attempt's end from the reaper (AttemptEnded(lost)); here the task only falls through to the
+    // stale requeue below.
+    const kernelAttempt = task.deliveryId ? !!(await kernelDeliveryById(task.deliveryId).catch(() => null)) : false;
+    if (!completedWorker && !kernelAttempt) {
       // Check errored workers for deliverables
       for (const w of taskWorkers.filter(w => w.status === 'error' || w.status === 'failed')) {
         try {

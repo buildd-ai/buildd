@@ -23,7 +23,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   let authorized = false;
   if (apiKey) {
     const account = await authenticateApiKey(apiKey, req);
-    if (account) authorized = await verifyAccountWorkspaceAccess(account.id, row.workspaceId, 'canCreate');
+    if (account) authorized = await verifyAccountWorkspaceAccess(account, row.workspaceId, 'canCreate');
   } else {
     const user = await getCurrentUser();
     if (user) authorized = !!(await verifyWorkspaceAccess(user.id, row.workspaceId));

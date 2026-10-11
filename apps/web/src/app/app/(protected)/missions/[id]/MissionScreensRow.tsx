@@ -13,7 +13,7 @@
 import { useState } from 'react';
 import SideSheet from '@/components/SideSheet';
 import { VISUAL_TONE_TEXT, VerdictDots, visualPhaseTone } from '@/components/visual-review/VisualReviewLine';
-import { describeVisualPhase } from '@/lib/visual-review-model';
+import { describeVisualPhase, screensToReview } from '@/lib/visual-review-model';
 import { DELIVERY_STATE_GLYPH, DELIVERY_STATE_TEXT, type DeliveryStep } from '@/lib/mission-delivery';
 import { MissionVisualTray, useMissionVisualReview } from './MissionVisualReview';
 
@@ -24,7 +24,7 @@ export default function MissionScreensRow({ missionId, step }: { missionId: stri
   const m = review.model;
   const copy = describeVisualPhase(m);
   const hasShots = m.cells.length > 0;
-  const awaiting = m.summary.awaitingHuman;
+  const awaiting = screensToReview(m);
   const state = step?.state ?? 'todo';
   return (
     <>

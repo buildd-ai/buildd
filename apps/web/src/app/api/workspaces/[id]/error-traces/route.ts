@@ -39,7 +39,7 @@ export async function GET(
   }
 
   const allowed = apiAccount && !user
-    ? taskScopeAllowsWorkspace(apiAccount, id) && await verifyAccountWorkspaceAccess(apiAccount.id, id)
+    ? taskScopeAllowsWorkspace(apiAccount, id) && await verifyAccountWorkspaceAccess(apiAccount, id)
     : !!(await verifyWorkspaceAccess(user!.id, id));
   if (!allowed) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });

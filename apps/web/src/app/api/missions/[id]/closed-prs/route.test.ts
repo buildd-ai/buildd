@@ -106,9 +106,39 @@ describe('POST /api/missions/[id]/closed-prs', () => {
     expect(mockAbandon).not.toHaveBeenCalled();
   });
 
-  it('abandon records the reason and who said so', async () => {
+  it('abandon from a dashboard session records the reason and the person who said so', async () => {
     expect((await call({ taskId: TASK, action: 'abandon', reason: 'plan changed' })).status).toBe(200);
-    expect(mockAbandon).toHaveBeenCalledWith({ workerId: 'w-6', reason: 'plan changed', recordedBy: 'owner@example.com' });
+    expect(mockAbandon).toHaveBeenCalledWith({ workerId: 'w-6', reason: 'plan changed', recordedBy: 'owner@example.com', actor: 'human:u-1' });
+  });
+
+  it('abandon from the person\'s own OAuth session acts as that person', async () => {
+    currentUser = null;
+    apiAccountRow = { id: 'acct-team', name: 'team account', level: 'admin', sessionUserId: 'u-7' };
+    expect((await call({ taskId: TASK, action: 'abandon', reason: 'plan changed' })).status).toBe(200);
+    expect(mockAbandon).toHaveBeenCalledWith({ workerId: 'w-6', reason: 'plan changed', recordedBy: 'team account', actor: 'human:u-7' });
+  });
+
+  it('abandon from an admin API key is refused: a key is not a person', async () => {
+    currentUser = null;
+    apiAccountRow = { id: 'acct-svc', name: 'svc key', level: 'admin' };
+    const res = await call({ taskId: TASK, action: 'abandon', reason: 'plan changed' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('Only a person');
+    expect(mockAbandon).not.toHaveBeenCalled();
+  });
+
+  it('abandon from a task-scoped account is refused even if it names a session user', async () => {
+    currentUser = null;
+    apiAccountRow = { id: 'acct-svc', name: 'svc key', level: 'admin', sessionUserId: 'u-7', taskScope: { taskId: TASK, workspaceId: 'ws' } };
+    expect((await call({ taskId: TASK, action: 'abandon', reason: 'plan changed' })).status).toBe(403);
+    expect(mockAbandon).not.toHaveBeenCalled();
+  });
+
+  it('confirm and dismiss stay open to an admin API key', async () => {
+    currentUser = null;
+    apiAccountRow = { id: 'acct-svc', name: 'svc key', level: 'admin' };
+    expect((await call({ taskId: TASK, action: 'dismiss' })).status).toBe(200);
+    expect((await call({ taskId: TASK, action: 'confirm' })).status).toBe(200);
   });
 
   it('rejects an unknown action', async () => {

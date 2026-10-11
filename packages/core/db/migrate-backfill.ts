@@ -19,6 +19,27 @@
 // That is the tasks_source_external_idx incident (PR #1288) — replaying old DDL
 // against a schema that has since moved on crashes or corrupts. A contradiction
 // is a human decision (write a reconciliation migration, as 0074 did).
+//
+// One narrow exception, for a throwaway CI database only: the Visual QA prod
+// clone (see CI_CLONE_APPLY_ABSENT_ENV below). There a contradicted migration
+// whose DDL is WHOLLY absent is a branch's own migration that prod has never
+// seen, and executing it is the ordinary forward path. Partially present DDL
+// is still refused: that is the replay case above.
+
+/**
+ * Set to `1` by .github/workflows/visual-qa.yml, and nowhere else, on the
+ * migrate step that runs a dispatched branch's migrations against a
+ * copy-on-write clone of prod. A mission branch's own migration usually
+ * predates dev's newest released one, so on that clone it sits below the
+ * high-water mark with its DDL absent, and the prod rule refuses it. Under the
+ * flag such a migration is executed in journal order instead. Only honoured in
+ * GitHub Actions, so a stray value on a deploy does nothing.
+ */
+export const CI_CLONE_APPLY_ABSENT_ENV = 'MIGRATION_CI_CLONE_APPLY_ABSENT';
+
+export function ciCloneApplyAbsentEnabled(env: Record<string, string | undefined>): boolean {
+  return env[CI_CLONE_APPLY_ABSENT_ENV] === '1' && env.GITHUB_ACTIONS === 'true';
+}
 
 import type { MigrationFile } from './migrate-plan';
 
@@ -203,6 +224,11 @@ export interface BackfillEvaluation {
   /** Human-readable assertion failures (empty unless `contradicted`). */
   failures: string[];
   opaque: string[];
+  /**
+   * Contradicted, and no assertion holds: none of this migration's checkable
+   * DDL is in the database, so it never ran at all (as opposed to ran in part).
+   */
+  absent: boolean;
 }
 
 /**
@@ -223,15 +249,16 @@ export function evaluateBackfill(
     .map((a) => `${a.kind} ${a.target}`);
 
   if (failures.length > 0) {
-    return { verdict: 'contradicted', checked: assertions.length, failures, opaque };
+    const absent = failures.length === assertions.length;
+    return { verdict: 'contradicted', checked: assertions.length, failures, opaque, absent };
   }
   if (assertions.length > 0) {
-    return { verdict: 'verified', checked: assertions.length, failures: [], opaque };
+    return { verdict: 'verified', checked: assertions.length, failures: [], opaque, absent: false };
   }
   if (opaque.length > 0) {
-    return { verdict: 'unverifiable', checked: 0, failures: [], opaque };
+    return { verdict: 'unverifiable', checked: 0, failures: [], opaque, absent: false };
   }
-  return { verdict: 'inert', checked: 0, failures: [], opaque };
+  return { verdict: 'inert', checked: 0, failures: [], opaque, absent: false };
 }
 
 export interface BackfillRequest {
@@ -245,6 +272,12 @@ export interface BackfillRequest {
    * Wired to MIGRATION_BACKFILL_ALLOW_UNVERIFIED=1 in db/migrate.ts.
    */
   allowUnverified?: boolean;
+  /**
+   * CI prod clone only (ciCloneApplyAbsentEnabled): return a contradicted
+   * migration whose DDL is wholly absent in `toApply` for the caller to
+   * execute, instead of refusing it. Partially present DDL is still refused.
+   */
+  applyAbsent?: boolean;
   log?: (message: string) => void;
 }
 
@@ -252,6 +285,11 @@ export interface BackfillResult {
   recorded: number;
   /** Of `recorded`, how many were recorded without any DDL evidence. */
   unverified: number;
+  /**
+   * Under `applyAbsent` only: migrations to EXECUTE (not record), in the order
+   * given. The caller records each after its SQL succeeds.
+   */
+  toApply: MigrationFile[];
 }
 
 export class BackfillContradictedError extends Error {
@@ -270,10 +308,18 @@ export class BackfillContradictedError extends Error {
  * different, harder-to-read state.
  */
 export async function backfillTrackingRows(request: BackfillRequest): Promise<BackfillResult> {
-  const { toBackfill, shape, record, allowUnverified = false, log = () => {} } = request;
-  if (toBackfill.length === 0) return { recorded: 0, unverified: 0 };
+  const {
+    toBackfill,
+    shape,
+    record,
+    allowUnverified = false,
+    applyAbsent = false,
+    log = () => {},
+  } = request;
+  if (toBackfill.length === 0) return { recorded: 0, unverified: 0, toApply: [] };
 
   const contradicted: string[] = [];
+  const toApply: MigrationFile[] = [];
   const unverifiable: string[] = [];
   const plan: Array<{ migration: MigrationFile; evaluation: BackfillEvaluation }> = [];
 
@@ -281,10 +327,14 @@ export async function backfillTrackingRows(request: BackfillRequest): Promise<Ba
     const evaluation = evaluateBackfill(migration.sql, shape);
     plan.push({ migration, evaluation });
 
-    if (evaluation.verdict === 'contradicted') {
+    if (evaluation.verdict === 'contradicted' && applyAbsent && evaluation.absent) {
+      toApply.push(migration);
+    } else if (evaluation.verdict === 'contradicted') {
       contradicted.push(
         `  ${migration.folderMillis}: ${evaluation.failures.join(', ')} ` +
-          `(${evaluation.checked} assertion(s) checked)`,
+          `(${evaluation.checked} assertion(s) checked` +
+          (applyAbsent ? `; partially present, so not applied on this clone` : '') +
+          `)`,
       );
     } else if (evaluation.verdict === 'unverifiable' && !allowUnverified) {
       unverifiable.push(`  ${migration.folderMillis}: ${evaluation.opaque[0] ?? '(no statements)'}`);
@@ -316,6 +366,13 @@ export async function backfillTrackingRows(request: BackfillRequest): Promise<Ba
   let recorded = 0;
   let unverified = 0;
   for (const { migration, evaluation } of plan) {
+    if (toApply.includes(migration)) {
+      log(
+        `  [ci-clone apply] ${migration.folderMillis} DDL wholly absent ` +
+          `(${evaluation.checked} assertion(s)); executing it on this CI clone`,
+      );
+      continue;
+    }
     await record(migration);
     recorded++;
     if (evaluation.verdict === 'unverifiable') {
@@ -331,5 +388,5 @@ export async function backfillTrackingRows(request: BackfillRequest): Promise<Ba
     }
   }
 
-  return { recorded, unverified };
+  return { recorded, unverified, toApply };
 }

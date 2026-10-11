@@ -50,6 +50,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findFirst: mockMissionsFindFirst, findMany: mockMissionsFindMany },
+      workspaces: { findFirst: mock(async () => ({ id: 'ws-1', teamId: 'team-1', accessMode: 'open', gitConfig: { executor: 'cloud' } })) },
       tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       workers: { findMany: mockWorkersFindMany },
       gateEvents: { findMany: mockGateEventsFindMany },
@@ -62,6 +63,7 @@ const mockLatestDispatchForTask = mock(async (_id: string) => latestWake);
 mock.module('@buildd/core/dispatch-outbox', () => ({ latestDispatchForTask: mockLatestDispatchForTask }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  workspaces: { id: 'id' },
   missions: { id: 'id', workspaceId: 'workspaceId', status: 'status' },
   tasks: { id: 'id', missionId: 'missionId', parentTaskId: 'parentTaskId', workspaceId: 'workspaceId', status: 'status' },
   workers: { id: 'id', workspaceId: 'workspaceId', prBaseRef: 'prBaseRef', mergedAt: 'mergedAt', startedAt: 'startedAt' },
@@ -95,8 +97,11 @@ mock.module('@/lib/mission-completion', () => ({ canCompleteMission: mockCanComp
 const mockEvaluateMissionWorkState = mock(async () => workStateResult);
 mock.module('@/lib/mission-pr', () => ({ evaluateMissionWorkState: mockEvaluateMissionWorkState }));
 
+let browserHeartbeats: Row[] | null = [];
+mock.module('@/lib/runner-heartbeats', () => ({ loadBrowserRunnerHeartbeats: mock(async () => browserHeartbeats) }));
+
 // Imported AFTER the mocks.
-import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf } from './explain';
+import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf, kernelUnmergedPr } from './explain';
 import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
 
 const ACTOR = { userId: 'user-1' };
@@ -180,6 +185,28 @@ describe('historyPrStateOf', () => {
     expect(historyPrStateOf(w('closed'))).toBe('closed');
     expect(historyPrStateOf(w('unresolvable'))).toBe('closed');
     expect(historyPrStateOf(w('ci_green'))).toBe('open');
+  });
+  // §17.5 (Slice E): a task that owns a kernel-owned delivery reads the delivery.
+  it('a kernel-owned delivery wins over the worker columns', () => {
+    expect(historyPrStateOf(w('merged'), { prState: 'ci_failed', prNumber: 7 })).toBe('ci_failed');
+    expect(historyPrStateOf(w('ci_failed'), { prState: 'merged', prNumber: 7 })).toBe('merged');
+    expect(historyPrStateOf(undefined, { prState: 'awaiting_ci', prNumber: 7 })).toBe('open');
+  });
+});
+
+describe('kernelUnmergedPr (§17.5: explain\'s state chain reads the delivery)', () => {
+  const task = { id: 't1', title: 'feat: x', status: 'completed' };
+  it('a live delivery is unmerged; a settled one is not', () => {
+    expect(kernelUnmergedPr(task, { prUrl: 'u' }, { state: 'AWAITING_REVIEW', prNumber: 7 })).toEqual([{ taskId: 't1', title: 'feat: x', prNumber: 7, prUrl: 'u' }]);
+    for (const state of ['MERGED', 'SUPERSEDED', 'ABANDONED', 'FAILED'] as const) {
+      expect(kernelUnmergedPr(task, { prUrl: 'u' }, { state, prNumber: 7 })).toEqual([]);
+    }
+  });
+  it('closed with no edge is closed-unsuperseded, whatever the worker column says', () => {
+    expect(kernelUnmergedPr(task, { prUrl: 'u' }, { state: 'CLOSED_UNMERGED', prNumber: 7 })[0]).toMatchObject({ closedUnsuperseded: true });
+  });
+  it('a failed owner attempt whose PR is live still holds the PR open (S35)', () => {
+    expect(kernelUnmergedPr({ ...task, status: 'failed' }, undefined, { state: 'REPAIRING', prNumber: 7 })).toHaveLength(1);
   });
 });
 
@@ -448,6 +475,55 @@ describe('explainTask', () => {
     }
   });
 
+  it('a task held on a soft overlap names who holds what and the hold/start verdict', async () => {
+    missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+    taskRows = [
+      task({
+        id: 'task-1', status: 'pending', pathManifest: ['scripts/'],
+        pathDeclaration: { declared: ['scripts/'], source: 'creation', snapshotAt: 'x', overlapPolicy: 'v2', softOverlaps: [{ taskId: 'holder-1', paths: [], kind: 'prefix' }] },
+      }),
+      task({ id: 'holder-1', status: 'in_progress', title: 'Rewrite the test runner', pathManifest: ['scripts/run-unit-tests.ts'], missionId: 'mission-x' }),
+    ];
+    gateEventRows = [{
+      taskId: 'task-1', gate: 'claim_loop_deferral', outcome: 'deferred', reason: 'soft_overlap',
+      occurredAt: new Date('2026-01-03T00:00:00.000Z'),
+      detail: { holderTaskId: 'holder-1', paths: ['scripts', 'scripts/run-unit-tests.ts'], verdict: 'HOLD', overlapKind: 'prefix', consecutiveDeferrals: 4 },
+    }];
+    try {
+      const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+      expect(answer.coordination?.holds).toEqual([expect.objectContaining({
+        edge: 'soft_overlap', holderTaskId: 'holder-1', holderTitle: 'Rewrite the test runner', verdict: 'HOLD',
+        paths: ['scripts', 'scripts/run-unit-tests.ts'],
+      })]);
+      const link = answer.because.find(l => l.refs.taskId === 'holder-1');
+      expect(link?.claim).toContain('Rewrite the test runner');
+      expect(link?.claim).toContain('HOLD');
+      expect(answer.gateHistory[0].holder).toMatchObject({ holderTaskId: 'holder-1', verdict: 'HOLD' });
+      expect(answer.because.map(l => l.order)).toEqual(answer.because.map((_, i) => i + 1));
+    } finally {
+      gateEventRows = [];
+    }
+  });
+
+  it('a task held on a live path lease names the lease holder', async () => {
+    missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+    taskRows = [
+      task({ id: 'task-1', status: 'pending', pathManifest: ['apps/web/src/lib/x.ts'] }),
+      task({ id: 'lease-1', status: 'in_progress', title: 'Lease holder', pathManifest: ['apps/web/src/lib/x.ts'], missionId: 'mission-x' }),
+    ];
+    gateEventRows = [{
+      taskId: 'task-1', gate: 'claim_loop_deferral', outcome: 'deferred', reason: 'path_overlap',
+      occurredAt: new Date('2026-01-03T00:00:00.000Z'), detail: { blockingTaskId: 'lease-1', prNumber: null, prUrl: null },
+    }];
+    try {
+      const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+      expect(answer.coordination?.holds[0]).toMatchObject({ edge: 'path_lease', holderTaskId: 'lease-1', paths: ['apps/web/src/lib/x.ts'] });
+      expect(answer.because.some(l => l.claim.includes('live path lease held by task lease-1'))).toBe(true);
+    } finally {
+      gateEventRows = [];
+    }
+  });
+
   it('a task that is not pending never reads its wake', async () => {
     taskRows = [task({ id: 'task-1', status: 'completed' })];
     mockLatestDispatchForTask.mockClear();
@@ -698,6 +774,31 @@ describe('explainPr — a dirty mission PR', () => {
     expect(answer.because.map(l => l.order)).toEqual(answer.because.map((_, i) => i + 1));
   });
 
+  // Spec workflow-state-kernel §13.11 rule 3: "dirty PR mislabeled ready".
+  it('a conflicted PR is never READY FOR REVIEW / ready to merge', async () => {
+    const answer = (await explainPr(subject, ACTOR))!.subjects[0];
+    expect(answer.chip.label).not.toBe('READY FOR REVIEW');
+    expect(answer.situation.headline).not.toContain('ready to merge');
+    expect(answer.waitingOn).toMatchObject({ kind: 'landing_blocked', cause: 'conflicted', owner: 'platform', prNumbers: [101] });
+  });
+
+  it('a dirty, colliding PR whose repair attempts all ended needs a person', async () => {
+    taskRows.push(task({
+      id: 'task-noop-fix', title: '[builder · after conflict #1] Mission PR', status: 'completed', taskClass: 'attempt',
+      parentTaskId: 'task-mission-pr', creationSource: 'conflict', updatedAt: new Date('2026-01-02T01:00:00.000Z'),
+    }));
+    gateEventRows = [{
+      occurredAt: new Date('2026-01-02T03:00:00.000Z'), gate: 'pr_landing', outcome: 'deferred',
+      reason: 'PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch; also refused: migration number collision: <n>_a.sql is at or below <n>_b.sql, already on the base',
+      detail: { prNumber: 101, headSha: 'h1' },
+    }];
+    const answer = (await explainPr(subject, ACTOR))!.subjects[0];
+    gateEventRows = [];
+    expect(answer.displayState).toBe('blocked');
+    expect(answer.waitingOn).toMatchObject({ kind: 'landing_blocked', cause: 'repair_exhausted', owner: 'person' });
+    expect(answer.nextAction).toContain('regenerate the migration');
+  });
+
   it('derives the touch set from stored rows — no merge attempt, no GitHub call', async () => {
     await explainPr(subject, ACTOR);
     // Only the base-side merge query ran against workers; nothing shelled out.
@@ -907,5 +1008,22 @@ describe('explain — fix-attempt lineage', () => {
     const fix2 = (await explainTask('root', ACTOR))!.subjects[0].history[0].attempts[0].attempts[0];
     expect('evidence' in fix2).toBe(false);
     expect('mismatch' in fix2).toBe(false);
+  });
+});
+
+
+describe('visual task browser claimability explanation', () => {
+  it('names missing browser capability instead of silently leaving a queued visual task', async () => {
+    browserHeartbeats = [];
+    taskRows = [task({ status: 'pending', roleSlug: 'visual-auditor' })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.because.map(l => l.claim).join(' ')).toContain('browser capability');
+  });
+  it('does not invent a missing browser when the capability read failed', async () => {
+    browserHeartbeats = null;
+    taskRows = [task({ status: 'pending', roleSlug: 'visual-auditor' })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('missing browser capability');
+    browserHeartbeats = [];
   });
 });

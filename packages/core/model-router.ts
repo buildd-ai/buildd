@@ -76,6 +76,42 @@ export const BASELINE: Record<TaskKind, Record<TaskComplexity, Tier>> = {
   observation:  { simple: 'haiku', normal: 'haiku', complex: 'haiku' },
 };
 
+/** The closed `tasks.kind` vocabulary, as a runtime value. */
+export const TASK_KIND_VALUES: readonly TaskKind[] = Object.freeze(
+  Object.keys(BASELINE) as TaskKind[],
+);
+
+export function isRouterTaskKind(value: unknown): value is TaskKind {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(BASELINE, value);
+}
+
+/**
+ * Category values (`tasks.category`) that are sometimes written where a kind
+ * belongs. Anything not listed here and not a kind maps to `engineering`.
+ */
+const CATEGORY_TO_KIND: Readonly<Record<string, TaskKind>> = Object.freeze({
+  docs: 'writing',
+});
+
+/**
+ * Coerce any stored or supplied kind onto the closed vocabulary.
+ *
+ * `tasks.kind` is a plain text column (its `$type<>` is compile-time only), so
+ * a category value such as 'feature' or 'test' can reach a reader. Null/empty
+ * stays null (no signal); a valid kind passes through; a known category maps
+ * to its closest kind; anything else becomes `engineering`, the router default.
+ */
+export function normalizeTaskKind(value: unknown): TaskKind | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (isRouterTaskKind(value)) return value;
+  if (typeof value === 'string' && Object.prototype.hasOwnProperty.call(CATEGORY_TO_KIND, value)) {
+    return CATEGORY_TO_KIND[value];
+  }
+  return 'engineering';
+}
+
+const COMPLEXITIES: ReadonlySet<string> = new Set(['simple', 'normal', 'complex']);
+
 const TIER_ORDER: Tier[] = ['haiku', 'sonnet', 'opus'];
 
 function downshift(tier: Tier, steps = 1): Tier {
@@ -109,9 +145,13 @@ export function resolveEffectiveModel(input: RouterInput): RouterDecision {
     };
   }
 
-  const kind: TaskKind = kindInput || 'engineering';
-  const complexity: TaskComplexity = complexityInput || 'normal';
-  const baseline = BASELINE[kind][complexity];
+  // Never index BASELINE with an unchecked value: an out-of-vocabulary kind
+  // (e.g. a category like 'feature') used to throw here and 500 every claim
+  // whose candidate set held that task.
+  const kind: TaskKind = normalizeTaskKind(kindInput) ?? 'engineering';
+  const complexity: TaskComplexity =
+    complexityInput && COMPLEXITIES.has(complexityInput) ? complexityInput : 'normal';
+  const baseline = BASELINE[kind]?.[complexity] ?? BASELINE.engineering[complexity];
 
   // 2. Budget-pressure gate — see the table in plans/buildd/smart-model-routing.md.
   let tier = baseline;

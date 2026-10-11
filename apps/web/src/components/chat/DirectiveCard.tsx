@@ -3,9 +3,9 @@
 /**
  * The directive card (knowledge-base: buildd/design/memory-done-right.md, "Chat"): the person
  * just stated a standing rule, and one tap keeps it. The rule is said in
- * Newsreader; the chrome is Plex Mono; the card is square with a 1px rule and
- * the 3px offset shadow of every chat object, over a faint patch of sea (calm
- * teal: this is a quiet offer, not something that needs them).
+ * Newsreader; the chrome is JetBrains Mono; the card is the shared 6px card with a hairline and
+ * no shadow, over a faint patch of sea (calm
+ * neutral: this is a quiet offer, not something that needs them).
  *
  * Self-contained: it reads its own part (which carries the conversation id)
  * and talks to /api/chat/directives itself, so the thread renderer only has
@@ -14,6 +14,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import type { ChatDirectiveCandidateData, ChatDirectiveScope } from '@buildd/shared';
+import StatePill, { TonePill } from '@/components/ui/StatePill';
 import { STANDING_RULES_HREF, directiveCandidates, initialScope, saveRequest, savedLine, scopeOptions } from './directive-card';
 
 type CardState = 'open' | 'saving' | 'saved' | 'dismissing' | 'dismissed';
@@ -78,7 +79,7 @@ export function DirectiveCard({ data, messageId }: { data: ChatDirectiveCandidat
 
   if (state === 'dismissed') {
     return (
-      <div data-testid="directive-card" data-state="dismissed" className="border border-[var(--chat-rule)] bg-[var(--chat-surface)] px-3.5 py-2 font-mono text-[12px] text-[var(--chat-muted)]">
+      <div data-testid="directive-card" data-state="dismissed" className="rounded-[var(--radius-card)] border border-[var(--chat-rule)] bg-[var(--chat-surface)] px-3.5 py-2 font-mono text-[12px] text-[var(--chat-muted)]">
         Not saved as a rule.
       </div>
     );
@@ -86,12 +87,10 @@ export function DirectiveCard({ data, messageId }: { data: ChatDirectiveCandidat
 
   if (state === 'saved') {
     return (
-      <section data-testid="directive-card" data-state="saved" className="relative overflow-hidden border border-[var(--chat-rule-strong)] bg-[var(--chat-surface)] shadow-[3px_3px_0_0_var(--chat-rule)]">
+      <section data-testid="directive-card" data-state="saved" className="relative overflow-hidden rounded-[var(--radius-card)] border border-[var(--chat-rule)] bg-[var(--chat-surface)]">
         <FaintSea />
         <div className="relative flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3 md:px-5">
-          <span className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[.16em] text-[var(--mood-calm)]">
-            <span aria-hidden="true" className="h-2 w-2 bg-[var(--mood-calm)]" />Rule saved
-          </span>
+          <StatePill state="landed" label="Rule saved" />
           <span data-testid="directive-saved-line" className="font-mono text-[12px] text-[var(--chat-muted)]">{savedLine(data, scope)}</span>
           <Link href={STANDING_RULES_HREF} className="ml-auto min-h-8 font-mono text-[12px] text-[var(--chat-text)] underline decoration-[var(--chat-rule-strong)] underline-offset-4 hover:decoration-[var(--chat-text)]">
             Edit in Settings
@@ -107,13 +106,11 @@ export function DirectiveCard({ data, messageId }: { data: ChatDirectiveCandidat
       data-testid="directive-card"
       data-state={state}
       aria-label="Save this as a standing rule"
-      className="relative overflow-hidden border border-[var(--chat-rule-strong)] bg-[var(--chat-surface)] shadow-[3px_3px_0_0_var(--chat-rule)]"
+      className="relative overflow-hidden rounded-[var(--radius-card)] border border-[var(--chat-rule)] bg-[var(--chat-surface)]"
     >
       <FaintSea />
       <header className="relative flex items-center gap-3 border-b border-[var(--chat-rule)] px-4 py-2.5 md:px-5">
-        <span className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[.16em] text-[var(--mood-calm)]">
-          <span aria-hidden="true" className="h-2 w-2 bg-[var(--mood-calm)]" />Standing rule
-        </span>
+        <TonePill tone="q">Standing rule</TonePill>
         <span className="ml-auto font-mono text-[11px] text-[var(--chat-muted)]">for your chats</span>
       </header>
       <div className="relative px-4 py-3 md:px-5 md:py-4">
@@ -121,7 +118,7 @@ export function DirectiveCard({ data, messageId }: { data: ChatDirectiveCandidat
           {data.text}
         </p>
         {options.length > 1 ? (
-          <div role="radiogroup" aria-label="Where this rule applies" data-testid="directive-scope" className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] border border-[var(--chat-rule-strong)] md:max-w-[460px] md:grid-cols-2">
+          <div role="radiogroup" aria-label="Where this rule applies" data-testid="directive-scope" className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] overflow-hidden rounded-[var(--radius-card)] border border-[var(--chat-rule-strong)] md:max-w-[460px] md:grid-cols-2">
             {options.map((o, i) => {
               const on = scope === o.value;
               return (
@@ -159,7 +156,7 @@ export function DirectiveCard({ data, messageId }: { data: ChatDirectiveCandidat
           data-testid="directive-save"
           disabled={busy}
           onClick={() => { void save(); }}
-          className="min-h-11 shrink-0 whitespace-nowrap border-2 border-[var(--on-accent)] bg-accent px-4 font-convo text-[14px] font-semibold text-[var(--on-accent)] hover:bg-primary-hover disabled:opacity-60 md:px-5"
+          className="min-h-11 shrink-0 whitespace-nowrap rounded-[var(--radius-card)] bg-accent px-4 font-convo text-[14px] font-semibold text-[var(--on-accent)] hover:bg-primary-hover disabled:opacity-60 md:px-5"
         >
           {state === 'saving' ? 'Saving…' : 'Remember this'}
         </button>

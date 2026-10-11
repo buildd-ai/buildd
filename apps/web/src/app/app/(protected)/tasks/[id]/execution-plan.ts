@@ -7,6 +7,7 @@
  * chain showed a builder's review passes as if they were the plan it executes.
  */
 import { deriveTaskType } from '@buildd/core/mission-helpers';
+import { compareTasksChrono, oldestFirst, type Chrono } from '@/lib/attempt-order';
 
 export interface AttemptProbe {
   taskClass?: string | null;
@@ -39,11 +40,14 @@ export function selectExecutionPlan<T extends AttemptProbe & { id: string }>(
   return plan;
 }
 
-/** Split a task's children into genuine subtasks and attempts at it, keeping order. */
-export function partitionChildTasks<T extends AttemptProbe>(children: readonly T[]): { subtasks: T[]; attempts: T[] } {
+/**
+ * Split a task's children into genuine subtasks and attempts at it, each in
+ * (createdAt, id) order — never the order the rows arrived in.
+ */
+export function partitionChildTasks<T extends AttemptProbe & Chrono>(children: readonly T[]): { subtasks: T[]; attempts: T[] } {
   const subtasks: T[] = [];
   const attempts: T[] = [];
-  for (const c of children) (isAttemptTask(c) ? attempts : subtasks).push(c);
+  for (const c of oldestFirst(children, compareTasksChrono)) (isAttemptTask(c) ? attempts : subtasks).push(c);
   return { subtasks, attempts };
 }
 
@@ -78,4 +82,14 @@ export function descriptionDuplicatesSummary(
   if (a === b) return true;
   const [short, long] = a.length <= b.length ? [a, b] : [b, a];
   return long.includes(short) && short.length >= long.length * COPY_RATIO;
+}
+
+/**
+ * Whether a chain is worth showing as an execution plan. A single phase is
+ * not a plan: either it is this task (a self-loop) or it is some other task
+ * (e.g. a friction report filed during this run), which shown as "the plan"
+ * reads as if this task were a step of it.
+ */
+export function isMeaningfulPlan(chain: ReadonlyArray<{ id: string }>): boolean {
+  return chain.length > 1;
 }

@@ -2,10 +2,6 @@
 status: reference
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
-  - id: "status-chip"
-    type: "symbol"
-    name: "StatusChip"
-    path: "apps/web/src/components/StatusChip.tsx"
   - id: "task-card"
     type: "symbol"
     name: "TaskCard"

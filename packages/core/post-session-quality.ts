@@ -98,8 +98,8 @@ export const TRIAGE_FOCUSES = ['general', 'retrieval', 'knowledge', 'orchestrati
 export type TriageFocus = (typeof TRIAGE_FOCUSES)[number];
 
 export interface PostSessionTriageRecord {
-  /** `unavailable` = the decision call timed out / failed / was malformed (fail-open). */
-  status: 'ok' | 'unavailable';
+  /** `unavailable` = no answer was applied (failed, malformed or below the threshold; fail-open). `rule` = a hard trigger decided without asking a model. */
+  status: 'ok' | 'unavailable' | 'rule';
   decision: TriageDecision | null;
   focus: TriageFocus | null;
   reasonCode: string | null;

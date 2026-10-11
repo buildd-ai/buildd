@@ -7,6 +7,7 @@
  * resolveDispatchTask alone by /api/runner/runner-size.
  */
 import { db } from '@buildd/core/db';
+import { pinnedHeadBranch } from '@buildd/core/branch-names';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
@@ -117,15 +118,16 @@ export async function resolveDispatchPrincipal(
  * `context.headBranch` when it pins one (a mission's shared working branch,
  * which every task on that mission pushes; the claim route normally makes it
  * the worker's branch as well). A stacked phase pushes its own branch on top
- * of its predecessor's, so `context.baseBranch` is never included. A protected
- * branch is never pushable, whatever the task says.
+ * of its predecessor's, so `context.baseBranch` is never included — nor is a
+ * pinned head equal to it (`pinnedHeadBranch`). A protected branch is never
+ * pushable, whatever the task says.
  */
 export function taskPushableBranches(args: {
   workerBranch?: string | null;
   context?: unknown;
   protectedBranches: readonly string[];
 }): string[] {
-  const head = (args.context as { headBranch?: unknown } | null | undefined)?.headBranch;
+  const head = pinnedHeadBranch(args.context);
   const out: string[] = [];
   for (const b of [args.workerBranch, head]) {
     if (typeof b !== 'string') continue;

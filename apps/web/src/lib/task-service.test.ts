@@ -7,6 +7,7 @@ const mockWorkspacesFindFirst = mock(() => null as any);
 // teamMembers.findMany and teams.findFirst back getUserTeamIds without mocking @/lib/team-access
 const mockTeamMembersFindMany = mock(async () => [{ teamId: 'team-1' }] as any[]);
 const mockTeamsFindFirst = mock(async () => null as any);
+const mockTasksFindFirst = mock(async () => null as any);
 
 // Mock the database module
 mock.module('@buildd/core/db', () => ({
@@ -26,6 +27,9 @@ mock.module('@buildd/core/db', () => ({
       },
       teams: {
         findFirst: mockTeamsFindFirst,
+      },
+      tasks: {
+        findFirst: mockTasksFindFirst,
       },
     },
   },
@@ -365,6 +369,7 @@ describe('task-service', () => {
           createdByWorkerId: 'mcp-worker',
           creationSource: 'mcp',
           parentTaskId: 'current-task',
+          createdByUserId: null,
         });
       });
 
@@ -382,6 +387,7 @@ describe('task-service', () => {
           createdByWorkerId: null,
           creationSource: 'dashboard',
           parentTaskId: null,
+          createdByUserId: 'user-123',
         });
       });
 
@@ -395,8 +401,33 @@ describe('task-service', () => {
           createdByWorkerId: null,
           creationSource: 'github',
           parentTaskId: null,
+          createdByUserId: null,
         });
       });
+    });
+  });
+
+  describe('createdByUserId (who the task is for)', () => {
+    it('is the signed-in user', async () => {
+      const ctx = await resolveCreatorContext({ userId: 'user-1' });
+      expect(ctx.createdByUserId).toBe('user-1');
+    });
+
+    it('is the person behind an OAuth session', async () => {
+      const ctx = await resolveCreatorContext({ apiAccount: { id: 'acct-1', sessionUserId: 'user-2' } });
+      expect(ctx.createdByUserId).toBe('user-2');
+    });
+
+    it("inherits the parent task's person for an agent-filed task", async () => {
+      mockTasksFindFirst.mockImplementation(async () => ({ createdByUserId: 'user-3' }));
+      const ctx = await resolveCreatorContext({ apiAccount: { id: 'acct-1' }, parentTaskId: 'parent-1' });
+      expect(ctx.createdByUserId).toBe('user-3');
+      mockTasksFindFirst.mockImplementation(async () => null);
+    });
+
+    it('is null for a plain API key with no parent', async () => {
+      const ctx = await resolveCreatorContext({ apiAccount: { id: 'acct-1' } });
+      expect(ctx.createdByUserId).toBeNull();
     });
   });
 });

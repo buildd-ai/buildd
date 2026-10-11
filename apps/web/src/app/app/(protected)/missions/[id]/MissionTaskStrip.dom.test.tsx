@@ -9,7 +9,10 @@
  * - the stepper's "Next open" and the header's "N open ›" jump;
  * - the situation block's single-task affordance selects that cell and moves
  *   focus to the drawer instead of rendering a second call to action;
- * - selecting a task makes no request.
+ * - selecting a task makes no request;
+ * - with per-task deliveries, the drawer adds the task's own Build → Audit →
+ *   Land `Lifecycle` and an "Audit and repair" disclosure, without adding a cell;
+ *   without them the drawer is exactly what it was.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
@@ -30,7 +33,7 @@ const { LandedStrip } = await import('./MissionTaskStrip');
 const { MissionStripContext, createMissionStripStore } = await import('@/components/missions/mission-strip-context');
 const { default: SituationTaskAffordance } = await import('@/components/missions/SituationTaskAffordance');
 const { stripOrder } = await import('@/lib/mission-task-strip');
-const { missionTaskStripFixture, stripFixtureId, dagBoard, dagId, DAG_SPECS } = await import('../../../dev/fixtures/mission-task-strip-fixtures');
+const { missionTaskStripFixture, stripFixtureId, dagBoard, dagId, DAG_SPECS, DELIVERY_HELD, DELIVERY_REPAIRING } = await import('../../../dev/fixtures/mission-task-strip-fixtures');
 type Fixture = import('../../../dev/fixtures/mission-task-strip-fixtures').MissionTaskStripFixture;
 type StripFocus = import('./MissionTaskStrip').StripFocus;
 
@@ -61,7 +64,7 @@ async function mount(f: Fixture, focus: StripFocus | null = null, extra: React.R
     root.render(
       <MissionStripContext.Provider value={{ store, taskIds: stripOrder(f.model) }}>
         {extra}
-        <LandedStrip model={f.model} compact={false} link={{ missionId: 'm1' }} workspaceId="ws1" executor={f.executor} focus={focus} count={null} />
+        <LandedStrip model={f.model} compact={false} link={{ missionId: 'm1' }} workspaceId="ws1" executor={f.executor} focus={focus} count={null} deliveries={f.deliveries} />
       </MissionStripContext.Provider>,
     );
   });
@@ -99,12 +102,15 @@ describe('Landed strip', () => {
     expect(drawer().querySelector('[data-testid="task-action-zone"]')?.getAttribute('data-actions')).toBe('claim_hint run_now');
   });
 
-  it('the action column is capped, so a long refusal wraps instead of starving the title column', async () => {
+  it('the drawer is one column: the title takes the full width and the actions sit below it', async () => {
     await mount(missionTaskStripFixture('mid-open'));
-    // An `auto` track grows to the refusal's max-content width and squeezes
-    // the `minmax(0,1fr)` title column to nothing (the title then breaks per letter).
-    expect(drawer().className).toContain('md:grid-cols-[minmax(0,1fr)_fit-content(60%)]');
-    expect(drawer().className).not.toMatch(/grid-cols-\[[^\]]*auto\)?\]/);
+    // A side column for the actions squeezed the title to a word or two per
+    // line in the band's half-width Landed cell (and an `auto` track once
+    // starved it to nothing), so there is no column split at any width.
+    expect(drawer().className).not.toMatch(/grid-cols/);
+    const title = drawer().querySelector('[aria-live="polite"]')!;
+    const open = drawer().querySelector('[data-testid="landed-strip-drawer-open"]')!;
+    expect(title.compareDocumentPosition(open) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('selects the last task when everything landed', async () => {
@@ -192,15 +198,38 @@ describe('Landed strip', () => {
     expect(failedTick.className).toContain('text-status-error');
     expect(failedTick.className).not.toContain('text-accent-text');
 
-    // The genuinely-open cell (ready, index 1) still reads accent, never error.
+    // The genuinely-open cell (ready, index 1) reads neutral, never error.
     const openTick = ticks()[1];
     expect(openTick.dataset.tone).toBe('open');
-    expect(openTick.className).toContain('text-accent-text');
+    expect(openTick.className).toContain('text-text-secondary');
+    expect(openTick.className).not.toContain('text-status-error');
 
     // 02 is open, 03 is held (blocked on 02), 04 is failed: the header must
     // name the failed one apart from "open" instead of folding it in.
     const jump = container.querySelector<HTMLElement>('[data-testid="landed-strip-open-jump"]')!;
     expect(jump.textContent).toBe('1 open · 1 failed · 1 held ›');
+  });
+
+  it('selecting a held task keeps its held state (gray, never mustard) while raw status stays blocked', async () => {
+    const spec = {
+      tasks: ['01', '02', '03', '04', '05', '06', '07', '08'],
+      edges: { '06': ['05'], '07': ['06'], '08': ['07'] },
+      states: { '01': 'landed', '02': 'failed', '03': 'failed', '04': 'failed' } as const,
+    };
+    const model = dagBoard(spec);
+    await mount({ model, executor: 'runner' });
+    const cell = cells().find(c => c.dataset.taskRef === dagId(spec, '08'))!;
+    await click(cell);
+    expect(cell.getAttribute('aria-pressed')).toBe('true');
+    expect(cell.className).toContain('outline-text-primary'); // selection ring only
+    expect(cell.className).toContain('fleet-hatch'); // fill still the held texture
+    expect(cell.className).not.toContain('border-accent');
+    expect(cell.className).not.toContain('border-status-error');
+    const d = drawer();
+    expect(d.className).toContain('border-[var(--fleet-border-mid)]');
+    expect(d.className).not.toContain('border-accent');
+    expect(model.tasks[dagId(spec, '08')].status).toBe('blocked');
+    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')!.textContent).toBe('1 open · 3 failed · 3 held ›');
   });
 
   it('AC-7: ready, blocked and queued cells carry three different fills', async () => {
@@ -275,5 +304,75 @@ describe('Landed strip', () => {
     const link = container.querySelector<HTMLAnchorElement>('[data-testid="mission-primary-action"]')!;
     expect(link.getAttribute('data-task-id')).toBe('t');
     expect(link.textContent).toContain('View the open task');
+  });
+});
+
+describe('Landed strip drawer: the selected task\'s own delivery', () => {
+  const stages = () => Array.from(drawer().querySelectorAll<HTMLElement>('[data-testid="lifecycle-step"]'));
+  const toggle = () => drawer().querySelector<HTMLButtonElement>('[data-testid="landed-strip-drawer-evidence-toggle"]');
+  const evidence = () => drawer().querySelector<HTMLElement>('[data-testid="landed-strip-drawer-evidence"]');
+
+  it('35 tasks, 2 remaining: one cell per task, the repairing one selected on arrival', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    expect(cells()).toHaveLength(35);
+    expect(pressed()).toBe(DELIVERY_REPAIRING - 1);
+    expect(cells()[DELIVERY_REPAIRING - 1].dataset.status).toBe('fixing');
+    expect(cells()[DELIVERY_HELD - 1].dataset.status).toBe('blocked');
+    // Mission dependency progress stays the strip's own vocabulary: a red cell
+    // under a fix is its failed bucket (TONE-1), the drawer says Repairing.
+    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')?.textContent).toBe('1 failed · 1 held ›');
+    expect(drawer().querySelector('[data-testid="landed-strip-drawer-ordinal"]')?.textContent).toBe('34 · LEVEL 34 OF 35');
+  });
+
+  it('the repairing task shows Build passed, Audit current with its round, Land ahead', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    expect(stages().map(s => [s.dataset.stage, s.dataset.state])).toEqual([['build', 'done'], ['audit', 'current'], ['land', 'later']]);
+    expect(stages()[0].textContent).toBe('✓ BuildPR #434 opened');
+    expect(stages()[1].textContent).toContain('Repair 2 · CI failed');
+    expect(stages()[1].querySelector('[aria-current="step"]')?.textContent).toBe('↻ Audit · repair 2');
+  });
+
+  it('a repairing task opens its audit and repair evidence; the toggle closes it', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    expect(toggle()?.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle()?.textContent).toContain('2 revisions · 2 repairs');
+    expect(evidence()!.querySelectorAll('[data-testid="activity-revision"]')).toHaveLength(2);
+    expect(evidence()!.querySelectorAll('[data-testid="activity-repair"]')).toHaveLength(2);
+    expect(evidence()!.querySelector('[data-testid="activity-revision"]')?.getAttribute('data-current')).toBe('true');
+    await click(toggle()!);
+    expect(evidence()).toBeNull();
+    expect(fetches).toEqual([]);
+  });
+
+  it('the held task has not started: no evidence to open, its actions unchanged', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    await click(cells()[DELIVERY_HELD - 1]);
+    expect(stages().map(s => s.dataset.state)).toEqual(['later', 'later', 'later']);
+    expect(stages()[0].textContent).toContain('Not started');
+    expect(toggle()).toBeNull();
+    expect(drawer().querySelector('[data-testid="landed-strip-drawer-reason"]')?.textContent).toMatch(/^After 34/);
+    expect(drawer().querySelector('[data-testid="task-action-zone"]')).not.toBeNull();
+  });
+
+  it('a landed task: every stage passed, Merged', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    await click(cells()[32]);
+    expect(stages().map(s => s.dataset.state)).toEqual(['done', 'done', 'done']);
+    expect(stages()[2].textContent).toContain('Merged');
+    expect(drawer().querySelector('[data-testid="task-action-zone"]')).toBeNull();
+  });
+
+  it('the disclosure closes again when another task is selected and reopens on the repair', async () => {
+    await mount(missionTaskStripFixture('delivery'));
+    await click(toggle()!);
+    await click(cells()[DELIVERY_HELD - 1]);
+    await click(cells()[DELIVERY_REPAIRING - 1]);
+    expect(toggle()?.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('without deliveries the drawer has no stage row (every older caller)', async () => {
+    await mount(missionTaskStripFixture('mid-open'));
+    expect(drawer().querySelector('[data-testid="landed-strip-drawer-delivery"]')).toBeNull();
+    expect(drawer().querySelector('[data-testid="lifecycle"]')).toBeNull();
   });
 });

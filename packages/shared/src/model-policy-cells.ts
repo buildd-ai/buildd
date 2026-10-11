@@ -66,7 +66,10 @@ export interface ModelPolicyCellProgress {
 
 export interface ModelPolicyRecentRun {
   taskId: string;
+  /** The task's title; null when it has none. */
+  title: string | null;
   at: string;
+  /** True merged, false closed/failed, null = outcome not known yet (not a grade). */
   merged: boolean | null;
   reviewOk: boolean | null;
 }
@@ -80,6 +83,10 @@ export interface ModelPolicyCellRun {
   /** Null until any run of this model is graded on that signal. */
   mergedRate: number | null;
   reviewOkRate: number | null;
+  /** Runs with a known merge outcome: the denominator of `mergedRate`. */
+  mergedGraded: number;
+  /** Runs with a reviewer verdict: the denominator of `reviewOkRate`. */
+  reviewOkGraded: number;
   costPerRunUsd: number | null;
   /**
    * Chat cells only, once chat learning reports them: share of conversations

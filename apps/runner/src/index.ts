@@ -1984,19 +1984,6 @@ const server = DEBUG_MODE ? Bun.serve({
       return Response.json(result, { headers: corsHeaders });
     }
 
-    // Team state endpoint (P2P — dashboard fetches directly from the runner)
-    if (path.startsWith('/api/workers/') && path.endsWith('/team') && req.method === 'GET') {
-      if (!workerManager) {
-        return Response.json({ error: 'Not configured' }, { status: 401, headers: corsHeaders });
-      }
-      const workerId = path.split('/')[3];
-      const worker = workerManager.getWorker(workerId);
-      if (!worker) {
-        return Response.json({ error: 'Worker not found' }, { status: 404, headers: corsHeaders });
-      }
-      return Response.json({ team: worker.teamState || null }, { headers: corsHeaders });
-    }
-
     // Sessions endpoint — list past sessions or get session messages via SDK
     if (path.startsWith('/api/workers/') && path.endsWith('/sessions') && req.method === 'GET') {
       if (!workerManager) {

@@ -8,8 +8,8 @@ assertions:
     path: "apps/web/src/app/app/(protected)/you/page.tsx"
   - id: "workspace-settings-page"
     type: "symbol"
-    name: "WorkspaceConfigPage"
-    path: "apps/web/src/app/app/(protected)/workspaces/[id]/config/page.tsx"
+    name: "WorkspaceSettingsPage"
+    path: "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx"
 ---
 
 # settings-ia-refactor

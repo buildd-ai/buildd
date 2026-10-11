@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { getUserAdminTeamIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { loadTeamKeySettings } from '@/lib/provider-keys';
 import { policyAllowsOwnKey } from '@buildd/core/inference-key-policy';
 import {
@@ -34,7 +35,7 @@ export async function GET(req: NextRequest) {
   if (!teamId || !teamIds.includes(teamId)) return back('team');
 
   if (scope === 'team') {
-    if (!(await getUserAdminTeamIds(userId)).includes(teamId)) return back('not_admin');
+    if (!(await can({ kind: 'user', userId }, 'manage_inference_providers', teamId))) return back('not_admin');
   } else {
     const { keyPolicy } = await loadTeamKeySettings(teamId);
     if (!policyAllowsOwnKey(keyPolicy)) return back('team_key_only');

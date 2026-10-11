@@ -79,6 +79,44 @@ mock.module('@/lib/pr-merge-stamp', () => ({
   noRowOfPrMerged: () => ({ type: 'noRowOfPrMerged' }),
 }));
 
+// ─── PR fact funnel (terminal-wins SQL covered in tests/db/pr-facts.test.ts) ─
+//
+// pr-state-refresh hands every lifecycle/merge fact to `recordPrFact`; only the
+// bookkeeping clocks go through `db.update(workers).set(...)`. Tests assert the
+// fact handed over plus the bookkeeping write.
+
+type RecordedFact = { target: any; fact: any; opts?: any };
+const recordedFacts: RecordedFact[] = [];
+let recordPrFactRows: Array<{ id: string; taskId: string | null; workspaceId: string | null; previousStatus: string | null }> = [
+  { id: 'w1', taskId: 't1', workspaceId: 'ws1', previousStatus: null },
+];
+mock.module('@buildd/core/pr-facts', () => ({
+  recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
+    recordedFacts.push({ target, fact, opts });
+    return recordPrFactRows;
+  },
+}));
+
+// Kernel import on merge/close is best-effort; no real kernel code runs here.
+const mockObservePrState = mock(async (_input: any) => false);
+mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState }));
+
+beforeEach(() => {
+  recordedFacts.length = 0;
+  mockObservePrState.mockClear();
+});
+
+/** The bookkeeping write: clocks only, never a guarded fact column. */
+const BOOKKEEPING = {
+  prLastCheckedAt: expect.any(Date),
+  // AC-4: this write only ever happens after a successful GitHub call (the
+  // catch branch writes nothing at all), so it is always a confirmed answer —
+  // the verification clock advances alongside the attempt clock.
+  prLastVerifiedAt: expect.any(Date),
+  prCheckFailureCount: 0,
+  updatedAt: expect.any(Date),
+};
+
 // ─── Task dependencies mock ───────────────────────────────────────────────────
 
 const mockCheckDependsOnResolved = mock(() => Promise.resolve());
@@ -152,17 +190,12 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     const setMock = makeSetMock();
     await refreshStaleWorkersForWorkspaces(['ws1']);
 
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        prLifecycleStatus: 'merged',
-        prLastCheckedAt: expect.any(Date),
-        // AC-4: this write only ever happens after a successful GitHub call
-        // (the catch branch below writes nothing at all), so it is always a
-        // confirmed answer — the verification clock advances alongside the
-        // attempt clock.
-        prLastVerifiedAt: expect.any(Date),
-      }),
-    );
+    expect(recordedFacts).toContainEqual({
+      target: { workerId: 'w1' },
+      fact: { kind: 'merged', mergedAt: '2026-01-01T00:00:00Z' },
+      opts: undefined,
+    });
+    expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
     expect(mockTriggerEvent).toHaveBeenCalledWith(
       expect.stringContaining('ws1'),
       'worker:progress',
@@ -173,7 +206,8 @@ describe('refreshStaleWorkersForWorkspaces', () => {
 
   it('heals every other row carrying the merged PR too (a CI-retry attempt that adopted it)', async () => {
     mockStampPrMergedOnAllRows.mockClear();
-    mockStampPrMergedOnAllRows.mockResolvedValueOnce([{ id: 'w-retry', taskId: 'task-retry' }]);
+    // The stamp returns this row too; only the sibling gets a separate nudge.
+    mockStampPrMergedOnAllRows.mockResolvedValueOnce([{ id: 'w1', taskId: 'task1' }, { id: 'w-retry', taskId: 'task-retry' }]);
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 42, prUrl: 'https://github.com/owner/repo/pull/42', workspaceId: 'ws1', taskId: 'task1' },
     ]);
@@ -186,10 +220,12 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     expect(mockStampPrMergedOnAllRows).toHaveBeenCalledWith(expect.objectContaining({
       prUrl: 'https://github.com/owner/repo/pull/42',
       prNumber: 42,
-      mergedAt: new Date('2026-01-01T00:00:00Z'),
+      // GitHub's merged_at, handed through to the funnel unparsed.
+      mergedAt: '2026-01-01T00:00:00Z',
     }));
     // The sibling's task gets the same dependency nudge as the row itself.
     expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-retry');
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1');
   });
 
   it('stamps mergedAt when webhook was missed for an externally-merged PR (pr_open + null prLastCheckedAt)', async () => {
@@ -209,13 +245,12 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     const setMock = makeSetMock();
     await refreshStaleWorkersForWorkspaces(['ws1']);
 
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mergedAt: expect.any(Date),
-        prLifecycleStatus: 'merged',
-        prLastCheckedAt: expect.any(Date),
-      }),
-    );
+    expect(recordedFacts).toContainEqual({
+      target: { workerId: 'w-missed' },
+      fact: { kind: 'merged', mergedAt: '2026-08-27T07:00:00Z' },
+      opts: undefined,
+    });
+    expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
     expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-missed');
   });
 
@@ -229,13 +264,12 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     const setMock = makeSetMock();
     await refreshStaleWorkersForWorkspaces(['ws1']);
 
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        prLifecycleStatus: 'closed',
-        prLastCheckedAt: expect.any(Date),
-        prLastVerifiedAt: expect.any(Date),
-      }),
-    );
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: undefined }]);
+    expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
+    // A kernel-owned delivery imports the same close from its own live read.
+    expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws1', prNumber: 99, installationId: 123, source: 'sweep:pr-state-refresh',
+    }));
     expect(mockCheckDependsOnResolved).not.toHaveBeenCalled();
   });
 
@@ -249,12 +283,9 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     const setMock = makeSetMock();
     await refreshStaleWorkersForWorkspaces(['ws1']);
 
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLastCheckedAt: expect.any(Date), prLastVerifiedAt: expect.any(Date) }),
-    );
-    expect(setMock).toHaveBeenCalledWith(
-      expect.not.objectContaining({ prLifecycleStatus: 'merged' }),
-    );
+    expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
+    expect(recordedFacts).toEqual([]);
+    expect(mockObservePrState).not.toHaveBeenCalled();
     expect(mockCheckDependsOnResolved).not.toHaveBeenCalled();
   });
 
@@ -494,9 +525,13 @@ describe('refreshStaleWorkers', () => {
     ]);
 
     expect(mockFetchCiLifecycleStatus).toHaveBeenCalledWith(123, 'owner/repo', 'sha-abc');
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'ci_green' }),
-    );
+    // The verdict is for the live head, so it is never an old-SHA fact.
+    expect(recordedFacts).toEqual([{
+      target: { workerId: 'w-ci-fail' },
+      fact: { kind: 'ci', status: 'ci_green', headSha: 'sha-abc', currentHeadSha: 'sha-abc' },
+      opts: undefined,
+    }]);
+    expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });
 
   // AC-2: ci_green worker whose PR CI is now red refreshes to ci_failed
@@ -517,9 +552,12 @@ describe('refreshStaleWorkers', () => {
       },
     ]);
 
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'ci_failed' }),
-    );
+    expect(recordedFacts).toEqual([{
+      target: { workerId: 'w-ci-green' },
+      fact: { kind: 'ci', status: 'ci_failed', headSha: 'sha-def', currentHeadSha: 'sha-def' },
+      opts: undefined,
+    }]);
+    expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });
 
   // AC-6: #2010 regression — worker stuck as ci_green (renders as Open), live CI
@@ -544,9 +582,12 @@ describe('refreshStaleWorkers', () => {
       },
     ]);
 
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'ci_failed' }),
-    );
+    expect(recordedFacts).toEqual([{
+      target: { workerId: 'w-2010' },
+      fact: { kind: 'ci', status: 'ci_failed', headSha: 'sha-2010', currentHeadSha: 'sha-2010' },
+      opts: undefined,
+    }]);
+    expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });
 
   it('does not call fetchCiLifecycleStatus for non-CI prLifecycleStatus', async () => {
@@ -585,10 +626,9 @@ describe('refreshStaleWorkers', () => {
       },
     ]);
 
-    // prLifecycleStatus should not be in the update when state is unchanged
-    expect(setMock).toHaveBeenCalledWith(
-      expect.not.objectContaining({ prLifecycleStatus: expect.anything() }),
-    );
+    // No CI fact is recorded when state is unchanged; only the clocks advance.
+    expect(recordedFacts).toEqual([]);
+    expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });
 });
 
@@ -675,9 +715,12 @@ describe('pr-state-refresh repo resolution', () => {
     await refreshStaleWorkersForWorkspaces(['ws-coord']);
 
     expect(mockGithubApi).toHaveBeenCalledWith(789, '/repos/owner/repo/pulls/58');
-    expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'merged' }),
-    );
+    expect(recordedFacts).toContainEqual({
+      target: { workerId: 'w1' },
+      fact: { kind: 'merged', mergedAt: '2026-06-05T22:43:47Z' },
+      opts: undefined,
+    });
+    expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });
 
   it('takes the fallback repo from the linked row, not the stale text column', async () => {

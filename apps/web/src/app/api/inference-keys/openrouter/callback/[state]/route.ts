@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { loadTeamKeySettings, setProviderKey } from '@/lib/provider-keys';
 import { policyAllowsOwnKey } from '@buildd/core/inference-key-policy';
 import { PKCE_COOKIE, PKCE_COOKIE_PATH, decodePkceCookie, exchangeOpenRouterCode } from '@/lib/openrouter-oauth';
@@ -37,7 +38,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ stat
   // Permissions can change in ten minutes; check again, as the start route did.
   if (!(await getUserTeamIds(flow.userId)).includes(flow.teamId)) return finish({ error: 'team' });
   if (flow.scope === 'team') {
-    if (!(await getUserAdminTeamIds(flow.userId)).includes(flow.teamId)) return finish({ error: 'not_admin' });
+    if (!(await can({ kind: 'user', userId: flow.userId }, 'manage_inference_providers', flow.teamId))) return finish({ error: 'not_admin' });
   } else if (!policyAllowsOwnKey((await loadTeamKeySettings(flow.teamId)).keyPolicy)) {
     return finish({ error: 'team_key_only' });
   }

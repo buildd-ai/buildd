@@ -13,7 +13,9 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/closing-turn.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 import { createPr, builddAction, toolCall } from '../fixtures/task-shape-stream';
 import { RUNNER_DENIAL_MARKER } from '../../src/runner-denial';
@@ -119,13 +121,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -199,7 +201,24 @@ async function runSession(
   const task = makeTask(overrides);
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 300));
+  // A fixed sleep is flaky on loaded CI: the session may not have started yet.
+  // Wait for the backend to be created, then for update traffic to go quiet.
+  const deadline = Date.now() + 10_000;
+  while (createBackendCalls.length === 0 && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+  let lastCount = -1;
+  let quietSince = Date.now();
+  while (Date.now() < deadline) {
+    const count = updateCalls.length + createBackendCalls.length;
+    if (count !== lastCount) {
+      lastCount = count;
+      quietSince = Date.now();
+    } else if (Date.now() - quietSince >= 300) {
+      break;
+    }
+    await new Promise(r => setTimeout(r, 25));
+  }
 }
 
 function assistantText(text: string) {
@@ -248,6 +267,12 @@ describe('closing turn', () => {
   let manager: InstanceType<typeof WorkerManager>;
 
   beforeEach(resetAll);
+  afterAll(() => {
+
+    cleanupTestWorkspace();
+
+  });
+
   afterEach(() => { manager?.destroy(); });
 
   test('natural end without complete_task resumes the same session id for a closing turn', async () => {
@@ -706,6 +731,11 @@ describe('session-end classification', () => {
     expect(call).toBeDefined();
     expect(call!.payload.error).not.toContain('no commits were made');
     expect(call!.payload.error).toContain('No PR was created');
+    // S30: an unmet output requirement after work is a hand-off failure the
+    // kernel reads as AttemptEnded(unproven), with the head and count it saw.
+    expect(call!.payload.outcome).toBe('unproven');
+    expect(call!.payload).toHaveProperty('localHeadSha');
+    expect(call!.payload.commitCount).toBeGreaterThanOrEqual(1);
   });
 
   test('genuinely_blocked calls the Jev gate with the synthesized question', async () => {
@@ -762,7 +792,25 @@ describe('session-end classification', () => {
     const worker = manager.getWorker('w-ask-park');
     expect(worker?.status).toBe('waiting');
     expect((worker?.waitingFor as any)?.context).toContain('genuinely_blocked');
-    expect((worker?.waitingFor as any)?.disposition).toBeUndefined();
+    // Tagged with the gate's own disposition, so the server admits it to Needs You.
+    expect((worker?.waitingFor as any)?.disposition).toBe('ask');
+  });
+
+  test('genuinely_blocked + the gate recovered it: parks tagged with the repair task, never as an ask', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('CI is already failing on the base branch, unrelated to this change.'), successResult('sess-1')],
+    ];
+    mockCheckQuestion.mockImplementation(async () => ({
+      verdict: 'decide', outcome: 'recovered', disposition: 'decide', repairTaskId: 'repair-1',
+      reason: 'Not sent to a person: repair task filed.', version: null, latencyMs: 5,
+    }));
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-recovered-park', { outputRequirement: 'pr_required' });
+
+    expect(failedCall()).toBeUndefined();
+    const wf = manager.getWorker('w-recovered-park')?.waitingFor as any;
+    expect(wf?.disposition).toBe('recovered');
+    expect(wf?.repairTaskId).toBe('repair-1');
   });
 
   test('genuinely_blocked + Jev holds: parks tagged hold, not a push', async () => {

@@ -19,6 +19,13 @@ mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: teams }));
 mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany: workspaces } } } }));
 mock.module('@buildd/core/decision-ledger', () => ({ readDecisionLedgerPage: ledger, summarizeDecisionLedger: (rows: unknown[]) => ({ total: rows.length }) }));
 
+const orchRead = mock(async (..._args: any[]) => ({ rows: [{ id: 'o1', capability: 'orchestration_claim', appliedAnswer: 'START', createdAt: new Date('2026-01-01T00:00:00Z') }] as any[], truncated: false }));
+mock.module('@buildd/core/orchestration-decision-ledger', () => ({
+  isOrchestrationCapability: (c?: string) => !!c && c.startsWith('orchestration_'),
+  readOrchestrationDecisionPage: orchRead,
+  summarizeOrchestrationDecisions: (rows: unknown[]) => ({ total: rows.length, byAppliedAnswer: { START: rows.length } }),
+}));
+
 const { GET } = await import('./route');
 
 beforeEach(() => {
@@ -136,4 +143,16 @@ it('refuses an unfiltered request for a workspace-scoped token', async () => {
   const request = new NextRequest('http://localhost/api/decisions', { headers: { authorization: 'Bearer bld_reader' } });
   expect((await GET(request)).status).toBe(401);
   expect(ledger).not.toHaveBeenCalled();
+});
+
+it('routes orchestration_* capabilities to orchestration_decisions, not decision_records', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  const res = await GET(req('?workspaceId=ws&capability=orchestration_claim'));
+  expect(res.status).toBe(200);
+  expect(ledger).not.toHaveBeenCalled();
+  expect(orchRead.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws', capability: 'orchestration_claim' });
+  const body = await res.json();
+  expect(body.status).toBe('OK');
+  expect(body.source).toBe('orchestration_decisions');
+  expect(body.summary.byAppliedAnswer).toEqual({ START: 1 });
 });

@@ -3,7 +3,8 @@ import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { evidenceObjects, tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, ne, sql } from 'drizzle-orm';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import {
   EVIDENCE_UPLOAD_EXPIRY_SECONDS,
   generateEvidenceUploadUrl,
@@ -111,13 +112,13 @@ export async function POST(
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    columns: { id: true, accountId: true, workspaceId: true, taskId: true },
+    columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true },
     with: { workspace: { columns: { teamId: true, dataClass: true } } },
   });
   if (!worker) {
     return refuse('Worker not found', 404);
   }
-  if (!worker.accountId || worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
+  if (!callerOwnsWorker(account, worker)) {
     return refuse('Forbidden', 403);
   }
   const workspace = worker.workspace;

@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { SteerComposer, steerTitle, type SteerMessage, type SteerPresenceItem } from '@builddai/ai-kit/chat/react';
 import { taskDisplayLabel } from '@buildd/core/task-label';
-import type { InstructionHistoryEntry } from '@/lib/worker-instructions';
+import type { InstructionHistoryEntry, MessageDeliveryState } from '@/lib/worker-instructions';
 import { messageDeliveryStatus } from '@/lib/worker-instructions';
 import { steerPresence } from '@/lib/chat/steer-presence';
 import { ObjectStoreProvider, useObjectEntry } from './objects/ObjectStoreProvider';
@@ -29,8 +29,18 @@ interface TaskMessagesResponse {
   workerId: string | null;
   /** Caller may send (workspace admin), by the instruct route's own rule. */
   canSend: boolean;
-  messages: InstructionHistoryEntry[];
+  /** Status of the worker whose history this is (a message it never read is undelivered once it ends). */
+  workerStatus?: string | null;
+  messages: Array<InstructionHistoryEntry & { state?: MessageDeliveryState }>;
 }
+
+/** buildd's four states in the kit's words; 'queued' is the kit's 'sent'. */
+const KIT_DELIVERY: Record<MessageDeliveryState, SteerMessage['status']> = {
+  queued: 'sent',
+  delivered: 'delivered',
+  acknowledged: 'acknowledged',
+  undelivered: 'undelivered',
+};
 
 const NO_AGENT = 'No agent is running on this task right now.';
 
@@ -43,9 +53,21 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
-/** The task's instructions as the kit's list: the text (hidden in a sensitive workspace) and its delivery. */
-export function steerMessages(entries: readonly InstructionHistoryEntry[]): SteerMessage[] {
-  return entries.map((m, i) => ({ id: `${m.timestamp ?? i}-${i}`, text: m.message ?? null, status: messageDeliveryStatus(m).state }));
+/**
+ * The task's instructions as the kit's list: the text (hidden in a sensitive
+ * workspace) and its delivery — the server's derived `state` when it sent one,
+ * else the same derivation here (messageDeliveryStatus), never the stored field.
+ */
+export function steerMessages(
+  entries: ReadonlyArray<InstructionHistoryEntry & { state?: MessageDeliveryState }>,
+  workerStatus: string | null = null,
+): SteerMessage[] {
+  return entries
+    .map((m, i) => ({
+      id: m.id ?? `${m.timestamp ?? i}-${i}`,
+      text: m.message ?? null,
+      status: KIT_DELIVERY[m.state ?? messageDeliveryStatus(m, workerStatus).state],
+    }));
 }
 
 /** Why nobody can steer right now, or null. */
@@ -66,7 +88,13 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
       const res = await fetch(`/api/tasks/${taskId}/messages`, { credentials: 'include' });
       if (!res.ok) return;
       const body = await res.json();
-      setData({ taskId, workerId: body.workerId ?? null, canSend: body.canSend === true, messages: Array.isArray(body.messages) ? body.messages : [] });
+      setData({
+        taskId,
+        workerId: body.workerId ?? null,
+        canSend: body.canSend === true,
+        workerStatus: typeof body.workerStatus === 'string' ? body.workerStatus : null,
+        messages: Array.isArray(body.messages) ? body.messages : [],
+      });
     } catch { /* keep the last good copy */ }
   }, [taskId]);
 
@@ -113,7 +141,7 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
       idlePresence={NO_AGENT}
       onClose={onClose}
       onSend={send}
-      messages={steerMessages(data?.messages ?? [])}
+      messages={steerMessages(data?.messages ?? [], data?.workerStatus ?? null)}
       blockedReason={steerBlockedReason(data)}
       hiddenText="(hidden in a sensitive workspace)"
     />

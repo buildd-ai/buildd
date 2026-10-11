@@ -2,13 +2,13 @@
 title: Managed-Runner Entitlements
 status: active
 owner: builder
-last_verified: 2026-10-06
+last_verified: 2026-10-07
 summary: A Buildd-managed runner claim MUST leave a task queued, never failed, when the team's plan limit on parallel managed runs or monthly runner-hours is reached, and MUST start it once the limit lifts.
 domain: billing
-surfaces: [packages/shared/src/entitlements.ts, apps/web/src/lib/entitlements/managed-runner.ts, apps/web/src/lib/entitlements/plans.ts, apps/web/src/components/entitlements/EntitlementBlockedNotice.tsx]
+surfaces: [packages/shared/src/entitlements.ts, apps/web/src/lib/entitlements/managed-runner.ts, apps/web/src/lib/entitlements/plans.ts, apps/web/src/components/entitlements/EntitlementBlockedNotice.tsx, apps/web/src/lib/hosted-runner-usage.ts, apps/web/src/lib/hosted-runner-usage-store.ts]
 related: [claim-ordering]
-keywords: [plan limit, concurrency, runner-hours, managed runner, hosted, upgrade, entitlement_blocked, managed_concurrency, managed_runner_hours]
-verified_by: [apps/web/src/lib/entitlements/entitlements.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/tasks/[id]/start/route.test.ts, apps/web/src/components/entitlements/EntitlementBlockedNotice.dom.test.tsx]
+keywords: [plan limit, concurrency, runner-hours, managed runner, hosted, upgrade, entitlement_blocked, managed_concurrency, managed_runner_hours, hosted runner allowance, hosted_runner_hours, counted hours, runner_usage]
+verified_by: [apps/web/src/lib/entitlements/entitlements.test.ts, apps/web/src/lib/hosted-runner-usage.test.ts, apps/web/src/lib/hosted-runner-usage-store.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/tasks/[id]/start/route.test.ts, apps/web/src/components/entitlements/EntitlementBlockedNotice.dom.test.tsx]
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "evaluate-entitlement"
@@ -27,6 +27,15 @@ assertions:
   - id: "entitlement-tests"
     type: "test_file"
     path: "apps/web/src/lib/entitlements/entitlements.test.ts"
+  - id: "claim-checks-hosted-allowance"
+    type: "symbol_reachable"
+    symbol: "checkHostedRunnerAllowance"
+    entry: "apps/web/src/app/api/workers/claim/route.ts"
+    as: "call"
+  - id: "hosted-runner-hours-column"
+    type: "config_key"
+    key: "hostedRunnerHours"
+    file: "packages/core/db/schema.ts"
 ---
 
 # Managed-Runner Entitlements
@@ -108,6 +117,56 @@ Three things are kept apart:
 - `apps/web/src/components/entitlements/EntitlementBlockedNotice.tsx` and
   `apps/web/src/lib/entitlements/presentation.ts`: the one renderer and its copy.
 - `packages/core/db/schema.ts`: `accounts.managedRunner`, `teams.managedRunnerPlan`.
+
+## Hosted runner allowance (counted hours)
+
+**Capability statement**: Every cloud run attempt's runner time MUST be kept
+per attempt, weighted by container size (standard 1x, large 2x), and rolled up
+per team and workspace for the current UTC month. When the team has a hosted
+runner allowance and its counted hours reach it, a new cloud claim MUST leave
+the task queued with the reason recorded, never fail it, and MUST NOT stop a
+task already running.
+
+**Invariants**:
+
+- `runner_usage` holds one row per (worker, attempt), written when the
+  attempt's run report arrives (`cloud-run-report:*` artifact). Re-delivery
+  overwrites its own row; a resumed attempt adds one.
+- An attempt spanning a month boundary is split between the months by the
+  share of its running time on each side.
+- `teams.hosted_runner_hours` NULL (the default) is no cap: the claim never
+  reads usage, and no banner or hold appears.
+- The hold applies to cloud claims only (`executor: 'cloud'` or a per-task
+  token). A host runner may still take the task.
+- The hold is stamped as `context.entitlementBlock` with kind `hosted_runner`
+  and deferral key `hosted_runner_hours`; `explain` names it ("Hosted runner
+  allowance used"). The hourly sweep wakes it once the allowance refills or
+  grows.
+- Hours only: no compute dollars are shown anywhere. Model spend is on the
+  team's own key and is not part of the meter.
+
+**Acceptance criteria**:
+
+- AC-8: GIVEN a team with an allowance of 50 and 50 counted hours this month
+  WHEN a cloud claim reaches one of its tasks THEN the claim returns no worker,
+  `diagnostics.deferrals.hosted_runner_hours` is 1, the task stays `pending`,
+  and its context gains `entitlementBlock` with kind `hosted_runner`.
+- AC-9: GIVEN the same team WHEN a host runner claims THEN the allowance is not
+  evaluated.
+- AC-10: GIVEN counted hours at 80% of the allowance WHEN Home renders THEN it
+  shows the hosted runner banner; at 100% the banner says new cloud runs wait.
+- AC-11: GIVEN a held task WHEN it renders THEN the notice offers more hours,
+  running on your own runner, and waiting for the reset.
+
+**Code surface**:
+
+- `apps/web/src/lib/hosted-runner-usage.ts`: roll-up, month split, forecast,
+  thresholds and copy (pure).
+- `apps/web/src/lib/hosted-runner-usage-store.ts`: `recordRunnerUsageFromReport`,
+  `checkHostedRunnerAllowance`, `teamHostedRunnerSummary`, `teamHostedRunnerBanner`.
+- `apps/web/src/app/api/workers/[id]/artifacts/route.ts`: records usage on report write.
+- `apps/web/src/components/hosted-runner/`: the Usage page section and the Home banner.
+- `packages/core/db/schema.ts`: `runnerUsage`, `teams.hostedRunnerHours`.
 
 **Out of scope**: prices, product ids, checkout, plan assignment and overage
 billing (hosted billing writes `teams.managed_runner_plan` and sets

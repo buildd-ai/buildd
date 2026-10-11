@@ -32,6 +32,8 @@ export interface FeedEvent {
   detail: string;
   /** Opens the task's sheet. */
   taskId: string | null;
+  /** A retry or a repair: History nests it under its task's earlier entry. */
+  nest?: boolean;
 }
 
 export interface FeedDay {
@@ -93,9 +95,9 @@ export function buildMissionEventFeed({ model, notes = [], completionText = null
       continue;
     }
     const tag = tagOf(b.taskId) ?? b.scope ?? b.label;
-    raw.push({ id: `claim:${b.id}`, kind: 'claim', at: b.start, actor: tag, detail: `${b.retry ? `${b.label} ` : ''}claimed by ${b.runner}`, taskId: b.taskId });
+    raw.push({ id: `claim:${b.id}`, kind: 'claim', at: b.start, actor: tag, detail: `${b.retry ? `${b.label} ` : ''}claimed by ${b.runner}`, taskId: b.taskId, nest: !!b.retry });
     if (b.tone === 'stopped' && b.end != null) {
-      raw.push({ id: `stop:${b.id}`, kind: 'failed', at: b.end, actor: tag, detail: 'run stopped without a PR', taskId: b.taskId });
+      raw.push({ id: `stop:${b.id}`, kind: 'failed', at: b.end, actor: tag, detail: 'run stopped without a PR', taskId: b.taskId, nest: true });
     }
   }
 
@@ -108,7 +110,7 @@ export function buildMissionEventFeed({ model, notes = [], completionText = null
     raw.push({ id: `merged:${m.pr}`, kind: 'merged', at: m.at, actor: tagOf(m.taskId) ?? 'PR', detail: `#${m.pr} merged`, taskId: m.taskId });
   }
   model.ciFails.forEach((f, i) => {
-    raw.push({ id: `ci:${i}`, kind: 'failed', at: f.at, actor: tagOf(f.taskId) ?? 'CI', detail: `${f.pr ? `#${f.pr} ` : ''}CI failed`, taskId: f.taskId });
+    raw.push({ id: `ci:${i}`, kind: 'failed', at: f.at, actor: tagOf(f.taskId) ?? 'CI', detail: `${f.pr ? `#${f.pr} ` : ''}CI failed`, taskId: f.taskId, nest: true });
   });
 
   for (const n of notes) {

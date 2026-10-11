@@ -9,6 +9,9 @@ const mockConnectorsFindFirst = mock(() => null as any);
 const mockConnectorSharesFindMany = mock(() => [] as any[]);
 const mockTeamMembersFindFirst = mock(() => null as any);
 const mockSecretsFindMany = mock(() => [] as any[]);
+const mockPoliciesFindMany = mock(async () => [] as any[]);
+const mockLoadTeamCatalog = mock(async (_t: string) => [] as any[]);
+mock.module('@/lib/connector-catalog-store', () => ({ loadTeamCatalog: mockLoadTeamCatalog }));
 const mockConnectorsInsert = mock(() => ({
   values: mock(() => ({
     returning: mock(() => [{ id: 'conn-1', name: 'Test', url: 'https://mcp.example.com', authMode: 'oauth', teamId: 'team-1' }]),
@@ -21,15 +24,30 @@ const mockSecretsProviderSet = mock(() => Promise.resolve('secret-1'));
 const mockEncrypt = mock((v: string) => `enc:${v}`);
 const mockResolveConnectorIcon = mock(() => Promise.resolve(null as string | null));
 
+import { fakeCan } from '@/lib/connector-team-auth.fixtures';
+
+// can() runs against the registry defaults with the caller's role read from
+// the teamMembers mock; no row (undefined) = no membership, which holds nothing.
+mock.module('@/lib/permissions', () => ({
+  can: fakeCan(async (userId, teamId) =>
+    (await (mockTeamMembersFindFirst as any)({ where: { op: 'and', args: [{ a: 'userId', b: userId }, { a: 'teamId', b: teamId }] } }))?.role),
+}));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds }));
+class FakeRegistrationRejected extends Error {
+  readonly needsApprovedClient = true;
+  readonly description = 'The provided redirect URIs are not approved for use by this authorization server.';
+}
 mock.module('@/lib/mcp-oauth', () => ({
+  ClientRegistrationRejectedError: FakeRegistrationRejected,
   discoverOAuthMetadata: mockDiscoverOAuthMetadata,
   registerClient: mockRegisterClient,
   getCallbackUrl: mockGetCallbackUrl,
 }));
-mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: mockResolveConnectorIcon }));
+const mockScheduleStaleIconRefresh = mock((_rows: unknown[]) => {});
+mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: mockResolveConnectorIcon, resolveConnectorIconData: mockResolveConnectorIcon }));
+mock.module('@/lib/connector-icon-refresh', () => ({ scheduleStaleIconRefresh: mockScheduleStaleIconRefresh }));
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({ set: mockSecretsProviderSet }),
   encrypt: mockEncrypt,
@@ -42,6 +60,7 @@ mock.module('@buildd/core/db', () => ({
       connectorShares: { findMany: mockConnectorSharesFindMany },
       secrets: { findMany: mockSecretsFindMany },
       teamMembers: { findFirst: mockTeamMembersFindFirst },
+      connectorCatalogTeamPolicies: { findMany: mockPoliciesFindMany },
     },
     insert: () => mockConnectorsInsert(),
   },
@@ -58,6 +77,7 @@ mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissi
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },
   teamMembers: { userId: 'userId', teamId: 'teamId' },
+  connectorCatalogTeamPolicies: { teamId: 'teamId', policy: 'policy' },
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -90,9 +110,25 @@ describe('GET /api/connectors', () => {
     mockConnectorsFindMany.mockResolvedValue([]);
     mockConnectorSharesFindMany.mockResolvedValue([]);
     mockSecretsFindMany.mockResolvedValue([]);
+    mockPoliciesFindMany.mockReset();
+    mockPoliciesFindMany.mockResolvedValue([]);
+    mockLoadTeamCatalog.mockReset();
+    mockLoadTeamCatalog.mockResolvedValue([]);
   });
 
   afterAll(() => { process.env.NODE_ENV = originalNodeEnv; });
+
+  it('keeps a connector the team blocked in the list, flagged blockedByPolicy', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindMany.mockResolvedValue([
+      { id: 'conn-ax', teamId: 'team-1', name: 'Axiom', url: 'https://mcp.axiom.co/mcp', authMode: 'oauth', transport: 'http' },
+      { id: 'conn-ok', teamId: 'team-1', name: 'Other', url: 'https://mcp.example.com', authMode: 'none', transport: 'http' },
+    ]);
+    mockPoliciesFindMany.mockResolvedValue([{ teamId: 'team-1' }]);
+    mockLoadTeamCatalog.mockResolvedValue([{ slug: 'axiom', name: 'Axiom', url: 'https://mcp.axiom.co/mcp', policy: 'blocked' }]);
+    const data = await (await GET(makeGetReq())).json();
+    expect(data.connectors.map((c: any) => [c.id, c.blockedByPolicy])).toEqual([['conn-ax', true], ['conn-ok', false]]);
+  });
 
   it('returns 401 when unauthenticated', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
@@ -114,6 +150,16 @@ describe('GET /api/connectors', () => {
     // Role picker renders transport + authMode badges from the list response.
     expect(data.connectors[0].transport).toBe('http');
     expect(data.connectors[0].authMode).toBe('oauth');
+  });
+
+  it('schedules a lazy icon lookup for the listed rows', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindMany.mockResolvedValue([
+      { id: 'conn-1', name: 'Test', url: 'https://mcp.example.com', authMode: 'oauth', transport: 'http', iconUrl: null, iconCheckedAt: null },
+    ]);
+    mockScheduleStaleIconRefresh.mockClear();
+    await GET(makeGetReq());
+    expect((mockScheduleStaleIconRefresh.mock.calls.at(-1)?.[0] as any[]).map(r => r.id)).toEqual(['conn-1']);
   });
 
   it('defaults the list to the active-team cookie, not the first team', async () => {
@@ -244,7 +290,7 @@ describe('POST /api/connectors', () => {
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockDiscoverOAuthMetadata.mockResolvedValue({ authMode: 'none' as const });
     mockConnectorsFindFirst.mockResolvedValue(null);
-    // Default: session user is an admin/owner of the team (no member row => personal team => allowed).
+    // Default: session user is an owner of the team.
     mockTeamMembersFindFirst.mockResolvedValue({ role: 'owner' });
     mockSecretsProviderSet.mockResolvedValue('secret-1');
     mockResolveConnectorIcon.mockReset();
@@ -294,9 +340,27 @@ describe('POST /api/connectors', () => {
     expect(data.message).toMatch(/ENOTFOUND/);
   });
 
+  // Vercel's DCR answers buildd's callback with invalid_redirect_uri: an
+  // approval problem for the owner, not a reachability problem.
+  it('returns 422 needs_approved_client when the provider refuses to register buildd', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockDiscoverOAuthMetadata.mockResolvedValue({
+      authMode: 'oauth',
+      authorizationServer: { registration_endpoint: 'https://api.vercel.com/login/oauth/register' },
+    });
+    mockRegisterClient.mockRejectedValueOnce(new FakeRegistrationRejected('DCR failed (400)'));
+    const res = await POST(makePostReq({ name: 'Vercel', url: 'https://mcp.vercel.com' }));
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(data.error).toBe('needs_approved_client');
+    expect(data.message).toMatch(/Vercel/);
+    expect(data.actionUrl).toMatch(/^https:\/\/vercel\.com\//);
+    expect(mockConnectorsInsert).not.toHaveBeenCalled();
+  });
+
   it('stores the resolved icon on create', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockResolveConnectorIcon.mockResolvedValue('https://custom.dev/logo.png');
+    mockResolveConnectorIcon.mockResolvedValue('data:image/png;base64,AA');
     let captured: any;
     mockConnectorsInsert.mockReturnValue({
       values: mock((v: any) => { captured = v; return {
@@ -305,8 +369,16 @@ describe('POST /api/connectors', () => {
     });
     const res = await POST(makePostReq({ name: 'Custom', url: 'https://mcp.custom.dev/mcp' }));
     expect(res.status).toBe(201);
-    expect(mockResolveConnectorIcon).toHaveBeenCalledWith('https://mcp.custom.dev/mcp');
-    expect(captured.iconUrl).toBe('https://custom.dev/logo.png');
+    expect(mockResolveConnectorIcon).toHaveBeenCalledWith('https://mcp.custom.dev/mcp', { headers: undefined });
+    expect(captured.iconUrl).toBe('data:image/png;base64,AA');
+    expect(captured.iconCheckedAt).toBeInstanceOf(Date);
+  });
+
+  it('probes initialize with the header credential for a header-auth connector', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makePostReq({ name: 'Keyed', url: 'https://mcp.custom.dev/mcp', authMode: 'header', headerName: 'X-API-Key', headerValue: 'k' }));
+    expect(res.status).toBe(201);
+    expect(mockResolveConnectorIcon).toHaveBeenCalledWith('https://mcp.custom.dev/mcp', { headers: { 'X-API-Key': 'k' } });
   });
 
   it('still creates the connector when icon resolution fails', async () => {
@@ -446,6 +518,14 @@ describe('POST /api/connectors', () => {
     mockTeamMembersFindFirst.mockResolvedValue({ role: 'member' });
     const res = await POST(makePostReq({ name: 'Test', url: 'https://mcp.example.com', authMode: 'none' }));
     expect(res.status).toBe(403);
+  });
+
+  it('returns 403 and inserts nothing when the user has no membership row in the active team (fails closed)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTeamMembersFindFirst.mockResolvedValue(undefined);
+    const res = await POST(makePostReq({ name: 'Test', url: 'https://mcp.example.com', authMode: 'none' }));
+    expect(res.status).toBe(403);
+    expect(mockConnectorsInsert).not.toHaveBeenCalled();
   });
 
   // Assertion-mode connector validation (spec §E.2 invariants)

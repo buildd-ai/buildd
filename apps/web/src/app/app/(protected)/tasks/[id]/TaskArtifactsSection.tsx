@@ -88,7 +88,7 @@ export default function TaskArtifactsSection({
 
   return (
     <div data-testid="task-artifacts" className="mb-8">
-      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+      <div className="section-label pb-2 border-b border-border-default mb-4">
         {artifacts.length > 0 ? `Artifacts (${artifacts.length})` : 'Visual audit'}
       </div>
       {visual ? (

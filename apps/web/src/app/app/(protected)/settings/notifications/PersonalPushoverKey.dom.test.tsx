@@ -59,10 +59,10 @@ async function mount() {
 }
 
 describe('Your Pushover key', () => {
-  it('shows the heading and an add button when no key is set', async () => {
+  it('shows the channel row and an add button when no key is set', async () => {
     await mount();
-    expect(host.textContent).toContain('Your Pushover key');
-    expect(host.querySelector('[data-testid="provider-key-health"]')?.textContent).toBe('not connected');
+    expect(host.textContent).toContain('Pushover · yours');
+    expect(host.querySelector('[data-testid="provider-key-health"]')?.textContent).toBe('Not connected');
     expect(button('Add your key')).toBeDefined();
   });
 
@@ -79,6 +79,7 @@ describe('Your Pushover key', () => {
     const put = requests.find((r) => r.method === 'PUT');
     expect(put).toEqual({ url: '/api/me/pushover', method: 'PUT', body: { teamId: 't-1', value: KEY } });
     expect(host.textContent).toContain(`…${KEY.slice(-4)}`);
+    expect(host.querySelector('[data-testid="provider-key-health"]')?.textContent).toBe('Connected');
     expect(host.textContent).not.toContain(KEY);
   });
 

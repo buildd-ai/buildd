@@ -13,6 +13,7 @@ import { ARTIFACT_TYPES, isArtifactType } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { notifyTeamOf, type NotifyPayload } from '@/lib/notify';
 import { isReviewArtifact } from '@/lib/artifact-prominence';
+import { upsertedContent } from '@/lib/artifact-upsert-content';
 
 /** GET's auth. A per-task token is accepted here and confined in GET. */
 async function authenticateRequest(req: NextRequest) {
@@ -87,7 +88,7 @@ export async function GET(
   } else if (auth.type === 'api') {
     // A per-task token lists artifacts only in its own task's workspace.
     if (!taskScopeAllowsWorkspace(auth.account, id)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-    const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
+    const hasAccess = await verifyAccountWorkspaceAccess(auth.account, id);
     if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
@@ -176,7 +177,7 @@ export async function POST(
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
-  const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, id);
+  const hasAccess = await verifyAccountWorkspaceAccess(apiAccount, id);
   if (!hasAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
@@ -211,7 +212,8 @@ export async function POST(
       .update(artifacts)
       .set({
         title,
-        content: content || null,
+        content: upsertedContent(existing.content, content),
+        contentAuthor: `account:${apiAccount.id}`,
         metadata: artifactMetadata,
         type,
         updatedAt: new Date(),
@@ -220,7 +222,7 @@ export async function POST(
       .returning();
 
     // Notify if opted in and content or title changed (not on every upsert).
-    if (notifyOnCreate && (existing.content !== (content || null) || existing.title !== title)) {
+    if (notifyOnCreate && (existing.content !== upsertedContent(existing.content, content) || existing.title !== title)) {
       await notifyWorkspaceArtifact(updated, id);
     }
 
@@ -237,6 +239,7 @@ export async function POST(
       type,
       title,
       content: content || null,
+      contentAuthor: `account:${apiAccount.id}`,
       shareToken: null,
       visibility: 'private',
       metadata: artifactMetadata,

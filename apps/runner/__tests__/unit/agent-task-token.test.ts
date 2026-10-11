@@ -8,6 +8,7 @@ import {
   AGENT_TASK_TOKEN_TTL_MS,
   agentTaskTokenEnabled,
   isOrchestrationTask,
+  looksLikePersonSessionBearer,
   parseAgentTaskTokenResponse,
   resolveAgentBuilddAuth,
   usesAdminBuilddActions,
@@ -313,5 +314,52 @@ describe('resolveAgentBuilddAuth for an orchestration task', () => {
     });
     expect(auth).toMatchObject({ source: 'runner-key', reason: 'admin-role' });
     expect(called).toBe(0);
+  });
+});
+
+// A runner agent never acts as a person (docs/specs/workflow-state-kernel.md, T5 `human:`).
+// The server reads a person only from an OAuth session bearer; the agent's buildd
+// credential is a per-task token or the runner's key, and never a session bearer.
+describe('a runner agent never carries a person\'s sign-in session', () => {
+  const SESSION = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1LTEifQ.c2lnbmF0dXJl';
+
+  test('the shape test matches an OAuth access token and neither buildd key form', () => {
+    expect(looksLikePersonSessionBearer(SESSION)).toBe(true);
+    expect(looksLikePersonSessionBearer(KEY)).toBe(false);
+    expect(looksLikePersonSessionBearer(TOKEN)).toBe(false);
+    expect(looksLikePersonSessionBearer('')).toBe(false);
+  });
+
+  test('every credential the agent is given on a buildd key runner is a buildd key or a task token', async () => {
+    const cases = [
+      { env: {}, mint: async () => okBody() },
+      { env: {}, mint: async () => { throw refusal(500); } },
+      { env: { BUILDD_AGENT_TASK_TOKEN: '0' }, mint: async () => okBody() },
+      { env: {}, adminRole: true, mint: async () => okBody() },
+      { env: {}, orchestration: true, mint: async () => { throw refusal(403); } },
+    ];
+    for (const c of cases) {
+      const auth = await resolveAgentBuilddAuth({ runnerKey: KEY, taskId: TASK, warn: () => {}, info: () => {}, ...c });
+      expect(looksLikePersonSessionBearer(auth.token)).toBe(false);
+      expect(auth.token.startsWith('bld_') || auth.token.startsWith('bldt_')).toBe(true);
+    }
+  });
+
+  test('a runner started on a session bearer still gives the agent a task token when one is minted', async () => {
+    const auth = await resolveAgentBuilddAuth({ runnerKey: SESSION, taskId: TASK, env: {}, warn: () => {}, mint: async () => okBody() });
+    expect(auth).toMatchObject({ source: 'task-token', token: TOKEN });
+  });
+
+  test.each([
+    ['the mint fails', { env: {}, mint: async () => { throw refusal(500); } }],
+    ['task tokens are switched off', { env: { BUILDD_AGENT_TASK_TOKEN: '0' }, mint: async () => okBody() }],
+    ['the role needs admin actions', { env: {}, adminRole: true, mint: async () => okBody() }],
+    ['an orchestration mint is refused', { env: {}, orchestration: true, mint: async () => { throw refusal(403); } }],
+  ])('a runner started on a session bearer never hands it to the agent when %s', async (_name, c) => {
+    const warns: string[] = [];
+    const auth = await resolveAgentBuilddAuth({ runnerKey: SESSION, taskId: TASK, warn: l => warns.push(l), info: () => {}, ...c });
+    expect(auth).toMatchObject({ source: 'none', token: '', reason: 'runner-key-is-person-session' });
+    expect(warns.some(l => l.includes('sign-in session'))).toBe(true);
+    expect(warns.join('\n')).not.toContain(SESSION);
   });
 });

@@ -87,17 +87,6 @@ function makeWorker(overrides: Partial<LocalWorker> = {}): LocalWorker {
       { sha: 'def456', message: 'fix: typo' },
     ],
     output: ['Line 1', 'Line 2', 'Line 3'],
-    teamState: {
-      teamName: 'test-team',
-      members: [
-        { name: 'lead', role: 'leader', status: 'active', spawnedAt: 1000 },
-        { name: 'worker-1', status: 'idle', spawnedAt: 2000 },
-      ],
-      messages: [
-        { from: 'lead', to: 'worker-1', content: 'Do task', summary: 'Assignment', timestamp: 3000 },
-      ],
-      createdAt: 1000,
-    },
     worktreePath: '/tmp/worktrees/test',
     promptSuggestions: ['Run tests', 'Deploy'],
     lastAssistantMessage: 'I have completed the task.',
@@ -162,7 +151,6 @@ describe('worker-store round-trip', () => {
     expect(loaded!.toolCalls).toEqual(worker.toolCalls);
     expect(loaded!.commits).toEqual(worker.commits);
     expect(loaded!.output).toEqual(worker.output);
-    expect(loaded!.teamState).toEqual(worker.teamState);
     expect(loaded!.worktreePath).toBe(worker.worktreePath);
     expect(loaded!.promptSuggestions).toEqual(worker.promptSuggestions);
     expect(loaded!.lastAssistantMessage).toBe(worker.lastAssistantMessage);
@@ -322,6 +310,21 @@ describe('worker-store round-trip', () => {
     expect(existsSync(filePath)).toBe(false);
   });
 
+  test('a file saved with the removed teamState field still loads, without it', () => {
+    const worker = makeWorker();
+    saveWorker(worker);
+
+    const filePath = join(WORKERS_DIR, `${worker.id}.json`);
+    const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+    data.teamState = { teamName: 'old-team', members: [], messages: [], createdAt: 1000 };
+    writeFileSync(filePath, JSON.stringify(data));
+
+    const loaded = loadWorker(worker.id);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.sessionId).toBe(worker.sessionId);
+    expect((loaded as unknown as Record<string, unknown>).teamState).toBeUndefined();
+  });
+
   test('corrupted JSON files return null from loadWorker', () => {
     const workerId = uniqueId('corrupt');
     mkdirSync(WORKERS_DIR, { recursive: true });
@@ -386,7 +389,6 @@ describe('worker-store round-trip', () => {
       completedAt: undefined,
       sessionId: undefined,
       waitingFor: undefined,
-      teamState: undefined,
       worktreePath: undefined,
       promptSuggestions: undefined,
       lastAssistantMessage: undefined,
@@ -400,7 +402,6 @@ describe('worker-store round-trip', () => {
     expect(loaded.completedAt).toBeUndefined();
     expect(loaded.sessionId).toBeUndefined();
     expect(loaded.waitingFor).toBeUndefined();
-    expect(loaded.teamState).toBeUndefined();
     expect(loaded.worktreePath).toBeUndefined();
   });
 });

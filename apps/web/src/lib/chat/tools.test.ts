@@ -41,7 +41,7 @@ describe('allowlist parity', () => {
 
   it('never exposes a never-in-chat, worker-only or deferred action', () => {
     const { tools } = setup();
-    for (const banned of ['manage_secrets', 'claim_task', 'complete_task', 'create_pr', 'manage_model_tiers', 'merge_pr', 'update_artifact', 'get_usage_stats']) {
+    for (const banned of ['manage_secrets', 'claim_task', 'complete_task', 'create_pr', 'manage_model_tiers', 'update_artifact', 'get_usage_stats']) {
       expect(Object.keys(tools)).not.toContain(banned);
     }
   });

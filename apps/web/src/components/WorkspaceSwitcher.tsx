@@ -272,7 +272,7 @@ export function WorkspaceSwitcher({
 
   const wsNavLinks = selectedId && !chip
     ? [
-        { label: 'Configure', href: `/app/workspaces/${selectedId}/config` },
+        { label: 'Configure', href: `/app/settings/workspace/${selectedId}` },
         { label: 'Runners', href: `/app/workspaces/${selectedId}/runners` },
         { label: 'Schedules', href: `/app/workspaces/${selectedId}/schedules` },
         { label: 'Memory', href: `/app/workspaces/${selectedId}/memory` },
@@ -304,7 +304,7 @@ export function WorkspaceSwitcher({
         </div>
       )}
       <Link
-        href="/app/workspaces"
+        href="/app/settings/workspaces"
         onClick={close}
         className={`w-full flex items-center gap-1.5 font-mono text-text-secondary hover:text-text-primary transition-colors hover:bg-surface-3 ${
           isMobile ? 'px-5 py-3.5 text-sm' : 'px-3 py-2 text-xs'
@@ -319,7 +319,7 @@ export function WorkspaceSwitcher({
         All workspaces
       </Link>
       <Link
-        href="/app/workspaces/new"
+        href="/app/settings/workspaces/new"
         onClick={close}
         className={`w-full flex items-center gap-1.5 font-mono text-accent hover:text-accent transition-colors hover:bg-surface-3 ${
           isMobile ? 'px-5 py-3.5 text-sm' : 'px-3 py-2 text-xs'
@@ -372,7 +372,6 @@ export function WorkspaceSwitcher({
         open ? 'shadow-sm text-text-primary' : ''
       }`}
     >
-      <span className="text-[11px] md:text-[8px] uppercase tracking-widest text-text-muted leading-tight hidden md:block">WORKSPACE</span>
       <div className="flex items-center gap-1.5">
         {/* Grid glyph: mobile-only, always shown on mobile. Filled when workspace is selected to indicate active filter. */}
         <svg

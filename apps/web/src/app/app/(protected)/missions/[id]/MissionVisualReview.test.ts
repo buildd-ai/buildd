@@ -32,7 +32,7 @@ describe('visualReviewPhaseActions', () => {
     await a.onTurnOff();
     expect(f.calls).toEqual([
       { url: '/api/missions/m1', method: 'PATCH', body: { autoSurfaceAudit: false } },
-      { url: '/api/tasks/audit-1', method: 'PATCH', body: { status: 'cancelled' } },
+      { url: '/api/tasks/audit-1', method: 'PATCH', body: { status: 'cancelled', abort: true } },
     ]);
     expect(refreshed).toBe(1);
   });
@@ -41,7 +41,7 @@ describe('visualReviewPhaseActions', () => {
     const f = fakeFetch();
     const a = visualReviewPhaseActions({ missionId: 'm1', auditTaskId: 'audit-1', fetchImpl: f.impl, refresh: () => {} });
     await a.onSkip();
-    expect(f.calls).toEqual([{ url: '/api/tasks/audit-1', method: 'PATCH', body: { status: 'cancelled' } }]);
+    expect(f.calls).toEqual([{ url: '/api/tasks/audit-1', method: 'PATCH', body: { status: 'cancelled', abort: true } }]);
   });
 
   it('Retry: re-queues the audit task', async () => {

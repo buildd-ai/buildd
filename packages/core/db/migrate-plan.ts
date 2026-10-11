@@ -140,3 +140,19 @@ export function planMigrations(
 
   return { toRun, toBackfill };
 }
+
+/**
+ * The migrations to execute, in journal order: `toRun` plus any below-the-mark
+ * migrations the CI clone flag hands back for execution (see
+ * CI_CLONE_APPLY_ABSENT_ENV in migrate-backfill.ts). Journal order matters
+ * because a branch's own migration can sit after dev's newest one in the
+ * journal while carrying an older timestamp.
+ */
+export function executionOrder(
+  migrations: readonly MigrationFile[],
+  toRun: readonly MigrationFile[],
+  toApply: readonly MigrationFile[]
+): MigrationFile[] {
+  const selected = new Set<MigrationFile>([...toRun, ...toApply]);
+  return migrations.filter((m) => selected.has(m));
+}

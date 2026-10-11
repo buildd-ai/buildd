@@ -133,6 +133,9 @@ describe('DELETE /api/accounts/[id]', () => {
     mockAccountsDelete.mockReset();
     mockGetUserTeamIds.mockReset();
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockGetUserTeamRole.mockReset();
+    mockGetUserTeamRole.mockResolvedValue('owner');
+    mockInvalidateAccountCacheByHash.mockClear();
     process.env.NODE_ENV = 'production';
 
     mockAccountsDelete.mockReturnValue({
@@ -165,7 +168,7 @@ describe('DELETE /api/accounts/[id]', () => {
 
   it('deletes account successfully', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111' });
+    mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1' });
 
     const req = new NextRequest('http://localhost:3000/api/accounts/account-1', { method: 'DELETE' });
     const res = await DELETE(req, { params: mockParams });
@@ -173,7 +176,66 @@ describe('DELETE /api/accounts/[id]', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.success).toBe(true);
+    expect(mockAccountsDelete).toHaveBeenCalled();
   });
+
+  // Deleting an API key requires manage_team_keys, like editing or regenerating it.
+  for (const [role, label] of [['member', 'a plain member'], [null, 'a user with no role in the key\'s team']] as const) {
+    it(`refuses ${label} with 403 and deletes nothing`, async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserTeamRole.mockResolvedValue(role as any);
+      mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', apiKey: 'bld_test123' });
+
+      const req = new NextRequest('http://localhost:3000/api/accounts/account-1', { method: 'DELETE' });
+      const res = await DELETE(req, { params: mockParams });
+
+      expect(res.status).toBe(403);
+      expect(mockAccountsDelete).not.toHaveBeenCalled();
+      expect(mockInvalidateAccountCacheByHash).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const role of ['admin', 'owner']) {
+    it(`lets a team ${role} delete the key`, async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserTeamRole.mockResolvedValue(role);
+      mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', apiKey: 'bld_test123' });
+
+      const req = new NextRequest('http://localhost:3000/api/accounts/account-1', { method: 'DELETE' });
+      const res = await DELETE(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockAccountsDelete).toHaveBeenCalled();
+      expect(mockGetUserTeamRole).toHaveBeenCalledWith('user-1', 'team-1');
+    });
+  }
+
+  // A key you minted yourself is yours to delete, whatever your role.
+  it('lets a plain member delete a key they created', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamRole.mockResolvedValue('member');
+    mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', apiKey: 'bld_mine', createdByUserId: 'user-1' });
+
+    const res = await DELETE(new NextRequest('http://localhost:3000/api/accounts/account-1', { method: 'DELETE' }), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockAccountsDelete).toHaveBeenCalled();
+    expect(mockInvalidateAccountCacheByHash).toHaveBeenCalledWith('bld_mine');
+  });
+
+  for (const [createdByUserId, label] of [['user-2', "someone else's key"], [null, 'a key with no recorded creator']] as const) {
+    it(`refuses a plain member deleting ${label}`, async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserTeamRole.mockResolvedValue('member');
+      mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', apiKey: 'bld_theirs', createdByUserId });
+
+      const res = await DELETE(new NextRequest('http://localhost:3000/api/accounts/account-1', { method: 'DELETE' }), { params: mockParams });
+
+      expect(res.status).toBe(403);
+      expect(mockAccountsDelete).not.toHaveBeenCalled();
+      expect(mockInvalidateAccountCacheByHash).not.toHaveBeenCalled();
+    });
+  }
 });
 
 describe('PATCH /api/accounts/[id] — maxConcurrentWorkers (team owners and admins only)', () => {

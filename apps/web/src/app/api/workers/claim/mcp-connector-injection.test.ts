@@ -29,12 +29,15 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   workspaceSkills: {
     slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId',
-    teamId: 'teamId', connectorRefs: 'connectorRefs',
+    teamId: 'teamId', connectorRefs: 'connectorRefs', ownerUserId: 'ownerUserId', visibility: 'visibility',
   },
+  tasks: { id: 'tasks.id' }, missions: { id: 'missions.id' }, taskSchedules: { id: 'taskSchedules.id' },
   connectors: { id: 'id', teamId: 'teamId', name: 'name' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },
+  connectorCatalogTeamPolicies: { teamId: 'teamId', policy: 'policy' },
+  teamMembers: { userId: 'userId', teamId: 'teamId' },
 }));
 
 const mockWorkspaceSkillsFindMany = mock(async (_args?: any) => [] as any[]);
@@ -42,6 +45,8 @@ const mockConnectorsFindMany = mock(async (_args?: any) => [] as any[]);
 const mockConnectorSharesFindMany = mock(async (_args?: any) => [] as any[]);
 const mockConnectorWorkspacesFindMany = mock(async (_args?: any) => [] as any[]);
 const mockSecretsFindMany = mock(async (_args?: any) => [] as any[]);
+const mockPoliciesFindMany = mock(async (_args?: any) => [] as any[]);
+const mockLoadTeamCatalog = mock(async (_teamId: string) => [] as any[]);
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -51,9 +56,11 @@ mock.module('@buildd/core/db', () => ({
       connectorShares: { findMany: mockConnectorSharesFindMany },
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
       secrets: { findMany: mockSecretsFindMany },
+      connectorCatalogTeamPolicies: { findMany: mockPoliciesFindMany },
     },
   },
 }));
+mock.module('@/lib/connector-catalog-store', () => ({ loadTeamCatalog: mockLoadTeamCatalog }));
 
 const mockRefresh = mock(async (_secretId: string) => 'refreshed' as string);
 mock.module('@/lib/mcp-connector-refresh', () => ({
@@ -100,8 +107,8 @@ function connector(overrides: Record<string, any> = {}) {
 }
 
 /** A role row. `workspaceId: null` = the team-default row. */
-function role(connectorRefs: string[], workspaceId: string | null = null) {
-  return { slug: 'builder', isRole: true, enabled: true, workspaceId, connectorRefs };
+function role(connectorRefs: string[], workspaceId: string | null = null, extra: Record<string, unknown> = {}) {
+  return { slug: 'builder', isRole: true, enabled: true, workspaceId, teamId: TEAM, ownerUserId: null, visibility: 'team', connectorRefs, ...extra };
 }
 
 /** Reads the `purpose` a secrets query filtered on, out of the stubbed predicate tree. */
@@ -162,6 +169,57 @@ beforeEach(() => {
   stageSecrets();
   mockRefresh.mockReset();
   mockRefresh.mockResolvedValue('refreshed');
+  mockPoliciesFindMany.mockReset();
+  mockPoliciesFindMany.mockResolvedValue([]);
+  mockLoadTeamCatalog.mockReset();
+  mockLoadTeamCatalog.mockResolvedValue([]);
+});
+
+// --- team catalog policy (§5a) --------------------------------------------
+
+describe('resolveMcpConnectorsForTask — blocked by team catalog policy', () => {
+  function blockUrl(teamId: string, url: string) {
+    mockPoliciesFindMany.mockResolvedValue([{ teamId }]);
+    mockLoadTeamCatalog.mockImplementation(async (t: string) =>
+      t === teamId ? [{ slug: 'axiom', name: 'Axiom', url, policy: 'blocked' }] : []);
+  }
+
+  it('never mounts or decrypts an installed connector the team has blocked', async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-oauth', 'conn-1'])]);
+    stageConnectors([
+      connector({ id: 'conn-oauth', name: 'axiom', authMode: 'oauth', url: 'https://mcp.axiom.co/mcp' }),
+      connector(),
+    ]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    stageSecrets({ credentials: [{ id: 'cs-1', label: 'conn-oauth', tokenExpiresAt: new Date(NOW.getTime() - 1) }] });
+    blockUrl(TEAM, 'https://mcp.axiom.co/mcp');
+    const p = provider({ 'cs-1': JSON.stringify({ access_token: 'tok' }) });
+
+    const result = await resolve(task(), p);
+
+    expect(result.map(c => c.name)).toEqual(['my-mcp']);
+    expect(p.get).not.toHaveBeenCalled();
+    expect(mockRefresh).not.toHaveBeenCalled();
+  });
+
+  it("drops a shared-in connector its owner team blocked", async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-shared'])]);
+    stageConnectors([connector({ id: 'conn-shared', teamId: OTHER_TEAM, url: 'https://mcp.axiom.co/mcp' })]);
+    mockConnectorSharesFindMany.mockResolvedValue([{ connectorId: 'conn-shared' }]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    blockUrl(OTHER_TEAM, 'https://mcp.axiom.co/mcp');
+
+    expect(await resolve()).toEqual([]);
+  });
+
+  it('mounts nothing when the policy cannot be read (fails closed)', async () => {
+    mockPoliciesFindMany.mockRejectedValue(new Error('db down'));
+    const workers = [{ id: 'w1', task: task() } as any];
+
+    await attachMcpConnectors(workers, NOW, provider());
+
+    expect(workers[0].mcpConnectors).toBeUndefined();
+  });
 });
 
 // --- §2: the opt-in intersection -----------------------------------------
@@ -207,7 +265,7 @@ describe('resolveMcpConnectorsForTask — role opt-in intersection (§2)', () =>
 
   it('mounts nothing when connectorRefs is null (never set)', async () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([
-      { slug: 'builder', isRole: true, enabled: true, workspaceId: null, connectorRefs: null },
+      role(null as any),
     ]);
     expect(await resolve()).toEqual([]);
     expect(mockConnectorsFindMany).not.toHaveBeenCalled();
@@ -261,6 +319,20 @@ describe('resolveMcpConnectorsForTask — role opt-in intersection (§2)', () =>
       { field: 'workspaceId', type: 'isNull' },
       { field: 'workspaceId', value: 'ws-9', type: 'eq' },
     ]);
+  });
+});
+
+describe('resolveMcpConnectorsForTask — personal roles', () => {
+  it("never mounts another member's private role connectors; the requester's own role wins", async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      role(['conn-team']),
+      role(['conn-bob'], null, { id: 'r-bob', ownerUserId: 'u-bob', visibility: 'private' }),
+    ]);
+    stageConnectors([connector({ id: 'conn-team', name: 'team-mcp' }), connector({ id: 'conn-bob', name: 'bob-mcp' })]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+
+    expect((await resolve(task({ createdByUserId: 'u-alice' }))).map(c => c.id)).toEqual(['conn-team']);
+    expect((await resolve(task({ createdByUserId: 'u-bob' }))).map(c => c.id)).toEqual(['conn-bob']);
   });
 });
 
@@ -398,7 +470,7 @@ describe('resolveMcpConnectorsForTask — cross-team sharing (§1b)', () => {
   });
 
   it('looks up share grants for the task team, restricted to the referenced ids', async () => {
-    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-a', 'conn-b'])]);
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-a', 'conn-b'], null, { teamId: 'team-9' })]);
     stageConnectors([]);
 
     await resolve(task({ workspace: { teamId: 'team-9' } }));
@@ -923,5 +995,91 @@ describe('attachMcpConnectors', () => {
     // `now` is AFTER the expiry → refresh.
     await attachMcpConnectors(workers, new Date('2026-09-04T12:00:00.000Z'), provider({ 'cs-1': JSON.stringify({ access_token: 'tok' }) }));
     expect(mockRefresh).toHaveBeenCalledWith('cs-1');
+  });
+});
+
+// --- connector gateway (docs/specs/capability-requests.md §Connector gateway) ---
+
+describe('resolveMcpConnectorsForTask — gateway providers are brokered', () => {
+  const AXIOM_URL = 'https://mcp.axiom.co/mcp';
+  function axiomCatalog() {
+    mockLoadTeamCatalog.mockImplementation(async () => [{ slug: 'axiom', name: 'Axiom', url: AXIOM_URL, policy: 'available' }]);
+  }
+  /** Honours both `inArray(id, …)` and `eq(teamId, …)` lookups. */
+  function stageTeamConnectors(rows: any[]) {
+    mockConnectorsFindMany.mockImplementation(async (args: any) => {
+      const w = args?.where;
+      if (w?.type === 'eq' && w.field === 'teamId') return rows.filter(r => r.teamId === w.value);
+      const ids: string[] = w?.values ?? [];
+      return rows.filter(r => ids.includes(r.id));
+    });
+  }
+  const axiom = (over: Record<string, any> = {}) => connector({ id: 'conn-axiom', name: 'axiom', authMode: 'oauth', url: AXIOM_URL, ...over });
+
+  it('returns a gateway path, never a credential, and never decrypts the token', async () => {
+    axiomCatalog();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-axiom'])]);
+    stageTeamConnectors([axiom()]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    stageSecrets({ credentials: [{ id: 'cs-ax', label: 'conn-axiom', tokenExpiresAt: new Date(NOW.getTime() - 1) }] });
+    const p = provider({ 'cs-ax': JSON.stringify({ access_token: 'provider-secret-token' }) });
+
+    const result = await resolve(task(), p);
+
+    expect(result).toEqual([{ id: 'conn-axiom', name: 'axiom', transport: 'http', gateway: true, gatewayPath: '/api/mcp/c/conn-axiom' }]);
+    expect(JSON.stringify(result)).not.toContain('provider-secret-token');
+    expect(p.get).not.toHaveBeenCalled();
+    expect(mockRefresh).not.toHaveBeenCalled();
+  });
+
+  it('mounts an owned gateway connector the role does not list (calls still need a grant)', async () => {
+    axiomCatalog();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role([])]);
+    stageTeamConnectors([axiom()]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    stageSecrets({ credentials: [{ id: 'cs-ax', label: 'conn-axiom', tokenExpiresAt: null }] });
+
+    const result = await resolve();
+    expect(result.map(c => [c.name, (c as any).gateway])).toEqual([['axiom', true]]);
+  });
+
+  it('does not mount an unlisted gateway connector disabled in the workspace, or one with no credential', async () => {
+    axiomCatalog();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role([])]);
+    stageTeamConnectors([axiom()]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([{ connectorId: 'conn-axiom', workspaceId: 'ws-1', enabled: false }]);
+    stageSecrets({ credentials: [{ id: 'cs-ax', label: 'conn-axiom', tokenExpiresAt: null }] });
+    expect(await resolve()).toEqual([]);
+
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    stageSecrets({ credentials: [] });
+    expect(await resolve()).toEqual([]);
+  });
+
+  it('keeps the direct mount for a non-gateway provider', async () => {
+    axiomCatalog();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-oauth'])]);
+    stageTeamConnectors([connector({ id: 'conn-oauth', name: 'linear', authMode: 'oauth', url: 'https://mcp.linear.app/mcp' })]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    stageSecrets({ credentials: [{ id: 'cs-1', label: 'conn-oauth', tokenExpiresAt: null }] });
+    const result = await resolve(task(), provider({ 'cs-1': JSON.stringify({ access_token: 'tok' }) }));
+    expect((result[0] as any).gateway).toBeUndefined();
+    expect(result[0].headers).toEqual({ Authorization: 'Bearer tok' });
+  });
+
+  it('BUILDD_CONNECTOR_GATEWAY=off restores the direct mount', async () => {
+    const prev = process.env.BUILDD_CONNECTOR_GATEWAY;
+    process.env.BUILDD_CONNECTOR_GATEWAY = 'off';
+    try {
+      axiomCatalog();
+      mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-axiom'])]);
+      stageTeamConnectors([axiom()]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+      stageSecrets({ credentials: [{ id: 'cs-ax', label: 'conn-axiom', tokenExpiresAt: null }] });
+      const result = await resolve(task(), provider({ 'cs-ax': JSON.stringify({ access_token: 'tok' }) }));
+      expect((result[0] as any).gateway).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.BUILDD_CONNECTOR_GATEWAY; else process.env.BUILDD_CONNECTOR_GATEWAY = prev;
+    }
   });
 });

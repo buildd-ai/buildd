@@ -7,19 +7,16 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllowsMissionTask } from '@/lib/task-token-auth';
 import { holdsInWorkspace } from '@/lib/team-access';
-import { triggerEvent, channels, events } from '@/lib/pusher';
-import { isInteractiveWorker } from '@/lib/interactive-worker-liveness';
-import {
-  appendInstructionHistory,
-  enqueuePendingInstruction,
-  isUnreachableWorkerStatus,
-} from '@/lib/worker-instructions';
+import { pushInstructionDelivery } from '@/lib/worker-instruction-push';
+import { isUnreachableWorkerStatus, queueInstruction } from '@/lib/worker-instructions';
 
 // POST /api/workers/[id]/instruct - Send instructions to a worker (admin only)
 //
-// Delivery model. A queued instruction is handed to the runner on its next
-// check-in and is cleared only when the runner confirms it injected the text.
-// An urgent instruction additionally goes out over Pusher for instant delivery.
+// Delivery model. A queued instruction is handed to its consumer (the runner's
+// sync, or an interactive session's receive_messages) at the next turn
+// boundary and is cleared only when the consumer confirms it injected the text;
+// the runner is woken with a text-free `deliver_pending` so that does not wait
+// for its next activity-driven sync.
 //
 // This endpoint must only accept workers the check-in route will actually serve:
 // `completed`, `failed` and `error` workers have their PATCH rejected with a 409
@@ -122,34 +119,22 @@ export async function POST(
 
   const isSensitive = (worker.workspace as any)?.dataClass === 'sensitive';
 
-  // Only a runner that speaks the delivery-confirmation protocol can confirm a
-  // delivery (and can be trusted not to double-inject a message that arrived
-  // both over Pusher and over the queue). Older runners get exactly the old
-  // behaviour: Pusher only, optimistically recorded as delivered.
-  //
-  // An interactive worker (claim_task, runner = 'mcp') counts as one from the
-  // start: no runner listens on Pusher for it, its session reads only the
-  // queue (update_progress, which acknowledges), so the queue is its only path.
-  const ackCapable = (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true
-    || isInteractiveWorker((worker as { runner?: string | null }).runner);
+  // One enqueue path for every sender (see queueInstruction): queued for any
+  // consumer that can acknowledge, text over Pusher only where the queue
+  // cannot carry it (a legacy runner, or an urgent message to a terminal
+  // worker whose session the runner may still hold).
+  const queued = queueInstruction(
+    {
+      instructionHistory: worker.instructionHistory,
+      pendingInstructions: worker.pendingInstructions,
+      turns: worker.turns,
+      status: worker.status,
+      runner: (worker as { runner?: string | null }).runner,
+      supportsInstructionAck: (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck,
+    },
+    { message, isSensitive, priority },
+  );
 
-  // Terminal-but-urgent: Pusher only — a queued copy could never be collected.
-  const queueable = !isUnreachableWorkerStatus(worker.status) && (!isUrgent || ackCapable);
-  // 'delivered' is only written where no confirmation can ever arrive.
-  const deliveryState = queueable || ackCapable ? 'pending' : 'delivered';
-
-  const updatedHistory = appendInstructionHistory(worker.instructionHistory, {
-    message,
-    isSensitive,
-    deliveryState,
-    turnAtSend: worker.turns,
-  });
-
-  // Urgent instructions are queued as well as pushed, so a Pusher event that
-  // reaches nobody (runner offline, not yet subscribed, Pusher down) is still
-  // recoverable on the next check-in. The runner de-duplicates: it skips
-  // injecting text it already injected and acknowledges it instead.
-  //
   // Read-modify-write: two instructions sent in the same instant can still lose
   // one (pre-existing, and equally true of instructionHistory). A concurrent
   // hand-off cannot lose one, because the queue is cleared by a compare-and-set
@@ -157,31 +142,22 @@ export async function POST(
   await db
     .update(workers)
     .set({
-      pendingInstructions: queueable
-        ? enqueuePendingInstruction(worker.pendingInstructions, message)
-        : worker.pendingInstructions ?? null,
-      instructionHistory: updatedHistory,
+      pendingInstructions: queued.pendingInstructions,
+      instructionHistory: queued.instructionHistory,
       updatedAt: new Date(),
     })
     .where(eq(workers.id, id))
     .returning();
 
-  if (isUrgent) {
-    await triggerEvent(
-      channels.worker(id),
-      events.WORKER_COMMAND,
-      { action: 'message', text: message, timestamp: Date.now() }
-    );
-  }
+  await pushInstructionDelivery(id, queued);
 
   return NextResponse.json({
     ok: true,
-    message: isUrgent
-      ? queueable
-        ? 'Instructions sent via Pusher and queued as a fallback — delivery is reported once the agent receives them'
-        : 'Instructions sent via Pusher — delivery is not confirmed'
-      : 'Instructions queued for delivery on next worker check-in',
-    deliveryState,
+    message: queued.queueable
+      ? "Queued — delivered at the agent's next turn boundary; get_task_messages shows when it is read"
+      : 'Instructions sent via Pusher — delivery is not confirmed',
+    deliveryState: queued.deliveryState,
+    messageId: queued.id,
     workerId: id,
   });
 }

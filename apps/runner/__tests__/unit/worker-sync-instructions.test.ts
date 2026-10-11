@@ -217,6 +217,84 @@ describe('WorkerSync instruction delivery', () => {
     expect(acks()).toHaveLength(1);
   });
 
+  // ── Turn-boundary steering: ids, single consumer, wake-ups ─────────────────
+
+  test('declares itself the runner consumer (it speaks ids)', async () => {
+    const worker = makeWorker();
+    await makeSync(worker).syncWorkerToServer(worker);
+    expect(seenPayloads[0].consumer).toBe('runner');
+  });
+
+  test('injects with the served ids and confirms delivery by id', async () => {
+    const worker = makeWorker();
+    const seenIds: unknown[] = [];
+    mockSendMessage.mockImplementation(async (id: string, text: string, ids?: string[]) => {
+      sentMessages.push({ id, text });
+      seenIds.push(ids);
+      return true;
+    });
+    responses = [{ instructions: 'Use the device flow', instructionsAck: 'Use the device flow', instructionIds: ['i-1'] }];
+
+    await makeSync(worker).syncWorkerToServer(worker);
+
+    expect(seenIds).toEqual([['i-1']]);
+    expect(acks()[0]).toMatchObject({ instructionsDelivered: 'Use the device flow', instructionIdsDelivered: ['i-1'] });
+  });
+
+  test('notes-only payload (no queued text) is still confirmed by id', async () => {
+    const worker = makeWorker();
+    responses = [{ instructions: '\n\n**USER REPLIES:**\n- Re: "x": yes', instructionIds: ['note-1'] }];
+    await makeSync(worker).syncWorkerToServer(worker);
+    expect(sentMessages).toHaveLength(1);
+    const idAck = seenPayloads.find(p => Array.isArray(p.instructionIdsDelivered));
+    expect(idAck.instructionIdsDelivered).toEqual(['note-1']);
+    expect(idAck.instructionsDelivered).toBeUndefined();
+  });
+
+  test('worker→worker messages: the runner is their consumer too — injected, then acked by id', async () => {
+    const worker = makeWorker();
+    responses = [{
+      pendingMessages: [{ id: 'wm-1', type: 'question', fromTaskId: 't-2', fromWorkerId: 'w-2', sentAt: '2026-01-01T00:00:00Z', hopCount: 0, body: { text: 'Touching auth.ts?' } }],
+    }];
+    await makeSync(worker).syncWorkerToServer(worker);
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].text).toContain('Touching auth.ts?');
+    expect(seenPayloads.some(p => Array.isArray(p.workerMessagesDelivered) && p.workerMessagesDelivered[0] === 'wm-1')).toBe(true);
+  });
+
+  test('B-6: a working worker that is not dirty is still synced within 30s', async () => {
+    const worker = makeWorker();
+    const sync = makeSync(worker);
+    const t0 = Date.now();
+    await sync.syncToServer(t0);              // first sight: synced (never synced before)
+    const afterFirst = seenPayloads.length;
+    expect(afterFirst).toBe(1);
+    await sync.syncToServer(t0 + 10_000);     // quiet, recently synced: skipped
+    expect(seenPayloads.length).toBe(afterFirst);
+    await sync.syncToServer(t0 + 31_000);     // quiet past 30s: synced to collect the queue
+    expect(seenPayloads.length).toBe(afterFirst + 1);
+  });
+
+  test('B-6: the quiet-sync fallback is for working workers only (done, error are left alone)', async () => {
+    // A parked cloud worker is `waiting` (already synced every tick for its
+    // answer) and leaves this runner entirely; nothing here may wake it.
+    for (const status of ['done', 'error']) {
+      seenPayloads.length = 0;
+      const worker = makeWorker({ status });
+      await makeSync(worker).syncToServer(Date.now() + 120_000);
+      expect(seenPayloads).toHaveLength(0);
+    }
+  });
+
+  test('requestSync (deliver_pending) syncs that one worker immediately', async () => {
+    const worker = makeWorker();
+    const sync = makeSync(worker);
+    await sync.requestSync('w-instr');
+    expect(seenPayloads).toHaveLength(1);
+    await sync.requestSync('unknown-worker');
+    expect(seenPayloads).toHaveLength(1);
+  });
+
   test('does not confirm agent output as human input', async () => {
     const worker = makeWorker();
     const sync = makeSync(worker);
