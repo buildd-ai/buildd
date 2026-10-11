@@ -404,6 +404,94 @@ export function pasteTitle(text: string, max = 60): string {
 }
 
 /**
+ * An image or file attached to a message (0.26.0): the original bytes are
+ * uploaded first (the app's `onUploadFile`), then the message carries a
+ * `data-file` part naming the uploaded artifact. Only a verified, ready upload
+ * is ever sent; an upload still running, failed or cancelled never is.
+ */
+export const FILE_PART_TYPE = 'data-file' as const;
+
+/** The file types a message may carry, by media type. */
+export const FILE_MEDIA_TYPES = [
+  'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+  'application/pdf',
+  'text/plain', 'text/markdown', 'text/csv', 'application/json',
+] as const;
+export type FileMediaType = (typeof FILE_MEDIA_TYPES)[number];
+
+/** Largest file a message may carry, in bytes. */
+export const MAX_FILE_BYTES = 20 * 1024 * 1024;
+
+/** `Image/PNG; x=y` -> `image/png`, or null when it is not one a message may carry. */
+export function fileMediaType(type: string | null | undefined): FileMediaType | null {
+  const t = (type ?? '').split(';')[0]!.trim().toLowerCase();
+  return (FILE_MEDIA_TYPES as readonly string[]).includes(t) ? t as FileMediaType : null;
+}
+
+export const isImageMediaType = (type: string): boolean => type.startsWith('image/');
+
+/**
+ * A file as the composer sends it: the id of its uploaded, verified artifact.
+ * `previewUrl` is a browser-local thumbnail and never leaves the client.
+ */
+export interface FileDraft {
+  kind: 'file';
+  id: string;
+  name: string;
+  mediaType: string;
+  sizeBytes: number;
+  previewUrl?: string;
+}
+
+/** A stored file: what a saved message keeps. The bytes live once, behind `artifactId`. */
+export interface FileRef {
+  artifactId: string;
+  revision: number;
+  /** sha256 hex of the original bytes. */
+  sha256: string;
+  name: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
+export type FileData = FileDraft | FileRef;
+
+export function isFilePart(part: ChatPart): part is { type: typeof FILE_PART_TYPE; data: FileData } {
+  if (part.type !== FILE_PART_TYPE) return false;
+  const d = (part as { data?: Partial<FileDraft & FileRef> }).data;
+  if (!d || typeof d.name !== 'string' || typeof d.mediaType !== 'string' || typeof d.sizeBytes !== 'number') return false;
+  return typeof d.id === 'string' || (typeof d.artifactId === 'string' && typeof d.sha256 === 'string' && typeof d.revision === 'number');
+}
+
+export function isFileDraft(d: FileData | AttachmentData): d is FileDraft {
+  return (d as FileDraft).kind === 'file' && typeof (d as FileDraft).id === 'string';
+}
+
+/** The id that names a file, either form. */
+export function fileId(d: FileData): string {
+  return isFileDraft(d) ? d.id : d.artifactId;
+}
+
+/** What a draft message may carry besides its text: long pastes and uploaded files. */
+export type DraftAttachment = AttachmentDraft | FileDraft;
+
+/** `1.4 MB`, `820 KB`, `312 bytes`. */
+export function fileSizeLabel(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} bytes`;
+}
+
+/** A short type label for a file card: `PNG`, `PDF`, `CSV`. */
+export function fileKindLabel(mediaType: string): string {
+  const sub = mediaType.split('/')[1] ?? 'file';
+  if (sub === 'jpeg') return 'JPG';
+  if (sub === 'plain') return 'TXT';
+  if (sub === 'markdown') return 'MD';
+  return sub.slice(0, 4).toUpperCase();
+}
+
+/**
  * Why a turn that had started streaming failed. `insufficient_credit`: the
  * provider refused the call for credit or a key's spending limit (OpenRouter's
  * "requires more credits, or fewer max_tokens"); `rate_limited`: the provider

@@ -124,8 +124,8 @@ export async function storeChatAttachments(
 /** The message part that stands in for a stored attachment. */
 export const attachmentRefPart = (ref: ChatAttachmentRef): ChatMessagePart => ({ type: CHAT_ATTACHMENT_PART_TYPE, data: ref });
 
-/** Link each stored attachment to the message that carried it, pinned to the revision sent. */
-export async function linkChatAttachments(messageId: string, teamId: string, userId: string, refs: readonly ChatAttachmentRef[]): Promise<void> {
+/** Link each stored attachment (a paste, or an uploaded file) to the message that carried it, pinned to the revision sent. */
+export async function linkChatAttachments(messageId: string, teamId: string, userId: string, refs: readonly Pick<ChatAttachmentRef, 'artifactId' | 'revision'>[]): Promise<void> {
   if (refs.length === 0) return;
   await db.insert(artifactLinks).values(refs.map(r => ({
     artifactId: r.artifactId,

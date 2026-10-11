@@ -431,6 +431,21 @@ describe('POST /api/github/pr/review — adoption', () => {
       on: 'merge',
     });
   });
+
+  it('[regression] returns 500 when reviewer task creation fails due to concurrent race', async () => {
+    // Regression for PR #4407 / task b89da258: When concurrent creators race for
+    // the same PR+SHA, the losing insert gets [] and must retry to find the winner.
+    // If all retries fail (winner never becomes visible), createReviewerTask returns
+    // null. The route should return a 500 error rather than crashing.
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.error).toContain('Could not create the reviewer task');
+    // The route logs the error for diagnosis.
+    expect(json.error).toContain('concurrent writer');
+  });
 });
 
 describe('POST /api/github/pr/review — reviewer role', () => {

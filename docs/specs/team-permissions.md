@@ -405,7 +405,7 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/teams/[id]/ownership/route.ts` | clamp the former owner's keys to admin | follows the new role | — | `manage_team_keys` |
 | `apps/web/src/lib/oauth/session-level.ts:10` | OAuth session acts at admin (fixed, not overridable) | owner, admin | — | — |
 | `apps/web/src/lib/key-level-policy.ts:47` | `canAdministerTeamKeys` | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/app/(protected)/settings/runners/tokens/new/page.tsx:40` | UI: admin scope selectable | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/app/(protected)/settings/runners/NewRunnerTokenSheet.tsx:42` | UI: admin scope selectable | owner, admin | — | `manage_team_keys` |
 | `apps/web/src/app/app/(protected)/settings/runners/page.tsx:45` | UI: host-runner toggle | owner, admin, personal team | — | `manage_team_keys` |
 
 ### Model access and spend

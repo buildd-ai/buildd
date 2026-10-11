@@ -91,7 +91,7 @@ export async function loadChatPageContext(input: { teamId: string; wsIds: string
       waitingType: w.waitingFor?.type ?? null,
       taskId: w.taskId,
       workspaceId: w.workspaceId,
-      href: `/app/tasks/${w.taskId}/respond`,
+      href: `/app/tasks/${w.taskId}?respond=1`,
       meta: w.missionTitle ?? null,
     })),
     missions: missionRows.map(contextMission),

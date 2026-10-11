@@ -139,4 +139,33 @@ describe('manage_specs', () => {
     expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual([`/api/specs/${SPEC}/conflicts`, { revision: 1, criterionIds: ['R-1', 'R-2'], note: 'disagree' }]);
     expect(r).toContain('advisory');
   });
+
+  it('create_draft and revise pass repoRefs through; get lists the cited repo specs; a refused reference is the route error', async () => {
+    const refs = [{ path: 'docs/specs/checkout.md', commitSha: 'c'.repeat(40) }];
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 1 } });
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'Checkout', body: 'R-1: x', repoRefs: refs }, ctx());
+    expect(JSON.parse(api.mock.calls[0][1].body).repoRefs).toEqual(refs);
+
+    api.mockRejectedValueOnce(new Error('API error: 400 - {"error":"repoRefs: docs/nope.md does not exist at cccccccccccc; nothing was written"}'));
+    const bad = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, body: 'R-1: x', repoRefs: [{ path: 'docs/nope.md', commitSha: 'c'.repeat(40) }] }, ctx());
+    expect(bad.isError).toBe(true);
+    expect(out(bad)).toContain('nothing was written');
+    expect(JSON.parse(api.mock.calls[1][1].body).repoRefs).toEqual([{ path: 'docs/nope.md', commitSha: 'c'.repeat(40) }]);
+
+    api.mockResolvedValueOnce({ spec, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc', repoRefs: refs }, body: 'R-1: x', requirements: [], revisions: [] });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'get', specId: SPEC }, ctx()))).toContain(`docs/specs/checkout.md @ ${'c'.repeat(40)}`);
+  });
+
+  it('read_ref reads a cited repo spec at its commit, bounded, with a read scope', async () => {
+    expect(requiredScopeForAction('manage_specs', { action: 'read_ref' })).toBe('tasks:read');
+    api.mockResolvedValueOnce({ path: 'docs/specs/checkout.md', commitSha: 'c'.repeat(40), revision: 2, read: { view: 'grep', chars: 900, pattern: 'total', matches: [{ line: 3, offset: 40, text: 'R-1: the total' }], truncated: false } });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'read_ref', specId: SPEC, path: 'docs/specs/checkout.md', view: 'grep', grep: 'total' }, ctx()));
+    expect(api.mock.calls[0][0]).toBe(`/api/specs/${SPEC}/repo-ref?path=docs%2Fspecs%2Fcheckout.md&view=grep&grep=total`);
+    expect(r).toContain('L3: R-1: the total');
+    expect(r).toContain('cited by revision 2');
+
+    api.mockRejectedValueOnce(new Error('API error: 404 - {"error":"Revision 2 does not cite docs/other.md"}'));
+    const miss = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'read_ref', specId: SPEC, path: 'docs/other.md' }, ctx());
+    expect([miss.isError, out(miss)]).toEqual([true, 'Revision 2 does not cite docs/other.md']);
+  });
 });

@@ -151,6 +151,11 @@ interface Props {
   /** Injectable clock for deterministic renders (tests). */
   nowMs?: number;
   /**
+   * An answer link opened the page (`?respond=1`): bring the question into view
+   * and focus its first control, so the reply is one tap away.
+   */
+  focusAnswer?: boolean;
+  /**
    * The kernel's reading of this task's delivery, when the kernel owns it.
    * A recoverable blocker the platform owns (e.g. a fix that has not reached
    * GitHub yet) is never shown as "Needs input" just because the worker
@@ -163,9 +168,20 @@ interface Props {
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null }: Props) {
+export default function RealTimeWorkerView({ initialWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false }: Props) {
+  const questionRef = useRef<HTMLDivElement>(null);
+  // Once, on the first render that shows the question: a later refresh never
+  // pulls focus back from wherever the reader went.
+  const focusedAnswerRef = useRef(false);
   const router = useRouter();
   const [worker, setWorker] = useState<Worker>(initialWorker);
+  useEffect(() => {
+    const el = questionRef.current;
+    if (!focusAnswer || focusedAnswerRef.current || !el) return;
+    focusedAnswerRef.current = true;
+    el.scrollIntoView({ block: 'start' });
+    el.querySelector<HTMLElement>('textarea, input, button:not([disabled])')?.focus({ preventScroll: true });
+  });
   const lastStatusRef = useRef(initialWorker.status);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
   const [answerSent, setAnswerSent] = useState(false);
@@ -410,7 +426,7 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
     const askedTs = questionNote?.createdAt ? new Date(questionNote.createdAt).getTime() : now.updatedTs;
     return (
       <div data-testid="worker-view" data-state="waiting" className="space-y-5">
-        <div data-testid="worker-needs-input-banner">
+        <div data-testid="worker-needs-input-banner" ref={questionRef} className="scroll-mt-16">
           <QuestionHero
             testId="worker-question-hero"
             question={question}

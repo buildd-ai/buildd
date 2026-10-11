@@ -1,5 +1,5 @@
 import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
-import { RUN_PROGRESS_READERS } from '@/modules';
+import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
@@ -136,10 +136,12 @@ export default async function TaskDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ artifact?: string }>;
+  searchParams: Promise<{ artifact?: string; respond?: string }>;
 }) {
   const { id } = await params;
-  const { artifact: initialOpenArtifactId } = await searchParams;
+  const { artifact: initialOpenArtifactId, respond } = await searchParams;
+  // `?respond=1`: an answer link. The reply box below gets focus.
+  const focusAnswer = respond === '1';
   if (!isValidTaskId(id)) notFound();
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
@@ -201,7 +203,7 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate] = await Promise.all([
+  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
     // Open question notes scoped to this task (drives the "Waiting on you"
     // badge, and lets the live worker view show the note and the worker's
     // waitingFor as ONE question). A mission task's questions carry its
@@ -280,7 +282,11 @@ export default async function TaskDetailPage({
         }),
       ]).then(([enabled, row]) => (enabled ? row ?? null : null));
     })(),
+    // An answer link for a mission filed from the reader's own conversation
+    // opens that conversation instead, when chat is on for them.
+    focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
   ]);
+  if (answerInChat) redirect(answerInChat);
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
   const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
   // S35: the mission's failed deliverables read through the kernel, as its card does.
@@ -1788,6 +1794,7 @@ export default async function TaskDetailPage({
               }}
               modelTier={modelSummary.tierLabel}
               questionNote={questionNote}
+              focusAnswer={focusAnswer}
               roleName={roleName}
             />
           </div>

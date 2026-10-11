@@ -191,6 +191,7 @@
     "./mission-completion-codes": "./mission-completion-codes.ts",
     "./mission-integration": "./mission-integration.ts",
     "./mission-branch-trace": "./mission-branch-trace.ts",
+    "./repair-target": "./repair-target.ts",
     "./task-title": "./task-title.ts",
     "./pr-lede": "./pr-lede.ts",
     "./copy-rules": "./copy-rules.ts",

@@ -212,7 +212,7 @@ describe('ReadinessCard steps', () => {
   it('the first-mission step links to the new-mission form with this workspace', async () => {
     stubFetch({ '/readiness': () => ({ json: report({ nextStep: 'first-mission' }) }) });
     await mount();
-    expect(q('readiness-mission-link')?.getAttribute('href')).toBe('/app/missions/new?workspace=ws-1');
+    expect(q('readiness-mission-link')?.getAttribute('href')).toBe('/app/missions?new=1&workspace=ws-1');
   });
 
   it('the author-spec step shows the spec wizard', async () => {

@@ -2737,6 +2737,10 @@ export const specRevisions = pgTable('spec_revisions', {
   authorKind: text('author_kind').notNull().$type<'user' | 'agent'>(),
   authorId: text('author_id').notNull(),
   changeSummary: text('change_summary'),
+  // Repo specs (docs/specs, Git-canonical per D-1) this revision cites, each
+  // pinned to the exact commit it was validated at on write. Immutable with
+  // the revision, so a moving branch never changes what it cites.
+  repoRefs: jsonb('repo_refs').$type<Array<{ path: string; commitSha: string }>>(),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
@@ -5852,6 +5856,43 @@ export const capabilityGrants = pgTable('capability_grants', {
 }));
 
 export type CapabilityGrant = typeof capabilityGrants.$inferSelect;
+
+/**
+ * Running spend per model.inference grant (the ledger behind
+ * capability-model-inference-ledger.ts). Reservations count as spent until
+ * settled. Changed only by single conditional statements: a reserve is one
+ * INSERT … ON CONFLICT DO UPDATE … WHERE <headroom> that also writes the
+ * reservation row, so N concurrent callers can never overdraw a budget.
+ * Dollars are whole micro-dollars.
+ */
+export const capabilityGrantUsage = pgTable('capability_grant_usage', {
+  grantId: uuid('grant_id').primaryKey().references(() => capabilityGrants.id, { onDelete: 'cascade' }),
+  calls: integer('calls').notNull().default(0),
+  tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+  usdMicros: bigint('usd_micros', { mode: 'number' }).notNull().default(0),
+  inFlight: integer('in_flight').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+/**
+ * One reserved model.inference call. Open (settledAt NULL) while the call is
+ * in flight; settle swaps its reservation for the debit. One left open past
+ * the stale window (a crashed request) is settled at the full reservation.
+ */
+export const capabilityGrantReservations = pgTable('capability_grant_reservations', {
+  id: uuid('id').primaryKey(),
+  grantId: uuid('grant_id').references(() => capabilityGrants.id, { onDelete: 'cascade' }).notNull(),
+  usdMicros: bigint('usd_micros', { mode: 'number' }).notNull(),
+  tokens: bigint('tokens', { mode: 'number' }).notNull(),
+  reservedAt: timestamp('reserved_at', { withTimezone: true }).defaultNow().notNull(),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+  debitUsdMicros: bigint('debit_usd_micros', { mode: 'number' }),
+  debitTokens: bigint('debit_tokens', { mode: 'number' }),
+  costSource: text('cost_source').$type<'provider' | 'reservation' | 'none'>(),
+  outcome: text('outcome').$type<'ok' | 'error' | 'not_sent' | 'stale'>(),
+}, (t) => ({
+  openIdx: index('capability_grant_reservations_open_idx').on(t.grantId, t.reservedAt).where(sql`${t.settledAt} IS NULL`),
+}));
 
 export const gateEventsRelations = relations(gateEvents, ({ one }) => ({
   workspace: one(workspaces, { fields: [gateEvents.workspaceId], references: [workspaces.id] }),

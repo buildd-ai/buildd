@@ -326,10 +326,17 @@
       "breakpoints": true
     },
     {
-      "idx": 302,
+      "idx": 304,
       "version": "7",
-      "when": 1791690741050,
-      "tag": "0302_amusing_omega_sentinel",
+      "when": 1791692698954,
+      "tag": "0304_smiling_the_watchers",
+      "breakpoints": true
+    },
+    {
+      "idx": 305,
+      "version": "7",
+      "when": 1791714216401,
+      "tag": "0305_misty_wonder_man",
       "breakpoints": true
     }
   ]

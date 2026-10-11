@@ -1712,3 +1712,95 @@ describe('a long paste rides as an attachment', () => {
     expect(res.status).toBe(400);
   });
 });
+
+// ── images and files (Living Specs C3) ──────────────────────────────────────
+describe('an image or file rides as a ready upload', () => {
+  const FILE_ID = '7c1e2a40-5b3d-4f6e-9a8b-0c1d2e3f4a5b';
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const fakeFiles = (ready = true) => {
+    const bound: string[] = [];
+    return {
+      bound,
+      deps: {
+        bind: async (_conv: { id: string }, _userId: string, drafts: Array<{ id: string }>) => {
+          if (!ready) return { ok: false as const, status: 409 as const, code: 'file_not_ready', error: 'this file has not finished uploading' };
+          bound.push(...drafts.map(d => d.id));
+          return { ok: true as const, refs: drafts.map(d => ({ artifactId: d.id, revision: 1, sha256: 'b'.repeat(64), name: 'chart.png', mediaType: 'image/png', sizeBytes: PNG.byteLength })) };
+        },
+        read: async () => PNG,
+      },
+    };
+  };
+  const linkDeps = () => {
+    const links: Array<{ messageId: string; artifactId: string }> = [];
+    return {
+      links,
+      deps: {
+        store: async () => ({ ok: true as const, refs: [] }),
+        link: async (messageId: string, _t: string, _u: string, refs: Array<{ artifactId: string }>) => { for (const r of refs) links.push({ messageId, artifactId: r.artifactId }); },
+        bodies: async () => new Map<string, string>(),
+      },
+    };
+  };
+  const fileMsg = (typed: string) => ({
+    id: 'client-f', role: 'user',
+    parts: [...(typed ? [{ type: 'text', text: typed }] : []), { type: 'data-file', data: { kind: 'file', id: FILE_ID, name: 'chart.png', mediaType: 'image/png', sizeBytes: 8 } }],
+  });
+  const visionModel = (model: MockLanguageModelV4) => async (o: any) => ({ ok: true as const, model, provider: 'anthropic' as const, modelId: 'claude-sonnet-5', tier: o.tier, keyScope: 'team' as const });
+
+  it('a model that takes images gets the original as file input; the message keeps only the reference', async () => {
+    const f = fakeFiles();
+    const l = linkDeps();
+    const model = new MockLanguageModelV4({ doStream: textStream('A bar chart.') as any });
+    const { turn } = harness({ model, extraDeps: { files: f.deps, attachments: l.deps, resolveModel: visionModel(model) } });
+    const { res } = await turn(fileMsg('what is this?'));
+    expect(res.status).toBe(200);
+    const saved = messages.find(m => m.role === 'user')!;
+    expect(saved.parts).toEqual([
+      { type: 'text', text: 'what is this?' },
+      { type: 'data-file', data: { artifactId: FILE_ID, revision: 1, sha256: 'b'.repeat(64), name: 'chart.png', mediaType: 'image/png', sizeBytes: PNG.byteLength } },
+    ]);
+    expect(l.links).toEqual([{ messageId: saved.id, artifactId: FILE_ID }]);
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('"type":"file"');
+    expect(prompt).toContain('image/png');
+    expect(prompt).not.toContain('cannot view images');
+  });
+
+  it('a model that cannot view images is told about the image instead, never a silent drop', async () => {
+    const f = fakeFiles();
+    const model = new MockLanguageModelV4({ doStream: textStream('I cannot see it.') as any });
+    const { turn } = harness({ model, extraDeps: { files: f.deps, attachments: linkDeps().deps } });
+    expect((await turn(fileMsg(''))).res.status).toBe(200);
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('chart.png');
+    expect(prompt).toContain('cannot view images');
+    expect(prompt).not.toContain('"type":"file"');
+  });
+
+  it('an upload that is not ready is refused before the model, and nothing is saved', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, extraDeps: { files: fakeFiles(false).deps, attachments: linkDeps().deps } });
+    const { res, text } = await turn(fileMsg('look'));
+    expect(res.status).toBe(409);
+    expect(JSON.parse(text).code).toBe('file_not_ready');
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(messages.filter(m => m.role === 'user')).toHaveLength(0);
+  });
+
+  it('on the next turn the earlier image is named, not re-sent', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, extraDeps: { files: fakeFiles().deps, attachments: linkDeps().deps, resolveModel: visionModel(model) } });
+    await turn(fileMsg('what is this?'));
+    await turn(userMsg('and the colours?'));
+    const second = JSON.stringify(model.doStreamCalls[1].prompt);
+    expect(second).toContain('Earlier image attached: chart.png');
+    expect(second).not.toContain('"type":"file"');
+  });
+
+  it('a malformed file part is a 400', async () => {
+    const { turn } = harness({ model: new MockLanguageModelV4({ doStream: textStream('ok') as any }), extraDeps: { files: fakeFiles().deps } });
+    const { res } = await turn({ id: 'c', role: 'user', parts: [{ type: 'data-file', data: { kind: 'file', id: 'nope', name: 'x', mediaType: 'image/png', sizeBytes: 1 } }] });
+    expect(res.status).toBe(400);
+  });
+});

@@ -21,7 +21,7 @@ import { useKitChat } from '@builddai/ai-kit/chat/react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  CHAT_PUSHER_EVENTS, conversationChannelName, type ChatAttachmentDraft, type ChatTierName,
+  CHAT_PUSHER_EVENTS, conversationChannelName, type ChatDraftAttachment, type ChatTierName,
   type CreateConversationResponse, type GetConversationResponse,
 } from '@buildd/shared';
 import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
@@ -198,7 +198,7 @@ export default function ChatConversation(props: ChatConversationProps) {
     }).then(r => { if (!r.ok) setPinnedTier(before); }).catch(() => setPinnedTier(before));
   }, [conversationId, pinnedTier, teamId, setSharedTier]);
 
-  const onSend = useCallback(async (text: string, attachments: ChatAttachmentDraft[] = []) => {
+  const onSend = useCallback(async (text: string, attachments: ChatDraftAttachment[] = []) => {
     clearError();
     if (conversationId) {
       void sendText(text, attachments);

@@ -5,6 +5,9 @@ import { isUuid } from '@/lib/uuid';
 import { resolveWorkspaceAccess, type WorkspaceAccessCaller } from '@/lib/workspace-access';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { requirementIds, type RequirementRef } from './requirements';
+import { newRepoRefs, normalizeRepoPath, parseRepoRefs, sameRepoRefs, type RepoRef } from './repo-refs';
+import { ArtifactReadError, AUTO_FULL_MAX_CHARS, readArtifactBody, type ArtifactReadResult, type ArtifactReadSelector } from '@buildd/core/artifact-read';
+import { readRepoFileAtCommit } from './repo-source';
 
 /**
  * Living Specs store (G1): create a draft, revise it under a version check,
@@ -20,6 +23,12 @@ import { requirementIds, type RequirementRef } from './requirements';
  * draft: on an approved spec it proposes N+1 while `approved_revision` stays N.
  * Nothing here approves: approval is a person's act on one revision
  * (./approval.ts, decision D-4).
+ *
+ * A revision may cite repo specs (`repoRefs`, D-1: repo docs stay
+ * Git-canonical) as `{ path, commitSha }`. Each new reference is checked on
+ * write against the workspace's linked repo: a full commit SHA that exists and
+ * a file at that path in it, else a 400 and nothing is written. A revise that
+ * omits `repoRefs` carries the head's forward; `[]` clears them.
  */
 
 export type SpecCaller =
@@ -31,7 +40,7 @@ const author = (c: SpecCaller) => (c.kind === 'user'
   ? { authorKind: 'user' as const, authorId: c.userId, label: `user:${c.userId}` }
   : { authorKind: 'agent' as const, authorId: c.account.id, label: `account:${c.account.id}` });
 
-export type SpecError = { ok: false; status: 400 | 403 | 404 | 409; error: string; currentVersion?: number };
+export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number };
 export const fail = (status: SpecError['status'], error: string, extra: Partial<SpecError> = {}): SpecError => ({ ok: false, status, error, ...extra });
 
 /** Read (or, with `write`, create and revise) access to a workspace's specs. */
@@ -48,11 +57,31 @@ function checkBody(body: unknown): string | SpecError {
   return body;
 }
 
+/** `repoRefs` from a request: undefined when absent, null when cleared, else the parsed set. */
+function readRefsInput(raw: unknown): RepoRef[] | null | undefined | SpecError {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  const parsed = parseRepoRefs(raw);
+  if (!parsed.ok) return fail(400, parsed.error);
+  return parsed.refs.length ? parsed.refs : null;
+}
+const isError = (v: unknown): v is SpecError => !!v && typeof v === 'object' && (v as SpecError).ok === false;
+
+/** Every reference must name a file that exists at its commit in the workspace's linked repo. */
+async function checkRepoRefs(workspaceId: string, refs: readonly RepoRef[]): Promise<SpecError | null> {
+  for (const ref of refs) {
+    const r = await readRepoFileAtCommit(workspaceId, ref.path, ref.commitSha);
+    if (r.ok) continue;
+    return r.reason === 'unavailable' ? fail(502, `${r.message}; nothing was written, try again`) : fail(400, `repoRefs: ${r.message}; nothing was written`);
+  }
+  return null;
+}
+
 export type SpecRow = typeof specs.$inferSelect;
 export type SpecRevisionRow = typeof specRevisions.$inferSelect;
 
 export async function createSpecDraft(caller: SpecCaller, input: {
-  workspaceId: unknown; title: unknown; scope?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown;
+  workspaceId: unknown; title: unknown; scope?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown;
 }): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow } | SpecError> {
   const { workspaceId, title, parentSpecId } = input;
   const scope = (input.scope ?? 'feature') as SpecScope;
@@ -61,11 +90,17 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   if (!SPEC_SCOPES.includes(scope)) return fail(400, `scope must be one of: ${SPEC_SCOPES.join(', ')}`);
   const body = checkBody(input.body);
   if (typeof body !== 'string') return body;
+  const repoRefs = readRefsInput(input.repoRefs);
+  if (isError(repoRefs)) return repoRefs;
   if (!(await reach(caller, workspaceId, true))) return fail(404, 'Workspace not found');
   if (parentSpecId !== undefined && parentSpecId !== null) {
     if (typeof parentSpecId !== 'string' || !isUuid(parentSpecId)) return fail(400, 'parentSpecId must be a UUID');
     const [parent] = await db.select({ workspaceId: specs.workspaceId }).from(specs).where(eq(specs.id, parentSpecId)).limit(1);
     if (!parent || parent.workspaceId !== workspaceId) return fail(404, 'Parent spec not found in this workspace');
+  }
+  if (repoRefs) {
+    const bad = await checkRepoRefs(workspaceId, repoRefs);
+    if (bad) return bad;
   }
 
   const who = author(caller);
@@ -82,17 +117,20 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   const [revision] = await db.insert(specRevisions).values({
     specId: spec.id, revision: 1, artifactRevision: art.currentRevision, contentHash: bodyRev!.contentHash!,
     authorKind: who.authorKind, authorId: who.authorId, changeSummary: typeof input.changeSummary === 'string' ? input.changeSummary : null,
+    repoRefs: repoRefs ?? null,
   }).returning();
   return { ok: true, spec, revision };
 }
 
 export async function reviseSpecDraft(caller: SpecCaller, specId: string, input: {
-  expectedVersion: unknown; body: unknown; changeSummary?: unknown;
+  expectedVersion: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown;
 }): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
   const body = checkBody(input.body);
   if (typeof body !== 'string') return body;
+  const refsInput = readRefsInput(input.repoRefs);
+  if (isError(refsInput)) return refsInput;
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
   if (spec.status === 'retired' || spec.status === 'superseded') return fail(409, `A ${spec.status} spec is not revised`);
@@ -101,14 +139,31 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
 
   const [head] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, spec.headRevision))).limit(1);
   const [{ hash }] = ((await db.execute(sql`SELECT encode(sha256(convert_to(${body}, 'UTF8')), 'hex') AS hash`)) as unknown as { rows: Array<{ hash: string }> }).rows;
-  if (hash === head.contentHash) return { ok: true, spec, revision: head, unchanged: true };
+  // Omitted repoRefs carry the head's forward.
+  const repoRefs = refsInput === undefined ? (head.repoRefs?.length ? head.repoRefs : null) : refsInput;
+  const refsChanged = !sameRepoRefs(repoRefs, head.repoRefs);
+  if (hash === head.contentHash && !refsChanged) return { ok: true, spec, revision: head, unchanged: true };
+  if (repoRefs && refsChanged) {
+    const bad = await checkRepoRefs(spec.workspaceId, newRepoRefs(repoRefs, head.repoRefs));
+    if (bad) return bad;
+  }
+  const refsJson = repoRefs ? JSON.stringify(repoRefs) : null;
 
   // One statement, so it lands whole or not at all: the body (only while the
   // artifact is still at the revision the head pins AND the spec still at the
   // version read), the version bump, and the spec revision pinning the new body.
+  // Only the references changed: the new revision pins the same body revision.
   const who = author(caller);
   const summary = typeof input.changeSummary === 'string' ? input.changeSummary : null;
-  const rows = await db.execute(sql`
+  const rows = hash === head.contentHash ? await db.execute(sql`
+    WITH up AS (
+      UPDATE specs SET version = version + 1, head_revision = head_revision + 1, status = 'draft', updated_at = now()
+      WHERE id = ${specId}::uuid AND version = ${spec.version}
+      RETURNING id, head_revision
+    )
+    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs)
+    SELECT up.id, up.head_revision, ${head.artifactRevision}, ${head.contentHash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb FROM up
+    RETURNING id`) : await db.execute(sql`
     WITH body AS (
       UPDATE artifacts SET content = ${body}, content_author = ${who.label}, updated_at = now()
       WHERE id = ${spec.bodyArtifactId}::uuid AND current_revision = ${head.artifactRevision}
@@ -119,8 +174,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
       WHERE id = ${specId}::uuid AND version = ${spec.version} AND EXISTS (SELECT 1 FROM body)
       RETURNING id, head_revision
     )
-    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary)
-    SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary} FROM up, body
+    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs)
+    SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb FROM up, body
     RETURNING id`);
   if (((rows as { rows?: unknown[] }).rows ?? []).length === 0) {
     const [now] = await db.select({ version: specs.version }).from(specs).where(eq(specs.id, specId)).limit(1);
@@ -196,4 +251,33 @@ export async function getSpec(caller: SpecCaller, specId: string, opts: { revisi
 export async function listSpecs(caller: SpecCaller, workspaceId: string): Promise<{ ok: true; specs: SpecRow[] } | SpecError> {
   if (!isUuid(workspaceId) || !(await reach(caller, workspaceId, false))) return fail(404, 'Workspace not found');
   return { ok: true, specs: await db.select().from(specs).where(eq(specs.workspaceId, workspaceId)).orderBy(desc(specs.updatedAt)) };
+}
+
+/**
+ * Read one repo file a revision cites, at the commit it cites, in bounded form
+ * (the artifact read views: outline, section, range, grep). Only a reference
+ * recorded on that revision is readable: this is not a general repo reader.
+ */
+export async function readSpecRepoRef(caller: SpecCaller, specId: string, opts: { revision?: number; path: unknown; selector: (text: string) => ArtifactReadSelector | null }): Promise<
+  { ok: true; ref: RepoRef; revision: number; read: ArtifactReadResult } | SpecError
+> {
+  if (!isUuid(specId)) return fail(404, 'Spec not found');
+  const path = normalizeRepoPath(opts.path);
+  if (!path) return fail(400, 'path must be a repo-relative file path the revision cites');
+  const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
+  if (!spec || !(await reach(caller, spec.workspaceId, false))) return fail(404, 'Spec not found');
+  const n = opts.revision ?? spec.headRevision;
+  const [revision] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, n))).limit(1);
+  if (!revision) return fail(404, `Spec has no revision ${n}`);
+  const ref = (revision.repoRefs ?? []).find((r) => r.path === path);
+  if (!ref) return fail(404, `Revision ${n} does not cite ${path}`);
+  const file = await readRepoFileAtCommit(spec.workspaceId, ref.path, ref.commitSha);
+  if (!file.ok) return fail(file.reason === 'unavailable' ? 502 : 404, file.message);
+  try {
+    const sel = opts.selector(file.text) ?? (file.text.length <= AUTO_FULL_MAX_CHARS ? { view: 'full' as const } : { view: 'outline' as const });
+    return { ok: true, ref, revision: n, read: readArtifactBody(file.text, sel) };
+  } catch (err) {
+    if (err instanceof ArtifactReadError) return fail(400, err.message);
+    throw err;
+  }
 }
