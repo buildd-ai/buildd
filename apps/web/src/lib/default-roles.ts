@@ -580,8 +580,13 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // v7: both themes per required route (QA_THEME, qa.theme), the first screen
     // at 390, nothing shown twice, before/after from trunk on a mission branch,
     // and the workspace's optional design rules and reference.
-    version: 7,
+    // v8: dispatch visual-qa.yml from trunk with the capture ref as capture_ref
+    // (the harness must match the prod clone), one viewport first and stop on a
+    // harness-stage failure, and a pushed-back boot question is rewritten, not
+    // dropped (task 7d3ff681 gave up after two pushbacks).
+    version: 8,
     supersededContentHashes: [
+      '1651f88ca8098bdda34368bb6db4b4d5df9423abcc693f8448f481a70deb9f7d',
       '9a2c3014983cfdf33c514cc6b40f29f5955cf34a83792d65b6429644c2334f00',
       '7287fafb7ea8cc8624c5ab0df92e4ca9c249029ff18712079f7a5242abbf0fca',
       '858c4bb3437c364efa8a74a6fd7aa778ca05c9481af2796cd6dfab577f72359d',
@@ -644,11 +649,17 @@ that branch deploys to Production and has no preview) only to pin another commit
 Follow the \`visual-review\` skill (\`.claude/skills/visual-review/SKILL.md\`). For the
 sandbox, pick the recipe by one question: is \`DATABASE_URL\` set?
 
-- **No \`DATABASE_URL\`** (the normal worker case): dispatch \`visual-qa.yml\` with
-  \`--ref <captureRef.ref>\` and your routes (or \`-f plan='<plan JSON>'\` instead of \`routes\`), once with
+- **No \`DATABASE_URL\`** (the normal worker case): run the \`dispatch\` command get_page_source
+  returned (\`gh workflow run visual-qa.yml --ref <trunk> -f capture_ref=<captureRef.ref>\`) with
+  your routes (or \`-f plan='<plan JSON>'\` instead of \`routes\`), once with
   \`viewport=mobile\` and once for desktop, each with \`-f theme=light\` or \`-f theme=dark\` (see
   "Both themes"), then download the \`qa-screenshots\` artifact exactly as the skill describes
-  (and delete it after).
+  (and delete it after). Never \`--ref <captureRef.ref>\`: the workflow and its scrub must come
+  from trunk to match the prod clone; only the app comes from \`capture_ref\`.
+- **One dispatch first.** Wait for the first one before sending the rest. If it failed at
+  \`Create Neon prod-clone branch\`, \`Run migrations\`, \`Scrub prod clone to placeholders\` or
+  \`Guard scrubbed clone\`, the app never booted and every other viewport and theme fails the
+  same way: stop, see "Harness failure".
 - **\`DATABASE_URL\` set** (a dev database, never prod): run \`scripts/qa/shoot.sh\` twice,
   with \`QA_VIEWPORT=mobile\` and without it (desktop). It passes \`QA_PLAN\` through.
 
@@ -809,6 +820,15 @@ light and a dark one. The server checks this: a missing route/viewport or theme,
 landed, or an issue with no fix task is rejected with a message naming what is missing. Fix
 exactly that and complete again.
 
+## Harness failure
+
+A run that failed at one of the four harness steps above is not a visual finding and not a
+choice for a person. Do not dispatch again, do not retry, do not capture another ref instead,
+and do not ask. Call \`complete_task\` with \`error\` naming the failed step
+(\`gh run view <run> --json jobs -q '.jobs[].steps[] | select(.conclusion=="failure") | .name'\`)
+and its \`::error\` annotation, the run URL, and, when get_page_source's \`freshness.needsSync\` was true, that
+\`captureRef.ref\` lacks trunk's migrations and needs a trunk merge before this audit is re-run.
+
 ## Boot failure
 
 If the app did not boot, or the workflow could not produce screenshots, you have seen nothing,
@@ -818,7 +838,11 @@ wall) or \`app_auth_not_configured\` (the app's sign-in page). A wall is a confi
 never a visual finding: do not upload it as a shot. Put the error name and the fix capture.ts
 printed in the question. Do not mark the task failed and do not complete it: a failed task
 releases the mission. Instead call the \`AskUserQuestion\` tool with the question "App did not
-boot: <one-line reason>" and the error output, and stop there. That parks this task in
+boot: <one-line reason>" and the error output, and stop there. Write it as a decision brief:
+which audit this is and what the owner must set up, then options that each say what happens
+next, the one you recommend first. If the call comes back saying the question was not shown to
+anyone, that is a pushback on its wording, not a refusal: rewrite it as asked and call again.
+After two pushbacks the next call parks. That parks this task in
 waiting_input, and the open task holds the mission until a human answers. Do NOT use
 \`post_note\` for this: a note does not park you, the session ends, and the runner's fallback
 completion is refused for missing screenshots and recorded as a failure.

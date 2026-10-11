@@ -4,7 +4,9 @@
  * Where the visual auditor's pages come from for this worker's workspace
  * (docs/design/visual-qa-auditor.md, "Page source"), and which branch to
  * capture (`captureRef`: the mission's integration branch on a mission-branch
- * mission, else trunk). Pages come from the sandbox, or the
+ * mission, else trunk). The sandbox workflow is dispatched from trunk
+ * (`harnessRef`, `dispatch`) with the capture ref as an input, and
+ * `freshness` says how far the capture ref is behind trunk. Pages come from the sandbox, or the
  * Vercel preview deployed for the commit, found through the commit's GitHub
  * deployment statuses with the workspace's GitHub App token. Long-polls a
  * still-building preview for at most waitSeconds (<= 45); `decision.error ===
