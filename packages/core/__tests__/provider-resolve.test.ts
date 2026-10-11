@@ -25,6 +25,7 @@ import {
 } from '../providers/resolve';
 import { surfacePolicy, type CredentialPolicy, type ProviderId, type Surface } from '../providers';
 import { pickMostSpecificCredential } from '../secrets/team-scope';
+import { toCredentialPolicy } from '../inference-key-policy';
 import {
   competingScopes,
   endpointWinsRanking,
@@ -99,9 +100,12 @@ describe('policy × requester × scopes available', () => {
     ['chat', 'personal_only', U, [workspace, team], 'no_personal'],
     ['chat', 'personal_only', null, all, 'no_personal'],
     ['chat', 'personal_first', U, [team], team.id],
-    // agent: NULL credentialPolicy ⇒ team scopes only, never personal
-    ['agent-claude', null, U, all, workspace.id],
-    ['agent-claude', null, U, [personal], 'none'],
+    // agent: NULL credentialPolicy ⇒ personal_first, as chat: the requester's
+    // own key wins, the team's is the fallback; no requester ⇒ team scopes
+    ['agent-claude', null, U, all, personal.id],
+    ['agent-claude', null, U, [personal], personal.id],
+    ['agent-claude', null, U2, [personal, workspace, team], workspace.id],
+    ['agent-claude', null, null, all, workspace.id],
     ['agent-claude', 'team', U, all, workspace.id],
     ['agent-claude', 'personal_first', U, all, personal.id],
     ['agent-claude', 'personal_first', null, all, workspace.id],
@@ -109,7 +113,8 @@ describe('policy × requester × scopes available', () => {
     ['agent-claude', 'personal_only', U, all, personal.id],
     ['agent-claude', 'personal_only', U, [workspace, team], 'no_personal'],
     ['agent-claude', 'personal_only', null, all, 'no_personal'],
-    ['cloud-egress', null, U, all, workspace.id],
+    ['cloud-egress', null, U, all, personal.id],
+    ['cloud-egress', null, null, all, workspace.id],
     ['cloud-egress', 'personal_first', U, all, personal.id],
   ];
 
@@ -389,7 +394,8 @@ describe('parity: chat ≡ resolveInferenceCredential', async () => {
           for (const accountId of [null, A]) {
             dbRows = rows;
             const old = await resolveInferenceCredential({ provider: 'anthropic', teamId: 'T', workspaceId: W, userId: requester, accountId, keyPolicy });
-            const now = pick(rows, ctx({ surface: 'chat', team: { inferenceKeyPolicy: keyPolicy }, requesterUserId: requester, accountId, providers: ['anthropic'] }));
+            // Stored as a choice: the legacy column's 'team' alone reads as unset.
+            const now = pick(rows, ctx({ surface: 'chat', team: { credentialPolicy: toCredentialPolicy(keyPolicy) }, requesterUserId: requester, accountId, providers: ['anthropic'] }));
             expect({ i, keyPolicy, requester, accountId, id: now.source?.secretId ?? null })
               .toEqual({ i, keyPolicy, requester, accountId, id: old?.secretId ?? null });
             compared++;
@@ -434,7 +440,7 @@ describe('parity: agent (credentialPolicy unset, no requester) ≡ today’s age
         healthStatus: rand() < 0.3 ? 'revoked' : 'healthy',
       }));
       const old = pickMostSpecificCredential(rows, { accountId: A, workspaceId: W });
-      const now = pick(rows, ctx({ surface: 'agent-claude', accountId: A, requesterUserId: U, providers: ['anthropic'] }));
+      const now = pick(rows, ctx({ surface: 'agent-claude', accountId: A, requesterUserId: null, providers: ['anthropic'] }));
       expect({ i, id: now.source?.secretId ?? null }).toEqual({ i, id: old?.id ?? null });
     }
   });

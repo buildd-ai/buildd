@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeDecisionShadows, normalizeFeatureModes } from '@buildd/core/inference-policy';
-import { isInferenceKeyPolicy, isCredentialPolicy, policyColumns, effectiveKeyPolicy, toCredentialPolicy } from '@buildd/core/inference-key-policy';
+import { isInferenceKeyPolicy, isCredentialPolicy, policyColumns, effectiveKeyPolicy, toCredentialPolicy, DEFAULT_KEY_POLICY } from '@buildd/core/inference-key-policy';
 import { normalizeTeamCodingPolicy, parseCodingPolicyLayer, resolveCodingPolicy, describeEffectiveCodingPolicy } from '@buildd/core/coding-policy';
 import { normalizeDecisionModel } from '@buildd/core/decision-model';
 import { db } from '@buildd/core/db';
@@ -9,10 +9,10 @@ import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { isUuid } from '@/lib/uuid';
-import { isWarmHandover } from '@buildd/shared';
 import { isChatTierName } from '@buildd/shared';
-import { roleHas, sanitizeOverrides, type Permission, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
 import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
+import { detachTeamStoredFiles, removeTeamStoredFiles } from '@/lib/artifact-team-files';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
 const MAX_CHAT_BUDGET_USD = 100_000;
@@ -34,7 +34,7 @@ async function verifyTeamAccess(
 
   const role = membership.role as TeamRole;
 
-  if (permission && !roleHas(role, permission, await getTeamPermissionOverrides(teamId))) {
+  if (permission && !roleHas(role, permission)) {
     return null;
   }
 
@@ -103,8 +103,6 @@ export async function GET(
         chatCapNewSessionTier: true,
         taskEstimates: true,
         timezone: true,
-        warmHandover: true,
-        permissionOverrides: true,
       },
     });
 
@@ -130,8 +128,7 @@ export async function GET(
     }));
 
     return NextResponse.json({
-      // Sanitized, so a client's roleHas() answers what the server will enforce.
-      team: { ...team, permissionOverrides: sanitizeOverrides(team.permissionOverrides), inferenceKeyPolicy: effectiveKeyPolicy(team) ?? 'team', credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? 'team'),
+      team: { ...team, inferenceKeyPolicy: effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY, credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY),
         // What the team layer allows for Coding, for the Models page. Workspace
         // and personal layers narrow it further per task at claim time.
         effectiveCodingPolicy: describeEffectiveCodingPolicy(resolveCodingPolicy({ team: parseCodingPolicyLayer(team.codingPolicy?.team) })) },
@@ -175,8 +172,7 @@ export async function PATCH(
     };
 
     if ('warmHandover' in body) {
-      if (!isWarmHandover(body.warmHandover)) return NextResponse.json({ error: "warmHandover must be 'off', 'repo' or 'deps'" }, { status: 400 });
-      updates.warmHandover = body.warmHandover;
+      return NextResponse.json({ error: "warmHandover is no longer a team setting: the platform decides it. A workspace can opt out with gitConfig.warmHandover: 'off'." }, { status: 400 });
     }
     if (name !== undefined) updates.name = name;
     if (enabledBackends !== undefined) {
@@ -363,10 +359,13 @@ export async function DELETE(
       return NextResponse.json({ error: 'Cannot delete personal team' }, { status: 400 });
     }
 
-    await db.delete(teams).where(eq(teams.id, id));
+    // Its artifacts cascade, their stored objects do not: detach the rows that
+    // hold one in the same transaction as the delete, then remove them.
+    await db.batch([detachTeamStoredFiles(id), db.delete(teams).where(eq(teams.id, id))]);
     // Its conversations went with it (cascade); their chat attachments do not
     // cascade, so remove them now. Whatever is left, the maintenance sweep takes.
     await removeTeamChatAttachments(id);
+    await removeTeamStoredFiles(id);
 
     return NextResponse.json({ success: true });
   } catch (error) {

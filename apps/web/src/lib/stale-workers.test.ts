@@ -160,6 +160,99 @@ describe('cleanupStuckWaitingInput', () => {
     });
   });
 
+  // ask_human parks an interactive (runner = 'mcp') worker on a question. The
+  // runner rules skip those rows, so this sweep is their only expiry: it must
+  // not exclude them.
+  it('covers interactive workers parked on a question, not only runner ones', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    await cleanupStuckWaitingInput('account-1');
+    // drizzle-orm is stubbed in this file: predicates are plain objects.
+    const where = (mockWorkersFindMany.mock.calls[0] as any)[0].where;
+    const nodes: any[] = [];
+    const walk = (n: any) => { if (!n || typeof n !== 'object') return; nodes.push(n); (n.args ?? []).forEach(walk); };
+    walk(where);
+    expect(nodes.some(n => n.type === 'eq' && n.value === 'waiting_input')).toBe(true);
+    expect(nodes.some(n => n.type === 'ne' && n.value === 'mcp')).toBe(false);
+    expect(JSON.stringify(nodes.map(n => n.type))).not.toContain('sql');
+  });
+
+  // An interactive session's question that expires unanswered must not be
+  // handed to a background runner: the person chose to run this work in their
+  // own session, and a cloned retry on a runner mission is exactly the
+  // duplicate a person then finds rebuilt behind their back. Only a local
+  // mission's retry is safe, because only a person's session can claim it.
+  describe('an interactive (runner = mcp) session whose question expired', () => {
+    const interactiveTask = (missionId: string | null) => ({
+      id: 'task-1', workspaceId: 'ws-1', title: 'Fix the bug', description: 'Fix the login bug', priority: 0,
+      category: 'bug', project: 'web', context: {}, requiredCapabilities: [], missionId,
+      runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
+    });
+    const stuck = (mission: { executor: string } | null) => ({
+      id: 'w1', taskId: 'task-1', runner: 'mcp', status: 'waiting_input',
+      updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+      waitingFor: { type: 'question', prompt: 'What color?' },
+      task: { missionId: mission ? 'mission-1' : null, mission },
+    });
+
+    function captureWorkerSet() {
+      const sets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((vals: any) => { sets.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      return sets;
+    }
+
+    it('reads each worker\'s runner and its mission executor', async () => {
+      mockWorkersFindMany.mockResolvedValue([]);
+      await cleanupStuckWaitingInput('account-1');
+      const q = (mockWorkersFindMany.mock.calls[0] as any)[0];
+      expect(q.columns.runner).toBe(true);
+      expect(q.with.task.with.mission.columns.executor).toBe(true);
+    });
+
+    it('standalone: fails the worker and the task with a clear reason, and files no retry', async () => {
+      mockWorkersFindMany.mockResolvedValue([stuck(null)]);
+      mockTasksFindFirst.mockResolvedValue(interactiveTask(null));
+      const sets = captureWorkerSet();
+      mockTasksInsert.mockClear();
+
+      const result = await cleanupStuckWaitingInput('account-1');
+
+      expect(result.failedWorkers).toBe(1);
+      expect(result.retriedTasks).toBe(0);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+      expect(sets[0].status).toBe('failed');
+      expect(sets[0].exitCause).toBe('needs_input');
+      expect(sets[0].error).toContain('interactive session');
+      expect(sets[0].error).toContain('not retried');
+    });
+
+    it('on a runner mission: files no retry a background runner could claim', async () => {
+      mockWorkersFindMany.mockResolvedValue([stuck({ executor: 'runner' })]);
+      mockTasksFindFirst.mockResolvedValue(interactiveTask('mission-1'));
+      captureWorkerSet();
+      mockTasksInsert.mockClear();
+
+      const result = await cleanupStuckWaitingInput('account-1');
+
+      expect(result.retriedTasks).toBe(0);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('on a local mission: files the retry, which only a person\'s session can claim', async () => {
+      mockWorkersFindMany.mockResolvedValue([stuck({ executor: 'local' })]);
+      mockTasksFindFirst.mockResolvedValue(interactiveTask('mission-1'));
+      captureWorkerSet();
+      mockTasksInsert.mockClear();
+      mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })) });
+
+      const result = await cleanupStuckWaitingInput('account-1');
+
+      expect(result.retriedTasks).toBe(1);
+      expect(mockTasksInsert).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('does nothing when no stuck waiting_input workers exist', async () => {
     mockWorkersFindMany.mockResolvedValue([]);
 

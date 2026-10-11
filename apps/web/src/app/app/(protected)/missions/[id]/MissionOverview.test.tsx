@@ -28,7 +28,7 @@ describe('MissionOverview', () => {
   it('draws the lg strip, a focus card and the counts', () => {
     expect(html).toContain('data-size="lg"');
     expect(html).toContain('data-testid="focus-card"');
-    expect(html).toContain('1 of 5 merged');
+    expect(html).toContain('1 of 5 landed');
     expect(html).toContain('data-testid="overview-stepper"');
   });
 

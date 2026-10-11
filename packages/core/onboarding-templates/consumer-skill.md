@@ -108,6 +108,19 @@ Why: buildd sessions have dedicated coordination tools that are the single sourc
   left off. Reserve this for cases where no amount of additional thinking
   produces a path forward — not for uncertainty, permission-seeking, or a
   design choice you're capable of making yourself.
+- **Hard block from an interactive session** — you claimed the task with
+  `claim_task` from a person's own session, so no runner manages you and
+  `AskUserQuestion` only reaches whoever is at this keyboard, not the task's
+  owner: call `buildd action=ask_human params={ question, options?, context? }`,
+  then loop on `buildd action=await_answer`. Each call waits up to 45 s; on
+  `timedOut: true` call it again straight away, until it returns
+  `answered: true`. Do not act on the decision it covers meanwhile, and do not
+  call `update_progress` while parked (it marks you running) — the
+  `await_answer` loop is your heartbeat, and a session that stops calling for
+  about 5 minutes has its answer sent to a follow-up task instead. Once
+  answered, carry on and resume your `update_progress` cadence. Unanswered, the
+  question expires (24 h, 4 h in a mission) and the task fails without a
+  runner retry. A soft question stays a non-blocking `post_note` (next bullet).
 - **Soft question you can proceed under a default for:** `buildd
   action=post_note` with `type=question` and `defaultChoice` set to what you
   chose. Non-blocking — work continues immediately. State the assumption and

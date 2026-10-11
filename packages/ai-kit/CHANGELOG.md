@@ -12,6 +12,17 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.27.0 — 2026-10-11
+
+Minor: a route can carry a threshold measured on the model that answered.
+
+- `DecisionRoute.thresholdFor(answeringModel)`: a number in [0, 1] replaces the
+  kind's (or the escalation's) threshold for that attempt, and the attempt
+  records it as `threshold`. Null, or anything outside [0, 1], keeps the
+  kind's own. Hosts use it so a model measured on a kind acts at its own
+  threshold instead of one measured on Jev. No engine version change: a route
+  without it behaves exactly as before.
+
 ## 0.26.0 — 2026-10-11
 
 Minor: images and files attach to a message.

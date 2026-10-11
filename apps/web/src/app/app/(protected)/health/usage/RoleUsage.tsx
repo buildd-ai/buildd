@@ -16,11 +16,11 @@ export function RoleUsage({ rows, truncated, window }: RoleUsageData & { window:
       {roles.length > 0 && (
         <section className="mb-6" data-testid="usage-roles">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-title font-semibold">Usage by role</h2>
+            <h2 className="text-title font-semibold">Usage by agent</h2>
             <Segmented label="Usage measure" items={[{ value: 'tokens', label: 'Tokens' }, { value: 'hours', label: 'Time' }]} value={measure} onChange={setMeasure} />
           </div>
           <p className="mt-2 text-meta text-text-muted">Run totals · last {window === '30d' ? '30 days' : '7 days'}</p>
-          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_4rem_4rem] gap-2 text-meta text-text-muted"><span>Role / tier</span><span className="text-right">{measure === 'tokens' ? 'Tokens' : 'Time'}</span><span className="text-right">Real ($)</span><span className="text-right">Plan ($)</span></div>
+          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_4rem_4rem] gap-2 text-meta text-text-muted"><span>Agent / tier</span><span className="text-right">{measure === 'tokens' ? 'Tokens' : 'Time'}</span><span className="text-right">Real ($)</span><span className="text-right">Plan ($)</span></div>
           <ul className="mt-2 divide-y divide-border-default border-y border-border-default">
             {roles.map(r => (
               <li key={r.role} className="text-meta py-3">

@@ -1092,8 +1092,8 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
       eq(workers.status, 'waiting_input'),
       lt(workers.updatedAt, missionCutoff),
     ),
-    columns: { id: true, taskId: true, accountId: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
-    with: { task: { columns: { missionId: true } } },
+    columns: { id: true, taskId: true, accountId: true, runner: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
+    with: { task: { columns: { missionId: true }, with: { mission: { columns: { executor: true } } } } },
   });
 
   // Mission tasks use 4h timeout, standalone tasks use 24h timeout
@@ -1111,12 +1111,24 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
   let retriedTasks = 0;
 
   for (const worker of stuckWorkers) {
+    const hours = (worker as any).task?.missionId ? '4' : '24';
+    // An interactive session (claim_task from a person's own session) chose to
+    // run this work itself. A retry cloned onto a runner mission would hand it
+    // to a background runner nobody asked for — the duplicate a person then
+    // finds rebuilt behind their back. So it is not retried, unless its
+    // mission is executor = 'local': only a person's session can claim that
+    // retry, which is the same arrangement the original claim had.
+    const interactive = (worker as { runner?: string | null }).runner === INTERACTIVE_WORKER_RUNNER;
+    const localMission = (worker as any).task?.mission?.executor === 'local';
+    const fileRetry = !interactive || localMission;
     // Fail the worker
     await db
       .update(workers)
       .set({
         status: 'failed',
-        error: `Worker timed out waiting for user input (${(worker as any).task?.missionId ? '4' : '24'}+ hours)`,
+        error: interactive && !fileRetry
+          ? `Question from an interactive session went unanswered for ${hours}+ hours; the task was not retried on a runner. Claim it again from your session, or retry it from the task page.`
+          : `Worker timed out waiting for user input (${hours}+ hours)`,
         // Not a code defect — an unanswered question timing out is the
         // correct terminal outcome for a hard-blocked worker. Must carry its
         // own exit cause so it stays out of the failure rate and
@@ -1174,6 +1186,11 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         commitCount: worker.commitCount ?? 0,
         source: 'sweep:waiting-input',
       }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${originalTask.id}:`, err));
+      continue;
+    }
+
+    if (!fileRetry) {
+      await resolveCompletedTask(originalTask.id, originalTask.workspaceId);
       continue;
     }
 

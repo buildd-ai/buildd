@@ -261,6 +261,24 @@ describe('resolveCommandCriterion — reuse', () => {
     expect(insertedValues).toHaveLength(0);
   });
 
+  // The agent in a verification task holds a per-task token and may PATCH its
+  // own worker. Evidence it reported that way is its word, not the runner's
+  // run, so it never stands in for a verdict: the command runs again.
+  it('does not reuse a pass whose evidence the agent reported on its task token', async () => {
+    taskFindManyRows = [{
+      id: 'verify-agent-said-ok',
+      status: 'completed',
+      context: marker(),
+      result: { loopHistory: [{ iteration: 0, satisfied: true, summary: 'Command exited 0', evidence: { workerId: 'w1', iteration: 0, outcome: 'ok', exitCode: 0, reportedVia: 'task_token' } }] },
+      updatedAt: new Date(Date.now() - 60_000),
+    }];
+
+    const res = await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
+
+    expect(res.kind).not.toBe('verdict');
+    expect(insertedValues).toHaveLength(1);
+  });
+
   it('reads a failed verification task as a failed criterion', async () => {
     taskFindManyRows = [{
       id: 'verify-failed',
@@ -548,6 +566,40 @@ describe('handleCriteriaVerificationOutcome', () => {
 
     expect(res.verdict).toBe('fail');
     expect(updateCalls[0].goalCriteriaState.criteria[0].evidence).toContain('exit code 2');
+  });
+
+  it('never passes on evidence the agent reported on its task token', async () => {
+    taskFindFirstRow = {
+      id: 'verify-task-1',
+      status: 'completed',
+      context: marker(),
+      result: { loopHistory: [{ satisfied: true, summary: 'Command exited 0', evidence: { outcome: 'ok', exitCode: 0, reportedVia: 'task_token' } }] },
+      missionId: 'm1',
+    };
+    missionRow = { id: 'm1', goalCriteria: structuredClone(CURRENT_CRITERIA), goalCriteriaState: structuredClone(STORED_STATE) };
+
+    const res = await handleCriteriaVerificationOutcome('verify-task-1', {
+      workerId: 'w1', iteration: 0, conditionType: 'command', command: COMMAND, exitCode: 0, outcome: 'ok', reportedVia: 'task_token',
+    });
+
+    expect(res.verdict).toBe('UNVERIFIED');
+    const written = updateCalls[0].goalCriteriaState;
+    expect(written.criteria[0].verdict).toBe('UNVERIFIED');
+    expect(written.criteria[0].evidence).toContain('not by the runner');
+    expect(written.overall).not.toBe('pass');
+    expect(firedGateEvents.some(e => e.reason === 'agent_reported_evidence')).toBe(true);
+  });
+
+  it('a later runner report replaces the agent-reported verdict', async () => {
+    taskFindFirstRow = { id: 'verify-task-1', status: 'completed', context: marker(), result: {}, missionId: 'm1' };
+    missionRow = { id: 'm1', goalCriteria: structuredClone(CURRENT_CRITERIA), goalCriteriaState: structuredClone(STORED_STATE) };
+
+    await handleCriteriaVerificationOutcome('verify-task-1', { command: COMMAND, exitCode: 0, outcome: 'ok', reportedVia: 'task_token' });
+    missionRow.goalCriteriaState = updateCalls[0].goalCriteriaState;
+    const res = await handleCriteriaVerificationOutcome('verify-task-1', { command: COMMAND, exitCode: 1, outcome: 'failed', reportedVia: 'runner' });
+
+    expect(res).toEqual({ applied: true, verdict: 'fail' });
+    expect(updateCalls[1].goalCriteriaState.criteria[0].verdict).toBe('fail');
   });
 
   it('refuses to write a verdict when the criterion changed while the task ran', async () => {

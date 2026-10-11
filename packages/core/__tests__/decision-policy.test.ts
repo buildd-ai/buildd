@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { choice } from '@builddai/ai-kit/decide';
 import { defineBuilddDecisionKind, listBuilddDecisionKinds, isMeasuredForKind } from '../decision-kinds';
-import { resolveBuilddDecisionRuntime, runBuilddDecision, toDecisionLedgerInput, type BuilddDecisionDeps } from '../decision-policy';
+import { replayOf, resolveBuilddDecisionRuntime, runBuilddDecision, toDecisionLedgerInput, type BuilddDecisionDeps } from '../decision-policy';
 import type { DecisionLedgerInput } from '../decision-ledger';
 import { assignExperimentArm } from '../experiment-randomizer';
 
@@ -113,6 +113,24 @@ describe('resolveBuilddDecisionRuntime', () => {
   });
 });
 
+describe('runBuilddDecision replay', () => {
+  it('keeps the parsed features and the prompt identity with the ledger row', async () => {
+    const h = harness();
+    const r = await runBuilddDecision(kind, { features: feats(0.7, true) }, scope, h.deps);
+    expect(h.rows[0].replay).toEqual({
+      state: feats(0.7, true),
+      featureSchemaVersion: r.featureSchemaVersion,
+      questionIds: Object.keys(kind.questions),
+      candidates: null,
+      promptRef: { id: 'buildd.test_probe_selection', version: r.policyVersion, contentHash: r.promptFingerprint },
+    });
+  });
+
+  it('keeps nothing when the features did not parse', () => {
+    expect(replayOf(kind, { features: { risk: 'x' } }, { featureDigest: null, featureSchemaVersion: 'v', policyVersion: 'p', promptFingerprint: 'f' })).toBeNull();
+  });
+});
+
 describe('runBuilddDecision', () => {
   it('spends through decisionCall with the pre-resolved access, never naming a model in the caller', async () => {
     const h = harness();
@@ -138,11 +156,55 @@ describe('runBuilddDecision', () => {
     expect(r.attempts[0]).toMatchObject({ provider: 'openai', outcome: 'unmeasured', applied: false });
   });
 
+  it('a stored measurement lets a team model act on the kind, at its own threshold, until the prompt changes', async () => {
+    const clef = { ok: true, apiKey: 'k', model: 'clef', endpoint: { kind: 'workers-ai', baseURL: 'https://api.cloudflare.com/client/v4/accounts/a/ai/run' } };
+    const measured = (fingerprint: string, status: 'active' | 'retired' = 'active') => async () => [{
+      kind: kind.kind, model: 'clef', threshold: 0.4, precisionLower: 0.95, coverage: 0.5, n: 80, evalRunId: 'run-1',
+      measuredFingerprint: fingerprint, status, setByAccountId: null, setAt: new Date(), reason: null,
+    }];
+    // The kind's own threshold is 0.8; Clef was measured at 0.4.
+    const acts = harness({ access: clef, replies: [answer('run', 0.55, 'clef')] });
+    const r = await runBuilddDecision(kind, { features: feats() }, scope, { ...acts.deps, measurements: measured(kind.promptFingerprint) });
+    expect(r).toMatchObject({ decision: 'run', source: 'model' });
+    expect(r.attempts[0]).toMatchObject({ outcome: 'decided', threshold: 0.4, applied: true });
+
+    // Below the measured threshold: held back like any low-confidence answer.
+    const low = harness({ access: clef, replies: [answer('run', 0.3, 'clef'), answer('skip', 0.5, 'acme/rich-1')] });
+    const held = await runBuilddDecision(kind, { features: feats() }, scope, { ...low.deps, measurements: measured(kind.promptFingerprint) });
+    expect(held.attempts[0]).toMatchObject({ outcome: 'below_threshold', threshold: 0.4 });
+
+    // A changed prompt, a retired row, or no row: Clef records only.
+    for (const m of [measured('older-prompt'), measured(kind.promptFingerprint, 'retired'), async () => []]) {
+      const h = harness({ access: clef, replies: [answer('run', 0.99, 'clef'), answer('skip', 0.5, 'acme/rich-1')] });
+      const rec = await runBuilddDecision(kind, { features: feats() }, scope, { ...h.deps, measurements: m });
+      expect(rec.attempts[0]).toMatchObject({ outcome: 'unmeasured', applied: false });
+    }
+  });
+
+  it('Jev with no stored measurement keeps the kind\'s threshold; a stored one replaces it', async () => {
+    const none = harness({ replies: [answer('run', 0.75, 'typesafe/jev-1.13-20260917'), answer('skip', 0.5, 'acme/rich-1')] });
+    const kept = await runBuilddDecision(kind, { features: feats() }, scope, { ...none.deps, measurements: async () => [] });
+    expect(kept.attempts[0]).toMatchObject({ outcome: 'below_threshold', threshold: 0.8 });
+
+    const row = harness({ replies: [answer('run', 0.75, 'typesafe/jev-1.13-20260917')] });
+    const lowered = await runBuilddDecision(kind, { features: feats() }, scope, {
+      ...row.deps,
+      measurements: async () => [{
+        kind: kind.kind, model: 'typesafe/jev-1.13', threshold: 0.7, precisionLower: 0.96, coverage: 0.7, n: 200, evalRunId: null,
+        measuredFingerprint: kind.promptFingerprint, status: 'active', setByAccountId: null, setAt: new Date(), reason: null,
+      }],
+    });
+    expect(lowered).toMatchObject({ decision: 'run', source: 'model' });
+    expect(lowered.attempts[0]).toMatchObject({ outcome: 'decided', threshold: 0.7 });
+  });
+
   it('writes one ledger row per decided call, with every version stamped and the chain kept', async () => {
     const h = harness({ replies: [answer('skip', 0.5, 'typesafe/jev-1.13-20260917'), answer('run', 0.75, 'acme/rich-1', 0.003)] });
     const r = await runBuilddDecision(kind, { features: feats() }, scope, h.deps);
     expect(h.rows).toHaveLength(1);
-    expect(h.rows[0]).toEqual(toDecisionLedgerInput(r, scope));
+    const { replay, ...row } = h.rows[0];
+    expect(row).toEqual(toDecisionLedgerInput(r, scope));
+    expect(replay).not.toBeNull();
     expect(h.rows[0]).toMatchObject({
       teamId: 'team-1', workspaceId: 'ws-1', taskId: 'task-1', capability: 'buildd.test_probe_selection',
       fingerprint: r.featureDigest, model: 'acme/rich-1', minConfidence: 0.7,

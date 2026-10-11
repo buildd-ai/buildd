@@ -47,7 +47,7 @@ export function quickAddTaskBody(input: {
  * review", never a hand-written task).
  */
 export function quickAddRoleOptions(roles: { slug: string; name: string }[]): { value: string; label: string }[] {
-  return [{ value: '', label: 'Any role' }, ...humanPickableRoles(roles).map(r => ({ value: r.slug, label: r.name }))];
+  return [{ value: '', label: 'Any agent' }, ...humanPickableRoles(roles).map(r => ({ value: r.slug, label: r.name }))];
 }
 
 /**
@@ -718,7 +718,7 @@ export default function MissionSettings({
               />
               {humanPickableRoles(roles).length > 0 && (
                 <Select
-                  aria-label="Role"
+                  aria-label="Agent"
                   testId="quick-task-role"
                   value={taskRoleSlug}
                   onChange={setTaskRoleSlug}

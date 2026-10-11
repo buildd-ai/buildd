@@ -1,5 +1,5 @@
 {
-  "id": "39d96f81-6bff-49eb-865b-d2e2e22f85f7",
+  "id": "2ed9bc24-1f83-40fc-92e4-f7e6c544c613",
   "prevId": "5d32eacf-c22e-4379-90b2-a58c151a555f",
   "version": "7",
   "dialect": "postgresql",
@@ -4962,6 +4962,69 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.decision_feature_modes": {
+      "name": "decision_feature_modes",
+      "schema": "",
+      "columns": {
+        "feature": {
+          "name": "feature",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "applying_fraction": {
+          "name": "applying_fraction",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "measured_fingerprint": {
+          "name": "measured_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "threshold": {
+          "name": "threshold",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "set_by_account_id": {
+          "name": "set_by_account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "set_at": {
+          "name": "set_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.decision_outcomes": {
       "name": "decision_outcomes",
       "schema": "",
@@ -9555,12 +9618,6 @@
         "end_reason": {
           "name": "end_reason",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "busy_since": {
-          "name": "busy_since",
-          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },

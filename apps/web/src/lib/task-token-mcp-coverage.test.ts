@@ -157,6 +157,7 @@ describe('worker MCP actions under a per-task token', () => {
  * route refuses these before any handler runs.
  */
 const REFUSED_ADMIN_ACTIONS: Record<string, string> = {
+  answer_question: 'a person\'s answer to a parked question; the route refuses every per-task token, so an organizer cannot answer its workers',
   create_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',
   update_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',
   delete_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',

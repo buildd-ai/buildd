@@ -185,6 +185,63 @@ export function heldByLivePresence(now: Date): SQL {
   )`;
 }
 
+/**
+ * Whether a PATCH /api/workers/[id] must leave `updated_at` alone: a read or
+ * ack (receive_messages, a message ack) on an interactive worker parked on a
+ * question.
+ *
+ * An interactive worker parked by `ask_human` is outside every reaper rule
+ * here (waiting_input is not a live status). Its only expiry is the
+ * waiting_input sweep (cleanupStuckWaitingInput: 24 h, 4 h in a mission, the
+ * same as a runner's question), which measures from `updated_at`. The session
+ * waiting for the answer keeps polling receive_messages; if each poll moved
+ * `updated_at`, the question would never expire. A status change or a new
+ * question does restart the clock.
+ */
+export function keepsParkClock(
+  worker: { runner?: string | null; status: string },
+  body: { status?: unknown; waitingFor?: unknown },
+): boolean {
+  return isInteractiveWorker(worker.runner)
+    && worker.status === 'waiting_input'
+    && body.status === undefined
+    && body.waitingFor === undefined;
+}
+
+/**
+ * The poll heartbeat of an interactive session parked on its own question:
+ * stamp `waitingFor.sessionSeenAt` (now, ISO). /respond reads it to tell a
+ * session that is still waiting from one whose terminal closed mid-wait
+ * (INTERACTIVE_SESSION_POLL_STALE_MS in lib/answer-resume.ts).
+ *
+ * Its own UPDATE, for two reasons:
+ *  - it must not move `updated_at`: that column is the park clock the
+ *    waiting_input sweep measures expiry from (see keepsParkClock), and
+ *    drizzle sets nothing the SET does not name;
+ *  - it must never resurrect a question. The write is `jsonb_set` on the live
+ *    column, gated on it still being set and the worker still parked, so an
+ *    answer that cleared `waitingFor` a moment earlier stays cleared.
+ *
+ * Best-effort: a heartbeat that fails to land only makes the session look
+ * older, never fails the poll it rides on.
+ */
+export async function recordInteractiveSessionSeen(workerId: string, now: Date = new Date()): Promise<void> {
+  try {
+    await db.update(workers)
+      .set({
+        waitingFor: sql`jsonb_set(${workers.waitingFor}, '{sessionSeenAt}', to_jsonb(${now.toISOString()}::text))` as any,
+      })
+      .where(and(
+        eq(workers.id, workerId),
+        eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
+        eq(workers.status, 'waiting_input'),
+        sql`${workers.waitingFor} IS NOT NULL`,
+      ));
+  } catch (err) {
+    console.warn(`[interactive] session heartbeat failed for worker ${workerId}:`, err);
+  }
+}
+
 /** Per-instance memo: (account, user, session) → last touch. Saves the round trip on bursts. */
 const lastTouch = new Map<string, number>();
 const MEMO_MAX = 5_000;

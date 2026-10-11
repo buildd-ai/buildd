@@ -106,8 +106,8 @@ type SecretsCaller = {
  * `manage_team_model_keys` for model keys and the Cloudflare token,
  * `manage_team_credentials` for everything else, and both for an Anthropic or
  * OpenAI key in canonical storage (agent runs read it as well as chat; the
- * rule `/api/providers` applies) — resolved through `can`, so a
- * team's permission overrides apply. An API key needs the permission's key level.
+ * rule `/api/providers` applies) — resolved through `can`. An API key needs
+ * the permission's key level.
  */
 function permissionsFor(purpose: string, label?: string | null): Permission[] {
   // A model credential the registry covers takes the one write path's rule:

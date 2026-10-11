@@ -1,4 +1,4 @@
-import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, CopyObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '@buildd/core/config';
@@ -133,6 +133,21 @@ export async function deleteObject(key: string): Promise<void> {
   await client.send(new DeleteObjectCommand({
     Bucket: config.storageBucket,
     Key: key,
+  }));
+}
+
+/**
+ * Server-side copy of one object to another key in the bucket, content type
+ * included. The bytes never pass through this process.
+ */
+export async function copyObject(fromKey: string, toKey: string): Promise<void> {
+  assertNormalizedObjectKey(fromKey);
+  assertNormalizedObjectKey(toKey);
+  const client = getClient();
+  await client.send(new CopyObjectCommand({
+    Bucket: config.storageBucket,
+    CopySource: `${config.storageBucket}/${fromKey}`,
+    Key: toKey,
   }));
 }
 

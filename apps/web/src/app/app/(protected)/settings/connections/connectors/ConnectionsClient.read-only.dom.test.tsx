@@ -1,8 +1,7 @@
 /**
  * Adding, connecting, sharing, disconnecting and deleting a team connector is
- * manage_connectors (the connector routes refuse anyone else, with the team's
- * overrides applied). A member sees the list and each status, and none of
- * those controls. The list is the page's active team, passed explicitly.
+ * manage_connectors (the connector routes refuse anyone else). A member sees
+ * the list and each status, and none of those controls. The list is the page's active team, passed explicitly.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */

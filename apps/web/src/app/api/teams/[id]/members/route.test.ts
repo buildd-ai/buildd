@@ -14,7 +14,6 @@ let memberships: Record<string, { role: string } | undefined> = {};
 const inserted: any[] = [];
 // The billing seat gate's view of the team: its plan row and head counts.
 let billing: { plan: string; paidSeats: number | null; members: number; pending: number };
-let overrides: unknown = null;
 
 mock.module('@/lib/auth-helpers', () => ({
   requireSessionUser: async () => ({ user: { id: 'caller' } }),
@@ -27,7 +26,7 @@ mock.module('drizzle-orm', () => ({
   count: () => 'count(*)',
 }));
 
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   teamMembers: { teamId: 'teamMembers.teamId', userId: 'teamMembers.userId', role: 'teamMembers.role' },
   users: { id: 'users.id' },
   teamInvitations: { teamId: 'teamInvitations.teamId', status: 'teamInvitations.status' },
@@ -39,7 +38,7 @@ function userIdIn(where: any): string | undefined {
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: { teams: { findFirst: async () => ({ plan: billing.plan, paidSeats: billing.paidSeats, permissionOverrides: overrides }) },
+    query: { teams: { findFirst: async () => ({ plan: billing.plan, paidSeats: billing.paidSeats }) },
       teamMembers: {
         findFirst: async (q: any) => {
           const userId = userIdIn(q.where);
@@ -79,7 +78,6 @@ beforeEach(() => {
   inserted.length = 0;
   delete process.env.BILLING_ENFORCED;
   billing = { plan: 'free', paidSeats: null, members: 1, pending: 0 };
-  overrides = null;
 });
 
 describe('POST /api/teams/[id]/members', () => {
@@ -115,31 +113,6 @@ describe('POST /api/teams/[id]/members', () => {
     const res = await post({ userId: 'target', role: 'owner' });
     expect(res.status).toBe(403);
     expect((await res.json()).error).toBe('Only owners can add owners');
-    expect(inserted).toHaveLength(0);
-  });
-
-  it('a team that widens manage_team_members to members lets them add a member', async () => {
-    overrides = { manage_team_members: ['owner', 'admin', 'member'] };
-    memberships.caller = { role: 'member' };
-    const res = await post({ userId: 'target', role: 'member' });
-    expect(res.status).toBe(200);
-    expect(inserted).toEqual([{ teamId: TEAM, userId: 'target', role: 'member' }]);
-  });
-
-  it('…but not add an admin, which takes assign_team_roles', async () => {
-    overrides = { manage_team_members: ['owner', 'admin', 'member'] };
-    memberships.caller = { role: 'member' };
-    const res = await post({ userId: 'target', role: 'admin' });
-    expect(res.status).toBe(403);
-    expect((await res.json()).error).toContain('assign_team_roles');
-    expect(inserted).toHaveLength(0);
-  });
-
-  it('403s an admin adding an admin when the team narrows assign_team_roles to owners', async () => {
-    overrides = { assign_team_roles: ['owner'] };
-    memberships.caller = { role: 'admin' };
-    const res = await post({ userId: 'target', role: 'admin' });
-    expect(res.status).toBe(403);
     expect(inserted).toHaveLength(0);
   });
 
