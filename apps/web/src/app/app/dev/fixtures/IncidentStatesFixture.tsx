@@ -139,7 +139,7 @@ export default function IncidentStatesFixture({ which }: { which: string }) {
         <div className="max-w-3xl mx-auto space-y-8">
           <section className="space-y-2">
             <h2 className="text-meta text-text-muted">Task page: a stale question recovery superseded</h2>
-            <h1 className="text-[22px] font-semibold">Visual audit: settings and connections pages</h1>
+            <h1 className="text-heading font-bold">Visual audit: settings and connections pages</h1>
             <Notice tone="info" title={stale.stateWord} action={{ label: 'Open incident', href: '#' }} data-testid="task-recovery-status">
               <p>{stale.sentence}</p>
               <p className="text-meta text-text-muted">Owner: {stale.ownerLabel}</p>
