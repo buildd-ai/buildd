@@ -44,7 +44,7 @@ export default function SharingDialog({ connector, onClose, onTransferred }: {
         setError(data.message || "Couldn't load who it's shared with.");
       }
     } catch {
-      setError("Couldn't load who it's shared with.");
+      setError("Couldn't load teams.");
     } finally {
       setLoading(false);
     }
