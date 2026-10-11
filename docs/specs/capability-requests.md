@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-11
 summary: An agent MUST get access it lacked at start only by asking for a semantic need, resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
-surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/app/api/agent-capabilities/requests/route.ts]
+surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
-keywords: [request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
-verified_by: [apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
+keywords: [connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
+verified_by: [apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
 supersedes: []
 assertions:
   - id: request-route
@@ -46,6 +46,30 @@ assertions:
     type: symbol_reachable
     symbol: capabilityGrantSource
     entry: apps/web/src/app/api/agent-capabilities/model-inference/route.ts
+  - id: gateway-route
+    type: route
+    method: POST
+    path: /api/mcp/c/[connectorId]
+    file: apps/web/src/app/api/mcp/c/[connectorId]/route.ts
+  - id: gateway-decide
+    type: symbol
+    name: decideToolCall
+    path: apps/web/src/lib/connector-gateway.ts
+  - id: gateway-classify
+    type: symbol
+    name: classifyNativeTool
+    path: apps/web/src/lib/connector-gateway.ts
+  - id: gateway-grant-check
+    type: symbol
+    name: authorizeConnectorToolUse
+    path: apps/web/src/lib/capability-grants-store.ts
+  - id: gateway-route-uses-grants
+    type: symbol_reachable
+    symbol: authorizeConnectorToolUse
+    entry: apps/web/src/app/api/mcp/c/[connectorId]/route.ts
+  - id: gateway-tests
+    type: test_file
+    path: apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts
   - id: rules-tests
     type: test_file
     path: apps/web/src/lib/capability-grants.test.ts
@@ -206,12 +230,97 @@ for, what they hold and the policy, without being able to change any of it.
 - AC-11: GIVEN an approved request WHEN the admin approves again THEN the page says it is already approved, not an error.
 - AC-12: GIVEN a policy auto-grant THEN no card and no push; it is listed under Allowed now.
 
-**Out of scope**: mounting a granted connector into a running session, or a
-gateway that proxies provider calls (the runtime follow-up calls
-`authorizeCapabilityUse`); the model-inference budget ledger. A connector a role already mounts at claim is
-governed by role `connectorRefs` and catalog policy, not by grants.
+**Out of scope**: the model-inference budget ledger. Provider tool calls go
+through the connector gateway below.
+
+## Connector gateway
+
+**Capability statement**: A provider's native MCP tools (Axiom, Vercel) MUST
+reach an agent with their own names, descriptions and schemas, through a
+buildd pass-through that holds the provider credential server-side and
+decides every call against live state; the credential MUST never reach the
+agent's prompt, argv, env, logs, artifacts or disk.
+
+**Invariants**:
+- Claim injection returns a gateway connector as `{ gateway: true,
+  gatewayPath: '/api/mcp/c/<id>' }` with no url and no credential. The runner
+  mounts `<its own buildd origin><path>?worker=<id>` with the agent's own
+  buildd token (Claude: `mcpServers` http entry; Codex: `config.toml` bearer
+  env var). Gateway providers: Axiom and Vercel oauth/header connectors;
+  `BUILDD_CONNECTOR_GATEWAY=all` brokers every oauth/header connector, `off`
+  restores the direct mount. stdio, `none` and assertion connectors stay direct.
+- Mounted set = role `connectorRefs` as before, plus every owned,
+  workspace-enabled, unblocked, connected gateway connector. Mounting confers
+  nothing: a connector the role does not list needs a live grant for every
+  call. The session's MCP topology is therefore fixed, and a grant approved,
+  revoked or expired mid-task takes effect on the next call on both runtimes.
+- Every request re-resolves the principal (live worker on its own task,
+  claimed by the caller; a task token reaches only its own worker, else 404)
+  and re-reads task, worker, role, connector visibility, workspace enablement,
+  catalog block, credential health and team policy. A trigger token is refused.
+- `tools/list` is forwarded and subset-filtered, never rewritten: a tool
+  is dropped when its class is above the run's ceiling, turned off by an
+  admin, or forbidden by a team rule. Ceiling = role `metadata.connectorCeiling`
+  (`read | query | write | admin`; absent = `write`), capped at `query` for an
+  unattended run (the task or its mission came from a schedule, as sentinels do).
+- A tool's class comes from the provider's own annotations: `destructiveHint`
+  is admin, `readOnlyHint` is read (unless the name is an admin verb), and
+  anything else, unannotated included, is write. An admin's
+  `discoveredMetadata.toolPolicy` (`readOnlyTools`, `denyTools`; exact names)
+  corrects it; only a signed-in person may change it (any bearer gets 403
+  `session_required`). An uncached tool is classified from a fresh provider
+  `tools/list`; if that fails it is a write (fail closed).
+- `tools/call`: a read or query on a role-mounted connector is allowed; any
+  write or admin call, and any call on a connector the role does not list,
+  needs a live grant covering the exact tool, the annotation risk (never
+  lowered by the name), and the resource and environment a grant names (read
+  from well-known argument keys). Nothing lifts the ceiling, a grant included.
+- A denial is a JSON-RPC result with `isError: true` and
+  `structuredContent: { code, nextSteps }` (`capability_not_granted`,
+  `role_ceiling`, `unattended_ceiling`, `catalog_blocked`, …), never an HTTP
+  auth challenge; `WWW-Authenticate` and `Set-Cookie` from the provider are
+  never passed back.
+- Writes: the attempt row is stored before the request is sent, and an
+  identical write (worker, MCP session, JSON-RPC id, tool, argument hash) is
+  refused as `replayed_call`. If the attempt cannot be stored, the call is
+  refused.
+- Audit (`agent_capability_decisions`): `connector.tool_call` (allowed or
+  refused, with reason, risk, basis, grant id, argument hash) and
+  `connector.tool_result` (status, HTTP status, duration). Never arguments,
+  results or credentials.
+- Limits: 60 calls per worker per connector per minute (20 unattended), 256 KB
+  request, 8 MB response, 90 s upstream timeout; batches and unlisted
+  methods are refused.
+- Credential: decrypted per request under the connector's owner team, sent
+  only to the connector's own https URL (no redirects). A provider 401 refreshes
+  the OAuth token and retries once; if that fails the credential is marked
+  (`gateway_401`) and the call answers `reconnect_required` as a tool result.
+  The session is never aborted for it.
+- Outage: if buildd cannot read run state or grants, the call is refused
+  (`gateway_unavailable`) and nothing is sent. If the provider is unreachable
+  or times out, the answer says a write may or may not have happened.
+- Restart and resume: the runner persists only gateway entries (rebuilt field
+  by field; a direct mount's headers or a stdio env never reach disk) and
+  re-mounts them with a freshly minted token. No grant can go stale across a
+  resume, because none is cached on the runner.
+
+**Runtime facts** (installed SDKs): Claude Agent SDK 0.3.290 exposes
+methods to replace, toggle and reconnect MCP servers in streaming
+mode, but `options.mcpServers` is read once at spawn. Codex SDK 0.162.0 reads
+MCP only from `CODEX_HOME/config.toml` at session start and has no per-call
+hook. Neither is needed: per-call enforcement in the gateway works the same on
+both, and visibility never depends on `tools/list_changed`.
+
+**Acceptance criteria**:
+- AC-13: GIVEN a role with `connectorCeiling: query` WHEN it lists Axiom's tools THEN monitor, dashboard and notifier mutations are absent, and calling one answers `role_ceiling` even with a grant.
+- AC-14: GIVEN Axiom mounted and then blocked in the catalog WHEN the agent calls a tool THEN `catalog_blocked`, and nothing reaches the provider.
+- AC-15: GIVEN a granted write WHEN the grant is revoked THEN the next call answers `capability_not_granted` (`grant_not_live`).
+- AC-16: GIVEN a provider 401 mid-call WHEN refresh fails THEN the tool result is `reconnect_required` and the session continues.
+- AC-17: GIVEN any gateway answer, header or audit row THEN it does not contain the provider credential.
 
 **Code surface**:
+- Gateway rules (pure): `apps/web/src/lib/connector-gateway.ts`; db half: `apps/web/src/lib/connector-gateway-store.ts`; route: `apps/web/src/app/api/mcp/c/[connectorId]/route.ts`; grant check: `authorizeConnectorToolUse`
+- Runner: `buildMcpServerEntries` (`apps/runner/src/workers.ts`), `buildCodexMcpServers` / `gatewayConnectorsOnly` (`apps/runner/src/mcp-json.ts`), persistence in `apps/runner/src/worker-store.ts`
 - Rules (pure): `apps/web/src/lib/capability-grants.ts` (`parseCapabilityRequest`, `classifyToolRisk`, `parsePolicyRule`, `effectivePolicy`, `resolveCapabilityRequest`, `checkGrantUse`, `approvalRefusal`, `toModelInferenceGrant`)
 - Store: `apps/web/src/lib/capability-grants-store.ts` (`requestCapability`, `decideCapabilityRequest`, `authorizeCapabilityUse`, `capabilityGrantSource`, `listTeamRequests`, `loadPolicyRules`)
 - Authority: `apps/web/src/lib/capability-grants-auth.ts`

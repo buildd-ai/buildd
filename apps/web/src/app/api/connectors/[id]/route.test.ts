@@ -221,6 +221,46 @@ describe('PATCH /api/connectors/[id]', () => {
     expect(data.actionUrl).toMatch(/^https:\/\/vercel\.com\//);
     expect(mockConnectorsUpdate).not.toHaveBeenCalled();
   });
+
+  // Tool overrides decide what the connector gateway lets a read-only run call.
+  it('a signed-in admin sets toolPolicy, kept beside the OAuth metadata', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindFirst.mockResolvedValue({ ...CONNECTOR, discoveredMetadata: { authorizationServer: { issuer: 'x' } } });
+    let captured: any;
+    mockConnectorsUpdate.mockReturnValue({
+      set: mock((v: any) => { captured = v; return { where: mock(() => ({ returning: mock(() => [CONNECTOR]) })) }; }),
+    });
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { toolPolicy: { readOnlyTools: ['queryApl'], denyTools: ['deleteNotifier'] } }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    expect(captured.discoveredMetadata).toEqual({ authorizationServer: { issuer: 'x' }, toolPolicy: { readOnlyTools: ['queryApl'], denyTools: ['deleteNotifier'] } });
+  });
+
+  it('an API key, even an admin one, cannot change toolPolicy', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json', authorization: 'Bearer bld_admin' }, { toolPolicy: { readOnlyTools: ['createMonitor'] } }), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('session_required');
+    expect(mockConnectorsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('a malformed toolPolicy (wildcard) is refused 400', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { toolPolicy: { readOnlyTools: ['*'] } }), { params: PARAMS });
+    expect(res.status).toBe(400);
+  });
+
+  it('rediscovery keeps an existing toolPolicy', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindFirst.mockResolvedValue({ ...CONNECTOR, clientId: 'c1', discoveredMetadata: { toolPolicy: { readOnlyTools: ['a'], denyTools: [] } } });
+    mockDiscoverOAuthMetadata.mockResolvedValue({ authMode: 'oauth', authorizationServer: {} } as any);
+    let captured: any;
+    mockConnectorsUpdate.mockReturnValue({
+      set: mock((v: any) => { captured = v; return { where: mock(() => ({ returning: mock(() => [CONNECTOR]) })) }; }),
+    });
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { rediscover: true }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    expect(captured.discoveredMetadata.toolPolicy).toEqual({ readOnlyTools: ['a'], denyTools: [] });
+  });
 });
 
 describe('PATCH /api/connectors/[id] requires manage_connectors', () => {
