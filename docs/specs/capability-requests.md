@@ -45,7 +45,7 @@ assertions:
   - id: inference-route-uses-grants
     type: symbol_reachable
     symbol: capabilityGrantSource
-    entry: apps/web/src/app/api/agent-capabilities/model-inference/route.ts
+    entry: apps/web/src/lib/capability-model-inference.ts
   - id: gateway-route
     type: route
     method: POST
