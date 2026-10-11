@@ -42,6 +42,7 @@ import { loadHealthExperiments } from '@/lib/health-experiments';
 import { getDispatchHealth } from '@/lib/dispatch-health';
 import { loadAgentAccessReport, type AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { buildFailureGroups, type FailureGroupsView } from '@/lib/health-failure-groups';
+import { loadFailureIncidentStates } from '@/lib/failure-incident-states';
 import { FAILED_WORKER_STATUSES, type FleetSnapshot } from '@buildd/shared';
 import { loadRunnersFleet } from '@/lib/home-fleet';
 import type { LaneMission } from '@/components/fleet/runner-lanes';
@@ -579,12 +580,19 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
         limit: FAILURE_GROUP_WORKER_LIMIT,
       });
       const ids = (failed as Array<{ id: string }>).map(w => w.id);
-      const traces = ids.length
-        ? await db
-            .selectDistinct({ workerId: workerErrorTraces.workerId, pattern: workerErrorTraces.pattern })
-            .from(workerErrorTraces)
-            .where(inArray(workerErrorTraces.workerId, ids))
-        : [];
+      const [traces, incidents] = await Promise.all([
+        ids.length
+          ? db
+              .selectDistinct({ workerId: workerErrorTraces.workerId, pattern: workerErrorTraces.pattern })
+              .from(workerErrorTraces)
+              .where(inArray(workerErrorTraces.workerId, ids))
+          : [],
+        // Failures shows where buildd stands on each platform cause; Overview
+        // only counts causes. A failed read drops the lines, not the list.
+        page === 'failures' && ids.length
+          ? loadFailureIncidentStates(scopedWsIds, windowStart).catch(() => [])
+          : [],
+      ]);
       const view = buildFailureGroups({
         failures: (failed as any[]).map(w => ({
           workerId: w.id,
@@ -596,6 +604,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
           completedAt: (w.completedAt ?? new Date()).toISOString(),
         })),
         traces: traces as Array<{ workerId: string; pattern: string }>,
+        incidents,
       });
       return { ...view, truncated: failed.length >= FAILURE_GROUP_WORKER_LIMIT };
     })().catch(() => null)

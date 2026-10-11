@@ -86,6 +86,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/[id]/evidence/[evidenceId]/confirm/route.ts',
   'apps/web/src/app/api/workers/[id]/instruct/route.ts',
   'apps/web/src/app/api/workers/[id]/page-source/route.ts',
+  // await_answer: an interactive session long-polls for the answer to its own question.
+  'apps/web/src/app/api/workers/[id]/answer/route.ts',
   'apps/web/src/app/api/workers/[id]/park/route.ts',
   'apps/web/src/app/api/workers/[id]/prompt-bundles/route.ts',
   'apps/web/src/app/api/workers/[id]/reattach/route.ts',
