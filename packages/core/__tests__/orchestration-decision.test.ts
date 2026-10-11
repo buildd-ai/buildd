@@ -244,6 +244,56 @@ describe('runOrchestrationDecision', () => {
     expect(h.rows[0]).toMatchObject({ model: other, applied: false, reason: 'non_jev', mode: 'live' });
   });
 
+  describe('stored measurements', () => {
+    const clefAccess = async () => ({ ok: true, apiKey: 'k', model: 'clef', endpoint: { kind: 'workers-ai', baseURL: 'https://api.cloudflare.com/client/v4/accounts/a/ai/run' } }) as any;
+    const row = (over: Record<string, unknown> = {}) => ({
+      kind: 'buildd.test_hold_start', model: 'clef', threshold: 0.5, precisionLower: 0.95, coverage: 0.4, n: 60, evalRunId: null,
+      measuredFingerprint: 't1', status: 'active' as const, setByAccountId: null, setAt: new Date(), reason: null, ...over,
+    });
+
+    it('Clef acts once measured, above its own threshold, even under the definition\'s higher one', async () => {
+      const h = harness({ resolveAccess: clefAccess, call: answer('START', 0.6, 'clef') as any, measurements: async () => [row()] });
+      const out = await runOrchestrationDecision(base(h, GATED, { cohort: { fraction: 1 } }));
+      expect(out).toMatchObject({ effective: 'START', applied: true, status: 'applied', reason: null });
+    });
+
+    it('below the measured threshold it is a suggestion', async () => {
+      const h = harness({ resolveAccess: clefAccess, call: answer('START', 0.45, 'clef') as any, measurements: async () => [row()] });
+      const out = await runOrchestrationDecision(base(h, GATED, { cohort: { fraction: 1 } }));
+      expect(out).toMatchObject({ applied: false, reason: 'below_threshold' });
+    });
+
+    it('a prompt version change, a retired row or no row keeps Clef recording only', async () => {
+      for (const rows of [[row({ measuredFingerprint: 't0' })], [row({ status: 'retired' })], []]) {
+        const h = harness({ resolveAccess: clefAccess, call: answer('START', 0.99, 'clef') as any, measurements: async () => rows });
+        const out = await runOrchestrationDecision(base(h, LIVE, { cohort: { fraction: 1 } }));
+        expect(out).toMatchObject({ applied: false, reason: 'non_jev' });
+      }
+    });
+
+    it('shadow still only records, and the cohort still gates a measured model', async () => {
+      const shadow = harness({ resolveAccess: clefAccess, call: answer('START', 0.99, 'clef') as any, measurements: async () => [row()] });
+      expect(await runOrchestrationDecision(base(shadow, SHADOW, { cohort: { fraction: 1 } }))).toMatchObject({ applied: false, reason: 'shadow' });
+      const out = harness({ resolveAccess: clefAccess, call: answer('START', 0.99, 'clef') as any, measurements: async () => [row()] });
+      expect(await runOrchestrationDecision(base(out, LIVE, { cohort: { fraction: 0 } }))).toMatchObject({ applied: false, reason: 'not_in_cohort' });
+    });
+
+    it('Jev with no row is unchanged; a Jev row moves its threshold', async () => {
+      const kept = harness({ call: answer('START', 0.7) as any, measurements: async () => [] });
+      expect(await runOrchestrationDecision(base(kept, GATED, { cohort: { fraction: 1 } }))).toMatchObject({ applied: false, reason: 'below_threshold' });
+      const moved = harness({ call: answer('START', 0.7) as any, measurements: async () => [row({ model: 'typesafe/jev-1.13', threshold: 0.65 })] });
+      expect(await runOrchestrationDecision(base(moved, GATED, { cohort: { fraction: 1 } }))).toMatchObject({ applied: true, status: 'applied' });
+    });
+
+    it('a measurement read that throws: Jev keeps today, others record', async () => {
+      const boom = async () => { throw new Error('db down'); };
+      const jev = harness({ call: answer('START', 0.97) as any, measurements: boom });
+      expect(await runOrchestrationDecision(base(jev, LIVE, { cohort: { fraction: 1 } }))).toMatchObject({ applied: true });
+      const clef = harness({ resolveAccess: clefAccess, call: answer('START', 0.99, 'clef') as any, measurements: boom });
+      expect(await runOrchestrationDecision(base(clef, LIVE, { cohort: { fraction: 1 } }))).toMatchObject({ applied: false, reason: 'non_jev' });
+    });
+  });
+
   it('routes through the team access: the resolved key, endpoint and model reach the call', async () => {
     let seen: any;
     const h = harness({

@@ -5,7 +5,7 @@ import { useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
 import { useConfirm } from '@/components/useConfirm';
-import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
+import { roleHas } from '@/lib/permission-registry';
 import { isQaFixtureMemberId } from './qa-state';
 import Section from '@/components/ui/Section';
 import Notice from '@/components/ui/Notice';
@@ -35,11 +35,9 @@ interface TeamDetailClientProps {
   isPersonal: boolean;
   /** `manage_team_members`: add, invite and remove members. */
   canManage: boolean;
-  /** The team's permission overrides, so role checks here match the server. */
-  permissionOverrides: PermissionOverrides | null;
   /**
    * Sections the page shows between the members and the danger zone
-   * (timezone, permissions), so Leave and Delete stay at the bottom.
+   * (handover, timezone), so Leave and Delete stay at the bottom.
    */
   children?: ReactNode;
 }
@@ -58,7 +56,6 @@ export default function TeamDetailClient({
   currentUserId,
   isPersonal,
   canManage,
-  permissionOverrides,
   children,
 }: TeamDetailClientProps) {
   const { confirm, confirmDialog } = useConfirm();
@@ -78,10 +75,10 @@ export default function TeamDetailClient({
   const [showInvite, setShowInvite] = useState(false);
   const [leaving, setLeaving] = useState(false);
 
-  const canEditTeam = roleHas(currentUserRole, 'manage_team_settings', permissionOverrides);
-  const canDeleteTeam = roleHas(currentUserRole, 'delete_team', null /* locked */) && !isPersonal;
-  const canAssignOwner = roleHas(currentUserRole, 'assign_team_owner', null /* locked */);
-  const canAssignRoles = roleHas(currentUserRole, 'assign_team_roles', permissionOverrides);
+  const canEditTeam = roleHas(currentUserRole, 'manage_team_settings');
+  const canDeleteTeam = roleHas(currentUserRole, 'delete_team') && !isPersonal;
+  const canAssignOwner = roleHas(currentUserRole, 'assign_team_owner');
+  const canAssignRoles = roleHas(currentUserRole, 'assign_team_roles');
   const isLastOwner = currentUserRole === 'owner' && members.filter((m) => m.role === 'owner').length <= 1;
 
   /** The roles this caller may pick for `member`, or null when its role is fixed for them. */

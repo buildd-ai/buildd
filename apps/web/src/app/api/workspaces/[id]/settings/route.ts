@@ -6,7 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveEarlyReleaseMode } from '@/lib/early-release-mode';
-import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 
 async function resolveAuth(req: NextRequest) {
@@ -50,7 +50,7 @@ async function verifyWriteAccess(
   if (user && !apiAccount) {
     const access = await verifyWorkspaceAccess(user.id, workspaceId);
     if (!access) return 'not_found';
-    return roleHas(access.role, 'manage_workspace_settings', await getTeamPermissionOverrides(access.teamId)) ? 'ok' : 'forbidden';
+    return roleHas(access.role, 'manage_workspace_settings') ? 'ok' : 'forbidden';
   }
   if (!(await verifyAccess(auth, workspaceId))) return 'not_found';
   return hasTokenRouteAdminAccess(apiAccount, req) ? 'ok' : 'forbidden';

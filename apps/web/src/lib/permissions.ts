@@ -8,8 +8,8 @@
  *   roleHas(role, 'manage_team_members')          // pure, UI that knows the role
  *   await can(caller, 'manage_team_members', id)  // routes: session OR API key
  *
- * Resolution runs through `effectiveRoles`, which today returns the registry's
- * `defaultRoles` and nothing else. The inventory these defaults reproduce lives
+ * Resolution reads the registry's `defaultRoles` and nothing else: no team
+ * can change them. The inventory these defaults reproduce lives
  * in docs/specs/team-permissions.md — a default here that disagrees with the
  * call site it names is a behaviour change, not a cleanup.
  *
@@ -31,14 +31,11 @@ import { db } from '@buildd/core/db';
 import * as schema from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import {
-  effectiveRoles,
-  sanitizeOverrides,
   holds,
   keyHolds,
   PERMISSIONS,
   type ApiKeyLevel,
   type Permission,
-  type PermissionOverrides,
   type TeamRole,
   type TeamScopeCaller,
 } from './permission-registry';
@@ -48,16 +45,12 @@ export {
   isApiKeyLevel,
   isTeamRole,
   keyLevelHas,
-  LOCKED_PERMISSIONS,
-  parseOverridesInput,
-  sanitizeOverrides,
   PERMISSIONS,
   roleHas,
   TEAM_ROLES,
   type ApiKeyLevel,
   type Permission,
   type PermissionDef,
-  type PermissionOverrides,
   type TeamRole,
   type TeamScopeCaller,
 } from './permission-registry';
@@ -86,32 +79,9 @@ export const getUserTeamRoles = cache(async (userId: string): Promise<Map<string
   return roles;
 });
 
-/**
- * A team's permission overrides (teams.permission_overrides), sanitized.
- * Cached per request, so every roleHas/can in one render or route reads the
- * row once. A missing team is `{}` (defaults). A failed read is NOT swallowed:
- * an override can take a permission away, so guessing "defaults" on error
- * could widen access. The error propagates and the request fails closed.
- */
-export const getTeamPermissionOverrides = cache(async (teamId: string): Promise<PermissionOverrides> => {
-  if (!teamId) return {};
-  const team = await db.query.teams.findFirst({
-    where: eq(schema.teams.id, teamId),
-    columns: { permissionOverrides: true },
-  });
-  return sanitizeOverrides(team?.permissionOverrides);
-});
-
-/** Overrides for several teams at once (each read is the cached one above). */
-export async function getTeamsPermissionOverrides(teamIds: readonly string[]): Promise<Map<string, PermissionOverrides>> {
-  const unique = [...new Set(teamIds)];
-  const all = await Promise.all(unique.map(id => getTeamPermissionOverrides(id)));
-  return new Map(unique.map((id, i) => [id, all[i]]));
-}
-
 /** A role grant plus key floor, the shape every check below resolves to. */
 type Grant = {
-  roles: (teamId: string, overrides: PermissionOverrides) => readonly TeamRole[];
+  roles: readonly TeamRole[];
   minKeyLevel: ApiKeyLevel | null;
 };
 
@@ -126,12 +96,11 @@ async function teamIdsGranted(caller: TeamScopeCaller, grant: Grant): Promise<st
     return keyHolds(grant.minKeyLevel, caller.level) ? [caller.teamId] : [];
   }
   const roles = [...(await getUserTeamRoles(caller.userId))];
-  const overrides = await Promise.all(roles.map(([teamId]) => getTeamPermissionOverrides(teamId)));
-  return roles.filter(([teamId, role], i) => holds(grant.roles(teamId, overrides[i]), role)).map(([teamId]) => teamId);
+  return roles.filter(([, role]) => holds(grant.roles, role)).map(([teamId]) => teamId);
 }
 
 function grantFor(permission: Permission): Grant {
-  return { roles: (_teamId, overrides) => effectiveRoles(permission, overrides), minKeyLevel: PERMISSIONS[permission].minKeyLevel };
+  return { roles: PERMISSIONS[permission].defaultRoles, minKeyLevel: PERMISSIONS[permission].minKeyLevel };
 }
 
 /**

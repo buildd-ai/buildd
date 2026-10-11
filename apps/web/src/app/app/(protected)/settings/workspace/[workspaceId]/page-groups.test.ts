@@ -66,7 +66,7 @@ describe('workspace settings page', () => {
     expect(readiness).toContain('{notices.readiness && <ReadinessCard');
     expect(readiness).toContain('{notices.repoAccess && repoAccessView && (');
     expect(PAGE).toContain('canManage: canManageSettings,');
-    expect(PAGE).toContain("roleHas(access.role, 'manage_workspace_settings', overrides)");
+    expect(PAGE).toContain("roleHas(access.role, 'manage_workspace_settings')");
   });
 
   it('names the workspace on a phone, where the shell header only says Workspaces', () => {

@@ -1,5 +1,5 @@
 {
-  "id": "c5d966ae-e4ac-4573-8bc1-df402c1138a9",
+  "id": "0a945b64-db39-417b-9b4d-77cf0184f5cf",
   "prevId": "09917238-3074-4c75-ab41-f037e575dfee",
   "version": "7",
   "dialect": "postgresql",
@@ -5018,6 +5018,122 @@
         }
       },
       "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.decision_model_measurements": {
+      "name": "decision_model_measurements",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "threshold": {
+          "name": "threshold",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "precision_lower": {
+          "name": "precision_lower",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "coverage": {
+          "name": "coverage",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "n": {
+          "name": "n",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "eval_run_id": {
+          "name": "eval_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "measured_fingerprint": {
+          "name": "measured_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "set_by_account_id": {
+          "name": "set_by_account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "set_at": {
+          "name": "set_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "decision_model_measurements_kind_model_idx": {
+          "name": "decision_model_measurements_kind_model_idx",
+          "columns": [
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "model",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -15002,24 +15118,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "case_source": {
-          "name": "case_source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "case_origin": {
-          "name": "case_origin",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "metrics": {
-          "name": "metrics",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -15163,18 +15261,6 @@
         "problems": {
           "name": "problems",
           "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "models": {
-          "name": "models",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "case_source": {
-          "name": "case_source",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

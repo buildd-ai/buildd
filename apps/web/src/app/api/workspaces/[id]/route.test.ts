@@ -64,7 +64,7 @@ mock.module('drizzle-orm', () => ({
   ),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   workspaces: { id: 'id', teamId: 'teamId' },
   githubRepos: { fullName: 'fullName' },
   workers: { prNumber: 'prNumber', prUrl: 'prUrl' },

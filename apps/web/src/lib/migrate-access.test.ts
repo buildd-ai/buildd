@@ -18,12 +18,9 @@ mock.module('@/lib/token-route-policy', () => ({ hasTokenRouteAdminAccess: mock(
 
 const { isTeamAdmin } = await import('./migrate-access');
 
-/** The personal-team lookup asks teams by slug; the overrides read asks by id. */
+/** The personal-team lookup asks teams by slug. */
 function personalTeam(id: string | null) {
-  mockTeamsFindFirst.mockImplementation(async (q: any) => {
-    if (q?.columns?.permissionOverrides) return { permissionOverrides: {} };
-    return id ? { id } : null;
-  });
+  mockTeamsFindFirst.mockImplementation(async () => (id ? { id } : null));
 }
 
 beforeEach(() => {
@@ -53,12 +50,5 @@ describe('isTeamAdmin', () => {
     expect(await isTeamAdmin('u1', 'team-o')).toBe(true);
     expect(await isTeamAdmin('u1', 'team-a')).toBe(true);
     expect(await isTeamAdmin('u1', 'team-m')).toBe(false);
-  });
-
-  it("applies the team's overrides", async () => {
-    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'team-a', role: 'admin' }]);
-    mockTeamsFindFirst.mockImplementation(async (q: any) =>
-      q?.columns?.permissionOverrides ? { permissionOverrides: { migrate_workspace: ['owner'] } } : null);
-    expect(await isTeamAdmin('u1', 'team-a')).toBe(false);
   });
 });

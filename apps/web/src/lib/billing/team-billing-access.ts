@@ -60,8 +60,7 @@ export async function requireBillingManager(req: NextRequest, teamId: string): P
     where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, session.user.id)),
   });
   if (!membership) return { response: Response.json({ error: 'Team not found' }, { status: 404 }) };
-  // manage_billing is locked, so team overrides never apply.
-  if (!roleHas(membership.role, 'manage_billing', null)) {
+  if (!roleHas(membership.role, 'manage_billing')) {
     return { response: Response.json({ error: 'Only a team owner or admin can manage billing' }, { status: 403 }) };
   }
 
