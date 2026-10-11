@@ -2975,6 +2975,7 @@ describe('POST /api/tasks', () => {
     expect(vals.loopConfig).toMatchObject({
       exitCondition: { type: 'pr_checks_green' },
       maxLoops: 3,
+      waitExpiryMinutes: 240,
     });
   });
 

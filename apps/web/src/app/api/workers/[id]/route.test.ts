@@ -13569,6 +13569,38 @@ describe('PATCH /api/workers/[id]', () => {
       expect(ctx.resumeBranch).toBe('buildd/loop-branch');
     });
 
+    it('pr_checks_green with CI still running waits for the webhook and leaves loopIteration unchanged', async () => {
+      const taskSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) })),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ prNumber: 42, prUrl: 'https://github.com/org/repo/pull/42', prLifecycleStatus: 'ci_running' }));
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask({
+        loopConfig: { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3, backoffMinutes: 0 },
+        loopIteration: 0,
+      }));
+
+      const before = Date.now();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const taskPendingSet = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(taskPendingSet).toBeDefined();
+      expect(taskPendingSet.loopIteration).toBe(0);
+      // Still reachable by evaluateAndAdvanceLoopOnCiGreen's guard.
+      expect(taskPendingSet.loopState).toBe('condition_unmet');
+      expect(taskPendingSet.context.loopHistory ?? []).toEqual([]);
+      expect(taskPendingSet.context.loopWebhookWait).toMatchObject({ prNumber: 42 });
+      expect(new Date(taskPendingSet.startAt).getTime()).toBeGreaterThanOrEqual(before + 240 * 60_000);
+    });
+
     it('sets task to failed with loopState=exhausted when maxLoops reached', async () => {
       const taskSetCalls: any[] = [];
       const workerSetCalls: any[] = [];

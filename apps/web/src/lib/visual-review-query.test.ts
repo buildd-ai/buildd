@@ -54,6 +54,12 @@ describe('audit why columns', () => {
     expect(sql).not.toMatch(/"result"(,| from)/);
   });
 
+  it('projects only the trunk-refresh marks of a non-audit task context', () => {
+    const { sql } = visualReviewTasksQuery(qb(), MISSION).toSQL();
+    expect(sql).toContain(`'requireMergeCommit', "context" -> 'requireMergeCommit', 'refreshTrunk', "context" -> 'refreshTrunk'`);
+    expect(sql).not.toMatch(/"context"(,| from)/);
+  });
+
   it('reads the worker error and base ref for audits', () => {
     const { sql } = visualReviewWorkersQuery(qb(), MISSION).toSQL();
     expect(sql).toMatch(/"merged_at", "pr_base_ref", "error" from "workers"/);

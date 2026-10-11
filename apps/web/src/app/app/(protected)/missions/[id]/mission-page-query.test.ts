@@ -229,7 +229,7 @@ describe('digestTaskContext and the Visual review coverage', () => {
   it('keeps context.visualQa, so required routes read the same from the digest', async () => {
     const { auditRequiredRoutes } = await import('@/lib/visual-qa-required-routes');
     const context = { surfaceAuditRound: 2, visualQa: { requiredRoutes: ['/app/tasks'] }, prompt: bulky };
-    const deps = [['apps/web/src/app/app/(protected)/missions/[id]/page.tsx']];
+    const deps = [{ pathManifest: ['apps/web/src/app/app/(protected)/missions/[id]/page.tsx'] }];
     expect(auditRequiredRoutes({ context: digestTaskContext(context) }, deps))
       .toEqual(auditRequiredRoutes({ context }, deps));
     expect(auditRequiredRoutes({ context: digestTaskContext(context) }, deps)).toContain('/app/tasks');

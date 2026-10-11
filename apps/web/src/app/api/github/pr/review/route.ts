@@ -249,25 +249,31 @@ export async function POST(req: NextRequest) {
     console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
     return null;
   });
-  if (kernel?.handled) {
+  // §8.1: the reviewer that answers is the round's at the live head, never the
+  // newest reviewer row of the PR number (§14 Slice A retired that rule here).
+  // A reviewTaskId whose row is gone is no review task at all: fall through and
+  // queue one rather than report "already under review" with no status.
+  const kernelReviewTask = kernel?.handled && kernel.reviewTaskId
+    ? (await db.query.tasks.findFirst({
+        where: eq(tasks.id, kernel.reviewTaskId),
+        columns: { id: true, status: true, result: true, context: true },
+      })) ?? null
+    : null;
+  // Only an accepted result may fall through: a refusal (escalation, force) keeps its 409.
+  const kernelAccepted = !!kernel?.handled && (kernel.result.result === 'applied'
+    || (kernel.result.result === 'rejected' && (kernel.result.reason === 'review_in_flight' || kernel.result.reason === 'head_already_reviewed')));
+  const kernelReviewTaskMissing = kernelAccepted && !!kernel?.reviewTaskId && !kernelReviewTask;
+  if (kernel?.handled && !kernelReviewTaskMissing) {
     const r = kernel.result;
-    const accepted = r.result === 'applied'
-      || (r.result === 'rejected' && (r.reason === 'review_in_flight' || r.reason === 'head_already_reviewed'));
-    if (!accepted) {
+    const accepted = kernelAccepted;
+    if (!accepted && r.result !== 'applied') {
       return bad(`Review not requested: ${r.reason}`, 409, {
         code: r.reason, current: r.current, kernel: true,
         ...(r.reason === 'force_requires_human' ? { hint: FORCE_NEEDS_PERSON } : {}),
         ...(r.reason === 'escalation_needs_human' ? { hint: 'this PR is escalated to a person for a reason another review does not answer; the owner resolves it from the dashboard' } : {}),
       });
     }
-    // §8.1: the reviewer that answers is the round's at the live head, never the
-    // newest reviewer row of the PR number (§14 Slice A retired that rule here).
-    const latest = kernel.reviewTaskId
-      ? (await db.query.tasks.findFirst({
-          where: eq(tasks.id, kernel.reviewTaskId),
-          columns: { id: true, status: true, result: true, context: true },
-        })) ?? null
-      : null;
+    const latest = kernelReviewTask;
     if (latest && callbackUrl && r.result === 'applied') {
       await db.update(tasks)
         .set({ context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('reviewCallback', ${JSON.stringify({ url: callbackUrl, on: callbackOn })}::jsonb)` })

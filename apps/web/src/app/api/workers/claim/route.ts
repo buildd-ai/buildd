@@ -108,6 +108,7 @@ import {
   attachExternalContextProviders,
   attachTaskAreaScope,
 } from './context-injection';
+import { VISUAL_AUDIT_ROUTES } from '@/modules';
 import { runDependentContextInjections } from './prompt-context-pipeline';
 import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
@@ -3368,7 +3369,7 @@ export async function POST(req: NextRequest) {
   // Prompt-context injection. ORDER IS THE CONTRACT: these seven append to the
   // same resolvedContextProviders rail and the runner concatenates it in
   // order — external providers, mission handoff, knowledge, subject-prior-work,
-  // discrepancy, linked-artifact manifest, task-area scope. See ./context-injection and
+  // discrepancy, linked-artifact manifest, visual-audit routes, task-area scope. See ./context-injection and
   // ./prompt-context-pipeline for why the middle four run concurrently without
   // disturbing that order.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
@@ -3385,6 +3386,7 @@ export async function POST(req: NextRequest) {
       : null,
   );
   await attachArtifactReferences(claimedWorkers, filteredTasks);
+  await VISUAL_AUDIT_ROUTES(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
