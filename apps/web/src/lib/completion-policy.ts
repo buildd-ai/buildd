@@ -60,12 +60,15 @@ export interface LoopProgress { iteration: number; history: LoopHistoryEntry[] }
  * `pass`: the exit condition holds; completion continues.
  * `hold`: condition unmet with attempts left: the task goes back to pending
  *   with `retryContext` as its context, not before `startAt` when set.
+ *   `until: 'webhook'` (pr_checks_green with CI still pending) spends no
+ *   attempt: progress is unchanged and startAt is the wait expiry, so the
+ *   check_suite / merge webhook (lib/loop-webhook.ts) completes it first.
  * `fail`: attempts exhausted; the task fails with `reason`.
  */
 export type LoopVerdict =
   | null
   | { kind: 'pass'; progress: LoopProgress }
-  | { kind: 'hold'; until: 'requeue'; progress: LoopProgress; startAt: Date | null; retryContext: Record<string, unknown> }
+  | { kind: 'hold'; until: 'requeue' | 'webhook'; progress: LoopProgress; startAt: Date | null; retryContext: Record<string, unknown> }
   | { kind: 'fail'; reason: string; progress: LoopProgress };
 
 // ── release ────────────────────────────────────────────────────────────────

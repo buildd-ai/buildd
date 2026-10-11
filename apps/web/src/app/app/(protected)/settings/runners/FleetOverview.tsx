@@ -85,13 +85,16 @@ export default function FleetOverview({ fleet, cloud, teamName }: { fleet: Fleet
       bare
     >
       <div data-testid="runners-fleet" className="space-y-3">
-        <p data-testid="runners-fleet-headline" className="text-base font-semibold text-text-primary">
-          {headline.map((p, i) => <span key={i} className={p.tone === 'accent' ? 'text-accent-text' : undefined}>{p.text}</span>)}
-        </p>
+        {/* Empty: the section title already says "0 runners", so the install prompt is the one statement. */}
+        {fleet.runners.length > 0 && (
+          <p data-testid="runners-fleet-headline" className="text-base font-semibold text-text-primary">
+            {headline.map((p, i) => <span key={i} className={p.tone === 'accent' ? 'text-accent-text' : undefined}>{p.text}</span>)}
+          </p>
+        )}
         {/* The one install instruction (lib/runner-install.ts). */}
         {fleet.runners.length === 0 && (
           <div data-testid="fleet-runner-empty" className="py-2 text-text-secondary">
-            <p className="text-body mb-3">Start a runner on any machine:</p>
+            <p className="text-body mb-3">{teamName ? `No runners online for ${teamName}. Start one on any machine:` : 'Start a runner on any machine:'}</p>
             <RunnerInstallSteps />
           </div>
         )}

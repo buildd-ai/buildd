@@ -286,7 +286,7 @@ describe('theme coverage (both themes per required route)', () => {
       ok: false, requiredRoutes: ['/app/x'], missing: [], emptyFindings: [], notUploaded: [], unlinkedIssues: [], invalidVerdicts: [],
       missingThemes: ['/app/x @ light theme'],
     });
-    expect(msg).toContain('/app/x @ light theme');
+    expect(msg).toContain('/app/x (light theme)');
     expect(msg).toContain('QA_THEME');
     expect(msg).toContain('qa.theme');
   });
@@ -303,7 +303,7 @@ describe('formatVisualEvidenceRejection', () => {
       unlinkedIssues: ['c'],
       invalidVerdicts: [],
     });
-    expect(msg).toContain('/app/tasks @ mobile');
+    expect(msg).toContain('/app/tasks (mobile)');
     expect(msg).toContain('upload_artifact');
     expect(msg).toContain('finding');
     expect(msg).toContain('fixTaskId');
@@ -343,12 +343,28 @@ describe('formatVisualEvidenceRejection', () => {
     expect(msg).toContain("verdict: 'ok' | 'issue' | 'unsure'");
   });
 
-  it('caps a long list', () => {
-    const missing = Array.from({ length: 60 }, (_, i) => `/r${i} @ mobile`);
-    const msg = formatVisualEvidenceRejection({ ok: false, requiredRoutes: [], missing, emptyFindings: [], notUploaded: [], unlinkedIssues: [], invalidVerdicts: [] });
-    expect(msg).toContain('/r0 @ mobile');
-    expect(msg).not.toContain('/r59 @ mobile');
-    expect(msg).toContain('more');
+  // An auditor refused with 55 missing routes saw 20 and gave up: every
+  // missing route is listed, grouped so the message stays short.
+  it('lists every missing route, grouped by route, never capped', () => {
+    const routes = Array.from({ length: 60 }, (_, i) => `/r${i}`);
+    const missing = routes.flatMap((r) => [`${r} @ mobile`, `${r} @ desktop`]);
+    const msg = formatVisualEvidenceRejection({ ok: false, requiredRoutes: routes, missing, emptyFindings: [], notUploaded: [], unlinkedIssues: [], invalidVerdicts: [] });
+    expect(msg).toContain('/r0 (mobile, desktop); /r1 (mobile, desktop)');
+    expect(msg).toContain('/r59 (mobile, desktop)');
+    expect(msg).not.toContain('more');
+  });
+
+  it('states the computed required-route list, which the description may not match', () => {
+    const msg = formatVisualEvidenceRejection({
+      ok: false, requiredRoutes: ['/app/a', '/app/b'], missing: ['/app/b @ desktop'],
+      emptyFindings: [], notUploaded: [], unlinkedIssues: [], invalidVerdicts: [],
+    });
+    expect(msg).toContain('all 2: /app/a, /app/b.');
+    expect(msg).toContain('not the description');
+    // Nothing missing: no route list to restate.
+    expect(formatVisualEvidenceRejection({
+      ok: false, requiredRoutes: ['/app/a'], missing: [], emptyFindings: ['x'], notUploaded: [], unlinkedIssues: [], invalidVerdicts: [],
+    })).not.toContain('Required routes');
   });
 });
 
@@ -393,6 +409,23 @@ describe('loadVisualAuditEvidence', () => {
     expect(v.notUploaded).toEqual(['d']);
     expect(v.unlinkedIssues).toEqual([]);
     expect(v.invalidVerdicts).toEqual([]);
+  });
+
+  it('a dependency that merged trunk in adds no routes, though its manifest names a shared layout', async () => {
+    mockTasksFindFirst.mockResolvedValue({ dependsOn: [DEP, FIX], context: null });
+    mockTasksFindMany
+      .mockResolvedValueOnce([
+        { title: 'fix(missions): page', context: null, pathManifest: ['apps/web/src/app/app/(protected)/missions/page.tsx'] },
+        {
+          title: 'chore(mission): merge dev into the Restore trust integration branch',
+          context: null,
+          pathManifest: ['apps/web/src/app/app/(protected)/layout.tsx', 'apps/web/src/app/app/(protected)/tasks/page.tsx'],
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    mockArtifactsFindMany.mockResolvedValue([]);
+    const v = await loadVisualAuditEvidence({ workerId: WORKER, taskId: TASK, missionId: MISSION, workspaceId: 'ws-1' });
+    expect(v.requiredRoutes).toEqual(['/app/missions']);
   });
 
   it('counts only screenshots written by THIS worker', async () => {
