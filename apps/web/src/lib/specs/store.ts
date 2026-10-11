@@ -16,8 +16,10 @@ import { requirementIds, type RequirementRef } from './requirements';
  * the revision the head pins and the spec at the version the writer read, and
  * the version bump and the new spec revision ride in the same statement, so a
  * revise lands whole or not at all and the loser of a race writes nothing. A stale `expectedVersion` is a 409 naming the current
- * version: re-read, merge, revise on top. Nothing here approves: approval is a
- * person's act on one revision (G2, decision D-4).
+ * version: re-read, merge, revise on top. A revise always leaves the head a
+ * draft: on an approved spec it proposes N+1 while `approved_revision` stays N.
+ * Nothing here approves: approval is a person's act on one revision
+ * (./approval.ts, decision D-4).
  */
 
 export type SpecCaller =
@@ -30,10 +32,10 @@ const author = (c: SpecCaller) => (c.kind === 'user'
   : { authorKind: 'agent' as const, authorId: c.account.id, label: `account:${c.account.id}` });
 
 export type SpecError = { ok: false; status: 400 | 403 | 404 | 409; error: string; currentVersion?: number };
-const fail = (status: SpecError['status'], error: string, extra: Partial<SpecError> = {}): SpecError => ({ ok: false, status, error, ...extra });
+export const fail = (status: SpecError['status'], error: string, extra: Partial<SpecError> = {}): SpecError => ({ ok: false, status, error, ...extra });
 
 /** Read (or, with `write`, create and revise) access to a workspace's specs. */
-async function reach(caller: SpecCaller, workspaceId: string, write: boolean): Promise<boolean> {
+export async function reach(caller: SpecCaller, workspaceId: string, write: boolean): Promise<boolean> {
   if (caller.kind === 'account' && caller.account.taskScope && caller.account.taskScope.workspaceId !== workspaceId) return false;
   return (await resolveWorkspaceAccess(workspaceId, accessCaller(caller), write ? 'canCreate' : undefined)).ok;
 }
@@ -113,7 +115,7 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
         AND EXISTS (SELECT 1 FROM specs WHERE id = ${specId}::uuid AND version = ${spec.version})
       RETURNING current_revision
     ), up AS (
-      UPDATE specs SET version = version + 1, head_revision = head_revision + 1, updated_at = now()
+      UPDATE specs SET version = version + 1, head_revision = head_revision + 1, status = 'draft', updated_at = now()
       WHERE id = ${specId}::uuid AND version = ${spec.version} AND EXISTS (SELECT 1 FROM body)
       RETURNING id, head_revision
     )
