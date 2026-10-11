@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import type { FlowSeries } from '@/lib/insights-flow';
 import { TIME_CATEGORIES, type TimeCategory } from '@/lib/insights-time-split';
-import { dayBars, parseSplitFilter, shippingSentence, stallSentences, tasksWithTime, timeRows, timeTaskListHref } from './insights-summary';
+import { dayBars, formatTimeShare, parseSplitFilter, shippingSentence, stallSentences, tasksWithTime, timeRows, timeTaskListHref } from './insights-summary';
 
 const H = 3_600_000;
 const D = 24 * H;
@@ -120,5 +120,13 @@ describe('the tasks behind a row', () => {
     const task = (key: string, ci: number) => ({ key, title: key, missionId: null, workspaceId: 'w', role: 'builder', segments: [], shippedAt: null, lostAt: null, agentHours: 0, time: { needs_input: 0, ci, review: 0, runner: 0, running: 0, retry: 0, release: 0 } });
     s.tasks = [task('a', H), task('b', 0), task('c', 3 * H)];
     expect(tasksWithTime(s, 'ci').map(t => t.key)).toEqual(['c', 'a']);
+  });
+});
+
+describe('formatTimeShare', () => {
+  it('never shows 0% for time that was spent', () => {
+    expect(formatTimeShare(0.001)).toBe('<1%');
+    expect(formatTimeShare(0)).toBe('0%');
+    expect(formatTimeShare(0.81)).toBe('81%');
   });
 });

@@ -54,6 +54,12 @@ export interface TimeRow {
   href: string;
 }
 
+/** A share as a percentage; time that rounds to nothing still reads as some. */
+export function formatTimeShare(share: number): string {
+  if (share > 0 && share < 0.005) return '<1%';
+  return `${Math.round(share * 100)}%`;
+}
+
 /** The rows of "What slowed work down?". The release row only appears when something waited for one. */
 export function timeRows(series: FlowSeries): TimeRow[] {
   const total = series.time.reduce((m, r) => m + r.ms, 0);

@@ -473,4 +473,13 @@ describe('UsageClient — plan-only teams and figures', () => {
     expect(value![1]).toContain('font-mono');
     expect(value![1]).not.toContain('tabular-nums');
   });
+
+  it('the monthly budget figure uses the same figure font', () => {
+    const html = renderToStaticMarkup(<UsageClient view={view({ rows: [] })} wsFilter={null}
+      monthly={{ kind: 'monthly', spentUsd: 0, budgetUsd: 100, pctUsed: 0, resetsAt: '2026-11-01T00:00:00.000Z', burnRateUsdPerDay: 0, daysToDepletion: null, confidence: 'low' }} />);
+    const line = html.match(/<p class="([^"]*)"[^>]*>\$0\.00 est\./);
+    expect(line).not.toBeNull();
+    expect(line![1]).toContain('font-mono');
+    expect(line![1]).not.toContain('tabular-nums');
+  });
 });

@@ -6,8 +6,8 @@ import type { FlowSeries, FlowWindow } from '@/lib/insights-flow';
 import { FLOW_WINDOWS } from '@/lib/insights-flow';
 import Link from 'next/link';
 import { ShippedChart } from '@/components/insights/ShippedChart';
-import { dayBars, shippingSentence, stallSentences, timeRows } from '@/components/insights/insights-summary';
-import { formatDuration, formatShare } from '@/components/insights/flow-chart-model';
+import { dayBars, formatTimeShare, shippingSentence, stallSentences, timeRows } from '@/components/insights/insights-summary';
+import { formatDuration } from '@/components/insights/flow-chart-model';
 import { countOf } from '@/lib/plural';
 import Segmented from '@/components/ui/Segmented';
 
@@ -54,7 +54,7 @@ export function InsightsClient({ series, window }: Props) {
                   <>
                     <div className="flex items-baseline justify-between gap-3">
                       <span className={`text-body ${r.ms > 0 ? 'text-text-primary' : 'text-text-muted'}`}>{r.label}</span>
-                      <span className="shrink-0 font-mono text-meta text-text-secondary">{r.ms > 0 ? `${formatDuration(r.ms)} · ${formatShare(r.share)}` : '0h'}</span>
+                      <span className="shrink-0 font-mono text-meta text-text-secondary">{r.ms > 0 ? `${formatDuration(r.ms)} · ${formatTimeShare(r.share)}` : '0h'}</span>
                     </div>
                     <div className="mt-1.5 h-2 bg-surface-3" aria-hidden>
                       <span className="block h-2" style={{ width: `${r.share * 100}%`, background: 'var(--flow-running)' }} />
