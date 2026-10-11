@@ -268,6 +268,12 @@ export const CHAT_NATIVE_TOOL_SPECS = {
    * told to stop at a safe point (or to carry on, on resume).
    */
   hold_task: single('tasks', write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'PATCH /api/tasks/:id', 'POST /api/workers/:id/instruct')),
+  /**
+   * The long pastes of this conversation (Living Specs C2): list them, or read
+   * one in bounded form (outline, section, range, grep). Only this
+   * conversation's own attachments, by its owner; no route, no other subject.
+   */
+  read_attachment: single('tasks', read()),
   /** Knowledge search (the MCP `recall` tool). */
   recall: single('memory', read()),
   /** Save team knowledge (the MCP `learn` tool). Team-visible, so a card. */

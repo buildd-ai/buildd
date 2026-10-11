@@ -16,7 +16,9 @@ const typeParity: [
   Same<shared.ChatMessagePart, kit.ChatMessagePart>,
   Same<shared.ChatUsage, kit.ChatUsage>,
   Same<shared.ChatUnavailableReason, kit.ChatUnavailableReason>,
-] = [true, true, true, true, true, true];
+  Same<shared.ChatAttachmentDraft, kit.AttachmentDraft>,
+  Same<shared.ChatAttachmentRef, kit.AttachmentRef>,
+] = [true, true, true, true, true, true, true, true];
 
 const preview: shared.ChatApprovalPreview = {
   v: 1, verb: 'Hold task', target: { kind: 'task', id: 't', label: 'checkout', detail: 'running' },
@@ -31,6 +33,8 @@ describe('shared ↔ kit chat contract parity', () => {
 
   it('approval previews encode, parse and render identically', () => {
     expect(kit.APPROVAL_PREVIEW_PREFIX).toBe(shared.CHAT_PREVIEW_PREFIX);
+    expect(kit.ATTACHMENT_PART_TYPE).toBe(shared.CHAT_ATTACHMENT_PART_TYPE as typeof kit.ATTACHMENT_PART_TYPE);
+    expect(kit.PASTE_ATTACHMENT_CHARS).toBe(shared.CHAT_PASTE_ATTACHMENT_CHARS);
     expect(kit.encodeApprovalPreview(preview)).toBe(shared.encodeApprovalPreview(preview));
     const enc = shared.encodeApprovalPreview(preview);
     expect(kit.parseApprovalPreview(enc)).toEqual(shared.parseApprovalPreview(enc));
