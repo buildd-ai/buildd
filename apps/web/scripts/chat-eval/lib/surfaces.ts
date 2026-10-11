@@ -128,6 +128,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   deploy: 'write',
   record_pr_supersession: 'write',
   post_note: 'write',
+  update_incident: 'write',
   suggest_schedule_update: 'write',
 };
 
