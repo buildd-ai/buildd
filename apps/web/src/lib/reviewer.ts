@@ -816,12 +816,20 @@ export async function createReviewerTask(
   // concurrent-producer race into a null (the route's 500).
   const dedupeSha = subjectAnchor?.headSha || headSha;
   if (!reviewerTask && dedupeSha) {
-    const winner = await findLiveReviewerTaskForHead(workspaceId, prNumber, dedupeSha);
-    if (winner) {
-      console.log(
-        `[reviewer] PR #${prNumber} at ${dedupeSha.slice(0, 7)}: a concurrent producer filed reviewer task ${winner.id} first — not dispatching a second`,
-      );
-      return { id: winner.id, deduplicated: true };
+    // A concurrent producer may have won the race. Retry with a small delay
+    // to allow the other insert to be visible in subsequent reads.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const winner = await findLiveReviewerTaskForHead(workspaceId, prNumber, dedupeSha);
+      if (winner) {
+        console.log(
+          `[reviewer] PR #${prNumber} at ${dedupeSha.slice(0, 7)}: a concurrent producer filed reviewer task ${winner.id} first — not dispatching a second`,
+        );
+        return { id: winner.id, deduplicated: true };
+      }
+      // If this is not the last attempt, wait a bit before retrying
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
+      }
     }
   }
 
