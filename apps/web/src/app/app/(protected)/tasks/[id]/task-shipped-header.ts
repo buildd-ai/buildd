@@ -15,6 +15,7 @@
  */
 import type { ShippedChangeType, ShippedHeroShot } from '@/lib/mission-shipped';
 import type { TaskShippedRecord } from '@/lib/task-shipped';
+import { readableTaskResult } from '@/lib/review-result';
 
 export const TASK_SHIPPED_HEADER_ID = 'what-shipped';
 
@@ -62,13 +63,35 @@ export function shippedEyebrow(conventionalType: string | null | undefined, cate
   return type ? `What shipped · ${type}` : 'What shipped';
 }
 
+/**
+ * What heads the result (docs/specs/task-page.md): "What shipped" only once the
+ * work shipped to its target; an open PR's result is a "Result"; a review or fix
+ * run names the PR it worked on.
+ */
+export function resultEyebrow(p: {
+  conventionalType: string | null | undefined;
+  category: string | null | undefined;
+  subject?: { kind: 'deliverable' | 'review' | 'fix'; prNumber: number | null } | null;
+  shipped?: boolean;
+}): string {
+  const pr = p.subject?.prNumber != null ? ` PR #${p.subject.prNumber}` : ' the PR';
+  if (p.subject?.kind === 'review') return `Review of${pr}`;
+  if (p.subject?.kind === 'fix') return `Fix for${pr}`;
+  const shipped = shippedEyebrow(p.conventionalType, p.category);
+  return p.shipped === false ? shipped.replace(/^What shipped/, 'Result') : shipped;
+}
+
 export interface TaskShippedView {
   eyebrow: string;
+  /** A review run's summary, as prose: it is the result, so it leads the body. */
+  resultProse: string | null;
+  /** The structured payload as recorded, for Run details › Raw output only. */
+  raw: Record<string, unknown> | null;
   lede: string | null;
   changeTypeLabel: string | null;
   heroShots: ShippedHeroShot[];
   offPlan: string[];
-  /** The raw handoff, unchanged, for the Technical summary disclosure. */
+  /** The handoff as prose (a JSON summary is read, never printed), for the Technical summary disclosure. */
   technicalSummary: string | null;
   technicalSummaryIsFallback: boolean;
 }
@@ -82,6 +105,11 @@ export interface BuildTaskShippedViewInput {
   summary: string | null | undefined;
   summarySource: string | null | undefined;
   heroShots: ShippedHeroShot[];
+  structuredOutput?: unknown;
+  /** Which run this is; absent reads as the deliverable. */
+  subject?: { kind: 'deliverable' | 'review' | 'fix'; prNumber: number | null } | null;
+  /** The work reached its target (merged, or done without a PR). Absent reads as shipped. */
+  shipped?: boolean;
 }
 
 /**
@@ -93,15 +121,18 @@ export function buildTaskShippedView(input: BuildTaskShippedViewInput): TaskShip
 
   const record = input.record;
   const lede = record?.lede ?? null;
-  const summary = typeof input.summary === 'string' && input.summary.trim() ? input.summary : null;
+  const readable = readableTaskResult(input.summary, input.structuredOutput);
+  const isReview = input.subject?.kind === 'review';
 
   return {
-    eyebrow: shippedEyebrow(input.conventionalType, input.category),
+    eyebrow: resultEyebrow(input),
+    resultProse: isReview ? readable.prose : null,
+    raw: readable.raw,
     lede,
     changeTypeLabel: record?.changeType ? TASK_CHANGE_TYPE_LABEL[record.changeType] : null,
     heroShots: input.heroShots.slice(0, 3),
     offPlan: lede ? (record?.offPlan ?? []).slice(0, 2) : [],
-    technicalSummary: summary,
+    technicalSummary: isReview ? null : readable.prose,
     technicalSummaryIsFallback: input.summarySource === 'fallback',
   };
 }

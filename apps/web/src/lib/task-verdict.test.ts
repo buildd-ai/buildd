@@ -133,3 +133,26 @@ describe('latestChecks / parseStoredVerdictDecision', () => {
     expect(parseStoredVerdictDecision(decision())!.causeKey).toBe('blocked:check:PR body lint');
   });
 });
+
+describe('a review run judges its own outcome (docs/specs/task-page.md AC-1)', () => {
+  const review = (verdict: 'approve' | 'request-changes' | 'escalate' | null, over: Partial<VerdictInput> = {}) =>
+    deriveTaskVerdict(input({ review: { verdict }, mismatch: [], checks: null, summary: null, ...over }))!;
+
+  it('an approving reviewer reads Review approved, never Done or Shipped', () => {
+    const v = review('approve');
+    expect(v).toMatchObject({ state: 'done', label: 'Review approved', headline: 'Review approved', actions: [] });
+  });
+
+  it("the parent's PR, merged or red, is not the reviewer's outcome", () => {
+    expect(review('approve', { pr: { ...PR, merged: true, lifecycle: 'merged' } }).label).toBe('Review approved');
+    expect(review('request-changes').label).toBe('Changes requested');
+    expect(review('request-changes').labelTone).toBe('warning');
+    expect(review('escalate').label).toBe('Escalated to a person');
+  });
+
+  it('a review with no verdict says so; a failed or running review stays failed or running', () => {
+    expect(review(null).label).toBe('Review finished without a verdict');
+    expect(review('approve', { taskStatus: 'failed' }).state).toBe('failed');
+    expect(review(null, { taskStatus: 'in_progress', live: { status: 'running', waitingForInput: false } }).headline).toBe('Working');
+  });
+});

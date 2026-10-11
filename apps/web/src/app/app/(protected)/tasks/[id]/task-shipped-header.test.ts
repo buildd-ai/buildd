@@ -69,3 +69,37 @@ describe('hero shots', () => {
     expect(buildTaskShippedView(input({ heroShots: [1, 2, 3, 4].map(shot) }))!.heroShots).toHaveLength(3);
   });
 });
+
+describe('the heading says what this result is (docs/specs/task-page.md)', () => {
+  const SCREENSHOT = JSON.stringify({ summary: 'Both PRs land.\n\nRecovery is unblocked.', verdict: 'approve', confidence: 0.8 });
+
+  it('AC-1: a review run is headed "Review of PR #N", never What shipped, with its summary as prose', () => {
+    const v = buildTaskShippedView(input({ record: null, conventionalType: null, summary: SCREENSHOT, subject: { kind: 'review', prNumber: 4413 }, shipped: false }))!;
+    expect(v.eyebrow).toBe('Review of PR #4413');
+    expect(v.resultProse).toBe('Both PRs land.\n\nRecovery is unblocked.');
+    // The prose leads the body, so the Technical summary does not repeat it, and no JSON is shown as a summary.
+    expect(v.technicalSummary).toBeNull();
+    expect(v.raw).toEqual({ summary: 'Both PRs land.\n\nRecovery is unblocked.', verdict: 'approve', confidence: 0.8 });
+  });
+
+  it('an unmerged deliverable is a Result, not What shipped', () => {
+    expect(buildTaskShippedView(input({ shipped: false }))!.eyebrow).toBe('Result · Feature');
+    expect(buildTaskShippedView(input({ shipped: true }))!.eyebrow).toBe('What shipped · Feature');
+  });
+
+  it('a fix run is headed as a fix for the PR', () => {
+    expect(buildTaskShippedView(input({ subject: { kind: 'fix', prNumber: 7 }, shipped: false }))!.eyebrow).toBe('Fix for PR #7');
+  });
+
+  it('a JSON summary on a deliverable reads as prose in the Technical summary, raw kept aside', () => {
+    const v = buildTaskShippedView(input({ summary: '{"summary":"Did the thing.","confidence":0.5}' }))!;
+    expect(v.technicalSummary).toBe('Did the thing.');
+    expect(v.raw).toEqual({ summary: 'Did the thing.', confidence: 0.5 });
+  });
+
+  it('structuredOutput never becomes the summary text', () => {
+    const v = buildTaskShippedView(input({ summary: 'Plain prose.', structuredOutput: { verdict: 'approve', confidence: 0.8 } }))!;
+    expect(v.technicalSummary).toBe('Plain prose.');
+    expect(v.raw).toEqual({ verdict: 'approve', confidence: 0.8 });
+  });
+});

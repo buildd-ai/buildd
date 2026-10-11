@@ -35,10 +35,12 @@ function current(state: StateKey, step: number, repairs: number | undefined): { 
 }
 
 /** One step's label: ticked when done, the state's glyph and variant when current, plain sub text later. */
-function StepLabel({ name, i, at, state, repairs }: { name: string; i: number; at: number; state: StateKey; repairs?: number }) {
+function StepLabel({ name, i, at, state, repairs, phrase }: { name: string; i: number; at: number; state: StateKey; repairs?: number; phrase?: string | null }) {
   if (at > i) return <span data-step={name} data-done="true" className={TONE_TEXT.ok}>✓ {name}</span>;
   if (at === i) {
     const c = current(state, i, repairs);
+    // The delivery's own phrase (task-page State mapping) says what the step is doing.
+    if (phrase) c.extra = ` · ${phrase}`;
     return (
       <span data-step={name} aria-current="step" className={`font-semibold ${TONE_TEXT[c.tone]}`}>
         {c.glyph} {name}{c.extra}
@@ -52,6 +54,12 @@ export interface LifecycleProps {
   state: StateKey;
   /** Repair rounds: on `fixing` it reads `repair N`; on `review` the rounds already taken (`↻N`). */
   repairs?: number;
+  /**
+   * What the current step is doing, in the delivery's words ("updating branch",
+   * "awaiting merge"). Replaces the state's own variant, so a refresh or a review
+   * never reads as "repair N".
+   */
+  phrase?: string | null;
   /** One short phrase per step (Build, Audit, Land), shown under each step's label. */
   notes?: readonly [string, string, string];
   className?: string;
@@ -64,7 +72,7 @@ export interface LifecycleProps {
  * Audit → Land track: every surface that shows a delivery's stage draws this.
  * With `notes`, each step also carries its own phrase below the label.
  */
-export default function Lifecycle({ state, repairs, notes, className = '' }: LifecycleProps) {
+export default function Lifecycle({ state, repairs, phrase, notes, className = '' }: LifecycleProps) {
   const at = STEP_OF[state];
   return (
     <span
@@ -83,11 +91,11 @@ export default function Lifecycle({ state, repairs, notes, className = '' }: Lif
               data-state={at > i ? 'done' : at === i ? 'current' : 'later'}
               className="flex min-w-0 flex-1 flex-col"
             >
-              <StepLabel name={name} i={i} at={at} state={state} repairs={repairs} />
+              <StepLabel name={name} i={i} at={at} state={state} repairs={repairs} phrase={phrase} />
               <span className={`[overflow-wrap:anywhere] ${at < i ? 'text-text-muted' : 'text-text-secondary'}`}>{notes[i]}</span>
             </span>
           ) : (
-            <StepLabel name={name} i={i} at={at} state={state} repairs={repairs} />
+            <StepLabel name={name} i={i} at={at} state={state} repairs={repairs} phrase={phrase} />
           )}
         </Fragment>
       ))}

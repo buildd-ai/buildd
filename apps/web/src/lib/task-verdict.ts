@@ -14,6 +14,7 @@
  * state and cause (`causeKey`); see `applyVerdictDecision`.
  */
 import type { TaskMismatch } from '@buildd/shared';
+import { REVIEW_VERDICT_LABEL, type ReviewVerdictWord } from './review-result';
 
 export type VerdictState = 'shipped' | 'blocked' | 'in_progress' | 'needs_you' | 'failed' | 'done';
 
@@ -59,6 +60,11 @@ export interface VerdictInput {
   /** A failed task's first error line (worker error / evidence). */
   failureLine?: string | null;
   mismatch?: readonly TaskMismatch[];
+  /**
+   * This task is a review run of another task's PR (docs/specs/task-page.md):
+   * its outcome is its verdict, and the PR it reviewed is the parent's, not its own.
+   */
+  review?: { verdict: ReviewVerdictWord | null } | null;
 }
 
 export interface TaskVerdict {
@@ -75,6 +81,9 @@ export interface TaskVerdict {
   failingChecks: VerdictCheck[];
   /** Who chose the wording: the rules, or a cached model decision. */
   wordedBy: 'rules' | 'model';
+  /** The outcome's own word when the state's generic one ("Done") says less, e.g. "Review approved". */
+  label?: string;
+  labelTone?: 'success' | 'warning';
 }
 
 const MAX_ACTIONS = 3;
@@ -141,7 +150,8 @@ function blockedByChecks(input: VerdictInput, pr: NonNullable<VerdictInput['pr']
  */
 export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
   const base = { failingChecks: [] as VerdictCheck[], wordedBy: 'rules' as const };
-  const pr = input.pr;
+  // A review run reports on its parent's PR; that PR's state is the parent's delivery, not this outcome.
+  const pr = input.review ? null : input.pr;
 
   // 1. Merged is shipped: nothing after a merge can un-ship it.
   if (pr && isMerged(pr)) {
@@ -252,7 +262,17 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
     };
   }
 
-  // 6. Completed without a PR.
+  // 6. A finished review run: its verdict is the outcome.
+  if (input.review && input.taskStatus === 'completed') {
+    const v = input.review.verdict;
+    const label = v ? REVIEW_VERDICT_LABEL[v] : 'Review finished without a verdict';
+    return {
+      ...base, state: 'done', label, labelTone: v === 'approve' ? 'success' : 'warning',
+      headline: label, cause: null, actions: [], causeKey: `done:review:${v ?? 'none'}`,
+    };
+  }
+
+  // 7. Completed without a PR.
   if (input.taskStatus === 'completed') {
     const disagreement = (input.mismatch ?? []).find(m => m.kind === 'pushed_without_diff' || m.kind === 'last_command_failed');
     if (disagreement) {
