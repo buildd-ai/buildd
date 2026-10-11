@@ -27,6 +27,10 @@ describe('composition root', () => {
     ]);
   });
 
+  it('worker.late_verification_reported: the late runner report becomes the verification verdict', () => {
+    expect(byEvent('worker.late_verification_reported')).toEqual(['reviews:late-runner-evidence']);
+  });
+
   it('task.completed: a resolved release\'s mission attempt, chat, the ledger, the team push, then its analytics row', () => {
     expect(byEvent('task.completed')).toEqual([
       'missions:mission-completion-on-release-completed',
