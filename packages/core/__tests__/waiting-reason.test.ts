@@ -23,7 +23,7 @@ const r = (kind: WaitingKind, id = 'x') =>
 
 /** A creation-time overlap edge on a migration path (the shape of a schema task queued behind others). */
 const migrationEdge = (id: string) => makeWaitingReason('dep_inferred', {
-  because: 'both add a migration',
+  because: 'both change migrations in core/db',
   blocker: { type: 'task', id, label: `“holder ${id}”` },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
   provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
@@ -73,6 +73,9 @@ describe('waiting-reason', () => {
     const mixed = waitingSummary([...edges, r('dep_declared', 'z')]);
     expect(mixed.headline).toBe('Waiting on 1 declared dependency');
     expect(mixed.coordination).toBe(5);
+    // A local mission leads by itself; the overlap edges are listed after it.
+    expect(waitingSummary([r('mission_local', 'm'), ...edges]).summarised).toBe(false);
+    expect(waitingSummary(edges).lead?.kind).toBe('dep_inferred');
   });
 
   it('force dialog: one checklist line per gate, the migration red line, rails with the file count', () => {

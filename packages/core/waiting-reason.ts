@@ -343,7 +343,8 @@ export function forceDialog(reasons: readonly WaitingReason[]): ForceDialog {
   const checklist = forceable.map(r => ({
     kind: r.kind,
     gate: gateName(r.kind),
-    sentence: `${r.blocker ? `${r.blocker.label}: ` : ''}${r.because}`,
+    // A mission blocker's label only restates the gate; the sentence says it.
+    sentence: `${r.blocker && r.blocker.type !== 'mission' ? `${r.blocker.label}: ` : ''}${r.because}`,
   }));
   const overlapped = forceable.filter(r => r.overlap && r.overlap.pathCount > 0);
   const fileCount = overlapped.reduce((n, r) => n + (r.overlap?.pathCount ?? 0), 0);
@@ -358,7 +359,9 @@ export function forceDialog(reasons: readonly WaitingReason[]): ForceDialog {
     .filter(r => r.overlap?.overlapKind === 'migration')
     .map(r => r.blocker?.label ?? 'the other task'))];
   const redLines = migrationHolders.length > 0
-    ? [`Migration numbering stays serialized; this agent can't take the next index until ${migrationHolders.slice(0, 2).join(', ')}${migrationHolders.length > 2 ? ` +${migrationHolders.length - 2}` : ''} releases it.`]
+    ? [`Migration numbering stays serialized; this agent can't take the next index until ${migrationHolders.length > 2
+      ? `${migrationHolders.slice(0, 2).join(', ')} and ${migrationHolders.length - 2} more release it`
+      : migrationHolders.length === 2 ? `${migrationHolders.join(' and ')} release it` : `${migrationHolders[0]} releases it`}.`]
     : [];
   return { checklist, stillEnforced, risk, redLines };
 }
@@ -372,16 +375,22 @@ const COORDINATION_ONLY: ReadonlySet<WaitingKind> = new Set<WaitingKind>(['dep_i
  * migration-overlap edges read "Waiting on migration slot · 5 tasks also
  * editing core/db" — never "waiting on 5 dependencies".
  */
-export function waitingSummary(reasons: readonly WaitingReason[]): { headline: string; declared: number; coordination: number } {
+export function waitingSummary(reasons: readonly WaitingReason[]): { headline: string; declared: number; coordination: number; summarised: boolean; lead: WaitingReason | null } {
   const hard = orderWaitingReasons(blockingReasons(reasons));
   const declared = hard.filter(r => r.kind === 'dep_declared').length;
   const coord = hard.filter(r => COORDINATION_ONLY.has(r.kind));
   const head = hard[0] ?? orderWaitingReasons(reasons)[0];
-  if (!head) return { headline: 'Ready', declared: 0, coordination: 0 };
+  if (!head) return { headline: 'Ready', declared: 0, coordination: 0, summarised: false, lead: null };
   let headline: string;
+  let summarised = false;
+  // The reason the headline is about: its because/releases line reads under it.
+  let lead: WaitingReason = head;
   if (declared > 0 && head.kind === 'dep_declared') {
     headline = `Waiting on ${declared} declared ${declared === 1 ? 'dependency' : 'dependencies'}`;
-  } else if (coord.length > 1 || (coord.length === 1 && coord[0] === head && head.kind !== 'pr_overlap_live' && head.kind !== 'pr_overlap_ended')) {
+    summarised = declared > 1 || coord.length > 0;
+  } else if (COORDINATION_ONLY.has(head.kind) && coord.length > 1) {
+    summarised = true;
+    lead = coord[0];
     const holders = new Set(coord.map(r => r.blocker?.id ?? r.kind)).size;
     const migration = coord.some(r => r.overlap?.overlapKind === 'migration');
     const byArea = new Map<string, number>();
@@ -391,8 +400,8 @@ export function waitingSummary(reasons: readonly WaitingReason[]): { headline: s
   } else {
     headline = waitingHeadline(head);
   }
-  if (declared > 0 && head.kind !== 'dep_declared') headline += ` · ${declared} declared ${declared === 1 ? 'dependency' : 'dependencies'}`;
-  return { headline, declared, coordination: coord.length };
+  if (declared > 0 && head.kind !== 'dep_declared' && summarised) headline += ` · ${declared} declared ${declared === 1 ? 'dependency' : 'dependencies'}`;
+  return { headline, declared, coordination: coord.length, summarised, lead };
 }
 
 /**

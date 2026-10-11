@@ -186,7 +186,7 @@ async function dependencyReasons(task: ProbeTask): Promise<WaitingReason[]> {
       out.push(makeWaitingReason('dep_inferred', {
         because: paths.length === 0
           ? 'it was ordered after this task when both declared overlapping files'
-          : `${kind === 'migration' ? 'both add a migration' : 'both edit'} ${paths.length === 1 ? paths[0] : `${paths.length} files in ${overlapAreas(paths).slice(0, 2).map(a => a.area).join(', ')}`}`,
+          : `${kind === 'migration' ? 'both change migrations in' : `both edit ${paths.length} file${paths.length === 1 ? '' : 's'} in`} ${overlapAreas(paths).slice(0, 2).map(a => a.area).join(', ')}`,
         blocker,
         overlap: holdOverlap(paths, kind),
         provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
@@ -230,9 +230,10 @@ async function softOverlapReasons(task: ProbeTask): Promise<WaitingReason[]> {
   return verdicts.map(v => {
     const blocker = { type: 'task' as const, id: v.holderTaskId, label: `task ${v.holderTaskId.slice(0, 8)}`, href: `/app/tasks/${v.holderTaskId}`, live: true };
     const overlapKind = v.kind === 'deterministic' ? v.overlapKind : v.overlapKind;
+    const areas = overlapAreas(v.paths).slice(0, 2).map(a => a.area).join(', ');
     const because = v.kind === 'deterministic' && v.overlapKind === 'migration'
-      ? `both add a migration (${v.paths.slice(0, 1).join('')})`
-      : `both edit ${v.paths.length === 1 ? v.paths[0] : `${v.paths.length} files in ${overlapAreas(v.paths).slice(0, 2).map(a => a.area).join(', ')}`}`;
+      ? `both change migrations in ${areas}`
+      : `both edit ${v.paths.length} file${v.paths.length === 1 ? '' : 's'} in ${areas}`;
     if (v.kind === 'deterministic') {
       return makeWaitingReason('serialized_surface', {
         because, blocker,

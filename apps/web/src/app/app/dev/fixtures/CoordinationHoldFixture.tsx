@@ -52,7 +52,7 @@ const DECLARED = makeWaitingReason('dep_declared', {
   provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
 });
 const migrationEdge = (n: number) => makeWaitingReason('dep_inferred', {
-  because: 'both add a migration packages/core/db/schema.ts',
+  because: 'both change migrations in core/db',
   blocker: { type: 'task', id: `h${n}`, label: `“unrelated schema task ${n}”`, href: '#', live: n === 1 },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
   provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },

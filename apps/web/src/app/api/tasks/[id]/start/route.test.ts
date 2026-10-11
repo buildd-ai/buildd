@@ -152,7 +152,7 @@ const localReason = (): WaitingReason => makeWaitingReason('mission_local', {
   provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
 });
 const migrationEdge = (id: string): WaitingReason => makeWaitingReason('dep_inferred', {
-  because: 'both add a migration packages/core/db/schema.ts',
+  because: 'both change migrations in core/db',
   blocker: { type: 'task', id, label: `task ${id}`, live: true },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
   provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
@@ -1607,7 +1607,9 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     mockProbe.mockResolvedValue(reasons);
     const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
     expect(refused.canForce).toBe(true);
-    expect(refused.error).toContain('Waiting on migration slot · 5 tasks also editing core/db');
+    // The local mission leads; the five overlap edges are ordering, never "dependencies".
+    expect(refused.error).toContain('Waiting on a local-session mission');
+    expect(refused.error).not.toMatch(/dependenc/);
     expect(refused.force.kinds.sort()).toEqual(['dep_inferred', 'mission_local']);
     expect(refused.force.checklist).toHaveLength(6);
     // The edit-time anchor still serializes migration numbering: the red line.

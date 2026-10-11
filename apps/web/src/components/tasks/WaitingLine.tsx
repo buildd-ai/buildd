@@ -44,8 +44,10 @@ export default function WaitingLine({ reasons, children }: { reasons: WaitingRea
   if (!head) return null;
   const chip = waitingChip(ordered);
   const summary = waitingSummary(ordered);
-  // One reason (or one holder) names its blocker as a link; several are summarised.
-  const summarised = summary.coordination > 1 || summary.declared > 1 || (summary.declared > 0 && head.kind !== 'dep_declared');
+  // One reason names its blocker as a link; several coordination holds (or
+  // declared dependencies) are summarised, and the line under it is the lead's.
+  const summarised = summary.summarised;
+  const lead = summary.lead ?? head;
   const rest = ordered.slice(1);
 
   return (
@@ -57,11 +59,11 @@ export default function WaitingLine({ reasons, children }: { reasons: WaitingRea
         </span>
       </p>
       <p className="font-mono text-eyebrow leading-relaxed text-text-secondary [overflow-wrap:anywhere]">
-        because {head.because} · starts when {head.releasesWhen.text}
+        because {lead.because} · starts when {lead.releasesWhen.text}
       </p>
       {rest.length > 0 && !summarised && (
         <p className="font-mono text-eyebrow text-text-muted">
-          Also: {[...new Set(rest.map(r => gateName(r.kind).toLowerCase()))].join(', ')}
+          Also: {[...new Set(rest.map(r => gateName(r.kind)))].join(', ')}
         </p>
       )}
       <Disclosure summary="Why">

@@ -36,7 +36,7 @@ describe('force-start', () => {
 
   it('an inferred edge is lifted by id; a local mission by its prefilter; the digest covers what was shown', () => {
     const edge = makeWaitingReason('dep_inferred', {
-      because: 'both add a migration',
+      because: 'both change migrations in core/db',
       blocker: { type: 'task', id: 'holder-a', label: 'holder' },
       overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
       provenance: { source: 'task_context', derivedFrom: 't' },

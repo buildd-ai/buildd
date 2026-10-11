@@ -43,7 +43,7 @@ const roleHold = makeWaitingReason('role_unavailable', {
   provenance: { source: 'runner_fleet', derivedFrom: 'fleet skills' },
 });
 const migrationEdge = (id: string) => makeWaitingReason('dep_inferred', {
-  because: 'both add a migration packages/core/db/schema.ts',
+  because: 'both change migrations in core/db',
   blocker: { type: 'task', id, label: `“holder ${id}”`, href: `/app/tasks/${id}`, live: true },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
   provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
@@ -194,9 +194,9 @@ describe('TaskActionZone: coordination holds', () => {
     })];
     await render({ isBlocked: true, blockedByCount: 2 });
     const text = q('[data-testid="task-blocked-waiting"]')!.textContent!;
-    // The declared dependency is the headline; the overlap edge is named as ordering, not a dependency.
-    expect(text).toContain('Waiting on “design first”');
-    expect(text).toContain('Also: file-overlap ordering');
+    // Counted apart: the declared dependency is the headline, the overlap edge is not a dependency.
+    expect(text).toContain('Waiting on 1 declared dependency');
+    expect(text).not.toMatch(/2 dependencies/);
     expect(q('[data-action="force_start_offer"]')).toBeNull();
   });
 
