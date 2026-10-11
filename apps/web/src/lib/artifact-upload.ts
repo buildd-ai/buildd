@@ -1,16 +1,28 @@
 import { db } from '@buildd/core/db';
 import { artifactLinks, artifactRevisions, artifacts, specs } from '@buildd/core/db/schema';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
-import { deleteObject, headObject, sha256Object } from '@/lib/storage';
+import { copyObject, deleteObject, headObject, sha256Object } from '@/lib/storage';
+import { uploadStagingKey } from '@/lib/storage-keys';
 
 /**
  * An uploaded file is ready only once its bytes are verified. The presigned
- * URL (POST /api/artifacts/upload-url) creates the row as `pending`; finalize
- * checks the stored object's size against the size the URL was signed for,
- * hashes it, writes the hash onto its revision (the one change the revision
- * immutability trigger allows), and marks it `ready`. A size, content-type
- * or hash mismatch marks it `failed`. The URL signs only content-length, so
- * the content type is checked here rather than at the PUT.
+ * URL (POST /api/artifacts/upload-url, POST /api/chat/uploads) creates the row
+ * as `pending` and is signed for the row's staging key
+ * (`uploadStagingKey(storageKey)`), never for `storageKey` itself. Finalize
+ * copies the staged object to `storageKey`, checks the copy's size and content
+ * type against what the URL was signed for, hashes it, writes the hash onto
+ * its revision (the one change the revision immutability trigger allows),
+ * marks the row `ready` and deletes the staged object. A size, content-type or
+ * hash mismatch marks it `failed`.
+ *
+ * So every reader reads bytes no signed URL can reach: a PUT through the
+ * upload URL after finalize lands on the dead staging key, and what is served
+ * stays the bytes whose hash the revision records. Only one finalize copies
+ * (a lease in the row's metadata), so a late second copy can never replace
+ * bytes already hashed.
+ *
+ * A URL signed before uploads were staged put the bytes at `storageKey`
+ * itself; with nothing staged, finalize verifies that object in place.
  *
  * Callers that never finalize (an agent that PUT with curl, the runner's
  * screenshot upload) still work: a read finalizes lazily, and the sweep
@@ -20,13 +32,24 @@ import { deleteObject, headObject, sha256Object } from '@/lib/storage';
 export interface UploadStorage {
   head(key: string): Promise<{ sizeBytes: number; contentType: string | null } | null>;
   sha256(key: string): Promise<{ sha256: string; sizeBytes: number }>;
+  copy(fromKey: string, toKey: string): Promise<void>;
   remove(key: string): Promise<void>;
 }
-export const defaultUploadStorage: UploadStorage = { head: headObject, sha256: sha256Object, remove: deleteObject };
+export const defaultUploadStorage: UploadStorage = { head: headObject, sha256: sha256Object, copy: copyObject, remove: deleteObject };
+
+/** Every key an upload's bytes may sit at: the verified one and its staging sibling. */
+export function uploadObjectKeys(storageKey: string): string[] {
+  return [storageKey, uploadStagingKey(storageKey)];
+}
+
+/** Remove an upload's objects; a failure is logged by the caller's catch, never thrown. */
+export async function removeUploadObjects(storage: UploadStorage, storageKey: string): Promise<void> {
+  await Promise.all(uploadObjectKeys(storageKey).map(k => storage.remove(k)));
+}
 
 export type FinalizeResult =
   | { state: 'ready'; sha256: string | null; sizeBytes: number | null }
-  | { state: 'pending'; reason: 'not_uploaded' }
+  | { state: 'pending'; reason: 'not_uploaded' | 'finalizing' }
   | { state: 'failed'; reason: string }
   | { state: 'missing' };
 
@@ -34,6 +57,8 @@ export type FinalizeResult =
 export const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000;
 /** The sweep leaves an upload this young to its uploader. */
 export const SWEEP_GRACE_MS = 60 * 1000;
+/** A finalize lease older than this is taken over: no request lives this long. */
+export const FINALIZE_LEASE_MS = 10 * 60 * 1000;
 
 /** `Text/Plain; charset=utf-8` -> `text/plain`: storage may normalize case and parameters. */
 function mediaType(v: unknown): string | null {
@@ -72,6 +97,32 @@ export async function finalizeArtifactUpload(
   if (row.uploadState === 'failed') return { state: 'failed', reason: String((row.metadata as { uploadError?: unknown } | null)?.uploadError ?? 'failed') };
   if (row.uploadState !== 'pending' || !row.storageKey) return { state: 'ready', ...(await revisionHash()) };
 
+  const staged = uploadStagingKey(row.storageKey);
+  const stagedHead = await storage.head(staged);
+  if (!stagedHead && !(await storage.head(row.storageKey))) return { state: 'pending', reason: 'not_uploaded' };
+
+  if (stagedHead) {
+    // One finalize copies: a second one copying later could replace bytes
+    // already hashed with whatever the upload URL wrote since.
+    const leased = await db.update(artifacts)
+      .set({ metadata: sql`coalesce(${artifacts.metadata}, '{}'::jsonb) || ${JSON.stringify({ finalizingAt: new Date().toISOString() })}::jsonb` })
+      .where(and(
+        eq(artifacts.id, row.id),
+        eq(artifacts.uploadState, 'pending'),
+        sql`(${artifacts.metadata} ->> 'finalizingAt' IS NULL OR (${artifacts.metadata} ->> 'finalizingAt')::timestamptz < ${new Date(Date.now() - FINALIZE_LEASE_MS).toISOString()}::timestamptz)`,
+      ))
+      .returning({ id: artifacts.id });
+    if (leased.length === 0) {
+      const [now] = await db.select({ uploadState: artifacts.uploadState }).from(artifacts).where(eq(artifacts.id, row.id)).limit(1);
+      if (now?.uploadState === 'ready') return { state: 'ready', ...(await revisionHash()) };
+      if (now?.uploadState === 'failed') return finalizeArtifactUpload(row.id, opts);
+      return { state: 'pending', reason: 'finalizing' };
+    }
+    await storage.copy(staged, row.storageKey);
+  }
+
+  // Checked on the copy, the bytes every reader gets: the staged object can
+  // still change until its URL expires.
   const head = await storage.head(row.storageKey);
   if (!head) return { state: 'pending', reason: 'not_uploaded' };
   const signedFor = Number((row.metadata as { sizeBytes?: unknown } | null)?.sizeBytes);
@@ -84,6 +135,9 @@ export async function finalizeArtifactUpload(
     return markFailed(row.id, `content_type_mismatch: signed for ${signedType}, stored ${storedType}`);
   }
   const { sha256, sizeBytes } = await storage.sha256(row.storageKey);
+  if (Number.isFinite(signedFor) && sizeBytes !== signedFor) {
+    return markFailed(row.id, `size_mismatch: signed for ${signedFor} bytes, stored ${sizeBytes}`);
+  }
   if (opts.expectedSha256 && opts.expectedSha256.toLowerCase() !== sha256) {
     return markFailed(row.id, 'sha256_mismatch: the stored bytes do not match the hash the uploader sent');
   }
@@ -92,8 +146,9 @@ export async function finalizeArtifactUpload(
     .set({ contentHash: sha256, sizeBytes })
     .where(and(eq(artifactRevisions.artifactId, row.id), eq(artifactRevisions.revision, row.currentRevision), isNull(artifactRevisions.contentHash)));
   await db.update(artifacts)
-    .set({ uploadState: 'ready' })
+    .set({ uploadState: 'ready', metadata: sql`coalesce(${artifacts.metadata}, '{}'::jsonb) - 'finalizingAt'` })
     .where(and(eq(artifacts.id, row.id), eq(artifacts.uploadState, 'pending')));
+  if (stagedHead) await storage.remove(staged).catch(() => {});
   return { state: 'ready', sha256, sizeBytes };
 }
 
@@ -140,7 +195,7 @@ export async function sweepStaleUploads(now: Date = new Date(), storage: UploadS
       .where(and(eq(artifacts.id, r.id), sweepable, unreferenced))
       .returning({ id: artifacts.id });
     if (gone.length === 0) continue;
-    if (r.storageKey) await storage.remove(r.storageKey).catch(() => {});
+    if (r.storageKey) await removeUploadObjects(storage, r.storageKey).catch(() => {});
     removed++;
   }
   return { finalized, removed, waiting };
