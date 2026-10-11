@@ -30,6 +30,7 @@ import type {
   RecoveryTelemetry,
 } from '@buildd/shared';
 import { createHash } from 'node:crypto';
+import { FAILED_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { effectiveCauseKey, causeCodeOf } from '@/lib/failure-incident-cause-key';
 import type { RecoveryAttemptDetail, SentinelLastRun } from '@/lib/failure-incident-recovery-events';
 import { computeBlockedWork, unblocksOf, type BlockEpisode, type CausePreference } from './blocked-work';
@@ -81,8 +82,8 @@ const SEVERITY_RANK: Record<FailureIncidentSeverity, number> = { low: 0, medium:
 export const SELF_HEALTH_SIGNATURE = 'repeated_failure|ws=none|sentinel_self_health_degraded';
 /** Cause codes whose fix is code: no repair Buildd runs can clear them. */
 const CODE_FIX_CAUSES = new Set(['path_overlap.subject_exempt_violated', 'path_overlap.spurious_overlap']);
-const TERMINAL_TASK = new Set(['completed', 'failed', 'cancelled']);
-const FAILED_WORKER = new Set(['failed', 'error']);
+const TERMINAL_TASK: ReadonlySet<string> = new Set(TERMINAL_TASK_STATUSES);
+const FAILED_WORKER: ReadonlySet<string> = new Set(FAILED_WORKER_STATUSES);
 
 const ms = (iso: string) => Date.parse(iso);
 const round1 = (n: number) => Math.round(n * 10) / 10;

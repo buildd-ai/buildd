@@ -594,7 +594,7 @@ export async function loadRecoveryCause(opts: RecoveryReadOpts & { causeKey: str
     audit: auditRows.map(a => ({
       at: a.occurredAt.toISOString(),
       actorAccountId: a.actorAccountId ?? '',
-      operatorLabel: typeof (a.after as { operatorLabel?: unknown } | null)?.operatorLabel === 'string' ? (a.after as { operatorLabel: string }).operatorLabel : null,
+      operatorLabel: (() => { const l = (a.after as { operatorLabel?: unknown } | null)?.operatorLabel; return typeof l === 'string' ? l : null; })(),
       action: a.action,
       before: a.before,
       after: a.after,
