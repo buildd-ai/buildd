@@ -139,6 +139,16 @@ function isTenantKeyForUpload(
     && !parts[3].includes('..');
 }
 
+/**
+ * Where the bytes of an upload to `key` are PUT: a sibling of `key` that the
+ * upload URL is signed for. Finalize verifies them, copies them to `key` and
+ * deletes this one, so `key` itself is written only by the server and never
+ * by anyone holding a signed URL (lib/artifact-upload.ts).
+ */
+export function uploadStagingKey(key: string): string {
+  return assertNormalizedObjectKey(`${key}.upload`);
+}
+
 /** `attachments/<workspaceId>/<uploadId>/<name>` */
 export function buildAttachmentKey(
   workspaceId: unknown,

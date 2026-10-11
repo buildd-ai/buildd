@@ -11,7 +11,8 @@ import { formatOffset, basename } from './task-activity';
 export interface AttemptInput {
   runner: string | null;
   roleName: string | null;
-  commits: number;
+  /** Null: never reported. Interactive and local-session claims often leave it unset. */
+  commits: number | null;
   add: number;
   rem: number;
   files: number;
@@ -52,11 +53,21 @@ export interface CommitChecks {
 
 export interface Lineage {
   steps: LineageStep[];
-  totals: { add: number; rem: number; files: number; commits: number; attempts: number; claimToMerge: string | null };
+  totals: { add: number; rem: number; files: number; commits: number; attempts: number; claimToMerge: string | null; claimToMergeMs: number | null };
   commits: CommitChecks[];
 }
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+/**
+ * Whether any attempt recorded its commit or diff counters. A head SHA is not
+ * a measurement: an interactive or local-session claim records the SHA its PR
+ * points at but never the counters, and a PR is never opened from zero
+ * commits, so all-zero counters on a PR are unrecorded, not 0.
+ */
+export function diffStatsRecorded(attempts: Pick<AttemptInput, 'commits' | 'add' | 'rem' | 'files'>[]): boolean {
+  return attempts.some(a => (a.commits ?? 0) > 0 || a.add > 0 || a.rem > 0 || a.files > 0);
+}
 const GREEN = new Set(['ci_green', 'merged', 'approved', 'mergeable']);
 
 export function buildLineage({
@@ -76,11 +87,14 @@ export function buildLineage({
     const n = i + 1;
     const who = [a.roleName, a.runner].filter(Boolean).join(' on ');
     const tail = i === 0 ? 'PR opened' : 'same branch';
+    // The attempt that opened the PR pushed at least one commit, so a 0 there
+    // is an unrecorded count; leave it out rather than state it.
+    const count = a.commits == null || (i === 0 && a.commits === 0) ? null : plural(a.commits, 'commit');
     steps.push({
       kind: 'attempt',
       n,
       title: `Attempt ${n}`,
-      sub: `${who ? `${who} · ` : ''}${plural(a.commits, 'commit')}, ${tail}`,
+      sub: `${who ? `${who} · ` : ''}${count ? `${count}, ${tail}` : tail}`,
       at: a.startedAt != null && a.completedAt != null
         ? formatOffset(a.completedAt - a.startedAt)
         : i > 0 && a.completedAt == null ? 'running' : null,
@@ -148,9 +162,10 @@ export function buildLineage({
       add: sum(a => a.add),
       rem: sum(a => a.rem),
       files: sum(a => a.files),
-      commits: sum(a => a.commits),
+      commits: sum(a => a.commits ?? 0),
       attempts: attempts.length,
       claimToMerge: pr.mergedAt != null && first ? formatOffset(pr.mergedAt - first.createdAt) : null,
+      claimToMergeMs: pr.mergedAt != null && first ? Math.max(0, pr.mergedAt - first.createdAt) : null,
     },
   };
 }

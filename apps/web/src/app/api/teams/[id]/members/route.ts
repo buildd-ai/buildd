@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
-import { roleHas, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas, type TeamRole } from '@/lib/permissions';
 import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 
 export async function GET(
@@ -82,8 +82,7 @@ export async function POST(
     }
 
     const currentRole = membership.role as TeamRole;
-    const overrides = await getTeamPermissionOverrides(teamId);
-    if (!roleHas(currentRole, 'manage_team_members', overrides)) {
+    if (!roleHas(currentRole, 'manage_team_members')) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
@@ -98,12 +97,12 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
     }
 
-    if (role === 'owner' && !roleHas(currentRole, 'assign_team_owner', null /* locked */)) {
+    if (role === 'owner' && !roleHas(currentRole, 'assign_team_owner')) {
       return NextResponse.json({ error: 'Only owners can add owners' }, { status: 403 });
     }
 
     // Widening manage_team_members must not let its holders mint admins.
-    if (role === 'admin' && !roleHas(currentRole, 'assign_team_roles', overrides)) {
+    if (role === 'admin' && !roleHas(currentRole, 'assign_team_roles')) {
       return NextResponse.json({ error: 'Adding an admin needs the assign_team_roles permission' }, { status: 403 });
     }
 

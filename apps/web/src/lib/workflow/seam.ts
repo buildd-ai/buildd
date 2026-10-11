@@ -30,7 +30,7 @@ import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
-import { floorCandidatesSql, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
+import { floorCandidatesSql, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
@@ -1143,6 +1143,16 @@ export async function reconcileKernelDeliveries(
         if (ended) {
           view = await loadView({ deliveryId }, deps.exec);
           if (view.delivery?.state !== 'WORKING') s.imported++;
+        }
+      }
+      // 75c04d5d: a mechanical refresh pinned to a head the delivery already left. The head read
+      // above is a duplicate (the delivery holds it), so nothing else ever ends the row.
+      const stranded = strandedMechanicalRepair(view);
+      if (stranded) {
+        const r = await applyCommand({ type: 'RepairNotNeeded', actor: source, attemptId: stranded, reason: 'head_moved', live }, { ref: { deliveryId }, exec: deps.exec });
+        if (r.result === 'applied') {
+          s.imported++;
+          view = await loadView({ deliveryId }, deps.exec);
         }
       }
       if (view.delivery) {

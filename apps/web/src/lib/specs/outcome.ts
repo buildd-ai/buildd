@@ -29,9 +29,11 @@ import { fail, reach, type SpecCaller, type SpecError } from './store';
  * outcome is reported as failed; the task stays completed and the PR merged.
  *
  * Who records: a person or an account with write access to the workspace, or
- * the per-task token of a task whose parent is the subject (the reviewer or a
- * verification task filed under it). A task never grades its own outcome, so
- * the subject's own token may read the outcome but not record a verdict.
+ * the per-task token of the kernel's review round for the subject's own PR
+ * delivery. A task never grades its own outcome: the subject's own token may
+ * read the outcome but not record a verdict, and neither may a builder fix
+ * attempt (CI, conflict or review fix) or any task filed under the subject.
+ * Criterion check runs record through recordCheckVerdict, not a token.
  */
 
 export const MAX_VERDICT_READS = 20;
@@ -59,10 +61,16 @@ async function mayAct(caller: SpecCaller, task: TaskRow, mode: Mode): Promise<bo
   const scope = caller.kind === 'account' ? (caller.account.taskScope as { taskId?: string } | undefined) : undefined;
   if (!scope) return true;
   if (mode === 'read' && scope.taskId === task.id) return true;
-  // A child of the subject (its reviewer, a verification task) may record; the subject itself may not.
+  // Only the review round of the subject's own delivery records. Its delivery
+  // role and delivery are set by the platform when it files the round, never
+  // by a task filing a child, so a fix attempt or a self-filed child cannot pass.
   if (!scope.taskId || !isUuid(scope.taskId)) return false;
-  const [own] = await db.select({ parentTaskId: tasks.parentTaskId }).from(tasks).where(eq(tasks.id, scope.taskId)).limit(1);
-  return own?.parentTaskId === task.id;
+  const [own] = await db.select({ parentTaskId: tasks.parentTaskId, deliveryRole: tasks.deliveryRole, deliveryId: tasks.deliveryId })
+    .from(tasks).where(eq(tasks.id, scope.taskId)).limit(1);
+  if (!own || own.parentTaskId !== task.id || own.deliveryRole !== 'review' || !own.deliveryId) return false;
+  // Read through the kernel's view: the round's delivery must be the one the subject owns.
+  const view = (await getDeliveryViewsForTasks([task.id])).get(task.id);
+  return view?.ownerTaskId === task.id && view.deliveryId === own.deliveryId;
 }
 
 const pinOf = (context: unknown): Record<string, unknown> | null => {
@@ -94,7 +102,7 @@ async function loadGoverned(caller: SpecCaller | null, taskId: unknown, mode: Mo
   const task = await loadTask(taskId);
   if (!task || (caller && !(await mayAct(caller, task, mode)))) {
     return task && caller && mode === 'record' && (await reach(caller, task.workspaceId, false))
-      ? fail(403, 'You may read this outcome but not record a verdict: that takes write access, and a task never grades its own outcome (a person, or a review or verification task filed under it, records verdicts)')
+      ? fail(403, 'You may read this outcome but not record a verdict: that takes write access, and a task never grades its own outcome (a person, or the review round of its PR, records verdicts)')
       : fail(404, 'Task not found');
   }
   const pin = pinOf(task.context);

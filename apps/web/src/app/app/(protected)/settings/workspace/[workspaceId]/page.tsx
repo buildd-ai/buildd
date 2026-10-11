@@ -15,7 +15,7 @@ import { collectPolicySuggestions } from '@/lib/policy-suggestions';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { getTeamsPermissionOverrides, getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 import { loadWorkspaceRepoFacts, memberHasRepoAccess } from '@/lib/member-repo-access';
 import { getRepoAccessView } from '@/lib/github-repo-access-store';
 import { checkWorkspaceHealth } from '@/lib/workspace-health';
@@ -70,7 +70,6 @@ export default async function WorkspaceSettingsPage({
 
   const access = await verifyWorkspaceAccess(user.id, workspaceId);
   if (!access) notFound();
-  const overrides = await getTeamPermissionOverrides(access.teamId);
 
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
@@ -91,7 +90,7 @@ export default async function WorkspaceSettingsPage({
   if (!workspace) notFound();
 
   const gitConfig = workspace.gitConfig as WorkspaceGitConfig | null;
-  const canManageSettings = roleHas(access.role, 'manage_workspace_settings', overrides);
+  const canManageSettings = roleHas(access.role, 'manage_workspace_settings');
 
   // Roles a reviewer can be picked from (skills with isRole = true).
   const roles = await db.query.workspaceSkills.findMany({
@@ -131,7 +130,7 @@ export default async function WorkspaceSettingsPage({
     : [];
 
   const userTeams = await getUserTeamsWithDetails(user.id).catch(() => []);
-  const moveTeams = moveTargets(user.id, userTeams, workspace.teamId, await getTeamsPermissionOverrides(userTeams.map((t) => t.id)));
+  const moveTeams = moveTargets(user.id, userTeams, workspace.teamId);
 
   // Read-only diagnosis; a failure here must not take the settings page down.
   const repoAccessView = await getRepoAccessView(workspaceId, user.id).catch((err) => {
@@ -158,7 +157,7 @@ export default async function WorkspaceSettingsPage({
   const runnerSize = executor.executor === 'host' ? null : await resolveWorkspaceRunnerSize(workspace);
   const runnerMonth = runnerSize ? await workspaceHostedRunnerMonth(workspace.id).catch(() => null) : null;
 
-  const canDelete = roleHas(access.role, 'delete_workspace', overrides);
+  const canDelete = roleHas(access.role, 'delete_workspace');
 
   // One notice per problem above the settings (readiness-notices.ts). Every
   // health action, the scaffold and the spec routes are admin writes, so
@@ -332,7 +331,7 @@ export default async function WorkspaceSettingsPage({
                 />
               </div>
             )}
-            {roleHas(access.role, 'delete_workspace', overrides) && (
+            {roleHas(access.role, 'delete_workspace') && (
               <div
                 data-testid="workspace-danger-zone"
                 className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"

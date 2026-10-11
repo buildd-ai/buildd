@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
 supersedes: []
 ---
 # Living Specs
@@ -61,6 +61,16 @@ whole or not at all.
   the same or a higher level) and revises the result as a whole body, so every
   rule above applies unchanged. An unknown id, a missing or repeated heading,
   or a result over the body cap is a 400 and nothing is written.
+- A spec's body artifact changes only through a revise. A generic artifact
+  write (`PATCH /api/artifacts/[id]`, MCP `update_artifact`, `writeArtifactBody`)
+  on it is a 409 `spec_body` naming `manage_specs revise`, title and metadata
+  included, and writes nothing. Keyed upserts cannot reach it: it has no key.
+- An operator redaction (`redactArtifactText`) still removes a value from a
+  spec body and its history, because removing a leaked secret outranks the
+  spec's history. The body then sits past the revision the head pins, so the
+  next revise is a 409 `spec_body_moved` that says so, with no
+  `currentVersion` to retry at; the recovery is a new spec from the current
+  text.
 
 **Acceptance criteria**:
 - AC-1: GIVEN two writers at version 1 WHEN both revise THEN one lands as
@@ -71,6 +81,10 @@ whole or not at all.
   is the old body with only that span replaced, hash-pinned; a stale version
   is 409 and an unknown section 400, both writing nothing
   (`apps/web/tests/db/spec-section-revise.test.ts`).
+- AC-4: GIVEN a spec WHEN its body artifact is written through a generic
+  artifact path THEN the write is refused and nothing changes, and the spec
+  still revises; GIVEN a redacted spec body WHEN it is revised THEN the 409
+  names the out-of-band change (`apps/web/tests/db/spec-body-guard.test.ts`).
 
 ## 3. Agents over MCP
 
@@ -156,6 +170,16 @@ later ones are proposed (D-4).
   default, team-permissions.md) or is named in the workspace's
   `gitConfig.livingSpecs.approverUserIds`. A spec the caller cannot read is a
   404.
+- An approve from an OAuth bearer session (MCP or chat) approves nothing: an
+  agent may be driving it. The route answers 202 with a link
+  (`/app/specs/[id]/approve?request=…`) carrying a signed request for exactly
+  that revision, version and body hash, valid 24 hours
+  (`apps/web/src/lib/specs/approval-request.ts`). The revision is approved
+  only when a person with approval rights confirms it from a dashboard session
+  (`POST /api/specs/[id]/approve/confirm { request }`); any bearer is a 403.
+  A spec that moved since the request is a 409 `request_stale`, an expired or
+  forged request a 400, and a request already confirmed reads as done and
+  writes nothing.
 - Only the head revision is approved, from the version the person read. One
   statement stamps the revision (`approved_by`, `approved_at`, set only while
   unset) and moves `specs.approved_revision` to it, both only while the spec
@@ -188,18 +212,24 @@ later ones are proposed (D-4).
   N+1; a person can (`apps/web/tests/db/spec-approval.test.ts`).
 - AC-4: GIVEN an agent token, a bare API key or a plain member WHEN they
   submit or approve THEN 403 and nothing is stamped.
+- AC-11: GIVEN a person's own OAuth session WHEN it approves THEN nothing is
+  stamped and it gets a confirmation link; WHEN that person (or another owner
+  or admin) confirms it from the dashboard THEN that revision is approved, and
+  a revise in between makes the link stale
+  (`apps/web/tests/db/spec-approval-confirm.test.ts`).
 
 **Code surface**:
-- `apps/web/src/lib/specs/approval.ts` — `specApprover`, `submitSpecRevision`, `approveSpecRevision`
+- `apps/web/src/lib/specs/approval.ts` — `specApprover`, `submitSpecRevision`, `approveSpecRevision`, `confirmSpecApproval`
+- `apps/web/src/lib/specs/approval-request.ts` — `signSpecApprovalRequest`, `verifySpecApprovalRequest`
 - `apps/web/src/lib/specs/pin.ts` — `pinSpecSource`, `readPinnedSpecRevision`
 - `apps/web/src/lib/reviewer.ts` — `renderSpecConformanceGuidance`
 
 **Not yet**:
 - The pin is taken when a task is filed, not when it is claimed: a task filed
   under N and claimed after N+1 is approved still runs on N, by design.
-- No dashboard page lists or approves specs yet; approval is over the routes
-  and `manage_specs` from a person's session. The task page shows the pinned
-  revision.
+- No dashboard page lists specs yet. The one spec page is the approval
+  confirm page; approving directly is over the routes from a dashboard
+  session. The task page shows the pinned revision.
 - A repo document without `commitSha` (the legacy emitsPlan shape) is still
   read at the PR head.
 
@@ -235,9 +265,11 @@ the task completed or its PR merged.
 - Advisory: no outcome blocks completing a task or merging its PR. A failed
   outcome is reported as failed beside a completed task and a merged PR.
 - Who records: a person or account with write access to the workspace, or the
-  per-task token of a task filed under the subject (its reviewer). A task's
-  own token reads its outcome but cannot record on it (403): a task never
-  grades itself. Another workspace can neither record nor read (404).
+  per-task token of the review round the platform filed for the subject's own
+  PR delivery. A task's own token reads its outcome but cannot record on it
+  (403): a task never grades itself. Nor does a builder fix attempt (CI,
+  conflict or review fix) or any other task filed under the subject (403).
+  Another workspace can neither record nor read (404).
 - The reviewer of a pinned task is given the revision's criteria and asked to
   record one verdict each at the head it reviews (`manage_specs action=verdict`).
   Its review verdict still alone decides the merge.

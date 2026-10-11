@@ -27,7 +27,7 @@ import { deriveFeedPrState } from './mission-pulse';
 import { unmetDependencyIds, type DependencyRow } from './mission-helpers';
 import type { LocalStrand } from './local-strand';
 import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
-import { isJevModel } from '@buildd/core/decision-model';
+import { resolveModelMeasurement, type StoredMeasurement } from '@buildd/core/decision-model-measurements';
 import { recordDecision, type DecisionLedgerInput } from '@buildd/core/decision-ledger';
 
 export const STRAND_CHOICE_CAPABILITY = 'mission_strand_choice' as const;
@@ -206,6 +206,8 @@ export interface StrandChoiceDeps {
   recordReceipt?: (receipt: DecisionReceipt, scope: { teamId: string; accountId: string | null }) => Promise<void>;
   cache?: Map<string, StrandChoice>;
   log?: (line: string) => void;
+  /** Stored (kind, model) measurements. Default: the cached table read. */
+  measurements?: () => Promise<readonly StoredMeasurement[]>;
 }
 
 const MAX_CACHE_ENTRIES = 200;
@@ -288,9 +290,16 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       costUsd: res.usage?.costUsd ?? null,
     })}`);
     if (!(STRAND_CHOICE_LABELS as readonly string[]).includes(choice)) return await fallback('invalid_choice');
-    if (!isJevModel(res.model)) return await fallback('non_jev');
+    // Jev at the site's threshold unless a stored measurement moves it; any
+    // other model only once measured on this decision (decision-model-measurements.ts).
+    const measurement = await resolveModelMeasurement(
+      { kind: STRAND_CHOICE_DECISION_ID, answeringModel: res.model, fingerprint: currentPrompt().promptVersion },
+      deps.measurements ? { load: deps.measurements } : {},
+    );
+    if (!measurement.measured) return await fallback('non_jev');
+    const minConfidence = measurement.threshold ?? STRAND_CHOICE_MIN_CONFIDENCE;
 
-    const isConfidentWaitForLocal = choice === 'wait-for-local' && confidence >= STRAND_CHOICE_MIN_CONFIDENCE;
+    const isConfidentWaitForLocal = choice === 'wait-for-local' && confidence >= minConfidence;
     const applied = STRAND_CHOICE_MODE === 'gated' && isConfidentWaitForLocal;
     const appliedAnswer = applied ? choice : 'runner-first';
     const status = applied ? 'applied' : 'suggested';
@@ -304,7 +313,7 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       fingerprint: key,
       promptVersion: currentPrompt().promptVersion,
       model: res.model,
-      minConfidence: STRAND_CHOICE_MIN_CONFIDENCE,
+      minConfidence,
       confidence,
       verdict: choice,
       ruleAnswer: 'runner-first',

@@ -139,6 +139,8 @@ export const CHAT_TOOL_SPECS = withAreas({
 
   // ── workers: steering and fleet health ──
   send_agent_message: one(write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'POST /api/workers/:id/instruct')),
+  /** Answer (or re-answer) a worker's waiting question; the chat tool takes `answer`, MCP takes `message`. */
+  answer_question: one(write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'POST /api/workers/:id/respond')),
   query_events: one(read('GET /api/workers/:id')),
   explain: one(read('GET /api/explain')),
   get_error_traces: one(read('GET /api/workspaces/:id/error-traces', 'GET /api/tasks/:id/error-traces', 'GET /api/workers/:id')),
@@ -261,8 +263,6 @@ export const CHAT_TOOL_SPECS = withAreas({
 
 /** Chat-only tools: no MCP action, same registry rules. */
 export const CHAT_NATIVE_TOOL_SPECS = {
-  /** Answer (or re-answer) a worker's waiting question. MCP has no action for this; the dashboard posts /respond. */
-  answer_question: single('workers', write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'POST /api/workers/:id/respond')),
   /**
    * Hold or resume one task: no new claims while held, and a running agent is
    * told to stop at a safe point (or to carry on, on resume).
@@ -325,6 +325,8 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   claim_task: { reason: 'worker-only', note: 'Claims work for a runner; a person in chat is not a worker.' },
   update_progress: { reason: 'worker-only', note: 'A running worker reports its own progress.' },
   receive_messages: { reason: 'worker-only', note: 'A running worker collects the messages sent to it.' },
+  ask_human: { reason: 'worker-only', note: 'An interactive session parks its own worker on a question; a person in chat answers instead.' },
+  await_answer: { reason: 'worker-only', note: 'An interactive session waits for the answer to its own question; a person in chat answers instead.' },
   complete_task: { reason: 'worker-only', note: 'A worker completes its own task.' },
   create_pr: { reason: 'worker-only', note: 'PRs are opened by the worker that wrote the branch.' },
   emit_event: { reason: 'worker-only', note: 'Worker milestone events.' },

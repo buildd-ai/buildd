@@ -7,7 +7,7 @@ import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
 import { clampKeyLevel, parseKeyLevel } from '@/lib/key-level-policy';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+
 import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
 import { trackEvent } from '@/lib/axiom';
 
@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
     if (!role) {
       return NextResponse.json({ error: 'You are not a member of this team' }, { status: 403 });
     }
-    const level = clampKeyLevel(role, requestedLevel, await getTeamPermissionOverrides(teamId));
+    const level = clampKeyLevel(role, requestedLevel);
 
     const plaintextKey = generateApiKey();
 

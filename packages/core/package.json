@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.320.1",
+  "version": "0.322.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -51,6 +51,7 @@
     "./coding-policy-store": "./coding-policy-store.ts",
     "./providers": "./providers/index.ts",
     "./providers/resolve": "./providers/resolve.ts",
+    "./providers/assignments": "./providers/assignments.ts",
     "./providers/manage": "./providers/manage.ts",
     "./providers/agent-keys": "./providers/agent-keys.ts",
     "./entitlements": "./entitlements.ts",
@@ -66,6 +67,7 @@
     "./decision-benchmark": "./decision-benchmark.ts",
     "./decision-client": "./decision-client.ts",
     "./decision-model": "./decision-model.ts",
+    "./decision-model-measurements": "./decision-model-measurements.ts",
     "./litellm-gateway": "./litellm-gateway.ts",
     "./cloudflare-gateway-tokens": "./cloudflare-gateway-tokens.ts",
     "./net/public-address": "./net/public-address.ts",

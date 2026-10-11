@@ -21,8 +21,6 @@ import { accounts } from '@buildd/core/db/schema';
 import { TOKEN_SCOPES, requiresTeamAdminToGrant } from '@buildd/core/token-scopes';
 import { and, eq, or, sql } from 'drizzle-orm';
 import { maxKeyLevelForRole, type ApiKeyLevel, type TeamRole } from './key-level-policy';
-import type { PermissionOverrides } from './permission-registry';
-import { getTeamPermissionOverrides } from './permissions';
 import { invalidateAccountCacheByHash } from './api-auth';
 
 /** Every scope only a manage_team_keys holder may put on a token. */
@@ -30,11 +28,10 @@ export const ADMIN_GRANT_SCOPES: readonly string[] = TOKEN_SCOPES.filter(require
 
 /**
  * The highest key level a person's keys may keep in a team. `role` null means
- * they are no longer in it: they keep what a member may mint, and team
- * overrides cannot lift that, since they no longer hold a role at all.
+ * they are no longer in it: they keep what a member may mint.
  */
-export function keyCeilingFor(role: TeamRole | null, overrides: PermissionOverrides | null): ApiKeyLevel {
-  return role === null ? 'worker' : maxKeyLevelForRole(role, overrides);
+export function keyCeilingFor(role: TeamRole | null): ApiKeyLevel {
+  return role === null ? 'worker' : maxKeyLevelForRole(role);
 }
 
 /** The clamp statement. Exported for the real-Postgres test of its WHERE. */
@@ -71,12 +68,8 @@ export async function clampCreatorKeys(opts: {
   teamId: string;
   userId: string;
   role: TeamRole | null;
-  overrides?: PermissionOverrides | null;
 }): Promise<number> {
-  const overrides = opts.role === null
-    ? null
-    : opts.overrides !== undefined ? opts.overrides : await getTeamPermissionOverrides(opts.teamId);
-  if (keyCeilingFor(opts.role, overrides) === 'admin') return 0;
+  if (keyCeilingFor(opts.role) === 'admin') return 0;
 
   const clamped = await creatorKeyClampStatement(opts.teamId, opts.userId);
   for (const row of clamped) invalidateAccountCacheByHash(row.apiKey);

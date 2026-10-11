@@ -226,7 +226,7 @@ export async function attachRoleConfig(
     // table, then overrides, then public text), not as last written.
     const delivered = (!role
       ? ''
-      : role.source === 'system' && role.content
+      : role.content
         ? await (await import('@/lib/default-roles')).deliverSeededRoleContent(role)
         : role.content) ?? '';
     if (role && delivered.trim()) {

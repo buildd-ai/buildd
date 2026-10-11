@@ -47,7 +47,7 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ args, type: 'and' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   workspaces: { id: 'id', teamId: 'teamId' },
 }));
 

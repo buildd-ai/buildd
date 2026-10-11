@@ -61,6 +61,14 @@ describe('manage_specs', () => {
     expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/${SPEC}`, 'PATCH', { expectedVersion: 2, body: 'new' }]);
   });
 
+  it('a revise refused because the body moved outside a revise gives the reason, not retry advice', async () => {
+    api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"The spec body was changed outside a spec revise","code":"spec_body_moved"}'));
+    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, body: 'new' }, ctx());
+    expect(r.isError).toBe(true);
+    expect(out(r)).toContain('changed outside a spec revise');
+    expect(out(r)).not.toContain('expectedVersion');
+  });
+
   it('revise with section or heading sends only that section, byte for byte, and says which section changed', async () => {
     api.mockResolvedValueOnce({ spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false });
     const text = '## Caching\nR-2: 5 minutes.\n\n';
@@ -114,6 +122,15 @@ describe('manage_specs', () => {
     api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"Approving a spec is a person\'s decision"}'));
     const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx());
     expect([r.isError, out(r)]).toEqual([true, "Approving a spec is a person's decision"]);
+  });
+
+  it('approve from an OAuth session returns the confirmation link and says nothing is approved yet', async () => {
+    const confirmUrl = `https://buildd.dev/app/specs/${SPEC}/approve?request=tok`;
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 2 }, pending: { confirmUrl, revision: 2, expiresAt: '2026-10-12T20:00:00.000Z' } });
+    const text = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx()));
+    expect(text).toContain('Not approved yet');
+    expect(text).toContain(confirmUrl);
+    expect(text).not.toContain('Approved:');
   });
 
   it('submit POSTs the version, and a stale one surfaces currentVersion', async () => {

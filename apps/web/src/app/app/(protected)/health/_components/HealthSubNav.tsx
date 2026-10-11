@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { healthItemFor, healthNavFor } from '@/lib/health-nav';
+import { healthItemFor, healthNavFor, type HealthViewer } from '@/lib/health-nav';
 
 /**
  * Health's second column, the same shape as Settings: a labelled list beside
@@ -11,11 +11,11 @@ import { healthItemFor, healthNavFor } from '@/lib/health-nav';
  * above the page, because Overview is a page in its own right (Settings has
  * a list page instead). The `?workspace=` filter rides along between pages.
  */
-export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
+export default function HealthSubNav({ viewer }: { viewer: HealthViewer }) {
   const pathname = usePathname();
   const params = useSearchParams();
   const active = healthItemFor(pathname);
-  const items = healthNavFor(isOperator);
+  const items = healthNavFor(viewer);
   const workspace = params.get('workspace');
   const activeTabRef = useRef<HTMLAnchorElement>(null);
 
