@@ -3147,6 +3147,60 @@ describe('PATCH /api/workers/[id]', () => {
     });
   });
 
+  describe('terminal status replaces the last tool call as the current action', () => {
+    function captureSets(status: string) {
+      const sets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          sets.push(updates);
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status, accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+      return sets;
+    }
+
+    async function patchTerminal(body: Record<string, unknown>) {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        currentAction: 'Running: echo final-marker',
+        pendingInstructions: null,
+      });
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body,
+      });
+      return PATCH(req, { params: mockParams });
+    }
+
+    it('a completed worker reads Completed', async () => {
+      const sets = captureSets('completed');
+      await patchTerminal({ status: 'completed' });
+      expect(sets.some(s => s.currentAction === 'Completed')).toBe(true);
+    });
+
+    it('a failed worker reads Failed', async () => {
+      const sets = captureSets('failed');
+      await patchTerminal({ status: 'failed', error: 'boom' });
+      expect(sets.some(s => s.currentAction === 'Failed')).toBe(true);
+    });
+
+    it('an explicit currentAction on the terminal write is kept', async () => {
+      const sets = captureSets('completed');
+      await patchTerminal({ status: 'completed', currentAction: 'Done: opened PR' });
+      expect(sets.some(s => s.currentAction === 'Done: opened PR')).toBe(true);
+      expect(sets.some(s => s.currentAction === 'Completed')).toBe(false);
+    });
+  });
+
   it('includes phases and lastQuestion in task.result on completion', async () => {
     let capturedTaskSet: any = null;
     mockTasksUpdate.mockReturnValue({
@@ -13439,6 +13493,33 @@ describe('PATCH /api/workers/[id]', () => {
         set: mock(() => ({ where: mock(() => Promise.resolve()) })),
       });
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    });
+
+    it('a loop hold still reports the completed owner attempt to the kernel (approved PR must not stick in WORKING)', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) })),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ commitCount: 1, prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42 }));
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask({ deliveryId: 'delivery-1', deliveryRole: 'owner' }));
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' },
+        },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'task-1', deliveryId: 'delivery-1', deliveryRole: 'owner' }, status: 'completed',
+      });
     });
 
     it('requeues task to pending when condition is unmet (command exit code != 0)', async () => {

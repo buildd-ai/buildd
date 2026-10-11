@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { beginAdminRead } from '@/lib/admin/scope';
-import { loadDispatchHealth } from '@/lib/admin/data';
+import { viewDispatchHealth } from '@/lib/admin/tenant-privacy';
 
 /**
  * GET /api/admin/dispatch-health — platform owner only (404 otherwise).
@@ -11,5 +11,5 @@ import { loadDispatchHealth } from '@/lib/admin/data';
 export async function GET(req: NextRequest) {
   const read = await beginAdminRead(req);
   if ('response' in read) return read.response;
-  return NextResponse.json({ teamId: read.scope.teamId, workspaceId: read.scope.workspaceId, report: await loadDispatchHealth(read.workspaceIds) });
+  return NextResponse.json({ teamId: read.scope.teamId, workspaceId: read.scope.workspaceId, report: await viewDispatchHealth(read.viewer) });
 }

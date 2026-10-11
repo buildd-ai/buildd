@@ -49,8 +49,9 @@ import { attemptLine } from '@/lib/workflow/projections';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
-import { REPO_WIDE_SENTINEL, readSoftOverlaps } from '@buildd/core/path-overlap';
-import { buildCoordinationHolds, coordinationGateDetail, coordinationLink, type CoordinationHold, type CoordinationHolder } from '@/lib/explain-coordination';
+import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { coordinationGateDetail, coordinationLink, type CoordinationHold } from '@/lib/explain-coordination';
+import { loadCoordinationHolds, type HoldTask } from '@/lib/coordination-holds';
 import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
 import { loadBrowserRunnerHeartbeats } from './runner-heartbeats';
 import { browserRunnerOnline } from './visual-audit-runner';
@@ -114,30 +115,12 @@ async function loadGateRows(taskId: string): Promise<Array<{ entry: GateHistoryE
   });
 }
 
-/**
- * Who holds a pending task, and why (./explain-coordination). One extra read,
- * only for a pending task that names holders. A failure omits it.
- */
-async function loadCoordination(
-  task: { id: string; status: string; dependsOn?: string[] | null; pathManifest?: string[] | null; pathDeclaration?: unknown },
+/** Who holds a pending task, and why (lib/coordination-holds.ts). A failure omits it. */
+function loadCoordination(
+  task: HoldTask,
   gateRows: Array<{ entry: GateHistoryEntry; detail: unknown }>,
 ): Promise<CoordinationHold[]> {
-  if (task.status !== 'pending') return [];
-  const gateDetails = gateRows.map(r => ({ reason: r.entry.reason, detail: r.detail }));
-  const ids = new Set<string>(task.dependsOn ?? []);
-  for (const e of readSoftOverlaps(task.pathDeclaration)) ids.add(e.taskId);
-  for (const g of gateRows) if (g.entry.holder?.blockingTaskId) ids.add(g.entry.holder.blockingTaskId);
-  ids.delete(task.id);
-  const rows = ids.size > 0
-    ? await db.query.tasks.findMany({
-        where: inArray(tasks.id, [...ids]),
-        columns: { id: true, title: true, status: true, pathManifest: true },
-      })
-    : [];
-  const holders = new Map<string, CoordinationHolder>(
-    (rows as Array<{ id: string; title: string | null; status: string; pathManifest: string[] | null }>).map(r => [r.id, r]),
-  );
-  return buildCoordinationHolds({ task, holders, gateDetails });
+  return loadCoordinationHolds(task, gateRows.map(r => ({ reason: r.entry.reason, detail: r.detail })));
 }
 
 /** Cap on how many gated subjects a workspace answer returns. */

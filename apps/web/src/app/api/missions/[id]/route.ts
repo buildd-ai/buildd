@@ -35,6 +35,7 @@ import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { resolveWorkspaceAccess } from '@/lib/workspace-access';
 import { wakeTasks } from '@/lib/dispatch-authority';
 import { continueOnRunnerBlockedReason } from '@/lib/local-strand';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
@@ -270,7 +271,7 @@ export async function PATCH(
         return NextResponse.json({ error: 'actorWorkerId must be its own worker' }, { status: 403 });
       }
     }
-    const { title, description, status, priority, cronExpression, workspaceId, initiativeId, skillSlugs, outputSchema, model,
+    const { title, description, status, priority, cronExpression, workspaceId: requestedWorkspaceId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
       integrationBranchEnabled, branchStrategy,
@@ -280,6 +281,30 @@ export async function PATCH(
 
     if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
       return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
+    }
+
+    // A mission moves only to a workspace the caller can create work in, and
+    // only within its own team: the mission's team is fixed at creation and
+    // every team-scoped read keys off it, so a cross-team move would leave the
+    // mission filed under one team while pointing at another team's workspace.
+    // The reference is resolved like POST /api/missions does (UUID, owner/repo
+    // or name) and the resolved id is what gets stored.
+    let workspaceId: string | null | undefined = requestedWorkspaceId;
+    if (requestedWorkspaceId && requestedWorkspaceId !== existing.workspaceId) {
+      const access = await resolveWorkspaceAccess(
+        String(requestedWorkspaceId),
+        apiAccount ? { account: apiAccount } : { userId: user!.id },
+        'canCreate',
+      );
+      if (!access.ok) {
+        return NextResponse.json({ error: access.error }, { status: access.status });
+      }
+      if (access.workspace.teamId !== existing.teamId) {
+        return NextResponse.json({
+          error: 'A mission can only move to a workspace in its own team. Create the mission in the other team instead.',
+        }, { status: 403 });
+      }
+      workspaceId = access.workspace.id;
     }
 
     // Resolved once for the whole request so every feed entry this PATCH

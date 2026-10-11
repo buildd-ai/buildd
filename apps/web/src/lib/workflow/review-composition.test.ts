@@ -5,7 +5,7 @@
  * reviewed on its own; anything the check cannot see fails closed.
  */
 import { describe, expect, test } from 'bun:test';
-import { buildCompositionAttestation, collectComposition, isCompositionPr, isReleaseArtifactCommit, patchIdOf, type CompositionInput, type ConstituentDelivery, type FileDiff } from './review-composition';
+import { buildCompositionAttestation, classifyRefreshMerge, renumberedMigrations, collectComposition, isCompositionPr, isReleaseArtifactCommit, patchIdOf, type CompositionInput, type ConstituentDelivery, type FileDiff, type RefreshMergeTrees } from './review-composition';
 import { headCoverage, reduce } from './reducer';
 import type { DeliverySnapshot, KernelView, RoundSnapshot } from './types';
 
@@ -258,5 +258,195 @@ describe('collectComposition (GitHub + ledger read)', () => {
     };
     const b = await collectComposition({ api, exec: async () => ({ rows: [] }), installationId: 1, workspaceId: 'w1', repoFullName: REPO, prNumber: 50, baseRef: 'dev', headRef: 'mission/x', aggregateHeadSha: 'AGG' });
     expect(b.attestation.novelDelta.result).toBe('unverifiable');
+  });
+});
+
+// ── A mission branch refresh PR: trunk merged into the integration branch ───
+//
+// knowledge-base: buildd/design/mission-branch-refresh-on-demand.md R3. The
+// trunk commits it brings in were each reviewed when they landed on trunk; the
+// mission side is already its base; what is new is the merge resolution.
+
+describe('isCompositionPr: a refresh PR', () => {
+  test('a refresh task PR into its mission branch is composed', () => {
+    expect(isCompositionPr({ headRef: 'buildd/abc-chore-mission-merge-dev', baseRef: 'mission/x', missionWorkingBranch: 'mission/x', refreshTrunk: 'dev' })).toBe(true);
+  });
+  test('without the refresh context, or into another branch, it is ordinary', () => {
+    expect(isCompositionPr({ headRef: 'buildd/abc-chore-mission-merge-dev', baseRef: 'mission/x', missionWorkingBranch: 'mission/x', refreshTrunk: null })).toBe(false);
+    expect(isCompositionPr({ headRef: 'buildd/abc-chore-mission-merge-dev', baseRef: 'mission/y', missionWorkingBranch: 'mission/x', refreshTrunk: 'dev' })).toBe(false);
+    expect(isCompositionPr({ headRef: 'buildd/abc-chore-mission-merge-dev', baseRef: 'mission/x', missionWorkingBranch: null, refreshTrunk: 'dev' })).toBe(false);
+  });
+});
+
+/** Trees as path → "mode blob" maps: merge base, mission side (ours), trunk side (theirs), the merge result. */
+const trees = (o: Partial<RefreshMergeTrees> = {}): RefreshMergeTrees => ({
+  base: { 'same.ts': 'b', 'dev-only.ts': 'b', 'mission-only.ts': 'b', 'both.ts': 'b' },
+  ours: { 'same.ts': 'b', 'dev-only.ts': 'b', 'mission-only.ts': 'm', 'both.ts': 'm' },
+  theirs: { 'same.ts': 'b', 'dev-only.ts': 'd', 'mission-only.ts': 'b', 'both.ts': 'd' },
+  merged: { 'same.ts': 'b', 'dev-only.ts': 'd', 'mission-only.ts': 'm', 'both.ts': 'md' },
+  ...o,
+});
+
+describe('classifyRefreshMerge', () => {
+  test('a file both sides changed is novel; one-sided changes taken as they were are not', () => {
+    expect(classifyRefreshMerge(trees())).toEqual(['both.ts']);
+  });
+  test('a file both sides changed is novel even when one side is taken whole', () => {
+    expect(classifyRefreshMerge(trees({ merged: { ...trees().merged, 'both.ts': 'm' } }))).toEqual(['both.ts']);
+    expect(classifyRefreshMerge(trees({ merged: { ...trees().merged, 'both.ts': 'd' } }))).toEqual(['both.ts']);
+  });
+  test('regression: a trunk change the merge dropped is novel, though the PR diff never shows it', () => {
+    expect(classifyRefreshMerge(trees({ merged: { ...trees().merged, 'dev-only.ts': 'b' } }))).toEqual(['both.ts', 'dev-only.ts']);
+  });
+  test('a mission change the merge dropped is novel', () => {
+    expect(classifyRefreshMerge(trees({ merged: { ...trees().merged, 'mission-only.ts': 'b' } }))).toEqual(['both.ts', 'mission-only.ts']);
+  });
+  test('an edit to a file neither side touched, a new file, or a deletion is novel', () => {
+    const t = trees();
+    expect(classifyRefreshMerge({ ...t, merged: { ...t.merged, 'same.ts': 'x', 'new.ts': 'n' } })).toEqual(['both.ts', 'new.ts', 'same.ts']);
+    const { ['same.ts']: _gone, ...rest } = t.merged;
+    expect(classifyRefreshMerge({ ...t, merged: rest })).toEqual(['both.ts', 'same.ts']);
+  });
+});
+
+describe('renumberedMigrations: a migration the merge only moved to a free index', () => {
+  const D = 'packages/core/drizzle/';
+  const t = (merged: Record<string, string>, ours: Record<string, string> = { [`${D}0002_mine.sql`]: 'X' }): RefreshMergeTrees => ({
+    base: {},
+    ours,
+    theirs: { [`${D}0002_theirs.sql`]: 'T' },
+    merged: { [`${D}0002_theirs.sql`]: 'T', ...merged },
+  });
+  test('the same file content at a new index, and the index it left, are not novel', () => {
+    expect([...renumberedMigrations(t({ [`${D}0003_regen.sql`]: 'X' }))].sort()).toEqual([`${D}0002_mine.sql`, `${D}0003_regen.sql`]);
+  });
+  test('a moved migration whose content changed is novel', () => {
+    expect([...renumberedMigrations(t({ [`${D}0003_regen.sql`]: 'Y' }))]).toEqual([]);
+  });
+  test('a migration written in the merge, matching nothing the mission had, is novel', () => {
+    expect([...renumberedMigrations(t({ [`${D}0003_regen.sql`]: 'X', [`${D}0004_extra.sql`]: 'Z' }))].sort()).toEqual([`${D}0002_mine.sql`, `${D}0003_regen.sql`]);
+  });
+  test('one mission file pairs with one new file at most', () => {
+    expect([...renumberedMigrations(t({ [`${D}0003_a.sql`]: 'X', [`${D}0004_b.sql`]: 'X' }))].length).toBe(2);
+  });
+  test('a copy of a trunk migration is not a renumber', () => {
+    expect([...renumberedMigrations(t({ [`${D}0003_copy.sql`]: 'T' }, {}))]).toEqual([]);
+  });
+  test('only migrations: a moved source file is still novel', () => {
+    expect([...renumberedMigrations({ base: {}, ours: { 'a.ts': 'X' }, theirs: {}, merged: { 'b.ts': 'X' } })]).toEqual([]);
+  });
+});
+
+describe('buildCompositionAttestation: a refresh PR', () => {
+  /** Trunk's reviewed squash S1 (PR #11), then the agent's merge M of trunk into the mission branch. */
+  const refresh = (t: RefreshMergeTrees | null, o: Partial<CompositionInput> = {}): CompositionInput => base({
+    commits: [
+      { sha: 'S1', parents: ['B0'], message: 'feat: one (#11)', files: ['a.ts'], diff: [fd('a.ts')] },
+      { sha: 'M', parents: ['MISSION', 'S1'], message: 'Merge dev', files: ['a.ts', 'both.ts', 'docs/specs/INDEX.md'], mergeParentsInBase: false, refreshMerge: t },
+    ],
+    aggregateFiles: ['a.ts', 'both.ts', 'docs/specs/INDEX.md'],
+    constituentsByCommit: { S1: { prNumber: 11, mergedHeadSha: 'P11', delivery: approved('11', 'P11') } },
+    reviewedDiffs: { S1: [fd('a.ts')] },
+    refresh: { trunk: 'dev' },
+    ...o,
+  });
+  const resolved = (extra: Record<string, string> = {}): RefreshMergeTrees => ({
+    base: { 'a.ts': 'b', 'both.ts': 'b', 'docs/specs/INDEX.md': 'b', 'packages/core/drizzle/meta/_journal.json': 'b' },
+    ours: { 'a.ts': 'b', 'both.ts': 'm', 'docs/specs/INDEX.md': 'm', 'packages/core/drizzle/meta/_journal.json': 'm' },
+    theirs: { 'a.ts': 'd', 'both.ts': 'd', 'docs/specs/INDEX.md': 'd', 'packages/core/drizzle/meta/_journal.json': 'd' },
+    merged: { 'a.ts': 'd', 'both.ts': 'md', 'docs/specs/INDEX.md': 'md', 'packages/core/drizzle/meta/_journal.json': 'md', ...extra },
+  });
+
+  test('only the resolution is novel: trunk commits are constituents, generated files CI rebuilds are left out', () => {
+    const b = buildCompositionAttestation(refresh(resolved()));
+    expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['both.ts'] });
+    expect(b.novelCommits).toEqual([{ sha: 'M', reason: 'refresh_merge_resolution', paths: ['both.ts'] }]);
+    expect(b.attestation.constituents.map((c) => c.prNumber)).toEqual([11]);
+    const dec = run(b);
+    if (dec.result !== 'apply') throw new Error(dec.result);
+    expect(dec.rounds.find((r) => r.op === 'insert')).toMatchObject({ kind: 'delta', scope: { novelDeltaPaths: ['both.ts'], composition: true } });
+  });
+
+  test('a resolution of generated files only needs no reviewer → APPROVED on composition', () => {
+    const t = resolved();
+    const only = { ...t, ours: { ...t.ours, 'both.ts': 'b' }, merged: { ...t.merged, 'both.ts': 'd' } };
+    const b = buildCompositionAttestation(refresh(only));
+    expect(b.attestation.novelDelta).toEqual({ result: 'none' });
+    const dec = run(b);
+    if (dec.result !== 'apply') throw new Error(dec.result);
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch.approvalBasis).toBe('composition');
+  });
+
+  test("a migration renumbered past trunk's, unchanged, needs no reviewer; one edited in the merge does", () => {
+    const t = resolved();
+    const mine = 'packages/core/drizzle/0002_mine.sql', regen = 'packages/core/drizzle/0003_regen.sql', trunks = 'packages/core/drizzle/0002_trunk.sql';
+    const only = { ...t, ours: { ...t.ours, 'both.ts': 'b', [mine]: 'X' }, theirs: { ...t.theirs, [trunks]: 'T' }, merged: { ...t.merged, 'both.ts': 'd', [trunks]: 'T', [regen]: 'X' } };
+    expect(buildCompositionAttestation(refresh(only)).attestation.novelDelta).toEqual({ result: 'none' });
+    const edited = { ...only, merged: { ...only.merged, [regen]: 'X2' } };
+    expect(buildCompositionAttestation(refresh(edited)).attestation.novelDelta).toEqual({ result: 'present', paths: [mine, regen] });
+  });
+
+  test('a design-check baseline resolved is still reviewed: CI only ratchets it', () => {
+    const t = resolved();
+    const p = 'scripts/design-check.baseline.json';
+    const withBaseline: RefreshMergeTrees = { base: { ...t.base, [p]: 'b' }, ours: { ...t.ours, [p]: 'm' }, theirs: { ...t.theirs, [p]: 'd' }, merged: { ...t.merged, [p]: 'md' } };
+    const b = buildCompositionAttestation(refresh(withBaseline));
+    expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['both.ts', p] });
+  });
+
+  test('a dropped trunk change is owed a review although the aggregate diff does not list it', () => {
+    // Taking the mission side of a.ts whole: the PR diff (mission...head) no longer shows a.ts.
+    const b = buildCompositionAttestation(refresh(resolved({ 'a.ts': 'b' }), { aggregateFiles: ['both.ts', 'docs/specs/INDEX.md'] }));
+    expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['a.ts', 'both.ts'] });
+  });
+
+  test('unreadable or truncated trees fail closed → full review', () => {
+    expect(buildCompositionAttestation(refresh(null)).attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'refresh_merge_unreadable:M' });
+  });
+
+  test('without the refresh context the same merge stays wholly novel (release and integration PRs unchanged)', () => {
+    const b = buildCompositionAttestation(refresh(resolved(), { refresh: null }));
+    expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['a.ts', 'both.ts', 'docs/specs/INDEX.md'] });
+    expect(b.novelCommits[0].reason).toBe('merge_of_unreviewed_history');
+  });
+});
+
+describe('collectComposition: a refresh PR', () => {
+  const T = (m: Record<string, string>) => ({ truncated: false, tree: Object.entries(m).map(([path, sha]) => ({ path, mode: '100644', type: 'blob', sha })) });
+  const api = (o: { truncated?: boolean; mergedBase?: string } = {}) => async (_i: number, path: string): Promise<unknown> => {
+    if (path.startsWith(`/repos/${REPO}/compare/mission%2Fx...AGG`)) return {
+      merge_base_commit: { sha: 'MISSION' }, base_commit: { sha: 'MISSION' }, total_commits: 2,
+      commits: [{ sha: 'S1', parents: [{ sha: 'B0' }], commit: { message: 'feat: one' } }, { sha: 'M', parents: [{ sha: 'MISSION' }, { sha: 'S1' }], commit: { message: 'Merge dev' } }],
+      files: [{ filename: 'a.ts' }, { filename: 'both.ts' }],
+    };
+    if (path === `/repos/${REPO}/commits/S1`) return { files: [{ filename: 'a.ts', status: 'modified', patch: '@@ -1 +1 @@\n-x\n+reviewed' }] };
+    if (path === `/repos/${REPO}/commits/M`) return { files: [{ filename: 'a.ts', status: 'modified', patch: '@@ -1 +1 @@\n-x\n+reviewed' }, { filename: 'both.ts', status: 'modified', patch: '@@ -1 +1 @@\n-m\n+md' }] };
+    // Constituents of a refresh are trunk PRs: merged into dev, not into the PR's head branch.
+    if (path === `/repos/${REPO}/commits/S1/pulls`) return [{ number: 11, merged_at: 't', base: { ref: 'dev' }, head: { sha: 'P11' } }];
+    if (path === `/repos/${REPO}/compare/B0...P11`) return { files: [{ filename: 'a.ts', status: 'modified', patch: '@@ -1 +1 @@\n-x\n+reviewed' }] };
+    // The merge's trunk parent is on trunk, and isn't in the mission branch yet.
+    if (path === `/repos/${REPO}/compare/S1...MISSION`) return { status: 'diverged' };
+    if (path === `/repos/${REPO}/compare/S1...dev`) return { status: 'ahead' };
+    if (path === `/repos/${REPO}/compare/MISSION...S1`) return { merge_base_commit: { sha: o.mergedBase ?? 'B0' } };
+    const commit = /\/git\/commits\/(\w+)$/.exec(path);
+    if (commit) return { tree: { sha: `tree-${commit[1]}` } };
+    if (path === `/repos/${REPO}/git/trees/tree-B0?recursive=1`) return T({ 'a.ts': 'b', 'both.ts': 'b' });
+    if (path === `/repos/${REPO}/git/trees/tree-MISSION?recursive=1`) return T({ 'a.ts': 'b', 'both.ts': 'm' });
+    if (path === `/repos/${REPO}/git/trees/tree-S1?recursive=1`) return T({ 'a.ts': 'd', 'both.ts': 'd' });
+    if (path === `/repos/${REPO}/git/trees/tree-M?recursive=1`) return { ...T({ 'a.ts': 'd', 'both.ts': 'md' }), truncated: !!o.truncated };
+    throw new Error(`unexpected ${path}`);
+  };
+  const ledger = async () => ({ rows: [{ id: 'd-11', pr_number: 11, approved_heads: ['P11'], rounds: [{ id: 'r-11', head_sha: 'P11', status: 'decided', effective_verdict: 'approve' }] }] });
+  const collect = (a: ReturnType<typeof api>) => collectComposition({ api: a, exec: ledger, installationId: 1, workspaceId: 'w1', repoFullName: REPO, prNumber: 50, baseRef: 'mission/x', headRef: 'buildd/abc-chore-mission-merge-dev', aggregateHeadSha: 'AGG', refreshTrunk: 'dev' });
+
+  test('proves the trunk commit against its trunk PR and reads the merge from four trees', async () => {
+    const b = await collect(api());
+    expect(b.attestation.constituents.map((c) => [c.prNumber, c.landedSha])).toEqual([[11, 'S1']]);
+    expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['both.ts'] });
+  });
+
+  test('a truncated tree fails closed', async () => {
+    expect((await collect(api({ truncated: true }))).attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'refresh_merge_unreadable:M' });
   });
 });

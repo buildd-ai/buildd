@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.319.0",
+  "version": "0.320.1",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -149,6 +149,9 @@
     "./orchestration-claim-risk-eval": "./orchestration-claim-risk-eval.ts",
     "./orchestration-claim-source": "./orchestration-claim-source.ts",
     "./orchestration-promotion": "./orchestration-promotion.ts",
+    "./decision-feature-modes": "./decision-feature-modes.ts",
+    "./owner-feature-switches": "./owner-feature-switches.ts",
+    "./sequence-anchors": "./sequence-anchors.ts",
     "./orchestration-readout": "./orchestration-readout.ts",
     "./orchestration-readout-source": "./orchestration-readout-source.ts",
     "./scheduling-metrics": "./scheduling-metrics.ts",
@@ -190,6 +193,7 @@
     "./flight-strip-store": "./flight-strip-store.ts",
     "./mission-completion-codes": "./mission-completion-codes.ts",
     "./mission-integration": "./mission-integration.ts",
+    "./generated-artifacts": "./generated-artifacts.ts",
     "./mission-branch-trace": "./mission-branch-trace.ts",
     "./repair-target": "./repair-target.ts",
     "./task-title": "./task-title.ts",
@@ -236,6 +240,7 @@
     "./knowledge-store/scip-runner": "./knowledge-store/scip-runner.ts",
     "./project-scope": "./project-scope.ts",
     "./path-overlap": "./path-overlap.ts",
+    "./waiting-reason": "./waiting-reason.ts",
     "./claim-planner": "./claim-planner.ts",
     "./github-installation-auth": "./github-installation-auth.ts",
     "./pr-scope-read": "./pr-scope-read.ts",
