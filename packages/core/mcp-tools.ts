@@ -1957,6 +1957,29 @@ async function resolveWorkspaceId(
   return null;
 }
 
+/**
+ * Run a prNumber-addressed PR call in the connection's bound workspace first.
+ * Low PR numbers collide across workspaces whose repos share the number, so an
+ * unqualified lookup on a workspace-bound connection can come back 409
+ * "exists in multiple workspaces" for a PR the caller plainly means in its own
+ * workspace. An explicit workspaceId always wins and is never retried. If the
+ * bound workspace has no such PR, fall back to the cross-workspace search the
+ * call did before.
+ */
+async function withBoundPrWorkspace<T>(
+  params: Record<string, any>,
+  ctx: ActionContext,
+  call: (workspaceId: unknown) => Promise<T>,
+): Promise<T> {
+  if (params.workspaceId != null || !params.prNumber || !ctx.workspaceId) return call(params.workspaceId);
+  try {
+    return await call(ctx.workspaceId);
+  } catch (err) {
+    if (err instanceof Error && /^API error: 404\b[\s\S]*PR not found/.test(err.message)) return call(undefined);
+    throw err;
+  }
+}
+
 /** One audit line for a schedule's delegation, or '' when it has none. */
 export function describeScheduleDelegation(value: unknown): string {
   const grants = readScheduleDelegation(value);
@@ -3248,14 +3271,14 @@ export async function handleBuilddAction(
       const workerId = String(params.workerId ?? '') || ctx.workerId || null;
       if (!params.prNumber) throw new Error('prNumber is required');
 
-      const data = await api('/api/github/pr', {
+      const data = await withBoundPrWorkspace(params, ctx, (workspaceId) => api('/api/github/pr', {
         method: 'PATCH',
         body: JSON.stringify({
           workerId,
           prNumber: params.prNumber,
-          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          ...(workspaceId != null ? { workspaceId } : {}),
         }),
-      });
+      }));
 
       const titlePart = data.pr.title ? ` — ${data.pr.title}` : '';
       return text(`Pull request #${data.pr.number} closed${titlePart}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
@@ -3304,16 +3327,16 @@ export async function handleBuilddAction(
         return text(`PR #${params.prNumber} merged successfully.${res.message ? `\n**Message:** ${res.message}` : ''}`);
       }
 
-      const data = await api('/api/github/pr', {
+      const data = await withBoundPrWorkspace(params, ctx, (workspaceId) => api('/api/github/pr', {
         method: 'PUT',
         body: JSON.stringify({
           workerId,
           prNumber: params.prNumber,
           mergeMethod,
-          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          ...(workspaceId != null ? { workspaceId } : {}),
           ...overrideFields,
         }),
-      });
+      }));
 
       if (!data.merged) {
         const hint = data.hint ? `\n\n**Action required:** ${data.hint}` : '';
@@ -3347,11 +3370,13 @@ export async function handleBuilddAction(
       const parts: string[] = [];
       if (workerId) parts.push(`workerId=${encodeURIComponent(workerId)}`);
       if (params.prNumber) parts.push(`prNumber=${encodeURIComponent(String(params.prNumber))}`);
-      if (params.workspaceId) parts.push(`workspaceId=${encodeURIComponent(String(params.workspaceId))}`);
       if (includeComments) parts.push('includeComments=true');
       if (includeCiFailures) parts.push('includeCiFailures=true');
 
-      const data = await api(`/api/github/pr${parts.length ? '?' + parts.join('&') : ''}`);
+      const data = await withBoundPrWorkspace(params, ctx, (workspaceId) => {
+        const q = workspaceId ? [...parts, `workspaceId=${encodeURIComponent(String(workspaceId))}`] : parts;
+        return api(`/api/github/pr${q.length ? '?' + q.join('&') : ''}`);
+      });
 
       const pr = data.pr;
       const checks = data.checks;
@@ -3556,17 +3581,17 @@ export async function handleBuilddAction(
       if (params.supersedingPrNumber == null) throw new Error('supersedingPrNumber is required');
       if (!params.reason || !String(params.reason).trim()) throw new Error('reason is required');
 
-      const data = await api('/api/github/pr/supersede', {
+      const data = await withBoundPrWorkspace(params, ctx, (workspaceId) => api('/api/github/pr/supersede', {
         method: 'POST',
         body: JSON.stringify({
           ...(workerId ? { workerId } : {}),
           ...(params.prNumber != null ? { prNumber: Number(params.prNumber) } : {}),
-          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          ...(workspaceId != null ? { workspaceId } : {}),
           supersedingPrNumber: Number(params.supersedingPrNumber),
           ...(params.supersedingRepo ? { supersedingRepo: String(params.supersedingRepo) } : {}),
           reason: String(params.reason),
         }),
-      });
+      }));
 
       return text(
         `PR #${data.supersededPrNumber} recorded as superseded by ${data.supersedingRepo && params.supersedingRepo ? `${data.supersedingRepo}#` : 'PR #'}${data.supersedingPrNumber}.\n`

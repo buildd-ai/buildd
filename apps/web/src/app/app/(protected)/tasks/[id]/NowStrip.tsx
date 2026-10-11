@@ -137,7 +137,7 @@ export default function NowStrip({ now, nowMs }: { now: NowState; nowMs: number 
               </span>
             )}
           </div>
-          <Headline text={now.headline ? collapseWorkspacePath(now.headline) : 'Working…'} />
+          <Headline text={now.headline ? collapseWorkspacePath(now.headline) : 'Waiting for the first update'} />
           {now.detail && (
             <p className="mt-1.5 font-mono text-meta text-text-secondary truncate">
               {now.detail.verb} <code className="text-text-primary">{collapseWorkspacePath(now.detail.target)}</code>

@@ -153,7 +153,7 @@ describe('a review run judges its own outcome (docs/specs/task-page.md AC-1)', (
   it('a review with no verdict says so; a failed or running review stays failed or running', () => {
     expect(review(null).label).toBe('Review finished without a verdict');
     expect(review('approve', { taskStatus: 'failed' }).state).toBe('failed');
-    expect(review(null, { taskStatus: 'in_progress', live: { status: 'running', waitingForInput: false } }).headline).toBe('Working');
+    expect(review(null, { taskStatus: 'in_progress', live: { status: 'running', waitingForInput: false } }).headline).toBe('In progress');
   });
 });
 
@@ -165,5 +165,21 @@ describe('the platform is acting on the PR (docs/specs/task-page.md, State mappi
   });
   it('red CI still outranks it', () => {
     expect(deriveTaskVerdict(input({ deliveryActivity: 'Updating branch' }))!.state).toBe('blocked');
+  });
+});
+
+// U1 audit (task 01e6293b): a running task said "In progress · Working · PR #N
+// open" and then "Now · Working…" right under it. The Now strip says what the
+// agent is doing; the outcome row adds only the PR.
+describe('a live run says its status once', () => {
+  const running = { status: 'running', waitingForInput: false } as const;
+  it('without a PR the outcome row is the label alone', () => {
+    const v = deriveTaskVerdict(input({ taskStatus: 'in_progress', live: running, pr: null }))!;
+    expect(v.headline).toBe('In progress');
+    expect(v.headline).not.toMatch(/working/i);
+  });
+  it('with a PR it names the PR, not the work', () => {
+    const v = deriveTaskVerdict(input({ taskStatus: 'in_progress', live: running, pr: { ...PR, lifecycle: 'pr_open' } }))!;
+    expect(v.headline).toBe('PR #12 open');
   });
 });
