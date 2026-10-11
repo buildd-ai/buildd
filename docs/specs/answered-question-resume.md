@@ -2,7 +2,7 @@
 title: Answered-Question Resume
 status: active
 owner: max
-last_verified: 2026-09-29
+last_verified: 2026-10-11
 summary: Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 domain: runners
 surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts]
@@ -67,10 +67,13 @@ the common case the cold path inherits neither the reasoning nor the work.
 
 **Invariants**:
 - `POST /api/workers/[id]/respond` MUST classify every accepted answer into
-  exactly one path — `resume` or `cold_continuation` — by calling
-  `evaluateAnswerPath` (`apps/web/src/lib/answer-resume.ts`), and MUST record
-  the resulting `path` and `reasonCode` on the task's `context.answerDelivery`
-  before returning. There is no third outcome and no unrecorded outcome.
+  exactly one path — `resume`, `interactive` or `cold_continuation` — by
+  calling `evaluateAnswerPath` (`apps/web/src/lib/answer-resume.ts`), and MUST
+  record the resulting `path` and `reasonCode` on the task's
+  `context.answerDelivery` before returning. There is no other outcome and no
+  unrecorded outcome. `interactive` applies only to an interactive worker
+  (`workers.runner = 'mcp'`) and is decided by gate G0 before every other gate;
+  see "The interactive path".
 - `evaluateAnswerPath` MUST be a pure function of server-visible facts. It
   performs no I/O, so the decision is reproducible from the recorded inputs and
   testable without a database.
@@ -331,6 +334,58 @@ already been answered.
 
 ---
 
+## The interactive path
+
+A worker minted by `claim_task` from a person's own MCP session
+(`workers.runner = 'mcp'`), parked on a question by that session, is held by no
+runner. RESUME would queue an answer no runner drains; COLD would hand live
+local work to a runner. So it gets its own path.
+
+**Invariants**:
+- G0 (`evaluateInteractiveAnswerPath`) runs before G1–G5. It returns nothing
+  for a runner-managed worker. For an interactive worker it returns
+  `interactive` / `interactive_session` while the worker is in a live status
+  (`waiting_input`, `running`, `idle`, `starting`) AND its `updatedAt` is
+  within `INTERACTIVE_WORKER_IDLE_TTL_MS`; otherwise `cold_continuation` /
+  `interactive_session_gone`. A gone interactive session MUST NOT be resumed
+  on a runner.
+- `/respond` takes G0 BEFORE the backend credential preflight: the session
+  runs on the person's own seat, so the workspace's managed credential (even a
+  revoked one) MUST NOT refuse or reroute an answer to it. A gone session's
+  cold continuation runs on a runner and is preflighted as usual.
+- The interactive path claims the answer with the same CAS on `waitingFor`,
+  sets `status: 'running'`, clears `waitingFor`, appends an
+  instruction-history entry (`deliveryState: 'pending'`), and enqueues an
+  `answer` worker message (`enqueueWorkerMessage`) on the worker's own task
+  with `body: { source: 'human', text, question?, workerId }`. The history
+  entry and the message share one id. It creates no task, wakes no runner and
+  releases no path claim.
+- The session receives it from `receive_messages` (or `update_progress`),
+  rendered as `**HUMAN ANSWER** to your question "…": …`. Its
+  `workerMessagesDelivered` ack also acknowledges the history entry with that
+  id (`PATCH /api/workers/[id]`).
+- Until that ack, a second tap on the running worker is `already_answered`
+  (`explainNotWaiting` with `interactive`), carrying the recorded answer.
+- When the message cannot be queued, the question, status and history are
+  restored and the call fails 500, so the answer can be given again.
+- `answerDelivery` carries no `ackDeadlineAt`: the unacknowledged-resume sweep
+  only degrades `resume`.
+
+**Acceptance criteria**:
+- AC-AQR-I1: GIVEN an interactive worker in `waiting_input` checked in within
+  the idle window WHEN `POST /respond` THEN `path: 'interactive'`, no task is
+  inserted, one `answer` message is queued on the worker's task, and the worker
+  write sets `status: 'running'` and `waitingFor: null`.
+- AC-AQR-I2: GIVEN the same worker and a revoked managed credential THEN the
+  answer is accepted on the interactive path and no preflight runs.
+- AC-AQR-I3: GIVEN an interactive worker past the idle window, or `failed` /
+  `error`, THEN `path: 'cold_continuation'`, `reasonCode:
+  'interactive_session_gone'`.
+- AC-AQR-I4: GIVEN a `workerMessagesDelivered` ack naming an instruction-history
+  entry's id THEN that entry is `acknowledged`.
+
+---
+
 ## The cold fallback, and why it is loud
 
 **Invariants**:
@@ -580,3 +635,11 @@ them.
    A credential that is unexpired and `healthy` can still be rejected by the
    provider. Only a live verification call would prove it, and that is a
    per-answer round trip this path does not take.
+6. **An interactive answer can be crowded out of the worker-message queue.**
+   That queue keeps the newest `WORKER_MESSAGE_CAP` messages per task; three
+   later agent messages arriving before the session reads its inbox drop the
+   answer while its history entry stays `pending`. Nothing re-queues it.
+7. **An interactive answer has no acknowledgement deadline.** If the session
+   dies after the answer is queued and before it reads it, the answer waits on
+   the task until a later worker on the same task reads the queue, or the
+   reaper frees the claim; it is not converted to a cold continuation.

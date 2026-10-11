@@ -4428,6 +4428,16 @@ export async function PATCH(
   // consumer that confirms by id.
   const instructionIds: string[] = [];
 
+  // A human answer /respond queued for an interactive session travels as an
+  // `answer` worker message whose id is also its instruction-history entry's
+  // id: the session's worker-message ack is that entry's read receipt.
+  const answerIdsAcknowledged = deliveredMessageIds.filter(msgId =>
+    Array.isArray(worker.instructionHistory)
+    && (worker.instructionHistory as Array<{ id?: string; type?: string }>).some(e => e?.type === 'instruction' && e.id === msgId));
+  if (answerIdsAcknowledged.length > 0) {
+    instructionIdsAcknowledged.push(...answerIdsAcknowledged.filter(i => !instructionIdsAcknowledged.includes(i)));
+  }
+
   if (instructionAckText || instructionIdsDelivered.length > 0 || instructionIdsAcknowledged.length > 0) {
     // A consumer confirmed delivery: this is the ONLY place 'delivered' is
     // written. By id when the consumer sent ids, else by the echoed text.
