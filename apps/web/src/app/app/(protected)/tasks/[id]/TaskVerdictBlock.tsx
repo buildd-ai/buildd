@@ -1,16 +1,17 @@
 /**
- * The task page's first block: one verdict, from the record (lib/task-verdict.ts).
- * State, one-sentence headline, the fact behind it (a failing check shows its
- * name and first error line inline), up to three actions, and a "Why this?"
- * disclosure naming the rule (and, for the platform owner, the decision-ledger
- * rows behind the wording; the ledger moved to the admin app).
+ * The task page's one outcome row, from the record (lib/task-verdict.ts):
+ * the state's word, the headline only where it adds to that word, and the
+ * cause when there is one (docs/specs/task-page.md). It sits under the
+ * Build → Audit → Land track, which carries where the delivery is; this says
+ * what the run on screen came to.
  *
- * Nothing below this block restates the state: the shipped header's chips,
- * "Your move" and "already handled" row are gone.
+ * Compact by default: a chip and a line. It becomes a card only when it asks
+ * for something (a primary or danger action, or failing checks to read).
+ * There is no explanation disclosure: the decision ledger behind the wording
+ * lives in the admin app.
  */
 import Chip, { type ChipTone } from '@/components/ui/Chip';
-import Disclosure from '@/components/ui/Disclosure';
-import type { StoredVerdictDecision, TaskVerdict, VerdictState } from '@/lib/task-verdict';
+import type { TaskVerdict, VerdictState } from '@/lib/task-verdict';
 
 const STATE: Record<VerdictState, { label: string; tone: ChipTone }> = {
   shipped: { label: 'Shipped', tone: 'success' },
@@ -29,43 +30,79 @@ const ACTION_CLASS = {
   quiet: 'border-border-strong text-text-primary hover:bg-surface-3',
 } as const;
 
-const KIND_LABEL: Record<StoredVerdictDecision['decisionIds'][number]['kind'], string> = {
-  headline: 'Wording and actions',
-  mismatch_diagnosis: 'Mismatch diagnosis',
-  error_class: 'Error classification',
-};
+/** The headline minus what the chip already says: null when it says nothing more. */
+export function headlineBeyondLabel(headline: string, label: string): string | null {
+  const h = headline.trim();
+  if (h.toLowerCase() === label.toLowerCase()) return null;
+  const prefix = `${label} · `;
+  return h.toLowerCase().startsWith(prefix.toLowerCase()) ? h.slice(prefix.length) : h;
+}
 
 export default function TaskVerdictBlock({
   verdict,
-  decision,
   displayStatus,
-  showDecisionRows = false,
 }: {
   verdict: TaskVerdict;
-  /** The cached decision on the task, as stored (applied or not). */
-  decision: StoredVerdictDecision | null;
   /** The page's derived status, kept on the e2e hook. */
   displayStatus: string;
-  /** List the decision-ledger rows behind the wording: the platform owner only. */
-  showDecisionRows?: boolean;
 }) {
   const s = STATE[verdict.state];
-  const decisionCurrent = !!decision && decision.state === verdict.state && decision.causeKey === verdict.causeKey;
+  const label = verdict.label ?? s.label;
+  const tone: ChipTone = verdict.labelTone ?? s.tone;
+  const headline = headlineBeyondLabel(verdict.headline, label);
+  const asks = verdict.failingChecks.length > 0 || verdict.actions.some(a => a.tone !== 'quiet');
+  const chip = (
+    <div data-testid="task-header-status" data-status={displayStatus} data-verdict={verdict.state} className="shrink-0">
+      <Chip tone={tone} variant="soft">{label}</Chip>
+    </div>
+  );
+
+  if (!asks) {
+    return (
+      <section
+        aria-label="Outcome"
+        data-testid="task-verdict"
+        data-state={verdict.state}
+        data-worded-by={verdict.wordedBy}
+        className="mb-5 flex flex-wrap items-center gap-x-2.5 gap-y-1"
+      >
+        {chip}
+        {headline && (
+          <p data-testid="task-verdict-headline" className="min-w-0 text-body font-medium [overflow-wrap:anywhere]">{headline}</p>
+        )}
+        {verdict.actions.map(a => (
+          <a
+            key={a.label}
+            href={a.href}
+            {...(a.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+            data-testid="task-verdict-action"
+            className="inline-flex min-h-11 items-center text-meta text-accent-text hover:underline"
+          >
+            {a.label}{a.external ? ' ↗' : ''}
+          </a>
+        ))}
+        {verdict.cause && (
+          <p data-testid="task-verdict-cause" className="w-full text-meta text-text-secondary [overflow-wrap:anywhere]">{verdict.cause}</p>
+        )}
+      </section>
+    );
+  }
+
   return (
     <section
-      aria-label="Where this task stands"
+      aria-label="Outcome"
       data-testid="task-verdict"
       data-state={verdict.state}
       data-worded-by={verdict.wordedBy}
       // L2 (a hairline card); L3 only when it asks you for a decision. The chip carries the tone.
-      className={`mb-6 px-4 py-4 md:px-5 ${verdict.state === 'needs_you' ? 'card-decision' : 'card'}`}
+      className={`mb-6 px-4 py-3 md:px-5 ${verdict.state === 'needs_you' ? 'card-decision' : 'card'}`}
     >
-      <div data-testid="task-header-status" data-status={displayStatus} data-verdict={verdict.state}>
-        <Chip tone={s.tone} variant="soft">{s.label}</Chip>
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        {chip}
+        {headline && (
+          <h2 data-testid="task-verdict-headline" className="min-w-0 text-body font-semibold leading-snug [overflow-wrap:anywhere]">{headline}</h2>
+        )}
       </div>
-      <h2 data-testid="task-verdict-headline" className="mt-2 text-heading font-semibold leading-snug [overflow-wrap:anywhere]">
-        {verdict.headline}
-      </h2>
       {verdict.cause && (
         <p data-testid="task-verdict-cause" className="mt-1.5 text-body text-text-secondary [overflow-wrap:anywhere]">{verdict.cause}</p>
       )}
@@ -94,7 +131,7 @@ export default function TaskVerdictBlock({
         </ul>
       )}
       {verdict.actions.length > 0 && (
-        <div data-testid="task-verdict-actions" className="mt-4 flex flex-col gap-2 md:flex-row md:flex-wrap">
+        <div data-testid="task-verdict-actions" className="mt-3 flex flex-col gap-2 md:flex-row md:flex-wrap">
           {verdict.actions.map(a => (
             <a
               key={a.label}
@@ -108,36 +145,6 @@ export default function TaskVerdictBlock({
           ))}
         </div>
       )}
-      <div className="mt-3 border-t border-border-default" data-testid="task-verdict-why">
-        <Disclosure summary={<span className="text-meta text-text-muted">Why this?</span>}>
-          <div className="pb-2 pt-1 text-meta text-text-secondary space-y-1.5">
-            <p>
-              The state comes from the record (pull request, checks, attempts, workers), never from the agent&apos;s summary.
-              {verdict.wordedBy === 'model'
-                ? ' The wording and actions were chosen by the decision model for this exact state.'
-                : ' The wording is the rules’ own.'}
-            </p>
-            {decision && decisionCurrent && decision.fallback && decision.decisionIds.length > 0 && (
-              <p>The decision model was not applied this time (unavailable or not confident), so the rules&apos; wording stands.</p>
-            )}
-            {decision && !decisionCurrent && (
-              <p>The last model decision was made for an earlier state; it is not used.</p>
-            )}
-            {showDecisionRows && decision && decision.decisionIds.length > 0 && (
-              <ul data-testid="task-verdict-decisions" className="font-mono">
-                {decision.decisionIds.map(d => (
-                  <li key={d.id} className="[overflow-wrap:anywhere]">
-                    {KIND_LABEL[d.kind]} · {d.status} · <span title={d.id}>{d.id.slice(0, 8)}</span>
-                  </li>
-                ))}
-                <li className="text-text-muted">
-                  Decision ledger: task_verdict{decision.model ? ` · ${decision.model}` : ''}
-                </li>
-              </ul>
-            )}
-          </div>
-        </Disclosure>
-      </div>
     </section>
   );
 }
