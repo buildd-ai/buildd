@@ -20,7 +20,7 @@ import Link from 'next/link';
 import { createPortal } from 'react-dom';
 import { MOBILE_TOP_BAR_SLOT_ID } from '@/components/MobileTopBar';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
-import type { ChatAttachmentDraft, ChatTierName } from '@buildd/shared';
+import type { ChatDraftAttachment, ChatTierName } from '@buildd/shared';
 import BottomSheet from '@/components/BottomSheet';
 import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract';
 import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions, type OpenVisualReview } from './ChatActions';
@@ -49,7 +49,7 @@ export interface ChatWorkspaceProps {
   /** Shown under the feed: the setup card when a turn was refused for want of a key. */
   notice?: ReactNode;
   /** `attachments`: the long pastes the message carries (Living Specs C2). */
-  onSend(text: string, attachments?: ChatAttachmentDraft[]): void;
+  onSend(text: string, attachments?: ChatDraftAttachment[]): void;
   onStop?: () => void;
   onApproval(approvalId: string, approved: boolean, reason?: string): void;
   /** Override how a question is answered (fixtures). Default: the respond route. */
@@ -235,8 +235,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const [ownDraft, setOwnDraft] = useState('');
   // The draft's long pastes (Living Specs C2), and what was last sent, so a
   // refused send puts the whole draft back, the same attachment ids included.
-  const [attachments, setAttachments] = useState<ChatAttachmentDraft[]>([]);
-  const lastSent = useRef<{ text: string; attachments: ChatAttachmentDraft[] } | null>(null);
+  const [attachments, setAttachments] = useState<ChatDraftAttachment[]>([]);
+  const lastSent = useRef<{ text: string; attachments: ChatDraftAttachment[] } | null>(null);
   const draft = props.draft ?? ownDraft;
   const setDraft = props.onDraftChange ?? setOwnDraft;
   // The overline's date, fixed at mount (the server's clock may differ: suppressHydrationWarning below).
@@ -412,7 +412,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     onApproval(approvalId, approved, reason);
   }, [onApproval]);
 
-  const send = (text: string, sentAttachments: ChatAttachmentDraft[] = []) => {
+  const send = (text: string, sentAttachments: ChatDraftAttachment[] = []) => {
     onSend(text, sentAttachments);
     lastSent.current = { text, attachments: sentAttachments };
     setDraft('');
