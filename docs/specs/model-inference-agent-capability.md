@@ -103,6 +103,11 @@ configure the team's own OpenRouter or LiteLLM key.
   ON CONFLICT DO UPDATE … WHERE <headroom>, writing the reservation row in the
   same statement), never read-then-write. A reserve also requires the grant
   row to be granted, unrevoked and unexpired at that instant.
+- At every instant, open reservations plus settled debits never exceed the
+  grant's `maxUsd`, however many calls run concurrently. The budget bounds what
+  is held at once, not a count of calls: settling swaps a reservation for its
+  (usually smaller) debit, so the unused part is headroom a later call may
+  reserve.
 - A reservation left open past `STALE_RESERVATION_MS` (the request died
   between reserve and settle) is settled at its full reservation before the
   grant's next reserve; a late settle after that changes nothing.
@@ -130,7 +135,8 @@ configure the team's own OpenRouter or LiteLLM key.
 - AC-4: GIVEN a requested model not listed in the grant, or not the team's configured decision model THEN the request is refused with `model_not_allowed`.
 - AC-5: GIVEN no ledger (`NO_LEDGER`) or a ledger that throws THEN the request is refused with 503 `ledger_unavailable` and no provider call is made.
 - AC-6: GIVEN a ledger with too little dollar, call, token or concurrency headroom THEN the request is refused with 429 and the matching code, and no provider call is made.
-- AC-7: GIVEN N concurrent requests against a grant whose dollar budget covers K reservations THEN at most K provider calls are made.
+- AC-7: GIVEN N > K concurrent requests against a grant whose dollar budget covers K reservations, all in flight at once THEN exactly K provider calls are made, the other N − K are refused with `budget_exhausted`, and the ledger never holds more than the budget.
+- AC-13: GIVEN calls that each settle at a provider cost below their reservation WHEN later calls arrive THEN they reserve against the freed headroom, and the grant's debited total equals the sum of provider costs, within `maxUsd`.
 - AC-8: GIVEN an allowed call whose provider reports a cost THEN the receipt carries the answering model version, token counts, `costUsd`, and `debitedUsd` equal to that cost.
 - AC-9: GIVEN an allowed call whose provider reports no cost, or which fails after being sent THEN `debitedUsd` equals the grant's `maxUsdPerCall`.
 - AC-10: WHEN a body names `baseURL`, `apiKey` or `endpoint` THEN the route returns 400 before resolving any grant.

@@ -183,35 +183,69 @@ describe('grant source', () => {
 });
 
 describe('invokeModelInference over the real grant source and ledger', () => {
-  test('concurrent agent calls stop at the dollar budget, and each debit is the provider cost', async () => {
+  const answered = (): DecideResult<DecisionQuestions> => ({
+    ok: true, answers: { verdict: { type: 'choice', choice: 'flaky', probabilities: { flaky: 0.9, real: 0.1 }, confidence: 0.9 } } as never,
+    model: 'typesafe/jev-1.13-20260917', usage: { inputTokens: 120, outputTokens: 4, costUsd: 0.0002 }, latencyMs: 50, attempts: 1,
+  });
+  const request = {
+    operation: 'decide' as const, model: JEV, state: 'row',
+    questions: { verdict: { type: 'choice' as const, instructions: 'Classify.', criteria: { flaky: null, real: null } } },
+  };
+  const depsWith = (decide: (p: DecideParams<DecisionQuestions>) => Promise<DecideResult<DecisionQuestions>>): ModelInferenceDeps => ({
+    grants: capabilityGrantSource,
+    ledger: modelInferenceLedger,
+    resolveRoute: async () => ({ apiKey: 'sk-test-fake', provider: 'openrouter', model: JEV }),
+    decide: decide as ModelInferenceDeps['decide'],
+    audit: () => {},
+  });
+
+  /**
+   * Holds every provider call until each of `n` invocations has either reached
+   * the provider or been refused, so the reservations all overlap. Without it
+   * the bound is a timing guess: a call that settles early swaps its $0.01
+   * reservation for its $0.0002 debit, and a later caller then fits (CI once
+   * saw six calls under the old "at most five" assertion; no overspend).
+   */
+  function barrier(n: number) {
+    let entered = 0, refused = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    const check = () => { if (entered + refused === n) open(); };
+    return {
+      gate,
+      enter: () => { entered++; check(); },
+      track: (p: Promise<{ ok: boolean }>) => p.then((r) => { if (!r.ok) { refused++; check(); } return r; }),
+      get entered() { return entered; },
+    };
+  }
+
+  test('with every call in flight at once, the dollar budget admits exactly as many reservations as it covers', async () => {
     const { principal, grantId } = await seedGrant();
-    let calls = 0;
-    const decide = async (_p: DecideParams<DecisionQuestions>): Promise<DecideResult<DecisionQuestions>> => {
-      calls++;
-      await new Promise(r => setTimeout(r, 50));
-      return {
-        ok: true, answers: { verdict: { type: 'choice', choice: 'flaky', probabilities: { flaky: 0.9, real: 0.1 }, confidence: 0.9 } } as never,
-        model: 'typesafe/jev-1.13-20260917', usage: { inputTokens: 120, outputTokens: 4, costUsd: 0.0002 }, latencyMs: 50, attempts: 1,
-      };
-    };
-    const deps: ModelInferenceDeps = {
-      grants: capabilityGrantSource,
-      ledger: modelInferenceLedger,
-      resolveRoute: async () => ({ apiKey: 'sk-test-fake', provider: 'openrouter', model: JEV }),
-      decide: decide as ModelInferenceDeps['decide'],
-      audit: () => {},
-    };
-    const request = {
-      operation: 'decide' as const, model: JEV, state: 'row',
-      questions: { verdict: { type: 'choice' as const, instructions: 'Classify.', criteria: { flaky: null, real: null } } },
-    };
-    const results = await Promise.all(Array.from({ length: 10 }, () => invokeModelInference(principal, request, deps)));
-    // 0.05 / 0.01 reserved per call: at most five in flight at once, whatever settles later.
-    expect(calls).toBeLessThanOrEqual(5);
-    expect(results.filter(r => r.ok)).toHaveLength(calls);
+    const b = barrier(10);
+    let peak: Awaited<ReturnType<typeof usage>> | null = null;
+    const deps = depsWith(async () => {
+      b.enter();
+      await b.gate;
+      peak = peak ?? (await usage(grantId));
+      return answered();
+    });
+    const results = await Promise.all(Array.from({ length: 10 }, () => b.track(invokeModelInference(principal, request, deps))));
+    // $0.05 / $0.01 reserved per call: five reserve, five are refused, none overspends.
+    expect(b.entered).toBe(5);
+    expect(results.filter((r) => r.ok)).toHaveLength(5);
+    expect(results.filter((r) => !r.ok).map((r) => !r.ok && r.code)).toEqual(Array(5).fill('budget_exhausted'));
+    expect(peak).toMatchObject({ inFlight: 5, usdMicros: 50_000 });
     const u = (await usage(grantId))!;
-    expect(u.inFlight).toBe(0);
-    expect(u.calls).toBe(calls);
-    expect(u.usdMicros).toBe(calls * 200);
+    expect(u).toMatchObject({ inFlight: 0, calls: 5, usdMicros: 5 * 200 });
+  });
+
+  test('a settled call returns the unused part of its reservation, so later calls fit, and each debit is the provider cost', async () => {
+    const { principal, grantId } = await seedGrant();
+    const deps = depsWith(async () => answered());
+    // Sequential: each call reserves $0.01 and settles at $0.0002 before the next.
+    for (let i = 0; i < 8; i++) expect((await invokeModelInference(principal, request, deps)).ok).toBe(true);
+    const u = (await usage(grantId))!;
+    expect(u).toMatchObject({ inFlight: 0, calls: 8, usdMicros: 8 * 200 });
+    expect(u.usdMicros).toBeLessThanOrEqual(50_000);
   });
 });
