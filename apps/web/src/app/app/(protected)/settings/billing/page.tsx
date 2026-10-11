@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { teamMembers, teams } from '@buildd/core/db/schema';
 import { isBillingEnforced } from '@buildd/core/entitlements';
-import { effectiveKeyPolicy } from '@buildd/core/inference-key-policy';
+import { effectiveKeyPolicy, DEFAULT_KEY_POLICY } from '@buildd/core/inference-key-policy';
 import Chip from '@/components/ui/Chip';
 import Section from '@/components/ui/Section';
 import { roleHas } from '@/lib/permission-registry';
@@ -63,7 +63,7 @@ export default async function BillingSettingsPage({
     }).catch(() => [] as Array<{ userId: string; user: { name: string | null; email: string | null } | null }>),
     billing ? teamSeatUsage(currentTeam.id).catch(() => ({ members: 0, pending: 0 })) : null,
   ]);
-  const keyPolicy = effectiveKeyPolicy(teamRow) ?? 'team';
+  const keyPolicy = effectiveKeyPolicy(teamRow) ?? DEFAULT_KEY_POLICY;
   const timeZone = teamRow?.timezone || 'UTC';
   const [spend, hostedRunner] = await Promise.all([
     loadSpendSummary({

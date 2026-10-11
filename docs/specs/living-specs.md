@@ -235,9 +235,11 @@ the task completed or its PR merged.
 - Advisory: no outcome blocks completing a task or merging its PR. A failed
   outcome is reported as failed beside a completed task and a merged PR.
 - Who records: a person or account with write access to the workspace, or the
-  per-task token of a task filed under the subject (its reviewer). A task's
-  own token reads its outcome but cannot record on it (403): a task never
-  grades itself. Another workspace can neither record nor read (404).
+  per-task token of the review round the platform filed for the subject's own
+  PR delivery. A task's own token reads its outcome but cannot record on it
+  (403): a task never grades itself. Nor does a builder fix attempt (CI,
+  conflict or review fix) or any other task filed under the subject (403).
+  Another workspace can neither record nor read (404).
 - The reviewer of a pinned task is given the revision's criteria and asked to
   record one verdict each at the head it reviews (`manage_specs action=verdict`).
   Its review verdict still alone decides the merge.

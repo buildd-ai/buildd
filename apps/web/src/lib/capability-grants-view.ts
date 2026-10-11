@@ -56,7 +56,7 @@ export function effectsFor(risk: AccessRisk): AccessEffect[] {
 
 /** What happens with no team rule, in the words of capability-grants.ts `defaultEffect`. */
 export function defaultEffectText(risk: AccessRisk): string {
-  return risk === 'write' || risk === 'admin' ? 'Ask a person' : 'Allow if a role uses it';
+  return risk === 'write' || risk === 'admin' ? 'Ask a person' : 'Allow if the agent uses it';
 }
 
 /**
@@ -135,7 +135,7 @@ export function accessStatusLine(r: AccessRequestView, now: Date = new Date()): 
 const EXPIRED_WHY: Record<string, string> = {
   task_terminal: 'the task ended',
   worker_not_live: 'the agent run stopped',
-  role_changed: "the task's role changed",
+  role_changed: "the task's agent changed",
 };
 
 /** The approve button's words: the lease is part of the decision. */

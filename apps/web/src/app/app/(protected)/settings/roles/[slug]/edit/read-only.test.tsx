@@ -34,12 +34,12 @@ describe('TeamRoleEditor: member vs admin', () => {
   it('member: the role in a disabled fieldset, no save, delete or new override', () => {
     const html = render(false);
     expect(html).toContain('data-testid="role-read-only"');
-    expect(html).toContain('Admins can change this role.');
+    expect(html).toContain('Admins can change this agent.');
     expect(html).toMatch(/<fieldset[^>]*disabled=""/);
     expect(html).toContain('You build.');
     expect(html).not.toContain('data-testid="header-save"');
     expect(html).not.toContain('data-testid="mobile-save-bar"');
-    expect(html).not.toContain('Delete this role');
+    expect(html).not.toContain('Delete this agent');
     expect(html).not.toContain('+ Add override');
   });
 
@@ -48,7 +48,7 @@ describe('TeamRoleEditor: member vs admin', () => {
     expect(html).not.toContain('role-read-only');
     expect(html).not.toMatch(/<fieldset[^>]*disabled/);
     expect(html).toContain('data-testid="header-save"');
-    expect(html).toContain('Delete this role');
+    expect(html).toContain('Delete this agent');
     expect(html).toContain('+ Add override');
   });
 });
