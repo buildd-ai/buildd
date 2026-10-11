@@ -138,9 +138,10 @@ function forceStartLiftsEdge(depId: SQL): SQL {
   // A constant key, inlined so the gate's bound parameters stay the contract's.
   const key = sql.raw(`'${FORCE_START_CONTEXT_KEY}'`);
   return sql`(
-    ${tasks.pathDeclaration}->'inferredDependsOn' ? (${depId})::text
-    AND ${tasks.context}->${key}->'liftDependsOn' ? (${depId})::text
-    AND (${tasks.context}->${key}->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+    -- Two-valued: a missing key must be FALSE, never NULL, inside the NOT EXISTS.
+    COALESCE(${tasks.pathDeclaration}->'inferredDependsOn' ? (${depId})::text, FALSE)
+    AND COALESCE(${tasks.context}->${key}->'liftDependsOn' ? (${depId})::text, FALSE)
+    AND COALESCE((${tasks.context}->${key}->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), FALSE)
   )`;
 }
 

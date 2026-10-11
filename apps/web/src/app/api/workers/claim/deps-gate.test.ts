@@ -114,8 +114,8 @@ describe('dependenciesSatisfied() — emitted SQL', () => {
   it('a force start lifts only inferred edges it names, and only until it expires', () => {
     const text = renderGate();
     // The forced arm requires BOTH: the edge is inferred, and the unexpired intent names it.
-    expect(text).toContain(`"tasks"."path_declaration"->'inferredDependsOn' ? (dep_id::uuid)::text AND "tasks"."context"->'forceStart'->'liftDependsOn' ? (dep_id::uuid)::text`);
-    expect(text).toContain(`("tasks"."context"->'forceStart'->>'expiresAt') > to_char(now()`);
+    expect(text).toContain(`COALESCE("tasks"."path_declaration"->'inferredDependsOn' ? (dep_id::uuid)::text, FALSE) AND COALESCE("tasks"."context"->'forceStart'->'liftDependsOn' ? (dep_id::uuid)::text, FALSE)`);
+    expect(text).toContain(`COALESCE(("tasks"."context"->'forceStart'->>'expiresAt') > to_char(now()`);
   });
 
   it('binds exactly the contract statuses to the IN (...) list', () => {
