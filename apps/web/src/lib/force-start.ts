@@ -26,6 +26,7 @@ import {
   FORCE_START_CONTEXT_KEY,
   FORCE_START_HISTORY_KEY,
   FORCE_START_TTL_MS,
+  HUMAN_FORCE_START_DECISION_ID,
   claimLoopKeysFor,
   prefilterLiftsFor,
   waitingReasonsDigest,
@@ -33,9 +34,9 @@ import {
   type WaitingKind,
   type WaitingReason,
 } from '@buildd/core/waiting-reason';
-import { recordOrchestrationDecision } from '@buildd/core/orchestration-ledger-source';
-import { HUMAN_FORCE_START_DECISION_ID } from '@buildd/core/orchestration-outcomes';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { emit } from '@/lib/core-emit';
+import type { OverrideStart } from '@/lib/core-events';
 
 export { HUMAN_FORCE_START_DECISION_ID };
 /** Candidate-policy prefix of a human force row: `hf1.<primary kind>`, beside Jev's `ch1.<gate>`. */
@@ -144,71 +145,14 @@ export function forceStartLifted(intent: ForceStartIntent, inLoop: readonly stri
   return [...out];
 }
 
-export type OverrideActor = 'human_force' | 'jev_start';
-
 /**
- * One START that overrode a HOLD, as an `orchestration_decisions` row the
- * outcome join (`labelDecisionOutcomes`) grades with no new join (§7.4b).
- * Shared by any override path: a person's Force start today, a later Jev
- * START path tomorrow. Fire-and-forget; never throws.
+ * One START that overrode a HOLD (§7.4b). Shared by any override path: a
+ * person's Force start today, a later Jev START path tomorrow. Core emits the
+ * fact; the decisions module writes the `orchestration_decisions` row the
+ * outcome join grades (lib/override-start-decision.ts). Never throws.
  */
-export function recordOverrideStart(opts: {
-  actor: OverrideActor;
-  decisionId: string;
-  policyPrefix: string;
-  /** Primary lifted gate: `${policyPrefix}.${primary}`. */
-  primary: string;
-  task: { id: string; workspaceId: string; missionId: string | null; teamId: string };
-  workerId: string;
-  reasonsDigest: string;
-  candidateCount: number;
-  receipt: Record<string, unknown>;
-}): void {
-  void recordOrchestrationDecision({
-    teamId: opts.task.teamId,
-    workspaceId: opts.task.workspaceId,
-    missionId: opts.task.missionId,
-    taskId: opts.task.id,
-    workerId: opts.workerId,
-    prNumber: null,
-    headSha: null,
-    baseRef: null,
-    baseSha: null,
-    capability: 'orchestration_claim',
-    decisionId: opts.decisionId,
-    decisionVersion: `${opts.policyPrefix}|${opts.actor}|engine-0`,
-    fingerprint: `${opts.policyPrefix}-${opts.primary}`.slice(0, 32),
-    question: 'force_start',
-    step: 0,
-    mode: 'live',
-    minConfidence: null,
-    model: null,
-    candidatePolicyVersion: `${opts.policyPrefix}.${opts.primary}`,
-    candidateDigest: opts.reasonsDigest,
-    candidateCount: opts.candidateCount,
-    candidateTruncated: false,
-    ruleVerdict: 'HOLD',
-    suggested: 'START',
-    confidence: null,
-    effective: 'START',
-    applied: true,
-    status: 'applied',
-    reason: null,
-    errorKind: null,
-    latencyMs: 0,
-    retrievalMs: null,
-    inputTokens: null,
-    outputTokens: null,
-    costUsd: null,
-    // A person's override is not an experiment draw: arm `human`, kept apart
-    // from Jev cohorts. Observational evidence (eval set, disagreement
-    // mining), never on-policy. The column is NOT NULL, so propensity is 1
-    // (the start happened with certainty) rather than the spec's null.
-    experimentArm: opts.actor === 'human_force' ? 'human' : 'apply',
-    propensity: 1,
-    applyingFraction: 1,
-    receipt: { actor: opts.actor, ...opts.receipt } as never,
-  });
+export function recordOverrideStart(override: OverrideStart): void {
+  void emit({ type: 'task.override_started', override });
 }
 
 /** Claim-time audit (§7.4a second row + §7.4b): the gate event plus the graded decision row. */

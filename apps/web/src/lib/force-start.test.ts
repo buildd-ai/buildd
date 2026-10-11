@@ -7,6 +7,12 @@ mock.module('@/lib/gate-ledger', () => ({
 }));
 const mockRecordDecision = mock(async (_row: any) => {});
 mock.module('@buildd/core/orchestration-ledger-source', () => ({ recordOrchestrationDecision: mockRecordDecision }));
+// Core emits; the decisions module writes the row. Fan out to that module's
+// subscriber only, not the whole composition root.
+const { overrideStartSubscribers } = await import('./override-start-decision');
+mock.module('@/lib/core-emit', () => ({
+  emit: async (e: any) => { for (const s of overrideStartSubscribers) if (s.on === e.type) await (s.run as any)(e); },
+}));
 
 import { buildForceStartIntent, consumeForceStart, recordForceStartClaim, recordForceStartRequest, HUMAN_FORCE_START_DECISION_ID } from './force-start';
 import { makeWaitingReason, FORCE_START_TTL_MS } from '@buildd/core/waiting-reason';

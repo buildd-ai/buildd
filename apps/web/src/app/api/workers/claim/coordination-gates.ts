@@ -11,7 +11,8 @@
  */
 import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { makeWaitingReason, overlapAreas, orderWaitingReasons, type WaitingReason } from '@buildd/core/waiting-reason';
-import { isDispatchedReview } from '@/lib/read-only-review';
+import { isDispatchedReview } from '@/lib/read-only-task';
+import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { splitOwnOpenPrs } from './claim-plan-input';
 import { checkMissionConcurrencyGate, checkMissionPacingGate } from './pacing-gate';
 
@@ -37,7 +38,7 @@ export interface OpenPrTask {
 }
 
 /** Worker statuses that mean the PR's writer is still at work. */
-const LIVE_WRITER = new Set(['running', 'idle', 'starting', 'waiting_input']);
+const LIVE_WRITER = new Set<string>(LIVE_WORKER_STATUSES);
 
 /**
  * Layer 2: the first active path claim, held by another task, that overlaps

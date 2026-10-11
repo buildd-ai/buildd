@@ -7,7 +7,7 @@
  * take.
  *
  * Dependency and soft-overlap holds are fed from what `explain` already
- * reports (`loadTaskCoordinationHolds`, lib/explain-coordination.ts): an
+ * reports (`loadTaskCoordinationHolds`, lib/coordination-holds.ts): an
  * inferred (creation-time overlap) edge is a coordination hold a person may
  * force past, a declared edge is a dependency no force lifts. Whether an edge
  * still holds is the claim's own SQL predicate (`dependencySatisfied`), and a
@@ -21,7 +21,7 @@ import { gateEvents, tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
 import { makeWaitingReason, orderWaitingReasons, overlapAreas, type WaitingReason } from '@buildd/core/waiting-reason';
-import { loadTaskCoordinationHolds } from '@/lib/explain';
+import { loadTaskCoordinationHolds } from '@/lib/coordination-holds';
 import type { CoordinationHold } from '@/lib/explain-coordination';
 import { dependencySatisfied } from '@/app/api/workers/claim/deps-gate';
 import { evaluateSoftOverlaps, readSoftOverlaps } from '@/app/api/workers/claim/soft-overlap-gate';
@@ -33,8 +33,8 @@ import { evaluateCoordinationGates } from '@/app/api/workers/claim/coordination-
 import { loadMissionCoordination, loadOpenPrTasksByWorkspace } from '@/app/api/workers/claim/coordination-snapshot';
 import { ORDERED_BEHIND_REASON } from '@/app/api/workers/claim/claim-plan-store';
 import { GATE_SLUGS } from '@buildd/core/gate-events';
+import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 
-const LIVE = ['running', 'starting', 'idle', 'waiting_input'] as const;
 /**
  * `ordered_behind` is written once per (task, blocker), never refreshed, so
  * the blocker's liveness is what says it still applies; this only bounds the read.
@@ -93,7 +93,7 @@ export async function probeCoordination(task: ProbeTask, now: Date = new Date(),
     ].filter(id => id !== task.id);
     const liveRows = candidateHolders.length > 0
       ? await db.query.workers.findMany({
-          where: and(inArray(workers.taskId, candidateHolders), inArray(workers.status, [...LIVE])),
+          where: and(inArray(workers.taskId, candidateHolders), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
           columns: { taskId: true },
         })
       : [];

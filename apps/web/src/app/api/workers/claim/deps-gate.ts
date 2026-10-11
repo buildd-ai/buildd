@@ -1,7 +1,6 @@
 import { isNull, or, sql, type SQL } from 'drizzle-orm';
 import { BYPASS_DEPS_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
 import { tasks, workers, dependencyReleases } from '@buildd/core/db/schema';
-import { FORCE_START_CONTEXT_KEY } from '@buildd/core/waiting-reason';
 import {
   DEP_SATISFYING_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
@@ -135,13 +134,13 @@ export function dependencySatisfied(depId: SQL): SQL {
  * The edit-time path lease still serializes the shared files.
  */
 function forceStartLiftsEdge(depId: SQL): SQL {
-  // A constant key, inlined so the gate's bound parameters stay the contract's.
-  const key = sql.raw(`'${FORCE_START_CONTEXT_KEY}'`);
+  // The key is FORCE_START_CONTEXT_KEY, written as a literal so the gate's
+  // bound parameters stay the contract's (pinned by deps-gate.test.ts).
   return sql`(
     -- Two-valued: a missing key must be FALSE, never NULL, inside the NOT EXISTS.
     COALESCE(${tasks.pathDeclaration}->'inferredDependsOn' ? (${depId})::text, FALSE)
-    AND COALESCE(${tasks.context}->${key}->'liftDependsOn' ? (${depId})::text, FALSE)
-    AND COALESCE((${tasks.context}->${key}->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), FALSE)
+    AND COALESCE(${tasks.context}->'forceStart'->'liftDependsOn' ? (${depId})::text, FALSE)
+    AND COALESCE((${tasks.context}->'forceStart'->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), FALSE)
   )`;
 }
 

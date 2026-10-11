@@ -1636,7 +1636,7 @@ export default async function TaskDetailPage({
                 </svg>
                 {(() => {
                   // Creation-time overlap edges are ordering, not dependencies a person declared.
-                  const inferred = new Set(((task.pathDeclaration as { inferredDependsOn?: string[] } | null)?.inferredDependsOn) ?? []);
+                  const inferred = new Set(task.pathDeclaration?.inferredDependsOn ?? []);
                   const overlap = unresolvedDeps.filter(d => inferred.has(d.id)).length;
                   return blockedHeadline(unresolvedDeps.length - overlap, overlap);
                 })()}

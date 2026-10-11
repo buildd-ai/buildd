@@ -32,7 +32,7 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 let holds: any[] = [];
-mock.module('@/lib/explain', () => ({ loadTaskCoordinationHolds: async () => holds }));
+mock.module('@/lib/coordination-holds', () => ({ loadTaskCoordinationHolds: async () => holds }));
 mock.module('@/app/api/workers/claim/coordination-snapshot', () => ({
   loadOpenPrTasksByWorkspace: async () => new Map(),
   loadMissionCoordination: async () => ({ missionClaimMap: new Map(), missionActiveCountMap: new Map(), missionAdvisoryInFlight: new Map(), missionInFlightRows: [] }),

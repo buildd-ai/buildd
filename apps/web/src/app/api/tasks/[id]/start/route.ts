@@ -140,7 +140,7 @@ export async function POST(
     // the claim route will silently skip this task. Surface that here before broadcasting.
     // Declared edges only: an inferred (creation-time overlap) edge is a
     // coordination hold the probe below reports, forceable on its own.
-    const inferredEdges = new Set(((task.pathDeclaration as { inferredDependsOn?: string[] } | null)?.inferredDependsOn) ?? []);
+    const inferredEdges = new Set(task.pathDeclaration?.inferredDependsOn ?? []);
     const dependsOn = ((task.dependsOn as string[] | null) || []).filter(id => !inferredEdges.has(id));
     if (dependsOn.length > 0 && !forceOverride) {
       const openDepWorkers = await db.query.workers.findMany({

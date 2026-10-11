@@ -8,7 +8,8 @@ import { tasks, workers, missions } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, not } from 'drizzle-orm';
 import { declaresNoScope } from '@buildd/core/path-overlap';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
-import { isDispatchedReview } from '@/lib/read-only-review';
+import { isDispatchedReview } from '@/lib/read-only-task';
+import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { producesNoFileEdits, type OpenPrTask } from './coordination-gates';
 import type { MissionInFlightRow } from './claim-plan-input';
 
@@ -26,7 +27,7 @@ export async function loadOpenPrTasksByWorkspace(workspaceIds: string[]): Promis
       inArray(workers.workspaceId, workspaceIds),
       not(isNull(workers.prUrl)),
       isNull(workers.mergedAt),
-      inArray(workers.status, ['running', 'idle', 'starting', 'waiting_input', 'completed']),
+      inArray(workers.status, [...LIVE_WORKER_STATUSES, 'completed']),
     ),
     columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true, branch: true, prBaseRef: true, prLifecycleStatus: true, status: true, updatedAt: true },
   });
@@ -107,7 +108,7 @@ export async function loadMissionCoordination(missionIds: string[]): Promise<Mis
     .innerJoin(tasks, eq(tasks.id, workers.taskId))
     .where(and(
       inArray(tasks.missionId, missionIds),
-      inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+      inArray(workers.status, [...LIVE_WORKER_STATUSES]),
     ));
   for (const row of out.missionInFlightRows) {
     if (!row.missionId) continue;

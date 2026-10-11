@@ -25,11 +25,11 @@ export async function GET(
 ) {
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   let userId: string | null = null;
-  let accountId: string | null = null;
+  // The authenticated account itself, not its id: a grant session is judged on the grant.
+  let account: Awaited<ReturnType<typeof authenticateApiKey>> = null;
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey, req);
+    account = await authenticateApiKey(apiKey, req);
     if (!account) return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
-    accountId = account.id;
   } else {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -41,7 +41,7 @@ export async function GET(
   if (!task) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
   const allowed = userId
     ? await verifyWorkspaceAccess(userId, task.workspaceId)
-    : await verifyAccountWorkspaceAccess(accountId!, task.workspaceId);
+    : await verifyAccountWorkspaceAccess(account!, task.workspaceId);
   if (!allowed) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 
   if (task.status !== 'pending') return NextResponse.json({ waitingReasons: [], probed: true });

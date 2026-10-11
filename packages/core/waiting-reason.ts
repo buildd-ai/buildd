@@ -482,6 +482,8 @@ export function overlapAreas(paths: readonly string[]): AreaCount[] {
 /** Context key of the dashboard force-start intent (see apps/web/src/lib/force-start.ts). */
 export const FORCE_START_CONTEXT_KEY = 'forceStart' as const;
 export const FORCE_START_HISTORY_KEY = 'forceStartHistory' as const;
+/** The decision id a person's dashboard Force start records (apps/web/src/lib/force-start.ts). */
+export const HUMAN_FORCE_START_DECISION_ID = 'buildd.human_force_start';
 /** A force start that no runner claims within this window lapses. */
 export const FORCE_START_TTL_MS = 15 * 60 * 1000;
 

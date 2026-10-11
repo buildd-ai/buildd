@@ -30,6 +30,7 @@
  * live in `./orchestration-ledger-source.ts`.
  */
 import { REPO_WIDE_SENTINEL } from './path-overlap';
+import { HUMAN_FORCE_START_DECISION_ID } from './waiting-reason';
 
 /** `workers.observed_touches` is capped at this many paths; a label at the cap may be partial. */
 export const OBSERVED_TOUCHES_CAP = 500;
@@ -248,8 +249,7 @@ function labelOne(d: DecisionForJoin, input: OutcomeJoinInput): DecisionOutcomeL
  */
 export type StartActor = 'jev_start' | 'human_force';
 
-/** The decision id a person's dashboard Force start records (apps/web/src/lib/force-start.ts). */
-export const HUMAN_FORCE_START_DECISION_ID = 'buildd.human_force_start';
+export { HUMAN_FORCE_START_DECISION_ID };
 
 /** The headline outcome of one start: the first unsafe dimension observed, else clean. */
 export type StartOutcome = 'clean' | 'edit_collision' | 'merge_conflict' | 'base_refusal' | 'censored' | 'missing';
