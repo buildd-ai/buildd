@@ -343,3 +343,14 @@ describe('buildSiblingConflictInstruction', () => {
     expect(t).toContain('git diff HEAD...FETCH_HEAD');
   });
 });
+
+describe('holdsPathClaim', () => {
+  const { holdsPathClaim } = require('./sibling-conflict-probe');
+  it('is true only for a task with a manifest that is not read-only', () => {
+    expect(holdsPathClaim({ pathManifest: ['a.ts'] })).toBe(true);
+    expect(holdsPathClaim({ pathManifest: [] })).toBe(false);
+    expect(holdsPathClaim({ pathManifest: null })).toBe(false);
+    expect(holdsPathClaim({ pathManifest: ['a.ts'], kind: 'observation' })).toBe(false);
+    expect(holdsPathClaim({ pathManifest: ['a.ts'], roleSlug: 'visual-auditor' })).toBe(false);
+  });
+});
