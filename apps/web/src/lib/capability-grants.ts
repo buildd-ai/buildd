@@ -535,6 +535,12 @@ export interface CapabilityUse {
   tool: string | null;
   resource: string | null;
   environment: string | null;
+  /**
+   * The call's risk when the caller knows more than the tool's name (the
+   * connector gateway reads the provider's own MCP annotations). Never lowers
+   * the name's risk: the higher of the two is checked.
+   */
+  risk?: CapabilityRisk;
 }
 
 /** Live facts read fresh for every use; nothing here is cached from grant time. */
@@ -567,9 +573,12 @@ export function checkGrantUse(g: GrantRecord, use: CapabilityUse, ctx: UseContex
   if (!isLiveWorkerStatus(ctx.workerStatus)) return 'worker_not_live';
   if ((g.roleSlug ?? null) !== (p.roleSlug ?? null)) return 'role_changed';
   if (g.capability !== use.capability || g.provider !== use.provider || (g.connectorId ?? null) !== (use.connectorId ?? null)) return 'target_mismatch';
+  const useRisk = use.tool ? maxRisk(classifyToolRisk(use.tool), use.risk ?? 'read') : use.risk ?? null;
   if (g.tool) {
     if (use.tool !== g.tool) return 'tool_not_granted';
-  } else if (use.tool && !riskAtLeast(g.risk, classifyToolRisk(use.tool))) {
+    // An exact-tool grant still holds only up to the risk it was granted at.
+    if (useRisk && !riskAtLeast(g.risk, useRisk)) return 'tool_risk_exceeds_grant';
+  } else if (useRisk && !riskAtLeast(g.risk, useRisk)) {
     return 'tool_risk_exceeds_grant';
   }
   if (g.resource && use.resource !== g.resource) return 'resource_not_granted';
