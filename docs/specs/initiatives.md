@@ -30,7 +30,9 @@ assertions:
 **Capability statement**: An initiative is a named container above missions,
 the way a Linear initiative sits above projects. It carries a title, a short
 description, an owner, an optional target date, a status a person sets, and its
-missions. The Initiatives list and the initiative page MUST show that status,
+missions. An initiative has no page of its own: it shows on Home, and on Missions as a
+group filter (a mission's group is its initiative link; `/app/initiatives`
+redirects there). Home's initiative cards MUST show that status,
 progress as missions done over missions, and whatever its missions need from
 you, each as a fact with a link. Nothing grades the initiative itself.
 
@@ -117,10 +119,10 @@ as an empty progress bar beside `100%`. See
   for the list and the page.
 - `apps/web/src/lib/initiative-fields.ts`: `parseInitiativeStatus`,
   `parseTargetDate`, `parseOwnerUserId`, shared by POST and PATCH.
-- `apps/web/src/components/initiatives/InitiativeCard.tsx` and
-  `apps/web/src/components/initiatives/InitiativeStatusControl.tsx`.
-- `apps/web/src/app/app/(protected)/initiatives/page.tsx`,
-  `apps/web/src/app/app/(protected)/initiatives/[id]/page.tsx`.
+- `apps/web/src/components/initiatives/InitiativeCard.tsx`.
+- `apps/web/src/app/app/(protected)/missions/MissionGrid.tsx` (group filter),
+  `apps/web/src/app/app/(protected)/missions/[id]/MissionInitiativeSelector.tsx`
+  (set a mission's group, create one inline).
 - `apps/web/src/app/api/initiatives/route.ts`,
   `apps/web/src/app/api/initiatives/[id]/route.ts`.
 - `packages/core/db/schema.ts`: `initiatives.ownerUserId`, `initiatives.targetDate`.

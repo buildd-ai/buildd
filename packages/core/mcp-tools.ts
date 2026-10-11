@@ -18,6 +18,7 @@ import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-heal
 import type { DispatchHistoryEntry } from './dispatch-outbox';
 import { formatEvidenceObjects, formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
+import { handleSpecsAction } from './mcp-specs';
 import { handleModelUpgradeAction } from './mcp-model-upgrades';
 import { defaultProvidersScope, handleProvidersAction, providersNeedsAdmin, type ProvidersOp } from './mcp-providers';
 import { modelCredentialPurposes } from './providers/manage';
@@ -592,6 +593,9 @@ export const workerActions = [
   'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
+  // Typed links (Living Specs): attach an artifact to a task, mission or chat
+  // without copying it, and read what is linked. Same checks as the REST routes.
+  'link_artifact', 'list_artifact_links',
   // The visual auditor's own read: where its pages come from (sandbox or a
   // Vercel preview), resolved server-side with the workspace's GitHub App.
   'get_page_source',
@@ -616,6 +620,10 @@ export const workerActions = [
   // opt-in, catalog policy and Operator grant. Worker level: the organizer
   // choosing a role and the agent missing a tool are the ones asking.
   'resolve_capability',
+  // Ask for a capability for this run. Worker level: the agent missing the
+  // access is the one asking; a person decides on the request page, and no
+  // key, however high, can approve it.
+  'request_capability',
   'list_releases',
   'get_release',
   // Read-only and team-scoped. Worker level, not trigger: the caller who needs
@@ -652,6 +660,10 @@ export const workerActions = [
   // own key; team/workspace set/delete and set_policy need admin, checked in
   // the handler (the route checks the permission again).
   'manage_providers',
+  // Living Specs (/api/specs): create, read, revise under a version check, list
+  // and relate drafts in the caller's workspace. Worker level: agents draft and
+  // revise specs. Nothing in it approves; approval is a person's act (D-4).
+  'manage_specs',
 ] as const;
 
 export const PROVIDER_OPS = ['list', 'set', 'delete', 'explain', 'set_policy'] as const;
@@ -954,9 +966,12 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments. model_routing compares model tiers. heartbeat_triage and question_gate are retired kinds: existing rows stay listable/readable, but create and start are refused. create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). Every kind config also takes an optional duration cap, maxDurationDays and/or endsAt (ISO date); editing only the cap never bumps policyVersion, and a daily check pauses a running experiment once it is past its cap. list and readout also report enrolment health for running experiments: nothing enrolled for days, an arm never drawn, a split far off treatmentFraction, one unit (mission) holding most of an arm, past its cap. list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
     manage_model_tiers: '{ action: "list" | "set" | "delete" | "policy" | "set_policy" | "adopt" | "model", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default; policy/set_policy/adopt: only an explicit workspaceId scopes to the workspace, omit for the team), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set and model: full model ID, e.g. "claude-fable-5"), surface? (set/delete: "agent"|"chat" — scopes the row to agent runs or to chat and inference calls; omit for the row that serves both), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer), mode? (set_policy: "latest-compatible"|"soak"|"manual"|"inherit"), soakHours? (set_policy with soak: default 72) } — manage team model tier registry and model upgrades. list returns the effective map (workspace+surface → workspace → team+surface → team → catalog → code fallback) with source annotation, one line per surface when a tier is split. set upserts a registry row (a pin: the tier stays on that model whatever the upgrade policy) — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. policy reads the upgrade policy in effect and where it comes from (workspace/team/default), and per tier: the model, why it was chosen, any newer centrally certified model and why it is withheld (pinned/manual/soak), and deprecation. set_policy sets how catalog-resolved tiers move to newly certified models: latest-compatible adopts on certification, soak after soakHours with no compatibility incident, manual never on its own (adopt moves it); mode "inherit" clears the level. adopt (manual policy) takes every model certified so far. model shows one model\'s central certification: state, CLI floor, release/certification time, deprecation. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key?, taskId? } — workerId auto-resolved from context if omitted; for worker artifacts, taskId is auto-resolved from worker data if not provided. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context. taskId enables artifact notifications when the artifact is meant for review.',
-    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
+    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown. After the PUT, upload_artifact { artifactId, sha256? } verifies the bytes and marks it ready.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
-    get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body) } — fetch full artifact content by ID, with its current revision and sha256; file artifacts include a short-lived presigned download URL',
+    get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body), view? ("outline"|"section"|"range"|"grep"|"meta"; default: the whole body when it is short, its outline when long), section? (id from the outline, with view section), offset? + length? (view range), grep? (literal text, with view grep), full? (true: the whole body however long) } — fetch an artifact by ID with its current revision and sha256. A long body comes back as an outline you read part by part, so a large reference never floods your context; what you read is recorded. File artifacts include a short-lived presigned download URL',
+    link_artifact: '{ artifactId (required), subjectKind ("task"|"mission"|"plan"|"conversation"|"message"), subjectId, relation ("context"|"requirement"|"normative_reference"|"design_reference"|"evidence"|"output"), revision? (pin; a normative_reference always pins, the current revision when omitted), linkId? + unlink: true (remove that link instead) } — attach an artifact to something it informs, in the same team, without copying it. Linking twice updates the link',
+    list_artifact_links: '{ artifactId? (this artifact\'s links) | subjectKind + subjectId (what is linked to that subject), relation? (comma-separated filter, with subjectKind) } — a reference manifest: id, title, type, relation, pinned revision, size and sha256, never the bodies; read one with get_artifact',
+    manage_specs: '{ action (required): "create_draft" | "get" | "revise" | "list" | "relate" | "submit" | "approve", specId? (all but create_draft/list), workspaceId? (create_draft/list; defaults to the session workspace), title? (create_draft), body? (create_draft/revise: the spec text, Markdown, at most 400,000 characters), scope? (create_draft: product|domain|feature|mission, default feature), parentSpecId? (create_draft; relate: a spec id, or null to clear), changeSummary? (create_draft/revise), expectedVersion? (revise/submit/approve, required: the version get showed), revision? (get: read that revision exactly as written; approve, required: the head revision) } — Living Specs: governed intent with immutable revisions. revise writes only if the spec is still at expectedVersion; otherwise nothing is written and the reply carries currentVersion: re-read, merge, revise on top. relate refuses a parent in another workspace or one that would form a cycle. get inlines a body up to 20,000 characters, else points at get_artifact views. submit and approve are a person\'s act (team owner/admin or a delegated approver, from their own session): an agent run or API key gets a 403. Approval puts the head revision in force; later revisions stay proposed until approved.',
     update_artifact: '{ artifactId (required), title?, content?, metadata?, expectedRevision? (with content: write only if the body is still at that revision, else refused with the current one — pass the currentRevision get_artifact showed) } — every content change is kept as a new immutable revision',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
@@ -1003,6 +1018,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. Cloud runs (one container per task) are one elastic group per dispatcher, "N running", with each run nested. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
     resolve_capability: '{ capability?, roleSlug?, workspaceId? } — what could satisfy a semantic need in this workspace, before choosing a role. capability is domain:verb, domain one of observability|deployment|database|analytics|work_tracking|docs|source_control, verb read|query|write (e.g. "observability:query", "deployment:read"); omit it to list every need something here serves, with what is available now. Returns ranked candidates: provider (catalog slug), installed connector or null, match exact|partial|category, access permitted|auto_grant (route to a role in roles.withAccess)|ask_admin|forbidden (team blocked it)|reconnect|unhealthy, availableNow, health, workspace enablement, compatibility (unknown_until_tested = the provider may refuse a Buildd-run client), risk (writeToolsExposed: mounting exposes every native tool, so read does not mean read-only), runtimeNeeds, nextSteps. Plus operator (Operator deploy grant, deployment needs only) and unclassifiedConnectors. roleSlug defaults to your own task\'s role under a per-task token. Read-only: installing, enabling or granting stays a team admin act. Native tool names and schemas are untouched.',
+    request_capability: '{ capability, provider?, tool?, resource?, environment?, risk?, ttlSeconds?, reason?, workerId? } — ask for access this run needs, by need not by connector: capability is domain:verb (as in resolve_capability) or model.inference (then provider openrouter|litellm, models[], budget). Never pass a connector id or credential. Returns outcome: existing (your role already has it, or a live grant covers it), auto_granted (team policy granted it now, for ttlSeconds), pending_approval (a team admin decides; asking again returns the same request), denied (a person denied this exact ask for this run), forbidden (team blocked it; not appealable here), need_connection / need_reauth / unhealthy (someone must (re)connect the provider), unavailable (nothing serves it) — plus nextSteps and alternatives (e.g. a role that already mounts it). Writes (risk write/admin) always need a person. A grant is bound to this worker, task and role and ends with them; it is re-checked on every use, so a revoke stops the next call. Credentials stay server-side.',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
@@ -2266,6 +2282,71 @@ async function mirrorWorkProduct(
     // Best-effort — never fail the underlying action if indexing fails.
     return null;
   }
+}
+
+
+/** A bounded artifact read (GET /api/artifacts/:id?view=…), as text an agent can act on. */
+function renderArtifactRead(read: any): string {
+  const n = (x: number) => Number(x).toLocaleString('en-US');
+  switch (read.view) {
+    case 'outline': {
+      const rows = (read.sections as any[]).map((s) => `${'  '.repeat(Math.max(0, s.level - 1))}- ${s.id}: ${s.title} (${n(s.chars)} chars)`);
+      return [
+        `## Outline (${n(read.chars)} characters, ${n(read.sections.length)} sections)`,
+        '',
+        rows.length ? rows.join('\n') : '(no headings: read it with view "range", offset and length)',
+        '',
+        'Read one part with view "section" and its id, search with view "grep" and grep, or pass full: true for the whole body.',
+      ].join('\n');
+    }
+    case 'section':
+      return `## Section ${read.section.id}: ${read.section.title} (${n(read.section.chars)} chars${read.truncated ? ', cut at 20,000; read the rest with view "range"' : ''})\n\n${read.text}`;
+    case 'range':
+      return `## Characters ${n(read.offset)}–${n(read.offset + read.length)} of ${n(read.chars)}${read.truncated ? ' (cut at 20,000)' : ''}\n\n${read.text}`;
+    case 'grep':
+      return [
+        `## ${n(read.matches.length)} match(es) for "${read.pattern}"${read.truncated ? ' (first 50)' : ''}`,
+        '',
+        ...(read.matches as any[]).map((m) => `line ${n(m.line)} (offset ${n(m.offset)}):\n${m.text}`),
+      ].join('\n');
+    case 'meta':
+      return `## ${n(read.chars)} characters, ${n(read.sections)} sections. Read the outline with view "outline".`;
+    default:
+      return '';
+  }
+}
+
+/**
+ * One-line state for a freshly created task, built only from fields the create
+ * response actually carries (dispatch outbox receipt, gate-ledger blocker,
+ * claim status). Anything not grounded falls back to a positive, async-neutral
+ * line — never "no runner has claimed it yet".
+ */
+export function describeCreatedTaskState(task: any): string {
+  if (task.startAt) return `Deferred until ${new Date(task.startAt).toISOString()}`;
+  if (task.status === 'assigned') return 'Claimed — a runner has picked it up';
+  if (task.status === 'in_progress') return 'Running';
+  if (task.status === 'completed' || task.status === 'failed') return `Terminal (${task.status})`;
+  const blocker = task.blockedByPr ?? task.deferral?.blockedByPr;
+  if (blocker?.prNumber || task.deferral?.reason) {
+    const reason = task.deferral?.reason ?? 'path_overlap';
+    const on = [
+      blocker?.prNumber ? `PR #${blocker.prNumber}` : null,
+      task.deferral?.blockingTaskId ? `task ${task.deferral.blockingTaskId}` : null,
+    ].filter(Boolean).join(' / ');
+    return `Created; currently deferred (${reason}${on ? ` — ${on}` : ''}). Pickup resumes when that clears.`;
+  }
+  const d = task.dispatch as { status?: string; deliveredVia?: string; deliveredAt?: string | null; handedOffAt?: string | null; target?: string } | undefined;
+  if (d?.status === 'delivered' && d.deliveredAt) {
+    return `Created and queued; wake delivered${d.deliveredVia ? ` via ${d.deliveredVia}` : ''} (delivery is not a claim — pickup is asynchronous)`;
+  }
+  if (d?.status === 'handed_off' || d?.handedOffAt) {
+    return `Created and queued; dispatch handed off${d.target ? ` to ${d.target}` : ''} (not yet confirmed delivered — pickup is asynchronous)`;
+  }
+  if (d?.status === 'pending' || d?.status === 'delivering') {
+    return 'Created and queued; dispatch enqueued, wake not yet delivered (pickup is asynchronous)';
+  }
+  return 'Created and queued; pickup is asynchronous';
 }
 
 export async function handleBuilddAction(
@@ -3980,11 +4061,7 @@ export async function handleBuilddAction(
         return text(`${how}: "${task.title}" (ID: ${task.id})\nYour report has been attached rather than dispatching a second agent onto a separate branch. Follow progress with get_task (taskId ${task.id}), or re-file with fileAnywayReason if this is genuinely distinct work.`);
       }
 
-      const statusLabel = task.startAt
-        ? `Deferred until ${new Date(task.startAt).toISOString()}`
-        : task.status === 'assigned'
-          ? 'Assigned — a runner has already claimed it'
-          : 'Queued — no runner has claimed it yet';
+      const statusLabel = describeCreatedTaskState(task);
 
       // Surface prior incidents/lessons/PRs related to this filing so the author
       // doesn't have to remember to run recall themselves — the CTA-derives-from-
@@ -4006,7 +4083,7 @@ export async function handleBuilddAction(
         ? `\nModel routing: ${task.routing.reason}`
         : '';
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${routingLine}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${subjectSuggestion}${similarTasksWarning}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}\nFollow progress at the Task URL below or with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${routingLine}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${taskBody.callbackUrl ? '\nCallback: callbackUrl receives one best-effort HTTPS POST when the task completes or fails; it is not a progress feed.' : ''}${subjectSuggestion}${similarTasksWarning}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
     }
 
     case 'create_schedule': {
@@ -4769,6 +4846,16 @@ export async function handleBuilddAction(
     }
 
     case 'upload_artifact': {
+      // Follow-up after the PUT: verify the stored bytes (size, content type,
+      // and sha256 when sent) and mark the upload ready, or failed.
+      if (typeof params.artifactId === 'string' && params.artifactId) {
+        const sha256 = typeof params.sha256 === 'string' && params.sha256 ? params.sha256 : undefined;
+        const data = await api(`/api/artifacts/${encodeURIComponent(params.artifactId)}/finalize`, {
+          method: 'POST',
+          body: JSON.stringify(sha256 ? { sha256 } : {}),
+        });
+        return text(`Upload ${data.state}: artifact ${data.artifactId}${data.sha256 ? ` (sha256 ${data.sha256}, ${data.sizeBytes} bytes)` : ''}`);
+      }
       const workerId = resolveWorkerId(params.workerId, ctx);
       if (!params.filename || !params.mimeType || !params.sizeBytes) {
         throw new Error('filename, mimeType, and sizeBytes are required');
@@ -4798,6 +4885,7 @@ export async function handleBuilddAction(
         ``,
         `Upload the file:`,
         `curl -X PUT -H "Content-Type: ${mimeStr}" --data-binary @./${params.filename} "${data.uploadUrl}"`,
+        `It is served only once its bytes arrive at exactly ${params.sizeBytes} bytes. Then call upload_artifact { artifactId, sha256? } to verify it now; otherwise the first read does (get_artifact shows uploadState).`,
         ``,
         `Download URL (permanent, for markdown embedding):`,
         data.downloadUrl,
@@ -4877,8 +4965,13 @@ export async function handleBuilddAction(
     case 'get_artifact': {
       if (!params.artifactId) throw new Error(`artifactId is required${params.id ? ' (you passed "id" — the field for this action is artifactId)' : ''}`);
 
-      const revisionQuery = params.revision !== undefined ? `?revision=${encodeURIComponent(String(params.revision))}` : '';
-      const data = await api(`/api/artifacts/${params.artifactId}${revisionQuery}`);
+      const qs = new URLSearchParams();
+      if (params.revision !== undefined) qs.set('revision', String(params.revision));
+      qs.set('view', params.full === true ? 'full' : String(params.view ?? 'auto'));
+      for (const k of ['section', 'offset', 'length', 'grep', 'context'] as const) {
+        if (params[k] !== undefined) qs.set(k, String(params[k]));
+      }
+      const data = await api(`/api/artifacts/${params.artifactId}?${qs}`);
       const art = data.artifact;
 
       const meta = [
@@ -4894,7 +4987,8 @@ export async function handleBuilddAction(
         art.metadata && Object.keys(art.metadata).length > 0 && `**Metadata:** ${JSON.stringify(art.metadata)}`,
       ].filter(Boolean).join('\n');
 
-      const content = art.content || (art.downloadUrl ? '(file artifact — see Download URL above)' : '(no content)');
+      if (art.read && art.read.view !== 'full') return text(`${meta}\n\n${renderArtifactRead(art.read)}`);
+      const content = art.read?.text || art.content || (art.downloadUrl ? '(file artifact — see Download URL above)' : '(no content)');
 
       return text(`${meta}\n\n## Content\n\n${content}`);
     }
@@ -4919,6 +5013,38 @@ export async function handleBuilddAction(
 
       const updatedArt = updated.artifact;
       return text(`Artifact updated: "${updatedArt.title}" (${updatedArt.type})\nID: ${updatedArt.id}\nRevision: ${updatedArt.currentRevision ?? 'n/a'}\nShare URL: ${updatedArt.shareUrl || 'N/A'}`);
+    }
+
+    case 'link_artifact': {
+      if (!params.artifactId) throw new Error('artifactId is required');
+      if (params.unlink === true) {
+        if (!params.linkId) throw new Error('linkId is required with unlink: true (list_artifact_links shows it)');
+        await api(`/api/artifacts/${params.artifactId}/links?linkId=${encodeURIComponent(String(params.linkId))}`, { method: 'DELETE' });
+        return text(`Link ${params.linkId} removed.`);
+      }
+      for (const k of ['subjectKind', 'subjectId', 'relation'] as const) if (!params[k]) throw new Error(`${k} is required`);
+      const linked = await api(`/api/artifacts/${params.artifactId}/links`, {
+        method: 'POST',
+        body: JSON.stringify({ subjectKind: params.subjectKind, subjectId: params.subjectId, relation: params.relation, ...(params.revision !== undefined ? { revision: params.revision } : {}) }),
+      });
+      const l = linked.link;
+      return text(`Linked artifact ${l.artifactId} to ${l.subjectKind} ${l.subjectId} as ${l.relation}${l.artifactRevision ? `, pinned to revision ${l.artifactRevision}` : ' (follows the current body)'}.\nLink ID: ${l.id}`);
+    }
+
+    case 'list_artifact_links': {
+      if (params.artifactId) {
+        const data = await api(`/api/artifacts/${params.artifactId}/links`);
+        const links = (data.links ?? []) as Array<Record<string, any>>;
+        if (!links.length) return text('This artifact has no links you can see.');
+        return text(`${links.length} link(s):\n${links.map(l => `- ${l.relation} → ${l.subjectKind} ${l.subjectId}${l.artifactRevision ? ` (rev ${l.artifactRevision} pinned)` : ''}. link: ${l.id}`).join('\n')}`);
+      }
+      if (!params.subjectKind || !params.subjectId) throw new Error('Pass artifactId, or subjectKind + subjectId');
+      const qs = new URLSearchParams({ subjectKind: String(params.subjectKind), subjectId: String(params.subjectId) });
+      if (params.relation) qs.set('relation', String(params.relation));
+      const data = await api(`/api/artifacts/linked?${qs}`);
+      const arts = (data.artifacts ?? []) as Array<Record<string, any>>;
+      if (!arts.length) return text(`Nothing is linked to ${params.subjectKind} ${params.subjectId}.`);
+      return text(`${arts.length} linked artifact(s):\n${arts.map(a => `- ${a.title || '(untitled)'} — ${a.relation}, ${a.type}${a.sizeBytes != null ? `, ${a.sizeBytes} bytes` : ''}, ${a.pinnedRevision ? `rev ${a.pinnedRevision} pinned` : `rev ${a.currentRevision || 'current'}`}${a.contentHash ? `, sha256 ${a.contentHash}` : ''}. id: ${a.artifactId}, link: ${a.linkId}`).join('\n')}`);
     }
 
     case 'list_artifact_templates': {
@@ -5478,6 +5604,17 @@ export async function handleBuilddAction(
     case 'list_runners':
       return runListRunners(api, params, (p) => resolveWorkspaceId(api, p, ctx));
 
+    case 'manage_specs': {
+      const op = params.action;
+      const wsId = op === 'create_draft' || op === 'list'
+        ? (params.workspaceId ? await resolveWorkspaceId(api, params.workspaceId, ctx) : await ctx.getWorkspaceId())
+        : null;
+      if ((op === 'create_draft' || op === 'list') && params.workspaceId && !wsId) {
+        return errorResult(`Workspace "${params.workspaceId}" not found or not visible to this token.`);
+      }
+      return handleSpecsAction(api, params, wsId);
+    }
+
     case 'get_visual_review':
       return runGetVisualReview(api, params, (p) => resolveWorkspaceId(api, p, ctx), ctx.appBaseUrl || 'https://buildd.dev', ctx.workspaceId || null);
 
@@ -5490,6 +5627,17 @@ export async function handleBuilddAction(
       if (typeof params.capability === 'string' && params.capability.trim()) q.set('capability', params.capability.trim());
       if (typeof params.roleSlug === 'string' && params.roleSlug.trim()) q.set('roleSlug', params.roleSlug.trim());
       const data = await api(`/api/connectors/capabilities?${q.toString()}`);
+      return text(JSON.stringify(data, null, 2));
+    }
+
+    case 'request_capability': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      if (typeof params.capability !== 'string' || !params.capability.trim()) throw new Error('capability is required (e.g. observability:query)');
+      const { workerId: _w, ...ask } = params as Record<string, unknown>;
+      const data = await api('/api/agent-capabilities/requests', {
+        method: 'POST',
+        body: JSON.stringify({ ...ask, workerId }),
+      });
       return text(JSON.stringify(data, null, 2));
     }
 

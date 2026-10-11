@@ -8,7 +8,13 @@
  * the agent for a task iff:
  *   role.connectorRefs  ∩  enabledForWorkspace  ∩  teamConnectors  −  catalogBlocked
  * where the role is resolved from the task's roleSlug (workspace override > team
- * default). No role or empty connectorRefs → mount nothing (least-privilege).
+ * default). No role or empty connectorRefs → mount nothing (least-privilege),
+ * except owned gateway connectors (below), whose every call is decided server-side.
+ *
+ * Gateway connectors (connector-gateway.ts: Axiom and Vercel by default) are
+ * returned as a buildd path, never with a credential: the agent's runtime
+ * mounts the connector gateway with its own buildd token, and the provider
+ * credential stays on the server.
  *
  * Credentials are resolved by the connector's OWNER team (connector.teamId), not
  * the task's workspace team. Today they are equal; keying on the owner makes the
@@ -29,6 +35,9 @@ import type { SecretsProvider } from '@buildd/core/secrets';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
+import { loadTeamCatalog } from '@/lib/connector-catalog-store';
+import { connectorHostKey } from '@/lib/connector-catalog';
+import { GATEWAY_PROVIDERS, gatewayMode, gatewayPath, usesGateway } from '@/lib/connector-gateway';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -56,6 +65,10 @@ export type ResolvedMcpConnector = {
   mintApiUrl?: string;
   audience?: string;
   tokenEndpoint?: string;
+  // Gateway mode: the runner mounts `<its buildd origin><gatewayPath>?worker=<id>`
+  // with the agent's own buildd token. No provider credential is in the entry.
+  gateway?: true;
+  gatewayPath?: string;
 };
 
 /**
@@ -98,7 +111,29 @@ export async function resolveMcpConnectorsForTask(
   );
   if (!role) return [];
   const connectorRefs = ((role as any).connectorRefs as string[] | null) ?? [];
-  if (connectorRefs.length === 0) return [];
+
+  // Gateway providers (Axiom, Vercel; all with BUILDD_CONNECTOR_GATEWAY=all)
+  // are mounted for any role, not only the role that lists them: the gateway
+  // decides every call, so a connector the role does not mount is listed but
+  // each call needs a live task grant. That keeps the session's MCP topology
+  // fixed while a grant is approved, revoked or expires (no remount, on Claude
+  // or Codex). Owned connectors only; a shared-in one still needs a role ref.
+  const mode = gatewayMode();
+  const catalogSlugByHost = new Map<string, string>();
+  if (mode !== 'off') {
+    for (const e of await loadTeamCatalog(workspaceTeamId)) {
+      const k = connectorHostKey(e.url);
+      if (k && !catalogSlugByHost.has(k)) catalogSlugByHost.set(k, e.slug);
+    }
+  }
+  const slugOf = (c: { url: string | null }) => (c.url ? catalogSlugByHost.get(connectorHostKey(c.url) ?? '') ?? null : null);
+  let candidateIds: string[] = [];
+  const catalogHasGatewayProvider = [...catalogSlugByHost.values()].some(s => GATEWAY_PROVIDERS.has(s));
+  if (mode === 'all' || (mode === 'providers' && catalogHasGatewayProvider)) {
+    const owned =await db.query.connectors.findMany({ where: eq(connectors.teamId, workspaceTeamId) });
+    candidateIds = owned.filter(c => !connectorRefs.includes(c.id) && usesGateway(c, slugOf(c), mode)).map(c => c.id);
+  }
+  if (connectorRefs.length === 0 && candidateIds.length === 0) return [];
 
   // Cross-team sharing (§1b): visibility = owned ∪ shared-in. Fetch the
   // share grants for this team first, then keep only referenced connectors
@@ -114,12 +149,16 @@ export async function resolveMcpConnectorsForTask(
   });
   const sharedIdSet = new Set(shareRows.map(r => r.connectorId));
 
-  const referencedRows = await db.query.connectors.findMany({
+  const referencedRows = connectorRefs.length > 0 ? await db.query.connectors.findMany({
     where: inArray(connectors.id, connectorRefs),
-  });
-  const referencedConnectors = referencedRows.filter(
-    c => c.teamId === workspaceTeamId || sharedIdSet.has(c.id),
-  );
+  }) : [];
+  const candidateRows = candidateIds.length > 0 ? await db.query.connectors.findMany({
+    where: inArray(connectors.id, candidateIds),
+  }) : [];
+  const referencedConnectors = [
+    ...referencedRows.filter(c => c.teamId === workspaceTeamId || sharedIdSet.has(c.id)),
+    ...candidateRows.filter(c => c.teamId === workspaceTeamId),
+  ];
   if (referencedConnectors.length === 0) return [];
 
   // Filter to connectors enabled for this workspace (enabled !== false; a
@@ -248,6 +287,12 @@ export async function resolveMcpConnectorsForTask(
 
     const secretInfo = connectorSecretMap.get(connector.id);
     if (!secretInfo) continue; // missing credential → omit (AC-4)
+
+    // Brokered: the credential stays on the server; nothing is decrypted here.
+    if (usesGateway(connector, slugOf(connector), mode)) {
+      mcpConnectors.push({ id: connector.id, name, transport: 'http', gateway: true, gatewayPath: gatewayPath(connector.id) });
+      continue;
+    }
 
     if (connector.authMode === 'oauth') {
       // Refresh an expired access token at claim time; omit on unrecoverable failure (AC-3).

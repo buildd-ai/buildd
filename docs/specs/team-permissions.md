@@ -472,6 +472,7 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/workers/[id]/release-slot/route.ts:60` | release an interactive worker's slot | owner, admin | — | `force_reassign_task` |
 | `apps/web/src/app/api/releases/trigger/route.ts:58` | trigger a release | owner, admin, personal team | admin (`:53`) | `manage_releases` |
 | `apps/web/src/app/api/releases/status/route.ts:35` | release preflight | owner, admin, personal team | admin (`:31`) | `manage_releases` |
+| `apps/web/src/lib/specs/approval.ts:26` | `specApprover`: submit and approve a Living Spec revision | owner, admin, or a delegated approver (`gitConfig.livingSpecs.approverUserIds`) | — (a person only; an OAuth session counts as its person) | `approve_specs` |
 
 ### Team infrastructure
 

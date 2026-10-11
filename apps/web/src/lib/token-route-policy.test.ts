@@ -32,6 +32,10 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute(token, request('/api/health/dispatch'))).toBe(false);
     expect(canAccessTokenRoute(token, request('/api/health/dispatch?workspaceId=ws-b'))).toBe(false);
     expect(canAccessTokenRoute(token, request('/api/health/dispatch?workspaceId=ws-a'))).toBe(true);
+    // incidents: same shape as dispatch — own workspace only.
+    expect(canAccessTokenRoute(token, request('/api/health/incidents'))).toBe(false);
+    expect(canAccessTokenRoute(token, request('/api/health/incidents?workspaceId=ws-b'))).toBe(false);
+    expect(canAccessTokenRoute(token, request('/api/health/incidents?workspaceId=ws-a'))).toBe(true);
     expect(canAccessTokenRoute(token, request('/api/stats/actions?workspaceId=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['tasks:read'], workspaceIds: ['ws-a'] }, request('/api/tasks?workspace=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/artifacts?workspaceId=ws-a'))).toBe(false);
@@ -61,6 +65,17 @@ describe('REST token scope policy', () => {
     const restricted = { scopes: ['analytics:read'], workspaceIds: ['ws-a'] };
     expect(canAccessTokenRoute(restricted, request('/api/evidence?workspaceId=ws-b&prNumber=1'))).toBe(false);
     expect(canAccessTokenRoute(restricted, request('/api/evidence?workspaceId=ws-a&prNumber=1'))).toBe(true);
+  });
+  test('Living Specs routes take the task capabilities, matching manage_specs', () => {
+    expect(requiredTokenScope('/api/specs', 'GET')).toBe('tasks:read');
+    expect(requiredTokenScope('/api/specs/s-1', 'PATCH')).toBe('tasks:write');
+    expect(requiredTokenScope('/api/specs/s-1/parent', 'PUT')).toBe('tasks:write');
+    expect(canAccessTokenRoute({ scopes: ['tasks:read'] }, request('/api/specs', 'POST'))).toBe(false);
+    const restricted = { scopes: ['tasks:read', 'tasks:write'], workspaceIds: ['ws-a'] };
+    expect(canAccessTokenRoute(restricted, request('/api/specs?workspaceId=ws-a'))).toBe(true);
+    expect(canAccessTokenRoute(restricted, request('/api/specs', 'POST'))).toBe(true);
+    expect(canAccessTokenRoute(restricted, request('/api/specs?workspaceId=ws-b'))).toBe(false);
+    expect(canAccessTokenRoute(restricted, request('/api/specs'))).toBe(false);
   });
   test('Scout runner-host routes take the runner capability, not admin', () => {
     for (const path of [

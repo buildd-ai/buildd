@@ -13,6 +13,8 @@ import { registrationRefusalBody } from '@/lib/connector-provision';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { isUuid } from '@/lib/uuid';
 import { canWriteTeamConnectors } from '@/lib/connector-team-auth';
+import { hasBearer, SESSION_REQUIRED } from '@/lib/capability-grants-auth';
+import { parseToolPolicy } from '@/lib/connector-gateway';
 
 const refuseWrite = () => NextResponse.json(
   { error: 'forbidden', message: 'Changing or deleting a connector requires the manage_connectors permission in its team.' },
@@ -110,11 +112,23 @@ export async function PATCH(
     clientSecret?: string;
     assertionAudience?: string;
     assertionTokenEndpoint?: string;
+    toolPolicy?: unknown;
   };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  // Tool classification overrides decide what the connector gateway lets a
+  // read-only run call, so only a signed-in person may change them: an agent
+  // holds keys, and a key must never widen its own read class.
+  let toolPolicy: { readOnlyTools: string[]; denyTools: string[] } | undefined;
+  if (body.toolPolicy !== undefined) {
+    if (auth.type === 'api' || hasBearer(req)) return NextResponse.json(SESSION_REQUIRED, { status: 403 });
+    const parsed = parseToolPolicy(body.toolPolicy);
+    if (!parsed) return NextResponse.json({ error: 'toolPolicy must be { readOnlyTools?: string[], denyTools?: string[] } with at most 200 exact tool names each' }, { status: 400 });
+    toolPolicy = parsed;
   }
 
   try {
@@ -134,7 +148,12 @@ export async function PATCH(
     if (body.rediscover || body.url) {
       const discovered = await discoverOAuthMetadata(targetUrl);
       if (discovered.authMode === 'oauth') {
-        updates.discoveredMetadata = discovered as unknown as Record<string, unknown>;
+        // Re-discovery replaces the OAuth metadata, never an admin's tool overrides.
+        const keptPolicy = (connector.discoveredMetadata as Record<string, unknown> | null)?.toolPolicy;
+        updates.discoveredMetadata = {
+          ...(discovered as unknown as Record<string, unknown>),
+          ...(keptPolicy !== undefined ? { toolPolicy: keptPolicy } : {}),
+        };
         if (!body.clientId && !connector.clientId && discovered.authorizationServer.registration_endpoint) {
           let dcrResult;
           try {
@@ -155,6 +174,13 @@ export async function PATCH(
           }
         }
       }
+    }
+
+    if (toolPolicy) {
+      updates.discoveredMetadata = {
+        ...((updates.discoveredMetadata ?? connector.discoveredMetadata ?? {}) as Record<string, unknown>),
+        toolPolicy,
+      };
     }
 
     const [updated] = await db.update(connectors)

@@ -8,6 +8,10 @@ import { TonePill } from '@/components/ui/StatePill';
 import { Select } from '@/components/ui/Select';
 import { ConnectorIcon } from '@/components/ConnectorIcon';
 import { CATALOG_POLICIES, type CatalogPolicy, type ConnectorClientSupport, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
+import { providerState, type InstalledConnector } from '@/lib/capability-grants-view';
+
+/** Fired after the catalog installs a connector, so the Team connectors list reloads. */
+export const CONNECTORS_CHANGED_EVENT = 'buildd:connectors-changed';
 
 const POLICY_LABEL: Record<CatalogPolicy, string> = {
   blocked: 'Blocked',
@@ -31,22 +35,37 @@ const inputClass =
   'w-full px-3 py-2 bg-surface-3 border border-border-default text-base md:text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary';
 
 /**
- * Settings → MCP connectors → Catalog. Team admins decide, per catalog entry,
- * whether it is blocked, available in Add connection, or preinstalled into
- * every workspace; and add entries private to the team. Members see nothing
- * here (they use Add connection).
+ * Settings → Connected apps → Catalog. Each provider with its real state for
+ * this team (installed? credential live, expired, or blocked on the provider's
+ * client review?) and the one step that moves it on. Team admins also decide,
+ * per entry, whether it is blocked, available in Add connection, or
+ * preinstalled into every workspace, and add entries private to the team.
+ * Members see what is available, read-only: the API hides blocked entries
+ * from them and refuses their writes.
+ *
+ * Preinstalled puts a connector in every workspace; it grants agents nothing.
+ * A role still has to use it, or an agent asks and team policy answers (Agent
+ * access, below).
  */
-export default function CatalogSection() {
+export default function CatalogSection({ teamId = null }: { teamId?: string | null } = {}) {
   const [entries, setEntries] = useState<ResolvedCatalogEntry[]>([]);
+  const [installed, setInstalled] = useState<InstalledConnector[]>([]);
   const [canManage, setCanManage] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [showAdd, setShowAdd] = useState(false);
 
+  const loadInstalled = useCallback(async () => {
+    const res = await fetch(teamId ? `/api/connectors?teamId=${teamId}` : '/api/connectors').catch(() => null);
+    if (!res?.ok) return;
+    const data = await res.json() as { connectors?: InstalledConnector[] };
+    setInstalled(data.connectors ?? []);
+  }, [teamId]);
+
   const load = useCallback(async () => {
     try {
-      const res = await fetch('/api/connectors/catalog');
+      const [res] = await Promise.all([fetch('/api/connectors/catalog'), loadInstalled()]);
       if (!res.ok) return;
       const data = await res.json() as { canManage?: boolean; entries?: ResolvedCatalogEntry[] };
       setCanManage(!!data.canManage);
@@ -56,7 +75,51 @@ export default function CatalogSection() {
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [loadInstalled]);
+
+  /**
+   * Install (create the team connector) and, for OAuth, go straight to the
+   * provider's sign-in; or start a reconnect. The provider decides: an error it
+   * returns (a client it has not approved, a refused sign-in) is shown as is.
+   */
+  async function runStep(entry: ResolvedCatalogEntry, step: { kind: 'install' | 'connect' | 'set_key'; connectorId?: string }) {
+    setSaving(entry.slug);
+    setMessage(null);
+    try {
+      let connectorId = step.connectorId;
+      if (step.kind === 'install') {
+        const res = await fetch('/api/connectors', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(entry.authMode === 'none' ? { name: entry.name, url: entry.url, authMode: 'none' } : { name: entry.name, url: entry.url }),
+        });
+        const data = await res.json().catch(() => ({})) as { connector?: { id: string }; message?: string; error?: string };
+        if (!res.ok || !data.connector) {
+          setMessage({ type: 'err', text: data.message || data.error || `Could not install ${entry.name}.` });
+          return;
+        }
+        window.dispatchEvent(new Event(CONNECTORS_CHANGED_EVENT));
+        await loadInstalled();
+        if (entry.authMode !== 'oauth') {
+          setMessage({ type: 'ok', text: `${entry.name} is installed.` });
+          return;
+        }
+        connectorId = data.connector.id;
+      }
+      if (!connectorId) return;
+      const res = await fetch(`/api/connectors/${connectorId}/connect`, { method: 'POST' });
+      const data = await res.json().catch(() => ({})) as { authorizationUrl?: string; message?: string; error?: string };
+      if (!res.ok || !data.authorizationUrl) {
+        setMessage({ type: 'err', text: data.message || data.error || `Could not start sign-in for ${entry.name}.` });
+        return;
+      }
+      window.location.href = data.authorizationUrl;
+    } catch {
+      setMessage({ type: 'err', text: `Could not reach the server for ${entry.name}.` });
+    } finally {
+      setSaving(null);
+    }
+  }
 
   useEffect(() => { void load(); }, [load]);
 
@@ -104,24 +167,29 @@ export default function CatalogSection() {
     }
   }
 
-  if (!loaded || !canManage) return null;
+  if (!loaded) return null;
 
   return (
     <Section
       title="Catalog"
-      action={
+      action={canManage ? (
         <button type="button" className="btn btn-sm" onClick={() => setShowAdd((v) => !v)} data-testid="catalog-add-toggle">
           {showAdd ? 'Cancel' : 'Add team entry'}
         </button>
-      }
+      ) : undefined}
     >
+      {!canManage && entries.length > 0 && (
+        <p className="mb-3 text-sm text-text-secondary" data-testid="catalog-member-note">
+          The tools your team makes available. Only team owners and admins can install or change them.
+        </p>
+      )}
       {message && (
         <Notice tone={message.type === 'ok' ? 'ok' : 'err'} className="mb-3" data-testid="catalog-message">
           {message.text}
         </Notice>
       )}
 
-      {showAdd && (
+      {canManage && showAdd && (
         <AddTeamEntryForm
           onAdded={async () => { setShowAdd(false); await load(); }}
         />
@@ -130,7 +198,10 @@ export default function CatalogSection() {
       {/* The per-row Blocked / Available / Preinstalled seg stays as is: the
           owner has not decided whether it becomes a select. */}
       <ul className="divide-y divide-border-default">
-        {entries.map((entry) => (
+        {entries.map((entry) => {
+          const state = providerState(entry, installed);
+          const step = canManage && entry.policy !== 'blocked' && state.action && state.action.kind !== 'set_key' ? state.action : null;
+          return (
           <li key={entry.slug} className="py-3" data-testid={`catalog-entry-${entry.slug}`}>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 sm:gap-4">
               <div className="flex-1 min-w-0 flex items-start gap-3">
@@ -140,11 +211,15 @@ export default function CatalogSection() {
                     <span className="text-sm font-medium text-text-primary">{entry.name}</span>
                     {/* Only a team's own entries are tagged; built-in is the default. */}
                     {entry.source === 'team' && <TonePill tone="q">Team</TonePill>}
+                    {entry.policy === 'blocked'
+                      ? <span data-testid={`catalog-state-${entry.slug}`}><TonePill tone="bad">Blocked</TonePill></span>
+                      : <span data-testid={`catalog-state-${entry.slug}`} data-state={state.kind}><TonePill tone={state.tone}>{state.label}</TonePill></span>}
+                    {!canManage && entry.policy === 'preinstalled' && <TonePill tone="q">In every workspace</TonePill>}
                   </div>
                   {entry.description && <div className="text-xs text-text-secondary mt-0.5">{entry.description}</div>}
                   {entry.policy === 'preinstalled' && (
                     <div className="text-xs text-text-secondary mt-1">
-                      Added to every workspace. Roles still choose which connectors they use.
+                      In every workspace. Agents get it only through a role that uses it, or a request team policy allows.
                     </div>
                   )}
                   {entry.policy === 'blocked' && (
@@ -158,7 +233,18 @@ export default function CatalogSection() {
                   </Disclosure>
                 </div>
               </div>
-              <div className="flex items-center gap-2 sm:flex-shrink-0 sm:justify-end">
+              {canManage && <div className="flex flex-wrap items-center gap-2 sm:flex-shrink-0 sm:justify-end">
+                {step && (
+                  <button
+                    type="button"
+                    className="btn btn-sm min-h-11 md:min-h-0"
+                    disabled={saving === entry.slug}
+                    onClick={() => void runStep(entry, step)}
+                    data-testid={`catalog-step-${entry.slug}`}
+                  >
+                    {saving === entry.slug ? 'Working…' : step.label}
+                  </button>
+                )}
                 <div className="seg inline-flex" role="radiogroup" aria-label={`${entry.name} policy`}>
                   {CATALOG_POLICIES.map((p) => (
                     <button
@@ -186,10 +272,11 @@ export default function CatalogSection() {
                     Remove
                   </button>
                 )}
-              </div>
+              </div>}
             </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
     </Section>
   );

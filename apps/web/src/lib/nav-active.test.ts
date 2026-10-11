@@ -25,8 +25,8 @@ describe('isNavActive', () => {
       expect(isNavActive('/app/missions/abc-123', '/app/missions')).toBe(true);
     });
 
-    // Releases and Initiatives left the nav for Missions (owner decision, Oct 9).
-    it.each(['/app/releases', '/app/releases/r-1', '/app/initiatives', '/app/initiatives/i-1'])('owns %s', (p) => {
+    // Releases left the nav for Missions (owner decision, Oct 9).
+    it.each(['/app/releases', '/app/releases/r-1'])('owns %s', (p) => {
       expect(isNavActive(p, '/app/missions')).toBe(true);
     });
 
