@@ -123,6 +123,9 @@ describe('dependenciesSatisfied() — emitted SQL', () => {
       ...EARLY_RELEASE_SATISFYING_DECISIONS,
       MIGRATION_PATH_RE.source,
       'mission/%',
+      'pending',
+      'idle', 'running', 'starting', 'waiting_input',
+      DEP_UNBLOCKING_PR_LIFECYCLE,
       '[surface audit] %',
     ]);
   });
@@ -132,7 +135,7 @@ describe('dependenciesSatisfied() — emitted SQL', () => {
     // this pins the shape: the arm is AND NOT'd per dependency, scoped to audit
     // titles, and compares the dependency's mission to the outer (dependent) row's.
     const text = renderGate();
-    expect(text).toContain('AND NOT ( "tasks"."mission_id" IS NOT NULL AND "tasks"."title" LIKE $8');
+    expect(text).toContain('AND NOT ( "tasks"."mission_id" IS NOT NULL AND "tasks"."title" LIKE $14');
     expect(text).toContain('t3.id = dep_id::uuid AND t3.mission_id = "tasks"."mission_id"');
   });
 
@@ -266,5 +269,27 @@ describe('dependencySatisfied(): migration edge onto another landing base', () =
     expect(renderParams()).toContain('mission/%');
     // The dependent's base is its mission's integration branch only when enabled.
     expect(text).toContain('m.integration_branch_enabled IS TRUE');
+  });
+});
+
+describe('dependencySatisfied(): inferred edge onto a holder that never started', () => {
+  it('releases an inferred edge whose dependency is pending with no live worker and no open PR', () => {
+    const text = renderGate();
+    // Only edges the creation route minted, never a caller-declared dependency.
+    expect(text).toContain(`"tasks"."path_declaration"->'inferredDependsOn' ? (dep_id::uuid)::text, FALSE) AND EXISTS ( SELECT 1 FROM "tasks" t5`);
+    // The holder has not started: still pending...
+    expect(text).toMatch(/t5\.status = \$\d+/);
+    expect(renderParams()).toContain('pending');
+    // ...with no live worker and no worker holding an open PR.
+    expect(text).toMatch(/w5\.status IN \(\$\d+, \$\d+, \$\d+, \$\d+\)/);
+    for (const s of ['idle', 'running', 'starting', 'waiting_input']) expect(renderParams()).toContain(s);
+    expect(text).toContain('w5.pr_url IS NOT NULL AND w5.merged_at IS NULL');
+  });
+
+  it('never lets a missing inferredDependsOn key go NULL inside the NOT EXISTS', () => {
+    // A bare `?` on an absent key is NULL; NOT (… OR NULL) is NULL and drops
+    // the dependency from the NOT EXISTS, releasing a caller-declared edge.
+    const text = renderGate();
+    expect(text).not.toMatch(/(?<!COALESCE\()"tasks"\."path_declaration"->'inferredDependsOn' \?/);
   });
 });
