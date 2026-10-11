@@ -138,7 +138,13 @@ export async function POST(
   // A per-task token may post only to its own task's mission feed.
   const apiAccount = await authenticateTaskScopedCaller(bearer(req), req);
   if (apiAccount && !(await taskScopeAllowsMission(apiAccount, id))) {
-    return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+    // 403, not 404: the caller named a mission it can see in get_task, so a
+    // bare "not found" reads as a bug. The mission's existence is not revealed
+    // beyond what the caller already named.
+    return NextResponse.json(
+      { error: "A task token may post only to its own task's mission feed. To coordinate with another task, say so in your PR body or spec." },
+      { status: 403 },
+    );
   }
   const access = await resolveMissionAccess(req, id, apiAccount);
   if (!access) {
