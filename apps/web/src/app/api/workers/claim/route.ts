@@ -107,7 +107,7 @@ import {
   attachExternalContextProviders,
   attachTaskAreaScope,
 } from './context-injection';
-import { attachVisualAuditRoutes } from './visual-audit-routes';
+import { VISUAL_AUDIT_ROUTES } from '@/modules';
 import { runDependentContextInjections } from './prompt-context-pipeline';
 import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
@@ -3371,7 +3371,7 @@ export async function POST(req: NextRequest) {
       : null,
   );
   await attachArtifactReferences(claimedWorkers, filteredTasks);
-  await attachVisualAuditRoutes(claimedWorkers, filteredTasks);
+  await VISUAL_AUDIT_ROUTES(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
