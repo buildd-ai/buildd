@@ -339,7 +339,7 @@ export type CoreEvent =
       type: 'pr.review_ready';
       installationId: number;
       repoFullName: string;
-      pr: { number: number; headRef: string; additions: number | null; deletions: number | null };
+      pr: { number: number; headRef: string; headSha?: string; additions: number | null; deletions: number | null };
       worker: { id: string; workspaceId: string; taskId: string };
     }
   /**
