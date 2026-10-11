@@ -1,11 +1,11 @@
 /**
- * ModelFeatures (Settings → AI features), mounted in happy-dom with a stubbed
- * fetch. Fixtures are illustrative.
+ * DecisionFeatures (Settings → Models → Decision features, platform owner
+ * only), mounted in happy-dom with a stubbed fetch. Fixtures are illustrative.
  *
  * - Chat is always on: no interactive switch, no "enable" step.
- * - Built-in decision calls are not listed.
- * - Server-side features show where they run, defaulted by the billing model;
- *   the override control sits inline on the row.
+ * - Built-in decision calls are not listed, and neither is Goal grading: Auto
+ *   is the behaviour, so there is nothing to choose.
+ * - Task role routing is one row; its alias id is not listed twice.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/settings/ai', width: 1280, height: 800 });
@@ -20,10 +20,9 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
-const { OPT_IN_CAPABILITIES } = await import('@buildd/core/inference-policy');
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: ModelFeatures } = await import('./ModelFeatures');
+const { default: DecisionFeatures, LISTED_DECISIONS } = await import('./DecisionFeatures');
 const { describeControls } = await import('../_lib/form-controls');
 
 let team: Record<string, unknown> = {};
@@ -52,18 +51,18 @@ afterEach(() => {
   host.remove();
 });
 
-async function mount(props: { canManage?: boolean; hasTeamKey?: boolean } = {}) {
+async function mount(props: { canManage?: boolean } = {}) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
   await act(async () => {
-    root.render(<ModelFeatures teamId="team-demo" canManage={props.canManage ?? true} hasTeamKey={props.hasTeamKey ?? true} />);
+    root.render(<DecisionFeatures teamId="team-demo" canManage={props.canManage ?? true} />);
   });
 }
 
 const q = (sel: string) => host.querySelector(sel) as HTMLElement | null;
 
-describe('ModelFeatures', () => {
+describe('DecisionFeatures', () => {
   it('has no chat kill switch and no enable step: chat is always on', async () => {
     await mount();
     expect(q('[data-testid="interactive-switch"]')).toBeNull();
@@ -71,15 +70,39 @@ describe('ModelFeatures', () => {
     expect(host.textContent).not.toMatch(/interactive ai|turn (on|off) chat|turn chat (on|off)|off for the team/i);
   });
 
-  it('lists every opt-in capability with its own named toggle, defaulting off', async () => {
+  it('has no Goal grading control and no "where it runs" choice', async () => {
     await mount();
-    expect(host.querySelectorAll('[role="switch"]').length).toBe(OPT_IN_CAPABILITIES.length);
-    for (const capability of OPT_IN_CAPABILITIES) {
+    expect(host.textContent).not.toMatch(/goal grading|where it runs/i);
+    expect(host.querySelectorAll('[role="radio"]').length).toBe(0);
+    expect(q('[data-testid="feature-criteria_grading"]')).toBeNull();
+  });
+
+  it('lists task role routing once: the alias id has no row of its own', async () => {
+    await mount();
+    expect(q('[data-testid="decision-task_role_apply"]')).toBeNull();
+    expect(host.textContent).not.toContain('(alias)');
+    expect(LISTED_DECISIONS).not.toContain('task_role_apply');
+    expect(LISTED_DECISIONS).toContain('task_role_shadow');
+  });
+
+  it('lists every other opt-in decision with its own named toggle, defaulting off', async () => {
+    await mount();
+    expect(host.querySelectorAll('[role="switch"]').length).toBe(LISTED_DECISIONS.length);
+    for (const capability of LISTED_DECISIONS) {
       const toggle = q(`[data-testid="decision-${capability}"] [role="switch"]`)!;
       expect(toggle).not.toBeNull();
       expect(toggle.getAttribute('aria-checked')).toBe('false');
       expect(toggle.getAttribute('aria-labelledby')).toBe(`decision-${capability}-label`);
     }
+  });
+
+  it('shows role routing on when only the alias is stored, and turning it off clears both', async () => {
+    team.enabledDecisionShadows = ['task_role_apply', 'orchestration_manifest'];
+    await mount();
+    const role = q('[data-testid="decision-task_role_shadow"] [role="switch"]')!;
+    expect(role.getAttribute('aria-checked')).toBe('true');
+    await act(async () => { role.click(); });
+    expect(patches[0]).toEqual({ enabledDecisionShadows: ['orchestration_manifest'] });
   });
 
   it('keeps opt-in controls disabled when stored selections could not be loaded', async () => {
@@ -113,67 +136,12 @@ describe('ModelFeatures', () => {
     expect(q('[role="alert"]')!.textContent).toBe('Save failed');
   });
 
-  it('shows members loaded opt-in states without mutation controls', async () => {
+  it('shows loaded states without controls to someone who cannot change them', async () => {
     team.enabledDecisionShadows = ['orchestration_manifest'];
     await mount({ canManage: false });
     expect(q('[data-testid="decision-orchestration_manifest"]')!.textContent).toContain('On');
     expect(q('[data-testid="decision-orchestration_claim"]')!.textContent).toContain('Off');
     expect(host.querySelectorAll('[role="switch"]').length).toBe(0);
-  });
-
-  it('does not list the built-in decision calls, or features with no call site', async () => {
-    await mount();
-    expect(q('[data-testid="feature-heartbeat_triage"]')).toBeNull();
-    expect(q('[data-testid="feature-task_category"]')).toBeNull();
-    expect(q('[data-testid="feature-visual_qa"]')).toBeNull();
-    expect(q('[data-testid="feature-mission_summary"]')).toBeNull();
-    expect(q('[data-testid="feature-criteria_grading"]')).not.toBeNull();
-  });
-
-  it('shows each feature once: one row, the control inline', async () => {
-    await mount();
-    expect(q('[data-testid="feature-advanced"]')).toBeNull();
-    expect(host.querySelectorAll('[data-testid="feature-criteria_grading"]').length).toBe(1);
-    expect(host.textContent!.match(/Goal grading/g)!.length).toBe(1);
-    expect(host.textContent!.match(/server-side/gi) ?? []).toHaveLength(0);
-  });
-
-  it('says what Auto means with a team key, and without one', async () => {
-    await mount({ hasTeamKey: true });
-    expect(q('[data-testid="feature-default"]')!.textContent).toBe('Auto: server (team key)');
-    act(() => root.unmount());
-    host.remove();
-    await mount({ hasTeamKey: false });
-    expect(q('[data-testid="feature-default"]')!.textContent).toBe('Auto: runner (no team key)');
-  });
-
-  it('saves an override from the inline control and clears it with Auto', async () => {
-    await mount();
-    const row = '[data-testid="feature-criteria_grading"]';
-    // The control is the shared Segmented: one radio per option, by its label.
-    const radio = (label: string) => [...host.querySelectorAll<HTMLElement>(`${row} [role="radio"]`)].find((r) => r.textContent === label)!;
-    expect(radio('Auto').getAttribute('aria-checked')).toBe('true');
-    const runner = radio('Runner');
-    await act(async () => { runner.click(); });
-    expect(patches).toEqual([{ inferenceFeatureModes: { criteria_grading: 'runner' } }]);
-    expect(runner.getAttribute('aria-checked')).toBe('true');
-    const def = radio('Auto');
-    await act(async () => { def.click(); });
-    expect(patches[1]).toEqual({ inferenceFeatureModes: null });
-  });
-
-  it('warns when a server override has no team key', async () => {
-    team = { inferenceFeatureModes: { criteria_grading: 'server' } };
-    await mount({ hasTeamKey: false });
-    expect(q('[data-testid="feature-criteria_grading"]')!.textContent).toContain('Needs a team key');
-  });
-
-  it('shows members the state without controls', async () => {
-    await mount({ canManage: false });
-    expect(host.querySelectorAll('[role="switch"]:not([disabled])').length).toBe(0);
-    expect(host.querySelectorAll('[role="radio"]').length).toBe(0);
-    expect(q('[data-testid="feature-criteria_grading"]')!.textContent).toContain('Server');
     expect(describeControls(host)).toEqual([]);
-    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change these|can change this/);
   });
 });

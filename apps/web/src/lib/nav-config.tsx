@@ -68,8 +68,9 @@ export const MOBILE_TAB_LIMIT = 5;
  * Health's sections, in sidebar order: the one list behind the Health sub-nav,
  * its phone link row and the mobile header title. Kept here, in core
  * navigation, because the mobile header (core) names these pages; the Health
- * module reads it through lib/health-nav.ts. Operator is buildd's own tooling
- * and only platform operators see it (lib/platform-operator.ts).
+ * module reads it through lib/health-nav.ts. Failures, Usage, Insights and
+ * Operator are buildd's own analytics, moved to the private admin app: only
+ * platform operators see them (lib/platform-operator.ts).
  */
 export type HealthSectionId = 'overview' | 'failures' | 'runners' | 'usage' | 'insights' | 'operator';
 
@@ -85,10 +86,10 @@ export const HEALTH_INDEX_HREF = '/app/health';
 
 export const HEALTH_NAV: readonly HealthNavItem[] = [
   { id: 'overview', label: 'Overview', href: HEALTH_INDEX_HREF },
-  { id: 'failures', label: 'Failures', href: '/app/health/failures' },
+  { id: 'failures', label: 'Failures', href: '/app/health/failures', operatorOnly: true },
   { id: 'runners', label: 'Runners & capacity', href: '/app/health/runners' },
-  { id: 'usage', label: 'Usage', href: '/app/health/usage' },
-  { id: 'insights', label: 'Insights', href: '/app/health/insights' },
+  { id: 'usage', label: 'Usage', href: '/app/health/usage', operatorOnly: true },
+  { id: 'insights', label: 'Insights', href: '/app/health/insights', operatorOnly: true },
   { id: 'operator', label: 'Operator', href: '/app/health/operator', operatorOnly: true },
 ];
 

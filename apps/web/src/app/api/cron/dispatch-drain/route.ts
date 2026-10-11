@@ -98,9 +98,20 @@ async function drainDue(): Promise<{ totals: DrainTotals; lastClaimAtMs: number 
   return { totals, lastClaimAtMs };
 }
 
+/**
+ * Drizzle wraps a driver error as "Failed query: <sql>" with the Postgres
+ * message on `cause`; the health report keeps only the first 200 characters,
+ * so lead with the cause or the real reason is cut off.
+ */
+function errorText(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = err.cause instanceof Error ? err.cause.message : null;
+  return cause ? `${cause} (${err.message})` : err.message;
+}
+
 type Isolated<T> = T | { error: string };
 const isolate = <T>(p: Promise<T>): Promise<Isolated<T>> =>
-  p.catch(err => ({ error: err instanceof Error ? err.message : String(err) }));
+  p.catch(err => ({ error: errorText(err) }));
 const failed = (r: Isolated<unknown>): boolean => typeof r === 'object' && r !== null && 'error' in r;
 
 async function run(req: NextRequest, report: CronReport): Promise<NextResponse> {

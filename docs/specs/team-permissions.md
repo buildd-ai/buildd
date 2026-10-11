@@ -380,10 +380,11 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/teams/[id]/notifications/route.ts:30` | PUT team notification settings (GET open to members, booleans only) | owner, admin | — | `manage_team_notifications` |
 | `apps/web/src/app/app/(protected)/home/home-view.ts:118` | UI: operator Home | owner, admin | — | `view_team_usage` |
 | `apps/web/src/app/api/insights/flow/route.ts:42` | team flow insights | owner, admin | — | `view_team_usage` |
-| `apps/web/src/app/app/(protected)/health/insights/page.tsx:45` | UI: insights | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/app/(protected)/health/insights/page.tsx:44` | UI: insights (platform owner only; a 404 for everyone else) | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:77` | UI: the team's hosted runner month | owner, admin | — | `view_team_usage` |
 | `apps/web/src/app/app/(protected)/settings/billing/page.tsx:102` | UI: per-person spend | owner, admin | — | `view_team_usage` |
 | `apps/web/src/lib/billing/team-billing-access.ts:64` | open Checkout / the billing portal / change seats | owner, admin | — | `manage_billing` |
-| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:76` | UI: billing actions | owner, admin, personal team | — | `manage_billing` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:81` | UI: billing actions | owner, admin, personal team | — | `manage_billing` |
 
 ### API keys and runners
 

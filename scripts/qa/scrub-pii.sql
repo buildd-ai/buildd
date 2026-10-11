@@ -535,6 +535,13 @@ FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM artifacts) s WHERE a.
 -- snapshots the pre-scrub body when the UPDATE above changes it. Drop it all,
 -- after that UPDATE: a clone keeps current bodies only.
 DELETE FROM artifact_revisions;
+-- The read ledger's selectors hold search text agents typed.
+DELETE FROM artifact_reads;
+-- Living Specs: titles and summaries are prose; who wrote or approved a
+-- revision is an account or user id. Bodies are artifacts, scrubbed above.
+UPDATE specs SET title = 'Spec ' || left(md5(id::text), 8), created_by = NULL;
+UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
+  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END;
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.

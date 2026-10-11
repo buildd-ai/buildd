@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation';
 import { and, inArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
-import { getCurrentUser } from '@/lib/auth-helpers';
+import { requirePlatformOperator } from '@/lib/operator-page';
 import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import { insightsTaskListFilter } from '@/lib/insights-task-list-filter';
 import { can } from '@/lib/permissions';
@@ -12,13 +12,12 @@ import BandTaskList from './BandTaskList';
 import { bandRows, type BandTaskInput } from './band-rows';
 import { resolveBandDrillQaState, sampleBandSelection } from './sample-band';
 
-/** Insights owns historical band selection and lists it as Activity-style rows. */
+/** Insights owns historical band selection and lists it as Activity-style rows. Platform owner only, like Insights. */
 export default async function InsightsTasksPage({ searchParams }: {
   searchParams: Promise<{ band?: string; from?: string; to?: string; at?: string; workspace?: string; state?: string }>;
 }) {
   const params = await searchParams;
-  const user = await getCurrentUser();
-  if (!user) redirect('/api/auth/signin');
+  const user = await requirePlatformOperator();
   const cookieStore = await cookies();
   const teamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
   if (!teamId) redirect('/app/health/insights');
