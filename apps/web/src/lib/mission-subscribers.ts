@@ -31,7 +31,7 @@ import { eq } from 'drizzle-orm';
 import { after } from 'next/server';
 import { refreshMissionBranchesBeforeStart } from '@/lib/mission-branch-refresh';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
-import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
+import { evaluateAndAdvanceLoopOnMerge, evaluateAndAdvanceLoopOnCiGreen } from '@/lib/loop-webhook';
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
@@ -94,6 +94,13 @@ export const missionSubscribers: readonly AnySubscriber[] = [
     if (!e.taskId || !e.workspaceId) return;
     evaluateAndAdvanceLoopOnMerge(e.workerId, e.taskId, e.workspaceId).catch((err) =>
       console.error(`[webhook] evaluateAndAdvanceLoopOnMerge failed for task ${e.taskId}:`, err),
+    );
+  }),
+  // When a PR merges, also advance pr_checks_green loops since 'merged' satisfies that condition.
+  subscriber('missions', 'task.pr_merge_delivered', 'loop-advance-on-merge-checks-green', e => {
+    if (!e.taskId || !e.workspaceId) return;
+    evaluateAndAdvanceLoopOnCiGreen(e.workerId, e.taskId, e.workspaceId, 'merged').catch((err) =>
+      console.error(`[webhook] evaluateAndAdvanceLoopOnCiGreen(merged) failed for task ${e.taskId}:`, err),
     );
   }),
   // Option A′: a task PR landing on the mission's integration branch is the

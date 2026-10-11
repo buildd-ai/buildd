@@ -116,12 +116,12 @@ async function resolveStaleTask(
     }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${taskId}:`, err));
   };
 
-  // Reaper exemption: a task in condition_unmet with a pr_merged exit condition
-  // is waiting for a webhook event — no in-flight worker to kill. Leave as pending
-  // until the wait expires or the webhook fires and advances the loop.
+  // Reaper exemption: a task in condition_unmet with a pr_merged or pr_checks_green
+  // exit condition is waiting for a webhook event — no in-flight worker to kill. Leave
+  // as pending until the wait expires or the webhook fires and advances the loop.
   if (currentTask?.loopState === 'condition_unmet') {
     const loopCfg = currentTask.loopConfig as LoopConfig | null;
-    if (loopCfg?.exitCondition?.type === 'pr_merged') {
+    if (loopCfg?.exitCondition?.type === 'pr_merged' || loopCfg?.exitCondition?.type === 'pr_checks_green') {
       const waitExpiryMinutes = loopCfg.waitExpiryMinutes ?? 240;
       const waitExpiryMs = waitExpiryMinutes * 60 * 1000;
       const elapsed = Date.now() - (currentTask.updatedAt?.getTime() ?? 0);
@@ -131,11 +131,15 @@ async function resolveStaleTask(
         return;
       }
       // Wait expired — fail the task so the mission can move forward.
+      const conditionType = loopCfg.exitCondition.type;
+      const waitReason = conditionType === 'pr_merged'
+        ? `PR merge wait expired after ${waitExpiryMinutes} minutes`
+        : `PR checks green wait expired after ${waitExpiryMinutes} minutes`;
       await db
         .update(tasks)
         .set({
           status: 'failed',
-          result: { error: `PR merge wait expired after ${waitExpiryMinutes} minutes` } as any,
+          result: { error: waitReason } as any,
           updatedAt: new Date(),
         })
         .where(eq(tasks.id, taskId));

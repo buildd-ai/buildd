@@ -1,4 +1,5 @@
 import { registerLocalPr } from '@/lib/register-local-pr';
+import { evaluateAndAdvanceLoopOnCiGreen } from '@/lib/loop-webhook';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -494,6 +495,12 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         if (greened.length > 0) {
           await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
           await emit({ type: 'pr.ci_passed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id });
+          // Advance pr_checks_green loop if the task is waiting on it
+          if (worker.taskId) {
+            await evaluateAndAdvanceLoopOnCiGreen(worker.id, worker.taskId, workspace.id, 'ci_green').catch((err) =>
+              console.error(`[webhook] evaluateAndAdvanceLoopOnCiGreen failed for task ${worker.taskId}:`, err),
+            );
+          }
         }
 
         // Resolve merge policy via the single precedence chain:
