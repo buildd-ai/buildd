@@ -4,7 +4,10 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { deriveTaskChecks, taskSubjectOf, type ChecksInput } from './task-checks';
-import type { AttemptSnapshot, RoundSnapshot } from './workflow/types';
+import type { DeliveryView } from './workflow/projections';
+
+type RoundSnapshot = DeliveryView['rounds'][number];
+type AttemptSnapshot = DeliveryView['ledger'][number];
 
 const R = (o: Partial<RoundSnapshot> = {}): RoundSnapshot => ({
   id: 'r1', round: 1, headSha: 'HEADB000', kind: 'full', status: 'queued', verdict: null, effectiveVerdict: null, failureCount: 0, reviewerTaskId: 'rev1', ...o,

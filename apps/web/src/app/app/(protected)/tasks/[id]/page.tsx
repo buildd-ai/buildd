@@ -97,7 +97,7 @@ import { headerLifecycle, taskHeading } from './task-header';
 import TaskChecks from './TaskChecks';
 import { deriveTaskChecks, taskSubjectOf } from '@/lib/task-checks';
 import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
-import { normaliseReviewVerdict, readableTaskResult } from '@/lib/review-result';
+import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { displayTaskTitle } from '@/lib/task-title';
 import { linkQuestionNote } from './question-hero';
@@ -655,7 +655,7 @@ export default async function TaskDetailPage({
   const subject = taskSubjectOf({
     taskId: task.id,
     view: deliveryView,
-    context: task.context as Record<string, unknown> | null,
+    context: task.context,
     parentTaskId: task.parentTaskId,
     retryOf: task.reviewerRetryPrNumber != null || task.ciRetryPrNumber != null || task.conflictRetryPrNumber != null,
   });
@@ -1131,7 +1131,7 @@ export default async function TaskDetailPage({
     summary: shippedResult?.summary ?? null,
     summarySource: shippedResult?.summarySource ?? null,
     structuredOutput: shippedResult?.structuredOutput ?? null,
-    subject: { kind: subject.kind, prNumber: deliveryView?.prNumber ?? (task.context as { prNumber?: number } | null)?.prNumber ?? null },
+    subject: { kind: subject.kind, prNumber: deliveryView?.prNumber ?? (typeof task.context?.prNumber === 'number' ? task.context.prNumber : null) },
     // "What shipped" only once it did: merged, or finished without a PR.
     shipped: deliveryView ? deliveryView.state === 'MERGED' : !(prWorker && !(prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')),
     heroShots: pickHeroShots(undefined, buildHeroPool(toVisualShots(taskArtifacts))),

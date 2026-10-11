@@ -10,7 +10,11 @@
  * branch refresh is not one either.
  */
 import type { DeliveryView } from './workflow/projections';
-import type { AttemptFamily, AttemptSnapshot, RoundSnapshot } from './workflow/types';
+
+// The kernel's snapshots, read through the view (only its read model is imported outside the kernel).
+type RoundSnapshot = DeliveryView['rounds'][number];
+type AttemptSnapshot = DeliveryView['ledger'][number];
+type AttemptFamily = AttemptSnapshot['family'];
 
 export type CheckState = 'passed' | 'failed' | 'running' | 'pending' | 'blocked' | 'closed' | 'skipped';
 

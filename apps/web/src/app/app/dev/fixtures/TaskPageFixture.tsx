@@ -29,8 +29,8 @@ export function TaskPageFixture() {
         <div className="mb-5 md:mb-6" data-testid="task-header">
           {f.shipped
             ? <TaskShippedTitle view={f.shipped} title={f.title} />
-            : <h1 className="text-[22px] md:text-[24px] font-semibold leading-snug tracking-[-0.2px] break-words max-w-[760px]">{f.title}</h1>}
-          <div className="mt-2 flex flex-wrap items-center gap-x-2 text-[12px] font-mono text-text-muted">
+            : <h1 className="text-heading font-semibold break-words max-w-[760px]">{f.title}</h1>}
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 text-meta font-mono text-text-muted">
             <span>{f.subjectLink ? 'Reviewer' : 'fix · Builder'} · example</span>
             <a href="#" className="font-medium text-accent-text hover:underline">PR #1234 ↗</a>
           </div>

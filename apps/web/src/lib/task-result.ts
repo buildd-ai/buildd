@@ -6,9 +6,8 @@
  * shape out of either the summary or `structuredOutput`; the untouched payload
  * is returned as `raw`, for the Raw output diagnostic only. Pure.
  */
-import type { PrReviewVerdict } from '@/lib/pr-review-status';
-
-export type ReviewVerdictWord = PrReviewVerdict;
+/** A review verdict in the page's vocabulary (the same words as `PrReviewVerdict`). */
+export type ReviewVerdictWord = 'approve' | 'request-changes' | 'escalate';
 
 export const REVIEW_VERDICT_LABEL: Record<ReviewVerdictWord, string> = {
   approve: 'Review approved',

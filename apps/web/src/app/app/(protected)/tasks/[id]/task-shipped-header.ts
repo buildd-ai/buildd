@@ -15,7 +15,7 @@
  */
 import type { ShippedChangeType, ShippedHeroShot } from '@/lib/mission-shipped';
 import type { TaskShippedRecord } from '@/lib/task-shipped';
-import { readableTaskResult } from '@/lib/review-result';
+import { readableTaskResult } from '@/lib/task-result';
 
 export const TASK_SHIPPED_HEADER_ID = 'what-shipped';
 

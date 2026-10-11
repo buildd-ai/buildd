@@ -4,7 +4,7 @@
  * disclosure only.
  */
 import { describe, expect, test } from 'bun:test';
-import { readableTaskResult, REVIEW_VERDICT_LABEL } from './review-result';
+import { readableTaskResult, REVIEW_VERDICT_LABEL } from './task-result';
 
 // The payload from the reviewer run's screenshot: the summary arrived as a JSON string.
 const SCREENSHOT = JSON.stringify({

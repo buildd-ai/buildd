@@ -14,7 +14,7 @@
  * state and cause (`causeKey`); see `applyVerdictDecision`.
  */
 import type { TaskMismatch } from '@buildd/shared';
-import { REVIEW_VERDICT_LABEL, type ReviewVerdictWord } from './review-result';
+import { REVIEW_VERDICT_LABEL, type ReviewVerdictWord } from './task-result';
 
 export type VerdictState = 'shipped' | 'blocked' | 'in_progress' | 'needs_you' | 'failed' | 'done';
 

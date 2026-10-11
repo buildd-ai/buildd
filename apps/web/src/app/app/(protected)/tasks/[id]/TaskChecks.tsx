@@ -9,9 +9,8 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import MarkdownContent from '@/components/MarkdownContent';
-import { taskPageHref } from '@/lib/mission-task-href';
 import type { CheckRepair, CheckRow, CheckState, TaskChecks as TaskChecksModel } from '@/lib/task-checks';
-import type { ReadableResult } from '@/lib/review-result';
+import type { ReadableResult } from '@/lib/task-result';
 
 const GLYPH: Record<CheckState, { glyph: string; cls: string; label: string }> = {
   passed: { glyph: '✓', cls: 'text-status-success', label: 'passed' },
@@ -22,6 +21,8 @@ const GLYPH: Record<CheckState, { glyph: string; cls: string; label: string }> =
   closed: { glyph: '✕', cls: 'text-status-error', label: 'closed' },
   skipped: { glyph: '–', cls: 'text-text-muted', label: 'not required' },
 };
+
+const taskPageHref = ({ taskId }: { taskId: string }) => `/app/tasks/${encodeURIComponent(taskId)}`;
 
 const REPAIR_WORD: Record<CheckRepair['status'], string> = {
   queued: 'queued', running: 'fixing', completed: 'completed', failed: 'failed', ended: 'ended', cancelled: 'cancelled',

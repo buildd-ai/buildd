@@ -8,7 +8,7 @@
 import { inArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
-import { readableTaskResult, type ReadableResult } from './review-result';
+import { readableTaskResult, type ReadableResult } from './task-result';
 import { getDeliveryViewsForTasks } from './workflow/delivery-view';
 import type { DeliveryView } from './workflow/projections';
 

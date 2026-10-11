@@ -5,14 +5,16 @@
  * deriveTaskChecks, deriveTaskVerdict, buildTaskShippedView) from illustrative
  * kernel snapshots. Nothing here is production data.
  */
-import { deriveDeliveryView, type DeliveryView } from '@/lib/workflow/projections';
-import type { AttemptSnapshot, DeliverySnapshot, RoundSnapshot } from '@/lib/workflow/types';
+import { deriveDeliveryView, type DeliverySnapshot, type DeliveryView } from '@/lib/workflow/projections';
+
+type RoundSnapshot = DeliveryView['rounds'][number];
+type AttemptSnapshot = DeliveryView['ledger'][number];
 import { deriveTaskChecks, type TaskChecks } from '@/lib/task-checks';
 import { deriveTaskVerdict, type TaskVerdict, type VerdictInput } from '@/lib/task-verdict';
 import { buildTaskShippedView, type TaskShippedView } from '../../(protected)/tasks/[id]/task-shipped-header';
 import { headerLifecycle } from '../../(protected)/tasks/[id]/task-header';
 import type { StateKey } from '@/components/ui/states';
-import type { ReadableResult } from '@/lib/review-result';
+import type { ReadableResult } from '@/lib/task-result';
 
 export const TASK_PAGE_CASES = ['review-approved', 'branch-refresh', 'repair', 'merged', 'failed', 'needs-human'] as const;
 export type TaskPageCase = typeof TASK_PAGE_CASES[number];

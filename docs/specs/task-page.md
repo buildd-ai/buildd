@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-11
 summary: The task page MUST lead with the deliverable, its Build → Audit → Land track and one compact outcome, list checks by review round from delivery facts, and frame a review or fix run as an attempt of its parent.
 domain: surfaces
-surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/review-result.ts, apps/web/src/lib/workflow/projections.ts]
+surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/lib/review-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/task-verdict.test.ts]
+verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/task-verdict.test.ts]
 supersedes: []
 ---
 
@@ -56,7 +56,7 @@ Canonical identifiers and the adapter that reads them:
 | Review rounds | `DeliveryView.rounds` | `deriveTaskChecks` |
 | Repairs and refreshes | `DeliveryView.ledger` | `deriveTaskChecks` |
 | CI on the current head | `DeliveryView.prState` | `deriveTaskChecks` |
-| A review's findings | the reviewer task's `result` (summary + `structuredOutput`) | `readableTaskResult` (lib/review-result.ts) |
+| A review's findings | the reviewer task's `result` (summary + `structuredOutput`) | `readableTaskResult` (lib/task-result.ts) |
 
 A task with no kernel-owned delivery (legacy-owned, kill switch off, no PR)
 keeps today's projections; the checks list is absent rather than guessed.
@@ -203,7 +203,7 @@ never described as released.
 - `apps/web/src/components/ui/Lifecycle.tsx` — the track; `phrase` prop.
 - `apps/web/src/lib/task-checks.ts` — `deriveTaskChecks`, `taskSubjectOf`.
 - `apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.tsx` — the checks list.
-- `apps/web/src/lib/review-result.ts` — `readableTaskResult`.
+- `apps/web/src/lib/task-result.ts` — `readableTaskResult`.
 - `apps/web/src/app/app/(protected)/tasks/[id]/TaskShippedHeader.tsx` — result heading, Technical summary, Run details and Raw output.
 - `apps/web/src/lib/task-verdict.ts` — the review-attempt outcome rule.
 - `apps/web/src/lib/workflow/projections.ts` — `deriveDeliveryView` headlines, `rounds` and `ledger` on the view.
