@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { GroupDimension } from '@/lib/usage-stats';
 import { beginAdminRead } from '@/lib/admin/scope';
-import { loadUsage } from '@/lib/admin/data';
+import { viewUsage } from '@/lib/admin/tenant-privacy';
 
 const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'creationSource', 'none', 'executor'];
 
@@ -11,6 +11,7 @@ const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'creationSource
  * The get_usage_stats rollup (tokens, cost, turns, tools per task) over any
  * scope, platform-wide by default. Query: window, teamId?, workspaceId?,
  * groupBy=role|workspace|creationSource|executor|none (default workspace).
+ * Top tasks list the owner's own teams only (lib/admin/tenant-privacy.ts).
  */
 export async function GET(req: NextRequest) {
   const read = await beginAdminRead(req);
@@ -19,6 +20,6 @@ export async function GET(req: NextRequest) {
   if (!GROUP_DIMENSIONS.includes(groupBy)) {
     return NextResponse.json({ error: `groupBy must be one of ${GROUP_DIMENSIONS.join(', ')}` }, { status: 400 });
   }
-  const usage = await loadUsage({ workspaceIds: read.workspaceIds, since: read.scope.since, groupBy });
+  const usage = await viewUsage(read.viewer, { since: read.scope.since, groupBy });
   return NextResponse.json({ ...read.scope, since: read.scope.since.toISOString(), ...usage });
 }
