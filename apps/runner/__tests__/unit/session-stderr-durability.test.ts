@@ -266,7 +266,12 @@ describe('SDK stderr durability', () => {
 
     manager = new WorkerManager(makeConfig());
     await startSessionFor(manager, 'w-once', makeTask('task-once'), 'buildd/once');
-    await new Promise(r => setTimeout(r, 250));
+    const filed = () => tracePatches()
+      .flatMap((c: any[]) => c[1].appendErrorTraces)
+      .filter((t: any) => t.excerpt.includes('single failure line'));
+    await waitFor(() => filed().length > 0);
+    // Short settle so a duplicate flush, if there were one, has a chance to land.
+    await new Promise(r => setTimeout(r, 100));
 
     const traces = tracePatches().flatMap((c: any[]) => c[1].appendErrorTraces);
     const matching = traces.filter((t: any) => t.excerpt.includes('single failure line'));
@@ -283,7 +288,8 @@ describe('SDK stderr durability', () => {
 
     manager = new WorkerManager(makeConfig());
     await startSessionFor(manager, 'w-upload-fail', makeTask('task-up'), 'buildd/up');
-    await new Promise(r => setTimeout(r, 300));
+    await waitFor(() => mockRequestSessionUploadUrl.mock.calls.length > 0);
+    await new Promise(r => setTimeout(r, 100));
 
     const worker = manager.getWorker('w-upload-fail');
     expect(worker?.status).not.toBe('error');
