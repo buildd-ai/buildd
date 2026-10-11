@@ -130,6 +130,23 @@ describe('DEFAULT_ROLES', () => {
       expect(c).toMatch(/never open (a )?PR/i);
     });
 
+    // Task 7d3ff681: four dispatches with --ref <mission branch> all died in that
+    // branch's stale scrub, then the boot question was pushed back twice and dropped.
+    it('dispatches the harness from trunk with capture_ref, stops on a harness failure, rewrites a pushed-back question', () => {
+      const c = role().content;
+      expect(c).toContain('-f capture_ref=<captureRef.ref>');
+      expect(c).toContain('Never `--ref <captureRef.ref>`');
+      for (const line of c.split('\n')) {
+        if (line.includes('--ref <captureRef.ref>')) expect(line).toContain('Never');
+      }
+      expect(c).toContain('## Harness failure');
+      for (const stepName of ['Create Neon prod-clone branch', 'Run migrations', 'Scrub prod clone to placeholders', 'Guard scrubbed clone']) {
+        expect(c).toContain(stepName);
+      }
+      expect(c).toMatch(/One dispatch first/);
+      expect(c).toMatch(/pushback on its wording, not a refusal/);
+    });
+
     // Task 8bc5b5ac: an auditor dispatched the workflow, said it would wait for a
     // background watcher, and ended its turn — the runner recorded that as
     // completion, so the evidence check rejected it for missing screenshots. The

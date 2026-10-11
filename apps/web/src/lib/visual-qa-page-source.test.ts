@@ -115,3 +115,51 @@ describe('resolvePageSource: the capture ref (visual-qa-auditor.md, "Which ref i
     expect(get.calls).toHaveLength(0);
   });
 });
+
+// The clone is current prod, so the harness (the workflow, scripts/qa) always
+// runs from trunk; only the app and its migrations come from the capture ref.
+describe('resolvePageSource: harness from trunk (visual-qa-auditor.md, "Page source")', () => {
+  const BRANCH = 'mission/settings-abcd1234';
+  const MISSION = { workingBranch: BRANCH, integrationBranchEnabled: true };
+  const branchExists = { [`/repos/${REPO}/git/ref/heads/${BRANCH}`]: { ref: `refs/heads/${BRANCH}` } };
+  const compare = `/repos/${REPO}/compare/${BRANCH}...dev`;
+
+  it('a mission branch dispatches from trunk with the branch as capture_ref', async () => {
+    const r = await resolvePageSource({ get: github({ ...branchExists, [compare]: { ahead_by: 0, files: [] } }), repoFullName: REPO, gitConfig: { defaultBranch: 'dev' }, mission: MISSION });
+    expect(r.harnessRef).toBe('dev');
+    expect(r.dispatch).toBe(`gh workflow run visual-qa.yml --ref dev -f capture_ref=${BRANCH}`);
+    expect(r.dispatch).not.toContain(`--ref ${BRANCH}`);
+  });
+
+  it('trunk itself needs no capture_ref and no freshness check', async () => {
+    const get = github({});
+    const r = await resolvePageSource({ get, repoFullName: REPO, gitConfig: { defaultBranch: 'dev' } });
+    expect(r.dispatch).toBe('gh workflow run visual-qa.yml --ref dev');
+    expect(r.freshness).toBeNull();
+    expect(get.calls).toHaveLength(0);
+  });
+
+  it('a branch behind trunk on migrations needs a sync before dispatching', async () => {
+    const files = [
+      { filename: 'packages/core/drizzle/0300_new.sql' },
+      { filename: 'packages/core/drizzle/meta/_journal.json' },
+      { filename: 'apps/web/src/app/page.tsx' },
+    ];
+    const r = await resolvePageSource({ get: github({ ...branchExists, [compare]: { ahead_by: 7, files } }), repoFullName: REPO, gitConfig: { defaultBranch: 'dev' }, mission: MISSION });
+    expect(r.freshness).toEqual({
+      state: 'behind', behindBy: 7,
+      migrationsBehind: ['packages/core/drizzle/0300_new.sql'],
+      needsSync: true,
+    });
+  });
+
+  it('behind trunk on app code only is reported, but needs no sync', async () => {
+    const r = await resolvePageSource({ get: github({ ...branchExists, [compare]: { ahead_by: 2, files: [{ filename: 'apps/web/src/x.ts' }] } }), repoFullName: REPO, gitConfig: { defaultBranch: 'dev' }, mission: MISSION });
+    expect(r.freshness).toMatchObject({ state: 'behind', behindBy: 2, migrationsBehind: [], needsSync: false });
+  });
+
+  it('an unreadable comparison says so instead of guessing', async () => {
+    const r = await resolvePageSource({ get: github({ ...branchExists, [compare]: new Error('GitHub API error: 500 boom') }), repoFullName: REPO, gitConfig: { defaultBranch: 'dev' }, mission: MISSION });
+    expect(r.freshness).toMatchObject({ state: 'unreadable' });
+  });
+});

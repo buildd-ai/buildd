@@ -36,6 +36,66 @@
 
 BEGIN;
 
+-- ---------------------------------------------------------------------------
+-- Trunk ahead of the clone
+-- ---------------------------------------------------------------------------
+
+-- This file runs from trunk; the clone is prod plus the capture ref's
+-- migrations. A table or column trunk added that neither has yet (an unreleased
+-- dev migration) would fail the statement that names it. -v shape is trunk's
+-- schema (scripts/qa/known-columns.ts --shape): each missing table or column
+-- is added here, empty, and dropped again before COMMIT ($unshim$ below). An
+-- empty object holds no data, and every statement still runs, so no real
+-- column goes unscrubbed. An unset -v shape is a syntax error (fail closed).
+SET qa.shape = :'shape';
+
+DO $shim$
+DECLARE
+  shape jsonb;
+  tbl text;
+  cols jsonb;
+  col text;
+  typ text;
+  made text[] := '{}';
+BEGIN
+  BEGIN
+    shape := current_setting('qa.shape', true)::jsonb;
+  EXCEPTION WHEN OTHERS THEN
+    shape := NULL;
+  END;
+  IF shape IS NULL OR jsonb_typeof(shape) <> 'object' OR NOT shape ? 'tasks' THEN
+    RAISE EXCEPTION 'scrub: schema shape (-v shape) is empty or malformed';
+  END IF;
+  CREATE TEMP TABLE qa_shim (tbl_name text NOT NULL, col_name text) ON COMMIT DROP;
+  FOR tbl, cols IN SELECT key, value FROM jsonb_each(shape) LOOP
+    IF to_regclass(format('public.%I', tbl)) IS NULL THEN
+      EXECUTE format('CREATE TABLE public.%I ()', tbl);
+      INSERT INTO qa_shim VALUES (tbl, NULL);
+      made := made || tbl;
+    END IF;
+    FOR col, typ IN SELECT key, value #>> '{}' FROM jsonb_each(cols) LOOP
+      CONTINUE WHEN EXISTS (
+        SELECT 1 FROM information_schema.columns c
+        WHERE c.table_schema = 'public' AND c.table_name = tbl AND c.column_name = col);
+      BEGIN
+        EXECUTE format('ALTER TABLE public.%I ADD COLUMN %I %s', tbl, col, typ);
+      EXCEPTION WHEN OTHERS THEN
+        EXECUTE format('ALTER TABLE public.%I ADD COLUMN %I text', tbl, col);
+      END;
+      IF NOT EXISTS (SELECT 1 FROM qa_shim s WHERE s.tbl_name = tbl AND s.col_name IS NULL) THEN
+        INSERT INTO qa_shim VALUES (tbl, col);
+        made := made || (tbl || '.' || col);
+      END IF;
+    END LOOP;
+  END LOOP;
+  -- Schema names only (public code), never values.
+  IF cardinality(made) > 0 THEN
+    RAISE NOTICE 'scrub: added % empty object(s) trunk has and the clone lacks: %',
+      cardinality(made), array_to_string(made, ', ');
+  END IF;
+END
+$shim$;
+
 -- Known identifiers (NO_PROD_DATA_IDENTIFIERS, via `psql -v ids=…`). Anything
 -- matching is redacted wherever it survives the shape rules below: kept enum-
 -- like tokens, jsonb object keys, tool names. An unset -v ids leaves `:'ids'`
@@ -724,7 +784,22 @@ BEGIN
 END
 $unknown$;
 
+-- Drop what $shim$ added, so the app under audit sees the clone's own schema.
+DO $unshim$
+DECLARE
+  r record;
+BEGIN
+  FOR r IN SELECT tbl_name, col_name FROM qa_shim WHERE col_name IS NOT NULL LOOP
+    EXECUTE format('ALTER TABLE public.%I DROP COLUMN %I', r.tbl_name, r.col_name);
+  END LOOP;
+  FOR r IN SELECT tbl_name FROM qa_shim WHERE col_name IS NULL LOOP
+    EXECUTE format('DROP TABLE public.%I', r.tbl_name);
+  END LOOP;
+END
+$unshim$;
+
 RESET qa.known;
+RESET qa.shape;
 RESET qa.ids;
 
 COMMIT;

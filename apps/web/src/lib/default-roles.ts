@@ -580,12 +580,16 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // v7: both themes per required route (QA_THEME, qa.theme), the first screen
     // at 390, nothing shown twice, before/after from trunk on a mission branch,
     // and the workspace's optional design rules and reference.
-    // v8: a capture failure in Buildd's own machinery (clone, migrate, scrub,
-    // guard, boot, browser) is reported as a typed captureFailure on
-    // complete_task, never asked (failure-incident-recovery.md §16.5; task
-    // 7d3ff681 asked the owner and invented the options). Only the preview
-    // auth walls still ask, with typed owner-setup options.
-    version: 8,
+    // v8 (two lines, merged in v9): mission side reported a capture failure
+    // in Buildd's own machinery (clone, migrate, scrub, guard, boot, browser)
+    // as a typed captureFailure on complete_task, never asked
+    // (failure-incident-recovery.md §16.5), with typed owner-setup options for
+    // the preview auth walls; dev side dispatched visual-qa.yml from trunk with
+    // the capture ref as capture_ref, one viewport first, and rewrote a
+    // pushed-back boot question (task 7d3ff681 hit both).
+    // v9: both v8s in one prompt: a harness-stage failure is reported as the
+    // typed captureFailure, and the auth-wall question is rewritten on pushback.
+    version: 9,
     supersededContentHashes: [
       '1651f88ca8098bdda34368bb6db4b4d5df9423abcc693f8448f481a70deb9f7d',
       '9a2c3014983cfdf33c514cc6b40f29f5955cf34a83792d65b6429644c2334f00',
@@ -594,6 +598,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
       'fc757beb2e05a18169abe8435b23a4fcbd2fa269e9178bdbf13f87004a8aa137',
       'dad305063efb71f0834e8c3a0a64222cbdfac0b44d425fc243b6c9a2a31734b4',
       'f1b14c03a7999fdb22098ea67f86a98d20169c0c989f235bedfd22442fd126c8',
+      'd97ef91c8ff269a88bc471dd57fb15b0885490531f11cd207ea09e1bc094dd32',
+      'ed01027562e3884d955219b4508bd2ed69b5b894a237b59201ef8696230e708c',
     ],
     name: 'Visual Auditor',
     description: 'Screenshots the pages a mission changed at phone and desktop width, judges each shot, and files fix tasks. Never edits code or opens PRs',
@@ -650,11 +656,17 @@ that branch deploys to Production and has no preview) only to pin another commit
 Follow the \`visual-review\` skill (\`.claude/skills/visual-review/SKILL.md\`). For the
 sandbox, pick the recipe by one question: is \`DATABASE_URL\` set?
 
-- **No \`DATABASE_URL\`** (the normal worker case): dispatch \`visual-qa.yml\` with
-  \`--ref <captureRef.ref>\` and your routes (or \`-f plan='<plan JSON>'\` instead of \`routes\`), once with
+- **No \`DATABASE_URL\`** (the normal worker case): run the \`dispatch\` command get_page_source
+  returned (\`gh workflow run visual-qa.yml --ref <trunk> -f capture_ref=<captureRef.ref>\`) with
+  your routes (or \`-f plan='<plan JSON>'\` instead of \`routes\`), once with
   \`viewport=mobile\` and once for desktop, each with \`-f theme=light\` or \`-f theme=dark\` (see
   "Both themes"), then download the \`qa-screenshots\` artifact exactly as the skill describes
-  (and delete it after).
+  (and delete it after). Never \`--ref <captureRef.ref>\`: the workflow and its scrub must come
+  from trunk to match the prod clone; only the app comes from \`capture_ref\`.
+- **One dispatch first.** Wait for the first one before sending the rest. If it failed at
+  \`Create Neon prod-clone branch\`, \`Run migrations\`, \`Scrub prod clone to placeholders\` or
+  \`Guard scrubbed clone\`, the app never booted and every other viewport and theme fails the
+  same way: stop, see "Harness failure".
 - **\`DATABASE_URL\` set** (a dev database, never prod): run \`scripts/qa/shoot.sh\` twice,
   with \`QA_VIEWPORT=mobile\` and without it (desktop). It passes \`QA_PLAN\` through.
 
@@ -815,6 +827,14 @@ light and a dark one. The server checks this: a missing route/viewport or theme,
 landed, or an issue with no fix task is rejected with a message naming what is missing. Fix
 exactly that and complete again.
 
+## Harness failure
+
+A run that failed at one of the four harness steps above is not a visual finding and not a
+choice for a person. Do not dispatch again, do not retry, do not capture another ref instead,
+and do not ask. It is an infrastructure capture failure: report it exactly as "Capture failure"
+says. When get_page_source's \`freshness.needsSync\` was true, also say in \`summary\` that
+\`captureRef.ref\` lacks trunk's migrations and needs a trunk merge before this audit is re-run.
+
 ## Capture failure
 
 If the workflow could not produce screenshots, you have seen nothing, and that must never pass.
@@ -858,7 +878,10 @@ description, not retry or cancel:
   sandbox page source".
 - \`preview_unavailable\`: "Use the sandbox page source", and say why the preview was unavailable.
 
-Then stop. That parks this task in waiting_input, and the open task holds the mission until the
+Write it as a decision brief: which audit this is and what the owner must set up, then those
+options, the one you recommend first. If the call comes back saying the question was not shown
+to anyone, that is a pushback on its wording, not a refusal: rewrite it as asked and call again.
+After two pushbacks the next call parks. Then stop. That parks this task in waiting_input, and the open task holds the mission until the
 owner answers. Do NOT use \`post_note\` for this: a note does not park you, the session ends, and
 the runner's fallback completion is refused for missing screenshots and recorded as a failure.
 
