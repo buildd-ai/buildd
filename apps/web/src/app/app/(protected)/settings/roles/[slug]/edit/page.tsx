@@ -4,7 +4,7 @@ import { eq, and, or, isNull, inArray } from 'drizzle-orm';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
-import { getTeamPermissionOverrides, roleHas, can } from '@/lib/permissions';
+import { roleHas, can } from '@/lib/permissions';
 import { findVisibleTeamLevelRole, isPersonalRole } from '@/lib/personal-roles';
 import { isUuid } from '@/lib/uuid';
 import { personalRoleAccess } from '@/lib/personal-roles-shared';
@@ -155,14 +155,11 @@ export default async function TeamRoleSettingsPage({
     notFound();
   }
 
-  // The roles routes take manage_agent_roles in the role's team, with that
-  // team's overrides (a personal team counts as owned). Without it the
-  // viewer goes to the role's page, which shows the same values read-only. A failed overrides read holds nothing.
-  const [viewerRole, permissionOverrides] = await Promise.all([
-    getUserTeamRole(user.id, teamRole.teamId).catch(() => null),
-    getTeamPermissionOverrides(teamRole.teamId).catch(() => null),
-  ]);
-  const canEdit = !!permissionOverrides && roleHas(viewerRole, 'manage_agent_roles', permissionOverrides);
+  // The roles routes take manage_agent_roles in the role's team (a personal
+  // team counts as owned). Without it the viewer goes to the role's page,
+  // which shows the same values read-only.
+  const viewerRole = await getUserTeamRole(user.id, teamRole.teamId).catch(() => null);
+  const canEdit = roleHas(viewerRole, 'manage_agent_roles');
   // Read-only is the role's own page: its values, with no controls.
   if (!canEdit) redirect(`/app/settings/roles/${encodeURIComponent(slug)}`);
 

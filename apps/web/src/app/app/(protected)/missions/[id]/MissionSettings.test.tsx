@@ -138,12 +138,12 @@ describe('quick-add role picker', () => {
   it('renders the picker showing "Any role" by default', () => {
     const html = render({ displayState: 'active', roles: ROLES });
     const trigger = html.match(/<button\b[^>]*data-testid="quick-task-role"[^>]*>[\s\S]*?<\/button>/)![0];
-    expect(trigger).toContain('Any role');
+    expect(trigger).toContain('Any agent');
   });
 
   it('offers "Any role" first, then each workspace role', () => {
     expect(quickAddRoleOptions(ROLES)).toEqual([
-      { value: '', label: 'Any role' },
+      { value: '', label: 'Any agent' },
       { value: 'builder', label: 'Builder' },
       { value: 'writer', label: 'Writer' },
     ]);

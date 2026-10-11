@@ -56,7 +56,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   accounts: { id: 'id', teamId: 'teamId' },
 }));
 
