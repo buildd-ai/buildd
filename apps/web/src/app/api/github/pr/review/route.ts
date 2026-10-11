@@ -249,7 +249,18 @@ export async function POST(req: NextRequest) {
     console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
     return null;
   });
-  if (kernel?.handled) {
+  // §8.1: the reviewer that answers is the round's at the live head, never the
+  // newest reviewer row of the PR number (§14 Slice A retired that rule here).
+  // A reviewTaskId whose row is gone is no review task at all: fall through and
+  // queue one rather than report "already under review" with no status.
+  const kernelReviewTask = kernel?.handled && kernel.reviewTaskId
+    ? (await db.query.tasks.findFirst({
+        where: eq(tasks.id, kernel.reviewTaskId),
+        columns: { id: true, status: true, result: true, context: true },
+      })) ?? null
+    : null;
+  const kernelReviewTaskMissing = !!kernel?.handled && !!kernel.reviewTaskId && !kernelReviewTask;
+  if (kernel?.handled && !kernelReviewTaskMissing) {
     const r = kernel.result;
     const accepted = r.result === 'applied'
       || (r.result === 'rejected' && (r.reason === 'review_in_flight' || r.reason === 'head_already_reviewed'));
@@ -260,14 +271,7 @@ export async function POST(req: NextRequest) {
         ...(r.reason === 'escalation_needs_human' ? { hint: 'this PR is escalated to a person for a reason another review does not answer; the owner resolves it from the dashboard' } : {}),
       });
     }
-    // §8.1: the reviewer that answers is the round's at the live head, never the
-    // newest reviewer row of the PR number (§14 Slice A retired that rule here).
-    const latest = kernel.reviewTaskId
-      ? (await db.query.tasks.findFirst({
-          where: eq(tasks.id, kernel.reviewTaskId),
-          columns: { id: true, status: true, result: true, context: true },
-        })) ?? null
-      : null;
+    const latest = kernelReviewTask;
     if (latest && callbackUrl && r.result === 'applied') {
       await db.update(tasks)
         .set({ context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('reviewCallback', ${JSON.stringify({ url: callbackUrl, on: callbackOn })}::jsonb)` })

@@ -527,6 +527,16 @@ describe('POST /api/github/pr/review — idempotency', () => {
       mockFindReviewTaskForPr.mockReturnValue(null);
     });
 
+    it('a reviewTaskId whose row is missing falls through to queueing a review, never a null status', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current }, reviewTaskId: 'ghost-task' });
+      mockTasksFindFirst.mockImplementation(async () => null);
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      const json = await res.json();
+      expect(json.kernel).toBeUndefined();
+      expect(json.status ?? null).not.toBeNull();
+      expect(mockCreateReviewerTask).toHaveBeenCalled();
+    });
+
     it('force is a recorded bypass actor, never a second reviewer on a running round', async () => {
       mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current } });
       const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
