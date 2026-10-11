@@ -4,8 +4,10 @@ import { NextRequest } from 'next/server';
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const mockAuthenticateApiKey = mock(() => null as any);
-mock.module('@/lib/api-auth', () => ({
-  authenticateApiKey: mockAuthenticateApiKey,
+mock.module('@/lib/task-token-auth', () => ({
+  authenticateTaskScopedCaller: mockAuthenticateApiKey,
+  taskScopeAllowsDelegated: () => true,
+  taskScopeAllowsWorkspace: () => true,
 }));
 
 const mockGetCurrentUser = mock(async () => null as any);
