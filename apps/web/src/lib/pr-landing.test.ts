@@ -973,6 +973,14 @@ describe('landPr — safety rails', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('pending CI on an ESCALATED delivery names the escalation and needs a person, not "wait for green"', async () => {
+    gh.checkRuns = [{ name: 'build', status: 'in_progress', conclusion: null }];
+    const kernelLandingView = async () => ({ deliveryId: 'd1', stateReason: 'landing_needs_human', current: { state: 'ESCALATED', version: 3, head: 'head1', round: 1 } });
+    const out = await land({}, { ...deps(), kernelLandingView } as any);
+    expect(out).toMatchObject({ kind: 'waiting_ci', needsPerson: true });
+    expect((out as { reason: string }).reason).toContain('ESCALATED (landing_needs_human) at v3');
+  });
+
   it('red CI is a CI fix, never a merge (replay: unrelated-flake red check)', async () => {
     gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
     const out = await land();
