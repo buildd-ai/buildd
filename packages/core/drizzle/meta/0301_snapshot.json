@@ -1,6 +1,6 @@
 {
-  "id": "3a833b5c-b6ef-43ff-b45d-a859e0384664",
-  "prevId": "e626b84e-3beb-4a61-9c0b-ed33c5ac5a05",
+  "id": "27d5ec44-54d3-40d4-b158-4ab826804286",
+  "prevId": "225d9d76-297b-4ecd-8aa1-6f4a5502074b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1671,6 +1671,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "upload_state": {
+          "name": "upload_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1698,6 +1704,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "artifacts_upload_pending_idx": {
+          "name": "artifacts_upload_pending_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "upload_state = 'pending'",
           "concurrently": false,
           "method": "btree",
           "with": {}
