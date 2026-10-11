@@ -4,6 +4,7 @@ import { resolvePrompt, resolvePromptTemplate } from '@buildd/core/prompts';
 import { CRITERIA_REARM_TEMPLATE, MISSION_PROMPT_DEFAULTS, MISSION_PROMPT_IDS } from './mission-prompts';
 import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
 import { contextArtifactsWhere } from '@/lib/context-artifact-ids';
+import { artifactsLinkedTo } from '@/lib/artifact-links';
 import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
@@ -594,11 +595,16 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
   });
 
-  // Referenced artifacts from contextArtifactIds (cross-mission context)
+  // Referenced artifacts: the mission's links (artifact_links, owned by Living
+  // Specs). contextArtifactIds is dual-written into links at create, so the
+  // column only adds what predates links; an unlink removes the id from both.
+  // Both go through the team-scoped read.
+  const linked = await artifactsLinkedTo('mission', mission.id, { relations: ['context', 'requirement', 'normative_reference', 'design_reference'] });
+  const referencedIds = [...new Set([...(mission.contextArtifactIds ?? []), ...(Array.isArray(linked) ? linked.map(l => l.artifactId) : [])])];
   let referencedArtifacts: typeof priorArtifacts = [];
-  if (mission.contextArtifactIds?.length) {
+  if (referencedIds.length) {
     referencedArtifacts = await db.query.artifacts.findMany({
-      where: contextArtifactsWhere(mission.contextArtifactIds, mission.teamId),
+      where: contextArtifactsWhere(referencedIds, mission.teamId),
       limit: 10,
       columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
     });
