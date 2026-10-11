@@ -38,6 +38,7 @@ import { githubApi } from '@/lib/github';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { installationIdForRepo } from '@/lib/workspace-installation';
+import { verifyByContent, type DiffFile } from '@/lib/pr-supersession-verify';
 
 /**
  * Why the successor could not continue on the ancestor's branch, as the runner
@@ -58,8 +59,43 @@ export interface SupersededPr {
  * Reason prefixes for an ancestor PR that was deliberately left open — it was
  * never a close that failed, so it is neither stranded nor retried.
  */
-const LEFT_OPEN_PREFIXES = ['already', 'not an earlier attempt'];
+const LEFT_OPEN_PREFIXES = ['already', 'not an earlier attempt', 'not carried'];
 const leftOpenByDesign = (r: SupersededPr) => LEFT_OPEN_PREFIXES.some(p => r.reason.startsWith(p));
+
+/**
+ * Files a successor regenerates by design rather than carrying: migration SQL,
+ * snapshots and journal (renumbered on top of the new base), and the derived
+ * files every merge regenerates. Their absence from the successor proves
+ * nothing about where the work went.
+ */
+const REGENERATED = [/(^|\/)drizzle\//, /(^|\/)bun\.lock$/, /^docs\/specs\/INDEX\.md$/];
+
+/**
+ * Does the successor carry the ancestor's changes? Content, not lineage: a
+ * retry PR that dropped half of what its predecessor did must not close it.
+ * docs/specs/workflow-state-kernel.md §13.11 rule 5.
+ */
+export function successorCarriesAncestor(
+  ancestorFiles: ReadonlyArray<DiffFile>,
+  successorFiles: ReadonlyArray<DiffFile>,
+): { carried: boolean; detail: string } {
+  const own = ancestorFiles.filter(f => !REGENERATED.some(re => re.test(f.filename)));
+  if (own.length === 0) return { carried: true, detail: 'only regenerated files' };
+  const v = verifyByContent(own, successorFiles);
+  const carried = v.verified || (v.totalLines > 0 && v.matchedLines === v.totalLines);
+  return { carried, detail: `${v.matchedLines}/${v.totalLines} added lines found in the successor` };
+}
+
+async function listPrFiles(installationId: number, repoFullName: string, prNumber: number): Promise<DiffFile[]> {
+  const out: DiffFile[] = [];
+  for (let page = 1; page <= 30; page++) {
+    const batch = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=100&page=${page}`);
+    if (!Array.isArray(batch)) throw new Error(`malformed file list for #${prNumber}`);
+    out.push(...(batch as DiffFile[]));
+    if (batch.length < 100) return out;
+  }
+  return out;
+}
 
 /** GitHub's view of a PR, as far as supersession needs it. */
 interface LivePr {
@@ -315,6 +351,7 @@ export async function closeAncestorRetryPrs(opts: {
   }
 
   const cause = await resolveSupersessionCause(opts.successorWorkerId);
+  let successorFilesOnce: Promise<DiffFile[]> | undefined;
   const protectedHeads = await protectedHeadBranches(opts.workspaceId);
   const results: SupersededPr[] = [];
 
@@ -362,6 +399,26 @@ export async function closeAncestorRetryPrs(opts: {
       continue;
     }
 
+    // Retire only on verified content (§13.11 rule 5): a successor that does
+    // not carry the ancestor's changes leaves it open and named on the
+    // successor, never silently closed.
+    let carried: { carried: boolean; detail: string };
+    try {
+      const [ancestorFiles, successorFiles] = await Promise.all([
+        withOneRetry(() => listPrFiles(installationId, repoFullName, prNumber)),
+        successorFilesOnce ??= withOneRetry(() => listPrFiles(installationId, repoFullName, successorPrNumber)),
+      ]);
+      carried = successorCarriesAncestor(ancestorFiles, successorFiles);
+    } catch (err) {
+      strand(prNumber, `could not verify the successor carries its changes: ${err instanceof Error ? err.message : String(err)}`, ancestor.id);
+      continue;
+    }
+    if (!carried.carried) {
+      console.log(`[retry-pr-supersession] #${prNumber} left open: successor #${successorPrNumber} does not carry its changes (${carried.detail})`);
+      results.push({ prNumber, closed: false, reason: `not carried by #${successorPrNumber}: ${carried.detail}` });
+      continue;
+    }
+
     // Close first: the close is the invariant, the comment is the explanation.
     // In the other order a comment that lands before a failed close is posted
     // again on every retry.
@@ -403,6 +460,21 @@ export async function closeAncestorRetryPrs(opts: {
     }
     console.log(`[retry-pr-supersession] closed #${prNumber}, superseded by #${successorPrNumber} (${cause}, via ${via})`);
     results.push({ prNumber, closed: true, reason: `superseded (${cause})` });
+  }
+
+  // An earlier attempt the successor does not carry stays open, and the
+  // successor says so: a person decides whether the dropped work still matters.
+  const notCarried = results.filter(r => r.reason.startsWith('not carried'));
+  if (via === 'create_pr' && notCarried.length > 0) {
+    const list = notCarried.map(r => `#${r.prNumber}`).join(', ');
+    githubApi(installationId, `/repos/${repoFullName}/issues/${successorPrNumber}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        body: `Earlier attempt ${list} was left open: this PR does not carry all of its changes, so closing it could drop work. ` +
+          'Bring the missing changes over, or close it yourself if they are no longer wanted.',
+      }),
+    }).catch(err => console.warn('[retry-pr-supersession] could not note uncarried ancestor on successor:', err));
   }
 
   // A close that did not happen at PR-open time is also named on the successor,

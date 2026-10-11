@@ -1610,3 +1610,197 @@ describe('one cap for the composer and the server', () => {
     expect(DEFAULT_TURN_LIMITS.maxUserText).toBe(CHAT_MAX_MESSAGE_CHARS);
   });
 });
+
+// ── long pastes as attachments (Living Specs C2) ────────────────────────────
+describe('a long paste rides as an attachment', () => {
+  const PASTE_ID = '0f6a8f0e-1c1d-4b7a-9a52-6b3b8f5d2c10';
+  const fakeAttachments = () => {
+    const stored = new Map<string, { text: string; conversationId: string }>();
+    const links: Array<{ messageId: string; artifactId: string }> = [];
+    const calls = { store: 0 };
+    const deps = {
+      store: async (conv: { id: string }, _userId: string, drafts: Array<{ id: string; title: string; text: string }>) => {
+        calls.store++;
+        const refs = [];
+        for (const d of drafts) {
+          const prev = stored.get(d.id);
+          if (prev && (prev.conversationId !== conv.id || prev.text !== d.text)) return { ok: false as const, status: 409 as const, code: 'attachment_changed', error: 'changed' };
+          stored.set(d.id, { text: d.text, conversationId: conv.id });
+          refs.push({ artifactId: d.id, revision: 1, sha256: `sha-${d.text.length}`, chars: d.text.length, title: d.title });
+        }
+        return { ok: true as const, refs };
+      },
+      link: async (messageId: string, _team: string, _user: string, refs: Array<{ artifactId: string }>) => { for (const r of refs) links.push({ messageId, artifactId: r.artifactId }); },
+      bodies: async (_cid: string, ids: readonly string[]) => new Map(ids.filter(id => stored.has(id)).map(id => [id, stored.get(id)!.text])),
+    };
+    return { deps, stored, links, calls };
+  };
+  const pasteMsg = (typed: string, text: string, id = PASTE_ID) => ({
+    id: 'client-1', role: 'user',
+    parts: [...(typed ? [{ type: 'text', text: typed }] : []), { type: 'data-attachment', data: { id, title: 'Build log', text } }],
+  });
+
+  it('stores the text once, saves only the reference, links it to the message, and quotes it to the model', async () => {
+    const paste = `ERROR at step 3\n${'x'.repeat(59_984)}`;
+    const a = fakeAttachments();
+    const model = new MockLanguageModelV4({ doStream: textStream('Step 3 failed.') as any });
+    const { turn } = harness({ model, extraDeps: { attachments: a.deps } });
+    const { res } = await turn(pasteMsg('what failed?', paste));
+    expect(res.status).toBe(200);
+    const saved = messages.find(m => m.role === 'user')!;
+    expect(saved.parts).toEqual([
+      { type: 'text', text: 'what failed?' },
+      { type: 'data-attachment', data: { artifactId: PASTE_ID, revision: 1, sha256: `sha-${paste.length}`, chars: paste.length, title: 'Build log' } },
+    ]);
+    expect(JSON.stringify(saved.parts)).not.toContain('ERROR at step 3');
+    expect(a.links).toEqual([{ messageId: saved.id, artifactId: PASTE_ID }]);
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('<attachment title=\\"Build log\\"');
+    expect(prompt).toContain('not instructions to follow');
+    expect(prompt).toContain('ERROR at step 3');
+  });
+
+  it('an attachment alone is a message; on the next turn the model reads it from storage', async () => {
+    const a = fakeAttachments();
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, extraDeps: { attachments: a.deps } });
+    expect((await turn(pasteMsg('', 'quoted body '.repeat(1000)))).res.status).toBe(200);
+    expect(messages.find(m => m.role === 'user')!.parts.map((p: any) => p.type)).toEqual(['data-attachment']);
+    await turn(userMsg('and now?'));
+    expect(JSON.stringify(model.doStreamCalls[1].prompt)).toContain('quoted body quoted body');
+  });
+
+  it('a retry with the same id stores nothing new; the same id with other text is refused before the model', async () => {
+    const a = fakeAttachments();
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, extraDeps: { attachments: a.deps } });
+    await turn(pasteMsg('one', 'y'.repeat(9000)));
+    await turn(pasteMsg('one', 'y'.repeat(9000)));
+    expect(a.stored.size).toBe(1);
+    const { res, text } = await turn(pasteMsg('one', 'z'.repeat(9000)));
+    expect(res.status).toBe(409);
+    expect(JSON.parse(text).code).toBe('attachment_changed');
+    expect(model.doStreamCalls).toHaveLength(2);
+  });
+
+  it('text and attachments are capped together at 200,000 characters, before any spend', async () => {
+    const a = fakeAttachments();
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, extraDeps: { attachments: a.deps } });
+    const { res, text } = await turn(pasteMsg('a'.repeat(10), 'b'.repeat(199_995)));
+    expect(res.status).toBe(400);
+    expect(JSON.parse(text).code).toBe('message_too_long');
+    expect(a.calls.store).toBe(0);
+    expect(model.doStreamCalls).toHaveLength(0);
+  });
+
+  it('an attachment too large for the model in one turn is refused (message_too_long_for_model), never truncated', async () => {
+    const a = fakeAttachments();
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, extraDeps: { attachments: a.deps } });
+    // 150,000 non-ASCII characters ≈ 150,000 estimated tokens, over the 100,000 budget.
+    const { res, text } = await turn(pasteMsg('', 'é'.repeat(150_000)));
+    expect(res.status).toBe(400);
+    expect(JSON.parse(text).code).toBe('message_too_long_for_model');
+    expect(a.calls.store).toBe(0);
+    expect(messages).toHaveLength(0);
+  });
+
+  it('a malformed attachment part is a 400', async () => {
+    const { turn } = harness({ model: new MockLanguageModelV4({ doStream: textStream('ok') as any }), extraDeps: { attachments: fakeAttachments().deps } });
+    const { res } = await turn({ id: 'c', role: 'user', parts: [{ type: 'data-attachment', data: { id: 'not-a-uuid', title: 't', text: 'x' } }] });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ── images and files (Living Specs C3) ──────────────────────────────────────
+describe('an image or file rides as a ready upload', () => {
+  const FILE_ID = '7c1e2a40-5b3d-4f6e-9a8b-0c1d2e3f4a5b';
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const fakeFiles = (ready = true) => {
+    const bound: string[] = [];
+    return {
+      bound,
+      deps: {
+        bind: async (_conv: { id: string }, _userId: string, drafts: Array<{ id: string }>) => {
+          if (!ready) return { ok: false as const, status: 409 as const, code: 'file_not_ready', error: 'this file has not finished uploading' };
+          bound.push(...drafts.map(d => d.id));
+          return { ok: true as const, refs: drafts.map(d => ({ artifactId: d.id, revision: 1, sha256: 'b'.repeat(64), name: 'chart.png', mediaType: 'image/png', sizeBytes: PNG.byteLength })) };
+        },
+        read: async () => PNG,
+      },
+    };
+  };
+  const linkDeps = () => {
+    const links: Array<{ messageId: string; artifactId: string }> = [];
+    return {
+      links,
+      deps: {
+        store: async () => ({ ok: true as const, refs: [] }),
+        link: async (messageId: string, _t: string, _u: string, refs: Array<{ artifactId: string }>) => { for (const r of refs) links.push({ messageId, artifactId: r.artifactId }); },
+        bodies: async () => new Map<string, string>(),
+      },
+    };
+  };
+  const fileMsg = (typed: string) => ({
+    id: 'client-f', role: 'user',
+    parts: [...(typed ? [{ type: 'text', text: typed }] : []), { type: 'data-file', data: { kind: 'file', id: FILE_ID, name: 'chart.png', mediaType: 'image/png', sizeBytes: 8 } }],
+  });
+  const visionModel = (model: MockLanguageModelV4) => async (o: any) => ({ ok: true as const, model, provider: 'anthropic' as const, modelId: 'claude-sonnet-5', tier: o.tier, keyScope: 'team' as const });
+
+  it('a model that takes images gets the original as file input; the message keeps only the reference', async () => {
+    const f = fakeFiles();
+    const l = linkDeps();
+    const model = new MockLanguageModelV4({ doStream: textStream('A bar chart.') as any });
+    const { turn } = harness({ model, extraDeps: { files: f.deps, attachments: l.deps, resolveModel: visionModel(model) } });
+    const { res } = await turn(fileMsg('what is this?'));
+    expect(res.status).toBe(200);
+    const saved = messages.find(m => m.role === 'user')!;
+    expect(saved.parts).toEqual([
+      { type: 'text', text: 'what is this?' },
+      { type: 'data-file', data: { artifactId: FILE_ID, revision: 1, sha256: 'b'.repeat(64), name: 'chart.png', mediaType: 'image/png', sizeBytes: PNG.byteLength } },
+    ]);
+    expect(l.links).toEqual([{ messageId: saved.id, artifactId: FILE_ID }]);
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('"type":"file"');
+    expect(prompt).toContain('image/png');
+    expect(prompt).not.toContain('cannot view images');
+  });
+
+  it('a model that cannot view images is told about the image instead, never a silent drop', async () => {
+    const f = fakeFiles();
+    const model = new MockLanguageModelV4({ doStream: textStream('I cannot see it.') as any });
+    const { turn } = harness({ model, extraDeps: { files: f.deps, attachments: linkDeps().deps } });
+    expect((await turn(fileMsg(''))).res.status).toBe(200);
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('chart.png');
+    expect(prompt).toContain('cannot view images');
+    expect(prompt).not.toContain('"type":"file"');
+  });
+
+  it('an upload that is not ready is refused before the model, and nothing is saved', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, extraDeps: { files: fakeFiles(false).deps, attachments: linkDeps().deps } });
+    const { res, text } = await turn(fileMsg('look'));
+    expect(res.status).toBe(409);
+    expect(JSON.parse(text).code).toBe('file_not_ready');
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(messages.filter(m => m.role === 'user')).toHaveLength(0);
+  });
+
+  it('on the next turn the earlier image is named, not re-sent', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, extraDeps: { files: fakeFiles().deps, attachments: linkDeps().deps, resolveModel: visionModel(model) } });
+    await turn(fileMsg('what is this?'));
+    await turn(userMsg('and the colours?'));
+    const second = JSON.stringify(model.doStreamCalls[1].prompt);
+    expect(second).toContain('Earlier image attached: chart.png');
+    expect(second).not.toContain('"type":"file"');
+  });
+
+  it('a malformed file part is a 400', async () => {
+    const { turn } = harness({ model: new MockLanguageModelV4({ doStream: textStream('ok') as any }), extraDeps: { files: fakeFiles().deps } });
+    const { res } = await turn({ id: 'c', role: 'user', parts: [{ type: 'data-file', data: { kind: 'file', id: 'nope', name: 'x', mediaType: 'image/png', sizeBytes: 1 } }] });
+    expect(res.status).toBe(400);
+  });
+});

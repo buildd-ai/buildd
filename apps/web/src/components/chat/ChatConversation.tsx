@@ -21,7 +21,7 @@ import { useKitChat } from '@builddai/ai-kit/chat/react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  CHAT_PUSHER_EVENTS, conversationChannelName, type ChatTierName,
+  CHAT_PUSHER_EVENTS, conversationChannelName, type ChatDraftAttachment, type ChatTierName,
   type CreateConversationResponse, type GetConversationResponse,
 } from '@buildd/shared';
 import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
@@ -35,7 +35,7 @@ import type { ComposerWorkspace } from './ChatComposer';
 import ChatSetupCard from './ChatSetupCard';
 import { chatErrorLine, parseChatUnavailable } from './chat-errors';
 import { ObjectStoreProvider } from './objects/ObjectStoreProvider';
-import { parkPending, takePending } from './pending-message';
+import { parkPending, takePending, takePendingAttachments } from './pending-message';
 import { chooseComposerTier, chooseComposerWorkspace, useSharedComposer } from './composer-store';
 import { composerHint, conversationHref, EMPTY_CHAT_ENTRY, type ChatEntry } from '@/lib/chat/entry-points';
 import type { CanvasPulse } from './canvas-empty';
@@ -129,7 +129,8 @@ export default function ChatConversation(props: ChatConversationProps) {
     if (!conversationId || sentPending.current) return;
     sentPending.current = true;
     const text = takePending(conversationId);
-    if (text) void sendText(text);
+    const attachments = takePendingAttachments(conversationId);
+    if (text || attachments.length > 0) void sendText(text ?? '', attachments);
   }, [conversationId, sendText]);
 
   // Other devices: a ping means refetch, never content over Pusher.
@@ -197,10 +198,10 @@ export default function ChatConversation(props: ChatConversationProps) {
     }).then(r => { if (!r.ok) setPinnedTier(before); }).catch(() => setPinnedTier(before));
   }, [conversationId, pinnedTier, teamId, setSharedTier]);
 
-  const onSend = useCallback(async (text: string) => {
+  const onSend = useCallback(async (text: string, attachments: ChatDraftAttachment[] = []) => {
     clearError();
     if (conversationId) {
-      void sendText(text);
+      void sendText(text, attachments);
       return;
     }
     setCreating(true);
@@ -214,7 +215,7 @@ export default function ChatConversation(props: ChatConversationProps) {
       });
       if (!res.ok) throw new Error(await res.text());
       const { conversation } = (await res.json()) as CreateConversationResponse;
-      parkPending(conversation.id, text);
+      parkPending(conversation.id, text, attachments);
       if (onConversationCreated) onConversationCreated(conversation.id, { tier: pinnedTier, workspaceId });
       else router.push(conversationHref(conversation.id, entry));
     } catch (e) {

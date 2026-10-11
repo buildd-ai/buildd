@@ -6762,6 +6762,32 @@ describe('path-overlap claim guard', () => {
     });
   });
 
+  // Spec workflow-state-kernel §13.11 rule 4: "pending retry blocked by own lineage".
+  it('layer 2: a fix attempt is not deferred behind a claim its own parent still holds', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(
+      new Map([['task-parent', ['apps/web/src/lib/mcp-oauth.ts']]]),
+    );
+    mockTasksFindMany.mockResolvedValueOnce([{
+      ...taskWithManifest(['apps/web/src/lib/mcp-oauth.ts']),
+      taskClass: 'attempt',
+      parentTaskId: 'task-parent',
+      context: { rootTaskId: 'task-parent', lineagePrNumbers: [2700] },
+    }]);
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    }));
+    const data = await res.json();
+    expect(data.diagnostics?.taskExclusion?.code).not.toBe('path_overlap');
+    expect(data.diagnostics?.deferrals?.path_overlap ?? 0).toBe(0);
+  });
+
   // ── Claim-time waiter registration ─────────────────────────────────────────
   // A pending task deferred for path_overlap must be woken when its blocker
   // releases. Release only wakes rows in path_claim_waiters, so the deferral
@@ -9115,6 +9141,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
   });
 
   it('a fix attempt with another open attempt in its retry family is cancelled at claim, not started beside it', async () => {
+    // Counts calls below: earlier attempt-shaped claims in this file also reach the guard.
+    mockGuardClaimedRetry.mockClear();
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', reviewerRetryPrNumber: 3431, parentTaskId: 'orig' })]);
     mockGuardClaimedRetry.mockResolvedValueOnce(true);

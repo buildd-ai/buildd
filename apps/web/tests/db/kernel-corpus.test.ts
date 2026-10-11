@@ -93,6 +93,80 @@ describe('export', () => {
     expect(ws.size).toBe(1);
   });
 
+  test('sanitized: date-only and zone-less timestamps across day boundary', async () => {
+    // Verify that date-only (e.g. "2026-10-11") and zone-less timestamps
+    // (e.g. "2026-10-11T12:30:00") are shifted, not left as-is.
+    // This catches the regression when the test runs near UTC midnight.
+    const { Pseudonymizer } = await import('../../src/lib/workflow/testing/sanitize');
+    const p = new Pseudonymizer();
+    // Use a fixed creation timestamp at the start of a day
+    // All date values will be shifted relative to this same creation point
+    const createdAt = Date.UTC(2026, 9, 12, 0, 0, 0); // 2026-10-12 00:00:00 UTC (reference point)
+
+    // Date-only before creation — should be shifted away from 2026
+    const dateBeforeCreation = p.value('2026-10-11', createdAt);
+    expect(dateBeforeCreation).not.toMatch(/\b2026-/);
+    expect(dateBeforeCreation).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
+
+    // Date-only on creation day — should also be shifted and differ from before
+    const dateOnCreationDay = p.value('2026-10-12', createdAt);
+    expect(dateOnCreationDay).not.toMatch(/\b2026-/);
+    expect(dateOnCreationDay).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
+    // Different input dates shift to different output dates (preserved relative day distance)
+    expect(dateBeforeCreation).not.toBe(dateOnCreationDay);
+
+    // Date-only after creation — should be shifted away from 2026
+    const dateAfterCreation = p.value('2026-10-13', createdAt);
+    expect(dateAfterCreation).not.toMatch(/\b2026-/);
+    expect(dateAfterCreation).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
+    // All three should be distinct (with 1-day gaps preserved)
+    expect(dateBeforeCreation).not.toBe(dateOnCreationDay);
+    expect(dateOnCreationDay).not.toBe(dateAfterCreation);
+
+    // Zone-less timestamp — should be shifted and have no timezone
+    const zonelessBeforeCreation = p.value('2026-10-11T12:30:00', createdAt);
+    expect(zonelessBeforeCreation).not.toMatch(/\b2026-/);
+    expect(zonelessBeforeCreation).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(zonelessBeforeCreation).not.toMatch(/Z|[+-]\d{2}:/);
+
+    // Zone-less timestamp on creation day
+    const zonelessOnCreationDay = p.value('2026-10-12T12:30:00', createdAt);
+    expect(zonelessOnCreationDay).not.toMatch(/\b2026-/);
+    expect(zonelessOnCreationDay).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(zonelessOnCreationDay).not.toMatch(/Z|[+-]\d{2}:/);
+    // Different zone-less timestamps should shift to different results
+    expect(zonelessBeforeCreation).not.toBe(zonelessOnCreationDay);
+
+    // Full ISO timestamps should still work
+    const fullIsoBeforeCreation = p.value('2026-10-11T12:30:45.123Z', createdAt);
+    expect(fullIsoBeforeCreation).not.toMatch(/\b2026-/);
+    expect(fullIsoBeforeCreation).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+    const fullIsoOnCreationDay = p.value('2026-10-12T12:30:45.123Z', createdAt);
+    expect(fullIsoOnCreationDay).not.toMatch(/\b2026-/);
+    expect(fullIsoOnCreationDay).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(fullIsoBeforeCreation).not.toBe(fullIsoOnCreationDay);
+  });
+
+  test('sanitized: date-only shift does not depend on time of day of createdAt', async () => {
+    const { Pseudonymizer } = await import('../../src/lib/workflow/testing/sanitize');
+    const p = new Pseudonymizer();
+    const startOfDay = Date.UTC(2026, 9, 11, 0, 0, 0);
+    const endOfDay = Date.UTC(2026, 9, 11, 23, 59, 0);
+
+    const early = p.value('2026-10-11', startOfDay);
+    const late = p.value('2026-10-11', endOfDay);
+    const lateNext = p.value('2026-10-12', endOfDay);
+
+    // Shifted away from 2026, and distinct per input date, at 23:59 as well.
+    expect(late).not.toMatch(/\b2026-/);
+    expect(lateNext).not.toMatch(/\b2026-/);
+    expect(late).not.toBe(lateNext);
+    // Same input date + same createdAt day => same output at 00:00 and 23:59.
+    expect(late).toBe(early);
+    expect(p.value('2026-10-12', startOfDay)).toBe(lateNext);
+  });
+
   test('--limit, --since and --errors-first', async () => {
     const limited = join(dir, 'limited.jsonl');
     expect((await exportCorpus({ query: query(), out: limited, workspaceId, limit: 2 })).written).toBe(2);
