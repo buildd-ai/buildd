@@ -107,6 +107,29 @@ export function interactiveAbandonedScope(accountId: string, now: Date): SQL {
   )!;
 }
 
+/**
+ * Whether a PATCH /api/workers/[id] must leave `updated_at` alone: a read or
+ * ack (receive_messages, a message ack) on an interactive worker parked on a
+ * question.
+ *
+ * An interactive worker parked by `ask_human` is outside every reaper rule
+ * here (waiting_input is not a live status). Its only expiry is the
+ * waiting_input sweep (cleanupStuckWaitingInput: 24 h, 4 h in a mission, the
+ * same as a runner's question), which measures from `updated_at`. The session
+ * waiting for the answer keeps polling receive_messages; if each poll moved
+ * `updated_at`, the question would never expire. A status change or a new
+ * question does restart the clock.
+ */
+export function keepsParkClock(
+  worker: { runner?: string | null; status: string },
+  body: { status?: unknown; waitingFor?: unknown },
+): boolean {
+  return isInteractiveWorker(worker.runner)
+    && worker.status === 'waiting_input'
+    && body.status === undefined
+    && body.waitingFor === undefined;
+}
+
 /** Per-instance memo: (account, user, session) → last touch. Saves the round trip on bursts. */
 const lastTouch = new Map<string, number>();
 const MEMO_MAX = 5_000;

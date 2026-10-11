@@ -17579,3 +17579,69 @@ describe('PATCH /api/workers/[id] — OAuth session owner check', () => {
     expect((await patch()).status).toBe(200);
   });
 });
+
+// ask_human (packages/core/mcp-tools.ts) parks an interactive session's own
+// worker through this route, exactly as a runner's AskUserQuestion does. Its
+// expiry is the waiting_input sweep's, keyed on updated_at, so the session's
+// receive_messages polls while it waits must not push that clock forward.
+describe('PATCH /api/workers/[id] — interactive worker parked on a question', () => {
+  let capturedSet: any = null;
+  const interactive = {
+    id: 'worker-1', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1',
+    runner: 'mcp', status: 'running', claimedByUserId: null, pendingInstructions: null,
+    milestones: [], instructionHistory: [],
+  };
+
+  function setup(worker: any) {
+    capturedSet = null;
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', level: 'worker' });
+    mockWorkersFindFirst.mockResolvedValue(worker);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return { where: mock(() => ({ returning: mock(() => [{ ...worker, ...updates }]) })) };
+      }),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockMissionNotesFindMany.mockResolvedValue([]);
+  }
+
+  const patch = (body: Record<string, unknown>) => PATCH(
+    createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }),
+    { params: mockParams },
+  );
+
+  it('asking parks the worker and reaches the owner, the same as a runner question', async () => {
+    setup(interactive);
+    mockNotify.mockClear();
+    mockNotifySubject.mockClear();
+    const res = await patch({ status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Flag or straight on?', options: ['flag', 'straight'] } });
+    expect(res.status).toBe(200);
+    expect(capturedSet.status).toBe('waiting_input');
+    expect(capturedSet.waitingFor).toMatchObject({ type: 'question', prompt: 'Flag or straight on?' });
+    expect(capturedSet.updatedAt).toBeInstanceOf(Date);
+    expect(mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention')).toBe(true);
+  });
+
+  it('a receive_messages poll while parked leaves updated_at where the park set it', async () => {
+    const parkedAt = new Date('2026-10-01T09:00:00.000Z');
+    setup({ ...interactive, status: 'waiting_input', updatedAt: parkedAt, waitingFor: { type: 'question', prompt: 'Flag or straight on?' } });
+    const res = await patch({ consumer: 'agent' });
+    expect(res.status).toBe(200);
+    expect(capturedSet).not.toBeNull();
+    expect(capturedSet.updatedAt).toEqual(parkedAt);
+  });
+
+  it('a runner worker parked on a question is unchanged: every PATCH bumps updated_at', async () => {
+    setup({ ...interactive, runner: 'runner-1', status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
+    await patch({ consumer: 'runner' });
+    expect(capturedSet.updatedAt).toBeInstanceOf(Date);
+  });
+
+  it('resuming (status running) restarts the clock', async () => {
+    setup({ ...interactive, status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
+    await patch({ status: 'running', consumer: 'agent' });
+    expect(capturedSet.updatedAt).toBeInstanceOf(Date);
+  });
+});

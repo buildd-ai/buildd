@@ -120,6 +120,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   claim_task: 'write',
   update_progress: 'write',
   receive_messages: 'write',
+  ask_human: 'write',
   complete_task: 'write',
   create_pr: 'write',
   emit_event: 'write',
