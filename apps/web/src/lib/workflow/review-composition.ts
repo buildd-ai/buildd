@@ -20,6 +20,7 @@
  */
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
+import { isCiVerifiedGeneratedPath } from '@buildd/core/generated-artifacts';
 import { isReleaseBranchPr } from '@buildd/core/release-strategy';
 import type { Exec } from './kernel';
 import type { CompositionAttestation, CompositionConstituent, ConstituentEvidence, NovelDelta, RoundStatus, Verdict } from './types';
@@ -32,18 +33,26 @@ export interface CompositionPrRefs {
   /** The owner task's mission working (integration) branch, when it has one. */
   missionWorkingBranch?: string | null;
   releaseConfig?: Parameters<typeof isReleaseBranchPr>[0];
+  /**
+   * The trunk a mission branch refresh merges in, when the owner task is that
+   * refresh (`integrationRefreshOf` its context); null for every other task.
+   */
+  refreshTrunk?: string | null;
 }
 
 /**
- * A mission's integration PR (its working branch merging into trunk) or a
- * release PR (releaseBranch → prodBranch). Every other PR, including a task PR
- * INTO a mission branch, is ordinary and stays exact-head bound.
+ * A mission's integration PR (its working branch merging into trunk), a
+ * release PR (releaseBranch → prodBranch), or a mission branch refresh PR
+ * (trunk merged into the mission's working branch, opened by the refresh
+ * conflict task). Every other PR, including an ordinary task PR INTO a mission
+ * branch, is ordinary and stays exact-head bound.
  */
 export function isCompositionPr(r: CompositionPrRefs): boolean {
   const head = r.headRef?.trim() || null;
   const base = r.baseRef?.trim() || null;
   if (!head || !base || head === base) return false;
   if (r.missionWorkingBranch && head === r.missionWorkingBranch.trim()) return true;
+  if (r.refreshTrunk && r.missionWorkingBranch && base === r.missionWorkingBranch.trim()) return true;
   return isReleaseBranchPr(r.releaseConfig ?? null, { headRef: head, baseRef: base });
 }
 
@@ -144,6 +153,48 @@ export interface CommitFacts {
   diff?: FileDiff[] | null;
   /** For a merge commit: every non-first parent is already contained in the base. */
   mergeParentsInBase?: boolean;
+  /**
+   * A refresh composition's merge of trunk (two parents, the second on trunk):
+   * the four trees that decide what the merge itself changed. null = a tree
+   * was unreadable or truncated; absent = not such a merge.
+   */
+  refreshMerge?: RefreshMergeTrees | null;
+}
+
+/** path → `${mode} ${sha}` of one commit's whole tree (blobs and submodules). */
+export type TreeMap = Record<string, string>;
+
+export interface RefreshMergeTrees {
+  /** The merge base of the two parents. */
+  base: TreeMap;
+  /** The first parent: the mission side. */
+  ours: TreeMap;
+  /** The second parent: the trunk side. */
+  theirs: TreeMap;
+  /** The merge commit itself. */
+  merged: TreeMap;
+}
+
+/**
+ * The paths a merge decided rather than inherited, from whole trees (no file
+ * cap): every path both sides changed (the resolution, including a side taken
+ * whole, which drops the other side's change), and every path where the result
+ * is not what the one side that changed it, or neither side, left there (an
+ * edit made in the merge, or a dropped change). A path only one side changed,
+ * taken as that side has it, is inherited: its change was reviewed on that side.
+ */
+export function classifyRefreshMerge(t: RefreshMergeTrees): string[] {
+  const paths = new Set([...Object.keys(t.base), ...Object.keys(t.ours), ...Object.keys(t.theirs), ...Object.keys(t.merged)]);
+  const novel: string[] = [];
+  for (const p of paths) {
+    const b = t.base[p], o = t.ours[p], th = t.theirs[p], m = t.merged[p];
+    const inherited = o === th ? m === o
+      : o === b ? m === th
+      : th === b ? m === o
+      : false;
+    if (!inherited) novel.push(p);
+  }
+  return novel.sort();
 }
 
 export interface ConstituentDelivery {
@@ -176,6 +227,13 @@ export interface CompositionInput {
    * independently of the commit itself. Absent or null = unreadable.
    */
   reviewedDiffs?: Record<string, FileDiff[] | null>;
+  /**
+   * Set for a mission branch refresh PR: its constituents are trunk PRs, a
+   * merge of trunk is read from `refreshMerge`, and of what that merge decided,
+   * the files CI regenerates and compares (`isCiVerifiedGeneratedPath`) are not
+   * owed a review.
+   */
+  refresh?: { trunk: string } | null;
   verifier?: string;
   now?: string;
 }
@@ -210,9 +268,20 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
   if (!input.aggregateFiles) unverifiable = unverifiable ?? 'aggregate_diff_truncated';
 
   const covered = new Set<string>();
+  // What a refresh's merge decided is owed a review even where the aggregate
+  // diff shows nothing: taking the mission side whole drops a trunk change
+  // without leaving a line in the PR diff.
+  const resolutionPaths = new Set<string>();
   for (const c of input.commits ?? []) {
     if (!c.files) { unverifiable = unverifiable ?? `commit_unreadable:${c.sha.slice(0, 12)}`; continue; }
     c.files.forEach((f) => covered.add(f));
+    if (c.parents.length > 1 && input.refresh && !c.mergeParentsInBase && c.refreshMerge !== undefined) {
+      if (!c.refreshMerge) { unverifiable = unverifiable ?? `refresh_merge_unreadable:${c.sha.slice(0, 12)}`; continue; }
+      const paths = classifyRefreshMerge(c.refreshMerge).filter((f) => !isCiVerifiedGeneratedPath(f));
+      paths.forEach((f) => resolutionPaths.add(f));
+      if (paths.length) novel.push({ sha: c.sha, reason: 'refresh_merge_resolution', paths });
+      continue;
+    }
     if (c.parents.length > 1) {
       // A merge commit. Bringing the base in adds nothing of its own except a
       // conflict resolution, which shows only in files both sides changed: those
@@ -282,7 +351,7 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
   // Only paths still present in the aggregate diff are owed a review (a novel
   // edit later reverted by a constituent leaves nothing to look at).
   const aggregate = new Set(input.aggregateFiles ?? []);
-  const novelPaths = [...new Set(novel.flatMap((n) => n.paths))].filter((p) => aggregate.has(p)).sort();
+  const novelPaths = [...new Set(novel.flatMap((n) => n.paths))].filter((p) => aggregate.has(p) || resolutionPaths.has(p)).sort();
   const novelDelta: NovelDelta = unverifiable
     ? { result: 'unverifiable', reason: unverifiable }
     : novelPaths.length ? { result: 'present', paths: novelPaths } : { result: 'none' };
@@ -348,6 +417,8 @@ export async function collectComposition(p: {
   baseRef: string;
   headRef: string;
   aggregateHeadSha: string;
+  /** The trunk a mission branch refresh PR merges in (see `isCompositionPr`); absent otherwise. */
+  refreshTrunk?: string | null;
 }): Promise<CompositionResult> {
   const { api, installationId: inst, repoFullName: repo } = p;
   const cmp = (await api(inst, `/repos/${repo}/compare/${encodeURIComponent(p.baseRef)}...${p.aggregateHeadSha}?per_page=${COMPARE_COMMIT_CAP}`)) as GhCompare | null;
@@ -357,6 +428,9 @@ export async function collectComposition(p: {
   const truncatedCommits = !cmp || (cmp.total_commits ?? rawCommits.length) > rawCommits.length || rawCommits.length >= COMPARE_COMMIT_CAP;
   const aggregateFiles = cmp?.files && cmp.files.length < DIFF_FILE_CAP ? cmp.files.map((f) => f.filename) : null;
 
+  const refreshTrunk = p.refreshTrunk?.trim() || null;
+  // A refresh's constituents landed on trunk; anything else's landed on its head branch.
+  const constituentBase = refreshTrunk ?? p.headRef;
   const commits: CommitFacts[] = [];
   const prsByCommit: Record<string, { prNumber: number; mergedHeadSha: string } | null> = {};
   for (const c of rawCommits) {
@@ -375,10 +449,14 @@ export async function collectComposition(p: {
           if (!(rel?.status === 'ahead' || rel?.status === 'identical')) mergeParentsInBase = false;
         } catch { mergeParentsInBase = false; }
       }
+      if (refreshTrunk && !mergeParentsInBase && parents.length === 2 && await onRef(api, inst, repo, parents[1], refreshTrunk)) {
+        commits.push({ sha: c.sha, parents, message: c.commit?.message ?? '', files, diff, mergeParentsInBase, refreshMerge: await readRefreshMerge(api, inst, repo, parents[0], parents[1], c.sha) });
+        continue;
+      }
     } else {
       try {
         const pulls = (await api(inst, `/repos/${repo}/commits/${c.sha}/pulls`)) as Array<{ number: number; merged_at?: string | null; base?: { ref?: string }; head?: { sha?: string } }> | null;
-        const hit = (pulls ?? []).find((x) => x.merged_at && x.base?.ref === p.headRef && x.head?.sha);
+        const hit = (pulls ?? []).find((x) => x.merged_at && x.base?.ref === constituentBase && x.head?.sha);
         prsByCommit[c.sha] = hit ? { prNumber: hit.number, mergedHeadSha: hit.head!.sha! } : null;
       } catch { prsByCommit[c.sha] = null; }
     }
@@ -426,5 +504,39 @@ export async function collectComposition(p: {
     aggregateFiles,
     constituentsByCommit,
     reviewedDiffs,
+    refresh: refreshTrunk ? { trunk: refreshTrunk } : null,
   });
+}
+
+/** Is `sha` contained in `ref`? Unreadable = no, which reads the merge as wholly novel. */
+async function onRef(api: GithubApi, inst: number, repo: string, sha: string, ref: string): Promise<boolean> {
+  try {
+    const rel = (await api(inst, `/repos/${repo}/compare/${sha}...${ref.split('/').map(encodeURIComponent).join('/')}`)) as { status?: string } | null;
+    return rel?.status === 'ahead' || rel?.status === 'identical';
+  } catch { return false; }
+}
+
+/** One commit's whole tree; null when unreadable or truncated (fails the proof closed). */
+async function readTree(api: GithubApi, inst: number, repo: string, commitSha: string): Promise<TreeMap | null> {
+  try {
+    const commit = (await api(inst, `/repos/${repo}/git/commits/${commitSha}`)) as { tree?: { sha?: string } } | null;
+    const treeSha = commit?.tree?.sha;
+    if (!treeSha) return null;
+    const tree = (await api(inst, `/repos/${repo}/git/trees/${treeSha}?recursive=1`)) as { truncated?: boolean; tree?: Array<{ path: string; mode: string; type: string; sha: string }> } | null;
+    if (!tree?.tree || tree.truncated) return null;
+    const map: TreeMap = {};
+    for (const e of tree.tree) if (e.type !== 'tree') map[e.path] = `${e.mode} ${e.sha}`;
+    return map;
+  } catch { return null; }
+}
+
+/** The four trees of a merge of trunk into a mission branch; null if any is unreadable. */
+async function readRefreshMerge(api: GithubApi, inst: number, repo: string, ours: string, theirs: string, merged: string): Promise<RefreshMergeTrees | null> {
+  let mergeBase: string | undefined;
+  try {
+    mergeBase = ((await api(inst, `/repos/${repo}/compare/${ours}...${theirs}`)) as GhCompare | null)?.merge_base_commit?.sha;
+  } catch { return null; }
+  if (!mergeBase) return null;
+  const [base, o, t, m] = await Promise.all([mergeBase, ours, theirs, merged].map((sha) => readTree(api, inst, repo, sha)));
+  return base && o && t && m ? { base, ours: o, theirs: t, merged: m } : null;
 }
