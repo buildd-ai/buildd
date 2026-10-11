@@ -599,6 +599,11 @@ async function loadCopyReviewSection(params: {
   }
 }
 
+// Retry delays for the duplicate-producer race recovery: 50ms, then 100ms.
+// The first producer's insert blocks, so retries use increasing delays to let
+// the winner's transaction complete and become visible to subsequent reads.
+const CONCURRENT_INSERT_RETRY_DELAY_MS = 50;
+
 export async function createReviewerTask(
   params: CreateReviewerTaskParams,
 ): Promise<{ id: string; deduplicated?: true } | null> {
@@ -828,7 +833,7 @@ export async function createReviewerTask(
       }
       // If this is not the last attempt, wait a bit before retrying
       if (attempt < 2) {
-        await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
+        await new Promise(resolve => setTimeout(resolve, CONCURRENT_INSERT_RETRY_DELAY_MS * (attempt + 1)));
       }
     }
   }
