@@ -79,7 +79,7 @@ describe('LoopHistory', () => {
       <LoopHistory entries={[entry(0)]} loopState="condition_unmet" maxLoops={5} />,
     );
     expect(html).toContain('Iteration 1');
-    expect(html).toContain('Condition unmet');
+    expect(html).toContain('Check failed');
     expect(html).toContain('1 failing test');
     expect(html).toContain('1.23s');
   });
@@ -90,5 +90,50 @@ describe('LoopHistory', () => {
     );
     expect(html).toContain('Condition unmet after 3 attempts');
     expect((html.match(/Iteration /g) ?? []).length).toBe(3);
+  });
+});
+
+describe('Loop chip and history agree (surface fix 415f718a)', () => {
+  // A task satisfied on its 2nd evaluation stores loopIteration=2 (evaluations
+  // completed). The chip used to add one for "the attempt in progress" even
+  // when nothing was in progress, so it read 3/3 over a 2-row history.
+  const uuid = '1efb308d-9ef3-4811-b874-4eff0f34e342';
+  const ciEntry = (iteration: number, satisfied: boolean): LoopHistoryEntry => ({
+    iteration,
+    workerId: uuid,
+    evaluatedAt: `2026-07-25T10:0${iteration}:00.000Z`,
+    conditionType: 'pr_checks_green',
+    satisfied,
+    summary: satisfied ? 'Checks green' : 'Checks failing',
+  });
+
+  it('counts the same number of iterations in the chip and the list', () => {
+    const entries = [ciEntry(0, false), ciEntry(1, true)];
+    const chip = renderToStaticMarkup(
+      <LoopStatusChip loopIteration={2} maxLoops={3} loopState="satisfied" exitConditionType="pr_checks_green" />,
+    );
+    const list = renderToStaticMarkup(<LoopHistory entries={entries} loopState="satisfied" maxLoops={3} />);
+    expect(chip).toContain('LOOP SATISFIED · 2/3');
+    expect((list.match(/Iteration \d/g) ?? []).length).toBe(2);
+  });
+
+  it('counts evaluations on an exhausted loop', () => {
+    const chip = renderToStaticMarkup(
+      <LoopStatusChip loopIteration={3} maxLoops={3} loopState="exhausted" />,
+    );
+    expect(chip).toContain('LOOP EXHAUSTED · 3/3');
+  });
+
+  it('renders no worker UUID and no raw condition enum', () => {
+    const list = renderToStaticMarkup(
+      <LoopHistory entries={[ciEntry(0, false), ciEntry(1, true)]} loopState="satisfied" maxLoops={3} />,
+    );
+    expect(list).not.toContain(uuid);
+    expect(list).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+    expect(list).not.toContain('pr_checks_green');
+    expect(list).not.toMatch(/PR_CHECKS_GREEN/i);
+    expect(list).toContain('until CI passes');
+    expect(list).toContain('CI passed');
+    expect(list).toContain('CI not passing');
   });
 });

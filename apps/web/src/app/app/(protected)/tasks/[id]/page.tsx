@@ -1473,6 +1473,7 @@ export default async function TaskDetailPage({
                 maxLoops={task.loopConfig.maxLoops ?? 5}
                 loopState={task.loopState}
                 startAt={task.startAt?.toISOString() ?? null}
+                exitConditionType={task.loopConfig.exitCondition?.type ?? null}
               />
             )}
             {/* Release controls belong to the deliverable, never to a review or fix run. */}

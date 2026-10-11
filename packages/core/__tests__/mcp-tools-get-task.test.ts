@@ -241,6 +241,29 @@ describe('get_task', () => {
     expect(text).toContain('1.25s');
   });
 
+  it('counts completed evaluations, not one more, once a loop has stopped', async () => {
+    // loopIteration counts evaluations done; a loop satisfied on its 2nd
+    // evaluation must not report a 3rd attempt that never ran.
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'Looping task',
+      status: 'completed',
+      priority: 3,
+      loopConfig: { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 },
+      loopIteration: 2,
+      loopState: 'satisfied',
+    });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_task',
+      { taskId: TASK_ID, include: [] },
+      ctx(),
+    );
+
+    expect(result.content[0].text).toContain('Loop:** satisfied — attempt 2/3');
+  });
+
   it('includes taskUrl in output when appBaseUrl is set', async () => {
     mockApi.mockResolvedValue({
       id: TASK_ID,

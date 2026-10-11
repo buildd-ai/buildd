@@ -2613,7 +2613,12 @@ export async function handleBuilddAction(
       if (task.startAt) lines.push(`**Starts at:** ${new Date(task.startAt).toISOString()}`);
       if (task.loopConfig) {
         const maxLoops = task.loopConfig.maxLoops ?? 5;
-        const attempt = Math.min((task.loopIteration ?? 0) + 1, maxLoops);
+        // loopIteration counts evaluations already done. Only a loop still
+        // going has an attempt in progress (one past that); a stopped one
+        // reports the count itself, matching its history rows.
+        const loopDone = task.loopState === 'satisfied' || task.loopState === 'exhausted';
+        const completed = task.loopIteration ?? 0;
+        const attempt = Math.min(loopDone ? Math.max(completed, 1) : completed + 1, maxLoops);
         lines.push(`**Loop:** ${task.loopState ?? 'pending'} — attempt ${attempt}/${maxLoops}`);
         const condition = task.loopConfig.exitCondition;
         const conditionDetail = condition.type === 'command' && condition.command
