@@ -173,15 +173,8 @@ function stderrEntries() {
   return loggedEntries.filter(e => e.event === 'session_stderr');
 }
 
-/**
- * Error-trace PATCHes, optionally scoped to one worker. Scope when asserting a
- * count: a previous test's session can still be running its closing-turn query
- * (the fake SDK reads the shared `mockStderrChunks` at call time), so its PATCHes
- * can carry this test's stderr text under another worker id.
- */
-function tracePatches(workerId?: string) {
-  return mockUpdateWorker.mock.calls.filter((c: any[]) =>
-    Array.isArray(c[1]?.appendErrorTraces) && (!workerId || c[0] === workerId));
+function tracePatches() {
+  return mockUpdateWorker.mock.calls.filter((c: any[]) => Array.isArray(c[1]?.appendErrorTraces));
 }
 
 /** Poll until `cond` holds (or timeout) — fixed sleeps race the session under CI load. */
@@ -273,7 +266,8 @@ describe('SDK stderr durability', () => {
 
     manager = new WorkerManager(makeConfig());
     await startSessionFor(manager, 'w-once', makeTask('task-once'), 'buildd/once');
-    const filed = () => tracePatches('w-once')
+    const filed = () => tracePatches()
+      .filter((c: any[]) => c[0] === 'w-once')
       .flatMap((c: any[]) => c[1].appendErrorTraces)
       .filter((t: any) => t.excerpt.includes('single failure line'));
     await waitFor(() => filed().length > 0);
@@ -282,7 +276,7 @@ describe('SDK stderr durability', () => {
 
     // Scope to this worker: a straggler session from an earlier test (destroyed
     // manager, late retry) re-invokes the shared fake SDK with this test's chunks.
-    const traces = tracePatches('w-once')
+    const traces = tracePatches()
       .filter((c: any[]) => c[0] === 'w-once')
       .flatMap((c: any[]) => c[1].appendErrorTraces);
     const matching = traces.filter((t: any) => t.excerpt.includes('single failure line'));
