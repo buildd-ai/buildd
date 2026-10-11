@@ -299,6 +299,12 @@ describe('post_review (§8.4)', () => {
     expect(r).toEqual({ outcome: 'failed_post:bad token' });
     expect(notes[0]).toMatchObject({ type: 'warning', missionId: 'm1' });
   });
+  test('a verdict on buildd\'s own PR that went up as a comment review is posted, with no warning', async () => {
+    postResult = { posted: true, reviewId: 77, commentedOwnPr: true };
+    const r = await __handlers.postReview(E('post_review', { roundId: 'r1', commitId: 'H1', event: 'APPROVE' }));
+    expect(r).toEqual({ outcome: 'ok:commented_own_pr' });
+    expect(notes).toHaveLength(0);
+  });
 });
 
 describe('cancellations and escalation', () => {
