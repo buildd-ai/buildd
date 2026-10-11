@@ -1,7 +1,11 @@
 import { expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-mock.module('next/navigation', () => ({ useRouter: () => ({ push() {} }) }));
-const { default: NewRunnerTokenPage } = await import('./page');
+mock.module('next/navigation', () => ({
+  useRouter: () => ({ push() {}, replace() {} }),
+  usePathname: () => '/app/settings/runners',
+  useSearchParams: () => new URLSearchParams('new=1'),
+}));
+const { default: NewRunnerTokenPage } = await import('./NewRunnerTokenSheet');
 it('offers scoped presets and reviews permissions before creating a token', () => {
   const html = renderToStaticMarkup(<NewRunnerTokenPage />);
   expect(html).toContain('CI trigger');
@@ -15,7 +19,7 @@ it('offers scoped presets and reviews permissions before creating a token', () =
   expect(html).not.toContain('Token Level');
 });
 
-it('is a settings page: one primary, ink selection, no back link', () => {
+it('is a sheet over Runners: one primary, ink selection, no back link', () => {
   const html = renderToStaticMarkup(<NewRunnerTokenPage />);
   expect(html).toContain('New runner token');
   expect(html).not.toContain('← Tokens');
@@ -23,5 +27,7 @@ it('is a settings page: one primary, ink selection, no back link', () => {
   // The chosen preset is marked in ink, not the orange primary border.
   expect(html).toMatch(/data-selected="true" class="[^"]*border-l-text-primary/);
   expect(html).not.toMatch(/data-selected="true" class="[^"]*border-primary/);
-  expect(html).toContain('href="/app/settings/runners"');
+  expect(html).toContain('role="dialog"');
+  // Cancel closes the sheet in place rather than navigating away.
+  expect(html).toMatch(/<button type="button" class="btn[^"]*">Cancel<\/button>/);
 });

@@ -2859,7 +2859,7 @@ describe('PATCH /api/workers/[id]', () => {
     expect(mockTasksUpdate).not.toHaveBeenCalled();
     // The owner is still reached through the existing notification path.
     expect(mockNotify.mock.calls.some((c: any) =>
-      c[0]?.title === 'Agent needs input' && c[0]?.url?.includes('/respond')
+      c[0]?.title === 'Agent needs input' && c[0]?.url?.includes('?respond=1')
     )).toBe(true);    // ...on the channel of the team that owns the workspace, never the operator's.
     expect(mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention' && 'workspaceId' in c[0])).toBe(true);
   });
