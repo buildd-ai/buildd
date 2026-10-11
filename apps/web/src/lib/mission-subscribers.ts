@@ -31,7 +31,7 @@ import { eq } from 'drizzle-orm';
 import { after } from 'next/server';
 import { refreshMissionBranchesBeforeStart } from '@/lib/mission-branch-refresh';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
-import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
+import { evaluateAndAdvanceLoopOnMerge, evaluateAndAdvanceLoopOnCiGreen } from '@/lib/loop-webhook';
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
@@ -91,12 +91,25 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   }),
 
   // ── GitHub facts ───────────────────────────────────────────────────────────
-  // mergedAt is stamped; the helper reads it and completes the task if its
-  // pr_merged loop condition now holds. Fire-and-forget.
+  // mergedAt is stamped; the helpers read it and complete the task if its
+  // pr_merged loop condition now holds, or its pr_checks_green one (a merge
+  // satisfies that too, should no green delivery have reached us first).
+  // Fire-and-forget.
   subscriber('missions', 'task.pr_merge_delivered', 'loop-advance-on-merge', e => {
     if (!e.taskId || !e.workspaceId) return;
     evaluateAndAdvanceLoopOnMerge(e.workerId, e.taskId, e.workspaceId).catch((err) =>
       console.error(`[webhook] evaluateAndAdvanceLoopOnMerge failed for task ${e.taskId}:`, err),
+    );
+    evaluateAndAdvanceLoopOnCiGreen(e.workerId, e.taskId, e.workspaceId, 'merged').catch((err) =>
+      console.error(`[webhook] evaluateAndAdvanceLoopOnCiGreen(merged) failed for task ${e.taskId}:`, err),
+    );
+  }),
+  // The pr_checks_green counterpart: a task the loop parked on its PR's CI
+  // (lib/loop-dispatcher-policy.ts) completes when the checks go green.
+  subscriber('missions', 'pr.ci_passed', 'loop-advance-on-ci-green', e => {
+    if (!e.taskId) return;
+    evaluateAndAdvanceLoopOnCiGreen(e.workerId, e.taskId, e.workspaceId, 'ci_green').catch((err) =>
+      console.error(`[webhook] evaluateAndAdvanceLoopOnCiGreen failed for task ${e.taskId}:`, err),
     );
   }),
   // Option A′: a task PR landing on the mission's integration branch is the
