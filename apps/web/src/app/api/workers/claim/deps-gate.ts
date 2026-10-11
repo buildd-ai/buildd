@@ -1,6 +1,7 @@
 import { isNull, or, sql, type SQL } from 'drizzle-orm';
 import { BYPASS_DEPS_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
 import { tasks, workers, dependencyReleases } from '@buildd/core/db/schema';
+import { FORCE_START_CONTEXT_KEY } from '@buildd/core/waiting-reason';
 import {
   DEP_SATISFYING_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
@@ -118,6 +119,24 @@ export function dependencySatisfied(depId: SQL): SQL {
       AND dr.revoked_at IS NULL
     )
     OR ${migrationEdgeOnOtherBase(depId)}
+    OR ${forceStartLiftsEdge(depId)}
+  )`;
+}
+
+/**
+ * TRUE when a person's unexpired dashboard Force start names `depId` in
+ * `context.forceStart.liftDependsOn` AND the edge is one the system inferred
+ * at creation (`pathDeclaration.inferredDependsOn`): incidental file-overlap
+ * ordering, which a force may lift for claim order (docs/specs/force-start.md).
+ * A declared edge never qualifies, even if named. The intent is single-use:
+ * the claim consumes it, and after `expiresAt` it no longer lifts anything.
+ * The edit-time path lease still serializes the shared files.
+ */
+function forceStartLiftsEdge(depId: SQL): SQL {
+  return sql`(
+    ${tasks.pathDeclaration}->'inferredDependsOn' ? (${depId})::text
+    AND ${tasks.context}->${FORCE_START_CONTEXT_KEY}->'liftDependsOn' ? (${depId})::text
+    AND (${tasks.context}->${FORCE_START_CONTEXT_KEY}->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
   )`;
 }
 

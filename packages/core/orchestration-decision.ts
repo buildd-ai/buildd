@@ -155,7 +155,11 @@ export interface OrchestrationDecisionRow {
   inputTokens: number | null;
   outputTokens: number | null;
   costUsd: number | null;
-  experimentArm: 'apply' | 'observe';
+  /**
+   * `human`: a person's override (dashboard Force start, `buildd.human_force_start`).
+   * Never an experiment draw; observational evidence only.
+   */
+  experimentArm: 'apply' | 'observe' | 'human';
   propensity: number;
   applyingFraction: number;
   receipt: DecisionReceipt | null;

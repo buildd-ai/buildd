@@ -1678,7 +1678,7 @@ export async function POST(req: NextRequest) {
     // The named task under an admin force claim skips the gates a person may
     // override; every other candidate in the batch is gated as usual.
     const forced = forceClaim && task.id === taskId;
-    // A dashboard Force start (POST /api/tasks/[id]/start with forceOverride)
+    // A dashboard Force start (POST /api/tasks/[id]/start with `force`)
     // leaves an audited intent on the task naming the coordination gates the
     // person confirmed. Whichever runner claims next honours it for exactly
     // those gates, then consumes it — the person never needs an admin token,
@@ -1867,7 +1867,8 @@ export async function POST(req: NextRequest) {
         let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
         let risk: { tier: string; rationale: string; reasons: string[]; reevaluateOn: string[] } | null =
           v.kind === 'deterministic' ? { tier: 'hard', rationale: `Held: ${v.overlapKind.replace('_', ' ')} overlap.`, reasons: [v.overlapKind], reevaluateOn: ['holder_terminal'] } : null;
-        if (v.kind === 'advisory' && !forced) {
+        // A person's Force start already decided this overlap: no Jev read.
+        if (v.kind === 'advisory' && !liftedByForce('soft_overlap')) {
           const holdCtx = holdStartContext(task, forced);
           const candidateBranch = splitOwnOpenPrs(task, openPrTasksByWorkspace.get(task.workspaceId) ?? []).own.find(p => p.branch)?.branch ?? null;
           const probe = holdCtx && candidateBranch
@@ -1900,8 +1901,11 @@ export async function POST(req: NextRequest) {
           // The tier and why, for explain/the dashboard; what would change it.
           ...(risk ? { riskTier: risk.tier, rationale: risk.rationale, reevaluateOn: risk.reevaluateOn } : {}),
         };
-        if (forced) {
-          softOverlapForced.push(detail);
+        if (liftedByForce('soft_overlap')) {
+          // Admin force claim or a dashboard Force start naming this gate:
+          // claim order only. The edit-time lease on the shared files (the
+          // migration anchor included) still applies when the agent edits.
+          if (forced) softOverlapForced.push(detail);
           bypassOrDefer('soft_overlap', detail);
           continue;
         }

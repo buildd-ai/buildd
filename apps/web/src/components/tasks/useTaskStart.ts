@@ -15,7 +15,7 @@
  * never "no runner has responded" while an idle runner defers it.
  *
  * A `coordination_hold` refusal offers Force start; confirming it sends the
- * refusal's reasons digest (`forceCoordination`), and the server records an
+ * refusal's reasons digest and the ticked kinds (`force`), and the server records an
  * intent the next runner claim honours. A 409 re-renders the fresh reasons.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -141,7 +141,7 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
   }, [stopTracking, workspaceId, taskId, loadFleet]);
 
   const start = useCallback(async (asked: StartRequest = {}) => {
-    setPending(asked.forceOverride || asked.forceCoordination ? 'force' : asked.capExempt ? 'exempt' : 'start');
+    setPending(asked.forceOverride || asked.force ? 'force' : asked.capExempt ? 'exempt' : 'start');
     setError(null);
     setWaiting(null);
     setStatus('starting');

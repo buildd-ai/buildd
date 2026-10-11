@@ -4,6 +4,9 @@
  * WaitingLine: why a pending task is not running, in one compact line —
  * `{chip} Waiting on {blocker} · because {reason} · starts when {release}` —
  * with a "Why" drilldown for every reason, its overlap areas and the paths.
+ * Several coordination holds collapse into one headline that keeps declared
+ * dependencies apart from incidental file-overlap ordering ("Waiting on
+ * migration slot · 5 tasks also editing core/db"); paths are drilldown only.
  * Renders the canonical `WaitingReason[]` (packages/core/waiting-reason.ts);
  * no surface builds its own reason copy. Mounted by `TaskActionZone`, so the
  * task sheet, the full task page and the mission drawer all show it.
@@ -11,7 +14,7 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import Disclosure from '@/components/ui/Disclosure';
-import { gateName, orderWaitingReasons, waitingChip, type WaitingChip, type WaitingReason } from '@buildd/core/waiting-reason';
+import { gateName, orderWaitingReasons, waitingChip, waitingSummary, type WaitingChip, type WaitingReason } from '@buildd/core/waiting-reason';
 
 const CHIP_LABEL: Record<WaitingChip, string> = {
   ready: 'Ready', held: 'Held', blocked: 'Blocked', cant_run: "Can't run", scheduled: 'Scheduled', unknown: 'Unknown',
@@ -40,20 +43,25 @@ export default function WaitingLine({ reasons, children }: { reasons: WaitingRea
   const head = ordered[0];
   if (!head) return null;
   const chip = waitingChip(ordered);
+  const summary = waitingSummary(ordered);
+  // One reason (or one holder) names its blocker as a link; several are summarised.
+  const summarised = summary.coordination > 1 || summary.declared > 1 || (summary.declared > 0 && head.kind !== 'dep_declared');
   const rest = ordered.slice(1);
 
   return (
     <div data-testid="task-waiting-line" data-kind={head.kind} data-chip={chip} className="space-y-2 border border-border-default p-3">
       <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono text-meta">
         <span className={`border px-1.5 py-0.5 text-chip font-semibold uppercase tracking-[1.4px] ${CHIP_TONE[chip]}`}>{CHIP_LABEL[chip]}</span>
-        <span className="font-medium text-text-primary">Waiting on <BlockerLink r={head} /></span>
+        <span data-testid="task-waiting-headline" className="font-medium text-text-primary [overflow-wrap:anywhere]">
+          {summarised ? summary.headline : <>Waiting on <BlockerLink r={head} /></>}
+        </span>
       </p>
       <p className="font-mono text-eyebrow leading-relaxed text-text-secondary [overflow-wrap:anywhere]">
         because {head.because} · starts when {head.releasesWhen.text}
       </p>
-      {rest.length > 0 && (
+      {rest.length > 0 && !summarised && (
         <p className="font-mono text-eyebrow text-text-muted">
-          Also: {rest.map(r => gateName(r.kind).toLowerCase()).join(', ')}
+          Also: {[...new Set(rest.map(r => gateName(r.kind).toLowerCase()))].join(', ')}
         </p>
       )}
       <Disclosure summary="Why">

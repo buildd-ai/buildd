@@ -28,6 +28,7 @@ export type WaitingKind =
   | 'pr_overlap_ended'
   | 'lease_overlap'
   | 'lease_stale'
+  | 'soft_overlap'
   | 'scope_undeclared_mutex'
   | 'ordered_behind'
   | 'serialized_surface'
@@ -88,6 +89,12 @@ export interface WaitingOverlap {
   /** Drilldown only; capped by the producer. */
   paths?: string[];
   basis: OverlapBasis;
+  /**
+   * `classifyManifestOverlap` kind when known (`migration`, `same_file`,
+   * `prefix`, …). `migration` adds the §7.3 red line to a force confirmation:
+   * the edit-time anchor lease still serializes migration numbering.
+   */
+  overlapKind?: string;
 }
 
 export interface WaitingReason {
@@ -112,7 +119,15 @@ export interface WaitingReason {
  * The claim loop's deferral key a kind maps to. A force start can only lift a
  * kind that has one: that is the key the claim route checks it against.
  */
-export type ClaimLoopKey = 'path_overlap' | 'mission_concurrent' | 'mission_paced' | 'advisory_manifest' | 'ordered_behind';
+export type ClaimLoopKey = 'path_overlap' | 'soft_overlap' | 'mission_concurrent' | 'mission_paced' | 'advisory_manifest' | 'ordered_behind';
+
+/**
+ * A claim PREFILTER (SQL, before the loop) a force start lifts for this task:
+ * `inferred_deps` drops only the creation-time overlap edges the force names
+ * from the dependency gate (declared edges stay), `local_mission` hands a
+ * local mission's task to a runner.
+ */
+export type PrefilterLift = 'inferred_deps' | 'local_mission';
 
 interface KindSpec {
   class: WaitingClass;
@@ -124,6 +139,7 @@ interface KindSpec {
   owner: 'human' | 'agent' | 'system';
   force: Omit<ForceSpec, 'lifts'> | null;
   claimLoopKey?: ClaimLoopKey;
+  prefilterLift?: PrefilterLift;
 }
 
 const COORDINATION_RAILS: Rail[] = ['edit_time_leases', 'declared_dependencies', 'budgets_and_seats', 'runner_capability', 'task_hold'];
@@ -132,30 +148,34 @@ const memberForce = (rails: Rail[] = COORDINATION_RAILS): Omit<ForceSpec, 'lifts
   ({ scope: 'member', railsRemaining: rails, mechanism: 'start_context' });
 
 /**
- * Classification table (artifact §1.3). `force` is the Stage-2 contract.
+ * Classification table (artifact §1.3). `force` is the Stage-2 contract
+ * (docs/specs/force-start.md):
  *
- * `scope_undeclared_mutex` (the claim loop's `advisory_manifest`) is NOT
- * forceable here: an admin `claim_task force` does not lift it either, and its
- * relaxation is owned by the Jev HOLD/START work, which decides it with
- * evidence rather than a person's click. Flip `force` here only together
- * with that decision.
+ *  - `scope_undeclared_mutex` and `ordered_behind` are liftable by a HUMAN
+ *    force start only; the admin MCP `claim_task force` keeps not lifting the
+ *    mutex.
+ *  - `dep_declared` is never forceable: a person wrote that order.
+ *  - `dep_inferred` / `serialized_surface` are forceable for claim-time
+ *    ordering only; the edit-time anchor lease stays enforced, so migration
+ *    numbering is still serialized.
  */
 export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   start_deferred: { class: 'schedule', strength: 'hard', intent: 'intentional', gateName: 'Scheduled start', releasesWhen: { event: 'time', text: 'its start time passes' }, owner: 'system', force: { scope: 'member', railsRemaining: POLICY_RAILS, mechanism: 'clear_start_at' } },
   runner_preference: { class: 'schedule', strength: 'hard', intent: 'intentional', gateName: 'Runner preference', releasesWhen: { event: 'runner.online', text: 'the preferred runner comes online' }, owner: 'human', force: null },
   task_held: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Task hold', releasesWhen: { event: 'hold.released', text: 'someone releases the hold' }, owner: 'human', force: null },
   mission_held: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Mission hold', releasesWhen: { event: 'mission.armed', text: 'the mission is armed' }, owner: 'human', force: memberForce(POLICY_RAILS) },
-  mission_local: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Local-session mission', releasesWhen: { event: 'claimed', text: 'a local session claims it' }, owner: 'human', force: memberForce(POLICY_RAILS) },
-  dep_declared: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Declared dependency', releasesWhen: { event: 'task.completed+merged', text: 'its dependencies complete and merge' }, owner: 'agent', force: memberForce(['edit_time_leases', 'budgets_and_seats', 'runner_capability', 'task_hold']) },
-  dep_inferred: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Inferred file-overlap dependency', releasesWhen: { event: 'task.completed+merged', text: 'the overlapping task completes and merges' }, owner: 'system', force: memberForce() },
+  mission_local: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Local-session mission', releasesWhen: { event: 'claimed', text: 'a local session claims it' }, owner: 'human', force: memberForce(POLICY_RAILS), prefilterLift: 'local_mission' },
+  dep_declared: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Declared dependency', releasesWhen: { event: 'task.completed+merged', text: 'its dependencies complete and merge' }, owner: 'agent', force: null },
+  dep_inferred: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'File-overlap ordering', releasesWhen: { event: 'task.completed+merged', text: 'the overlapping task completes and merges' }, owner: 'system', force: memberForce(), prefilterLift: 'inferred_deps' },
   subject_dead: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Closed subject PR', releasesWhen: { event: 'never', text: 'never: its subject PR is gone' }, owner: 'human', force: memberForce(POLICY_RAILS) },
   pr_overlap_live: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Open-PR file overlap', releasesWhen: { event: 'path_claim.released', text: 'that PR merges, closes or narrows its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'path_overlap' },
   pr_overlap_ended: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Open-PR file overlap', releasesWhen: { event: 'pr.closed', text: 'that PR merges or closes' }, owner: 'system', force: memberForce(), claimLoopKey: 'path_overlap' },
   lease_overlap: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Files claimed by a running task', releasesWhen: { event: 'path_claim.released', text: 'that task releases or narrows its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'path_overlap' },
   lease_stale: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'Stale file claim', releasesWhen: { event: 'sweep.hourly', text: 'the hourly sweep releases the stale claim' }, owner: 'system', force: null },
-  scope_undeclared_mutex: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'One scope-undeclared task per mission', releasesWhen: { event: 'task.finished', text: 'the other scope-undeclared task finishes or declares its files' }, owner: 'agent', force: null, claimLoopKey: 'advisory_manifest' },
+  soft_overlap: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'Scope overlap with an in-flight task', releasesWhen: { event: 'task.finished', text: 'the overlapping task finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'soft_overlap' },
+  scope_undeclared_mutex: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'One scope-undeclared task per mission', releasesWhen: { event: 'task.finished', text: 'the other scope-undeclared task finishes or declares its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'advisory_manifest' },
   ordered_behind: { class: 'coordination', strength: 'soft', intent: 'intentional', gateName: 'Planner order', releasesWhen: { event: 'task.claimed', text: 'the task ahead of it is claimed or finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'ordered_behind' },
-  serialized_surface: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serialized surface', releasesWhen: { event: 'path_claim.released', text: 'the surface lease is released' }, owner: 'agent', force: null },
+  serialized_surface: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serialized surface', releasesWhen: { event: 'task.finished', text: 'the task holding that surface finishes' }, owner: 'agent', force: memberForce(), claimLoopKey: 'soft_overlap' },
   mission_concurrent: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Mission concurrency limit', releasesWhen: { event: 'slot.freed', text: 'another task in the mission finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'mission_concurrent' },
   mission_paced: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Mission pacing', releasesWhen: { event: 'time', text: 'the mission\'s pacing interval passes' }, owner: 'system', force: memberForce(), claimLoopKey: 'mission_paced' },
   workspace_cap: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Workspace concurrency limit', releasesWhen: { event: 'slot.freed', text: 'a workspace task finishes' }, owner: 'system', force: { scope: 'member', railsRemaining: COORDINATION_RAILS, mechanism: 'cap_exempt' } },
@@ -180,12 +200,14 @@ export function makeWaitingReason(kind: WaitingKind, fields: {
   blocker?: WaitingBlocker;
   overlap?: WaitingOverlap;
   provenance: WaitingReason['provenance'];
+  /** A producer that knows this instance only orders the claim (e.g. an undecided soft overlap). */
+  strength?: 'hard' | 'soft';
 }): WaitingReason {
   const spec = WAITING_KIND_SPEC[kind];
   return {
     kind,
     class: spec.class,
-    strength: spec.strength,
+    strength: fields.strength ?? spec.strength,
     intent: spec.intent,
     ...(fields.blocker ? { blocker: fields.blocker } : {}),
     ...(fields.overlap ? { overlap: fields.overlap } : {}),
@@ -220,7 +242,13 @@ export function blockingReasons(reasons: readonly WaitingReason[]): WaitingReaso
  */
 export function canForceStart(reasons: readonly WaitingReason[]): boolean {
   const hard = blockingReasons(reasons);
-  return hard.length > 0 && hard.every(r => r.action.force?.mechanism === 'start_context' && !!WAITING_KIND_SPEC[r.kind].claimLoopKey);
+  return hard.length > 0 && hard.every(r => isStartForceable(r.kind));
+}
+
+/** A kind the dashboard Force start (`POST /start {force}`) can lift: one claim-loop key or one prefilter lift. */
+export function isStartForceable(kind: WaitingKind): boolean {
+  const spec = WAITING_KIND_SPEC[kind];
+  return spec?.force?.mechanism === 'start_context' && (!!spec.claimLoopKey || !!spec.prefilterLift);
 }
 
 /** The claim-loop keys a force start over `kinds` lifts. */
@@ -229,6 +257,16 @@ export function claimLoopKeysFor(kinds: readonly WaitingKind[]): ClaimLoopKey[] 
   for (const k of kinds) {
     const spec = WAITING_KIND_SPEC[k];
     if (spec?.force && spec.force.mechanism === 'start_context' && spec.claimLoopKey) out.add(spec.claimLoopKey);
+  }
+  return [...out];
+}
+
+/** The claim prefilters a force start over `kinds` lifts. */
+export function prefilterLiftsFor(kinds: readonly WaitingKind[]): PrefilterLift[] {
+  const out = new Set<PrefilterLift>();
+  for (const k of kinds) {
+    const lift = WAITING_KIND_SPEC[k]?.prefilterLift;
+    if (lift && WAITING_KIND_SPEC[k].force?.mechanism === 'start_context') out.add(lift);
   }
   return [...out];
 }
@@ -277,26 +315,115 @@ export function gateName(kind: WaitingKind): string {
   return WAITING_KIND_SPEC[kind].gateName;
 }
 
+/** One line of the §7.3 checklist: the gate a force skips and the blocker it names. */
+export interface ForceChecklistItem {
+  kind: WaitingKind;
+  gate: string;
+  /** "“claim waiter fix”: both edit 3 files in web, runner". */
+  sentence: string;
+}
+
+/** The §7.3 confirmation, computed once so every surface renders the same words. */
+export interface ForceDialog {
+  checklist: ForceChecklistItem[];
+  stillEnforced: string[];
+  /** "{areas} overlap · {basis}", or null when no reason carries an overlap. */
+  risk: string | null;
+  /** Red lines: what the force can NOT get past (migration numbering). */
+  redLines: string[];
+}
+
+const BASIS_TEXT: Record<OverlapBasis, string> = {
+  declared: 'declared files', predicted: 'predicted files', observed: 'files it touched', pr_scope: 'the open PR\'s files', lease: 'files being edited now',
+};
+
+/** Exactly what a Force start over `reasons` skips and keeps (artifact §7.3). */
+export function forceDialog(reasons: readonly WaitingReason[]): ForceDialog {
+  const forceable = reasons.filter(r => isStartForceable(r.kind));
+  const checklist = forceable.map(r => ({
+    kind: r.kind,
+    gate: gateName(r.kind),
+    sentence: `${r.blocker ? `${r.blocker.label}: ` : ''}${r.because}`,
+  }));
+  const overlapped = forceable.filter(r => r.overlap && r.overlap.pathCount > 0);
+  const fileCount = overlapped.reduce((n, r) => n + (r.overlap?.pathCount ?? 0), 0);
+  const areas = [...new Set(overlapped.flatMap(r => r.overlap!.areas.map(a => a.area)))];
+  const rails = railsRemainingFor(forceable);
+  const stillEnforced = rails.map(rail => rail === 'edit_time_leases' && fileCount > 0
+    ? `Files another agent is editing stay locked: this agent waits or is refused on ${fileCount} file${fileCount === 1 ? '' : 's'} in ${areas.slice(0, 3).join(', ')} until they are released.`
+    : RAIL_TEXT[rail]);
+  const bases = [...new Set(overlapped.map(r => BASIS_TEXT[r.overlap!.basis]))];
+  const risk = overlapped.length > 0 ? `${areas.slice(0, 3).join(', ')} overlap · ${bases.join(', ')}` : null;
+  const migrationHolders = [...new Set(forceable
+    .filter(r => r.overlap?.overlapKind === 'migration')
+    .map(r => r.blocker?.label ?? 'the other task'))];
+  const redLines = migrationHolders.length > 0
+    ? [`Migration numbering stays serialized; this agent can't take the next index until ${migrationHolders.slice(0, 2).join(', ')}${migrationHolders.length > 2 ? ` +${migrationHolders.length - 2}` : ''} releases it.`]
+    : [];
+  return { checklist, stillEnforced, risk, redLines };
+}
+
+/** Coordination-only kinds: incidental serialization, never an order a person declared. */
+const COORDINATION_ONLY: ReadonlySet<WaitingKind> = new Set<WaitingKind>(['dep_inferred', 'serialized_surface', 'soft_overlap', 'pr_overlap_live', 'pr_overlap_ended', 'lease_overlap']);
+
+/**
+ * The compact headline over every reason (artifact §2/§3): declared
+ * dependencies and coordination-only holds are counted apart, so five
+ * migration-overlap edges read "Waiting on migration slot · 5 tasks also
+ * editing core/db" — never "waiting on 5 dependencies".
+ */
+export function waitingSummary(reasons: readonly WaitingReason[]): { headline: string; declared: number; coordination: number } {
+  const hard = orderWaitingReasons(blockingReasons(reasons));
+  const declared = hard.filter(r => r.kind === 'dep_declared').length;
+  const coord = hard.filter(r => COORDINATION_ONLY.has(r.kind));
+  const head = hard[0] ?? orderWaitingReasons(reasons)[0];
+  if (!head) return { headline: 'Ready', declared: 0, coordination: 0 };
+  let headline: string;
+  if (declared > 0 && head.kind === 'dep_declared') {
+    headline = `Waiting on ${declared} declared ${declared === 1 ? 'dependency' : 'dependencies'}`;
+  } else if (coord.length > 1 || (coord.length === 1 && coord[0] === head && head.kind !== 'pr_overlap_live' && head.kind !== 'pr_overlap_ended')) {
+    const holders = new Set(coord.map(r => r.blocker?.id ?? r.kind)).size;
+    const migration = coord.some(r => r.overlap?.overlapKind === 'migration');
+    const byArea = new Map<string, number>();
+    for (const r of coord) for (const a of r.overlap?.areas ?? []) byArea.set(a.area, (byArea.get(a.area) ?? 0) + a.count);
+    const area = [...byArea].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))[0]?.[0];
+    headline = `Waiting on ${migration ? 'migration slot' : 'file overlap'} · ${holders} ${holders === 1 ? 'task' : 'tasks'} also editing ${area ?? 'the same files'}`;
+  } else {
+    headline = waitingHeadline(head);
+  }
+  if (declared > 0 && head.kind !== 'dep_declared') headline += ` · ${declared} declared ${declared === 1 ? 'dependency' : 'dependencies'}`;
+  return { headline, declared, coordination: coord.length };
+}
+
 /**
  * The 422 body for a start a coordination gate holds: the canonical reasons,
  * their digest (echoed back to confirm a force), and — when every one is
  * forceable — exactly which gates a force lifts and which rails remain.
  */
 export function coordinationHoldBody(blocking: WaitingReason[]) {
-  const head = blocking[0];
-  const canForce = canForceStart(blocking);
-  const notForceable = blocking.filter(r => !r.action.force);
+  const ordered = orderWaitingReasons(blocking);
+  const head = ordered[0];
+  const canForce = canForceStart(ordered);
+  const notForceable = ordered.filter(r => !isStartForceable(r.kind));
+  const dialog = canForce ? forceDialog(ordered) : null;
   return {
-    error: `${waitingHeadline(head)} because ${head.because}. Starts when ${head.releasesWhen.text}.`,
+    error: `${waitingSummary(ordered).headline} because ${head.because}. Starts when ${head.releasesWhen.text}.`,
     gateReason: 'coordination_hold',
     blockClass: 'policy' as const,
-    waitingReasons: blocking,
-    reasonsDigest: waitingReasonsDigest(blocking),
+    waitingReasons: ordered,
+    reasonsDigest: waitingReasonsDigest(ordered),
     canForce,
-    force: canForce
-      ? { gates: [...new Set(blocking.map(r => gateName(r.kind)))], railsRemaining: railsRemainingFor(blocking).map(r => RAIL_TEXT[r]) }
+    force: dialog
+      ? {
+          kinds: [...new Set(dialog.checklist.map(c => c.kind))],
+          gates: [...new Set(dialog.checklist.map(c => c.gate))],
+          railsRemaining: dialog.stillEnforced,
+          checklist: dialog.checklist,
+          risk: dialog.risk,
+          redLines: dialog.redLines,
+        }
       : null,
-    ...(notForceable.length > 0 ? { notForceable: notForceable.map(r => gateName(r.kind)) } : {}),
+    ...(notForceable.length > 0 ? { notForceable: [...new Set(notForceable.map(r => gateName(r.kind)))] } : {}),
   };
 }
 
@@ -342,8 +469,16 @@ export interface ForceStartIntent {
   /** Claim-loop keys these kinds lift (derived, stored so the claim route reads one field). */
   loopKeys: ClaimLoopKey[];
   reasonsDigest: string;
+  /** Claim prefilters this force lifts (`inferred_deps`, `local_mission`). */
+  prefilterLifts?: PrefilterLift[];
+  /**
+   * The inferred dependsOn edges the dependency gate lets through while this
+   * intent is unexpired (claim/deps-gate.ts). Never a declared edge: the gate
+   * also requires each id to be in `pathDeclaration.inferredDependsOn`.
+   */
+  liftDependsOn?: string[];
   /** The blockers at confirmation: the overlap basis evidence for outcome labelling. */
-  blockers: Array<{ kind: WaitingKind; type?: BlockerType; id?: string; label?: string; live?: boolean; pathCount?: number; areas?: AreaCount[] }>;
+  blockers: Array<{ kind: WaitingKind; type?: BlockerType; id?: string; label?: string; live?: boolean; pathCount?: number; areas?: AreaCount[]; basis?: OverlapBasis; overlapKind?: string; sharedPaths?: string[] }>;
   note?: string | null;
 }
 

@@ -241,3 +241,75 @@ function labelOne(d: DecisionForJoin, input: OutcomeJoinInput): DecisionOutcomeL
 
   return { decisionId: d.id, task: { status: 'observed', value: task.status }, touched, conflictCreated, collision, mergeBaseRefusal, risk };
 }
+
+/**
+ * Who started a task past a hold (artifact `coordination-visibility-map` §8.1).
+ * Every graded start shares one label vocabulary; only the actor differs.
+ */
+export type StartActor = 'jev_start' | 'human_force';
+
+/** The decision id a person's dashboard Force start records (apps/web/src/lib/force-start.ts). */
+export const HUMAN_FORCE_START_DECISION_ID = 'buildd.human_force_start';
+
+/** The headline outcome of one start: the first unsafe dimension observed, else clean. */
+export type StartOutcome = 'clean' | 'edit_collision' | 'merge_conflict' | 'base_refusal' | 'censored' | 'missing';
+
+type Dim = { status: 'observed'; value: boolean } | { status: 'censored' | 'missing' | 'not_applicable' };
+
+export interface GradedStart {
+  decisionId: string;
+  actor: StartActor;
+  outcome: StartOutcome;
+  dims: {
+    landed: Dim;
+    editCollision: Dim;
+    mergeConflict: Dim;
+    baseRefusal: Dim;
+    /** A conflict-retry task was filed for the PR: the repair the conflict cost. */
+    repairTask: Dim;
+    /** No revert detection exists yet (§8.1): always missing, never guessed. */
+    rollback: Dim;
+  };
+  /** Waiting the start skipped (request → claim for a force), when known. */
+  waitAvoidedMs: number | null;
+  /**
+   * Whether the grade counts as a policy result. A person's force is
+   * observational evidence (eval set, disagreement mining): it is graded with
+   * the same labels, never scored as a model error or success.
+   */
+  scored: boolean;
+}
+
+/** The actor of an orchestration_decisions row that STARTed past a HOLD, else null. */
+export function startActorOf(row: { decisionId: string; experimentArm?: string | null; effective?: string | null; applied?: boolean | null }): StartActor | null {
+  if (row.decisionId === HUMAN_FORCE_START_DECISION_ID || row.experimentArm === 'human') return 'human_force';
+  if (row.effective === 'START' && row.applied) return 'jev_start';
+  return null;
+}
+
+const dimOf = (p: { status: string; value?: unknown }): Dim =>
+  p.status === 'observed' ? { status: 'observed', value: p.value === true } : { status: p.status as 'censored' | 'missing' | 'not_applicable' };
+
+/** One start graded in the shared §8.1 vocabulary. */
+export function gradeStart(labels: DecisionOutcomeLabels, actor: StartActor, opts: { waitAvoidedMs?: number | null } = {}): GradedStart {
+  const editCollision = dimOf(labels.collision);
+  const mergeConflict = dimOf(labels.conflictCreated);
+  const baseRefusal = dimOf(labels.mergeBaseRefusal);
+  const landed: Dim = labels.touched.status === 'observed'
+    ? { status: 'observed', value: labels.touched.value.landed }
+    : { status: labels.touched.status };
+  let outcome: StartOutcome;
+  if (editCollision.status === 'observed' && editCollision.value) outcome = 'edit_collision';
+  else if (mergeConflict.status === 'observed' && mergeConflict.value) outcome = 'merge_conflict';
+  else if (baseRefusal.status === 'observed' && baseRefusal.value) outcome = 'base_refusal';
+  else if (labels.risk.status === 'observed') outcome = 'clean';
+  else outcome = labels.risk.status === 'censored' ? 'censored' : 'missing';
+  return {
+    decisionId: labels.decisionId,
+    actor,
+    outcome,
+    dims: { landed, editCollision, mergeConflict, baseRefusal, repairTask: mergeConflict, rollback: { status: 'missing' } },
+    waitAvoidedMs: opts.waitAvoidedMs ?? null,
+    scored: actor !== 'human_force',
+  };
+}

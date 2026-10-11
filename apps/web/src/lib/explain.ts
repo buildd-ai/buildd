@@ -140,6 +140,18 @@ async function loadCoordination(
   return buildCoordinationHolds({ task, holders, gateDetails });
 }
 
+/**
+ * The same holds `explain` reports for a pending task, for the start probe
+ * (lib/coordination-probe.ts): declared vs inferred dependency edges, soft
+ * overlaps with their newest verdict, and the last path-overlap holder.
+ */
+export async function loadTaskCoordinationHolds(
+  task: { id: string; status: string; dependsOn?: string[] | null; pathManifest?: string[] | null; pathDeclaration?: unknown },
+): Promise<CoordinationHold[]> {
+  if (task.status !== 'pending') return [];
+  return loadCoordination(task, await loadGateRows(task.id));
+}
+
 /** Cap on how many gated subjects a workspace answer returns. */
 const WORKSPACE_SUBJECT_LIMIT = 12;
 /** Cap on base-side merges examined for a conflicted PR. */

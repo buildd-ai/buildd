@@ -53,6 +53,7 @@ import {
   taskActionSet,
 } from '@/lib/task-actions';
 import type { WaitingFor } from '@buildd/shared';
+import type { WaitingKind } from '@buildd/core/waiting-reason';
 
 /** Phases that mean the agent took the answer and moved on: the confirmation stands down. */
 const MOVED_ON: ReadonlySet<TaskPhase> = new Set<TaskPhase>(['running', 'completed', 'failed', 'plan_review']);
@@ -98,6 +99,8 @@ export interface TaskActionZoneProps {
   entitlementBlock?: EntitlementBlock | null;
   /** Why a queued task cannot be claimed: its backend has no key (task context `credentialBlock`). */
   credentialBlock?: CredentialBlock | null;
+  /** The task's title, named in the Force start confirmation. */
+  taskTitle?: string | null;
   onChanged?: () => void | Promise<void>;
 }
 
@@ -122,6 +125,7 @@ export default function TaskActionZone({
   hideQueuedNote = false,
   entitlementBlock = null,
   credentialBlock = null,
+  taskTitle = null,
   onChanged,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
@@ -186,9 +190,11 @@ export default function TaskActionZone({
     setRetrying(null);
   }, [taskId, otherBackend, onChanged]);
 
-  // What holds a queued task, from the same probe /start refuses on.
+  // What holds a queued or blocked task, from the same probe /start refuses
+  // on: a local mission's hand-over, coordination holds, and which
+  // dependencies are declared vs incidental file-overlap ordering.
   const [waiting, setWaiting] = useState<TaskWaiting | null>(null);
-  const probeWaiting = has('run_now') && phase === 'pending' && missionExecutor !== 'local';
+  const probeWaiting = (has('run_now') || has('blocked')) && phase === 'pending';
   useEffect(() => {
     if (!probeWaiting || start.status !== 'idle') return;
     let cancelled = false;
@@ -312,8 +318,23 @@ export default function TaskActionZone({
         </div>
       )}
 
-      {/* Blocked — dep gate not satisfied */}
-      {has('blocked') && (
+      {/* Blocked — what holds it: declared dependencies vs coordination-only ordering */}
+      {has('blocked') && start.status === 'idle' && held?.waitingReasons && (
+        <div data-testid="task-blocked-waiting">
+          <WaitingLine reasons={held.waitingReasons}>
+            {waiting?.forceStart ? (
+              <p data-testid="task-force-pending" className="font-mono text-eyebrow text-text-secondary">
+                Force start requested. The next runner claim skips this wait.
+              </p>
+            ) : held.canForce && (
+              <button type="button" data-action="force_start_offer" onClick={() => start.present(held)} disabled={starting} className={QUIET_BTN}>
+                Force start…
+              </button>
+            )}
+          </WaitingLine>
+        </div>
+      )}
+      {has('blocked') && start.status === 'idle' && !held?.waitingReasons && (
         <div className="border border-status-warning p-4">
           <p className="font-mono text-[12px] font-medium text-status-warning">
             Blocked · waiting on {blockedByCount} {blockedByCount === 1 ? 'dependency' : 'dependencies'}
@@ -415,7 +436,8 @@ export default function TaskActionZone({
         <CoordinationRefusal
           refusal={refusal}
           pending={start.pending}
-          onForce={() => refusal.reasonsDigest && start.start({ forceCoordination: { reasonsDigest: refusal.reasonsDigest }, targetLocalUiUrl: target || undefined })}
+          taskTitle={taskTitle}
+          onForce={(kinds) => refusal.reasonsDigest && start.start({ force: { kinds, reasonsDigest: refusal.reasonsDigest }, targetLocalUiUrl: target || undefined })}
           onCancel={start.dismiss}
         />
       )}
@@ -515,36 +537,73 @@ function RailsRemaining({ rails }: { rails: string[] }) {
 
 /**
  * A start a coordination gate holds: the canonical waiting line, then the
- * Force start confirmation — exactly which gate it skips, what stays
- * enforced, and that the override is recorded. A wait no force can lift
- * says so and offers nothing.
+ * Force start confirmation in the exact §7.3 shape (docs/specs/force-start.md):
+ * a pre-checked checklist naming each gate it skips, what stays enforced, the
+ * overlap risk, any red line (migration numbering), and that the override is
+ * recorded. One press lifts every ticked gate. A wait no force can lift says
+ * so and offers nothing.
  */
-export function CoordinationRefusal({ refusal, pending, onForce, onCancel }: {
+export function CoordinationRefusal({ refusal, pending, onForce, onCancel, taskTitle = null }: {
   refusal: GateRefusal;
   pending: string | null;
-  onForce: () => void;
+  onForce: (kinds: WaitingKind[]) => void;
   onCancel: () => void;
+  taskTitle?: string | null;
 }) {
   const busy = pending !== null;
+  const offer = refusal.force ?? null;
+  const items = offer?.checklist ?? [];
+  const [unticked, setUnticked] = useState<ReadonlySet<number>>(new Set());
+  const kinds = items.length > 0
+    ? [...new Set(items.filter((_, i) => !unticked.has(i)).map(c => c.kind))]
+    : (offer?.kinds ?? []);
   return (
     <div data-testid="task-start-refusal" data-gate="coordination_hold" className="space-y-3">
       {refusal.reasonsChanged && (
         <p role="status" className="font-mono text-eyebrow text-status-warning">What holds this task changed since you looked. Review it again.</p>
       )}
       {refusal.waitingReasons && <WaitingLine reasons={refusal.waitingReasons} />}
-      {canOfferForce(refusal) && refusal.force ? (
-        <div data-testid="task-force-confirm" className="space-y-2 border border-status-warning p-3">
-          <p className="font-mono text-meta font-medium text-text-primary">
-            Force start skips: {refusal.force.gates.join(', ')}
+      {canOfferForce(refusal) && offer ? (
+        <div data-testid="task-force-confirm" className="space-y-2 border border-status-warning p-3 font-mono text-eyebrow">
+          <p className="text-meta font-medium text-text-primary [overflow-wrap:anywhere]">
+            Force start{taskTitle ? ` “${taskTitle}”` : ''}?
           </p>
-          <RailsRemaining rails={refusal.force.railsRemaining} />
-          <p className="font-mono text-eyebrow text-text-muted">This start and how it lands are recorded and used to tune automatic holds.</p>
+          {items.length > 1 ? (
+            <fieldset className="space-y-1">
+              <legend className="text-text-secondary">Skips:</legend>
+              {items.map((c, i) => (
+                <label key={`${c.kind}-${i}`} data-testid="task-force-skip" data-kind={c.kind} className="flex min-h-11 items-start gap-2 text-text-secondary md:min-h-0">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={!unticked.has(i)}
+                    onChange={() => setUnticked(prev => {
+                      const next = new Set(prev);
+                      if (next.has(i)) next.delete(i); else next.add(i);
+                      return next;
+                    })}
+                  />
+                  <span className="[overflow-wrap:anywhere]"><span className="text-text-primary">{c.gate}</span>: {c.sentence}.</span>
+                </label>
+              ))}
+            </fieldset>
+          ) : (
+            <p data-testid="task-force-skip" data-kind={items[0]?.kind} className="text-text-secondary [overflow-wrap:anywhere]">
+              <span className="text-text-primary">Skips:</span> {items[0] ? `${items[0].gate}: ${items[0].sentence}.` : offer.gates.join(', ')}
+            </p>
+          )}
+          <RailsRemaining rails={offer.railsRemaining} />
+          {offer.risk && <p className="text-text-secondary"><span className="text-text-primary">Risk:</span> {offer.risk}.</p>}
+          {(offer.redLines ?? []).map(line => (
+            <p key={line} data-testid="task-force-red-line" className="text-status-error [overflow-wrap:anywhere]">{line}</p>
+          ))}
+          <p className="text-text-muted">This start and how it lands (merged cleanly, conflicted, needed repair) are recorded and used to tune automatic holds.</p>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               data-action="force_start"
-              onClick={onForce}
-              disabled={busy || !refusal.reasonsDigest}
+              onClick={() => onForce(kinds)}
+              disabled={busy || !refusal.reasonsDigest || kinds.length === 0}
               className="min-h-11 border-2 border-status-warning bg-status-warning px-3 font-mono text-meta font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
               {pending === 'force' ? 'Force starting…' : 'Force start'}

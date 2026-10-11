@@ -12,7 +12,7 @@
  */
 import { deriveTaskPhase, type TaskPhase } from './task-presentation';
 import type { TaskFailureKind } from './task-failure-kind';
-import type { WaitingReason } from '@buildd/core/waiting-reason';
+import type { ForceChecklistItem, WaitingKind, WaitingReason } from '@buildd/core/waiting-reason';
 
 export interface GateRefusal {
   gateReason: string;
@@ -37,14 +37,24 @@ export interface GateRefusal {
   entitlement?: unknown;
   /** coordination_hold: what holds it, in order (reasons[0] is the headline). */
   waitingReasons?: WaitingReason[];
-  /** coordination_hold: echo back as `forceCoordination.reasonsDigest` to confirm a force. */
+  /** coordination_hold: echo back as `force.reasonsDigest` to confirm a force. */
   reasonsDigest?: string;
   /** coordination_hold: exactly what a force skips and what stays enforced; null = not forceable. */
-  force?: { gates: string[]; railsRemaining: string[] } | null;
+  force?: ForceOffer | null;
   /** coordination_hold: the gates no force lifts. */
   notForceable?: string[];
   /** 409: the reasons changed between the refusal and the confirmation. */
   reasonsChanged?: boolean;
+}
+
+/** The §7.3 confirmation a refusal carries (`coordinationHoldBody` in @buildd/core/waiting-reason). */
+export interface ForceOffer {
+  kinds?: WaitingKind[];
+  gates: string[];
+  railsRemaining: string[];
+  checklist?: ForceChecklistItem[];
+  risk?: string | null;
+  redLines?: string[];
 }
 
 /** What `/start` accepted a Force start past (200 body `forced`). */
@@ -162,8 +172,11 @@ export function claimTaskCommand(taskId: string): string {
 export interface StartRequest {
   forceOverride?: boolean;
   capExempt?: boolean;
-  /** Force start past a `coordination_hold`, confirming the reasons the refusal showed. */
-  forceCoordination?: { reasonsDigest: string };
+  /**
+   * Force start past a `coordination_hold` (docs/specs/force-start.md): the
+   * ticked kinds and the digest of the reasons the refusal showed.
+   */
+  force?: { kinds: WaitingKind[]; reasonsDigest: string; note?: string };
   /** Hand the task to one runner's local UI instead of any runner. */
   targetLocalUiUrl?: string;
 }
@@ -182,7 +195,7 @@ export async function requestTaskStart(taskId: string, req: StartRequest = {}): 
         ...(req.targetLocalUiUrl ? { targetLocalUiUrl: req.targetLocalUiUrl } : {}),
         ...(req.forceOverride ? { forceOverride: true } : {}),
         ...(req.capExempt ? { capExempt: true } : {}),
-        ...(req.forceCoordination ? { forceCoordination: req.forceCoordination } : {}),
+        ...(req.force ? { force: req.force } : {}),
       }),
     });
     const body = await res.json().catch(() => ({})) as Record<string, unknown>;
@@ -248,7 +261,7 @@ export interface TaskWaiting {
   waitingReasons: WaitingReason[];
   reasonsDigest?: string;
   canForce?: boolean;
-  force?: { gates: string[]; railsRemaining: string[] } | null;
+  force?: ForceOffer | null;
   notForceable?: string[];
   /** An unexpired Force start awaiting its runner claim. */
   forceStart?: { kinds: string[]; expiresAt: string };
