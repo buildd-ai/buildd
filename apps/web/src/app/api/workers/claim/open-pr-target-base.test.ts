@@ -59,6 +59,22 @@ describe('partitionOpenPrsByLandingBase', () => {
     expect(elsewhere).toEqual([]);
   });
 
+  // The live starvation shape: a conflict repair of an open dev PR, deferred
+  // on every poll for hours behind a dev→mission refresh PR, because both
+  // manifests name schema.ts. The repair exists to land a PR that is already
+  // open on dev. Landing the refresh changes nothing on dev, so holding the
+  // repair orders nothing. It only leaves the dev PR conflicted.
+  it('a repair of an open PR is not held by a PR into another base, migrations or not', () => {
+    const refresh = pr(13, MISSION_BRANCH, ['packages/core/drizzle/0290_x.sql', 'packages/core/db/schema.ts', 'apps/web/src/lib/a.ts']);
+    const manifest = ['packages/core/db/schema.ts', 'apps/web/src/lib/a.ts'];
+    const { sameBase, elsewhere } = partitionOpenPrsByLandingBase({ base: 'dev', trunk: 'dev', manifest, repairsOpenPr: true }, [refresh]);
+    expect(elsewhere).toEqual([refresh]);
+    expect(findBlockingPr(manifest, sameBase)).toBeNull();
+    // A PR into the repair's own base still holds it.
+    const devPr = pr(14, 'dev', ['packages/core/db/schema.ts']);
+    expect(partitionOpenPrsByLandingBase({ base: 'dev', trunk: 'dev', manifest, repairsOpenPr: true }, [devPr]).sameBase).toEqual([devPr]);
+  });
+
   it('an unknown base on either side keeps the PR blocking (fail-safe)', () => {
     const noBase = pr(13, null, ['a.ts']);
     expect(partitionOpenPrsByLandingBase({ base: 'dev', trunk: 'dev', manifest: ['a.ts'] }, [noBase]).sameBase).toEqual([noBase]);

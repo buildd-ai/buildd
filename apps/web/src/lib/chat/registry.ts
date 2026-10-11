@@ -308,7 +308,7 @@ export type ChatToolName = keyof typeof CHAT_TOOL_SPECS | keyof typeof CHAT_NATI
 
 export const ALL_CHAT_TOOL_SPECS: Record<string, ChatToolSpec> = { ...CHAT_TOOL_SPECS, ...CHAT_NATIVE_TOOL_SPECS };
 
-export type NotInChatReason = 'secret' | 'worker-only' | 'deprecated' | 'connection-only';
+export type NotInChatReason = 'secret' | 'worker-only' | 'deprecated' | 'connection-only' | 'not-yet';
 
 /** MCP actions chat never offers, and why. */
 export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string; deepLink?: string }> = {
@@ -335,6 +335,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   record_pr_supersession: { reason: 'worker-only', note: 'Recorded by the worker that superseded a PR.' },
   post_note: { reason: 'worker-only', note: 'Posts to the calling worker\'s task feed.' },
   suggest_schedule_update: { reason: 'worker-only', note: 'A scheduled worker suggests changes to its own schedule.' },
+  update_incident: { reason: 'not-yet', note: 'Acknowledging or resolving a sentinel incident is an MCP/API action for now; chat has no incident target or approval card.' },
   list_workspaces: { reason: 'connection-only', note: 'Discovery for an MCP connection that reaches several workspaces; a chat conversation is already bound to its team and workspace.' },
 };
 

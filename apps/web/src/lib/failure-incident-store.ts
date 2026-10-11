@@ -28,6 +28,7 @@
 import type {
   FailureIncident,
   FailureIncidentAffectedRefs,
+  FailureIncidentRule,
   FailureIncidentSeverity,
 } from '@buildd/shared';
 import {
@@ -50,6 +51,8 @@ export interface IncidentStorePort {
   insert(row: NewStoredIncident): Promise<StoredIncident | null>;
   /** Write `next` only if the row is still at `expectedVersion`; bumps version. Null when it moved. */
   compareAndSwap(id: string, expectedVersion: number, next: NewStoredIncident): Promise<StoredIncident | null>;
+  /** Open and acknowledged incidents of one rule in a workspace. Absent: nothing is reconciled. */
+  listUnresolved?(workspaceId: string, rule: FailureIncidentRule): Promise<StoredIncident[]>;
 }
 
 export type UpsertOutcome = 'opened' | 'updated' | 'reopened' | 'unchanged';
@@ -335,7 +338,7 @@ const date = (s: string | null): Date | null => (s ? new Date(s) : null);
 export async function createDbIncidentPort(): Promise<IncidentStorePort> {
   const { db } = await import('@buildd/core/db');
   const { failureIncidents } = await import('@buildd/core/db/schema');
-  const { and, eq, sql } = await import('drizzle-orm');
+  const { and, eq, ne, sql } = await import('drizzle-orm');
   type Row = typeof failureIncidents.$inferSelect;
   type Insert = typeof failureIncidents.$inferInsert;
 
@@ -407,6 +410,14 @@ export async function createDbIncidentPort(): Promise<IncidentStorePort> {
         .onConflictDoNothing({ target: [failureIncidents.signature, failureIncidents.detectorVersion] })
         .returning();
       return r ? fromRow(r) : null;
+    },
+    async listUnresolved(workspaceId, rule) {
+      const rows = await db
+        .select()
+        .from(failureIncidents)
+        .where(and(eq(failureIncidents.workspaceId, workspaceId), eq(failureIncidents.rule, rule), ne(failureIncidents.status, 'resolved')))
+        .limit(200);
+      return rows.map(fromRow);
     },
     async compareAndSwap(id, expectedVersion, next) {
       const [r] = await db

@@ -265,20 +265,32 @@ export async function catchUpBase(p: {
 export async function carryForwardEvidence(
   view: KernelView, repoFullName: string, live: LivePr, exec: Exec, github?: GithubFactReader,
 ): Promise<'content_equivalent' | 'own_refresh' | null> {
+  return (await carryForwardReading(view, repoFullName, live, exec, github)).evidence;
+}
+
+/**
+ * `carryForwardEvidence` plus whether the compare ran and said the PR's diff changed
+ * (edc02148). Unread (no reader, a failed compare, no approval to carry) is not
+ * `diffChanged`: only a read that answered "different" is.
+ */
+export async function carryForwardReading(
+  view: KernelView, repoFullName: string, live: LivePr, exec: Exec, github?: GithubFactReader,
+): Promise<{ evidence: 'content_equivalent' | 'own_refresh' | null; diffChanged: boolean }> {
+  const none = { evidence: null, diffChanged: false } as const;
   const d = view.delivery;
-  if (!d || !d.currentHeadSha || live.headSha === d.currentHeadSha) return null;
+  if (!d || !d.currentHeadSha || live.headSha === d.currentHeadSha) return none;
   // BLOCKED_ON_TRUNK resuming APPROVED: its §6.4 row keeps the approval only on this evidence (47be5f6c).
   const blockedApproved = d.state === 'BLOCKED_ON_TRUNK' && d.resumeState === 'APPROVED';
-  if (d.state !== 'APPROVED' && d.state !== 'LANDING' && d.state !== 'REPAIRING' && !blockedApproved) return null;
+  if (d.state !== 'APPROVED' && d.state !== 'LANDING' && d.state !== 'REPAIRING' && !blockedApproved) return none;
   // A policy approval is not a review; the reducer keeps it on any head without evidence.
-  if (d.approvalBasis === 'policy') return null;
+  if (d.approvalBasis === 'policy') return none;
   const previous = d.currentHeadSha;
-  if (headCoverage(d as DeliverySnapshot, previous) === 'none') return null;
-  if (!live.baseRef || !github?.contentEquivalent) return null;
+  if (headCoverage(d as DeliverySnapshot, previous) === 'none') return none;
+  if (!live.baseRef || !github?.contentEquivalent) return none;
   const same = await github.contentEquivalent(repoFullName, live.baseRef, previous, live.headSha).catch(() => null);
-  if (same !== true) return null;
+  if (same !== true) return { evidence: null, diffChanged: same === false };
   const own = ((await exec(ownRefreshSql(d.id, previous))).rows ?? []).length > 0;
-  return own ? 'own_refresh' : 'content_equivalent';
+  return { evidence: own ? 'own_refresh' : 'content_equivalent', diffChanged: false };
 }
 
 /** A `refresh_branch` effect of this delivery, pinned to `headSha`, that updated (or is updating) the branch. */
@@ -361,11 +373,13 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
         attribution = { descendsFromBound: await github.contains(fact.repoFullName, bound.boundHeadSha, live.headSha) };
       }
       const d = view.delivery;
-      const carryForward = live ? await carryForwardEvidence(view, fact.repoFullName, live, exec, github) : null;
+      const reading = live ? await carryForwardReading(view, fact.repoFullName, live, exec, github) : { evidence: null, diffChanged: false };
+      const carryForward = reading.evidence;
+      const diffChanged = reading.diffChanged;
       return {
-        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(attribution ? { attribution } : {}) },
+        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(diffChanged ? { diffChanged } : {}), ...(attribution ? { attribution } : {}) },
         ref,
-        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, attribution: attribution ?? null },
+        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, ...(diffChanged ? { diffChanged } : {}), attribution: attribution ?? null },
         repoFullName: fact.repoFullName, prNumber: fact.prNumber,
         held: d ? { deliveryId: d.id, headSha: d.currentHeadSha, version: d.version, state: d.state, round: d.currentRound } : null,
       };

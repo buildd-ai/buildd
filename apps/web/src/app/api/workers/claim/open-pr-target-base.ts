@@ -19,7 +19,9 @@
  * are known landing bases (trunk or a mission integration branch) and differ;
  * an unknown base, or a stacked phase branch, keeps today's answer. Migrations
  * on both sides stay blocking: an index collision across bases still surfaces
- * when the mission merges back.
+ * when the mission merges back. A repair of an already-open PR is the
+ * exception: it was held for hours behind a trunk → mission refresh while the
+ * PR it existed to land stayed conflicted.
  *
  * Live path leases (layer 2) and the soft-overlap gate are untouched.
  */
@@ -52,13 +54,24 @@ const touchesMigration = (paths: string[] | null | undefined) => (paths ?? []).s
  * landing base, which do not block this candidate at layer 1.
  */
 export function partitionOpenPrsByLandingBase<T extends { prBaseRef: string | null; pathManifest: string[] | null }>(
-  candidate: { base: string | null; trunk: string | null; manifest: string[] | null },
+  candidate: {
+    base: string | null;
+    trunk: string | null;
+    manifest: string[] | null;
+    /**
+     * A conflict, CI or review repair of a PR that is already open. The
+     * migration carve-out does not hold it: the PR it repairs is already
+     * queued on its base, so waiting for another base's PR orders nothing and
+     * only leaves that PR conflicted.
+     */
+    repairsOpenPr?: boolean;
+  },
   prs: T[],
 ): { sameBase: T[]; elsewhere: T[] } {
   const sameBase: T[] = [];
   const elsewhere: T[] = [];
   const { base, trunk } = candidate;
-  const candidateMigrates = touchesMigration(candidate.manifest);
+  const candidateMigrates = !candidate.repairsOpenPr && touchesMigration(candidate.manifest);
   for (const pr of prs) {
     const prBase = pr.prBaseRef?.trim() || null;
     const landsElsewhere = !!base && !!trunk && !!prBase && prBase !== base
