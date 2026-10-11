@@ -304,12 +304,16 @@ jobs:
           # ref's (columns its migrations add, which its app reads); the scrub
           # overwrites every other text column the clone has. Schema names only.
           KNOWN=$(bun "$QA_HARNESS/scripts/qa/known-columns.ts" "$QA_HARNESS/packages/core/drizzle" packages/core/drizzle)
+          # Trunk's tables and columns with their types: any the clone lacks
+          # (trunk ahead of prod and the capture ref) are added empty for the
+          # scrub and dropped before it commits.
+          SHAPE=$(bun "$QA_HARNESS/scripts/qa/known-columns.ts" --shape "$QA_HARNESS/packages/core/drizzle")
           # The scrub is one transaction, so a failure leaves the clone untouched.
           # psql reports the line where the failing statement ends; name that
           # statement from our own file (never from row data) so the next
           # breakage is self-diagnosing. A plpgsql body opens with a bare
           # `BEGIN` at column 0 too, so only `BEGIN;` names the transaction.
-          if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -v known="$KNOWN" -f "$QA_HARNESS/scripts/qa/scrub-pii.sql" 2> scrub.err; then
+          if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -v known="$KNOWN" -v shape="$SHAPE" -f "$QA_HARNESS/scripts/qa/scrub-pii.sql" 2> scrub.err; then
             cat scrub.err >&2
             line=$(grep -oE 'scrub-pii\.sql:[0-9]+' scrub.err | head -1 | cut -d: -f2)
             stmt=""

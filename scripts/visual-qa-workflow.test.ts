@@ -227,6 +227,12 @@ describe('visual-qa.yml scrub + guard', () => {
     expect(run).toContain('-v known="$KNOWN"');
   });
 
+  test('scrub gets trunk\'s schema shape, so objects only trunk has are added empty instead of failing', () => {
+    const run: string = step(/^Scrub/).run;
+    expect(run).toContain('SHAPE=$(bun "$QA_HARNESS/scripts/qa/known-columns.ts" --shape "$QA_HARNESS/packages/core/drizzle")');
+    expect(run).toContain('-v shape="$SHAPE"');
+  });
+
   test('the guard runs right after the scrub, before the app boots or anything is captured', () => {
     const guard = step(/^Guard/);
     expect(guard.id).toBe('guard');

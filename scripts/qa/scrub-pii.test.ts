@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MISSION_PR_TASK_PREFIX } from '../../packages/core/mission-integration';
-import { knownColumns, latestSnapshotPath, textColumns } from './known-columns';
+import { knownColumns, latestSnapshotPath, schemaShape, textColumns } from './known-columns';
 
 /**
  * scrub-pii.sql rewrites a prod clone before Visual QA screenshots it, and the
@@ -451,6 +451,42 @@ describe('scrub-pii.sql covers the schema', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  // The other direction: trunk's scrub names a table or column trunk added but
+  // neither prod nor the capture ref has yet (an unreleased dev migration), so
+  // the clone lacks it and the statement would fail. The scrub adds each one
+  // empty first and drops it again before COMMIT. An empty object holds no data,
+  // and every statement still runs, so no real column goes unscrubbed.
+  test('objects trunk has and the clone lacks are added empty, scrubbed through, then dropped', () => {
+    const shim = /DO \$shim\$[\s\S]*?\$shim\$;/.exec(sqlSrc)?.[0] ?? '';
+    const unshim = /DO \$unshim\$[\s\S]*?\$unshim\$;/.exec(sqlSrc)?.[0] ?? '';
+    expect(shim).not.toBe('');
+    expect(unshim).not.toBe('');
+    expect(sqlSrc).toContain("SET qa.shape = :'shape';");
+    // Fails closed on an empty or junk shape.
+    expect(shim).toMatch(/RAISE EXCEPTION 'scrub: schema shape \(-v shape\) is empty or malformed'/);
+    expect(shim).toContain("to_regclass(format('public.%I', tbl))");
+    expect(shim).toContain('CREATE TABLE public.%I ()');
+    expect(shim).toContain('ADD COLUMN %I %s');
+    // A type the clone lacks (a trunk-only enum) falls back to text.
+    expect(shim).toMatch(/EXCEPTION WHEN OTHERS THEN\s+EXECUTE format\('ALTER TABLE public\.%I ADD COLUMN %I text'/);
+    expect(unshim).toContain('DROP COLUMN %I');
+    expect(unshim).toContain('DROP TABLE public.%I');
+    // Before every scrub statement, and dropped inside the same transaction.
+    const begin = sqlSrc.indexOf('\nBEGIN;');
+    const firstScrub = sqlSrc.search(/\n(UPDATE|DELETE FROM|TRUNCATE) /);
+    expect(sqlSrc.indexOf('DO $shim$')).toBeGreaterThan(begin);
+    expect(sqlSrc.indexOf('DO $shim$')).toBeLessThan(firstScrub);
+    expect(sqlSrc.indexOf('DO $unshim$')).toBeGreaterThan(sqlSrc.indexOf('DO $unknown$'));
+    expect(sqlSrc.indexOf('DO $unshim$')).toBeLessThan(sqlSrc.lastIndexOf('COMMIT;'));
+  });
+
+  test('the schema shape is every public table and column of a snapshot, with its type', () => {
+    const shape = schemaShape(JSON.parse(readFileSync(latestSnapshotPath(join(root, 'packages/core/drizzle')), 'utf8')));
+    expect(shape.tasks.title).toBe('text');
+    expect(shape.tasks.id).toBe('uuid');
+    expect(Object.keys(shape)).toContain('artifact_revisions');
   });
 
   test('the CI QA user is designated before the general user scrub', () => {

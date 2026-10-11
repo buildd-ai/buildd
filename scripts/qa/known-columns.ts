@@ -18,7 +18,7 @@ import { join } from 'path';
 const TEXT_LIKE = /^(text|varchar|character varying|char|character|json|jsonb)(\(\d+\))?(\[\])?$/;
 
 interface Snapshot {
-  tables: Record<string, { name: string; schema: string; columns: Record<string, { name: string; type: string }> }>;
+  tables: Record<string, { name: string; schema: string; columns: Record<string, { name: string; type: string; typeSchema?: string }> }>;
 }
 
 export function latestSnapshotPath(drizzleDir: string): string {
@@ -38,6 +38,23 @@ export function textColumns(snapshot: Snapshot): string[] {
   return out.sort();
 }
 
+/**
+ * Every public table → column → SQL type of a snapshot, for scrub-pii.sql's
+ * `-v shape` (`--shape <dir>`). The scrub runs from trunk, so it names trunk's
+ * objects; any the clone lacks (trunk ahead of prod and the capture ref) are
+ * added empty for the scrub and dropped again before it commits.
+ */
+export function schemaShape(snapshot: Snapshot): Record<string, Record<string, string>> {
+  const out: Record<string, Record<string, string>> = {};
+  for (const t of Object.values(snapshot.tables)) {
+    if ((t.schema || 'public') !== 'public') continue;
+    const cols: Record<string, string> = {};
+    for (const c of Object.values(t.columns)) cols[c.name] = c.typeSchema && c.typeSchema !== 'public' ? `${c.typeSchema}.${c.type}` : c.type;
+    out[t.name] = cols;
+  }
+  return out;
+}
+
 const OWN_DRIZZLE_DIR = join(__dirname, '..', '..', 'packages', 'core', 'drizzle');
 
 /**
@@ -54,7 +71,12 @@ export function knownColumns(...drizzleDirs: string[]): string[] {
   return [...out].sort();
 }
 
-if (import.meta.main) {
+if (import.meta.main && process.argv[2] === '--shape') {
+  const dir = process.argv[3] ?? OWN_DRIZZLE_DIR;
+  const shape = schemaShape(JSON.parse(readFileSync(latestSnapshotPath(dir), 'utf8')));
+  if (!shape.tasks) throw new Error('known-columns --shape: no tasks table in the latest snapshot');
+  process.stdout.write(JSON.stringify(shape));
+} else if (import.meta.main) {
   const cols = knownColumns(...process.argv.slice(2));
   if (cols.length === 0) throw new Error('known-columns: no text columns found in the latest snapshot');
   process.stdout.write(cols.join(','));
