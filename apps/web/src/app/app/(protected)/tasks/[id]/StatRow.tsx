@@ -26,8 +26,9 @@ function Tile({ testId, value, unit, label }: { testId?: string; value: React.Re
  * The numbers under the Now strip. No cost tile: on seat/OAuth auth the cost is
  * virtual, so the fourth tile is the PR (and its CI state) once one exists, or
  * how many files the agent has touched before that. A figure the run has not
- * measured yet (no start time, no turns, no tokens, no diff) has no tile: an
- * unmeasured 0 reads as a measurement.
+ * measured yet (no start time, no turns, no tokens, no files, no diff) has no
+ * tile, and with none measured there is no strip: an unmeasured 0 reads as a
+ * measurement.
  */
 export default function StatRow({
   elapsed,
@@ -66,7 +67,7 @@ export default function StatRow({
         }
         label={lifecycle?.label ?? 'PR open'}
       />
-    ) : (
+    ) : filesTouched > 0 && (
       <Tile key="files" testId="worker-stat-files" value={filesTouched} label={filesTouched === 1 ? 'File touched' : 'Files touched'} />
     ),
     hasDiff && (
@@ -83,6 +84,7 @@ export default function StatRow({
       />
     ),
   ].filter(Boolean);
+  if (tiles.length === 0) return null;
   return (
     <div data-testid="worker-stats" className={`grid grid-cols-2 ${MD_COLS[tiles.length] ?? 'md:grid-cols-5'} border-2 border-border-strong bg-card mt-4 md:mt-5`}>
       {tiles}

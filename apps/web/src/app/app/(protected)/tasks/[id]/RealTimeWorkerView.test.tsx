@@ -267,6 +267,12 @@ describe('RealTimeWorkerView — running', () => {
     expect(html).not.toMatch(/>0</);
   });
 
+  test('no PR and no files touched yet: no files tile, and no empty strip', () => {
+    const html = render(baseWorker({ status: 'running', turns: 0 }));
+    expect(html).not.toContain('worker-stat-files');
+    expect(html).not.toContain('data-testid="worker-stats"');
+  });
+
   test('measured figures still show', () => {
     const html = renderToStaticMarkup(
       <RealTimeWorkerView initialWorker={{ ...running, linesAdded: 12, linesRemoved: 0 } as any} taskId="task-1" nowMs={T0 + 261_000} />,
