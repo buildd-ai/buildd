@@ -92,6 +92,8 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   list_artifact_templates: 'artifacts',
   create_artifact: 'artifacts',
   update_artifact: 'artifacts',
+  link_artifact: 'artifacts',
+  list_artifact_links: 'artifacts',
   manage_specs: 'artifacts',
   // admin
   trigger_release: 'admin',
@@ -210,6 +212,8 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   list_artifacts: 'listed',
   post_note: 'listed',
   update_artifact: 'listed',
+  link_artifact: 'more',
+  list_artifact_links: 'more',
   manage_specs: 'more',
   claim_task: 'listed',
   get_error_traces: 'listed',
@@ -359,6 +363,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   artifacts: {
     parts: [
       { text: 'reports, analyses and other artifacts', actions: ['list_artifacts', 'get_artifact', 'list_artifact_templates', 'update_artifact'] },
+      { text: 'link one to a task, mission or chat', actions: ['link_artifact', 'list_artifact_links'] },
       { text: 'Living Specs', actions: ['manage_specs'] },
     ],
   },
@@ -448,6 +453,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_artifact: "one artifact's content",
   list_artifact_templates: 'artifact templates and their schemas',
   update_artifact: 'edit an artifact',
+  link_artifact: 'link an artifact to a task, mission or chat',
+  list_artifact_links: 'what is linked, without bodies',
   manage_specs: 'Living Specs: draft, read, revise, relate',
   trigger_release: 'start a release',
   manage_workspaces: 'workspace config and new projects',
@@ -689,7 +696,10 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('releaseId', str, [{ text: 'Release UUID', actions: ['get_release'] }]),
   ],
   artifacts: [
-    param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact'] }]),
+    param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact', 'link_artifact', 'list_artifact_links'] }]),
+    param('subjectKind', str, [{ text: 'task|mission|plan|conversation|message', actions: ['link_artifact', 'list_artifact_links'] }]),
+    param('subjectId', str, [{ text: 'Subject UUID', actions: ['link_artifact', 'list_artifact_links'] }]),
+    param('relation', str, [{ text: 'context|requirement|normative_reference|…', actions: ['link_artifact', 'list_artifact_links'] }]),
     param('revision', num, [{ text: 'Read this revision', actions: ['get_artifact'] }]),
     param('expectedRevision', num, [{ text: 'Refuse if the body moved on', actions: ['update_artifact'] }]),
     param('missionId', str, [{ text: 'list_artifacts: mission UUID (not a title)', actions: ['list_artifacts'] }]),
