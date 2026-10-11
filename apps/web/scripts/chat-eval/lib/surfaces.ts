@@ -112,6 +112,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   update_artifact: 'write',
   link_artifact: 'write',
   list_artifact_links: 'read',
+  manage_specs: 'write',
   manage_model_tiers: 'write',
   manage_secrets: 'write',
   manage_providers: 'write',

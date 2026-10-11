@@ -93,6 +93,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   update_artifact: 'artifacts',
   link_artifact: 'artifacts',
   list_artifact_links: 'artifacts',
+  manage_specs: 'artifacts',
   // admin
   trigger_release: 'admin',
   manage_workspaces: 'admin',
@@ -212,6 +213,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   update_artifact: 'listed',
   link_artifact: 'more',
   list_artifact_links: 'more',
+  manage_specs: 'more',
   claim_task: 'listed',
   get_error_traces: 'listed',
   merge_pr: 'listed',
@@ -360,6 +362,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
     parts: [
       { text: 'reports, analyses and other artifacts', actions: ['list_artifacts', 'get_artifact', 'list_artifact_templates', 'update_artifact'] },
       { text: 'link one to a task, mission or chat', actions: ['link_artifact', 'list_artifact_links'] },
+      { text: 'Living Specs', actions: ['manage_specs'] },
     ],
   },
   schedules: {
@@ -449,6 +452,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   update_artifact: 'edit an artifact',
   link_artifact: 'link an artifact to a task, mission or chat',
   list_artifact_links: 'what is linked, without bodies',
+  manage_specs: 'Living Specs: draft, read, revise, relate',
   trigger_release: 'start a release',
   manage_workspaces: 'workspace config and new projects',
   manage_watched_projects: 'deploy-watched projects',
@@ -494,6 +498,7 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
   get_artifact: '{artifactId, view?, section?, grep?, full?, …}',
+  manage_specs: '{action: create_draft|get|revise|list|relate, specId?, title?, body?, expectedVersion?, parentSpecId?, …}',
   list_incidents: '{}',
   record_pr_supersession: '{prNumber?, supersedingPrNumber, supersedingRepo?, reason, …}',
   merge_pr: '{prNumber, workspaceId?, overrides?, reason?, …}',
@@ -691,6 +696,9 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('revision', num, [{ text: 'Read this revision', actions: ['get_artifact'] }]),
     param('expectedRevision', num, [{ text: 'Refuse if the body moved on', actions: ['update_artifact'] }]),
     param('missionId', str, [{ text: 'list_artifacts: mission UUID (not a title)', actions: ['list_artifacts'] }]),
+    param('action', str, [{ text: 'manage_specs: create_draft|get|revise|list|relate', actions: ['manage_specs'] }]),
+    param('specId', str, [{ text: 'Spec UUID', actions: ['manage_specs'] }]),
+    param('expectedVersion', num, [{ text: 'revise: the version you read; a stale one is refused with currentVersion', actions: ['manage_specs'] }]),
   ],
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),

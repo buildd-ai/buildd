@@ -2673,6 +2673,61 @@ export const artifactLinks = pgTable('artifact_links', {
 }));
 
 /**
+ * Living Specs: governed intent with immutable revisions (Living Specs v2, G1).
+ * A spec is a stable identity; its body lives in one artifact (`body_artifact_id`)
+ * so storage, history, hashes, bounded reads and redaction are the artifact
+ * machinery's. Each spec revision pins exactly one artifact revision.
+ * Owned by Living Specs (docs/specs/execution-control-plane.md): only
+ * apps/web/src/lib/specs/ writes these tables.
+ *
+ * `version` is the compare-and-swap token for drafts: a revise names the
+ * version it read, so two writers can never silently overwrite each other.
+ * Approval (G2) is a person's act on one revision; nothing here approves.
+ */
+export const SPEC_SCOPES = ['product', 'domain', 'feature', 'mission'] as const;
+export const SPEC_STATUSES = ['draft', 'in_review', 'approved', 'superseded', 'retired'] as const;
+export type SpecScope = (typeof SPEC_SCOPES)[number];
+export type SpecStatus = (typeof SPEC_STATUSES)[number];
+
+export const specs = pgTable('specs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  title: text('title').notNull(),
+  scope: text('scope').notNull().$type<SpecScope>(),
+  parentSpecId: uuid('parent_spec_id'),
+  status: text('status').notNull().default('draft').$type<SpecStatus>(),
+  version: integer('version').notNull().default(1),
+  bodyArtifactId: uuid('body_artifact_id').references(() => artifacts.id, { onDelete: 'restrict' }).notNull(),
+  // The newest revision (the draft head) and the approved one, by spec revision number.
+  headRevision: integer('head_revision').notNull().default(1),
+  approvedRevision: integer('approved_revision'),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: index('specs_workspace_idx').on(t.workspaceId),
+  parentIdx: index('specs_parent_idx').on(t.parentSpecId),
+}));
+
+export const specRevisions = pgTable('spec_revisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  // The body: exactly this revision of the spec's body artifact, and its hash.
+  artifactRevision: integer('artifact_revision').notNull(),
+  contentHash: text('content_hash').notNull(),
+  authorKind: text('author_kind').notNull().$type<'user' | 'agent'>(),
+  authorId: text('author_id').notNull(),
+  changeSummary: text('change_summary'),
+  // Set once by a person's approval (G2); never for an agent.
+  approvedBy: text('approved_by'),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/**
  * A human's decision on one visual-audit screenshot
  * (docs/design/visual-qa-human-review.md). Append-only: a new decision or an
  * undo sets `supersededAt` on the active row, then inserts. Kept out of

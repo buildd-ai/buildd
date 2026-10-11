@@ -18,6 +18,7 @@ import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-heal
 import type { DispatchHistoryEntry } from './dispatch-outbox';
 import { formatEvidenceObjects, formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
+import { handleSpecsAction } from './mcp-specs';
 import { handleModelUpgradeAction } from './mcp-model-upgrades';
 import { defaultProvidersScope, handleProvidersAction, providersNeedsAdmin, type ProvidersOp } from './mcp-providers';
 import { modelCredentialPurposes } from './providers/manage';
@@ -655,6 +656,10 @@ export const workerActions = [
   // own key; team/workspace set/delete and set_policy need admin, checked in
   // the handler (the route checks the permission again).
   'manage_providers',
+  // Living Specs (/api/specs): create, read, revise under a version check, list
+  // and relate drafts in the caller's workspace. Worker level: agents draft and
+  // revise specs. Nothing in it approves; approval is a person's act (D-4).
+  'manage_specs',
 ] as const;
 
 export const PROVIDER_OPS = ['list', 'set', 'delete', 'explain', 'set_policy'] as const;
@@ -962,6 +967,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body), view? ("outline"|"section"|"range"|"grep"|"meta"; default: the whole body when it is short, its outline when long), section? (id from the outline, with view section), offset? + length? (view range), grep? (literal text, with view grep), full? (true: the whole body however long) } — fetch an artifact by ID with its current revision and sha256. A long body comes back as an outline you read part by part, so a large reference never floods your context; what you read is recorded. File artifacts include a short-lived presigned download URL',
     link_artifact: '{ artifactId (required), subjectKind ("task"|"mission"|"plan"|"conversation"|"message"), subjectId, relation ("context"|"requirement"|"normative_reference"|"design_reference"|"evidence"|"output"), revision? (pin; a normative_reference always pins, the current revision when omitted), linkId? + unlink: true (remove that link instead) } — attach an artifact to something it informs, in the same team, without copying it. Linking twice updates the link',
     list_artifact_links: '{ artifactId? (this artifact\'s links) | subjectKind + subjectId (what is linked to that subject), relation? (comma-separated filter, with subjectKind) } — a reference manifest: id, title, type, relation, pinned revision, size and sha256, never the bodies; read one with get_artifact',
+    manage_specs: '{ action (required): "create_draft" | "get" | "revise" | "list" | "relate", specId? (get/revise/relate), workspaceId? (create_draft/list; defaults to the session workspace), title? (create_draft), body? (create_draft/revise: the spec text, Markdown, at most 400,000 characters), scope? (create_draft: product|domain|feature|mission, default feature), parentSpecId? (create_draft; relate: a spec id, or null to clear), changeSummary? (create_draft/revise), expectedVersion? (revise, required: the version get showed), revision? (get: read that revision exactly as written) } — Living Specs: governed intent with immutable revisions. revise writes only if the spec is still at expectedVersion; otherwise nothing is written and the reply carries currentVersion: re-read, merge, revise on top. relate refuses a parent in another workspace or one that would form a cycle. get inlines a body up to 20,000 characters, else points at get_artifact views. Nothing here approves: approving a revision is a person\'s act.',
     update_artifact: '{ artifactId (required), title?, content?, metadata?, expectedRevision? (with content: write only if the body is still at that revision, else refused with the current one — pass the currentRevision get_artifact showed) } — every content change is kept as a new immutable revision',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
@@ -5552,6 +5558,17 @@ export async function handleBuilddAction(
 
     case 'list_runners':
       return runListRunners(api, params, (p) => resolveWorkspaceId(api, p, ctx));
+
+    case 'manage_specs': {
+      const op = params.action;
+      const wsId = op === 'create_draft' || op === 'list'
+        ? (params.workspaceId ? await resolveWorkspaceId(api, params.workspaceId, ctx) : await ctx.getWorkspaceId())
+        : null;
+      if ((op === 'create_draft' || op === 'list') && params.workspaceId && !wsId) {
+        return errorResult(`Workspace "${params.workspaceId}" not found or not visible to this token.`);
+      }
+      return handleSpecsAction(api, params, wsId);
+    }
 
     case 'get_visual_review':
       return runGetVisualReview(api, params, (p) => resolveWorkspaceId(api, p, ctx), ctx.appBaseUrl || 'https://buildd.dev', ctx.workspaceId || null);

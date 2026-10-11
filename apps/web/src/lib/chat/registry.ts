@@ -198,6 +198,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   update_artifact: one(deferred(KEY_ONLY)),
   link_artifact: one(deferred(KEY_ONLY)),
   list_artifact_links: one(deferred(KEY_ONLY)),
+  manage_specs: one(deferred('Living Specs are drafted and revised by agents first; chat gets them with the approval flow (G2)')),
 
   // ── admin: workspace config, roles, experiments, models ──
   manage_workspaces: {

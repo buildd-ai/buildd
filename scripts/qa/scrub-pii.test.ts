@@ -211,6 +211,9 @@ const SAFE: Record<string, string[]> = {
   artifacts: ['type'],
   // Closed vocabularies (ARTIFACT_LINK_SUBJECTS / ARTIFACT_LINK_RELATIONS in the schema).
   artifact_links: ['subject_kind', 'relation'],
+  // Closed vocabularies (SPEC_SCOPES / SPEC_STATUSES) and a sha256 of a body scrubbed elsewhere.
+  specs: ['scope', 'status'],
+  spec_revisions: ['content_hash'],
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
   // github_repos.default_branch.
