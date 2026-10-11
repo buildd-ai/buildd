@@ -588,9 +588,17 @@ signed for, and an upload that never arrives MUST NOT linger.
   hours, deletes the row and object of one that never arrived or failed. It
   never deletes a row a typed link or a spec body refers to: that row and its
   object are skipped, checked again in the DELETE itself.
+- A deleted team's stored objects go with it. The team delete runs in one
+  transaction with a detach of every artifact of its workspaces that holds a
+  stored object (workspace, worker, mission and initiative cleared, made
+  private and unshared, marked `storageOrphan`), so the cascade cannot drop the
+  only record of the key; the same request then deletes each detached row and
+  its object, and the maintenance cron takes whatever a crash left. An object
+  another artifact row still holds is kept. Spec bodies are never detached.
 
 **Code surface**:
 - `apps/web/src/lib/artifact-upload.ts` — `finalizeArtifactUpload`, `sweepStaleUploads`
+- `apps/web/src/lib/artifact-team-files.ts` — `detachTeamStoredFiles`, `removeTeamStoredFiles`, `removeDetachedTeamFiles`
 
 ## 9. Typed links
 
