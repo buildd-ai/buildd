@@ -5982,7 +5982,7 @@ export const platformAdminAuditEvents = pgTable('platform_admin_audit_events', {
   actorAccountId: uuid('actor_account_id'),
   // e.g. 'experiment.update', 'team.experiment_flags.update'
   action: text('action').notNull(),
-  targetType: text('target_type').notNull().$type<'experiment' | 'team' | 'decision_feature'>(),
+  targetType: text('target_type').notNull().$type<'experiment' | 'team' | 'decision_feature' | 'decision_measurement'>(),
   targetId: text('target_id').notNull(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
   before: jsonb('before').$type<Record<string, unknown>>(),
@@ -6015,6 +6015,37 @@ export const decisionFeatureModes = pgTable('decision_feature_modes', {
 });
 
 export type DecisionFeatureModeRow = typeof decisionFeatureModes.$inferSelect;
+
+/**
+ * Which model may act on which decision kind, and at what confidence
+ * (packages/core/decision-model-measurements.ts). One row per (kind, model):
+ * an eval measured the lowest threshold at which that model is right often
+ * enough on that kind, and the platform owner stored it. No row: Jev keeps the
+ * kind's own threshold and every other model records only.
+ *
+ * `measuredFingerprint` pins what was measured (the call site's prompt
+ * version or fingerprint): when it changes the row stops applying until the
+ * model is measured again. `retired` records only.
+ */
+export const decisionModelMeasurements = pgTable('decision_model_measurements', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  kind: text('kind').notNull(),
+  model: text('model').notNull(),
+  threshold: real('threshold').notNull(),
+  precisionLower: real('precision_lower'),
+  coverage: real('coverage'),
+  n: integer('n').notNull(),
+  evalRunId: text('eval_run_id'),
+  measuredFingerprint: text('measured_fingerprint').notNull(),
+  status: text('status').notNull().default('active').$type<'active' | 'retired'>(),
+  setByAccountId: uuid('set_by_account_id'),
+  setAt: timestamp('set_at', { withTimezone: true }).defaultNow().notNull(),
+  reason: text('reason'),
+}, (t) => ({
+  kindModelIdx: uniqueIndex('decision_model_measurements_kind_model_idx').on(t.kind, t.model),
+}));
+
+export type DecisionModelMeasurementRow = typeof decisionModelMeasurements.$inferSelect;
 
 /**
  * One row per worker session end, on every path — completed, failed, the
