@@ -13,10 +13,11 @@ describe('NAV_ITEMS', () => {
     expect(NAV_ITEMS.length).toBe(MOBILE_TAB_LIMIT);
   });
 
-  it('Releases, Initiatives and Team leave the nav but their pages still resolve', () => {
+  it('Releases and Team leave the nav but their pages still resolve', () => {
     // Team resolves through a redirect into Settings › Roles (next.config SETTINGS_ROUTE_MOVES).
     const redirected = new Map(SETTINGS_ROUTE_MOVES.map((m) => [m.source, m.destination]));
-    for (const href of ['/app/releases', '/app/initiatives', '/app/team']) {
+    expect(NAV_ITEMS.map((i) => i.href)).not.toContain('/app/initiatives');
+    for (const href of ['/app/releases', '/app/team']) {
       expect(NAV_ITEMS.map((i) => i.href)).not.toContain(href);
       const target = redirected.get(href) ?? href;
       expect(`${href}: ${existsSync(resolve(import.meta.dir, `../app/app/(protected)${target.replace('/app', '')}/page.tsx`))}`).toBe(`${href}: true`);
@@ -87,7 +88,6 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/missions')).toBe('Missions');
     expect(mobilePageTitle('/app/missions/plan')).toBe('Plan');
     expect(mobilePageTitle('/app/releases')).toBe('Releases');
-    expect(mobilePageTitle('/app/initiatives')).toBe('Initiatives');
     expect(mobilePageTitle('/app/tasks')).toBe('Activity');
     expect(mobilePageTitle('/app/team')).toBe('Team');
     expect(mobilePageTitle('/app/health')).toBe('Health');
@@ -115,7 +115,6 @@ describe('mobilePageTitle', () => {
 
   it('returns null on detail pages so they render their own headers', () => {
     expect(mobilePageTitle('/app/missions/abc-123')).toBeNull();
-    expect(mobilePageTitle('/app/initiatives/abc-123')).toBeNull();
     expect(mobilePageTitle('/app/tasks/abc-123')).toBeNull();
     expect(mobilePageTitle('/app/workspaces/abc-123/config')).toBeNull();
   });
@@ -125,7 +124,7 @@ describe('showsWorkspaceFilter', () => {
   // Paths with no page.tsx: next.config.mjs redirects them before any page renders.
   const REDIRECT_ONLY = new Set(['/app/dashboard']);
   // Top-level pages with a mobile header that ignore the param — a filter there is a no-op control.
-  const IGNORES_PARAM = ['/app/settings', '/app/settings/account', '/app/settings/runners', '/app/artifacts', '/app/initiatives', '/app/workspaces', '/app/team'];
+  const IGNORES_PARAM = ['/app/settings', '/app/settings/account', '/app/settings/runners', '/app/artifacts', '/app/workspaces', '/app/team'];
 
   it('shows on every allowlisted path', () => {
     for (const path of WORKSPACE_FILTERED_PAGES) expect(showsWorkspaceFilter(path)).toBe(true);

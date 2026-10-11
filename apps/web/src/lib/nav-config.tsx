@@ -117,7 +117,6 @@ export function mobilePageTitle(pathname: string, opts: { billing?: boolean } = 
   if (pathname === '/app/missions') return 'Missions';
   if (pathname === '/app/missions/plan') return 'Plan';
   if (pathname === '/app/releases') return 'Releases';
-  if (pathname === '/app/initiatives') return 'Initiatives';
   if (pathname === '/app/workspaces') return 'Workspaces';
   if (pathname === '/app/tasks') return 'Activity';
   if (pathname === '/app/team') return 'Team';

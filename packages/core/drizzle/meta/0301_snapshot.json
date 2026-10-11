@@ -1,6 +1,6 @@
 {
-  "id": "e7ef2627-7039-4b00-ae9f-6ce81e152e84",
-  "prevId": "d4882bdb-2864-4b77-8f08-c53dafc29663",
+  "id": "27d5ec44-54d3-40d4-b158-4ab826804286",
+  "prevId": "225d9d76-297b-4ecd-8aa1-6f4a5502074b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1195,6 +1195,149 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.artifact_links": {
+      "name": "artifact_links",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "artifact_id": {
+          "name": "artifact_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "artifact_revision": {
+          "name": "artifact_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subject_kind": {
+          "name": "subject_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_id": {
+          "name": "subject_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "relation": {
+          "name": "relation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "artifact_links_unique_idx": {
+          "name": "artifact_links_unique_idx",
+          "columns": [
+            {
+              "expression": "artifact_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "relation",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "artifact_links_subject_idx": {
+          "name": "artifact_links_subject_idx",
+          "columns": [
+            {
+              "expression": "subject_kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "artifact_links_artifact_id_artifacts_id_fk": {
+          "name": "artifact_links_artifact_id_artifacts_id_fk",
+          "tableFrom": "artifact_links",
+          "tableTo": "artifacts",
+          "columnsFrom": [
+            "artifact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "artifact_links_normative_is_pinned": {
+          "name": "artifact_links_normative_is_pinned",
+          "value": "\"artifact_links\".\"relation\" <> 'normative_reference' OR \"artifact_links\".\"artifact_revision\" IS NOT NULL"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.artifact_reads": {
       "name": "artifact_reads",
       "schema": "",
@@ -1528,6 +1671,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "upload_state": {
+          "name": "upload_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1555,6 +1704,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "artifacts_upload_pending_idx": {
+          "name": "artifacts_upload_pending_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "upload_state = 'pending'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -16968,6 +17133,12 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "spec_revision_id": {
+          "name": "spec_revision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -17086,6 +17257,162 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "spec_discrepancies_spec_revision_id_spec_revisions_id_fk": {
+          "name": "spec_discrepancies_spec_revision_id_spec_revisions_id_fk",
+          "tableFrom": "spec_discrepancies",
+          "tableTo": "spec_revisions",
+          "columnsFrom": [
+            "spec_revision_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.spec_outcome_verdicts": {
+      "name": "spec_outcome_verdicts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "spec_revision_id": {
+          "name": "spec_revision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "criterion_id": {
+          "name": "criterion_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "verdict": {
+          "name": "verdict",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "evidence": {
+          "name": "evidence",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "spec_outcome_verdicts_task_idx": {
+          "name": "spec_outcome_verdicts_task_idx",
+          "columns": [
+            {
+              "expression": "task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "spec_revision_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "criterion_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "spec_outcome_verdicts_workspace_id_workspaces_id_fk": {
+          "name": "spec_outcome_verdicts_workspace_id_workspaces_id_fk",
+          "tableFrom": "spec_outcome_verdicts",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "spec_outcome_verdicts_task_id_tasks_id_fk": {
+          "name": "spec_outcome_verdicts_task_id_tasks_id_fk",
+          "tableFrom": "spec_outcome_verdicts",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "spec_outcome_verdicts_spec_revision_id_spec_revisions_id_fk": {
+          "name": "spec_outcome_verdicts_spec_revision_id_spec_revisions_id_fk",
+          "tableFrom": "spec_outcome_verdicts",
+          "tableTo": "spec_revisions",
+          "columnsFrom": [
+            "spec_revision_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -18304,337 +18631,6 @@
         "task_dispatch_outbox_task_id_tasks_id_fk": {
           "name": "task_dispatch_outbox_task_id_tasks_id_fk",
           "tableFrom": "task_dispatch_outbox",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.task_estimate_actuals": {
-      "name": "task_estimate_actuals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_minutes": {
-          "name": "agent_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tokens": {
-          "name": "tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "repairs": {
-          "name": "repairs",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "worker_count": {
-          "name": "worker_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "first_started_at": {
-          "name": "first_started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "wall_minutes": {
-          "name": "wall_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "wall_basis": {
-          "name": "wall_basis",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "recorded_at": {
-          "name": "recorded_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "task_estimate_actuals_task_idx": {
-          "name": "task_estimate_actuals_task_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "task_estimate_actuals_team_idx": {
-          "name": "task_estimate_actuals_team_idx",
-          "columns": [
-            {
-              "expression": "team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "task_estimate_actuals_team_id_teams_id_fk": {
-          "name": "task_estimate_actuals_team_id_teams_id_fk",
-          "tableFrom": "task_estimate_actuals",
-          "tableTo": "teams",
-          "columnsFrom": [
-            "team_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimate_actuals_workspace_id_workspaces_id_fk": {
-          "name": "task_estimate_actuals_workspace_id_workspaces_id_fk",
-          "tableFrom": "task_estimate_actuals",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimate_actuals_task_id_tasks_id_fk": {
-          "name": "task_estimate_actuals_task_id_tasks_id_fk",
-          "tableFrom": "task_estimate_actuals",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.task_estimates": {
-      "name": "task_estimates",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "estimator_version": {
-          "name": "estimator_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p50_minutes": {
-          "name": "p50_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p80_minutes": {
-          "name": "p80_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p50_tokens": {
-          "name": "p50_tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p80_tokens": {
-          "name": "p80_tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_repairs": {
-          "name": "expected_repairs",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "explanation": {
-          "name": "explanation",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "task_estimates_task_version_idx": {
-          "name": "task_estimates_task_version_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "estimator_version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "task_estimates_workspace_created_idx": {
-          "name": "task_estimates_workspace_created_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "task_estimates_team_id_teams_id_fk": {
-          "name": "task_estimates_team_id_teams_id_fk",
-          "tableFrom": "task_estimates",
-          "tableTo": "teams",
-          "columnsFrom": [
-            "team_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimates_workspace_id_workspaces_id_fk": {
-          "name": "task_estimates_workspace_id_workspaces_id_fk",
-          "tableFrom": "task_estimates",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimates_task_id_tasks_id_fk": {
-          "name": "task_estimates_task_id_tasks_id_fk",
-          "tableFrom": "task_estimates",
           "tableTo": "tasks",
           "columnsFrom": [
             "task_id"
@@ -20979,12 +20975,6 @@
         },
         "chat_retro": {
           "name": "chat_retro",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "task_estimates": {
-          "name": "task_estimates",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
