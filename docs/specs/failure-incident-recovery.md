@@ -38,7 +38,7 @@ assertions:
   - id: "backstop-reachable"
     type: "symbol_reachable"
     symbol: "assessDueIncidents"
-    entry: "apps/web/src/app/api/cron/failure-pattern-sentinel/route.ts"
+    entry: "apps/web/src/lib/failure-pattern-sweep.ts"
   - id: "recovery-tests"
     type: "test_file"
     path: "apps/web/src/lib/failure-incident-recovery.test.ts"
