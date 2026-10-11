@@ -74,6 +74,21 @@ export function deepHealthAllowed(request: Request, env: Env): boolean {
   return diff === 0;
 }
 
+/**
+ * The deep health's anonymous GitHub call. Unauthenticated calls share a small
+ * hourly budget per egress IP, and a Worker's egress IP is shared with other
+ * Cloudflare tenants, so the budget is often spent by someone else: GitHub
+ * answers 403 with `x-ratelimit-remaining: 0`, or 429 for a secondary limit.
+ * That says nothing about this Worker's outbound fetch, so it reads
+ * `rate_limited` and keeps the probe healthy. A 403 with budget left is what
+ * the 2026-10-10 cutover's missing User-Agent looked like, and still fails.
+ * The App probe beside it proves the authenticated path either way.
+ */
+export function anonymousGithubProbe(status: number, rateLimitRemaining: string | null): { report: number | 'rate_limited'; healthy: boolean } {
+  if (status === 429 || (status === 403 && rateLimitRemaining === '0')) return { report: 'rate_limited', healthy: true };
+  return { report: status, healthy: status === 200 };
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -86,8 +101,9 @@ export default {
       // Probes report ok/fail and a status code, never upstream error text.
       if (url.searchParams.get('deep') === '1') {
         if (!deepHealthAllowed(request, env)) return new Response('Not Found', { status: 404 });
-        const gh = await fetch('https://api.github.com/zen').catch(() => ({ status: 0 }) as Response);
-        health.github = gh.status;
+        const gh = await fetch('https://api.github.com/zen').catch(() => ({ status: 0, headers: new Headers() }) as Response);
+        const anonymous = anonymousGithubProbe(gh.status, gh.headers?.get('x-ratelimit-remaining') ?? null);
+        health.github = anonymous.report;
         // And as the GitHub App, with the real key: the JWT the installation
         // tokens are minted from.
         const app = await import('@/lib/github')
@@ -107,7 +123,7 @@ export default {
         health.redis = await import('@/lib/redis')
           .then(async ({ isRedisConfigured, getCachedApiKey }) => (isRedisConfigured() ? ((await getCachedApiKey('control-plane-health')) === null ? 'ok' : 'unexpected') : 'unconfigured'))
           .catch(() => 'error');
-        health.ok = gh.status === 200 && app.status === 200 && health.pusher === 'sent' && health.storage === 'ok' && health.redis === 'ok';
+        health.ok = anonymous.healthy && app.status === 200 && health.pusher === 'sent' && health.storage === 'ok' && health.redis === 'ok';
       }
       return Response.json(health, { status: health.ok ? 200 : 503 });
     }
