@@ -1410,6 +1410,12 @@ export async function PATCH(
           source: 'api',
         };
     updates.milestones = [...existingMilestones, transition];
+    // A finished worker's current action is its outcome, not the last tool
+    // call it happened to make (a runner's completion payload carries no
+    // currentAction, so the row kept e.g. "Running: echo ..." forever).
+    if (currentAction === undefined) {
+      updates.currentAction = status === 'completed' ? 'Completed' : 'Failed';
+    }
   }
 
   // Handle status transitions
