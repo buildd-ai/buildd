@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (67)
+## Active (68)
 
 ### auth (9)
 
@@ -67,8 +67,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-10-08
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 
-### missions (3)
+### missions (4)
 
+- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-11
+  A mission's integration branch MUST be brought up to date with trunk when a mission task starts on it, by a daily backstop while the mission is in use, and never by a trunk merge alone.
 - [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-03
   A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-28
