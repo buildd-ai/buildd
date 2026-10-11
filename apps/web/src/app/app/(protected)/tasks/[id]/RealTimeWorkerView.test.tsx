@@ -255,6 +255,34 @@ describe('RealTimeWorkerView — running', () => {
     expect(html).not.toContain(' tok<');
   });
 
+  // U1 audit (task fcaae6e3): a worker that has not started measuring read
+  // "0 Elapsed · 0 Turns · 0 Tokens · 0 Lines so far". Unmeasured is not 0.
+  test('a run that has measured nothing shows no zero tiles', () => {
+    const html = render(baseWorker({ status: 'running', turns: 0, prUrl: 'https://example.test/pull/7', prNumber: 7, prLifecycleStatus: 'pr_open' }));
+    expect(html).toContain('worker-pr-link');
+    expect(html).not.toMatch(/>Elapsed</);
+    expect(html).not.toMatch(/>Turns</);
+    expect(html).not.toMatch(/>Tokens</);
+    expect(html).not.toMatch(/>Lines so far</);
+    expect(html).not.toMatch(/>0</);
+  });
+
+  test('no PR and no files touched yet: no files tile, and no empty strip', () => {
+    const html = render(baseWorker({ status: 'running', turns: 0 }));
+    expect(html).not.toContain('worker-stat-files');
+    expect(html).not.toContain('data-testid="worker-stats"');
+  });
+
+  test('measured figures still show', () => {
+    const html = renderToStaticMarkup(
+      <RealTimeWorkerView initialWorker={{ ...running, linesAdded: 12, linesRemoved: 0 } as any} taskId="task-1" nowMs={T0 + 261_000} />,
+    );
+    expect(html).toMatch(/>Elapsed</);
+    expect(html).toMatch(/>Turns</);
+    expect(html).toMatch(/>Lines so far</);
+    expect(html).toContain('+12');
+  });
+
   test('instructions are not rendered here any more (they live in the side panel)', () => {
     const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
     expect(html).not.toContain('worker-instruct-form');
