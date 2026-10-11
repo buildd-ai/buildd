@@ -14,8 +14,8 @@ export async function register() {
     // team's evidence backend. DECISION_REPLAY=off leaves capture unregistered.
     if (process.env.DECISION_REPLAY !== 'off') {
       try {
-        const { startDecisionReplayStore } = await import('./lib/decision-replay-store');
-        await startDecisionReplayStore();
+        const { DECISION_REPLAY_STORE } = await import('./modules');
+        await DECISION_REPLAY_STORE();
       } catch (err) {
         console.warn('[instrumentation] decision replay store not started:', (err as Error)?.message ?? err);
       }

@@ -15,6 +15,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
  */
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
+import { startDecisionReplayStore } from '@/lib/decision-replay-store';
 import { loadIncidentNeedsYou, loadIncidentVerdicts } from '@/lib/failure-incident-escalation';
 import { loadAccessNeedsYou } from '@/lib/capability-grants-needs-you';
 import type { CompletionPolicies } from '@/lib/completion-policy';
@@ -187,3 +188,10 @@ export const ANSWER_IN_CHAT = answerInChatHref;
  * action sheet (`?pr=<n>&t=<token>`, a landing alert's link) shows, as data.
  */
 export const PR_ACTION_SHEET = loadPrActionSheet;
+
+/**
+ * The decisions module's boot slot (instrumentation.ts): installs the evidence
+ * backend store behind `@buildd/core/decision-replay`, so each decision keeps
+ * a replayable copy of its input. Without it capture is a no-op.
+ */
+export const DECISION_REPLAY_STORE = startDecisionReplayStore;
