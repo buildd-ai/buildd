@@ -278,6 +278,32 @@ describe('ensureMissionSurfaceAudit', () => {
     expect(inserted.description).toContain('apps/web/src/components/Foo.tsx');
     expect(inserted.description).toContain('packages/core/mission-helpers.ts');
   });
+
+  // A refresh's claim manifest widens to trunk's whole diff; as a dependency it
+  // made the gate demand every route under /app.
+  it('never adds a trunk-refresh task to the audit, filed by hand or by the refresher', async () => {
+    tasksFindFirst.mockResolvedValue({ id: 'audit-1', dependsOn: ['builder-1'] });
+    for (const refresh of [
+      uiTask('refresh-1', { title: 'chore(mission): merge dev into the Mobile nav redesign integration branch' }),
+      uiTask('refresh-2', { title: 'Refresh mission branch', context: { requireMergeCommit: true, refreshTrunk: 'dev' } }),
+    ]) {
+      await ensureMissionSurfaceAudit({ missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask: refresh, targetWorkspace });
+    }
+    expect(tasksUpdateSet).not.toHaveBeenCalled();
+
+    tasksFindFirst.mockResolvedValue(null);
+    const builder = uiTask('builder-1');
+    const refresh = uiTask('refresh-1', {
+      title: 'Refresh mission branch',
+      context: { requireMergeCommit: true },
+      pathManifest: ['apps/web/src/app/app/(protected)/layout.tsx'],
+    });
+    tasksFindMany.mockResolvedValue([builder, refresh]);
+    await ensureMissionSurfaceAudit({ missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask: builder, targetWorkspace });
+    const inserted = tasksInsertValues.mock.calls[0][0];
+    expect(inserted.dependsOn).toEqual(['builder-1']);
+    expect(inserted.description).not.toContain('layout.tsx');
+  });
 });
 
 describe('ensureMissionSurfaceAudit — re-check rounds', () => {

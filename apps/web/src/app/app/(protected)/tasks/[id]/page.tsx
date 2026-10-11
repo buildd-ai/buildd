@@ -1001,6 +1001,7 @@ export default async function TaskDetailPage({
     p50Minutes: taskEstimate?.p50Minutes ?? null,
     p80Minutes: taskEstimate?.p80Minutes ?? null,
     summary: taskEstimate?.explanation?.summary ?? null,
+    priorWeight: taskEstimate?.explanation?.priorWeight ?? null,
   });
   const factRows: FactRow[] = [
     ...(prOutcome && prWorker && isTerminal && !prStatedAbove

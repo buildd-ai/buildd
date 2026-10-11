@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
 supersedes: []
 ---
 # Living Specs
@@ -170,6 +170,16 @@ later ones are proposed (D-4).
   default, team-permissions.md) or is named in the workspace's
   `gitConfig.livingSpecs.approverUserIds`. A spec the caller cannot read is a
   404.
+- An approve from an OAuth bearer session (MCP or chat) approves nothing: an
+  agent may be driving it. The route answers 202 with a link
+  (`/app/specs/[id]/approve?request=…`) carrying a signed request for exactly
+  that revision, version and body hash, valid 24 hours
+  (`apps/web/src/lib/specs/approval-request.ts`). The revision is approved
+  only when a person with approval rights confirms it from a dashboard session
+  (`POST /api/specs/[id]/approve/confirm { request }`); any bearer is a 403.
+  A spec that moved since the request is a 409 `request_stale`, an expired or
+  forged request a 400, and a request already confirmed reads as done and
+  writes nothing.
 - Only the head revision is approved, from the version the person read. One
   statement stamps the revision (`approved_by`, `approved_at`, set only while
   unset) and moves `specs.approved_revision` to it, both only while the spec
@@ -202,18 +212,24 @@ later ones are proposed (D-4).
   N+1; a person can (`apps/web/tests/db/spec-approval.test.ts`).
 - AC-4: GIVEN an agent token, a bare API key or a plain member WHEN they
   submit or approve THEN 403 and nothing is stamped.
+- AC-11: GIVEN a person's own OAuth session WHEN it approves THEN nothing is
+  stamped and it gets a confirmation link; WHEN that person (or another owner
+  or admin) confirms it from the dashboard THEN that revision is approved, and
+  a revise in between makes the link stale
+  (`apps/web/tests/db/spec-approval-confirm.test.ts`).
 
 **Code surface**:
-- `apps/web/src/lib/specs/approval.ts` — `specApprover`, `submitSpecRevision`, `approveSpecRevision`
+- `apps/web/src/lib/specs/approval.ts` — `specApprover`, `submitSpecRevision`, `approveSpecRevision`, `confirmSpecApproval`
+- `apps/web/src/lib/specs/approval-request.ts` — `signSpecApprovalRequest`, `verifySpecApprovalRequest`
 - `apps/web/src/lib/specs/pin.ts` — `pinSpecSource`, `readPinnedSpecRevision`
 - `apps/web/src/lib/reviewer.ts` — `renderSpecConformanceGuidance`
 
 **Not yet**:
 - The pin is taken when a task is filed, not when it is claimed: a task filed
   under N and claimed after N+1 is approved still runs on N, by design.
-- No dashboard page lists or approves specs yet; approval is over the routes
-  and `manage_specs` from a person's session. The task page shows the pinned
-  revision.
+- No dashboard page lists specs yet. The one spec page is the approval
+  confirm page; approving directly is over the routes from a dashboard
+  session. The task page shows the pinned revision.
 - A repo document without `commitSha` (the legacy emitsPlan shape) is still
   read at the PR head.
 
