@@ -58,7 +58,7 @@ export function TaskShippedFixture() {
         <div className="mb-5 md:mb-6">
           <TaskShippedTitle view={view} title={FIXTURE_TASK_TITLE} />
         </div>
-        <TaskVerdictBlock verdict={verdict} decision={null} displayStatus="completed" />
+        <TaskVerdictBlock verdict={verdict} displayStatus="completed" />
         <TaskShippedBody view={view} artifactHref={() => '#'} shotSrc={shotSrc} />
         <div className="mb-8">
           <PrCard

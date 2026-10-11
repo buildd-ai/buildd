@@ -5,7 +5,7 @@
  *
  *   TaskShippedTitle    eyebrow · plain title
  *   TaskShippedBody     the lede card (what changed, hero shots, off plan)
- *   TaskShippedDetails  Technical summary and Run details, both collapsed
+ *   TaskShippedDetails  Technical summary and Run details (with Raw output), all collapsed
  *
  * Where the task stands and what to do next is the verdict block's
  * (TaskVerdictBlock), rendered once above the body: no status chip, action
@@ -51,6 +51,16 @@ export function TaskShippedBody({
   shotSrc?: (artifactId: string) => string;
 }) {
   const hasLedeCard = !!view.lede || view.heroShots.length > 0;
+  if (view.resultProse) {
+    // A review run's result is its summary: wrapping prose, paragraphs kept.
+    return (
+      <div id={TASK_SHIPPED_HEADER_ID} data-testid="task-shipped" data-variant="review" className="mb-8 scroll-mt-4">
+        <section data-testid="task-result-prose" aria-label="Review summary" className="card px-4 py-4 md:px-5 [overflow-wrap:anywhere]">
+          <MarkdownContent content={view.resultProse} />
+        </section>
+      </div>
+    );
+  }
   return (
     <div id={TASK_SHIPPED_HEADER_ID} data-testid="task-shipped" data-variant={view.lede ? 'lede' : 'title-only'} className="mb-8 flex scroll-mt-4 flex-col gap-4 empty:hidden">
       {hasLedeCard && (
@@ -109,32 +119,24 @@ export function TaskShippedBody({
 export function TaskShippedDetails({
   view,
   runDetails = [],
-  structuredOutput = null,
   children,
 }: {
   view: TaskShippedView;
   runDetails?: RunDetail[];
-  /** Shown under the handoff text in Technical summary, as it was. */
-  structuredOutput?: Record<string, unknown> | null;
   children?: ReactNode;
 }) {
-  const hasRunDetails = runDetails.length > 0 || !!children;
-  if (!view.technicalSummary && !structuredOutput && !hasRunDetails) return null;
+  const hasRunDetails = runDetails.length > 0 || !!children || !!view.raw;
+  if (!view.technicalSummary && !hasRunDetails) return null;
   return (
     <div className="flex flex-col border-b border-border-default">
-      {(view.technicalSummary || structuredOutput) && (
+      {view.technicalSummary && (
         <div className="border-t border-border-default" data-testid="task-shipped-technical">
           <Disclosure summary="Technical summary">
             <div className="pb-4 pt-1">
               {view.technicalSummaryIsFallback && (
                 <div className="mb-2"><Chip tone="muted" dot={false}>unauthored · last message</Chip></div>
               )}
-              {view.technicalSummary && <MarkdownContent content={view.technicalSummary} />}
-              {structuredOutput && (
-                <pre className="mt-3 overflow-x-auto border border-border-default bg-surface-2 p-3 font-mono text-meta text-text-primary">
-                  {JSON.stringify(structuredOutput, null, 2)}
-                </pre>
-              )}
+              <div className="[overflow-wrap:anywhere]"><MarkdownContent content={view.technicalSummary} /></div>
             </div>
           </Disclosure>
         </div>
@@ -153,6 +155,16 @@ export function TaskShippedDetails({
               </dl>
             )}
             {children && <div data-testid="task-shipped-run-details-more" className="flex flex-col gap-6 pb-4">{children}</div>}
+            {view.raw && (
+              // Diagnostics only: the structured payload as recorded (confidence and all), wrapped, never scrolled sideways.
+              <div className="border-t border-border-default pb-2" data-testid="task-shipped-raw-output">
+                <Disclosure summary={<span className="text-meta text-text-secondary">Raw output</span>}>
+                  <pre className="mb-3 whitespace-pre-wrap border border-border-default bg-surface-2 p-3 font-mono text-meta text-text-primary [overflow-wrap:anywhere]">
+                    {JSON.stringify(view.raw, null, 2)}
+                  </pre>
+                </Disclosure>
+              </div>
+            )}
           </Disclosure>
         </div>
       )}
