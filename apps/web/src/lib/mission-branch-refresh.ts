@@ -49,13 +49,31 @@
  *    integration branch.
  *
  * Together these coalesce any burst into exactly one real merge attempt.
+ *
+ * ## When it runs (docs/specs/mission-branch-refresh.md)
+ *
+ * Not on every trunk merge. That trigger turned each round of dev churn into
+ * its own conflict task, and each one moved the branch under every open task
+ * PR. A refresh runs when a stale base actually costs something:
+ *
+ *  - **A mission task starts** (`refreshMissionBranchesBeforeStart`, from the
+ *    claim route): a work task cutting its branch from the integration branch
+ *    starts on current trunk. Bounded and fail-open; the claim never waits on
+ *    it past its budget.
+ *  - **The mission is about to land**: nothing here. The mission PR into
+ *    trunk is a kernel delivery, and an approved, behind one is updated by
+ *    `refresh_branch` through the landing lane.
+ *  - **A daily backstop** (`sweepMissionBranchRefresh`): a mission still in
+ *    use whose last confirmed refresh (`branchRefreshedAt`) is older than
+ *    `BRANCH_REFRESH_BACKSTOP_MS`, so an idle stretch never grows one huge
+ *    conflict.
  */
 
 import { randomUUID } from 'node:crypto';
 import { db } from '@buildd/core/db';
 import { missions, missionNotes, tasks, workers, workspaces, githubRepos } from '@buildd/core/db/schema';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
-import { and, desc, eq, inArray, isNotNull, lt, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, lt, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -63,11 +81,14 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { findMissionPrOwner } from '@/lib/mission-pr';
-import { workspaceRepoMatches } from '@/lib/repo-scope';
 import { integrationRefreshOf, verifyRefreshLanded } from '@/lib/integration-refresh';
 
 /** How long a single-flight claim holds, before another caller may retry it. */
 export const BRANCH_REFRESH_LEASE_MS = 45_000;
+/** The backstop refreshes a mission still in use once its last confirmed refresh is this old. */
+export const BRANCH_REFRESH_BACKSTOP_MS = 24 * 60 * 60 * 1000;
+/** The most a starting task's claim waits on its mission's refresh. */
+export const START_REFRESH_BUDGET_MS = 4_000;
 
 function githubErrorStatus(err: unknown): number | null {
   const msg = err instanceof Error ? err.message : String(err);
@@ -233,7 +254,7 @@ export async function refreshMissionIntegrationBranch(
     }
     if (ensured.created) {
       // Freshly cut from trunk — already current by construction.
-      await db.update(missions).set({ branchRefreshHeadSha: trunkSha }).where(ownsLease);
+      await db.update(missions).set({ branchRefreshHeadSha: trunkSha, branchRefreshedAt: new Date() }).where(ownsLease);
       return { kind: 'skipped', reason: 'already_current' };
     }
 
@@ -286,7 +307,7 @@ export async function refreshMissionIntegrationBranch(
     }
 
     // 204 → null (githubApi): GitHub says the branch already contains trunk.
-    await db.update(missions).set({ branchRefreshHeadSha: trunkSha }).where(ownsLease);
+    await db.update(missions).set({ branchRefreshHeadSha: trunkSha, branchRefreshedAt: new Date() }).where(ownsLease);
     if (!merged) {
       return { kind: 'skipped', reason: 'already_current' };
     }
@@ -540,11 +561,24 @@ export interface MissionBranchRefreshSweepResult {
   errors: number;
 }
 
+/** Something will use the branch: a non-terminal task, or the mission's PR still open. */
+async function missionInUse(missionId: string): Promise<boolean> {
+  const live = await db.query.tasks.findFirst({
+    where: and(eq(tasks.missionId, missionId), notInArray(tasks.status, [...TERMINAL_TASK_STATUSES])),
+    columns: { id: true },
+  });
+  if (live) return true;
+  return (await findMissionPrOwner(missionId))?.state === 'open';
+}
+
 /**
- * Backstop for a lost webhook delivery: refresh every active, opted-in
- * mission regardless of whether a dev-merge event ever reached us. Each
- * mission's own debounce makes repeating this cheap — a mission the webhook
- * already caught up to costs one DB read and no GitHub call.
+ * The daily backstop. A refresh otherwise runs only when a mission task starts
+ * (or, for the mission PR, when the kernel updates it to land), so a mission
+ * that sits a while without one would build up a single large conflict. Each
+ * active, opted-in mission still in use is refreshed once its last confirmed
+ * refresh is older than `BRANCH_REFRESH_BACKSTOP_MS`; an idle mission is left
+ * alone, since nothing will cut from its branch. Runs from the hourly
+ * pr-reconcile cron; a mission inside the window costs one DB read.
  */
 export async function sweepMissionBranchRefresh(): Promise<MissionBranchRefreshSweepResult> {
   const candidates = await db.query.missions.findMany({
@@ -552,13 +586,19 @@ export async function sweepMissionBranchRefresh(): Promise<MissionBranchRefreshS
       eq(missions.integrationBranchEnabled, true),
       sql`${missions.status} NOT IN ('completed', 'archived')`,
     ),
-    columns: { id: true },
+    columns: { id: true, branchRefreshedAt: true },
   });
 
   const result: MissionBranchRefreshSweepResult = { scanned: 0, merged: 0, conflicts: 0, skipped: 0, errors: 0 };
+  const staleBefore = Date.now() - BRANCH_REFRESH_BACKSTOP_MS;
   for (const m of candidates) {
     result.scanned++;
     try {
+      const refreshedAt = m.branchRefreshedAt ? new Date(m.branchRefreshedAt).getTime() : null;
+      if ((refreshedAt != null && refreshedAt > staleBefore) || !(await missionInUse(m.id))) {
+        result.skipped++;
+        continue;
+      }
       const outcome = await refreshMissionIntegrationBranch(m.id);
       if (outcome.kind === 'merged') result.merged++;
       else if (outcome.kind === 'conflict') result.conflicts++;
@@ -572,43 +612,65 @@ export async function sweepMissionBranchRefresh(): Promise<MissionBranchRefreshS
   return result;
 }
 
+/** A claimed task, as far as the start trigger reads it. */
+export interface StartingTask {
+  missionId?: string | null;
+  context?: unknown;
+}
+
 /**
- * Webhook trigger: a PR merged into a workspace's trunk. Refresh every active,
- * opted-in mission scoped to that workspace — the fast path; `sweepMissionBranchRefresh`
- * is the backstop for a lost delivery.
+ * A mission task is starting: bring its integration branch up to date first,
+ * so the work cuts its branch from current trunk instead of building on a base
+ * that will conflict later.
  *
- * Scoped to workspaces whose configured trunk is exactly `baseRef`: a merge
- * into some other branch of the same repo (a release branch, a long-lived
- * feature branch) is not the event this exists to react to.
+ * Only a task whose `context.baseBranch` IS its mission's integration branch
+ * counts: fix and CI-fix retries base on their PR's branch, and the refresh
+ * conflict task (`requireMergeCommit`) does its own merge. Each mission is
+ * refreshed once however many of its tasks start in this claim.
+ *
+ * Bounded and fail-open: the caller waits at most `budgetMs` and is never
+ * failed by it. A refresh still running at the budget keeps going on its own
+ * (it holds the single-flight lease, so a concurrent start coalesces into it).
+ * Returns each mission's outcome, or `timed_out`, for the caller's log.
  */
-export async function refreshMissionBranchesForTrunkMerge(input: {
-  repoFullName: string;
-  baseRef: string;
-}): Promise<void> {
-  const linkedWorkspaces = await db.query.workspaces.findMany({
-    where: workspaceRepoMatches(input.repoFullName),
-    columns: { id: true, gitConfig: true },
-  });
-  const trunkWorkspaces = linkedWorkspaces.filter((w) => {
-    const trunk = w.gitConfig?.targetBranch || w.gitConfig?.defaultBranch;
-    return trunk ? trunk === input.baseRef : input.baseRef === 'main' || input.baseRef === 'master';
-  });
-  if (trunkWorkspaces.length === 0) return;
-
-  const activeMissions = await db.query.missions.findMany({
-    where: and(
-      inArray(missions.workspaceId, trunkWorkspaces.map((w) => w.id)),
-      eq(missions.integrationBranchEnabled, true),
-      sql`${missions.status} NOT IN ('completed', 'archived')`,
-    ),
-    columns: { id: true },
-  });
-
-  for (const m of activeMissions) {
-    try {
-      await refreshMissionIntegrationBranch(m.id);
-    } catch (err) {
-      console.error(`[mission-branch-refresh] trigger failed for mission ${m.id}:`, err);
+export async function refreshMissionBranchesBeforeStart(
+  starting: StartingTask[],
+  opts: { budgetMs?: number } = {},
+): Promise<Record<string, MissionBranchRefreshOutcome | 'timed_out'>> {
+  const out: Record<string, MissionBranchRefreshOutcome | 'timed_out'> = {};
+  try {
+    const wanted = new Map<string, Set<string>>();
+    for (const t of starting) {
+      const ctx = (t.context ?? {}) as Record<string, unknown>;
+      if (!t.missionId || typeof ctx.baseBranch !== 'string' || ctx.requireMergeCommit === true) continue;
+      const bases = wanted.get(t.missionId) ?? new Set<string>();
+      bases.add(ctx.baseBranch);
+      wanted.set(t.missionId, bases);
     }
+    if (wanted.size === 0) return out;
+
+    const rows = await db.query.missions.findMany({
+      where: inArray(missions.id, [...wanted.keys()]),
+      columns: { id: true, workingBranch: true, integrationBranchEnabled: true },
+    });
+    const due = rows.filter((m) => {
+      const branch = missionIntegrationBase(m);
+      return branch != null && (wanted.get(m.id)?.has(branch) ?? false);
+    });
+    if (due.length === 0) return out;
+
+    const budgetMs = opts.budgetMs ?? START_REFRESH_BUDGET_MS;
+    await Promise.all(due.map(async (m) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const refresh = refreshMissionIntegrationBranch(m.id).catch((err): MissionBranchRefreshOutcome => ({
+        kind: 'error', detail: githubErrorMessage(err),
+      }));
+      const timeout = new Promise<'timed_out'>((resolve) => { timer = setTimeout(() => resolve('timed_out'), budgetMs); });
+      out[m.id] = await Promise.race([refresh, timeout]);
+      clearTimeout(timer);
+    }));
+  } catch (err) {
+    console.error('[mission-branch-refresh] start refresh failed; the claim proceeds on the branch as it is:', err);
   }
+  return out;
 }
