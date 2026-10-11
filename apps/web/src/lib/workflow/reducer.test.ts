@@ -1736,6 +1736,34 @@ describe('EffectDead (§10.3, 67d34094): a critical dead effect hands the delive
     expectResult(dead(V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })), 'post_review'), 'duplicate', 'already_escalated');
     expectResult(dead(V(D({ state: 'LANDING' })), 'render_activity'), 'rejected', 'not_critical');
   });
+
+  // edc02148: an approved, green PR sat in REPAIRING(behind) with its refresh_branch backing off;
+  // a refresh that went dead left it there for good (no state exit, no floor re-owe, no person told).
+  describe('a dead mechanical repair is REPAIRING\'s only exit, so it hands over', () => {
+    const repairing = (o: Partial<DeliverySnapshot> = {}) =>
+      V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'm1', approvedHeads: ['H1'], ...o }), [],
+        [A({ id: 'm1', family: 'conflict', mode: 'mechanical', triggerReason: 'behind', taskId: null })]);
+    test('a dead behind refresh at the current head: ESCALATED(landing_needs_human), its row failed, a person told', () => {
+      const dec = applied(dead(repairing(), 'refresh_branch', { dedupeKey: 'refresh_branch:d1:H1:mechanical:1' }));
+      expect(dec.toState).toBe('ESCALATED');
+      expect(dec.patch).toMatchObject({ stateReason: 'landing_needs_human', boundAttemptId: null });
+      expect(dec.attempts).toEqual([expect.objectContaining({ op: 'update', attemptId: 'm1', set: expect.objectContaining({ status: 'ended', outcome: 'failed' }) })]);
+      expect(dec.effects.find((e) => e.kind === 'notify')).toMatchObject({ payload: { event: 'effect_dead', effectKind: 'refresh_branch', reason: 'landing_needs_human' } });
+    });
+    test('a dead conflict refresh or migration renumber is ESCALATED(effect_dead)', () => {
+      expect(applied(dead(repairing({ stateReason: 'conflict' }), 'refresh_branch', { dedupeKey: 'refresh_branch:d1:H1:mechanical:1' })).patch)
+        .toMatchObject({ stateReason: 'effect_dead' });
+      expect(applied(dead(repairing({ stateReason: 'migration' }), 'renumber_migration', { dedupeKey: 'renumber_migration:d1:H1:mechanical:1' })).patch)
+        .toMatchObject({ stateReason: 'effect_dead' });
+    });
+    test('a dead refresh for a head that is no longer current, or a trunk-recovery refresh, is stale', () => {
+      expectResult(dead(repairing({ currentHeadSha: 'H2' }), 'refresh_branch', { dedupeKey: 'refresh_branch:d1:H1:mechanical:1' }), 'stale', 'head_moved');
+      expectResult(dead(repairing(), 'refresh_branch', { dedupeKey: 'refresh_branch:d1:H1:trunk:i1' }), 'stale', 'not_bound_repair');
+    });
+    test('outside REPAIRING a dead refresh is stale', () => {
+      expectResult(dead(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })), 'refresh_branch', { dedupeKey: 'refresh_branch:d1:H1:mechanical:1' }), 'stale', 'state_moved');
+    });
+  });
 });
 
 // ── Adversarial probe findings (task e769323f) ──────────────────────────────
@@ -1881,5 +1909,66 @@ describe('a second occurrence after a person resolves is not a replay (10658a4c)
   test('a dead dispatch_fix still waits for a person', () => {
     const dead = applied(run(V(D({ state: 'CHANGES_REQUESTED', currentRound: 1 }), [decidedRC]), { type: 'EffectDead', actor: 'kernel', effectId: 'e1', effectKind: 'dispatch_fix', dedupeKey: 'dispatch_fix:d1:x', lastError: 'boom' }));
     expect(dead.patch).toMatchObject({ stateReason: 'effect_dead' });
+  });
+});
+
+// edc02148 (#4413): a coordination owner stayed assigned after opening its PR, nothing asked for
+// a review until a person did, and the approved head then sat in a backed-off refresh. The
+// kernel's answers for each step of that path, including events out of order or twice.
+describe('review, refresh and landing while a coordination owner keeps running (edc02148)', () => {
+  const working = V(D({ state: 'WORKING', currentRound: 0 }));
+  const ask = (v: KernelView) => run(v, { type: 'ReviewRequested', actor: 'github:create_pr:coordination_owner', headSha: 'H1', live: live('H1'), forced: false });
+
+  test('the review is asked for while the owner runs: round 1 at the head, a reviewer dispatched', () => {
+    const dec = applied(ask(working));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(effectKinds(dec)).toContain('dispatch_review');
+    // A second ask (both doors, a retry) does not start a second round.
+    expectResult(ask(V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R()])), 'rejected', 'review_in_flight');
+  });
+
+  test('the approval stands when the still-running owner ends later: approved is not merged, and the end moves nothing', () => {
+    const approved = V(D({ state: 'APPROVED', currentRound: 1, approvedHeads: ['H1'] }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]);
+    const end = run(approved, { type: 'AttemptEnded', actor: 'runner', workerId: 'w9', taskId: 't1', outcome: 'success', localHeadSha: 'H1', commitCount: 1, live: live('H1') });
+    expectResult(end, 'stale', 'attempt_not_bound');
+  });
+
+  test('a refresh in flight with the head unmoved: the same head again is a duplicate, the delivery stays REPAIRING', () => {
+    const v = V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'm1', approvedHeads: ['H1'], currentRound: 1 }), [],
+      [A({ id: 'm1', family: 'conflict', mode: 'mechanical', triggerReason: 'behind', taskId: null })]);
+    expectResult(run(v, { type: 'HeadObserved', actor: 'floor', live: live('H1') }), 'duplicate');
+  });
+
+  test('the refresh lands (own refresh): the approval carries to the new head, no second review', () => {
+    const v = V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'm1', approvedHeads: ['H1'], currentRound: 1 }),
+      [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })],
+      [A({ id: 'm1', family: 'conflict', mode: 'mechanical', triggerReason: 'behind', taskId: null })]);
+    const dec = applied(run(v, { type: 'HeadObserved', actor: 'effect:refresh_branch', live: live('H2'), carryForward: 'own_refresh', attribution: { descendsFromBound: true }, proof: { liveContainsLocal: true } }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(effectKinds(dec)).not.toContain('dispatch_review');
+  });
+
+  test('an external repair that changed the diff is reviewed, not landed on the old approval', () => {
+    const v = V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'm1', approvedHeads: ['H1'], currentRound: 1 }),
+      [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })],
+      [A({ id: 'm1', family: 'conflict', mode: 'mechanical', triggerReason: 'behind', taskId: null })]);
+    // The queued refresh is credited with the push (it descends from the pinned head), but the
+    // fact layer's compare read the PR diff as changed: the approval does not carry.
+    const dec = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H3'), diffChanged: true, attribution: { descendsFromBound: true } }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(effectKinds(dec)).toContain('dispatch_review');
+    expect(dec.patch.approvedHeads).toBeUndefined();
+  });
+
+  test('a merge observed first wins over a late head or a replayed merge', () => {
+    const merged = V(D({ state: 'MERGED', mergedAt: '2026-10-11T10:58:23Z', approvedHeads: ['H2'], currentHeadSha: 'H2' }));
+    expect(run(merged, { type: 'HeadObserved', actor: 'webhook', live: live('H1') }).result).not.toBe('apply');
+    expect(run(merged, { type: 'PrMerged', actor: 'webhook', live: live('H2', { state: 'closed', merged: true }) }).result).toBe('duplicate');
+  });
+
+  test('an external merge while REPAIRING is accepted from any non-terminal state (T17)', () => {
+    const v = V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'm1', currentRound: 1 }), [],
+      [A({ id: 'm1', family: 'conflict', mode: 'mechanical', triggerReason: 'behind', taskId: null })]);
+    expect(applied(run(v, { type: 'PrMerged', actor: 'floor', live: live('H1', { state: 'closed', merged: true }) })).toState).toBe('MERGED');
   });
 });
