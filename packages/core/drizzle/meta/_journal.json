@@ -298,6 +298,13 @@
       "breakpoints": true
     },
     {
+      "idx": 295,
+      "version": "7",
+      "when": 1791676896304,
+      "tag": "0295_absurd_moon_knight",
+      "breakpoints": true
+    },
+    {
       "idx": 296,
       "version": "7",
       "when": 1791676915354,

@@ -303,7 +303,8 @@ export function parseModelInferenceRequest(body: unknown): { ok: true; request: 
   };
 }
 
-function budgetIsSane(b: ModelInferenceBudget | null | undefined): b is ModelInferenceBudget {
+/** Every budget field positive, finite and inside MODEL_INFERENCE_LIMITS. The grant service validates requests with it too. */
+export function isSaneModelInferenceBudget(b: ModelInferenceBudget | null | undefined): b is ModelInferenceBudget {
   if (!b) return false;
   const L = MODEL_INFERENCE_LIMITS;
   const pos = (v: unknown, max: number) => typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= max;
@@ -335,7 +336,7 @@ export function checkGrant(
   if (!(grant.expiresAt instanceof Date) || Number.isNaN(grant.expiresAt.getTime()) || grant.expiresAt.getTime() <= now.getTime()) return 'grant_expired';
   if (!grant.operations.includes(request.operation)) return 'operation_not_allowed';
   if (!grant.models.includes(request.model)) return 'model_not_allowed';
-  if (!budgetIsSane(grant.budget)) return 'budget_invalid';
+  if (!isSaneModelInferenceBudget(grant.budget)) return 'budget_invalid';
   return null;
 }
 
