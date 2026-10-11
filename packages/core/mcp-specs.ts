@@ -12,6 +12,9 @@
  * outcome against its pinned revision, one verdict on one criterion, and an
  * advisory conflict between two criteria. None of them blocks anything.
  *
+ * revise with `section` (an outline id) or `heading` replaces just that
+ * section; the server rebuilds the whole body and revises it as usual.
+ *
  * repoRefs (on create_draft / revise) cite repo specs at an exact commit (D-1);
  * read_ref reads one of them at that commit, bounded, over
  * GET /api/specs/[id]/repo-ref.
@@ -113,13 +116,17 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'revise': {
       const specId = need(params.specId, 'specId');
       if (!Number.isInteger(params.expectedVersion)) throw new Error('expectedVersion (the version you read with get) is required');
-      const payload: Record<string, unknown> = { expectedVersion: params.expectedVersion, body: need(params.body, 'body') };
+      // section / heading: body is that one section's text, sent as written.
+      const target = params.section !== undefined ? { section: params.section } : params.heading !== undefined ? { heading: params.heading } : null;
+      if (target && (typeof params.body !== 'string' || !params.body.trim())) throw new Error('body (the section text, its heading line included) is required');
+      const payload: Record<string, unknown> = { expectedVersion: params.expectedVersion, ...target, body: target ? params.body : need(params.body, 'body') };
       if (params.changeSummary !== undefined) payload.changeSummary = params.changeSummary;
       if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.`);
-        return text(`Revised: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).`);
+        const what = target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
+        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).`);
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
