@@ -7,8 +7,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
-
-import { NO_PERMISSIONS, settingsPermissions, type SettingsPermissions } from './settings-permissions';
+import { settingsPermissions, type SettingsPermissions } from './settings-permissions';
 
 export interface SettingsWorkspace {
   id: string;
@@ -59,7 +58,7 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
   const currentTeam = teams.find((t) => t.id === currentTeamId) ?? null;
   const permsByTeam: Record<string, SettingsPermissions> = {};
   for (const t of teams) permsByTeam[t.id] = settingsPermissions(t, user.id);
-  const perms = (currentTeam && permsByTeam[currentTeam.id]) || NO_PERMISSIONS;
+  const perms = settingsPermissions(currentTeam, user.id);
 
   const rows = wsIds.length > 0
     ? await db.query.workspaces.findMany({

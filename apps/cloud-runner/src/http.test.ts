@@ -113,7 +113,7 @@ describe('POST /dispatch', () => {
     const agents = stubAgents();
     const res = await handleRequest(post({ ...payload, event: 'task.resume', workerId: 'worker-9' }), ENV, agents.get);
     expect(res.status).toBe(202);
-    expect(agents.byName.get(TASK_ID)!.requests).toEqual([{ resumeWorkerId: 'worker-9', runnerSize: FALLBACK_DECISION }]);
+    expect(agents.byName.get(TASK_ID)!.requests).toEqual([{ warmHandover: 'off', resumeWorkerId: 'worker-9', runnerSize: FALLBACK_DECISION }]);
   });
 
   describe('task.scheduled', () => {
@@ -164,7 +164,7 @@ describe('POST /dispatch', () => {
       const agents = stubAgents();
       await handleRequest(post({ ...payload, event: 'task.retry', notBefore: '2026-01-01T00:05:00.000Z' }), ENV, agents.get, now);
       const a = agents.byName.get(TASK_ID)!;
-      expect(a.requests).toEqual([{ runnerSize: FALLBACK_DECISION }]);
+      expect(a.requests).toEqual([{ warmHandover: 'off', runnerSize: FALLBACK_DECISION }]);
       expect(a.schedules).toEqual([]);
     });
   });
@@ -172,7 +172,7 @@ describe('POST /dispatch', () => {
   test('any other event is a plain dispatch, whatever workerId it carries', async () => {
     const agents = stubAgents();
     await handleRequest(post({ ...payload, event: 'task.retry', workerId: 'worker-9' }), ENV, agents.get);
-    expect(agents.byName.get(TASK_ID)!.requests).toEqual([{ runnerSize: FALLBACK_DECISION }]);
+    expect(agents.byName.get(TASK_ID)!.requests).toEqual([{ warmHandover: 'off', runnerSize: FALLBACK_DECISION }]);
   });
 
   test.each([
@@ -227,7 +227,7 @@ describe('container class routing', () => {
     const res = await handleRequest(post(payload), ENV, agents.get, undefined, r);
     expect(await res.json()).toMatchObject({ taskId: TASK_ID, runnerSize: 'large', accepted: true });
     expect(agents.lookups).toEqual([`large:${TASK_ID}`]);
-    expect(agents.byName.get(`large:${TASK_ID}`)!.requests).toEqual([{ runnerSize: LARGE }]);
+    expect(agents.byName.get(`large:${TASK_ID}`)!.requests).toEqual([{ warmHandover: 'off', runnerSize: LARGE }]);
     expect(r.asked).toEqual([[TASK_ID, undefined]]);
   });
 
@@ -235,7 +235,7 @@ describe('container class routing', () => {
     const agents = stubAgents();
     const decision = { size: 'standard', source: 'default', reason: null, workspaceId: 'ws-from-buildd' } as RunnerSizeDecision;
     await handleRequest(post(payload), ENV, agents.get, undefined, sizes(decision));
-    expect(agents.byName.get(TASK_ID)!.requests).toEqual([{ runnerSize: decision, workspaceId: 'ws-from-buildd' }]);
+    expect(agents.byName.get(TASK_ID)!.requests).toEqual([{ warmHandover: 'off', runnerSize: decision, workspaceId: 'ws-from-buildd' }]);
     // buildd named none (an older buildd): the body's workspaceId is not used.
     const other = stubAgents();
     await handleRequest(post(payload), ENV, other.get, undefined, sizes({ size: 'standard', source: 'default', reason: null }));
@@ -249,11 +249,13 @@ describe('container class routing', () => {
       await handleRequest(post({ ...payload, warmHandover: 'deps' }), env, agents.get, undefined, sizes(d));
       return (agents.byName.get(TASK_ID)!.requests[0] as { warmHandover?: string }).warmHandover;
     };
-    // Off is no field at all: the agent treats a missing mode as fresh containers.
-    expect(await modeFor(ENV)).toBeUndefined();
+    // Off is sent as 'off', never left out: a resume with no mode would carry on
+    // under the parked run's (supervisor.ts), and the opt-out must reach it.
+    expect(await modeFor(ENV)).toBe('off');
     expect(await modeFor({ ...ENV, CONTAINER_REUSE: '1' })).toBe('repo');
     expect(await modeFor({ ...ENV, CONTAINER_REUSE: '1', CONTAINER_REUSE_DEPS: '1' })).toBe('deps');
-    expect(await modeFor({ ...ENV, CONTAINER_REUSE: '1', CONTAINER_REUSE_DEPS: '1' }, { ...decision, warmHandover: 'off' })).toBeUndefined();
+    expect(await modeFor({ ...ENV, CONTAINER_REUSE: '1', CONTAINER_REUSE_DEPS: '1' }, { ...decision, warmHandover: 'off' })).toBe('off');
+    expect(await modeFor({ ...ENV, CONTAINER_REUSE: '1' }, { size: 'standard', source: 'fallback', reason: null })).toBe('off');
   });
 
   test('the webhook body cannot choose the class', async () => {
@@ -290,7 +292,7 @@ describe('container class routing', () => {
     const res = await handleRequest(post({ ...payload, event: 'task.resume', workerId: 'worker-9' }), ENV, agents.get, undefined, r);
     expect(await res.json()).toMatchObject({ runnerSize: 'large', accepted: true });
     expect(r.asked).toEqual([[TASK_ID, 'worker-9']]);
-    expect(agents.byName.get(`large:${TASK_ID}`)!.requests).toEqual([{ resumeWorkerId: 'worker-9', runnerSize: { size: 'large', source: 'pinned', reason: null } }]);
+    expect(agents.byName.get(`large:${TASK_ID}`)!.requests).toEqual([{ warmHandover: 'off', resumeWorkerId: 'worker-9', runnerSize: { size: 'large', source: 'pinned', reason: null } }]);
     expect(agents.byName.get(TASK_ID)!.dispatches).toBe(0);
   });
 

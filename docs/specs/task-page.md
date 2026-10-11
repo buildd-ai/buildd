@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/task-verdict.test.ts]
+verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/task-verdict.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -197,6 +197,11 @@ never described as released.
   name (case-insensitive) is dropped.
 - The release badge (Skip / Force release) renders only for a deliverable,
   never for a review or fix attempt.
+- The PR card never states a commit or diff count nobody recorded. When no
+  attempt recorded its counters (`diffStatsRecorded`), the Added, Removed,
+  Files and Commits figures are left out, and the attempt that opened the PR
+  names no commit count. A recorded head SHA is not a recording, and a PR is
+  never opened from zero commits, so all-zero counters read as unrecorded.
 
 ## Interaction
 

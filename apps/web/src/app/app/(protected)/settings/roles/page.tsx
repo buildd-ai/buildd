@@ -88,7 +88,7 @@ export default async function RolesPage() {
   const cookieStore = await cookies();
   const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
   const teamIds = activeTeamId ? [activeTeamId] : [];
-  // What "New role" offers in the active team, with its overrides applied.
+  // What "New role" offers in the active team.
   const caller = { kind: 'user' as const, userId: user.id };
   const [canCreatePersonalRole, canCreateTeamRole] = activeTeamId
     ? await Promise.all([

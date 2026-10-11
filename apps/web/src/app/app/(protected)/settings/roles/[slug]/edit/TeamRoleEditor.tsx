@@ -77,7 +77,7 @@ interface Props {
   workspaces: WorkspaceOption[];
   delegateOptions: DelegateOption[];
   /**
-   * Holds `manage_agent_roles` in the role's team (overrides applied). False:
+   * Holds `manage_agent_roles` in the role's team. False:
    * the role and its overrides read-only, with no save, delete or new
    * override. Defaults to true.
    */

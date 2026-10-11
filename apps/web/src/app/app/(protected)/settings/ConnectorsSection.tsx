@@ -47,7 +47,7 @@ export default function ConnectorsSection({
   teams?: Team[];
   currentTeamId?: string | null;
   /**
-   * Teams where the person holds `manage_connectors` (overrides applied). A
+   * Teams where the person holds `manage_connectors`. A
    * workspace outside them shows whether a connector is on, read-only, and a
    * connector of another team gets no Reconnect. Omitted = every team.
    */
