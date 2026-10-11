@@ -4,6 +4,8 @@
  * Extracted from workers.ts for testability.
  */
 
+import { readRepairTarget, RepairTargetMissingError } from '@buildd/core/repair-target';
+
 export type BranchFetchResult = 'ok' | 'missing' | 'diverged';
 
 export interface ResolveWorktreeBaseOptions {
@@ -64,12 +66,22 @@ export interface ResolveWorktreeBaseOptions {
  * red flag about that attempt specifically, independent of whatever base the
  * task declared.
  *
+ * A REPAIR TARGET is neither. When the context names the PR this attempt exists
+ * to update (`repairTarget`, packages/core/repair-target.ts), `resumeBranch` is
+ * that PR's head, and abandoning it can only produce an attempt that changes
+ * nothing on the PR. So for a repair target, `'diverged'` is expected (a
+ * mission integration PR's head is far ahead of trunk by construction) and the
+ * worktree is cut from it exactly. `'missing'` throws
+ * {@link RepairTargetMissingError} instead of falling back to trunk.
+ * docs/specs/workflow-state-kernel.md §13.11 rule 1.
+ *
  * @returns A git ref like `origin/main` or `origin/buildd/abc-fix-tests`
  */
 export async function resolveWorktreeBase(
   opts: ResolveWorktreeBaseOptions,
 ): Promise<string> {
   const { defaultBranch, context, fetchBranch, log, onFallback } = opts;
+  const repairTarget = readRepairTarget(context);
 
   const resumeCandidate =
     typeof context?.resumeBranch === 'string' && context.resumeBranch.length > 0
@@ -111,12 +123,20 @@ export async function resolveWorktreeBase(
     return `origin/${resumeCandidate}`;
   }
   if (result === 'diverged') {
+    if (repairTarget) {
+      log?.(
+        `[worktree] resumeBranch ${resumeCandidate} is far ahead of ${defaultBranch}, and it is PR #${repairTarget.prNumber}'s head — ` +
+        `repairing it in place (merge the PR's base in), not starting fresh`,
+      );
+      return `origin/${resumeCandidate}`;
+    }
     log?.(`[worktree] resumeBranch ${resumeCandidate} is diverged beyond recovery — falling back to ${defaultBranch}`);
     onFallback?.({ candidate: resumeCandidate, reason: 'diverged' });
     return `origin/${defaultBranch}`;
   }
 
   // result === 'missing'
+  if (repairTarget) throw new RepairTargetMissingError(repairTarget);
   log?.(
     `[worktree] resumeBranch ${resumeCandidate} not found on remote — falling back to ` +
     (declaredBase ? `declared base ${declaredBase}` : defaultBranch),

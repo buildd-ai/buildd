@@ -154,6 +154,12 @@ async function inspectOnce(params: {
    * If the delta can't be read, the full PR file list is used, as before.
    */
   deltaBase?: string | null;
+  /**
+   * Open PRs this PR replaces (`predecessorPrNumbers`): their migration slots
+   * are not collisions. A successor must never be told to renumber around
+   * the PR it supersedes (spec workflow-state-kernel §13.11 rule 5).
+   */
+  ignorePrNumbers?: readonly number[];
 }): Promise<MigrationSafety> {
   let completeFiles: GitHubPullRequestFile[] | null = null;
   let usedDelta = false;
@@ -281,6 +287,7 @@ async function inspectOnce(params: {
         return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions', kind: 'uninspectable' };
       }
       if (pull.number === params.prNumber) continue;
+      if (params.ignorePrNumbers?.includes(pull.number as number)) continue;
       const peer = pull as { number: number; base?: { ref?: string }; head?: { sha?: string } };
       // Separate integration branches acquire a shared namespace only when
       // their integration PRs target the same branch.

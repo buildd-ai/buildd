@@ -774,6 +774,31 @@ describe('explainPr — a dirty mission PR', () => {
     expect(answer.because.map(l => l.order)).toEqual(answer.because.map((_, i) => i + 1));
   });
 
+  // Spec workflow-state-kernel §13.11 rule 3: "dirty PR mislabeled ready".
+  it('a conflicted PR is never READY FOR REVIEW / ready to merge', async () => {
+    const answer = (await explainPr(subject, ACTOR))!.subjects[0];
+    expect(answer.chip.label).not.toBe('READY FOR REVIEW');
+    expect(answer.situation.headline).not.toContain('ready to merge');
+    expect(answer.waitingOn).toMatchObject({ kind: 'landing_blocked', cause: 'conflicted', owner: 'platform', prNumbers: [101] });
+  });
+
+  it('a dirty, colliding PR whose repair attempts all ended needs a person', async () => {
+    taskRows.push(task({
+      id: 'task-noop-fix', title: '[builder · after conflict #1] Mission PR', status: 'completed', taskClass: 'attempt',
+      parentTaskId: 'task-mission-pr', creationSource: 'conflict', updatedAt: new Date('2026-01-02T01:00:00.000Z'),
+    }));
+    gateEventRows = [{
+      occurredAt: new Date('2026-01-02T03:00:00.000Z'), gate: 'pr_landing', outcome: 'deferred',
+      reason: 'PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch; also refused: migration number collision: <n>_a.sql is at or below <n>_b.sql, already on the base',
+      detail: { prNumber: 101, headSha: 'h1' },
+    }];
+    const answer = (await explainPr(subject, ACTOR))!.subjects[0];
+    gateEventRows = [];
+    expect(answer.displayState).toBe('blocked');
+    expect(answer.waitingOn).toMatchObject({ kind: 'landing_blocked', cause: 'repair_exhausted', owner: 'person' });
+    expect(answer.nextAction).toContain('regenerate the migration');
+  });
+
   it('derives the touch set from stored rows — no merge attempt, no GitHub call', async () => {
     await explainPr(subject, ACTOR);
     // Only the base-side merge query ran against workers; nothing shelled out.
