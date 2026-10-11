@@ -12,6 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
 import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
+import { detachTeamStoredFiles, removeTeamStoredFiles } from '@/lib/artifact-team-files';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
 const MAX_CHAT_BUDGET_USD = 100_000;
@@ -358,10 +359,13 @@ export async function DELETE(
       return NextResponse.json({ error: 'Cannot delete personal team' }, { status: 400 });
     }
 
-    await db.delete(teams).where(eq(teams.id, id));
+    // Its artifacts cascade, their stored objects do not: detach the rows that
+    // hold one in the same transaction as the delete, then remove them.
+    await db.batch([detachTeamStoredFiles(id), db.delete(teams).where(eq(teams.id, id))]);
     // Its conversations went with it (cascade); their chat attachments do not
     // cascade, so remove them now. Whatever is left, the maintenance sweep takes.
     await removeTeamChatAttachments(id);
+    await removeTeamStoredFiles(id);
 
     return NextResponse.json({ success: true });
   } catch (error) {
