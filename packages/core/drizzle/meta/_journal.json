@@ -345,6 +345,13 @@
       "when": 1791714602373,
       "tag": "0306_amusing_omega_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 307,
+      "version": "7",
+      "when": 1791717557926,
+      "tag": "0307_panoramic_maddog",
+      "breakpoints": true
     }
   ]
 }

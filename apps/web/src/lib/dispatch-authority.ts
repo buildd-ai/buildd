@@ -96,14 +96,16 @@ export const KICK_GRACE_MS = 30_000;
 export async function wakeTask(
   taskId: string,
   cause: DispatchCause,
-  opts: { notBefore?: Date; targetLocalUiUrl?: string | null } = {},
+  /** `metadata`: delivery hints and tracing only (e.g. a recovery action key), never task state. */
+  opts: { notBefore?: Date; targetLocalUiUrl?: string | null; metadata?: Record<string, unknown> } = {},
 ): Promise<void> {
   try {
+    const metadata = { ...(opts.metadata ?? {}), ...(opts.targetLocalUiUrl ? { targetLocalUiUrl: opts.targetLocalUiUrl } : {}) };
     await enqueueTaskDispatch({
       taskId,
       cause,
       notBefore: opts.notBefore,
-      metadata: opts.targetLocalUiUrl ? { targetLocalUiUrl: opts.targetLocalUiUrl } : undefined,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     });
   } catch (err) {
     // The trigger row (if any) still stands; a missing cause costs precision, not the wake.

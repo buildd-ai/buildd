@@ -77,6 +77,8 @@ describe('composition root', () => {
       'reviews:supersession-detect-on-close',
       'reviews:supersession-reconcile-on-close',
       'reviews:dead-pr-shutdown',
+      // A closed blocker is a recovery moment (failure-incident-recovery §12(a)).
+      'health-quality:failure-incident-recovery-on-pr-closed',
       'jev-decisions:verdict-on-close',
     ]);
     expect(byEvent('pr.close_delivered')).toEqual(['jev-decisions:merge-readiness-outcome', 'reviews:pr-activity-on-close', 'reviews:review-callback-on-close']);

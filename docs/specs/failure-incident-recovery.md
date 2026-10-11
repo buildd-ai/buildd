@@ -1,15 +1,53 @@
 ---
 title: Failure Incident Recovery
-status: draft
+status: active
 owner: max
 last_verified: 2026-10-11
 summary: A failure incident MUST carry one fresh, versioned recovery assessment that is re-checked before any repair, resolved only by a passing check, and shown identically on every surface.
 domain: tasks
-surfaces: [apps/web/src/lib/failure-incident-store.ts, apps/web/src/lib/failure-incident-escalation.ts, apps/web/src/lib/failure-pattern-sweep.ts, apps/web/src/lib/failure-pattern-sentinel.ts]
+surfaces: [apps/web/src/lib/failure-incident-recovery.ts, apps/web/src/lib/failure-incident-recovery-path-overlap.ts, apps/web/src/lib/failure-incident-store.ts, apps/web/src/lib/failure-incident-escalation.ts]
 related: [path-claim-ownership, task-dispatch-authority, claim-ordering, workflow-state-kernel, decision-kinds, surface-ia-home-missions-initiatives, execution-control-plane]
-keywords: [failure_incidents, Failure Pattern Sentinel, incident, path_overlap_stall, path_overlap.no_progress, recovery assessment, Needs You, no_next_step, Nothing is fixing it, escalation gate, incident page, stale incident, reopen, dismiss]
-verified_by: [apps/web/src/lib/failure-incident-store.test.ts, apps/web/src/lib/failure-incident-actions.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/failure-pattern-sentinel.test.ts, apps/web/src/lib/failure-pattern-sweep.test.ts]
+keywords: [failure_incidents, Failure Pattern Sentinel, incident, path_overlap_stall, path_overlap.no_progress, recovery assessment, Needs You, no_next_step, Nothing is fixing it, escalation gate, incident page, stale incident, reopen, dismiss, infrastructure failure, capability gap, needs_operator, How should I proceed, surface audit boot failure, artifact_revisions immutable]
+verified_by: [apps/web/src/lib/failure-incident-recovery.test.ts, apps/web/src/lib/failure-incident-store.test.ts, apps/web/src/lib/failure-incident-actions.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/failure-pattern-sentinel.test.ts, apps/web/src/lib/failure-pattern-sweep.test.ts, packages/core/__tests__/gate-events.test.ts, apps/web/src/lib/pr-reconcile.test.ts, apps/web/src/lib/pr-merged-work.test.ts]
 supersedes: []
+assertions:
+  - id: "plan-recovery"
+    type: "symbol"
+    name: "planRecovery"
+    path: "apps/web/src/lib/failure-incident-recovery.ts"
+  - id: "assess-incident"
+    type: "symbol"
+    name: "assessIncident"
+    path: "apps/web/src/lib/failure-incident-recovery.ts"
+  - id: "path-overlap-policy"
+    type: "symbol"
+    name: "evaluatePathOverlap"
+    path: "apps/web/src/lib/failure-incident-recovery-path-overlap.ts"
+  - id: "reopen-recovery"
+    type: "symbol"
+    name: "reopenRecovery"
+    path: "apps/web/src/lib/failure-incident-store.ts"
+  - id: "gate-follows-recovery"
+    type: "symbol"
+    name: "incidentSubjectRecovery"
+    path: "apps/web/src/lib/failure-incident-escalation.ts"
+  - id: "merge-reassess"
+    type: "symbol"
+    name: "reassessIncidentsNamingPr"
+    path: "apps/web/src/lib/failure-pattern-sweep.ts"
+  - id: "backstop-reachable"
+    type: "symbol_reachable"
+    symbol: "assessDueIncidents"
+    entry: "apps/web/src/lib/failure-pattern-sweep.ts"
+  - id: "recovery-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/failure-incident-recovery.test.ts"
+  - id: "sweep-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/failure-pattern-sweep.test.ts"
+  - id: "gate-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/failure-incident-escalation.test.ts"
 ---
 
 # Failure Incident Recovery
@@ -26,14 +64,17 @@ assessment.
 This spec owns the Failure Pattern Sentinel's incident ledger and its recovery
 layer. There was no owning spec before: the ledger (#4066) and the escalation
 adapter (#4294) shipped against code comments and a private design. §1 records
-what ships today, so the gaps in §2 are against real code. §3–§10 are the
-contract. Path overlap (`path_overlap_stall`) is the first family. The contract
-is written so that every other `FailureIncidentRule` can implement it without
-changing it.
+the baseline the gaps in §2 were found against; §1.5 records what workstream
+(a) changed. §3–§10 are the contract. Path overlap (`path_overlap_stall`) is
+the first family. The contract is written so that every other
+`FailureIncidentRule` can implement it without changing it. §16 extends it to
+infrastructure failures that today surface as a person's question, and §17 is
+the surface/state matrix every surface is held to.
 
-Status is `draft`: the recovery layer is not built. Only the §1 baseline is
-guarded by the `verified_by` tests. Promote this spec to `active` when
-workstream (a) in §12 ships with its tests.
+Status is `active`: workstream (a) shipped the assessment, the path-overlap
+policy, the merge hooks and the backstop, guarded by the `verified_by` tests.
+Workstreams (b) and (c) and the §16 family are not built yet; their sections
+say NOT IMPLEMENTED where it matters.
 
 ---
 
@@ -101,6 +142,36 @@ There is no recovery state machine. These are the only states that exist:
 - for the deferred task: pending, with `path_claim_waiters` rows that are notified or not notified.
 
 §4 maps the recovery states onto exactly these. No new status value is added.
+
+### 1.5 Reconciled with PR #4412 and workstream (a)
+
+- **PR #4412** (merged to dev before this spec went active) added a sweep
+  reconcile that resolved an open `path_overlap_stall` incident when its
+  blocker PR merged or closed, or every named task left `pending`, and made a
+  path-overlap stall Buildd's in the gate. Its resolve check accepted "the
+  blocker merged" on its own. §7 does not: a merged blocker is the start of
+  recovery, not proof of it. Workstream (a) replaced that reconcile with the
+  assessment (§3) and its per-subject check, and kept #4412's other two
+  properties: unknown evidence never resolves, and a path-overlap wait never
+  pages the owner unless the assessment reaches `needs_decision`.
+- **Workstream (a)** fixed G1 (per-blocker deferral streaks in
+  `recordOrCoalesceDeferral`, one collector entry per (task, blocker), only a
+  task's newest episode can be a stall, `FAILURE_PATTERN_DETECTOR_VERSION`
+  `fps-v2`), G2 (a delivered `path_claim.released` wake counts as progress),
+  G3 (the assessment resolves on a passing check), G4 (the fingerprint carries
+  generation and state; any assessment change re-gates; Home ignores a person
+  verdict the current assessment contradicts), G6 (`reconcileStalePrWorkers`
+  calls `releaseAndNotify(..., 'merged')`) and G7 (deferral `detail` carries
+  `blockingTaskId` and up to 20 overlapping `paths`). G5 and G9 belong to
+  workstream (b). G8 (`checkStarvation`) is untouched.
+- **The merge hook is a subscriber.** Core (`pr-merged-work.ts`) may not
+  import the sentinel module (`scripts/module-boundaries.test.ts`), so the
+  re-assessment runs from a `pr.closed` subscriber in
+  `apps/web/src/lib/failure-pattern-subscribers.ts`. `runMergedPrWork` emits
+  that event after it schedules `releaseAndNotify`; the subscriber runs after
+  the response, merged or closed. A merge healed by `reconcileStalePrWorkers`
+  reaches it through the kernel import for a kernel-owned PR. For any other
+  PR, the backstop sweep catches it.
 
 ---
 
@@ -174,7 +245,8 @@ One assessment per incident, kept up to date. Shape (JSON, `v: 1`):
 recovery: {
   v: 1,
   generation: number,          // bumps on every change of cause, subject set or blocker set, and on reopen
-  cause: { reasonCode: string, rule: FailureIncidentRule },   // e.g. 'path_overlap.blocker_open'
+  cause: { reasonCode: string, rule: FailureIncidentRule,     // e.g. 'path_overlap.blocker_open'
+           ownership: 'workflow' | 'infrastructure' | 'person' },   // §16: classified before anyone is asked
   subjects: Array<{ kind: 'task' | 'pr' | 'worker', id: string }>,   // bounded like affectedRefs
   blockers: Array<{ kind: 'pr' | 'task' | 'lease', id: string, state: string, observedAt: string }>,
   overlappingPaths: string[],   // bounded (≤ 20), path-overlap family only; [] when unknown
@@ -183,14 +255,16 @@ recovery: {
   firstSeenAt: string,          // this episode's start (§5 rule 3), not the incident's
   lastSeenAt: string,
   lastProgressAt: string | null,  // newest of: worker created, wake delivered, blocker changed, blocker state moved
-  owner: 'buildd' | 'person',
-  state: 'observing' | 'recovering' | 'waiting' | 'needs_decision' | 'inconclusive' | 'recovered',
+  owner: 'buildd' | 'operator' | 'person',     // 'operator': §16
+  state: 'observing' | 'recovering' | 'waiting' | 'needs_decision' | 'needs_operator' | 'inconclusive' | 'recovered',
   nextAction: { kind: string, label: string, key: string } | null,   // what Buildd does next, or asks
   nextCheckAt: string | null,     // required unless state is 'recovered' or owner is 'person'
   decision?: { question: string, options: Array<{ capability: string, label: string, effect: string }>,
                recommended: string },
   verification: { predicate: string, params: Record<string, unknown> },   // §6
   budget: { spent: number, limit: number, deadlineAt: string, spentKeys: string[] },   // spentKeys bounded, current generation only
+  capabilityGap?: { capability: string, reason: string },   // operator-owned only (§16)
+  attempts: Array<{ key, action, subject, at, generation }>,  // repairs actually run, all generations, bounded (20); never rewritten
 }
 ```
 
@@ -230,6 +304,7 @@ recovery: {
 | `recovering` | `open` | Buildd `wait_machine`, with the repair named in `nextAction` | no | no |
 | `waiting` (on a live blocker) | `open` | Buildd `hold`, `holdUntil = nextCheckAt` | no | no |
 | `needs_decision` | `open` | person, rail `no_next_step` (or `critical_incident`) | yes, once | once per generation |
+| `needs_operator` (§16) | `open` | Buildd `hold`, reason names the capability gap | no | no; the gap goes to the operator through `reportOps` |
 | *(person dismissed it)* | `acknowledged` | whatever the verdict was; not re-paged unless severity rises | no | no |
 | `recovered` | `resolved` (`resolvedAt` set) | Buildd `hold` ("Resolved, nothing to do.") | no | no |
 
@@ -340,6 +415,28 @@ out or the deadline passes (§8) while the state is still `recovering` or
 `waiting`, the state becomes `needs_decision` with the options the last rule
 offered.
 
+**As implemented** (`evaluatePathOverlap` in
+`apps/web/src/lib/failure-incident-recovery-path-overlap.ts`):
+
+- **Evaluation order** is 1, 2, 3, 6, 8, 7, 5, 4. A cycle, an exempt subject
+  and a spurious overlap are checked before "the blocker is open", because a
+  blocker that is open and moving would otherwise hide them (AC-8 requires a
+  cycle to decide at once).
+- **Rule 1** passes when the task left `pending`, started a worker after its
+  episode began, or was deferred behind a *different* blocker since (that wait
+  is another incident's episode). "No deferral since the last observation" is
+  not used: a task nobody polled has no deferral either, and that is not
+  progress.
+- **Rule 5's "no progress past the deadline"** is the rule 4 wait running into
+  the episode deadline, which becomes `needs_decision`. Only an `ESCALATED`
+  delivery is `blocked_by_escalation`.
+- **Rule 7** reads `diffPaths`, which the sweep's observer leaves unknown (it
+  makes no GitHub call), so it is dark until a diff source is wired.
+- **Combining subjects:** each subject is judged on its own episode. The
+  incident takes the most urgent verdict (decide, repair, operator, delegated,
+  wait, inconclusive) and passes only when every subject passes and the
+  incident kept a ref for every stalled task.
+
 ---
 
 ## 7. Resolution, dismissal and reopen
@@ -414,6 +511,13 @@ offered.
     flight.
   - Concurrent triggers (the merge hook, the release hook, the sweep, a click)
     collapse onto the lease plus the action key.
+  - A repair whose re-check (`nextCheckAt`, 2 minutes) is not yet due is in
+    flight: a trigger that plans the same action again in that window reuses
+    its key and runs nothing.
+- **Order inside one call** (`assessIncident`): observe, plan, and only if a
+  repair is planned, take the lease and observe again; a different evidence
+  revision drops the repair and writes the fresher assessment (I-3); then one
+  CAS writes the assessment with the key spent (I-4); then the repair runs.
 
 **Default budget, backoff and deadline (proposals; per-workspace tuning is out of scope):**
 
@@ -522,6 +626,9 @@ Every path below exists today, unless it is marked *new*.
 
 ### (a) Backend: assessment, path-overlap recovery, merge-triggered reconcile, sweep backstop
 
+Shipped (§1.5). The optional `EscalationAction` additions were not needed: a
+repair records as `wait_machine` with the assessment's own sentence.
+
 - **Migration.** `packages/core/db/schema.ts` gets `failure_incidents.recovery`
   jsonb, nullable. Generate the migration with `bun db:generate`. Check the next
   free index against `origin/dev` first: this mission branch can lag dev.
@@ -619,14 +726,19 @@ Every path below exists today, unless it is marked *new*.
 
 ## 14. Code surface
 
-- `apps/web/src/lib/failure-pattern-sentinel.ts`: `detectFailurePatterns`, `rulePathOverlapStall`, `DEFAULT_SENTINEL_THRESHOLDS`
-- `apps/web/src/lib/failure-pattern-sweep.ts`: `runFailurePatternSweep`, `SWEEP_LOOKBACK_MINUTES`
+- `apps/web/src/lib/failure-incident-recovery.ts`: `planRecovery`, `assessIncident`, `assessDueIncidents`, `recoveryDue`, `evidenceRevision`, `recoveryActionKey`, `RecoveryFamily`, `RecoveryEffects`, `productionRecoveryEffects`, `claimRecoveryLease`, `RECOVERY_BUDGET_LIMIT`, `RECOVERY_BACKOFF_MINUTES`
+- `apps/web/src/lib/failure-incident-recovery-path-overlap.ts`: `evaluatePathOverlap`, `dbObservePathOverlapRecovery`, `pathOverlapRecoveryFamily`
+- `packages/shared/src/types.ts`: `FailureIncidentRecovery`, `FailureRecoveryState`, `FailureRecoveryOwner`, `FailureCauseOwnership`, `FailureRecoveryCapability`
+- `apps/web/src/lib/failure-pattern-sentinel.ts`: `detectFailurePatterns`, `rulePathOverlapStall`, `DEFAULT_SENTINEL_THRESHOLDS`, `FAILURE_PATTERN_DETECTOR_VERSION`
+- `apps/web/src/lib/failure-pattern-sweep.ts`: `runFailurePatternSweep`, `SWEEP_LOOKBACK_MINUTES`, `reassessIncidentsNamingPr`, `regateAlert`
 - `apps/web/src/lib/failure-incident-store.ts`: `upsertIncident`, `mergeIncident`, `updateIncidentState`, `applyIncidentAction`, `createDbIncidentPort`
 - `apps/web/src/lib/failure-incident-actions.ts`: `actOnIncidentResults`, `claimIncidentAlert`, `planIncidentAlert`, `formatIncidentAlert`, `incidentDeepLink`
-- `apps/web/src/lib/failure-incident-escalation.ts`: `incidentEscalationRule`, `incidentFingerprint`, `createGatedIncidentSender`, `loadIncidentNeedsYou`, `incidentNeedsYouItems`, `loadIncidentVerdicts`
+- `apps/web/src/lib/failure-incident-escalation.ts`: `incidentEscalationRule`, `incidentFingerprint`, `incidentSubjectRecovery`, `createGatedIncidentSender`, `loadIncidentNeedsYou`, `incidentNeedsYouItems`, `loadIncidentVerdicts`
 - `packages/core/escalation-gate.ts`: `EscalationVerdict`, `verdictCode`, `verdictFromCode`
 - `packages/core/gate-events.ts`: `recordOrCoalesceDeferral`, `recordDeferralOnce`
 - `packages/core/path-claim.ts`: `releaseClaims`, `registerClaimDeferralWaiters`, `checkStarvation`
+- `packages/core/path-overlap.ts`: `boundDeferralPaths`, `MAX_DEFERRAL_PATHS`
+- `apps/web/src/app/api/workers/claim/route.ts`: the `path_overlap` deferral `detail` (`blockingTaskId`, `paths`)
 - `apps/web/src/lib/path-claim-release.ts`: `releaseAndNotify`
 - `apps/web/src/lib/pr-merged-work.ts`: `runMergedPrWork`
 - `apps/web/src/lib/pr-reconcile.ts`: `reconcileStalePrWorkers`
@@ -643,3 +755,206 @@ Every path below exists today, unless it is marked *new*.
 - Per-workspace tuning of the §8 defaults.
 - Registering an adapter for the outbox's `incident` intent.
 - Changing who may merge, or any rule of the PR escalation gate.
+
+---
+
+## 16. Infrastructure failures must not become a person's question
+
+*Owner scope amendment, 2026-10-11.* The contract above extends to failures in
+Buildd's own machinery that today reach a person as a generic question. Status:
+**NOT IMPLEMENTED** beyond the shared types (`cause.ownership`, owner
+`operator`, state `needs_operator`, `capabilityGap`, which `planRecovery`
+already handles). The delivery tasks are listed in §16.7.
+
+### 16.1 The case
+
+A surface-audit task in an MCP connection mission (`7d3ff681`, mission
+`9bca3364`) dispatched `visual-qa.yml` to capture screenshots. The workflow's
+database scrub step failed on the `artifact_revisions` immutability trigger, so
+the app never booted and no screenshot existed. The auditor followed its
+prompt's "Boot failure" section and asked the owner "How should I proceed?",
+offering options it made up (sync dev, capture dev, cancel). No person's
+decision could fix a failing scrub, and "capture dev" would have substituted
+evidence from a different revision.
+
+Gaps, against the code:
+
+- **H1. No classification.** A failed `visual-qa.yml` run is only a failed run.
+  `classifyPageLoad` (`packages/core/visual-qa-page-source.ts`) types the two
+  preview auth walls and nothing else; scrub, guard, migration, clone and
+  browser failures have no code.
+- **H2. The prompt turns every capture failure into a question.** The auditor
+  role's "Boot failure" section (`apps/web/src/lib/default-roles.ts`) tells it
+  to call `AskUserQuestion`, whatever failed.
+- **H3. The question carries no cause.** `workers.waitingFor` holds prompt and
+  options only. Nothing reconciles it when the infrastructure is repaired;
+  `cleanupStuckWaitingInput` only ages it out.
+- **H4. Exhaustion has one exit.** When retries run out, the only route is the
+  question, so "retry exhaustion" invents a human decision.
+- **H5. The mission cannot say why.** Mission progress shows the audit as
+  running or waiting on the owner, not as blocked by a repair.
+
+### 16.2 Classify cause and ownership before asking anyone
+
+Every failure that would produce a `waiting_input` question or a Needs You card
+is classified first, into `cause.ownership`:
+
+| Ownership | Meaning | Examples | May ask a person? |
+|---|---|---|---|
+| `infrastructure` | Buildd's own machinery or environment failed; no workspace person's decision fixes it | QA clone, scrub, guard, migration on the clone, browser launch, runner sandbox, a credential Buildd holds | **No.** Repair, then operator (§16.4) |
+| `workflow` | Coordination between Buildd's own work items | path overlap (§6), retry forks, stale leases | Only through `needs_decision` with typed options (§4) |
+| `person` | A decision only an authorized person can make | the workspace's merge policy, a product choice, the preview auth walls `protection_bypass_missing` / `app_auth_not_configured` (owner setup), approving a destructive action | Yes: one concrete typed capability |
+
+Unknown ownership is explicit (`inconclusive`), never defaulted to `person`.
+
+### 16.3 The family: `infrastructure_failure`
+
+- **Rule and signature.** A new `FailureIncidentRule`, `infrastructure_failure`,
+  with signature `infrastructure_failure|ws=<id>|component=<component>|sig=<friction signature>`.
+  The friction signature is the normalized error (`toFrictionSignature`). So
+  every audit blocked by the same failing scrub statement is a subject of ONE
+  incident, and that incident files ONE fix task.
+- **Components (closed set, v1):** `visual_qa.clone`, `visual_qa.migrate`,
+  `visual_qa.scrub`, `visual_qa.guard`, `visual_qa.boot`, `visual_qa.browser`.
+- **Facts.** It is opened from a typed capture failure
+  `{ component, runId, step, errorSignature, ref, headSha }`, reported by the
+  capture path instead of a question (§16.5). Subjects are the blocked tasks
+  (`kind: 'task'`) and their missions (`kind: 'mission'`).
+- **Policy, in order:**
+  1. **Check passes.** A capture of the same component, on a run started after
+     the last repair, for the subject's own ref and head, succeeded. The state
+     becomes `recovered`, and the resume adapter runs (§16.4).
+  2. **No fix task.** Repair `file_fix_task`, once per generation, through the
+     existing fix-task path (`createDbFixTaskPort`, claim key
+     `failure-incident-fix:<id>`).
+  3. **Fix task running.** `delegated`, `fix_task_running`.
+  4. **Fix task finished, check not re-run.** Repair `retry_capture`: re-queue
+     the blocked audits through the resume adapter. Bounded by `budget.limit`
+     (3) per generation.
+  5. **Budget spent or deadline passed.** `needs_operator`, with `capabilityGap
+     { capability: 'repair_infrastructure:<component>', reason }`. Not
+     `needs_decision`: exhaustion alone does not create a person's decision.
+     The gap goes to the operator over `reportOps`. The buildd-admin operator
+     recovery queue (operator-recovery spec, buildd-admin) reads it from there.
+  6. **A concrete authorized decision exists.** Only if the policy names a
+     typed capability only a workspace person holds (none exists in v1; waiving
+     the mission's surface audit is one candidate, and it is the person's call
+     to make, never recovery's) is the state `needs_decision`.
+
+### 16.4 Adapters to tasks and missions (no second lifecycle writer)
+
+- **Task adapter.** Each blocked task gets `context.recoveryRef = { incidentId,
+  generation }`, written through the existing context merge (the fix-task
+  port's `touch` shape). Task surfaces read the incident's assessment through
+  it. They never parse the question text.
+- **Stale question.** Once a blocked task has a `recoveryRef`, its worker's
+  open `waiting_input` question is superseded. It is closed through the
+  existing waiting-input cleanup writer (`cleanupStuckWaitingInput` in
+  `apps/web/src/lib/stale-workers.ts`) with reason `superseded_by_recovery`.
+  The worker row, its question and its attempt stay as history.
+- **Resume.** When §16.3 rule 1 passes, each blocked task goes back to
+  `pending` through the existing requeue writer and is woken with
+  `wakeTask(taskId, 'task.requeued')`. The claim route decides when it runs.
+- **Mission adapter.** The audit obligation stays where it is
+  (`evaluateSurfaceAuditGate`). A required audit whose task carries a
+  `recoveryRef` reads "Audit blocked: <component> repair <state>". It stays
+  unmet: completion progress never counts it as done.
+- **Rollout and periodic reconciliation.** The existing sentinel cron
+  reconciles legacy open states. It looks at every `waiting_input` worker on a
+  surface-audit task whose run has a typed capture failure. The run's failing
+  step is read from the Actions API through the existing GitHub client. A
+  legacy question with no such record stays as it is, marked unclassified, and
+  is never auto-answered. Unknown stays explicit.
+
+### 16.5 The capture path reports, it does not ask
+
+- **Capture path.** `scripts/qa/capture.ts` and the `visual-qa.yml` steps emit
+  `{ component, step, errorSignature }` for a failure, in the
+  `qa-screenshots` artifact's manifest.
+- **Auditor.** The auditor role's "Boot failure" section reports that object
+  through its existing progress and completion path (a structured
+  capture-failure field (proposed)). It does not call `AskUserQuestion`.
+- **The person's question is kept** for the two preview auth walls, which are
+  owner setup (§16.2), with typed options.
+
+### 16.6 Invariants and acceptance
+
+- I-9. No `waiting_input` question and no `needs_decision` is produced for a cause whose ownership is `infrastructure` or `workflow`, unless the policy names a typed capability only a person holds.
+- I-10. One incident, and so at most one fix task, per (workspace, component, error signature). N blocked audits are N subjects of it.
+- I-11. Recovery never marks an audit passed, waives it, cancels or deletes a task, worker, question or attempt.
+- I-12. A blocked audit resumes only after the check passes on a capture run started after the last repair, for its own ref and head. Evidence from another revision or branch never satisfies it.
+- AC-13: GIVEN two surface-audit tasks whose captures fail on the same scrub statement WHEN both report THEN one `infrastructure_failure` incident exists with both tasks as subjects, one fix task is filed, and neither worker is in `waiting_input`.
+- AC-14: GIVEN the fix task merged and a later capture of the same component succeeds for each audit's own head WHEN assessed THEN the incident is `recovered` and each audit task is `pending` and woken once, with its earlier attempts and question kept.
+- AC-15: GIVEN three `retry_capture` repairs that all failed WHEN a fourth is planned THEN none runs, the state is `needs_operator` with a `capabilityGap`, no Needs You card exists, and one `reportOps` warning was sent.
+- AC-16: GIVEN a legacy `waiting_input` audit question with no typed capture failure on record WHEN the rollout sweep runs THEN the question is unchanged and marked unclassified.
+- AC-17: GIVEN a capture that hits `app_auth_not_configured` WHEN classified THEN ownership is `person`, and the question offers the typed owner-setup action, not retry or cancel.
+
+### 16.7 Delivery
+
+These are dependent builder tasks in this mission. Each one claims its paths
+before editing. The overlap with the control-plane mission (`27b1fe42`, which
+hosts crons and drains) and the automatic visual-review mission (which owns
+the auditor role and capture) is coordinated through those path claims.
+
+1. Task `b3cb321d`, **shipped in #4420**. Repair the scrub itself:
+   `scripts/qa/scrub-pii.sql` now switches a table's user triggers off for the
+   generic overwrite on the throwaway clone, so the `artifact_revisions`
+   immutability trigger no longer fails it (the concrete failure in §16.1).
+2. Task `89d92f1a`. Typed capture failures, plus the auditor prompt: §16.5, H1, H2.
+3. Task `1acc6048`. The `infrastructure_failure` family on this contract, with the task and
+   mission adapters and rollout reconciliation: §16.3, §16.4, H3–H5.
+
+---
+
+## 17. Surface and state matrix
+
+Every surface reads ONE canonical assessment, through an adapter: the
+incident's `recovery`, or a task's or mission's `recoveryRef` to it. No
+surface derives state from question text, a string match on errors, or its own
+heuristics. Workstream (b) and the §16 tasks deliver this matrix. Today only
+the gate column is wired (§1.5).
+
+### 17.1 What each state shows
+
+| State | Status word | Owner shown | Question controls | Counts in Needs You and badge | Global banner |
+|---|---|---|---|---|---|
+| `observing` | Checking current status | Buildd | no | no | no |
+| `recovering` (repair queued or running) | Repair queued / Repair running, plus what the repair is | Buildd | no | no | no |
+| `recovering` (retry n of 3) | Retrying (n of 3) | Buildd | no | no | no |
+| `waiting` | Waiting for PR #N / for task X, plus next check time | Buildd | no | no | no |
+| `inconclusive` | Couldn't confirm, plus next check time | Buildd | no | no | no |
+| `needs_operator` | Automatic recovery unavailable: reason, and the operator action | Operator | no | no | no; the operator gets it over `reportOps` |
+| `needs_decision` | The one question, with typed options | Person | yes, typed capabilities only | yes, once | yes, while unanswered |
+| `recovered` / superseded | Recovered at HH:MM: what moved | n/a | no | no, removed after reconciliation | no |
+
+Copy rules are those of §9. "Fixed", "resolved" and "recovered" appear only for
+`recovered`. Diagnostics, raw ids, paths and attempt history live in
+expandable details on every surface.
+
+### 17.2 Surfaces and their adapter
+
+| Surface | Reads | Must not |
+|---|---|---|
+| Global attention banner | incident / `recoveryRef` → §17.1 | show a banner for any state but `needs_decision` |
+| Home Needs You | `incidentNeedsYouItems` (generation-checked) and task questions via `recoveryRef` | list a question superseded by recovery |
+| Nav badge / count | same rows as Home Needs You | count anything Home does not list |
+| Mission list, detail, header, progress | mission adapter (§16.4) | show RUNNING or done for an audit blocked by a repair |
+| Task list, detail, mobile task sheet | task adapter (`recoveryRef`) | offer question controls for a superseded question |
+| Activity / chat cards and question forms | task adapter | render "How should I proceed?" for a system failure |
+| Incident detail | incident `recovery` + generation-matched verdict | say "Nothing is fixing it" |
+| Notifications / push | `createGatedIncidentSender` → `notifyTeam` only | send for any state but `needs_decision` or critical |
+
+### 17.3 Verification matrix
+
+Each case is covered on every surface in §17.2. Tests assert the state and the
+owner. Screenshots at 390 px and desktop width, in both themes, through
+`visual-qa.yml`, prove the rendering (workstream (b)).
+
+| Case | Fixture | Expected on every surface |
+|---|---|---|
+| stale prompt (pre-recovery question, recovery now owns it) | legacy `waiting_input` + `recoveryRef` | question gone from banner, Home, badge, cards; history kept |
+| repairing | `recovering`, `file_fix_task` / `release_blocker` | "Repair running" with owner Buildd and next check |
+| retry exhausted | `needs_operator` | "Automatic recovery unavailable" with the gap; not in Needs You |
+| genuine decision | `needs_decision` (cycle, AC-8) | one card, typed options, push once |
+| inconclusive | failed read (AC-3) | "Couldn't confirm", next check, no green |
+| recovered | check passed (AC-2, AC-14) | gone from banner, Home and badge; incident page says recovered |

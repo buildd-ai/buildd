@@ -35,7 +35,9 @@ import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import { gateFrictionSignature } from '@buildd/core/gate-friction-signature';
 
 /** Part of the incident key. Bump when a rule's signature shape or meaning changes. */
-export const FAILURE_PATTERN_DETECTOR_VERSION = 'fps-v1';
+// fps-v2: path-overlap episodes are per (task, blocker) and never older than
+// the blocker (failure-incident-recovery §5 rule 3, I-8).
+export const FAILURE_PATTERN_DETECTOR_VERSION = 'fps-v2';
 
 export const MAX_EVIDENCE_REFS = 20;
 export const MAX_AFFECTED_REFS = 25;
@@ -125,14 +127,19 @@ export interface GateEventFact {
   occurredAt: string;
 }
 
-/** A task the claim loop keeps deferring behind a path overlap. */
+/**
+ * One episode of a task waiting behind ONE blocker: the collector emits one
+ * per (task, blocker), and only a task's newest episode can be a stall.
+ */
 export interface PathOverlapDeferralFact {
   taskId: string;
   blockingPrNumber: number | null;
   firstDeferredAt: string;
   lastDeferredAt: string;
-  /** Last sign the task or its blocker moved (claim, blocker merge/close…); null for none. */
+  /** Last sign the task moved since the episode began (a worker started, a wake delivered); null for none. */
   lastProgressAt: string | null;
+  /** When the blocker came to exist; the episode never starts before it (I-8). Absent: unknown. */
+  blockerCreatedAt?: string | null;
   /** `tasks.status` as read this sweep; null or absent when not read. */
   taskStatus?: string | null;
   /** The blocking PR as read this sweep; absent when not read. */
@@ -166,28 +173,6 @@ export function pathOverlapSubjectStuck(subject: PathOverlapSubjectState, blocke
   if (blocker === 'merged' || blocker === 'closed') return false;
   if (subject.status !== null && subject.status !== 'pending') return false;
   return subject.lastWorkerAt === null || subject.lastWorkerAt < since;
-}
-
-/**
- * Pure. The resolve check for a `path_overlap_stall` incident: its blocking PR
- * landed or closed, or every task it names is no longer stuck. Decided from
- * facts read now, never from "no new occurrence lately". An incident with no
- * known blocker, no named task, or more stalled tasks than it kept refs for
- * (`MAX_AFFECTED_REFS`) clears only through its blocker.
- */
-export function pathOverlapIncidentCleared(
-  incident: { firstSeenAt: string; affectedRefs: FailureIncidentAffectedRefs; impact: Record<string, number> },
-  obs: PathOverlapObservation,
-): boolean {
-  const blocker = incident.affectedRefs.prNumbers[0];
-  const blockerState = blocker === undefined ? 'unknown' : obs.prs.get(blocker) ?? 'unknown';
-  if (blockerState === 'merged' || blockerState === 'closed') return true;
-  const ids = incident.affectedRefs.taskIds;
-  if (ids.length === 0 || (incident.impact.stalledTasks ?? 0) > ids.length) return false;
-  return ids.every(id => {
-    const s = obs.tasks.get(id);
-    return !!s && s.status !== null && !pathOverlapSubjectStuck(s, blockerState, incident.firstSeenAt);
-  });
 }
 
 /** A failure or provider wall, and who it was charged to. */
@@ -505,7 +490,16 @@ function ruleStrandedGate(facts: SentinelFacts, t: SentinelThresholds): Incident
 }
 
 function rulePathOverlapStall(facts: SentinelFacts, t: SentinelThresholds): IncidentCandidate[] {
-  const stalled = (facts.pathOverlapDeferrals ?? [])
+  // A task's current episode is its newest one; an earlier blocker's wait is over.
+  const current = new Map<string, PathOverlapDeferralFact>();
+  for (const raw of facts.pathOverlapDeferrals ?? []) {
+    const d = raw.blockerCreatedAt && raw.blockerCreatedAt > raw.firstDeferredAt ? { ...raw, firstDeferredAt: raw.blockerCreatedAt } : raw;
+    const prior = current.get(d.taskId);
+    if (!prior || d.lastDeferredAt > prior.lastDeferredAt || (d.lastDeferredAt === prior.lastDeferredAt && (d.blockingPrNumber ?? -1) > (prior.blockingPrNumber ?? -1))) {
+      current.set(d.taskId, d);
+    }
+  }
+  const stalled = [...current.values()]
     .filter(d =>
       minutesBetween(d.firstDeferredAt, d.lastDeferredAt) >= t.pathOverlapStallMinutes &&
       // The same check the sweep resolves on, so a task that moved or a
