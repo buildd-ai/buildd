@@ -2316,6 +2316,39 @@ function renderArtifactRead(read: any): string {
   }
 }
 
+/**
+ * One-line state for a freshly created task, built only from fields the create
+ * response actually carries (dispatch outbox receipt, gate-ledger blocker,
+ * claim status). Anything not grounded falls back to a positive, async-neutral
+ * line — never "no runner has claimed it yet".
+ */
+export function describeCreatedTaskState(task: any): string {
+  if (task.startAt) return `Deferred until ${new Date(task.startAt).toISOString()}`;
+  if (task.status === 'assigned') return 'Claimed — a runner has picked it up';
+  if (task.status === 'in_progress') return 'Running';
+  if (task.status === 'completed' || task.status === 'failed') return `Terminal (${task.status})`;
+  const blocker = task.blockedByPr ?? task.deferral?.blockedByPr;
+  if (blocker?.prNumber || task.deferral?.reason) {
+    const reason = task.deferral?.reason ?? 'path_overlap';
+    const on = [
+      blocker?.prNumber ? `PR #${blocker.prNumber}` : null,
+      task.deferral?.blockingTaskId ? `task ${task.deferral.blockingTaskId}` : null,
+    ].filter(Boolean).join(' / ');
+    return `Created; currently deferred (${reason}${on ? ` — ${on}` : ''}). Pickup resumes when that clears.`;
+  }
+  const d = task.dispatch as { status?: string; deliveredVia?: string; deliveredAt?: string | null; handedOffAt?: string | null; target?: string } | undefined;
+  if (d?.status === 'delivered' && d.deliveredAt) {
+    return `Created and queued; wake delivered${d.deliveredVia ? ` via ${d.deliveredVia}` : ''} (delivery is not a claim — pickup is asynchronous)`;
+  }
+  if (d?.status === 'handed_off' || d?.handedOffAt) {
+    return `Created and queued; dispatch handed off${d.target ? ` to ${d.target}` : ''} (not yet confirmed delivered — pickup is asynchronous)`;
+  }
+  if (d?.status === 'pending' || d?.status === 'delivering') {
+    return 'Created and queued; dispatch enqueued, wake not yet delivered (pickup is asynchronous)';
+  }
+  return 'Created and queued; pickup is asynchronous';
+}
+
 export async function handleBuilddAction(
   api: ApiFn,
   action: string,
@@ -4028,11 +4061,7 @@ export async function handleBuilddAction(
         return text(`${how}: "${task.title}" (ID: ${task.id})\nYour report has been attached rather than dispatching a second agent onto a separate branch. Follow progress with get_task (taskId ${task.id}), or re-file with fileAnywayReason if this is genuinely distinct work.`);
       }
 
-      const statusLabel = task.startAt
-        ? `Deferred until ${new Date(task.startAt).toISOString()}`
-        : task.status === 'assigned'
-          ? 'Assigned — a runner has already claimed it'
-          : 'Queued — no runner has claimed it yet';
+      const statusLabel = describeCreatedTaskState(task);
 
       // Surface prior incidents/lessons/PRs related to this filing so the author
       // doesn't have to remember to run recall themselves — the CTA-derives-from-
@@ -4054,7 +4083,7 @@ export async function handleBuilddAction(
         ? `\nModel routing: ${task.routing.reason}`
         : '';
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${routingLine}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${subjectSuggestion}${similarTasksWarning}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}\nFollow progress at the Task URL below or with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${routingLine}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${taskBody.callbackUrl ? '\nCallback: callbackUrl receives one best-effort HTTPS POST when the task completes or fails; it is not a progress feed.' : ''}${subjectSuggestion}${similarTasksWarning}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
     }
 
     case 'create_schedule': {
