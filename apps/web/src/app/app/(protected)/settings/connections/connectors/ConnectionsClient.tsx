@@ -68,7 +68,7 @@ export default function ConnectionsClient({
   /** The team whose connectors are listed (the page's active team). Omitted = the API's choice. */
   teamId?: string | null;
   /**
-   * Holds `manage_connectors` in that team (overrides applied). False: the
+   * Holds `manage_connectors` in that team. False: the
    * list with each connector's status, and no add, connect, sharing or delete.
    */
   canManage?: boolean;
