@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
-import { sanitizeOverrides } from '@/lib/permission-registry';
+
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { emit } from '@/lib/core-emit';
 
@@ -47,7 +47,7 @@ export async function GET(req: NextRequest) {
         team: {
           columns: {
             id: true, name: true, slug: true, plan: true,
-            createdAt: true, updatedAt: true, permissionOverrides: true,
+            createdAt: true, updatedAt: true,
           },
         },
       },
@@ -70,8 +70,6 @@ export async function GET(req: NextRequest) {
 
     const result = memberships.map(m => ({
       ...m.team,
-      // Sanitized, so a client's roleHas() answers what the server will enforce.
-      permissionOverrides: sanitizeOverrides(m.team.permissionOverrides),
       role: m.role,
       memberCount: countMap.get(m.teamId) || 1,
     }));

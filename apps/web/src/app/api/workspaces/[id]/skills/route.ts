@@ -14,7 +14,7 @@ import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 import { normalizeBackend } from '@/lib/normalize-backend';
-import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
 async function authenticateRequest(req: NextRequest) {
@@ -54,7 +54,7 @@ async function sessionMayManageRole(
     touchesRole: boolean,
 ): Promise<boolean> {
     if (!access || !touchesRole) return true;
-    return roleHas(access.role, 'manage_agent_roles', await getTeamPermissionOverrides(access.teamId));
+    return roleHas(access.role, 'manage_agent_roles');
 }
 
 const ROLE_FORBIDDEN = { error: 'Managing agent roles requires team admin' };

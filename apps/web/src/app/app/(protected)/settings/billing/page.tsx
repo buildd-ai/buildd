@@ -77,8 +77,8 @@ export default async function BillingSettingsPage({
     perms.view_team_usage ? loadHostedRunnerMonth(currentTeam.id) : null,
   ]);
 
-  // manage_billing is locked to owner/admin; a personal team's user is its owner.
-  const canManageBilling = roleHas(currentTeam.role, 'manage_billing', null) || currentTeam.slug === `personal-${user.id}`;
+  // manage_billing is owner/admin; a personal team's user is its owner.
+  const canManageBilling = roleHas(currentTeam.role, 'manage_billing') || currentTeam.slug === `personal-${user.id}`;
 
   return (
     <SettingsPage title={title} readOnly={settingsReadOnly('billing', perms) && !canManageBilling}>

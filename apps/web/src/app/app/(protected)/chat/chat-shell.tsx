@@ -23,7 +23,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, tasks } from '@buildd/core/db/schema';
 import type { ChatAbout } from '@/lib/chat/entry-points';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+
 
 export interface ChatShellData {
   user: { id: string; name: string | null; email: string | null };
@@ -62,7 +62,7 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
     available: true,
     reason: null,
     canManageTeamKeys: avail.canManageTeamKeys,
-    audience: homeAudience(role, await getTeamPermissionOverrides(teamId)),
+    audience: homeAudience(role),
     context,
     conversations,
   };
