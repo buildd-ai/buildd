@@ -4983,7 +4983,7 @@ describe('POST /api/workers/claim', () => {
   });
 
   // Regression: on 2026-05-25, a task pinned to project "sibling-app" was created
-  // against a workspace whose projects[] only contained "dispatch-family". The
+  // against a workspace whose projects[] only contained "acme-app". The
   // task got claimed, the agent flailed on a non-existent path, stuck-detector
   // killed it, cleanup re-queued, and the loop ran 4 times before being killed
   // manually. The claim route now refuses such tasks up-front and marks them
@@ -5010,7 +5010,7 @@ describe('POST /api/workers/claim', () => {
         workspace: {
           id: 'ws-1',
           gitConfig: { claimPlanner: 'record' },
-          projects: [{ name: 'dispatch-family' }],
+          projects: [{ name: 'acme-app' }],
         },
       },
     ]);
@@ -5056,13 +5056,13 @@ describe('POST /api/workers/claim', () => {
         id: 'good-task',
         workspaceId: 'ws-1',
         title: 'Test task',
-        project: 'dispatch-family',
+        project: 'acme-app',
         requiredCapabilities: [],
         context: {},
         workspace: {
           id: 'ws-1',
           gitConfig: { claimPlanner: 'record' },
-          projects: [{ name: 'dispatch-family' }, { name: 'other-project' }],
+          projects: [{ name: 'acme-app' }, { name: 'other-project' }],
         },
       },
     ]);
