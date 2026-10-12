@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, dispatchWakeLink, withDispatchLink, entitlementHoldLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
+import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, dispatchWakeLink, withDispatchLink, entitlementHoldLink, taskRecoveryLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
 import { rankGatedSubjects, waitingOnRank, type ExplainAnswer } from './explain-types';
 import { deriveMissionStateView, type MissionStateInput } from './mission-state-view';
 
@@ -429,5 +429,34 @@ describe('entitlementHoldLink (explain for a task held by a plan limit)', () => 
   it('no hold, no link', () => {
     expect(entitlementHoldLink({}, subject)).toBeNull();
     expect(entitlementHoldLink(null, subject)).toBeNull();
+  });
+});
+
+// failure-incident-recovery §18.5/§18.6 (AC-22).
+describe('taskRecoveryLink', () => {
+  const subject = { taskId: 'task-1', workspaceId: 'ws-1' };
+
+  it('a cancelled task superseded by a PR says so', () => {
+    const l = taskRecoveryLink('cancelled', { cancellation: { reason: 'Superseded by PR #3936', supersededBy: { prNumber: 3936 }, actor: 'account:a', at: '2026-10-11T00:00:00.000Z' } }, subject)!;
+    expect(l.claim).toBe('Cancelled: superseded by PR #3936.');
+    expect(l.derivedFrom).toBe('tasks.context.cancellation');
+  });
+
+  it('a cancelled task with a reason says the reason', () => {
+    expect(taskRecoveryLink('cancelled', { cancellation: { reason: 'No longer needed', actor: 'user:u', at: 'x' } }, subject)!.claim).toBe('Cancelled: No longer needed');
+  });
+
+  it('a pending task held for its credential says what it waits on', () => {
+    const hold = { credentialKey: 'account:a', shared: false, label: 'the Claude login on runner "laptop"', since: 'x', firstHeldAt: 'x', attempts: 1, probeAt: '2026-10-11T12:15:00.000Z', exhausted: false };
+    const l = taskRecoveryLink('pending', { credentialHold: hold }, subject)!;
+    expect(l.claim).toContain('Waiting for a healthy credential');
+    expect(l.claim).toContain('12:15 UTC');
+    expect(l.derivedFrom).toBe('tasks.context.credentialHold');
+  });
+
+  it('nothing recorded, no link', () => {
+    expect(taskRecoveryLink('cancelled', {}, subject)).toBeNull();
+    expect(taskRecoveryLink('pending', null, subject)).toBeNull();
+    expect(taskRecoveryLink('completed', { cancellation: { reason: 'x', actor: 'a', at: 'b' } }, subject)).toBeNull();
   });
 });

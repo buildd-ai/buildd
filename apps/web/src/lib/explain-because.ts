@@ -23,6 +23,8 @@ import type { MissionStateView, WaitingOnDescriptor } from './mission-state-view
 import { suggestionRef } from './mission-state-view';
 import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
+import { taskRecoverySentence } from './task-recovery-hold';
+import { cancellationLine } from './task-cancellation';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -651,6 +653,27 @@ export function entitlementHoldLink(context: unknown, subject: BecauseSubjectRef
     case 'concurrency':
       return link(`${block.active} of ${block.limit} managed runs are active. It starts when one finishes.`, 'tasks.context.entitlementBlock', refs);
   }
+}
+
+/**
+ * failure-incident-recovery §18.5/§18.6: why a cancelled task was cancelled
+ * (or what superseded it), and what a task held for its credential waits on.
+ * The one sentence the task page shows too.
+ */
+export function taskRecoveryLink(status: string, context: unknown, subject: BecauseSubjectRefs): Link | null {
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+  };
+  if (status === 'cancelled') {
+    const line = cancellationLine(context);
+    return line ? link(line, 'tasks.context.cancellation', refs) : null;
+  }
+  if (status === 'pending') {
+    const line = taskRecoverySentence(context, iso => `${iso.slice(11, 16)} UTC`);
+    return line ? link(line, 'tasks.context.credentialHold', refs) : null;
+  }
+  return null;
 }
 
 /** Insert the wake link before the chain's closing conclusion, renumbered. */

@@ -85,7 +85,7 @@ export function recoveryActionKey(k: {
 
 // ── Policy outcome (what a family concluded on fresh facts) ─────────────────
 
-export type RecoveryRepairAction = 'release_blocker' | 'wake_subject' | 'file_fix_task';
+export type RecoveryRepairAction = 'release_blocker' | 'wake_subject' | 'file_fix_task' | 'release_hold' | 'retry_capture';
 
 export type RecoveryVerdict =
   /** The family's check passed on this observation. */
@@ -119,6 +119,12 @@ export interface RecoveryPolicyOutcome {
   verification: { predicate: string; params: Record<string, unknown> };
   /** What a person is offered when the budget or the deadline runs out. */
   fallbackDecision: FailureRecoveryDecision;
+  /**
+   * An infrastructure cause (§16.3 rule 5, §18.4): exhaustion alone is not a
+   * person's decision. When set, a spent budget or a passed deadline is
+   * `needs_operator` with this gap instead of `fallbackDecision`.
+   */
+  fallbackOperator?: { capability: string; reason: string; label: string };
 }
 
 export type RecoverySource = FailureIncidentRecovery['observation']['source'];
@@ -225,6 +231,14 @@ export function planRecovery(input: {
     nextAction: { kind: 'decide', label: decision.question, key: recoveryGenerationKey(incident.id, generation) },
     nextCheckAt: null, decision, budget,
   });
+  const operator = (gap: { capability: string; reason: string; label: string }): FailureIncidentRecovery => ({
+    ...base, lastSeenAt: now, owner: 'operator', state: 'needs_operator',
+    nextAction: { kind: 'operator', label: gap.label, key: recoveryGenerationKey(incident.id, generation) },
+    // Still looked at: an operator's fix is noticed and the incident resolves.
+    nextCheckAt: backoff('needs_operator'), capabilityGap: { capability: gap.capability, reason: gap.reason }, budget,
+  });
+  /** Budget or deadline spent: a person's decision, or the operator's for an infrastructure cause. */
+  const exhausted = (): FailureIncidentRecovery => outcome.fallbackOperator ? operator(outcome.fallbackOperator) : decide(outcome.fallbackDecision);
 
   let recovery: FailureIncidentRecovery;
   let repair: PlannedRepair | null = null;
@@ -245,7 +259,7 @@ export function planRecovery(input: {
       const inFlight = !!backoffFrom && backoffFrom.state === 'recovering' && backoffFrom.nextAction?.key.startsWith(prefix) === true
         && !!backoffFrom.nextCheckAt && backoffFrom.nextCheckAt > now;
       // I-5: a repair at the limit, or past the episode deadline, is refused and becomes a decision.
-      if (!inFlight && (budget.spent >= budget.limit || pastDeadline)) { recovery = decide(outcome.fallbackDecision); break; }
+      if (!inFlight && (budget.spent >= budget.limit || pastDeadline)) { recovery = exhausted(); break; }
       const used = budget.spentKeys.filter(k => k.startsWith(prefix)).length;
       const key = inFlight ? backoffFrom!.nextAction!.key : `${prefix}${v.once ? 1 : used + 1}`;
       const alreadySpent = budget.spentKeys.includes(key);
@@ -267,7 +281,7 @@ export function planRecovery(input: {
       break;
     }
     case 'wait':
-      if (pastDeadline) { recovery = decide(outcome.fallbackDecision); break; }
+      if (pastDeadline) { recovery = exhausted(); break; }
       recovery = {
         ...base, lastSeenAt: now, owner: 'buildd', state: 'waiting',
         nextAction: { kind: 'wait', label: v.label, key: recoveryGenerationKey(incident.id, generation) },
@@ -287,12 +301,7 @@ export function planRecovery(input: {
       recovery = decide(v.decision);
       break;
     case 'operator':
-      recovery = {
-        ...base, lastSeenAt: now, owner: 'operator', state: 'needs_operator',
-        nextAction: { kind: 'operator', label: v.label, key: recoveryGenerationKey(incident.id, generation) },
-        // Still looked at: an operator's fix is noticed and the incident resolves.
-        nextCheckAt: backoff('needs_operator'), capabilityGap: { capability: v.capability, reason: v.reason }, budget,
-      };
+      recovery = operator(v);
       break;
     case 'inconclusive':
       recovery = {
@@ -356,6 +365,12 @@ export interface RecoveryFamily<F = unknown> {
   observe(incident: StoredIncident): Promise<{ complete: boolean; facts: F }>;
   /** Pure: the policy over those facts. */
   evaluate(incident: StoredIncident, facts: F, now: string): RecoveryPolicyOutcome;
+  /**
+   * The family's adapters to its subjects (§16.4), after the assessment is
+   * written: `incident` is the row as swapped, `prior` the one it replaced.
+   * Only existing writers; idempotent; a throw is logged, never re-planned.
+   */
+  afterAssess?(incident: StoredIncident, prior: StoredIncident): Promise<void>;
 }
 
 /** The existing writers repairs go through (spec §1.3). Each is idempotent on its own. */
@@ -363,6 +378,10 @@ export interface RecoveryEffects {
   releaseBlocker(blockerTaskId: string, reason: 'merged' | 'abandoned', key: string): Promise<void>;
   wakeSubject(taskId: string, key: string): Promise<void>;
   fileFixTask(incident: StoredIncident, key: string): Promise<string | null>;
+  /** Release credential holds (task-recovery-hold.ts, §18.4). Optional: families without holds never plan it. */
+  releaseHold?(taskIds: string[], key: string): Promise<string[]>;
+  /** Re-queue blocked audits for a fresh capture (§16.3 rule 4). Optional: only the capture family plans it. */
+  retryCapture?(taskIds: string[], key: string): Promise<string[]>;
 }
 
 export interface RecoveryDeps {
@@ -435,6 +454,9 @@ export async function assessIncident(deps: RecoveryDeps, incidentId: string, sou
       const swapped = await deps.port.compareAndSwap(row.id, row.version, applyIncidentAction(row, { type: 'assess', recovery: plan.recovery }, now));
       if (!swapped) continue; // another writer moved it: re-read and re-plan
 
+      if (family.afterAssess) {
+        await family.afterAssess(swapped, row).catch(err => console.error(`[failure-incident-recovery] adapters failed for ${row.id}:`, err));
+      }
       const verified = verifyPriorAttempt(readRecovery(row), plan.recovery);
       if (verified && deps.events) await deps.events.verify(verified.actionKey, verified).catch(() => {});
       if (plan.repair) {
@@ -466,6 +488,18 @@ async function runRepair(effects: RecoveryEffects, incident: StoredIncident, rep
       case 'file_fix_task':
         await effects.fileFixTask(incident, repair.key);
         break;
+      case 'release_hold': {
+        const ids = Array.isArray(repair.params.taskIds) ? repair.params.taskIds.filter((x): x is string => typeof x === 'string') : [repair.subject.id];
+        if (!effects.releaseHold) throw new Error('release_hold has no writer');
+        await effects.releaseHold(ids, repair.key);
+        break;
+      }
+      case 'retry_capture': {
+        const ids = Array.isArray(repair.params.taskIds) ? repair.params.taskIds.filter((x): x is string => typeof x === 'string') : [repair.subject.id];
+        if (!effects.retryCapture) throw new Error('retry_capture has no writer');
+        await effects.retryCapture(ids, repair.key);
+        break;
+      }
     }
     return true;
   } catch (err) {
@@ -526,6 +560,14 @@ export function productionRecoveryEffects(): RecoveryEffects {
     async wakeSubject(taskId, key) {
       const { wakeTask } = await import('./dispatch-authority');
       await wakeTask(taskId, 'path_claim.released', { metadata: { recoveryKey: key } });
+    },
+    async releaseHold(taskIds, key) {
+      const { releaseCredentialHolds } = await import('./task-recovery-hold');
+      return releaseCredentialHolds({ taskIds, by: key });
+    },
+    async retryCapture(taskIds) {
+      const { requeueFailedTasks } = await import('./credential-recovery');
+      return requeueFailedTasks(taskIds, 'task.requeued');
     },
     async fileFixTask(incident) {
       const { createDbFixTaskPort, buildFixTaskDraft } = await import('./failure-incident-actions');

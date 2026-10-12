@@ -514,6 +514,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  // A cancel needs cancelReason or supersededBy, so those stay listed.
+  update_task: '{taskId, title?, description?, priority?, status?, cancelReason?, supersededBy?, abort?, startAt?, startIn?, tier?, model?, pause?, …}',
   // Token, cost and diff counters are runner telemetry; help lists them.
   update_progress: '{workerId?, progress?, message?, plan?, kind?, …}',
   resolve_capability: '{capability?, …}',

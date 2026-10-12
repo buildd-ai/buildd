@@ -35,7 +35,12 @@ export const REPAIR_KINDS: readonly RepairKind[] = [
 
 /** FIR's repair actions under their RepairKind names. */
 export function repairKindOf(action: RecoveryRepairAction): RepairKind {
-  return action === 'file_fix_task' ? 'queue_fix' : action;
+  if (action === 'file_fix_task') return 'queue_fix';
+  // Releasing a credential hold wakes the held task (§18.4).
+  if (action === 'release_hold') return 'wake_subject';
+  // Re-queueing blocked audits for a fresh capture (§16.3).
+  if (action === 'retry_capture') return 'rerun_visual_audit';
+  return action;
 }
 
 export const RECOVERY_EVENT_SURFACE = 'failure-incident-recovery';

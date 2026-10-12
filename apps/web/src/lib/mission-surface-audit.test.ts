@@ -646,3 +646,14 @@ describe('ensureMissionSurfaceAudit — mission belongs to another team', () => 
     expect(tasksInsertValues).not.toHaveBeenCalled();
   });
 });
+
+describe('isLiveAudit (failure-incident-recovery §16.4 mission adapter)', () => {
+  it('an audit blocked by a repair is still the mission\'s audit; only an unrecovered failure is replaced', async () => {
+    const { isLiveAudit } = await import('./mission-surface-audit');
+    expect(isLiveAudit({ status: 'in_progress' })).toBe(true);
+    expect(isLiveAudit({ status: 'completed' })).toBe(true);
+    expect(isLiveAudit({ status: 'failed', context: {} })).toBe(false);
+    expect(isLiveAudit({ status: 'cancelled', context: { incidentRecovery: { incidentId: 'inc-1', generation: 1 } } })).toBe(false);
+    expect(isLiveAudit({ status: 'failed', context: { incidentRecovery: { incidentId: 'inc-1', generation: 2 } } })).toBe(true);
+  });
+});

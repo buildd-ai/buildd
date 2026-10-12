@@ -95,6 +95,7 @@ import { firstTaskState, gettingStartedChecklist, type FirstTaskState } from '@/
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
 
 // --- Helpers ---
 
@@ -1599,9 +1600,12 @@ export default async function HomePage({
             },
             limit: 5,
           });
+          // A question recovery superseded is the incident's, not the owner's (failure-incident-recovery §17.2).
+          const supersededQuestions = await loadSupersededQuestionTaskIds(waitingInputWorkers.map(w => w.taskId ?? ''));
           for (const w of waitingInputWorkers) {
             const wf = w.waitingFor as { type: string; prompt: string } | null;
             if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input') || !admitsToNeedsYou(wf, Date.now())) continue;
+            if (w.taskId && supersededQuestions.has(w.taskId)) continue;
             waitingOnYou.push({
               kind: 'answer',
               workerId: w.id,

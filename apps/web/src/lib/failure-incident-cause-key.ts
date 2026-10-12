@@ -46,8 +46,22 @@ function signatureTail(signature: string): string[] {
   return parts.slice(1).filter(p => !p.startsWith('ws='));
 }
 
-export function causeScope(i: Pick<CauseInput, 'rule' | 'workspaceId'>): CauseScope {
+export function causeScope(i: Pick<CauseInput, 'rule' | 'workspaceId'> & { signature?: string; impact?: Record<string, number> | null }): CauseScope {
+  if (i.rule === 'infrastructure_failure') return infrastructureScope(i);
   return WORKSPACE_SCOPED_RULES.has(i.rule) && i.workspaceId ? `ws:${i.workspaceId}` : 'platform';
+}
+
+/**
+ * failure-incident-recovery §18.4: a worker component lives in one workspace
+ * (a runner's login, a workspace's credential, its tasks' lost sessions),
+ * except a team-wide credential every workspace shares, which is one cause
+ * across them. Other components (the capture pipeline, §16.3) are platform.
+ */
+function infrastructureScope(i: { workspaceId: string | null; signature?: string; impact?: Record<string, number> | null }): CauseScope {
+  const component = signatureTail(i.signature ?? '').find(p => p.startsWith('component='))?.slice('component='.length) ?? '';
+  if (!component.startsWith('worker.') || !i.workspaceId) return 'platform';
+  if (component === 'worker.auth' && (i.impact?.sharedCredential ?? 0) > 0) return 'platform';
+  return `ws:${i.workspaceId}`;
 }
 
 /**

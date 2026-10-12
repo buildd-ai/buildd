@@ -36,7 +36,7 @@ import type {
   WorkerExitCause,
 } from '@buildd/shared';
 import { FAILED_WORKER_STATUSES } from '@buildd/shared';
-import { isBookkeepingExit } from './worker-exit-taxonomy';
+import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import {
   detectFailurePatterns,
   FAILURE_PATTERN_DETECTOR_VERSION,
@@ -44,6 +44,7 @@ import {
   type IncidentCandidate,
   type PathOverlapObservation,
   type SentinelFacts,
+  type WorkerInfraFact,
 } from './failure-pattern-sentinel';
 import {
   createDbIncidentPort,
@@ -76,6 +77,9 @@ import {
   type RecoverySource,
 } from './failure-incident-recovery';
 import { pathOverlapRecoveryFamily } from './failure-incident-recovery-path-overlap';
+import { createInfrastructureRecoveryFamily } from './failure-incident-recovery-infrastructure';
+import { readCredentialHold } from './task-recovery-hold';
+import { isBookkeepingExit, isInfrastructureExit } from './worker-exit-taxonomy';
 import { dbRecoveryEvents, pruneRecoveryEvents, writeSentinelLastRun, type SentinelLastRun } from './failure-incident-recovery-events';
 
 // ── Window math (pure) ──────────────────────────────────────────────────────
@@ -144,6 +148,8 @@ export interface FailureRateWorkerRow {
   exitCause: WorkerExitCause | null;
   createdAt: string;
   completedAt: string | null;
+  /** The worker's task status, when read; an infrastructure exit whose task recovered is not a failure. */
+  taskStatus?: string | null;
 }
 
 /**
@@ -172,6 +178,8 @@ export function tallyFailureRateWindow(
     if (endedAt < sinceIso || endedAt >= untilIso) continue;
     const isFailure = (FAILED_WORKER_STATUSES as readonly string[]).includes(r.status);
     if (isFailure && isBookkeepingExit(r.exitCause)) continue;
+    // Noise, not failure (§18.7): an infrastructure exit whose task recovered.
+    if (isInfrastructureExit(r.exitCause) && r.taskStatus != null && r.taskStatus !== 'failed') continue;
     total++;
     if (isFailure) {
       failed++;
@@ -457,7 +465,10 @@ async function afterAssessment(deps: Pick<SweepDeps, 'send' | 'reportOpsError'>,
     }
     if (!r.changed) continue;
     const rec = readRecovery(r.incident);
-    if (rec?.state === 'needs_operator' && rec.capabilityGap) {
+    const was = r.before ? readRecovery(r.before) : null;
+    // Once per generation (AC-15): a later change of evidence is not news to the operator.
+    const newlyOperator = !(was?.state === 'needs_operator' && was.generation === rec?.generation);
+    if (rec?.state === 'needs_operator' && rec.capabilityGap && newlyOperator) {
       await deps.reportOpsError(
         `Failure incident recovery needs an operator (${rec.capabilityGap.capability})`,
         `incident ${r.incident.id.slice(0, 8)}: ${rec.capabilityGap.reason}`,
@@ -841,13 +852,21 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
     }
   }
 
+  // ── worker infrastructure (failure-incident-recovery §18.4) ─────────────
+  const workerInfra = await dbCollectWorkerInfra(workspaceId, floors.failureRateBaselineSince);
+
+  // ── capture pipeline (§16.3), and the rollout of legacy questions (§16.4) ─
+  const { dbCollectCaptureFailures } = await import('./failure-incident-recovery-capture');
+  const captureFailures = await dbCollectCaptureFailures(workspaceId, floors.retrySince, now);
+
   // ── failure rate: recent vs. baseline ──────────────────────────────────
   // Both windows are keyed on when the worker ended — see tallyFailureRateWindow.
   const rateSince = new Date(floors.failureRateBaselineSince);
   const rateUntil = new Date(now);
   const rateRows = (await db
-    .select({ id: workers.id, status: workers.status, exitCause: workers.exitCause, createdAt: workers.createdAt, completedAt: workers.completedAt })
+    .select({ id: workers.id, status: workers.status, exitCause: workers.exitCause, createdAt: workers.createdAt, completedAt: workers.completedAt, taskStatus: tasks.status })
     .from(workers)
+    .leftJoin(tasks, eq(workers.taskId, tasks.id))
     .where(and(
       eq(workers.workspaceId, workspaceId),
       or(
@@ -862,6 +881,7 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
       exitCause: r.exitCause,
       createdAt: r.createdAt.toISOString(),
       completedAt: r.completedAt ? r.completedAt.toISOString() : null,
+      taskStatus: r.taskStatus,
     }));
   const recent = tallyFailureRateWindow(rateRows, floors.failureRateRecentSince, now, IN_FLIGHT_WORKER_STATUSES);
   const baseline = tallyFailureRateWindow(rateRows, floors.failureRateBaselineSince, floors.failureRateRecentSince, IN_FLIGHT_WORKER_STATUSES);
@@ -879,7 +899,82 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
     // until a real source lands, rather than inventing one from logs.
     providerAttributions: [],
     failureRate: { recent: recent.counts, baseline: baseline.counts, recentFailures: recent.failures },
+    workerInfra,
+    captureFailures,
   };
+}
+
+/**
+ * Pure. Whether one terminal worker counts in the failure-rate windows
+ * (failure-incident-recovery §18.7): a bookkeeping exit never does; an
+ * infrastructure exit (auth, lost session, released slot, wall) does only
+ * while its task is still `failed`. Every other terminal worker counts.
+ */
+export function countsTowardFailureRate(r: { exitCause: string | null; taskStatus: string | null }): boolean {
+  if (isBookkeepingExit(r.exitCause as WorkerExitCause | null)) return false;
+  if (isInfrastructureExit(r.exitCause) && r.taskStatus !== null && r.taskStatus !== 'failed') return false;
+  return true;
+}
+
+/**
+ * The tasks Buildd's own machinery is failing (§18.4): held for a rejected
+ * credential (`pending` with an active `credentialHold`), and stalled after
+ * their infra retries (`failed`, `infra_stalled`, updated since `sinceIso`),
+ * each with its last worker's friction signature.
+ */
+async function dbCollectWorkerInfra(workspaceId: string, sinceIso: string): Promise<WorkerInfraFact[]> {
+  const { db } = await import('@buildd/core/db');
+  const { tasks, workers } = await import('@buildd/core/db/schema');
+  const { and, desc, eq, gte, inArray, sql } = await import('drizzle-orm');
+  const { normalizeErrorSignature } = await import('./error-signature');
+  const out: WorkerInfraFact[] = [];
+
+  const held = await db
+    .select({ id: tasks.id, context: tasks.context })
+    .from(tasks)
+    .where(and(eq(tasks.workspaceId, workspaceId), eq(tasks.status, 'pending'), sql`${tasks.context} ? 'credentialHold'`))
+    .limit(SWEEP_MAX_ROWS);
+  for (const t of held) {
+    const h = readCredentialHold(t.context);
+    if (!h || h.releasedAt) continue;
+    out.push({ taskId: t.id, component: 'worker.auth', key: h.credentialKey, shared: h.shared, occurredAt: h.since, attempts: h.attempts, exhausted: h.exhausted, workerId: h.lastWorkerId ?? null });
+  }
+
+  const stalled = await db
+    .select({ id: tasks.id, context: tasks.context, updatedAt: tasks.updatedAt })
+    .from(tasks)
+    .where(and(
+      eq(tasks.workspaceId, workspaceId),
+      eq(tasks.status, 'failed'),
+      sql`${tasks.result}->>'errorType' = 'infra_stalled'`,
+      gte(tasks.updatedAt, new Date(sinceIso)),
+    ))
+    .limit(SWEEP_MAX_ROWS);
+  if (stalled.length > 0) {
+    const lastWorker = new Map<string, { id: string; error: string | null }>();
+    const rows = await db
+      .select({ id: workers.id, taskId: workers.taskId, error: workers.error })
+      .from(workers)
+      .where(inArray(workers.taskId, stalled.map(t => t.id)))
+      .orderBy(desc(workers.createdAt))
+      .limit(SWEEP_MAX_ROWS);
+    for (const w of rows) if (w.taskId && !lastWorker.has(w.taskId)) lastWorker.set(w.taskId, { id: w.id, error: w.error });
+    for (const t of stalled) {
+      const w = lastWorker.get(t.id);
+      const ctx = (t.context ?? {}) as Record<string, unknown>;
+      out.push({
+        taskId: t.id,
+        component: 'worker.session_lost',
+        // The friction slug, so one runner fault across tasks is one incident.
+        key: toFrictionSignature(normalizeErrorSignature(w?.error ?? 'session lost')),
+        occurredAt: t.updatedAt.toISOString(),
+        attempts: typeof ctx.infraRetryCount === 'number' ? ctx.infraRetryCount : 0,
+        exhausted: true,
+        workerId: w?.id ?? null,
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -968,7 +1063,7 @@ export function productionSweepDeps(): SweepDeps {
         });
     },
     collectFacts: dbCollectFacts,
-    recovery: { families: [pathOverlapRecoveryFamily], effects: productionRecoveryEffects(), claimLease: claimRecoveryLease, events: dbRecoveryEvents() },
+    recovery: { families: [pathOverlapRecoveryFamily, createInfrastructureRecoveryFamily()], effects: productionRecoveryEffects(), claimLease: claimRecoveryLease, events: dbRecoveryEvents() },
     recordLastRun: writeSentinelLastRun,
     pruneRecoveryEvents: () => pruneRecoveryEvents(),
     async reportOpsError(message, detail, severity) {

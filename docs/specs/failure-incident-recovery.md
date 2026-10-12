@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-11
 summary: A failure incident MUST carry one fresh, versioned recovery assessment that is re-checked before any repair, resolved only by a passing check, and shown identically on every surface.
 domain: tasks
-surfaces: [apps/web/src/lib/failure-incident-recovery.ts, apps/web/src/lib/failure-incident-recovery-path-overlap.ts, apps/web/src/lib/failure-incident-store.ts, apps/web/src/lib/failure-incident-escalation.ts]
+surfaces: [apps/web/src/lib/failure-incident-recovery.ts, apps/web/src/lib/failure-incident-recovery-path-overlap.ts, apps/web/src/lib/failure-incident-recovery-worker-infra.ts, apps/web/src/lib/task-recovery-hold.ts, apps/web/src/lib/task-cancellation.ts, packages/core/failure-classification.ts, apps/web/src/lib/failure-incident-store.ts, apps/web/src/lib/failure-incident-escalation.ts]
 related: [path-claim-ownership, task-dispatch-authority, claim-ordering, workflow-state-kernel, decision-kinds, surface-ia-home-missions-initiatives, execution-control-plane]
-keywords: [failure_incidents, Failure Pattern Sentinel, incident, path_overlap_stall, path_overlap.no_progress, recovery assessment, Needs You, no_next_step, Nothing is fixing it, escalation gate, incident page, stale incident, reopen, dismiss, infrastructure failure, capability gap, needs_operator, How should I proceed, surface audit boot failure, artifact_revisions immutable]
-verified_by: [apps/web/src/lib/failure-incident-recovery.test.ts, apps/web/src/lib/failure-incident-store.test.ts, apps/web/src/lib/failure-incident-actions.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/failure-pattern-sentinel.test.ts, apps/web/src/lib/failure-pattern-sweep.test.ts, packages/core/__tests__/gate-events.test.ts, apps/web/src/lib/pr-reconcile.test.ts, apps/web/src/lib/pr-merged-work.test.ts]
+keywords: [failure_incidents, Failure Pattern Sentinel, incident, path_overlap_stall, path_overlap.no_progress, recovery assessment, Needs You, no_next_step, Nothing is fixing it, escalation gate, incident page, stale incident, reopen, dismiss, infrastructure failure, capability gap, needs_operator, auth_failure, credential hold, credentialHold, OAuth 401, session lost, interactive released, local session detached, cancelReason, supersededBy, classifyFailure, failure-rate baseline, How should I proceed, surface audit boot failure, artifact_revisions immutable]
+verified_by: [apps/web/src/lib/failure-incident-recovery.test.ts, apps/web/src/lib/failure-incident-store.test.ts, apps/web/src/lib/failure-incident-actions.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/failure-pattern-sentinel.test.ts, apps/web/src/lib/failure-pattern-sweep.test.ts, packages/core/__tests__/gate-events.test.ts, apps/web/src/lib/pr-reconcile.test.ts, apps/web/src/lib/pr-merged-work.test.ts, apps/web/src/lib/failure-incident-recovery-worker-infra.test.ts, apps/web/src/lib/task-recovery-hold.test.ts, packages/core/__tests__/failure-classification.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/app/api/tasks/[id]/route.test.ts, apps/web/src/lib/admin/recovery/queue.test.ts]
 supersedes: []
 assertions:
   - id: "plan-recovery"
@@ -48,6 +48,36 @@ assertions:
   - id: "gate-tests"
     type: "test_file"
     path: "apps/web/src/lib/failure-incident-escalation.test.ts"
+  - id: "failure-classifier"
+    type: "symbol"
+    name: "classifyFailure"
+    path: "packages/core/failure-classification.ts"
+  - id: "credential-hold"
+    type: "symbol"
+    name: "planCredentialHold"
+    path: "apps/web/src/lib/task-recovery-hold.ts"
+  - id: "worker-infra-policy"
+    type: "symbol"
+    name: "evaluateWorkerInfra"
+    path: "apps/web/src/lib/failure-incident-recovery-worker-infra.ts"
+  - id: "cancel-reason"
+    type: "symbol"
+    name: "parseCancellation"
+    path: "apps/web/src/lib/task-cancellation.ts"
+  - id: "worker-infra-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/failure-incident-recovery-worker-infra.test.ts"
+  - id: "capture-policy"
+    type: "symbol"
+    name: "evaluateCaptureFailure"
+    path: "apps/web/src/lib/failure-incident-recovery-capture.ts"
+  - id: "infrastructure-family"
+    type: "symbol"
+    name: "createInfrastructureRecoveryFamily"
+    path: "apps/web/src/lib/failure-incident-recovery-infrastructure.ts"
+  - id: "capture-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/failure-incident-recovery-capture.test.ts"
 ---
 
 # Failure Incident Recovery
@@ -73,8 +103,10 @@ the surface/state matrix every surface is held to.
 
 Status is `active`: workstream (a) shipped the assessment, the path-overlap
 policy, the merge hooks and the backstop, guarded by the `verified_by` tests.
-Workstreams (b) and (c) and the §16 family are not built yet; their sections
-say NOT IMPLEMENTED where it matters.
+§18 (worker infrastructure failures: auth holds, lost sessions, cancel
+reasons) shipped as the second family. Workstreams (b) and (c) and the §16
+capture components are not built yet; their sections say NOT IMPLEMENTED where
+it matters.
 
 ---
 
@@ -760,6 +792,20 @@ repair records as `wait_machine` with the assessment's own sentence.
 - `packages/core/gate-events.ts`: `recordOrCoalesceDeferral`, `recordDeferralOnce`
 - `packages/core/path-claim.ts`: `releaseClaims`, `registerClaimDeferralWaiters`, `checkStarvation`
 - `packages/core/path-overlap.ts`: `boundDeferralPaths`, `MAX_DEFERRAL_PATHS`
+- `packages/core/failure-classification.ts`: `classifyFailure`, `isInfrastructureClass` (§18.2)
+- `packages/core/auth-error-classifier.ts`: `classifyAuthErrorSeverity` (§18.2)
+- `apps/web/src/lib/worker-exit-taxonomy.ts`: `classifyReportedFailure` (`authFailure`), `isInfrastructureExit`, `consumesRetryAttempt` (§18.2)
+- `apps/web/src/lib/task-recovery-hold.ts`: `planCredentialHold`, `holdTaskForCredential`, `releaseCredentialHolds`, `resolveCredentialIdentity`, `taskRecoverySentence` (§18.3)
+- `apps/web/src/lib/failure-incident-recovery-worker-infra.ts`: `evaluateWorkerInfra`, `dbObserveWorkerInfraRecovery`, `workerInfraRecoveryFamily` (§18.4)
+- `apps/web/src/lib/failure-pattern-sentinel.ts`: `WorkerInfraFact`, `workerInfraSignature` (§18.4); `apps/web/src/lib/failure-pattern-sweep.ts`: `countsTowardFailureRate` (§18.7)
+- `apps/web/src/lib/stale-workers.ts`: the interactive arm of `resolveStaleTask` (§18.3)
+- `apps/web/src/lib/credential-recovery.ts`: `requeueAuthFailedTasks` (releases holds, §18.3), `requeueFailedTasks` (the requeue writer, §16.4)
+- `apps/web/src/lib/failure-incident-recovery-capture.ts`: `evaluateCaptureFailure`, `freshCaptureSucceeded`, `runCaptureAdapters`, `dbObserveCaptureRecovery`, `dbCollectCaptureFailures`, `legacyRollout` (§16.3, §16.4)
+- `apps/web/src/lib/failure-incident-recovery-infrastructure.ts`: `createInfrastructureRecoveryFamily` (routes `infrastructure_failure` by component)
+- `apps/web/src/lib/failure-pattern-sentinel.ts`: `CaptureFailureFact`, `captureFailureSignature` (§16.3)
+- `apps/web/src/lib/stale-workers.ts`: `cleanupStuckWaitingInput` with reason `superseded_by_recovery` (§16.4)
+- `apps/web/src/lib/mission-surface-audit.ts`: `isLiveAudit` (the mission adapter, §16.4)
+- `apps/web/src/lib/task-cancellation.ts`: `parseCancellation`, `cancellationLine`; `apps/web/src/lib/explain-because.ts`: `taskRecoveryLink` (§18.5)
 - `apps/web/src/app/api/workers/claim/route.ts`: the `path_overlap` deferral `detail` (`blockingTaskId`, `paths`)
 - `apps/web/src/lib/path-claim-release.ts`: `releaseAndNotify`
 - `apps/web/src/lib/pr-merged-work.ts`: `runMergedPrWork`
@@ -784,9 +830,9 @@ repair records as `wait_machine` with the assessment's own sentence.
 
 *Owner scope amendment, 2026-10-11.* The contract above extends to failures in
 Buildd's own machinery that today reach a person as a generic question. Status:
-**NOT IMPLEMENTED** beyond the shared types (`cause.ownership`, owner
-`operator`, state `needs_operator`, `capabilityGap`, which `planRecovery`
-already handles). The delivery tasks are listed in §16.7.
+**IMPLEMENTED** (§16.7): typed capture failures (§16.5), and the
+`infrastructure_failure` capture family with its adapters and rollout
+(§16.3, §16.4) in `apps/web/src/lib/failure-incident-recovery-capture.ts`.
 
 ### 16.1 The case
 
@@ -888,6 +934,40 @@ Unknown ownership is explicit (`inconclusive`), never defaulted to `person`.
   legacy question with no such record stays as it is, marked unclassified, and
   is never auto-answered. Unknown stays explicit.
 
+**As built (task `1acc6048`).**
+
+- **One family per rule.** `assessIncident` picks a family by rule, so
+  `failure-incident-recovery-infrastructure.ts` routes each
+  `infrastructure_failure` incident by its `component=`: `visual_qa.*` to the
+  capture family, `worker.*` to §18.
+- **The adapter field** is `context.incidentRecovery` (§18.9), not
+  `recoveryRef`. It is written through the fix-task port's `touch`.
+- **Generations.** The incident's fix task is the generation's blocker. Filing
+  it starts a new generation, so `retry_capture` has the full budget of 3.
+- **The check (I-12).** A blocked audit passes when a `visual-qa.yml` run for
+  its own ref (the run title `Visual QA · <ref>`, or its head sha) succeeded
+  after both the repair finished and its own failure. An audit that completed
+  or was cancelled passes too. Runs that could not be read never pass.
+- **Superseding a question.** `cleanupStuckWaitingInput(accountId, { reason:
+  'superseded_by_recovery', workerIds })` fails the worker with that reason
+  and fails the task, so the incident can re-queue it. The question stays on
+  the row as history. No retry clone is created and no dependency is released.
+- **Resume and retry** both go through `requeueFailedTasks`
+  (`credential-recovery.ts`). This guarded `failed` → `pending` flip wakes
+  only the rows it moved, with `task.requeued`.
+- **Mission adapter.** A failed audit that carries `incidentRecovery` stays the
+  mission's live audit. "Run visual review" returns it instead of minting a
+  second audit. The completion gate still counts only a completed audit.
+- **Rollout.** Each sentinel sweep classifies at most 10 legacy questions per
+  workspace. The run is the newest `visual-qa.yml` failure inside the worker's
+  own window, and its first failed step is read from the Actions API. The
+  outcome is recorded once as `context.captureFailureRollout`:
+  - `adopted`: the step is a known component. The incident's signature then
+    uses that step, because the run's log text is not read.
+  - `unclassified`: anything else. The question is left as it is.
+- **Ops warning.** A `needs_operator` warning goes out once per generation,
+  not on every change of evidence (AC-15).
+
 ### 16.5 The capture path reports, it does not ask
 
 - **Capture path.** `scripts/qa/capture.ts` and the `visual-qa.yml` steps emit
@@ -930,8 +1010,9 @@ the auditor role and capture) is coordinated through those path claims.
    reports it on `complete_task` as `error: capture_failure: ...` (read back with
    `parseCaptureFailureError`, since a failed completion does not keep `structuredOutput`)
    and asks a person only about the two preview auth walls, with `CONFIG_ERROR_SETUP_ACTIONS`.
-3. Task `1acc6048`. The `infrastructure_failure` family on this contract, with the task and
-   mission adapters and rollout reconciliation: §16.3, §16.4, H3–H5.
+3. Task `1acc6048`, **built**. The `infrastructure_failure` family on this contract, with the task and
+   mission adapters and rollout reconciliation: §16.3, §16.4, H3–H5. AC-13..AC-17 are
+   `apps/web/src/lib/failure-incident-recovery-capture.test.ts`.
 
 ---
 
@@ -987,3 +1068,220 @@ owner. Screenshots at 390 px and desktop width, in both themes, through
 | genuine decision | `needs_decision` (cycle, AC-8) | one card, typed options, push once |
 | inconclusive | failed read (AC-3) | "Couldn't confirm", next check, no green |
 | recovered | check passed (AC-2, AC-14) | gone from banner, Home and badge; incident page says recovered |
+
+---
+
+## 18. Worker infrastructure failures: auth, lost sessions, released interactive workers
+
+*Owner scope amendment, 2026-10-11 (task `6bfc6293`).* The second family on
+this contract, after path overlap. It shares §16's `infrastructure_failure`
+rule, ownership and adapters with the capture family (task `1acc6048`); the
+two differ only in their components and their per-component policy.
+
+### 18.1 The case
+
+- **Auth at session start.** A task's only worker died at start with a 401
+  ("OAuth access token is invalid"), 0 diff. The phrase matched no auth
+  pattern, so the exit was booked `code_failure` and the task went to
+  `failed`. It sat for days unnoticed, although it was the planned fix for a
+  recurring owner complaint.
+- **Interactive release.** A task force-claimed from a local session lost the
+  session ("Slot released, local session detached"), then was cancelled with
+  no reason and no `supersededBy`. Its work had in fact landed through another
+  task's PR, but nothing recorded that, so the owner saw an unexplained cancel.
+- **Lost sessions.** Another task lost workers to "local session detached" and
+  "no MCP activity for 2 hours", and recovered only because a person
+  re-claimed it.
+- **The baseline.** A `failure_rate_spike` incident compared a recent rate
+  against a baseline that counted every infrastructure exit, recovered or not,
+  as a failure.
+
+### 18.2 Classification (every terminal worker failure)
+
+`classifyFailure(error, pattern, hints?)` in `packages/core/failure-classification.ts`
+is the one classifier. It implements `knowledge-base: buildd/design/backend-failover-policy.md`
+§1 and returns `{ class, family }`:
+
+| class | family slugs | Recorded `exitCause` | Charges the task's retry budget |
+|---|---|---|---|
+| `budget` | `budget` | `budget_limited` | no |
+| `auth` | `auth` | `auth_failure` (new) | no |
+| `infra` | `infra.session_lost`, `infra.interactive_released`, `infra.runner` | `infra_failure`, `reassigned`, `sandbox_mount_gap`, … (unchanged) | no |
+| `task` | `task` | `code_failure` (unchanged) | yes |
+
+- `auth` and `infra` are never `code_failure`. `task` stays the default for
+  anything unrecognized, so an unknown failure never buys a free retry.
+- Auth recognition is `classifyAuthErrorSeverity`, extended with the CLI's
+  "Failed to authenticate" and "OAuth access token is invalid" phrasings.
+- The exit cause is the durable record analytics read. `auth_failure` and the
+  infra causes are not chargeable (`consumesRetryAttempt`), and they are
+  excluded from the `failure_rate_spike` counts when the task later left
+  `failed` (§18.7). Each incident-level repair is also an `incident_recovery`
+  attempt event (§8), so the operator read model can tell a real code failure
+  from infrastructure noise.
+
+### 18.3 Per-task policy, at the moment of failure
+
+These run inside the existing failure writers: the worker PATCH and the
+stale-worker reaper. They add no lifecycle writer of their own.
+
+1. **auth: hold the task for the credential.**
+   - When auth failover (`resolveFailoverBackend`) finds no other backend, the
+     task goes back to `pending`, not `failed`.
+   - Its `startAt` floor is the hold, and `context.credentialHold` records the
+     hold.
+   - It keeps `resumeBranch`, so the next attempt resumes the same branch and PR.
+   - The hold has the shape `{ credentialKey, shared, since, attempts, probeAt,
+     exhausted, releasedAt? }`. `credentialKey` is `secret:<id>` for a
+     credential Buildd holds and `account:<id>` for a runner's own login
+     (`authType: 'oauth'`).
+   - The floor is the next probe: 15 minutes, then 60, then 240.
+   - At the third failure the hold is `exhausted`. The floor becomes 7 days,
+     and only a healthy credential or an operator releases the task. The task
+     is still never `failed`.
+   - There is one writer for the hold:
+     `apps/web/src/lib/task-recovery-hold.ts` (`planCredentialHold`,
+     `holdTaskForCredential`, `releaseCredentialHolds`).
+2. **Session lost (runner or interactive).**
+   - The existing infra requeue is unchanged: `pending` on the same
+     `resumeBranch`, budget 3 (`infraRetryCount`), backoff 5, 15 and 30
+     minutes.
+   - An **interactive** worker (`runner = 'mcp'`, the local executor) is
+     different. Its task returns to `pending` with no floor and no charge, for
+     a session to re-claim. It is never `failed`. A detached slot already
+     behaved this way (`requeueOpenTask`); the 2-hour idle reap now matches it.
+3. **Infra budget exhausted.**
+   - The task ends `failed` with `result.errorType: 'infra_stalled'`, as
+     today. That already holds a mission open.
+   - It is no longer silent: §18.4 makes it the subject of an incident whose
+     state is `needs_operator`.
+4. **A genuine task failure** (`class: 'task'`) fails exactly as before.
+
+### 18.4 The incident: `infrastructure_failure`, worker components
+
+- **Components (closed, v1).** The capture components of §16.3 are joined by:
+  - `worker.auth`
+  - `worker.session_lost`
+
+  `infra.interactive_released` opens no incident: the task is pending and a
+  session owns the next step.
+- **Signature.** The incident is keyed on the cause, never on raw error text:
+  - auth: `infrastructure_failure|ws=<id>|component=worker.auth|cred=<credentialKey>`
+  - lost session: `infrastructure_failure|ws=<id>|component=worker.session_lost|sig=<friction signature>`
+
+  N held tasks on one credential are N subjects of ONE incident.
+- **Cause key.** The `causeCode` is the refined reason code:
+  - `infrastructure.auth` for `worker.auth`;
+  - `infrastructure.session_lost` for `worker.session_lost`.
+
+  The scope is `platform` for a credential shared by the team's workspaces
+  (`cred=` names a team-wide secret, `shared`). Otherwise it is `ws:<id>`. So
+  one shared credential is one cause in the operator queue, across workspaces.
+- **Facts.** The sweep collects them from their owners:
+  - held tasks: `tasks.context.credentialHold` on `pending` rows;
+  - stalled tasks: `failed` rows with `errorType 'infra_stalled'` inside the
+    lookback, with their last worker's friction signature.
+- **Policy, `worker.auth`, in order:**
+  1. **Check passes.** Every subject left the hold. That means one of:
+     - its hold was released and a worker started after `since`;
+     - it reached a terminal status;
+     - it no longer carries the hold.
+  2. **The credential checks healthy, and a subject is still held.** Repair
+     `release_hold`, once per generation. It calls `releaseCredentialHolds`
+     (floor cleared, `releasedAt` stamped, `wakeTask(…, 'credential.restored')`).
+     "Healthy" means one of:
+     - for `secret:`, `secrets.healthStatus = 'healthy'` with a success or a
+       refresh after `since`;
+     - for `account:`, a worker of that account started after `since` and did
+       not die on auth.
+  3. **A subject's hold is exhausted, or the episode deadline (§8) passed.**
+     The state is `needs_operator`, with `capabilityGap { capability:
+     'reconnect_credential', reason }`. The reason names the action:
+     "Reconnect <the Claude login of runner account X | the team's Codex
+     credential>".
+  4. Otherwise **wait.** "Waiting for a healthy credential, will retry at
+     HH:MM": the next check is the earliest probe.
+- **Policy, `worker.session_lost`, in order:**
+  1. **Check passes.** No subject is still `failed` / `infra_stalled`.
+  2. Otherwise `needs_operator`, with `capabilityGap { capability:
+     'requeue_task', reason }`. The reason carries the evidence (attempts, the
+     signature, the last error excerpt). Retrying a fourth time is not
+     recovery's to do (I-5).
+- **Ownership and owner.**
+  - `cause.ownership` is `infrastructure`. Neither component reaches a person:
+    the rule-level verdict before the first assessment is Buildd's `hold`
+    (`BUILDD_RECOVERS`), and the action layer files no fix task for
+    `worker.auth`.
+  - `needs_operator` goes to the operator through `reportOps` and the
+    buildd-admin recovery queue, ranked by blocked task-hours. The owner
+    actions there are B2's typed capabilities, registered in its repair
+    allowlist and not built here: reconnect the credential, requeue now, give
+    up with a reason.
+- **Attempt events.** A `release_hold` is recorded under RepairKind
+  `wake_subject` (§8), with `causeKey`, generation and attempt like every
+  other repair.
+
+### 18.5 Cancelling records why
+
+- **The PATCH must say why.** A cancel through the API with a key (the
+  `update_task` MCP action) MUST carry `cancelReason` or `supersededBy`
+  (`{ taskId }` or `{ prNumber }`). Without one it is refused with 400 and
+  nothing changes.
+- **A dashboard cancel is the person's own act.** It records the actor and a
+  default reason.
+- **What is stored.** `context.cancellation = { reason, supersededBy?, actor, at }`.
+- **Where it shows.**
+  - explain's task view says "Cancelled: <reason>", or "Superseded by task X"
+    / "Superseded by PR #N".
+  - The task page shows the same line under the status.
+- **Internal cancel writers** keep their own stamps (supersession, quality
+  scout, surface audit). This rule binds the API, where a reason was being
+  dropped.
+
+### 18.6 Member surfaces
+
+- **Task page and explain.** These show one sentence from
+  `taskRecoverySentence`. They never show the incident's internals:
+  - Waiting: "Waiting for a healthy credential, will retry at HH:MM."
+  - Exhausted: "Waiting for the credential to be reconnected; the operator has
+    been told."
+- **Home.** There is no Needs You card for this family. A person is never the
+  owner (§17.1).
+
+### 18.7 The failure-rate baseline
+
+- **What changed.** `failure_rate_spike` counts are taken from workers. An
+  exit whose cause is infrastructure (`auth_failure`, `infra_failure`,
+  `reassigned`, `sandbox_mount_gap`, `silent_start`, `budget_limited`) is
+  excluded from both windows when its task is no longer `failed`.
+- **What is always excluded.** Bookkeeping exits (`isBookkeepingExit`) are
+  excluded in every case.
+- **Why.** A recovered infrastructure failure is noise. An unrecovered one
+  still counts.
+
+### 18.8 Invariants and acceptance
+
+- I-13. An auth or infra exit is never recorded `code_failure`.
+- I-14. An auth failure with no failover backend never sets the task `failed`. The task stays `pending` behind a credential hold, on its `resumeBranch`.
+- I-15. An interactive worker's task is never set `failed` by the idle reap or a detach.
+- I-16. One incident per (workspace, credential) for auth, and one cause across workspaces for a shared credential. Per-task incidents are never opened.
+- I-17. An API cancel without a reason or `supersededBy` changes nothing.
+- AC-18: GIVEN a worker that dies at session start with "401 OAuth access token is invalid" and no other backend WHEN it reports THEN its `exitCause` is `auth_failure`, and the task is `pending` with a credential hold and its `resumeBranch`, not `failed`.
+- AC-19: GIVEN a held task whose credential then checks healthy WHEN the incident is assessed THEN `release_hold` runs once, the floor is cleared, and the task is woken on the same branch.
+- AC-20: GIVEN an interactive worker reaped for 2 hours of MCP silence WHEN the reaper settles its task THEN the task is `pending` with no floor, its `resumeBranch` kept and `infraRetryCount` unchanged.
+- AC-21: GIVEN a task whose third infra retry fails WHEN the sweep runs THEN one `worker.session_lost` incident is `needs_operator` with a `capabilityGap` and the evidence, and it is listed in the operator recovery queue.
+- AC-22: GIVEN an API cancel without `cancelReason` or `supersededBy` THEN it is refused. GIVEN one with `supersededBy: { prNumber }` THEN explain says the task was superseded by that PR.
+- AC-23: GIVEN two tasks held on the same credential WHEN the sweep runs THEN one incident exists with both as subjects, under one causeKey.
+- AC-24: GIVEN a genuine code failure WHEN it reports THEN the task fails exactly as before.
+
+### 18.9 Follow-ups (not built here)
+
+- **B2 owner capabilities** (task `c5e732b0`): register `reconnect_credential`
+  and `requeue_task` in the repair allowlist. They map to
+  `releaseCredentialHolds` and the infra requeue writer.
+- **The task adapter field.** §16.4's `context.recoveryRef` name is
+  already taken: the worker PATCH writes the runner's own `recoveryRef` string
+  there. The shared adapter field is therefore context.incidentRecovery
+  ({ incidentId, generation }), the name the workstream (b) projection
+  (task `5ef4c315`) uses. This family does not write it yet. Until it does,
+  the task surfaces read the hold directly (§18.6).

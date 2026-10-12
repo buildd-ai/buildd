@@ -36,3 +36,24 @@ describe('update_task cancel needs an explicit abort for a live worker', () => {
     expect(api).not.toHaveBeenCalled();
   });
 });
+
+// failure-incident-recovery §18.5: a cancel carries why, and what superseded it.
+describe('update_task cancel carries its reason', () => {
+  it('forwards cancelReason and supersededBy with the cancel', async () => {
+    const api = cancelled();
+    await handleBuilddAction(api as unknown as ApiFn, 'update_task', {
+      taskId: TASK_ID, status: 'cancelled', cancelReason: 'Absorbed by the other task', supersededBy: { prNumber: 3936 },
+    }, ctx);
+    expect(JSON.parse(api.mock.calls[0][1].body)).toEqual({
+      status: 'cancelled', cancelReason: 'Absorbed by the other task', supersededBy: { prNumber: 3936 },
+    });
+  });
+
+  it('refuses a reason on anything but a cancel', async () => {
+    const api = cancelled();
+    await expect(handleBuilddAction(api as unknown as ApiFn, 'update_task', {
+      taskId: TASK_ID, title: 'x', cancelReason: 'because',
+    }, ctx)).rejects.toThrow(/only apply to status: cancelled/);
+    expect(api).not.toHaveBeenCalled();
+  });
+});

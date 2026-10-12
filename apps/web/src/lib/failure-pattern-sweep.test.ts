@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import {
+  countsTowardFailureRate,
   computeSweepFloors,
   effectiveFloor,
   minutesBeforeIso,
@@ -479,5 +480,26 @@ describe('the collector feeds per-blocker episodes (G1) into detection', () => {
     const { deps } = fakeDeps([WS1], { facts, incidentPort });
     const c = await runFailurePatternSweep(deps, { now });
     expect(c.incidentsOpened).toBe(0);
+  });
+});
+
+// failure-incident-recovery §18.7: the failure-rate windows count real
+// failures. A recovered infrastructure exit is noise; an unrecovered one is not.
+describe('countsTowardFailureRate', () => {
+  it('drops an infrastructure exit whose task recovered', () => {
+    expect(countsTowardFailureRate({ exitCause: 'auth_failure', taskStatus: 'pending' })).toBe(false);
+    expect(countsTowardFailureRate({ exitCause: 'infra_failure', taskStatus: 'completed' })).toBe(false);
+    expect(countsTowardFailureRate({ exitCause: 'reassigned', taskStatus: 'in_progress' })).toBe(false);
+  });
+
+  it('keeps an infrastructure exit whose task is still failed, and every code failure', () => {
+    expect(countsTowardFailureRate({ exitCause: 'infra_failure', taskStatus: 'failed' })).toBe(true);
+    expect(countsTowardFailureRate({ exitCause: 'code_failure', taskStatus: 'completed' })).toBe(true);
+    expect(countsTowardFailureRate({ exitCause: null, taskStatus: 'pending' })).toBe(true);
+  });
+
+  it('never counts bookkeeping', () => {
+    expect(countsTowardFailureRate({ exitCause: 'needs_input', taskStatus: 'failed' })).toBe(false);
+    expect(countsTowardFailureRate({ exitCause: 'task_cancelled', taskStatus: 'cancelled' })).toBe(false);
   });
 });

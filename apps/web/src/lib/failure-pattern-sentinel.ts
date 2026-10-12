@@ -33,6 +33,7 @@ import type {
 } from '@buildd/shared';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import { gateFrictionSignature } from '@buildd/core/gate-friction-signature';
+import type { CaptureFailureComponent } from '@buildd/core/visual-qa-page-source';
 
 /** Part of the incident key. Bump when a rule's signature shape or meaning changes. */
 // fps-v2: path-overlap episodes are per (task, blocker) and never older than
@@ -193,6 +194,47 @@ export interface FailureRateFact {
   recentFailures?: Array<{ workerId: string; at: string }>;
 }
 
+/**
+ * A task Buildd's own machinery is failing (failure-incident-recovery §18.4):
+ * held for a rejected credential, or stalled after its infra retries ran out.
+ */
+export interface WorkerInfraFact {
+  taskId: string;
+  component: WorkerInfraComponent;
+  /** `worker.auth`: the credential key. `worker.session_lost`: the last worker's friction signature. */
+  key: string;
+  /** `worker.auth`: a team-wide credential every workspace of the team uses. */
+  shared?: boolean;
+  /** This occurrence: the hold's failure, or the stall. */
+  occurredAt: string;
+  attempts: number;
+  exhausted: boolean;
+  workerId?: string | null;
+}
+
+/**
+ * A surface audit whose capture failed in Buildd's own capture pipeline
+ * (failure-incident-recovery §16.3): reported by the auditor as a typed
+ * capture failure, or adopted from a legacy question whose run's failed step
+ * is on record (§16.4 rollout).
+ */
+export interface CaptureFailureFact {
+  taskId: string;
+  missionId: string | null;
+  component: CaptureFailureComponent;
+  /** The record's `errorSignature` (toFrictionSignature of the normalized error). */
+  errorSignature: string;
+  /** When the audit reported it (or, for a legacy question, when it asked). */
+  occurredAt: string;
+  workerId?: string | null;
+  runId?: string | null;
+  ref?: string | null;
+  headSha?: string | null;
+}
+
+/** Worker components of the `infrastructure_failure` family (§18.4). Closed. */
+export type WorkerInfraComponent = 'worker.auth' | 'worker.session_lost';
+
 export interface SentinelFacts {
   workspaceId: string | null;
   /** ISO. The engine's only clock. */
@@ -204,6 +246,8 @@ export interface SentinelFacts {
   pathOverlapDeferrals?: PathOverlapDeferralFact[];
   providerAttributions?: ProviderAttributionFact[];
   failureRate?: FailureRateFact | null;
+  workerInfra?: WorkerInfraFact[];
+  captureFailures?: CaptureFailureFact[];
 }
 
 // ── Candidates ──────────────────────────────────────────────────────────────
@@ -422,7 +466,9 @@ function ruleLineageMultiPr(facts: SentinelFacts, t: SentinelThresholds): Incide
 }
 
 /** Exits that are not failures of the work (mirrors failure-analytics' bookkeeping set). */
-const NON_FAILURE_EXITS = new Set(['needs_input', 'task_cancelled', 'reassigned', 'never_started']);
+// auth_failure belongs to the infrastructure_failure family (one incident per
+// credential, §18.4), never to a per-signature repeated_failure as well.
+const NON_FAILURE_EXITS = new Set(['needs_input', 'task_cancelled', 'reassigned', 'never_started', 'auth_failure']);
 
 function failureRef(f: WorkerFailureFact): FailureIncidentEvidenceRef {
   return f.terminalRecordId
@@ -539,6 +585,88 @@ function rulePathOverlapStall(facts: SentinelFacts, t: SentinelThresholds): Inci
   return out;
 }
 
+/** The signature of one worker-infrastructure cause (§18.4). Keyed on the cause, never raw error text. */
+export function workerInfraSignature(workspaceId: string | null, component: WorkerInfraComponent, key: string): string {
+  return ['infrastructure_failure', wsPart(workspaceId), `component=${component}`, component === 'worker.auth' ? `cred=${seg(key)}` : `sig=${seg(key)}`].join('|');
+}
+
+export const WORKER_INFRA_REASON_CODE: Record<WorkerInfraComponent, string> = {
+  'worker.auth': 'infrastructure.auth',
+  'worker.session_lost': 'infrastructure.session_lost',
+};
+
+/**
+ * One incident per (component, cause): every task held on one credential, or
+ * stalled on one lost-session signature, is a subject of the same incident
+ * (§18.4, I-16). Recovery is Buildd's (BUILDD_RECOVERS); a person is never
+ * asked for these.
+ */
+function ruleWorkerInfrastructure(facts: SentinelFacts): IncidentCandidate[] {
+  const rows = newestFirst(facts.workerInfra ?? [], f => f.occurredAt, f => f.taskId).filter(f => f.occurredAt <= facts.now);
+  const out: IncidentCandidate[] = [];
+  for (const group of groupBy(rows, f => `${f.component}|${f.key}`).values()) {
+    const { component, key } = group[0];
+    const tasks = new Set(group.map(f => f.taskId));
+    const exhausted = group.filter(f => f.exhausted).length;
+    const severity: FailureIncidentSeverity =
+      component === 'worker.session_lost' || exhausted > 0 || tasks.size >= 2 ? 'high' : 'medium';
+    out.push(buildCandidate(facts, {
+      rule: 'infrastructure_failure',
+      reasonCode: WORKER_INFRA_REASON_CODE[component],
+      signature: workerInfraSignature(facts.workspaceId, component, key),
+      severity,
+      title: component === 'worker.auth'
+        ? `${tasks.size} task(s) held: the backend credential was rejected`
+        : `${tasks.size} task(s) stalled after repeated lost sessions`,
+      occurrences: group.map(f => ({ kind: 'task' as const, id: f.taskId, at: f.occurredAt })),
+      affected: {
+        taskIds: boundedUnique(group.map(f => f.taskId)),
+        workerIds: boundedUnique(group.map(f => f.workerId)),
+        prNumbers: [],
+      },
+      impact: { distinctTasks: tasks.size, exhaustedTasks: exhausted, ...(group[0].shared ? { sharedCredential: 1 } : {}) },
+    }));
+  }
+  return out;
+}
+
+/** The signature of one capture-pipeline cause (§16.3): component and normalized error, never a run or a task. */
+export function captureFailureSignature(workspaceId: string | null, component: CaptureFailureComponent, errorSignature: string): string {
+  return ['infrastructure_failure', wsPart(workspaceId), `component=${component}`, `sig=${seg(errorSignature)}`].join('|');
+}
+
+export const captureFailureReasonCode = (component: CaptureFailureComponent) => `infrastructure_failure.${component}`;
+
+/**
+ * One incident, so at most one fix task, per (workspace, component, error
+ * signature): every audit blocked by the same failing step is a subject of
+ * it (§16.6 I-10). Recovery is Buildd's; a person is never asked.
+ */
+function ruleCaptureFailure(facts: SentinelFacts): IncidentCandidate[] {
+  const rows = newestFirst(facts.captureFailures ?? [], f => f.occurredAt, f => f.taskId).filter(f => f.occurredAt <= facts.now);
+  const out: IncidentCandidate[] = [];
+  for (const group of groupBy(rows, f => `${f.component}|${f.errorSignature}`).values()) {
+    const { component, errorSignature } = group[0];
+    const tasks = new Set(group.map(f => f.taskId));
+    const missions = new Set(group.map(f => f.missionId).filter(Boolean));
+    out.push(buildCandidate(facts, {
+      rule: 'infrastructure_failure',
+      reasonCode: captureFailureReasonCode(component),
+      signature: captureFailureSignature(facts.workspaceId, component, errorSignature),
+      severity: tasks.size >= 2 ? 'high' : 'medium',
+      title: `${tasks.size} surface audit(s) blocked: the capture's ${component.slice('visual_qa.'.length)} step failed`,
+      occurrences: group.map(f => ({ kind: 'task' as const, id: f.taskId, at: f.occurredAt })),
+      affected: {
+        taskIds: boundedUnique(group.map(f => f.taskId)),
+        workerIds: boundedUnique(group.map(f => f.workerId)),
+        prNumbers: [],
+      },
+      impact: { blockedAudits: tasks.size, missions: missions.size },
+    }));
+  }
+  return out;
+}
+
 function ruleProviderMismatch(facts: SentinelFacts, t: SentinelThresholds): IncidentCandidate[] {
   const rows = newestFirst(facts.providerAttributions ?? [], r => r.occurredAt, r => r.workerId)
     .filter(r => r.executedProvider && r.attributedProvider && r.executedProvider !== r.attributedProvider);
@@ -628,6 +756,8 @@ const RULES = [
   ruleProviderMismatch,
   ruleFailureRateSpike,
   ruleOutputUnmetBoundary,
+  ruleWorkerInfrastructure,
+  ruleCaptureFailure,
 ];
 
 /**
