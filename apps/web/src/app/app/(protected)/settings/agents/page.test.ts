@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 
-// Logic extracted from settings/roles/page.tsx for testability.
+// Logic extracted from settings/agents/page.tsx for testability.
 // Maps active workers to roles and counts attributions.
 
 type WorkerInput = {

@@ -31,7 +31,7 @@ export default async function NewTeamRolePage({
   // The same team POST /api/roles defaults to: the active one.
   const teamId = activeTeamId && teamIds.includes(activeTeamId) ? activeTeamId : teamIds[0];
   if (!teamId) {
-    redirect('/app/settings/roles');
+    redirect('/app/settings/agents');
   }
 
   const caller = { kind: 'user' as const, userId: user.id };
@@ -41,7 +41,7 @@ export default async function NewTeamRolePage({
   ]);
   const kinds = newRoleKinds({ createPersonal, manageTeam });
   const initialKind = initialRoleKind(kinds, requestedKind);
-  if (!initialKind) redirect('/app/settings/roles');
+  if (!initialKind) redirect('/app/settings/agents');
 
   const workspaceList = manageTeam && wsIds.length > 0
     ? await db.query.workspaces.findMany({

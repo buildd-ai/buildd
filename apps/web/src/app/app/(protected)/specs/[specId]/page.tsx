@@ -12,7 +12,7 @@ const positive = (raw: string | undefined) => {
 };
 
 /**
- * One Living Spec (living-specs.md §8): the revision in force, its history,
+ * One Living Spec (living-specs.md §9): the revision in force, its history,
  * the changes between two revisions (?from=&to=), one revision (?revision=N),
  * and for an approver the waiting revision (?review=1). Read-only but for the
  * Approve action, which posts to the approve route.

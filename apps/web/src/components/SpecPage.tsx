@@ -82,7 +82,7 @@ function Compare({ specId, revisions, from, to }: { specId: string; revisions: n
 }
 
 /**
- * One spec (living-specs.md §8): the revision in force rendered, its history,
+ * One spec (living-specs.md §9): the revision in force rendered, its history,
  * the changes between any two revisions and, for a person who may approve,
  * the waiting revision with one Approve action (§6's route; nothing new).
  */

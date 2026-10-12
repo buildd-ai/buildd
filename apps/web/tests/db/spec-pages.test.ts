@@ -1,5 +1,5 @@
 /**
- * The dashboard spec pages' reads against real Postgres (living-specs.md §8):
+ * The dashboard spec pages' reads against real Postgres (living-specs.md §9):
  * the list is the workspace's specs as a tree and nothing of another team's;
  * the spec page reads the approved revision by default, any revision on
  * request, the same diff the API returns for two picked revisions, and the
@@ -62,14 +62,14 @@ describe('spec list', () => {
     expect(v.specs.some((s) => s.id === childId)).toBe(false);
   });
 
-  test('another team reads nothing (AC-18)', async () => {
+  test('another team reads nothing (AC-23)', async () => {
     expect(await specListView(outsider, wsA)).toEqual({ state: 'not_found' });
     expect(await specPageView(outsider, parentId)).toEqual({ state: 'not_found' });
   });
 });
 
 describe('spec page', () => {
-  test('reads the approved revision by default and says the newer one waits (AC-19)', async () => {
+  test('reads the approved revision by default and says the newer one waits (AC-24)', async () => {
     const v = await specPageView(member, parentId);
     if (v.state !== 'ok') throw new Error('expected ok');
     expect(v.reading).toEqual({ revision: 1, approved: true, isHead: false });
@@ -93,7 +93,7 @@ describe('spec page', () => {
     expect(v.reading).toEqual({ revision: 1, approved: false, isHead: true });
   });
 
-  test('two picked revisions show the rows diffSpecRevisions returns (AC-20)', async () => {
+  test('two picked revisions show the rows diffSpecRevisions returns (AC-25)', async () => {
     const v = await specPageView(member, parentId, { from: 1, to: 2 });
     if (v.state !== 'ok' || !v.compare || 'error' in v.compare) throw new Error('expected a compare');
     const d = await diffSpecRevisions(user(member), parentId, { from: 1, to: 2, rows: true });
@@ -102,7 +102,7 @@ describe('spec page', () => {
     expect(v.compare).toMatchObject({ from: 1, to: 2, linesAdded: 1, linesRemoved: 1 });
   });
 
-  test('only an approver gets the review, and approving it is the approve route (AC-22)', async () => {
+  test('only an approver gets the review, and approving it is the approve route (AC-27)', async () => {
     const asMember = await specPageView(member, parentId, { review: true });
     if (asMember.state !== 'ok') throw new Error('expected ok');
     expect(asMember.canApprove).toBe(false);

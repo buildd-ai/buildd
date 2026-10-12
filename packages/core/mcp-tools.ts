@@ -7825,8 +7825,12 @@ function formatKnowledgeResult(
   }
 
   // Non-memory: show corpus · path · timestamps · score breakdown
-  const path = r.sourcePath ?? parseSourcePath(r.id);
-  const pathStr = path ? `\`${path}\`` : r.sourceType;
+  // An approved Living Spec has no repo path: name it by title and revision.
+  const livingSpec = r.sourceType === 'living_spec' && typeof r.metadata?.title === 'string'
+    ? `living spec "${r.metadata.title}", approved revision ${String(r.metadata.revision)}`
+    : null;
+  const path = livingSpec ? null : r.sourcePath ?? parseSourcePath(r.id);
+  const pathStr = livingSpec ?? (path ? `\`${path}\`` : r.sourceType);
   const urlSuffix = r.sourceUrl ? ` [↗](${r.sourceUrl})` : '';
   const header = `### ${index + 1}. ${typeTag}${r.corpus} · ${pathStr}${urlSuffix}`;
 

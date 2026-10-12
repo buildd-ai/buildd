@@ -1,5 +1,5 @@
 /**
- * One spec's page, mounted (happy-dom), living-specs.md §8 AC-19/22: the
+ * One spec's page, mounted (happy-dom), living-specs.md §9 AC-24/27: the
  * reading line names the revision and what waits; an approver reviewing the
  * waiting revision sends exactly one approve for that revision and version;
  * a reader who may not approve sees no approve action.

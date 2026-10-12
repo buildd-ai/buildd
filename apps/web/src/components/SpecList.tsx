@@ -29,7 +29,7 @@ function Row({ item }: { item: SpecListItem }) {
 }
 
 /**
- * A workspace's specs as a tree (living-specs.md §8): each row says in words
+ * A workspace's specs as a tree (living-specs.md §9): each row says in words
  * what it is, where it stands and whether a revision waits for approval. No
  * counts; an empty workspace says how specs get made.
  */

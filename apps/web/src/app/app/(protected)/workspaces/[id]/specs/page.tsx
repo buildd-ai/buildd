@@ -6,7 +6,7 @@ import SpecList from '@/components/SpecList';
 
 export const dynamic = 'force-dynamic';
 
-/** A workspace's Living Specs as a tree (living-specs.md §8). Read-only. */
+/** A workspace's Living Specs as a tree (living-specs.md §9). Read-only. */
 export default async function WorkspaceSpecsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const user = await getCurrentUser();

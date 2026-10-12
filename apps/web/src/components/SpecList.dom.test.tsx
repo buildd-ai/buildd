@@ -1,5 +1,5 @@
 /**
- * A workspace's spec list, mounted (happy-dom), living-specs.md §8 AC-16/17:
+ * A workspace's spec list, mounted (happy-dom), living-specs.md §9 AC-21/22:
  * a child sits under its parent, each row says where it stands in words, and
  * an empty workspace says how specs get made with no count.
  *

@@ -9,7 +9,7 @@
  * module mocks stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/roles/builder/edit' });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/agents/builder/edit' });
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 mock.module('next/navigation', () => ({
   useRouter: () => ({ refresh: () => {}, push: () => {}, replace: () => {} }),
-  usePathname: () => '/app/settings/roles/builder/edit',
+  usePathname: () => '/app/settings/agents/builder/edit',
   useSearchParams: () => new URLSearchParams(''),
 }));
 

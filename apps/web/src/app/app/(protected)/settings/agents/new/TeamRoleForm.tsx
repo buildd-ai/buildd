@@ -146,7 +146,7 @@ export function TeamRoleForm({ teamId, workspaces, kinds = ['team'], initialKind
         throw new Error(responseErrorMessage(data, 'Failed to create agent'));
       }
 
-      router.push('/app/settings/roles');
+      router.push('/app/settings/agents');
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create agent');
@@ -347,7 +347,7 @@ export function TeamRoleForm({ teamId, workspaces, kinds = ['team'], initialKind
         <PrimaryAction type="submit" pending={saving}>
           {saving ? 'Creating…' : 'Create agent'}
         </PrimaryAction>
-        <Link href="/app/settings/roles" className="btn btn-lg h-11 md:h-10">Cancel</Link>
+        <Link href="/app/settings/agents" className="btn btn-lg h-11 md:h-10">Cancel</Link>
       </div>
     </form>
   );

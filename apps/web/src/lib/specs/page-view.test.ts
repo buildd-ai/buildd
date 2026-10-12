@@ -1,5 +1,5 @@
 /**
- * The pure parts of the spec pages (living-specs.md §8): where a spec stands in
+ * The pure parts of the spec pages (living-specs.md §9): where a spec stands in
  * words, the parent/child tree, and links to a cited repo file at its commit.
  *
  * Run: bun run scripts/run-unit-tests.ts apps/web/src/lib/specs/page-view.test.ts

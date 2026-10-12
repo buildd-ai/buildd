@@ -6,9 +6,9 @@ last_verified: 2026-10-11
 summary: Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
-related: [artifacts-and-sharing]
-keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx]
+related: [artifacts-and-sharing, knowledge-ingest-pipeline]
+keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx]
 supersedes: []
 ---
 # Living Specs
@@ -262,7 +262,7 @@ later ones are proposed (D-4).
 - The pin is taken when a task is filed, not when it is claimed: a task filed
   under N and claimed after N+1 is approved still runs on N, by design.
 - The task page shows the pinned revision as text; it does not link to the
-  spec page yet (§8).
+  spec page yet (§9).
 - No horizontal overflow at 320px is held by the wrapping the DOM test
   asserts and was measured on screenshots at 320, 390 and 1280px; no CI test
   renders the page at a real width yet.
@@ -341,7 +341,70 @@ the task completed or its PR merged.
 - The dashboard does not show the governed outcome yet (U1); it is in
   `get_task` and the API.
 
-## 8. Reading specs in the dashboard
+## 8. Approved specs in knowledge
+
+**Capability statement**: A spec's approved revision MUST be findable through
+recall, and its explicit references MUST be walkable in the knowledge graph,
+without an approval ever depending on either.
+
+**Invariants**:
+- Only the approved revision is indexed. When a person's approval commits
+  (`approveSpecRevision`, which the confirmation link also goes through), it
+  emits the core event `spec.approved` and the knowledge module indexes it: that
+  revision's body, exactly the artifact revision it pins, is chunked with the
+  docs markdown chunker into the workspace's `spec` corpus
+  (`{workspaceId}:spec`). Drafts and proposed revisions are never indexed: a
+  revise on an approved spec leaves the approved text in recall until N+1 is
+  approved.
+- One approved text per spec. Every chunk id starts with
+  `living-spec:<specId>#`, and an approval first deletes every chunk under that
+  prefix, so re-approval replaces the earlier text instead of adding a second.
+  Chunks carry `specId`, `revision`, `contentHash`, `parentSpecId`, `scope`,
+  `workspaceId` and `approvedAt`, source type `living_spec`, and no source
+  path: the repo ingest prunes paths it did not see on disk, and these are not
+  repo files. Their source URL is the spec page, `/app/specs/<specId>` (§9),
+  so a recall hit opens the spec, not an approval.
+- The graph comes only from what the spec stores: the spec `part_of` its
+  parent spec; the approved revision `references_doc` each repo file it cites
+  (the same `file` entity, keyed by repo path, that the repo ingest makes; the
+  commit sits on the revision entity's `repoRefs`); and the revision
+  `supersedes` the revision approved before it. No inferred, similarity or
+  agent-supplied edge is written for a spec. Each approval deletes this spec's
+  `living_spec:` edges and chunk links and writes them again, so the graph can
+  be rebuilt at any time.
+- Fail-open. Indexing runs after the approval has committed; a failure is
+  logged and never fails or rolls back the approval. Re-running the backfill
+  (`bun run --cwd apps/web specs:backfill-knowledge --apply`) repairs it and is
+  idempotent.
+
+**Acceptance criteria**:
+- AC-17: GIVEN a draft WHEN nothing is approved THEN it has no chunks; WHEN a
+  person approves it THEN its chunks carry the approved revision's hash and a
+  lexical recall finds them (`apps/web/tests/db/spec-knowledge.test.ts`).
+- AC-18: GIVEN an approved spec WHEN it is revised THEN recall still holds only
+  the approved text; WHEN N+1 is approved THEN its text replaces N's
+  (`apps/web/tests/db/spec-knowledge.test.ts`).
+- AC-19: GIVEN a spec with a parent and two repo refs WHEN approved THEN exactly
+  one `part_of` and two `references_doc` edges exist; WHEN re-approved with one
+  ref removed THEN that edge is gone and `supersedes` points at the previous
+  approval (`apps/web/tests/db/spec-knowledge.test.ts`,
+  `packages/core/__tests__/living-spec-knowledge.test.ts`).
+- AC-20: GIVEN the store and the graph writer both throw WHEN a person approves
+  THEN the spec is approved (`apps/web/tests/db/spec-knowledge.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/approval.ts` — emits `spec.approved` after the approval commits
+- `apps/web/src/lib/knowledge-subscribers.ts` — `living-spec-index` subscriber
+- `apps/web/src/lib/specs/knowledge.ts` — `indexApprovedSpec`, `specKnowledgeDeps`
+- `packages/core/knowledge-store/living-spec.ts` — `buildLivingSpecChunks`, `buildLivingSpecGraph`
+- `packages/core/knowledge-store/living-spec-graph.ts` — `replaceLivingSpecGraph`
+- `apps/web/scripts/backfill-living-spec-knowledge.ts`
+
+**Not yet**:
+- Nothing retires or deletes a spec yet (`retired` and `superseded` are only
+  read). When that lands, it must remove the spec's chunks and edges too.
+
+## 9. Reading specs in the dashboard
 
 **Capability statement**: A person MUST be able to find every spec of a
 workspace they can read, read the revision in force, see what is waiting for
@@ -377,6 +440,8 @@ same page, without an agent in between.
   bounded diff the API returns, and both reads are recorded in the read
   ledger like any other diff. The rendered body is read with `getSpec`, the
   same read `GET /api/specs/[id]` serves.
+- A recall hit on an approved spec links here (§8: the chunk's source URL
+  is `/app/specs/<specId>`).
 - The page links to the parent spec and to each child spec in the same
   workspace. Each repo reference of the revision being read shows as
   `path @ <12-character sha>`, linking to that file at that commit on GitHub
@@ -392,28 +457,28 @@ same page, without an agent in between.
   who may not approve sees no approve action.
 
 **Acceptance criteria**:
-- AC-16: GIVEN a workspace whose specs include a parent with one child and a
+- AC-21: GIVEN a workspace whose specs include a parent with one child and a
   spec with an approved revision and a newer draft WHEN its list renders THEN
   the child sits under its parent, and the rows read "approved at revision N",
   "draft, never approved" and "revision M waiting for approval"
   (`apps/web/src/lib/specs/page-view.test.ts`,
   `apps/web/src/components/SpecList.dom.test.tsx`).
-- AC-17: GIVEN a workspace with no specs WHEN its list renders THEN it says
+- AC-22: GIVEN a workspace with no specs WHEN its list renders THEN it says
   how specs are made and shows no count (`apps/web/src/components/SpecList.dom.test.tsx`).
-- AC-18: GIVEN a person of another team WHEN they open a workspace's spec
+- AC-23: GIVEN a person of another team WHEN they open a workspace's spec
   list or one of its specs THEN nothing about the spec is returned
   (`apps/web/tests/db/spec-pages.test.ts`).
-- AC-19: GIVEN revision 1 approved and revision 2 a draft WHEN the spec page
+- AC-24: GIVEN revision 1 approved and revision 2 a draft WHEN the spec page
   opens with no revision named THEN it reads revision 1 rendered and says
   revision 2 is waiting for approval; WHEN `?revision=2` THEN it reads revision
   2 (`apps/web/tests/db/spec-pages.test.ts`, `apps/web/src/components/SpecPage.dom.test.tsx`).
-- AC-20: GIVEN two revisions picked WHEN the page shows their changes THEN
+- AC-25: GIVEN two revisions picked WHEN the page shows their changes THEN
   the rows are the ones `diffSpecRevisions` returns for that pair
   (`apps/web/tests/db/spec-pages.test.ts`).
-- AC-21: GIVEN a revision citing `docs/specs/x.md` at a commit in a workspace
+- AC-26: GIVEN a revision citing `docs/specs/x.md` at a commit in a workspace
   with a linked repo WHEN the page renders THEN the reference links to that
   file at that commit (`apps/web/src/lib/specs/page-view.test.ts`).
-- AC-22: GIVEN an approver reviewing waiting revision M WHEN they press
+- AC-27: GIVEN an approver reviewing waiting revision M WHEN they press
   Approve THEN exactly one `POST /api/specs/[id]/approve` is sent naming M and
   the version the page was rendered at; GIVEN a reader who may not approve
   THEN no approve action renders (`apps/web/src/components/SpecPage.dom.test.tsx`,

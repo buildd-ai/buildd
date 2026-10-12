@@ -311,6 +311,56 @@ describe('runTaskRoleRouting', () => {
     expect(asked).not.toContain(TASK_ROLE_APPLY_CAPABILITY);
   });
 
+  // A team the way a real one looks once routing text is written: four described
+  // team defaults among undescribed and deliberately opted-out ones, a workspace
+  // override with no routing block of its own, and a read-only role.
+  const realisticTeam = (): RoleRow[] => [
+    routed('builder'),
+    { ...routed('builder'), workspaceId: 'ws-1', name: 'Repo builder', metadata: { color: 'blue' } },
+    { ...routed('researcher'), allowedTools: ['Read', 'Grep', 'WebSearch'] },
+    routed('organizer'),
+    routed('copy-editor'),
+    { ...routed('writer'), metadata: {} },
+    { ...routed('analyst'), metadata: null },
+    { ...routed('reviewer'), metadata: { routing: { disabled: true } } },
+    { ...routed('visual-auditor'), metadata: { routing: { disabled: true } } },
+    { ...routed('organizer'), workspaceId: 'ws-other', enabled: false },
+  ];
+
+  it('a workspace with two or more described roles reaches the model, and records no insufficient_candidates row', async () => {
+    const asked = mock(decide);
+    const recordDecision = mock(async () => {});
+    const res = await runTaskRoleRouting({ ...TASK, outputRequirement: 'pr_required' }, {
+      resolveAccess: async () => ({ ok: true, apiKey: 'k', model: JEV }),
+      decide: asked as never, loadRoles: async () => realisticTeam(),
+      readClaimedAt: async () => null, log: () => {},
+      apply: { write: async () => true, recordDecision, skipRowExists: async () => false, log: () => {}, minConfidence: 0.9 },
+    });
+    expect(asked).toHaveBeenCalledTimes(1);
+    expect(res.shadow.outcome).toBe('logged');
+    // The override inherits the team default's text; the read-only role cannot take a PR task.
+    expect(res.shadow.record?.candidates).toEqual(['builder', 'copy-editor', 'organizer']);
+    expect(res.shadow.record?.excluded).toMatchObject({ researcher: 'tools', writer: 'no_when_to_use', analyst: 'no_when_to_use' });
+    expect(recordDecision.mock.calls.map(c => (c as any)[0].reason)).not.toContain('insufficient_candidates');
+  });
+
+  it('a workspace with fewer than two described roles reports too_few_candidates, makes no call, and records insufficient_candidates', async () => {
+    const asked = mock(decide);
+    const recordDecision = mock(async () => {});
+    const res = await runTaskRoleRouting(TASK, {
+      resolveAccess: async () => ({ ok: true, apiKey: 'k', model: JEV }),
+      decide: asked as never,
+      loadRoles: async () => realisticTeam().filter(r => r.slug !== 'researcher' && r.slug !== 'organizer' && r.slug !== 'copy-editor'),
+      readClaimedAt: async () => null, log: () => {},
+      apply: { write: async () => true, recordDecision, skipRowExists: async () => false, log: () => {} },
+    });
+    expect(asked).not.toHaveBeenCalled();
+    expect(res.shadow.outcome).toBe('too_few_candidates');
+    expect(res.apply.outcome).toBe('no_decision');
+    expect(recordDecision).toHaveBeenCalledTimes(1);
+    expect((recordDecision.mock.calls[0] as any)[0]).toMatchObject({ status: 'fallback', reason: 'insufficient_candidates' });
+  });
+
   it('scheduleTaskRoleRouting hands the run to after(), and fires it directly outside a request scope', async () => {
     const scheduled: Array<() => Promise<unknown>> = [];
     const write = mock(async () => true);

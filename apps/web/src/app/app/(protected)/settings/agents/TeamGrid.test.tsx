@@ -126,7 +126,7 @@ describe('TeamGrid', () => {
       expect(html).toContain('Private');
       expect(html).toContain('Shared');
       // Personal slugs are not unique, so the link carries the id.
-      expect(html).toContain('/app/settings/roles/my-reviewer/edit?id=p-1');
+      expect(html).toContain('/app/settings/agents/my-reviewer/edit?id=p-1');
     });
 
     it('shows a teammate\'s shared role with its owner, outside Mine', () => {
@@ -140,8 +140,8 @@ describe('TeamGrid', () => {
 
     it('a member who can only create personal roles gets New role pointed at "Just for me"', () => {
       const html = render({ canCreatePersonalRole: true, canCreateTeamRole: false });
-      expect(html).toContain('href="/app/settings/roles/new?kind=personal"');
-      expect(html).not.toContain('href="/app/settings/roles/new"');
+      expect(html).toContain('href="/app/settings/agents/new?kind=personal"');
+      expect(html).not.toContain('href="/app/settings/agents/new"');
     });
 
     it('no New role at all when the viewer holds neither permission', () => {
@@ -152,7 +152,7 @@ describe('TeamGrid', () => {
 
     it('an admin gets the plain New role link (the form offers both kinds)', () => {
       const html = render({ canCreatePersonalRole: true, canCreateTeamRole: true });
-      expect(html).toContain('href="/app/settings/roles/new"');
+      expect(html).toContain('href="/app/settings/agents/new"');
     });
   });
 });

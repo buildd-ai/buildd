@@ -130,7 +130,7 @@ export default async function WorkspaceDetailPage({
     { href: `/app/workspaces/${workspace.id}/artifacts`, label: 'Artifacts', count: artifactCount },
     { href: `/app/workspaces/${workspace.id}/specs`, label: 'Specs' },
     { href: `/app/health/runners?workspace=${workspace.id}`, label: 'Runners' },
-    { href: '/app/settings/roles', label: 'Agents' },
+    { href: '/app/settings/agents', label: 'Agents' },
   ];
 
   return (

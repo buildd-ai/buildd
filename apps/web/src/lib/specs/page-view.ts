@@ -9,7 +9,7 @@ import { linkedRepoFullName } from './repo-source';
 import type { RepoRef } from './repo-refs';
 
 /**
- * What the dashboard's spec pages show (living-specs.md §8): a workspace's
+ * What the dashboard's spec pages show (living-specs.md §9): a workspace's
  * specs as a tree, and one spec's revision in force, its history, the changes
  * between two revisions and, for a person who may approve, the waiting
  * revision with one Approve action. Read-only: every read goes through the
