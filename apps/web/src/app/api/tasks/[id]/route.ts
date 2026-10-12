@@ -774,6 +774,23 @@ export async function PATCH(
       }).catch((err) => console.error('[task-patch] mission-feed/reopen failed:', err));
     }
 
+    // Replacing a role a role pick applied is an implicit correction of that
+    // decision. Clearing it is not (there is no corrected answer), and a role
+    // the task never had cannot have been picked. The decisions module labels
+    // it (lib/decision-subscribers.ts); emit never throws.
+    const nextRoleSlug = updated?.roleSlug ?? null;
+    const teamId = task.workspace?.teamId;
+    if (roleSlug !== undefined && teamId && task.roleSlug && nextRoleSlug && nextRoleSlug !== task.roleSlug) {
+      await emit({
+        type: 'task.role_changed',
+        taskId: id,
+        teamId,
+        from: task.roleSlug,
+        to: nextRoleSlug,
+        by: apiAccount?.id ?? user?.id ?? null,
+      });
+    }
+
     return NextResponse.json(updated);
   } catch (error) {
     console.error('Update task error:', error);

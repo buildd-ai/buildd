@@ -262,16 +262,23 @@ export function usedForView(
 ): UsedForRow[] | null {
   const connected = connectedProviders(res);
   if (connected.length < 2) return null;
-  // Named the way the list names its rows ("Claude"); a group's member by its
-  // own name only when two of that group could serve the same surface.
+  // A group shows once per surface, named the way the list names its row
+  // ("Claude"): only its members that serve the surface, or the first one,
+  // disabled, when none does. Two members serving go by their own names.
   const groupOf = (id: string) => PROVIDER_GROUPS.find((g) => g.members.includes(id));
   return SURFACE_ORDER.map((surface) => {
-    const serving = connected.filter((p) => p.surfaces[surface]?.ok);
+    const serves = (p: ProviderListing) => !!p.surfaces[surface]?.ok;
+    const shown = connected.filter((p) => {
+      const g = groupOf(p.id);
+      if (!g) return true;
+      const members = connected.filter((q) => groupOf(q.id) === g);
+      return members.some(serves) ? serves(p) : members[0] === p;
+    });
     const label = (p: ProviderListing) => {
       const g = groupOf(p.id);
-      return g && serving.filter((q) => groupOf(q.id) === g).length < 2 ? g.label : p.label;
+      return g && shown.filter((q) => groupOf(q.id) === g).length < 2 ? g.label : p.label;
     };
-    const options: UsedForOption[] = connected.map((p) => {
+    const options: UsedForOption[] = shown.map((p) => {
       const support = p.surfaces[surface];
       if (support?.ok) {
         // Every team key rejected: picking it would route this surface to a key that fails.
