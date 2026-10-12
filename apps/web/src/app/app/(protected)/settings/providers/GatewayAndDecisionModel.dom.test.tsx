@@ -16,17 +16,19 @@ const { describeControls } = await import('../_lib/form-controls');
 
 let gateway: unknown = null;
 let decisionModel: unknown = null;
+let decisionModelOverrides: unknown = undefined;
 const writes: Array<{ url: string; method: string; body: unknown }> = [];
 
 beforeEach(() => {
   writes.length = 0;
   gateway = null;
   decisionModel = null;
+  decisionModelOverrides = undefined;
   globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
     if (method !== 'GET') { writes.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : null }); return new Response('{}', { status: 200 }); }
     if (url.endsWith('/litellm-gateway')) return new Response(JSON.stringify({ gateway }), { status: 200 });
-    return new Response(JSON.stringify({ team: { decisionModel } }), { status: 200 });
+    return new Response(JSON.stringify({ team: { decisionModel, decisionModelOverrides } }), { status: 200 });
   }) as unknown as typeof fetch;
 });
 
@@ -52,6 +54,19 @@ const click = async (el: Element | null | undefined) => { await act(async () => 
 const button = (label: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === label);
 
 describe('GatewayAndDecisionModel', () => {
+  it('shows one line per decision with its own model, and none without', async () => {
+    await mount();
+    expect(host.querySelector('[data-testid="decision-model-overrides"]')).toBeNull();
+    act(() => root.unmount()); host.remove();
+    decisionModelOverrides = [
+      { kind: 'task_category', label: 'Task category', endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' },
+      { kind: 'buildd.orchestration_claim_hold', label: 'Start or wait', endpoint: 'systemone', model: 'clef', via: 'cloudflare' },
+    ];
+    await mount(false);
+    const lines = [...host.querySelectorAll('[data-testid="decision-model-overrides"] li')].map((li) => li.textContent);
+    expect(lines).toEqual(['Task category uses qwen3-8b', 'Start or wait uses Clef']);
+  });
+
   it('shows a connected gateway by URL and last4 only, and Jev as the default decision model', async () => {
     gateway = { baseURL: 'https://litellm.example.test/v1', last4: 'abcd', health: 'healthy', lastVerificationError: null };
     await mount();

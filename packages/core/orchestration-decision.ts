@@ -175,6 +175,8 @@ type ResolveAccessFn = (opts: {
   workspaceId?: string | null;
   accountId?: string | null;
   userId?: string | null;
+  /** The decision asked, so the team's model override for it answers (decision-model.ts `byKind`). */
+  kind?: string | null;
 }) => Promise<DecisionAccess>;
 
 export interface OrchestrationDecisionDeps {
@@ -424,6 +426,7 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
       workspaceId: scope.workspaceId,
       accountId: scope.accountId ?? null,
       userId: scope.userId ?? null,
+      kind: decision.id,
     }), remaining());
     if (access === DEADLINE) return await fallback('deadline');
     if (!access.ok) {

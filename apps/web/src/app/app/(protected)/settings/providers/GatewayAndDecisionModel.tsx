@@ -24,6 +24,8 @@ const GATEWAY_HEALTH: Record<MaskedGateway['health'], KeyHealth> = { healthy: 'o
 
 type DecisionVia = 'openrouter' | 'litellm' | 'cloudflare';
 type DecisionModel = { endpoint: 'systemone' | 'chat'; model: string; via: DecisionVia } | null;
+/** A decision answered by its own model (`decisionModelOverrides` on the team). */
+type DecisionModelOverride = NonNullable<DecisionModel> & { kind: string; label: string };
 
 /** The System One models Cloudflare serves: Clef on Workers AI, Jev through the AI Gateway. */
 const CLOUDFLARE_MODELS = [
@@ -86,14 +88,16 @@ export function GatewayCard({ teamId, canManage, onChanged, embedded = false }: 
 export function DecisionModelPicker({ teamId, canManage, rev = 0, embedded = false }: { teamId: string; canManage: boolean; rev?: number; embedded?: boolean }) {
   const { gateway } = useGateway(teamId, rev);
   const [decision, setDecision] = useState<DecisionModel | undefined>(undefined);
+  const [overrides, setOverrides] = useState<DecisionModelOverride[]>([]);
   const load = useCallback(async () => {
     const t = await fetch(`/api/teams/${teamId}`, { cache: 'no-store' }).catch(() => null);
     if (!t?.ok) return;
-    const team = (await t.json()) as { team?: { decisionModel?: DecisionModel }; decisionModel?: DecisionModel };
+    const team = (await t.json()) as { team?: { decisionModel?: DecisionModel; decisionModelOverrides?: DecisionModelOverride[] }; decisionModel?: DecisionModel };
     setDecision(team.team?.decisionModel ?? team.decisionModel ?? null);
+    setOverrides(team.team?.decisionModelOverrides ?? []);
   }, [teamId]);
   useEffect(() => { void load(); }, [load]);
-  return <DecisionModelSection teamId={teamId} canManage={canManage} value={decision} hasGateway={!!gateway} onChanged={load} embedded={embedded} />;
+  return <DecisionModelSection teamId={teamId} canManage={canManage} value={decision} overrides={overrides} hasGateway={!!gateway} onChanged={load} embedded={embedded} />;
 }
 
 function GatewaySection({ teamId, canManage, gateway, error, onChanged, embedded = false }: {
@@ -199,12 +203,20 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged, embedded
   );
 }
 
-function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged, embedded = false }: {
+/** A model's short name: Clef and Jev by name, anything else by its id. */
+function modelName(model: string): string {
+  if (model.startsWith('typesafe/jev-')) return 'Jev';
+  return CLOUDFLARE_MODELS.find((m) => m.id === model)?.label ?? model;
+}
+
+function DecisionModelSection({ teamId, canManage, value, overrides = [], hasGateway, onChanged, embedded = false }: {
   /** A row in Used for: titled "Decisions", no card. */
   embedded?: boolean;
   teamId: string;
   canManage: boolean;
   value: DecisionModel | undefined;
+  /** Decisions answered by their own model, ahead of the team's. */
+  overrides?: DecisionModelOverride[];
   hasGateway: boolean;
   onChanged: () => Promise<void>;
 }) {
@@ -254,6 +266,11 @@ function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged,
         : <h2 id="decision-model-h" className="section-label mb-3">Decision model</h2>}
       <div className={embedded ? 'space-y-2 text-xs' : 'card p-4 space-y-2 text-xs'}>
         <p className="text-sm text-text-primary" data-testid="decision-model-current">{value === undefined ? 'Loading…' : current}</p>
+        {overrides.length > 0 && (
+          <ul className="text-text-primary" data-testid="decision-model-overrides">
+            {overrides.map((o) => <li key={o.kind}>{o.label} uses {modelName(o.model)}</li>)}
+          </ul>
+        )}
         <p className="text-text-muted">
           Labels tasks by category. Needs a model that returns token logprobs. Other models only record their picks until evaluated.
         </p>
