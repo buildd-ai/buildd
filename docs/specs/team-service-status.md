@@ -224,9 +224,9 @@ role. The operator role adds nothing to them.
   cards (the stored escalation verdicts), decision-feature health rows ("…is
   not deciding", the decision collection items), and any other item whose
   subject is buildd's own machinery rather than the team's work.
-- **Where it goes**: the platform-owner API, which any operator client reads.
-  Incidents and decision health stay in the product as API routes, with no
-  team UI. The operator's push page for an owner verdict is unchanged; only
+- **Where it goes**: operator tooling, which reads root causes through the
+  platform-owner API and keeps its own state. Team surfaces carry no operator
+  items. The operator's push page for an owner verdict is unchanged; only
   its Home card goes. Moving them MUST NOT leave the operator without them:
   the platform-owner API serves the same items, with the same verdicts, before
   Home stops rendering them.
