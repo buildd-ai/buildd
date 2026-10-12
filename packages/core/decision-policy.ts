@@ -132,6 +132,8 @@ export async function resolveBuilddDecisionRuntime<K extends string, F, D extend
     workspaceId: scope.workspaceId,
     accountId: scope.accountId,
     userId: scope.userId,
+    // The team's model override for this kind, if any, answers the cheap route.
+    kind: kind.kind,
     ...(scope.onUsage ? { onUsage: scope.onUsage } : {}),
   };
 

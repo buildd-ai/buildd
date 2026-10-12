@@ -86,7 +86,8 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
 
       {open && (
         <div className="pb-3 space-y-2 text-body" data-testid="provider-detail">
-          {rows.map((row) => <CredentialRow key={row.id} row={row} scope={scope} teamId={data.teamId} workspaceId={workspaceId} canRemove={!readOnly && !closed} onChanged={onChanged} />)}
+          {/* A form (gateway, endpoint) shows its own masked key and Remove. */}
+          {!(form && formSlot) && rows.map((row) => <CredentialRow key={row.id} row={row} scope={scope} teamId={data.teamId} workspaceId={workspaceId} canRemove={!readOnly && !closed} onChanged={onChanged} />)}
           {inherited.length > 0 && (
             <p className="text-meta text-text-muted" data-testid="provider-inherits">
               Uses the team&apos;s {inherited.map((r) => `${SHAPE_NOUN[r.shape] ?? r.shape}${r.last4 ? ` …${r.last4}` : ''}`).join(', ')}

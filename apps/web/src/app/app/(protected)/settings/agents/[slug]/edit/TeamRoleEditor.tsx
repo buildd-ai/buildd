@@ -174,7 +174,7 @@ function PersonalSharingSection({
     }
   }
 
-  const teamRoleHref = `/app/settings/roles/${encodeURIComponent(slug)}/edit`;
+  const teamRoleHref = `/app/settings/agents/${encodeURIComponent(slug)}/edit`;
   const label = (v: RoleVisibility) => (v === 'private' ? (info.isOwner ? 'Only me' : 'Only its owner') : 'Whole team');
 
   return (
@@ -559,7 +559,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
 
       // A move re-reads the row: this same page resolves it at its new scope.
       if (body.workspaceId !== undefined) {
-        router.push(`/app/settings/roles/${encodeURIComponent(role.slug)}/edit?id=${encodeURIComponent(role.id)}`);
+        router.push(`/app/settings/agents/${encodeURIComponent(role.slug)}/edit?id=${encodeURIComponent(role.id)}`);
         router.refresh();
         return;
       }
@@ -580,7 +580,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
     try {
       const res = await fetch(`/api/roles/${role.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete');
-      router.push('/app/settings/roles');
+      router.push('/app/settings/agents');
       router.refresh();
     } catch {
       setError('Failed to delete agent');

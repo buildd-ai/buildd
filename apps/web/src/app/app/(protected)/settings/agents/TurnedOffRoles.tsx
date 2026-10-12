@@ -21,7 +21,7 @@ export function TurnedOffRoles({ roles }: { roles: TurnedOffRole[] }) {
         {roles.map(r => (
           <li key={r.id}>
             <Link
-              href={`/app/settings/roles/${encodeURIComponent(r.slug)}/edit?id=${encodeURIComponent(r.id)}`}
+              href={`/app/settings/agents/${encodeURIComponent(r.slug)}/edit?id=${encodeURIComponent(r.id)}`}
               className="flex min-h-11 items-center justify-between gap-3 py-2 text-sm"
             >
               <span className="min-w-0 truncate text-text-primary">{r.name}</span>

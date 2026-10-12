@@ -48,7 +48,7 @@ const QUIET_DAY = series(Array.from({ length: 96 }, () => 0));
 const IDLE: IdleStretch[] = [{ from: NOW - 10 * H, to: NOW - 8 * H, waited: 3 }];
 
 const mission = (m: Pick<MissionDelivery, 'id' | 'title' | 'kind' | 'landed' | 'total' | 'repairRounds' | 'evidence' | 'next' | 'exception'>): MissionDelivery => ({
-  href: '#', open: true, inAudit: 1, executing: true, milestones: {} as MissionDelivery['milestones'], focus: null, tasks: [], ...m,
+  href: '#', open: true, inAudit: 1, executing: true, milestones: {} as MissionDelivery['milestones'], focus: null, visual: null, tasks: [], ...m,
 });
 const MILESTONES: MissionDelivery[] = [
   mission({ id: 'm3', title: 'First-run checklist', kind: 'landing', landed: 4, total: 4, repairRounds: 0, evidence: 'Every task landed on the mission branch.', next: 'The mission PR merges to trunk', exception: { tone: 'info', text: 'All tasks done, not yet on trunk' } }),

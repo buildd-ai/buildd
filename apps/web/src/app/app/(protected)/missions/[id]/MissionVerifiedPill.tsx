@@ -121,7 +121,7 @@ function MissionVerifiedPillInner({
           type="button"
           id={MISSION_CRITERIA_ANCHOR}
           onClick={handleOpen}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-text-muted font-mono text-[11px] md:text-[10px] rounded-sm hover:text-text-secondary transition-colors"
+          className="inline-flex min-h-11 items-center gap-1 px-1.5 py-0.5 md:min-h-0 border border-border-default text-text-muted font-mono text-[11px] md:text-[10px] rounded-sm hover:text-text-secondary transition-colors"
         >
           + Criteria
         </button>
@@ -178,7 +178,7 @@ function MissionVerifiedPillInner({
         id={MISSION_CRITERIA_ANCHOR}
         onClick={handleOpen}
         title={title}
-        className={`inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[11px] md:text-[10px] rounded-sm transition-opacity hover:opacity-80 ${toneClass}`}
+        className={`inline-flex min-h-11 items-center gap-1 px-1.5 py-0.5 md:min-h-0 border font-mono text-[11px] md:text-[10px] rounded-sm transition-opacity hover:opacity-80 ${toneClass}`}
       >
         {icon ? `${icon} ${text}` : text}
       </button>

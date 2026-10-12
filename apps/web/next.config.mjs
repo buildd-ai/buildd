@@ -23,12 +23,15 @@ export function buildSkipsTypecheck(env) {
  * Guarded by src/lib/settings-route-moves.test.ts.
  */
 export const SETTINGS_ROUTE_MOVES = [
-  // Agent roles: the Team page and its editor become Settings › Roles.
-  { source: '/app/team', destination: '/app/settings/roles' },
-  { source: '/app/team/new', destination: '/app/settings/roles/new' },
-  { source: '/app/team/:slug/settings', destination: '/app/settings/roles/:slug/edit' },
-  { source: '/app/team/:slug', destination: '/app/settings/roles/:slug' },
-  { source: '/app/workspaces/:id/skills', destination: '/app/settings/roles' },
+  // Agents: the Team page and its editor became Settings › Roles, then
+  // Settings › Agents. Old links go straight to the current home.
+  { source: '/app/settings/roles', destination: '/app/settings/agents' },
+  { source: '/app/settings/roles/:path*', destination: '/app/settings/agents/:path*' },
+  { source: '/app/team', destination: '/app/settings/agents' },
+  { source: '/app/team/new', destination: '/app/settings/agents/new' },
+  { source: '/app/team/:slug/settings', destination: '/app/settings/agents/:slug/edit' },
+  { source: '/app/team/:slug', destination: '/app/settings/agents/:slug' },
+  { source: '/app/workspaces/:id/skills', destination: '/app/settings/agents' },
   // People: one Team page; another team opens there by id.
   { source: '/app/teams/new', destination: '/app/settings/team?new=1' },
   { source: '/app/teams/:id', destination: '/app/settings/team?team=:id' },

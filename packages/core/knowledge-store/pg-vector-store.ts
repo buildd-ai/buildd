@@ -722,17 +722,20 @@ export class PgVectorStore implements KnowledgeStore {
 
   async deleteBySource(
     namespace: string,
-    selector: { sourcePath?: string; sourceType?: string },
+    selector: { sourcePath?: string; sourceType?: string; sourceIdPrefix?: string },
   ): Promise<void> {
-    if (!selector.sourcePath && !selector.sourceType) return;
+    if (!selector.sourcePath && !selector.sourceType && !selector.sourceIdPrefix) return;
     const db = await getDb();
     const pathClause = selector.sourcePath ? sql`AND source_path = ${selector.sourcePath}` : sql``;
     const typeClause = selector.sourceType ? sql`AND source_type = ${selector.sourceType}` : sql``;
+    // starts_with, not LIKE: an id may contain `_` or `%`.
+    const idClause = selector.sourceIdPrefix ? sql`AND starts_with(source_id, ${selector.sourceIdPrefix})` : sql``;
     await db.execute(sql`
       DELETE FROM knowledge_chunks
       WHERE namespace = ${namespace}
         ${pathClause}
         ${typeClause}
+        ${idClause}
     `);
   }
 

@@ -246,8 +246,8 @@ export default async function RoleProfilePage({
 
   // A workspace-scoped role shares its slug with others elsewhere, so its editor link carries the id.
   const editHref = role.workspaceId
-    ? `/app/settings/roles/${encodeURIComponent(role.slug)}/edit?id=${encodeURIComponent(role.id)}`
-    : `/app/settings/roles/${encodeURIComponent(role.slug)}/edit`;
+    ? `/app/settings/agents/${encodeURIComponent(role.slug)}/edit?id=${encodeURIComponent(role.id)}`
+    : `/app/settings/agents/${encodeURIComponent(role.slug)}/edit`;
   const ROWS = 'divide-y divide-border-default border-y border-border-default';
 
   return (
@@ -366,7 +366,7 @@ export default async function RoleProfilePage({
                 <div className="mb-1.5 text-sm text-text-muted">Can delegate to</div>
                 <div className="flex flex-wrap gap-1.5">
                   {delegateRoles.map(d => (
-                    <Link key={d.slug} href={`/app/settings/roles/${d.slug}`} className="btn btn-sm h-11 md:h-6">
+                    <Link key={d.slug} href={`/app/settings/agents/${d.slug}`} className="btn btn-sm h-11 md:h-6">
                       {d.name}
                     </Link>
                   ))}
