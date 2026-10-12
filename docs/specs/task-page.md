@@ -297,8 +297,8 @@ branch update" for a carried approval), binding what follows to that round.
 | Row's round / reviewer | Detail |
 |---|---|
 | no round on this head (Awaiting review), or policy-skipped | none: the row is not a disclosure |
-| round `queued`, reviewer task not claimed | "Review queued · no findings yet" |
-| round `reviewing`, or the reviewer task claimed / running | "Review in progress · no findings yet" |
+| round `queued`, reviewer task not yet `in_progress` | "Review queued · no findings yet" |
+| round `reviewing`, or the reviewer task `in_progress` | "Review in progress · no findings yet" |
 | round `decided`, reviewer left a summary | the summary as prose |
 | round `decided`, reviewer row read, no summary (or no row) | "The review finished without written findings" |
 | round `decided`, reviewer rows could not be read | "Couldn’t load the review’s findings" + "Try again" (reloads the page) |

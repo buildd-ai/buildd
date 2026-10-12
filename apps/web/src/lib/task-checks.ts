@@ -9,6 +9,7 @@
  * round) that caused it; a review round is never a repair, and a mechanical
  * branch refresh is not one either.
  */
+import { TaskStatus } from '@buildd/shared';
 import type { DeliveryView } from './workflow/projections';
 
 // The kernel's snapshots, read through the view (only its read model is imported outside the kernel).
@@ -196,8 +197,6 @@ export type ReviewDetail =
   | { kind: 'findings'; prose: string; round: ReviewRoundRef; linkTaskId: string | null }
   | { kind: 'queued' | 'running' | 'no-output' | 'run-failed' | 'unavailable'; text: string; round: ReviewRoundRef; linkTaskId: string | null };
 
-const RUNNING_TASK = new Set(['assigned', 'in_progress', 'waiting_input']);
-
 /**
  * What the Code review row opens to, or null when it has nothing to add (then
  * the row is not a disclosure). Findings are only ever the current round's
@@ -219,7 +218,7 @@ export function reviewDetailOf(
 
   if (r.status === 'failed') return say('run-failed', 'The review run ended before giving a verdict');
   if (r.status === 'queued' || r.status === 'reviewing') {
-    return r.status === 'reviewing' || RUNNING_TASK.has(f?.status ?? '')
+    return r.status === 'reviewing' || f?.status === TaskStatus.IN_PROGRESS
       ? say('running', 'Review in progress · no findings yet')
       : say('queued', 'Review queued · no findings yet');
   }
