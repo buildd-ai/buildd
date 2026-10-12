@@ -67,7 +67,8 @@ export function outcomeText(o: Outcome): string {
   return [`Governed outcome: ${o.outcome.toUpperCase()} against spec revision ${o.revision}, head ${head}. ${o.reason}.`, ...rows].join('\n');
 }
 
-export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null): Promise<ToolResult> {
+export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null, appBase = 'https://buildd.dev'): Promise<ToolResult> {
+  const specUrl = (id: string) => `${appBase.replace(/\/+$/, '')}/app/specs/${encodeURIComponent(id)}`;
   const op = params.action as SpecOp;
   if (!op || !(SPEC_OPS as readonly string[]).includes(op)) throw new Error(`action must be one of: ${SPEC_OPS.join(', ')}`);
 
@@ -91,7 +92,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
-      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}. A person approves it (submit / approve from their own session).`);
+      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}\nSpec URL: ${specUrl(spec.id)}\nA person approves it (submit / approve from their own session).`);
     }
 
     case 'get': {
@@ -108,6 +109,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         : `(${body.length} characters, not inlined. Read it in parts: get_artifact { artifactId: "${s.bodyArtifactId}", revision: ${view.revision.artifactRevision}, view: "outline" }, then view "section" or "grep".)`;
       return text([
         line(s).slice(2),
+        `Spec URL: ${specUrl(s.id)}`,
         `Showing revision ${view.revision.revision} (sha256 ${view.revision.contentHash}). Revise with expectedVersion ${s.version}.`,
         reqs.length ? `Requirement ids: ${reqs.join(', ')}` : 'Requirement ids: none',
         `Revisions:\n${history}`,
@@ -130,9 +132,9 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
-        if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.`);
+        if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
         const what = target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
-        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).`);
+        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}`);
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
@@ -154,11 +156,11 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}/${op}`, { method: 'POST', body: JSON.stringify(payload) });
         if (op === 'approve' && r.pending) {
-          return text(`Not approved yet: approving a spec is the person's own decision, so it waits for them to confirm it on buildd.dev.\nConfirm revision ${r.pending.revision} of "${r.spec.title}": ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.`);
+          return text(`Not approved yet: approving a spec is the person's own decision, so it waits for them to confirm it on buildd.dev.\nConfirm revision ${r.pending.revision} of "${r.spec.title}": ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
         }
         return text(op === 'approve'
-          ? `Approved: revision ${r.revision.revision} of "${r.spec.title}" is now in force (sha256 ${r.revision.contentHash}). Version ${r.spec.version}.`
-          : `Submitted: "${r.spec.title}" revision ${r.spec.headRevision} is in review. Version ${r.spec.version}.`);
+          ? `Approved: revision ${r.revision.revision} of "${r.spec.title}" is now in force (sha256 ${r.revision.contentHash}). Version ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`
+          : `Submitted: "${r.spec.title}" revision ${r.spec.headRevision} is in review. Version ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 403) return errorResult(String(e.body?.error ?? 'Only a person decides on a spec.'));
