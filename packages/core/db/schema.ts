@@ -2805,6 +2805,10 @@ export const specRevisions = pgTable('spec_revisions', {
   // pinned to the exact commit it was validated at on write. Immutable with
   // the revision, so a moving branch never changes what it cites.
   repoRefs: jsonb('repo_refs').$type<Array<{ path: string; commitSha: string }>>(),
+  // The design this revision is built to (Living Specs D-8/D-9), pinned to one
+  // version: an artifact at a revision number, a URL or a design-tool file at a
+  // version id. Immutable with the revision, so an approval records it too.
+  design: jsonb('design').$type<{ kind: 'artifact' | 'url' | 'figma'; ref: string; version: string; screens?: Array<{ id: string; name: string }> }>(),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),

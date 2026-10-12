@@ -14,3 +14,4 @@ export * from './shapes';
 export * from './source';
 export * from './confluence-markdown';
 export * from './confluence';
+export * from './design';

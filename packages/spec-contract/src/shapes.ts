@@ -41,7 +41,8 @@ export interface DesignScreen {
 export interface DesignRef {
   kind: DesignKind;
   ref: string;
-  version: string;
+  /** An artifact's revision number, or the tool's version id. A stored reference always has one. */
+  version?: string;
   /** The screens a criterion may name, so a checker knows what each one covers. */
   screens?: DesignScreen[];
 }

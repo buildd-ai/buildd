@@ -55,7 +55,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if (body?.checker === 'visual') {
     const v = await VISUAL_SPEC_VERDICT(c, taskId, {
       criterionId: body.criterionId, verdict: body.verdict, capturedSha: body.capturedSha,
-      screenshotIds: body.screenshotIds, observed: body.observed,
+      screenshotIds: body.screenshotIds, designShotIds: body.designShotIds, observed: body.observed,
     });
     if (v.ok) return NextResponse.json({ verdictId: v.verdictId, outcome: v.outcome });
     return NextResponse.json({ error: v.error }, { status: v.status });

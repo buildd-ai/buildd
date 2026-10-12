@@ -20,6 +20,17 @@ describe('renderVisualAuditSpecCriteria', () => {
     expect(block).toContain('Skip a criterion nothing on screen can show');
   });
 
+  it('names the pinned design, how to open it, and the screens each criterion covers', () => {
+    const block = renderVisualAuditSpecCriteria([{
+      ...subject([{ id: 'AC-1', text: 'Empty state.', screens: ['cart-empty'] }, { id: 'AC-2', text: 'Totals.' }]),
+      design: { kind: 'artifact', ref: 'art-1', version: '4', screens: [{ id: 'cart-empty', name: 'Empty cart' }] },
+    }])!;
+    expect(block).toContain('Design: artifact at version 4, open with get_artifact { artifactId: "art-1", revision: 4 }; screens cart-empty (Empty cart)');
+    expect(block).toContain('- **AC-1** Empty state. (screens: cart-empty)');
+    expect(block.endsWith('- **AC-2** Totals.')).toBe(true);
+    expect(block).toContain('designShotIds');
+  });
+
   it('renders nothing when no dependency is pinned, or none has criteria', () => {
     expect(renderVisualAuditSpecCriteria([])).toBeNull();
     expect(renderVisualAuditSpecCriteria([subject([])])).toBeNull();

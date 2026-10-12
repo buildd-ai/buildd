@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -673,8 +673,6 @@ from that package, so a copy is the same rule and not a port of it.
   Confluence home yet: that needs a service account credential and a source
   column on specs and revisions. A git home reads through `read_ref` (§5) but
   is not wrapped as an adapter.
-- Revisions do not carry a design reference yet, and an approval records no
-  design version.
 - The stored verdict row has no `checker` column: the checker is implied by
   who recorded it.
 
@@ -745,8 +743,72 @@ captured contains that head; no task MAY grade its own work this way.
   evidence is kept indefinitely today; 400 days is the floor, not a ceiling.
 - The task page lists each criterion's standing but does not link a visual
   verdict's screenshots.
-- The audit compares the build with the criterion text only. Comparing it
-  with a design (an artifact prototype or images) at the pinned design
-  version waits for revisions to carry a design reference (§10, "Not yet").
 - A mission with no `[surface audit]` (no UI change, or opted out) gets no
   visual verdicts.
+
+## 12. Designs
+
+**Capability statement**: A spec revision MUST be able to name the design it
+is built to, at one version, so approving the revision records the design
+version next to the text, the spec says when the design moved on since, and
+the visual audit judges the build against that version of the design.
+
+**Invariants**:
+- A revision's `design` is `{ kind, ref, version, screens? }`
+  (`parseDesignRef`, packages/spec-contract/src/design.ts), written on
+  create_draft or revise (`apps/web/src/lib/specs/design.ts`):
+  - `artifact` (the default): an artifact in the spec's workspace, such as an
+    HTML or code prototype or images. Pinned to its current revision unless
+    `version` names one, which must exist. One in another workspace is a 400.
+  - `url` (https) or `figma`: `version` is required; buildd stores it as given
+    and cannot tell when either moves on.
+  - `screens` (at most 50) name the screens a criterion may cover.
+- On revise an omitted `design` carries the head's forward and `null` clears
+  it. A revise that changes only the design writes a new revision on the same
+  body, which an approver approves like any other.
+- Approval is of the revision, so it records the design version the revision
+  carries; nothing moves it after. Reading the approved revision, the spec
+  page names the design and its version, and, for an artifact design whose
+  current revision is newer, says "The design changed since approval".
+- A criterion names the screens it covers on a line under it:
+  `screen: <id>, <id>` (`criterionScreens`, same placement rule as check
+  lines, §7).
+- A visual audit's claim block (§11) names the design, its version, how to
+  open it (`get_artifact { artifactId, revision }` for an artifact) and each
+  criterion's screens. A visual pass or fail on a criterion that names screens
+  must also cite 1 or 2 screenshots of the design rendered at the same state
+  (`designShotIds`), taken by the audit's own run; the verdict's evidence then
+  names the design version it was judged against. A pixel difference alone is
+  not a fail; the audit judges layout, content and states.
+
+**Acceptance criteria**:
+- AC-42: GIVEN an artifact design with no version WHEN a draft is created THEN
+  the revision pins the artifact's current revision; GIVEN an artifact in
+  another workspace, a missing revision, or a URL with no version THEN 400
+  and nothing is written (`apps/web/tests/db/spec-design.test.ts`).
+- AC-43: GIVEN a revise that changes only the design THEN it is a new revision
+  on the same body; GIVEN a later revise that omits it THEN the design carries
+  forward; GIVEN `design: null` THEN it is cleared
+  (`apps/web/tests/db/spec-design.test.ts`).
+- AC-44: GIVEN an approved revision with an artifact design WHEN the artifact
+  is revised THEN the spec page says the design changed since approval and
+  names both versions, and the approved revision still names its own
+  (`apps/web/tests/db/spec-design.test.ts`,
+  `apps/web/src/components/SpecPage.dom.test.tsx`).
+- AC-45: GIVEN a criterion with a `screen:` line WHEN the audit records a pass
+  with no design shot THEN 400; WITH one THEN the verdict cites it and the
+  design version (`apps/web/tests/db/spec-visual-verdict.test.ts`).
+
+**Code surface**:
+- `packages/spec-contract/src/design.ts` — `parseDesignRef`, `designDrift`, `sameDesign`
+- `packages/spec-contract/src/check-lines.ts` — `criterionScreens`, `criterionLines`
+- `apps/web/src/lib/specs/design.ts` — `resolveDesign`, `approvedDesignDrift`
+- `apps/web/src/lib/specs/page-view.ts` — `specPageView` (`design`)
+
+**Not yet**:
+- A URL or design-tool design cannot be checked for drift; only artifact
+  designs say "changed since approval".
+- The spec page does not render the design inline; it links to it.
+- No design-tool integration (such as Figma) is built: such a reference is
+  stored as given.
+

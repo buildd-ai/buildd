@@ -55,6 +55,7 @@ const base = {
   parent: { id: 'parent-id', title: 'Shop' } as { id: string; title: string } | null,
   children: [] as Array<{ id: string; title: string }>,
   repoRefs: [{ path: 'docs/specs/checkout.md', sha: 'abcdef123456', href: 'https://github.com/acme/shop/blob/abc/docs/specs/checkout.md' }],
+  design: null as any,
   compare: null,
   canApprove: true,
   review: null as any,
@@ -91,6 +92,20 @@ describe('SpecPage', () => {
     expect(revs[1].querySelector('[data-testid="spec-page-approved-by"]')!.textContent).toContain('Approved by Max');
     expect(q('spec-page-review')!.getAttribute('href')).toBe(`/app/specs/${SPEC}?review=1`);
     expect(q('spec-page-approve')).toBeNull();
+  });
+
+  it('names the design the revision is built to, and says when it changed since approval', () => {
+    const design = { label: 'Cart prototype', href: '/app/artifacts/a1', version: '3', screens: ['Empty cart'], changedSince: null };
+    act(() => root.render(<SpecPage view={{ ...base, design }} />));
+    const d = q('spec-page-design')!;
+    expect(d.textContent).toContain('Built to the design Cart prototype, version 3.');
+    expect(d.querySelector('a')!.getAttribute('href')).toBe('/app/artifacts/a1');
+    expect(d.textContent).toContain('Screens: Empty cart');
+    expect(q('spec-page-design-changed')).toBeNull();
+    act(() => root.render(<SpecPage view={{ ...base, design: { ...design, changedSince: { pinned: '3', current: '5' } } }} />));
+    expect(q('spec-page-design-changed')!.textContent).toBe('The design changed since approval: it is at version 5, and revision 1 was approved with version 3.');
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-design')).toBeNull();
   });
 
   it('a reader who may not approve sees no approve action', () => {
