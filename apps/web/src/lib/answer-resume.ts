@@ -25,6 +25,7 @@ import {
   isTerminalWorkerStatus,
   LIVE_WORKER_STATUSES,
 } from '@buildd/shared';
+import { FILING_TARGETS_CONTEXT_KEY, inheritTaskDelegation, readFilingTargets } from '@buildd/core/token-delegation';
 
 /**
  * How stale `workers.updatedAt` may be and still mean "the runner that holds
@@ -518,6 +519,9 @@ export function buildContinuationDescription(opts: {
     '',
     '## User Response',
     opts.answer,
+    '',
+    '## Already Answered',
+    'The question above was asked by the run this task continues, and a person answered it. Act on that answer; do not ask it again. If you hit the same need again (e.g. access you were told you have), check whether the answer or the task\'s grants already cover it; if something is still missing, ask for that specific thing (request_capability for access), never the same question.',
   ].join('\n');
 }
 
@@ -542,6 +546,8 @@ export interface ContinuationParentTask {
   backend?: 'claude' | 'codex' | null;
   runnerPreference?: 'any' | 'user' | 'service' | 'action' | null;
   context?: unknown;
+  /** The task's own cross-workspace grant (packages/core/token-delegation.ts). */
+  delegation?: unknown;
 }
 
 /**
@@ -598,6 +604,11 @@ export function buildContinuationTaskValues(opts: {
 }) {
   const parentContext = (opts.task?.context as Record<string, unknown>) || {};
   const currentIteration = (parentContext.iteration as number) || 1;
+  // The same work keeps the same cross-workspace grant a person gave it, and
+  // the same declared need; without them the continuation would hit the wall
+  // its parent was granted past, or start without the claim pre-flight.
+  const delegation = opts.task?.id ? inheritTaskDelegation({ id: opts.task.id, delegation: opts.task.delegation }) : null;
+  const filingTargets = readFilingTargets(parentContext);
 
   return {
     workspaceId: opts.workspaceId,
@@ -624,6 +635,7 @@ export function buildContinuationTaskValues(opts: {
     // it goes where the parent was allowed to go (claim routing and webhook
     // dispatch both read it).
     runnerPreference: opts.task?.runnerPreference ?? undefined,
+    ...(delegation ? { delegation } : {}),
     context: {
       // Honored by the runner's worktree setup — but ONLY when `branch` already
       // exists on the remote, i.e. the original worker had already pushed. If
@@ -650,6 +662,7 @@ export function buildContinuationTaskValues(opts: {
       // continuation itself so a reader of the cold task sees it without
       // reconstructing anything.
       answerDelivery: opts.delivery,
+      ...(filingTargets.length ? { [FILING_TARGETS_CONTEXT_KEY]: filingTargets } : {}),
     },
   };
 }

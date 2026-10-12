@@ -7,6 +7,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc } from 'drizzle-orm';
+import { requestingPerson } from '@/lib/request-person';
+import { resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
 import { emit } from '@/lib/core-emit';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
@@ -315,6 +317,32 @@ export async function PATCH(
       }
     }
     const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest, startAt, startIn, abort } = body;
+
+    // delegation: a person grants (or clears) this task's cross-workspace
+    // reach before it is claimed (lib/task-delegation.ts). Its own request:
+    // the claim pre-flight reads it, and a running token re-reads it on every
+    // call, but a grant is decided before the run, not mid-edit of something else.
+    if (body && typeof body === 'object' && 'delegation' in body) {
+      if (Object.keys(body).some(k => k !== 'delegation')) {
+        return NextResponse.json({ error: 'delegation is sent on its own, with no other fields' }, { status: 400 });
+      }
+      if (task.status !== 'pending') {
+        return NextResponse.json({
+          error: `A task's delegation is set before it is claimed; this one is ${task.status}. A running agent asks with request_capability instead.`,
+          code: 'not_pending',
+        }, { status: 409 });
+      }
+      const write = await resolveTaskDelegationWrite(body.delegation, task.workspaceId, requestingPerson(user, apiAccount));
+      if (!write.ok) return NextResponse.json({ error: write.error }, { status: write.status });
+      const [updated] = await db.update(tasks)
+        .set({ delegation: write.value, updatedAt: new Date() })
+        .where(and(eq(tasks.id, id), eq(tasks.status, 'pending')))
+        .returning({ id: tasks.id, delegation: tasks.delegation });
+      if (!updated) {
+        return NextResponse.json({ error: 'The task was claimed while the delegation was being set; a running agent asks with request_capability instead.', code: 'not_pending' }, { status: 409 });
+      }
+      return NextResponse.json({ id: updated.id, delegation: updated.delegation });
+    }
 
     // pause: true pauses the agent working on this task instead of cancelling
     // it (lib/worker-pause.ts): the session is kept and Resume continues it.

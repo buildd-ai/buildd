@@ -97,14 +97,26 @@ by the token's list. An unrestricted token is auto-linked to open workspaces
 only; linking a token to a restricted workspace takes `manage_team_keys` (owner or admin by default). `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
-A per-task token (`bldt_`) is confined to its own task's workspace. The one
-exception is a **schedule delegation** (`task_schedules.delegation`,
-`packages/core/token-delegation.ts`): a holder of `delegate_schedule_access` (owner or admin by default) may grant the tasks
-one schedule spawns `analytics:read` (decision ledger, decision/coordination stats,
-gate ledger, workspace name resolution) and/or `tasks:create` (the normal create
-path, no mission, dependencies or foreign parent) on named workspaces of the same
-team. It is stored on the schedule, never the task, records who granted it and
-when, is re-read on every request, and never exceeds the minting account's reach.
+A per-task token (`bldt_`) is confined to its own task's workspace. The
+exception is a **delegation** (`packages/core/token-delegation.ts`): an explicit
+grant of `analytics:read` (decision ledger, decision/coordination stats, gate
+ledger, workspace name resolution) and/or `tasks:create` (the normal create
+path; a mission link and dependencies only within that same workspace, never a
+foreign parent) on named workspaces of the same team. It lives in two places,
+never in task context (caller-written, so forgeable):
+- `task_schedules.delegation`: set by a holder of `delegate_schedule_access`
+  (owner or admin by default), for every task the schedule spawns;
+- `tasks.delegation`: set by a **person** who reaches each target (dashboard or
+  OAuth session) when filing the task or with `update_task` before it is
+  claimed, or by a person approving the running task's `tasks:create`
+  capability request (`request_capability`, resource = target workspace).
+  A continuation or retry of the task copies it.
+Both record who granted it and when, are re-read on every request, and never
+exceed the minting key's reach. A task may declare `filingTargets` (workspaces it
+will file in): a need, not a grant. The claim pre-flight holds a task
+(`delegation_unmet`, not forceable) when a declared target is not granted, or a
+grant names a workspace the claiming account (which mints the token) cannot use
+— before any agent turn, instead of letting the run discover the wall.
 Analytics reads a reviewer depends on report `status` — `OK` / `NO_DATA` reached
 the data; `FORBIDDEN` / `UNAUTHORIZED` / `TOOL_UNAVAILABLE` did not and are never
 evidence of zero rows.

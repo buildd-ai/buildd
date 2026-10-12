@@ -63,6 +63,17 @@ export const MAX_GRANT_TTL_SECONDS = 24 * 60 * 60;
 export const MODEL_INFERENCE_PROVIDERS: readonly ModelInferenceProvider[] = ['openrouter', 'litellm'];
 
 /**
+ * Filing tasks in another workspace of the team. Not a connector: buildd
+ * itself serves it, so the provider is always `buildd` and the resource is
+ * the target workspace's UUID. Always a write, so always a person's decision;
+ * an approval lands as a grant on the task's own delegation
+ * (lib/task-delegation.ts), which its token re-reads on every call.
+ */
+export const TASK_FILING_CAPABILITY = 'tasks:create';
+export const TASK_FILING_PROVIDER = 'buildd';
+const WORKSPACE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
  * A tool's risk from its name: read verbs read, destructive or authority verbs
  * are admin, anything else is a write. Unknown names fail closed (write), so a
  * read grant never covers a tool it cannot name as a read.
@@ -168,6 +179,23 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
         capability, provider: p, tool: null, resource: null, environment: null,
         risk: maxRisk('query', declared ?? 'query'), ttlSeconds, reason,
         modelInference: { models: [...new Set(models as string[])].sort(), operations: [...new Set(operations as ModelInferenceOperation[])], budget: b.budget as ModelInferenceBudget },
+      },
+    };
+  }
+
+  if (capability === TASK_FILING_CAPABILITY) {
+    const p = val(provider);
+    if (p && p !== TASK_FILING_PROVIDER) return { ok: false, error: `${TASK_FILING_CAPABILITY} is served by buildd itself; omit provider` };
+    const r = val(resource);
+    if (!r || !WORKSPACE_UUID_RE.test(r)) return { ok: false, error: `${TASK_FILING_CAPABILITY} needs resource: the UUID of the workspace to file tasks in` };
+    if (val(tool) || val(environment) || b.models !== undefined || b.operations !== undefined || b.budget !== undefined) {
+      return { ok: false, error: `${TASK_FILING_CAPABILITY} takes only resource (a workspace UUID) and reason` };
+    }
+    return {
+      ok: true,
+      request: {
+        capability, provider: TASK_FILING_PROVIDER, tool: null, resource: r.toLowerCase(), environment: null,
+        risk: 'write', ttlSeconds, reason, modelInference: null,
       },
     };
   }

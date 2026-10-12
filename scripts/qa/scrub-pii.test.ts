@@ -186,6 +186,10 @@ const SAFE: Record<string, string[]> = {
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',
     'conflict_retry_head_sha', 'reviewer_retry_head_sha', 'depends_on', 'predicted_model',
     'loop_state', 'subject_head_sha',
+    // TaskDelegation (packages/core/token-delegation.ts): workspace ids,
+    // fixed-vocabulary capabilities, granting user/account ids, timestamps and
+    // capability-grant ids. Same shape as task_schedules.delegation.
+    'delegation',
     'category_decision', // { v, source, keyword, jev, confidence, skipped?, at }: labels, numbers, a version, a timestamp
     // StoredVerdictDecision (lib/task-verdict.ts): fixed-vocabulary labels, a
     // hash, row ids, a model id, a timestamp, and a cause key naming CI checks.
