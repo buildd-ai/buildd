@@ -294,7 +294,7 @@ describe('task header — full-width title on a phone, actions on the title row 
   it('below md the title spans both columns and the actions take row 2; md puts them back on row 1', () => {
     expect(header).toContain('className="min-w-0 col-span-2 row-start-1 md:col-span-1 md:col-start-1"');
     expect(cls('task-header-actions')).toContain('row-start-2 md:row-start-1');
-    expect(cls('task-header-status')).toContain('row-start-2 self-center md:col-start-2 md:row-start-1');
+    expect(cls('task-header-status')).toContain('row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start');
   });
   it('with no status pill the sub-line shares the actions\' row on a phone, and its PR link is a 44px target', () => {
     const sub = pageSource.slice(pageSource.indexOf('data-testid="task-subline"'), pageSource.indexOf('{/* An attempt says what it is an attempt of'));

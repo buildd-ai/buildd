@@ -1422,7 +1422,7 @@ export default async function TaskDetailPage({
             )}
             {/* With a verdict, the verdict block carries the state (and this hook). */}
             {!shippedView && !verdict && (
-              <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:mt-0.5">
+              <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start md:mt-0.5">
                 <HeaderStatusPill
                   status={displayStatus}
                   merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}

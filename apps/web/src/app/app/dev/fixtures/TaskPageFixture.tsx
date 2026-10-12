@@ -41,7 +41,7 @@ export function TaskPageFixture() {
               {f.shipped ? <TaskShippedTitle view={f.shipped} title={f.title} /> : <TaskTitle title={f.title} />}
             </div>
             {!f.shipped && !f.verdict && (
-              <span data-testid="task-header-status" className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:mt-0.5">
+              <span data-testid="task-header-status" className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start md:mt-0.5">
                 <HeaderStatusPill status={f.taskStatus} merged={false} delivery={{ headline: f.view.headline, owner: f.view.owner, needsYou: f.view.needsYou, stage: f.view.stage, detail: f.view.detail, prState: f.view.prState, state: f.view.state }} />
               </span>
             )}
