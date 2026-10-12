@@ -10,6 +10,18 @@ related: [workflow-state-kernel, task-dispatch-authority, artifacts-and-sharing]
 keywords: [control plane, extraction, cloudflare worker, web outage, execution path, ownership boundary, living specs, kernel, dispatch, cutover]
 verified_by: [packages/core/__tests__/state-ownership.test.ts, apps/control-plane/src/index.test.ts, apps/web/src/app/api/deploy-identity/route.test.ts, apps/web/src/lib/release-health-watcher.test.ts]
 supersedes: []
+assertions:
+  - id: control-plane-worker
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: default
+    path: apps/control-plane/src/index.ts
+  - id: control-plane-test
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: test_file
+    path: apps/control-plane/src/index.test.ts
 ---
 # Execution Control Plane
 
