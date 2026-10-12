@@ -55,7 +55,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^20.14.5",
+    "@happy-dom/global-registrator": "^21.0.0",
     "@tailwindcss/postcss": "^4.0.0",
     "@types/bun": "latest",
     "@types/node": "^26.0.0",
