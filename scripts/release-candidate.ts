@@ -24,6 +24,14 @@
  *            is opened, its content is not rebuilt.
  *   amend  --candidate vX.Y.Z --confirm vX.Y.Z --source <sha|ref> [--dry-run]
  *            Explicit operator re-cut of the open candidate from a newer dev SHA.
+ *            Changes the candidate already leaves out stay left out.
+ *   exclude --candidate vX.Y.Z --confirm vX.Y.Z --revert "<sha> [<sha>…]" [--dry-run]
+ *            Explicit owner amendment that leaves changes out of the open
+ *            candidate: each commit (a PR's merge or squash commit on dev) is
+ *            reverted on the candidate branch only. Same source SHA, new
+ *            candidate SHA, every check and approval on the old one void. A
+ *            revert that does not apply cleanly changes nothing and names the
+ *            conflicting files (on the PR and in the run).
  *   reconcile-changelog --base F --ours F --theirs F
  *            sync-dev.yml's resolver when merging main (carrying a promoted
  *            CHANGELOG) back into dev (carrying new [Unreleased] entries).
@@ -222,7 +230,25 @@ export interface CandidateMeta {
   /** PR number of the candidate this one replaced (an amendment that changed the version). */
   supersedes: number | null;
   cutAt: string;
+  /** Changes on the source branch deliberately left out: reverted on the candidate only. */
+  reverted?: RevertedChange[];
 }
+
+export interface RevertedChange {
+  /** The source-branch commit that was reverted (a PR's merge or squash commit). */
+  sha: string;
+  subject: string;
+}
+
+/**
+ * Trailer on every candidate-only revert. sync-dev.yml reads it after merging
+ * main back into dev and reverts the revert, so a change left out of one
+ * release stays on dev for the next.
+ */
+export const EXCLUDED_TRAILER = 'Release-Excluded';
+
+/** Marker on the PR comment a refused exclusion leaves, so the dashboard can show why. */
+export const REFUSED_MARKER = 'release-candidate:refused';
 
 const META_RE = /<!-- release-candidate (\{[\s\S]*?\}) -->/;
 const EXCLUDED_START = '<!-- release-candidate:excluded:start -->';
@@ -267,7 +293,9 @@ export function renderExcluded(excluded: CommitLine[]): string {
 }
 
 export function renderCandidateBody(meta: CandidateMeta, included: CommitLine[], excluded: CommitLine[], repo: string): string {
-  const prs = [...new Set(included.flatMap((c) => prNumbersIn(c.subject)))].sort((a, b) => a - b);
+  const reverted = meta.reverted ?? [];
+  const leftOut = new Set(reverted.flatMap((r) => prNumbersIn(r.subject)));
+  const prs = [...new Set(included.flatMap((c) => prNumbersIn(c.subject)))].filter((n) => !leftOut.has(n)).sort((a, b) => a - b);
   const prev = meta.previousTag ?? '(first release)';
   const amendment =
     meta.amendment === 0
@@ -291,7 +319,10 @@ export function renderCandidateBody(meta: CandidateMeta, included: CommitLine[],
     `| Amendment | ${amendment} |`,
     `| Cut at | ${meta.cutAt} |`,
     '',
-    `This branch is \`${meta.sourceRef}\` at the captured SHA plus one release-only commit (package versions + CHANGELOG). ` +
+    (reverted.length
+      ? `This branch is \`${meta.sourceRef}\` at the captured SHA, minus ${reverted.length} change(s) left out by an explicit amendment ` +
+        '(reverted here only; dev keeps them), plus one release-only commit (package versions + CHANGELOG). '
+      : `This branch is \`${meta.sourceRef}\` at the captured SHA plus one release-only commit (package versions + CHANGELOG). `) +
       `It does not move when \`${meta.sourceRef}\` moves. Only an explicit amendment (Release workflow, \`amend\` input, ` +
       'typed twice) changes it, and an amendment voids every check result and approval on the old SHA.',
     '',
@@ -301,6 +332,14 @@ export function renderCandidateBody(meta: CandidateMeta, included: CommitLine[],
     `### Included commits (${included.length}) · [compare](${compare})`,
     listCommits(included, '_None._'),
     '',
+    ...(reverted.length
+      ? [
+          `### Left out of this candidate (${reverted.length})`,
+          'Reverted on this branch only. After the release, sync-dev reverts the revert on `' + meta.sourceRef + '`, so they ship next time.',
+          listCommits(reverted, '_None._'),
+          '',
+        ]
+      : []),
     `### Not in this candidate (landed on \`${meta.sourceRef}\` after the cut)`,
     renderExcluded(excluded),
     '',
@@ -442,15 +481,51 @@ function patchBody(ctx: Ctx, number: number, body: string): void {
 
 // ── Building a candidate commit ──────────────────────────────────────────────
 
+/** A revert that did not apply cleanly; nothing was built or pushed. */
+export class RevertConflict extends Error {
+  constructor(readonly sha: string, readonly subject: string, readonly files: string[]) {
+    super(`reverting ${sha.slice(0, 12)} ("${subject}") conflicts in: ${files.join(', ') || '(unknown files)'}. Nothing was changed.`);
+  }
+}
+
+/** Message of a candidate-only revert; carries the trailer sync-dev re-lands from. */
+export function revertMessage(change: RevertedChange, version: string): string {
+  return [
+    `Revert "${change.subject}" from v${version.replace(/^v/, '')}`,
+    '',
+    `Left out of release v${version.replace(/^v/, '')} by an explicit amendment. Reverted on the candidate branch only.`,
+    '',
+    `${EXCLUDED_TRAILER}: ${change.sha}`,
+  ].join('\n');
+}
+
 /**
- * Build `source + one release commit` in a throwaway worktree and return its
- * SHA. Nothing is pushed and the caller's checkout is untouched.
+ * Build `source − reverts + one release commit` in a throwaway worktree and
+ * return its SHA. The reverts come first, newest commit first, so the release
+ * commit still promotes a CHANGELOG without the left-out entries. Nothing is
+ * pushed and the caller's checkout is untouched.
  */
-function buildCandidate(ctx: Ctx, source: string, version: string, previousTag: string | null): string {
+function buildCandidate(ctx: Ctx, source: string, version: string, previousTag: string | null, reverts: RevertedChange[] = []): string {
   const dir = mkdtempSync(join(tmpdir(), 'release-candidate-'));
   const wt = join(dir, 'wt');
   git(ctx.cwd, 'worktree', 'add', '--quiet', '--detach', wt, source);
   try {
+    for (const change of reverts) {
+      if (!isAncestor(ctx, change.sha, source)) {
+        throw new Refusal(`${change.sha.slice(0, 12)} ("${change.subject}") is not in the candidate's source ${source.slice(0, 12)}; there is nothing to leave out.`);
+      }
+      const parents = git(ctx.cwd, 'rev-list', '--parents', '-n', '1', change.sha).split(' ').length - 1;
+      const r = sh(wt, 'git', ['revert', '--no-commit', ...(parents > 1 ? ['-m', '1'] : []), change.sha]);
+      if (r.status !== 0) {
+        const files = sh(wt, 'git', ['diff', '--name-only', '--diff-filter=U']).stdout.split('\n').filter(Boolean);
+        sh(wt, 'git', ['revert', '--abort']);
+        throw new RevertConflict(change.sha, change.subject, files);
+      }
+      if (gitOk(wt, 'diff', '--cached', '--quiet')) {
+        throw new Refusal(`reverting ${change.sha.slice(0, 12)} ("${change.subject}") changes nothing at ${source.slice(0, 12)}; it is already undone there.`);
+      }
+      git(wt, 'commit', '--quiet', '--no-verify', '-m', revertMessage(change, version));
+    }
     const touched: string[] = [];
     for (const file of ctx.packageFiles) {
       const p = join(wt, file);
@@ -794,9 +869,12 @@ export function amend(ctx: Ctx, candidate: string, confirm: string, source: stri
 
   const snap = snapshot(ctx, sourceSha);
   const version = snap.plan.version;
-  const candidateSha = buildCandidate(ctx, sourceSha, version, snap.latestTag);
+  // What the owner left out stays left out: an amendment moves the source, not the composition.
+  const reverted = meta.reverted ?? [];
+  const candidateSha = buildCandidate(ctx, sourceSha, version, snap.latestTag, reverted);
   const next: CandidateMeta = {
     ...baseMeta(ctx, snap, version, candidateSha),
+    ...(reverted.length ? { reverted } : {}),
     amendment: meta.amendment + 1,
     previousCandidateSha: pr.headRefOid,
     supersedes: version === want ? meta.supersedes : pr.number,
@@ -852,6 +930,100 @@ function dismissApprovals(ctx: Ctx, number: number, message: string): number {
   return failed;
 }
 
+// ── exclude ──────────────────────────────────────────────────────────────────
+
+/** The refusal comment's machine-readable line; the dashboard shows the newest one. */
+export function renderRefusedComment(conflict: { sha: string; subject: string; files: string[] }, candidateSha: string, at: string): string {
+  const files = conflict.files.length ? conflict.files.map((f) => `- \`${f}\``).join('\n') : '- (git named no files)';
+  return [
+    `Could not leave out \`${conflict.sha.slice(0, 12)}\` ("${conflict.subject}"): reverting it on this candidate conflicts in:`,
+    '',
+    files,
+    '',
+    `Nothing was changed; the candidate is still \`${candidateSha.slice(0, 12)}\`. Ship it as it is, or fix the overlap on dev and cut again.`,
+    '',
+    `<!-- ${REFUSED_MARKER} ${JSON.stringify({ op: 'exclude', sha: conflict.sha, files: conflict.files, candidateSha, at })} -->`,
+  ].join('\n');
+}
+
+export function exclude(ctx: Ctx, candidate: string, confirm: string, shas: string[]): number {
+  const want = candidate.replace(/^v/, '');
+  if (!/^\d+\.\d+\.\d+$/.test(want)) throw new Refusal(`exclude: "${candidate}" is not a vX.Y.Z version`);
+  if (confirm.replace(/^v/, '') !== want) {
+    throw new Refusal(`exclude: confirmation "${confirm}" does not match "${candidate}". Leaving changes out voids checks and approvals; name the version twice.`);
+  }
+  if (shas.length === 0) throw new Refusal('exclude: no commits to leave out');
+  fetchAll(ctx);
+  const open = openPrsIntoBase(ctx);
+  const pr = openCandidates(open).find((p) => p.headRefName === candidateBranch(want));
+  if (!pr) throw new Refusal(`no open release candidate ${candidateBranch(want)} to leave changes out of`);
+  const meta = parseCandidateMeta(pr.body);
+  if (!meta) throw new Refusal(`#${pr.number} carries no release-candidate metadata; it was not cut by this workflow, so it is not amended by it`);
+  if (meta.candidateSha !== pr.headRefOid) {
+    throw new Refusal(`#${pr.number} head ${pr.headRefOid.slice(0, 12)} is not the candidate it was cut as (${meta.candidateSha.slice(0, 12)}); refusing to build on it.`);
+  }
+
+  const already = meta.reverted ?? [];
+  const fresh: RevertedChange[] = [];
+  for (const raw of shas) {
+    const sha = resolveSha(ctx, raw);
+    if (already.some((r) => r.sha === sha) || fresh.some((r) => r.sha === sha)) continue;
+    fresh.push({ sha, subject: git(ctx.cwd, 'log', '-1', '--format=%s', sha) });
+  }
+  if (fresh.length === 0) {
+    console.log(`#${pr.number} already leaves out every requested change; nothing to amend.`);
+    output({ status: 'unchanged', version: want, branch: pr.headRefName, source_sha: meta.sourceSha, candidate_sha: pr.headRefOid, pr_number: pr.number });
+    return 0;
+  }
+  // Newest first across old and new, so overlapping changes unwind in order.
+  const reverted = [...already, ...fresh].sort((a, b) =>
+    a.sha === b.sha ? 0 : isAncestor(ctx, a.sha, b.sha) ? 1 : -1,
+  );
+
+  const snap = snapshot(ctx, meta.sourceSha);
+  let candidateSha: string;
+  try {
+    candidateSha = buildCandidate(ctx, meta.sourceSha, want, snap.latestTag, reverted);
+  } catch (e) {
+    if (e instanceof RevertConflict && !ctx.dryRun) {
+      gh(ctx, ['pr', 'comment', String(pr.number), '--repo', ctx.repo, '--body', renderRefusedComment(e, pr.headRefOid, new Date().toISOString())]);
+    }
+    throw e;
+  }
+  const next: CandidateMeta = {
+    ...baseMeta(ctx, snap, want, candidateSha),
+    bump: meta.bump,
+    reverted,
+    amendment: meta.amendment + 1,
+    previousCandidateSha: pr.headRefOid,
+    supersedes: meta.supersedes,
+  };
+  const body = renderCandidateBody(next, snap.included, excludedSince(ctx, meta.sourceSha), ctx.repo);
+  const voided =
+    `Amended by an explicit owner request: left out ${fresh.map((r) => `\`${r.sha.slice(0, 12)}\` ("${r.subject}")`).join(', ')}. ` +
+    `Candidate \`${pr.headRefOid}\` → \`${candidateSha}\`, same captured \`${ctx.sourceBranch}\` SHA. Every check result and approval on the old SHA is void; ` +
+    'CI re-runs on the new head and the aggregate needs a fresh review.';
+
+  if (ctx.dryRun) {
+    console.log(`DRY RUN: would amend #${pr.number} to ${candidateSha}, leaving out ${fresh.length} change(s).\n\n${body}`);
+    output({ status: 'dry-run', version: want, branch: pr.headRefName, source_sha: meta.sourceSha, candidate_sha: candidateSha, pr_number: pr.number });
+    return 0;
+  }
+  const lease = `--force-with-lease=refs/heads/${pr.headRefName}:${pr.headRefOid}`;
+  if (!gitOk(ctx.cwd, 'push', '--quiet', lease, ctx.remote, `${candidateSha}:refs/heads/${pr.headRefName}`)) {
+    throw new Refusal(`${pr.headRefName} moved while leaving changes out; nothing was changed. Run it again.`);
+  }
+  patchBody(ctx, pr.number, body);
+  const dismissFailed = dismissApprovals(ctx, pr.number, voided);
+  gh(ctx, ['pr', 'comment', String(pr.number), '--repo', ctx.repo, '--body', voided]);
+  output({ status: 'amended', version: want, branch: pr.headRefName, source_sha: meta.sourceSha, candidate_sha: candidateSha, pr_number: pr.number });
+  if (dismissFailed) {
+    console.log(`::error::Could not dismiss ${dismissFailed} approval(s) on #${pr.number}; dismiss them by hand. They no longer describe the candidate.`);
+    return 1;
+  }
+  return 0;
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 function flag(args: string[], name: string): string | undefined {
@@ -905,11 +1077,15 @@ export function main(argv: string[]): number {
       const ctx = context(args);
       return amend(ctx, need(args, '--candidate'), need(args, '--confirm'), need(args, '--source'));
     }
-    console.error('usage: release-candidate.ts cut|amend|reconcile-changelog ...');
+    if (cmd === 'exclude') {
+      const ctx = context(args);
+      return exclude(ctx, need(args, '--candidate'), need(args, '--confirm'), need(args, '--revert').split(/[\s,]+/).filter(Boolean));
+    }
+    console.error('usage: release-candidate.ts cut|amend|exclude|reconcile-changelog ...');
     return 2;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (e instanceof Refusal) {
+    if (e instanceof Refusal || e instanceof RevertConflict) {
       console.log(`::error title=Release candidate refused::${msg}`);
       output({ status: 'refused' });
     } else {
