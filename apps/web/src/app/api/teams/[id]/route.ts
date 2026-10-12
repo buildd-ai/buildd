@@ -11,7 +11,7 @@ import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
 import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
-import { DECISION_MODEL_PROBE } from '@/modules';
+import { DECISION_MODEL_PROBE, IS_PLATFORM_OPERATOR_CALLER, OPERATOR_ONLY_RESPONSE } from '@/modules';
 import { detachTeamStoredFiles, removeTeamStoredFiles } from '@/lib/artifact-team-files';
 
 /** Written only through /api/admin/teams/[id]/experiment-flags; refused here for everyone. */
@@ -217,6 +217,8 @@ export async function PATCH(
     }
     // The retired enabledInferenceCapabilities allowlist is ignored, not written.
     if (decisionModel !== undefined) {
+      // A platform operator control, not a team setting (lib/admin/platform-operator-caller.ts).
+      if (!(await IS_PLATFORM_OPERATOR_CALLER({ user }))) return OPERATOR_ONLY_RESPONSE();
       // Which model answers decision calls. null = Jev on OpenRouter.
       // This sets the team default only; per-decision overrides are kept
       // (they are set through setDecisionModelForKind).

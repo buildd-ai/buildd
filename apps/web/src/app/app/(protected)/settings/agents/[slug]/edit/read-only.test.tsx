@@ -1,5 +1,5 @@
 /**
- * Editing a team role, its workspace overrides and the Platform Operator grants
+ * Editing a team role, its workspace overrides and its deploy access grants
  * is manage_agent_roles (the roles routes refuse anyone else). The settings page passes `canEdit`; without it the role
  * stays readable and nothing on it can be saved, deleted or added.
  */
@@ -53,23 +53,45 @@ describe('TeamRoleEditor: member vs admin', () => {
   });
 });
 
-describe('OperatorAccessSection: member vs admin', () => {
-  const renderOp = (canEdit: boolean) =>
+describe('OperatorAccessSection (Deploy access): member vs admin', () => {
+  const renderOp = (canEdit: boolean, overrides: unknown[] = []) =>
     renderToStaticMarkup(
-      <OperatorAccessSection roleId="role-op" teamMetadata={null} overrides={[]} workspaces={workspaces} canEdit={canEdit} />,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      <OperatorAccessSection roleId="role-op" teamMetadata={null} overrides={overrides as any} workspaces={workspaces} canEdit={canEdit} />,
     );
 
-  it('member: the team ceiling is a disabled fieldset with no save', () => {
-    const html = renderOp(false);
-    expect(html).toMatch(/<fieldset[^>]*disabled=""/);
-    expect(html).not.toContain('Save team ceiling');
-    // Each workspace row still lists, so the grants in effect are visible.
-    expect(html).toContain('billing-web');
+  it('never names the platform operator', () => {
+    for (const html of [renderOp(true), renderOp(false)]) {
+      expect(html).toContain('Deploy access');
+      expect(html).not.toContain('Platform Operator');
+      expect(html).not.toContain('Effective grant');
+    }
   });
 
-  it('admin: the ceiling saves', () => {
+  it('member: one plain line, no editor', () => {
+    const html = renderOp(false);
+    expect(html).toContain('data-testid="deploy-access-summary"');
+    expect(html).toContain('Can&#x27;t deploy from any workspace.');
+    expect(html).not.toContain('<fieldset');
+    expect(html).not.toContain('<input');
+    expect(html).not.toContain('Team limit');
+    expect(html).not.toContain('Save team limit');
+  });
+
+  it('member: names the workspaces the agent can deploy from', () => {
+    const html = renderOp(false, [
+      { id: 'o-1', workspaceId: 'ws-1', metadata: { operator: { enabled: true, capabilities: ['deployments:write'] } } },
+    ]);
+    expect(html).toContain('Can deploy from billing-web.');
+    expect(html).not.toContain('docs.');
+  });
+
+  it('admin: the team limit and workspace grants save', () => {
     const html = renderOp(true);
     expect(html).not.toMatch(/<fieldset[^>]*disabled/);
-    expect(html).toContain('Save team ceiling');
+    expect(html).toContain('Team limit');
+    expect(html).toContain('Save team limit');
+    expect(html).toContain('billing-web');
+    expect(html).not.toContain('deploy-access-summary');
   });
 });

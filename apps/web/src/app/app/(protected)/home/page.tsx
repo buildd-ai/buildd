@@ -1843,10 +1843,10 @@ export default async function HomePage({
         }
 
         // 9. A team whose decisions all fail at the provider (a token Workers AI
-        // refuses, a revoked key): one card per team for people who can change
-        // the decision model. Read from the ledgers; no push (DECISION_HEALTH_NEEDS_YOU in modules.ts).
-        if (wsIds.length > 0) {
-          waitingOnYou.push(...await DECISION_HEALTH_NEEDS_YOU(user?.id, wsIds));
+        // refuses, a revoked key): one card per team, operator-only like the
+        // decision model itself. Read from the ledgers; no push (DECISION_HEALTH_NEEDS_YOU in modules.ts).
+        if (wsIds.length > 0 && isPlatformOperator(user)) {
+          waitingOnYou.push(...await DECISION_HEALTH_NEEDS_YOU(user, wsIds));
         }
 
         // 10. Decision features asked all day that never got a model answer:

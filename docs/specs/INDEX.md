@@ -8,7 +8,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### auth (9)
 
-- [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-08
+- [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-11
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-09
   The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
@@ -31,7 +31,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Managed-Runner Entitlements](./managed-runner-entitlements.md) · @builder — verified 2026-10-07
   A Buildd-managed runner claim MUST leave a task queued, never failed, when the team's plan limit on parallel managed runs or monthly runner-hours is reached, and MUST start it once the limit lifts.
-- [Model Tier Ceilings](./model-tier-ceilings.md) · @max — verified 2026-10-09
+- [Model Tier Ceilings](./model-tier-ceilings.md) · @max — verified 2026-10-11
   Every chat turn, task claim and server inference call MUST run at or below the most restrictive applicable team, workspace, admin-member and personal tier maximum, refusing explicit requests above it with policy_denied.
 - [Usage & Cost Accounting](./usage-and-cost-accounting.md) · @max — verified 2026-08-30
   Worker usage MUST be recorded only from the worker's own report and attributed to one task, team-month and provider pool, and a budget-blocked claim MUST answer budget_exhausted with a reset time, not race_lost.
@@ -42,7 +42,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
 - [GitHub Repository Access Remediation](./github-repo-access.md) · @max — verified 2026-10-08
   When Buildd's GitHub App cannot act on a workspace's existing repo, every PR door MUST refuse with a typed reason and fix, surface it once to whoever can fix it, and resume the waiting task once access is verified.
-- [Model Policy Cells and the Dial](./model-policy-cells.md) · @max — verified 2026-10-07
+- [Model Policy Cells and the Dial](./model-policy-cells.md) · @max — verified 2026-10-11
   Each tier x surface cell MUST serve its primary until the team's own graded coding outcomes show an alternate keeps up within the dial's tolerance, and MUST revert, recorded, when it slips.
 - [Standalone Model Policy](./model-policy.md) · @max — verified 2026-10-05
   A caller MUST get provider, model and effort from surface (chat or coding) plus tier alone, locally or from the policy service, with a fallback answer always and no provider secret ever crossing the boundary.
@@ -165,7 +165,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-08
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
-- [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-05
+- [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-11
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 - [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-08
   Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a confident Jev START to its three advisory gates only; both MUST fall back to the rule on failure.
@@ -173,7 +173,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.
 - [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-10-07
   The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
-- [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
+- [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-10-11
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 - [Serialized Surface Merge Ordering](./surface-merge-ordering.md) · @max — verified 2026-10-01
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.

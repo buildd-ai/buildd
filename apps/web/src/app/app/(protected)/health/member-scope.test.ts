@@ -4,7 +4,7 @@ import { resolve } from 'path';
 
 /**
  * A member's Health shows their own work and the runners they can use. What
- * only admins act on or see (team-wide spend, pausing new starts) is loaded
+ * only admins see (team-wide spend) is loaded
  * only for people holding the permission, so it never reaches a member's
  * browser. Failures, Usage and Insights are the team's pages (team admins see
  * the team, members their own work); Operator stays the platform owner's.
@@ -19,9 +19,12 @@ describe("a member's Health", () => {
     expect(data).not.toMatch(/need\('budgetForecast'\) \? getBudgetForecast/);
   });
 
-  it('offers Pause new starts only for workspaces the viewer may manage', () => {
+  it('only shows a pause: Pause new starts is changed on the workspace settings page, under manage_workspace_settings', () => {
     const page = read('runners/page.tsx');
-    expect(page).toContain("'manage_workspace_settings'");
+    expect(page).toContain('<WorkspacePauseBanners');
+    expect(page).not.toContain('pause-starts');
+    const settings = read('../settings/workspace/[workspaceId]/page.tsx');
+    expect(settings).toMatch(/<PauseStartsSection[\s\S]*?canEdit=\{canManageSettings\}/);
   });
 
   it("shows a member's Usage as their own tasks, without the team's monthly spend or hosted runner month", () => {

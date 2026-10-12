@@ -1,18 +1,12 @@
 'use client';
 
 /**
- * Admin UX for the Operator capability model (docs/specs/agent-capabilities.md):
- * makes `metadata.operator` on the team default row and each workspace's
- * override row legible and editable, without exposing any credential value —
- * scope only ever carries a provider/project/environment/credential-ref
- * *label*. Deploy/use capabilities (standard tier) and secret
- * management/reveal (elevated tier, off by default) are rendered as visually
- * separate groups so the distinction survives in the UI, not just the schema.
- *
- * Mirrors the "Applies to" + inherited/override badge language the generic
- * `WorkspaceOverrideEditor` in `TeamRoleEditor.tsx` already established, but
- * is its own section: an operator grant is not a content/tools/mcp override,
- * and a workspace needs this editor whether or not it has ever created one.
+ * Deploy access (docs/specs/agent-capabilities.md): the team's own grants for
+ * an agent that can deploy, from `metadata.operator` on the team default row
+ * and each workspace's override row. Never shows a credential value; scope
+ * only carries labels. Admins (`manage_agent_roles`) get the editor: a team
+ * limit, then per workspace an opt-in with deploy/use and secret access as
+ * separate groups. Everyone else gets one line naming where it can deploy.
  */
 import { useState } from 'react';
 import {
@@ -31,7 +25,6 @@ import {
 } from '@/lib/operator-capability';
 import Section from '@/components/ui/Section';
 import Notice from '@/components/ui/Notice';
-import Eyebrow from '@/components/ui/Eyebrow';
 import { TonePill } from '@/components/ui/StatePill';
 
 const STANDARD_CAPS = AGENT_CAPABILITY_NAMES.filter(c => !ELEVATED_AGENT_CAPABILITIES.has(c));
@@ -144,38 +137,8 @@ function ChipListEditor({
   );
 }
 
-/** Resolved-grant preview: what `authorizeAgent` would actually see, live as the draft changes. */
-function EffectiveGrantPreview({ grant }: { grant: ReturnType<typeof resolveOperatorGrant> }) {
-  return (
-    <div className="border-t border-border-default pt-3">
-      <div className="mb-1.5 flex items-center gap-2">
-        <Eyebrow tone="muted">Effective grant</Eyebrow>
-        {grant.enabled ? <TonePill tone="ok">Enabled</TonePill> : <TonePill tone="q">Disabled</TonePill>}
-      </div>
-      {grant.enabled && (
-        <>
-          <div className="mb-1.5 flex flex-wrap gap-1">
-            {grant.capabilities.length === 0 && <span className="text-meta text-text-muted">No capabilities granted</span>}
-            {grant.capabilities.map(c => (
-              <TonePill key={c} tone={ELEVATED_AGENT_CAPABILITIES.has(c) ? 'dec' : 'q'}>{c}</TonePill>
-            ))}
-          </div>
-          <div className="space-y-0.5">
-            {SCOPE_DIMENSIONS.map(dim => (
-              <div key={dim} className="text-meta text-text-muted">
-                <span className="text-text-secondary">{DIMENSION_LABEL[dim]}:</span>{' '}
-                {grant.scope[dim].length > 0 ? grant.scope[dim].join(', ') : 'none'}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/** Team-level ceiling: a kill switch, the standard-capability ceiling, and optional scope ceilings. Never elevated. */
-function TeamCeilingCard({ roleId, metadata, canEdit = true }: { roleId: string; metadata: unknown; canEdit?: boolean }) {
+/** Team limit: a kill switch, the standard-capability limit, and optional scope limits. Never elevated. */
+function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unknown }) {
   const initial = sanitizeOperatorGrantConfig((metadata as { operator?: unknown } | null)?.operator) ?? {};
   const [killSwitchOff, setKillSwitchOff] = useState(initial.enabled === false);
   const [caps, setCaps] = useState<Set<AgentCapability>>(
@@ -225,9 +188,9 @@ function TeamCeilingCard({ roleId, metadata, canEdit = true }: { roleId: string;
   }
 
   return (
-    <fieldset disabled={!canEdit} className="min-w-0">
+    <div className="min-w-0">
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-text-primary">Team ceiling</h3>
+        <h3 className="text-sm font-semibold text-text-primary">Team limit</h3>
         <label className="flex min-h-11 md:min-h-0 items-center gap-2 cursor-pointer">
           <span className="text-meta text-text-secondary">Allow workspaces to enable this agent</span>
           <input
@@ -238,11 +201,7 @@ function TeamCeilingCard({ roleId, metadata, canEdit = true }: { roleId: string;
           />
         </label>
       </div>
-      <p className="text-meta text-text-muted mb-3">
-        Turning this off disables Operator for every workspace, including ones already opted in.
-      </p>
-
-      <div className={killSwitchOff ? 'opacity-50 pointer-events-none' : ''}>
+      <div className={`mt-2 ${killSwitchOff ? 'opacity-50 pointer-events-none' : ''}`}>
         <div className="mb-3">
           <span className="block text-meta font-medium text-text-primary mb-1.5">Deploy and use capabilities</span>
           <div className="space-y-2">
@@ -256,27 +215,25 @@ function TeamCeilingCard({ roleId, metadata, canEdit = true }: { roleId: string;
           {SCOPE_DIMENSIONS.map(dim => (
             <ChipListEditor
               key={dim}
-              label={`${DIMENSION_LABEL[dim]} ceiling`}
-              hint="Leave blank: no ceiling, each workspace picks its own list."
+              label={DIMENSION_LABEL[dim]}
+              hint="Blank allows any."
               values={scope[dim]}
               onChange={v => setScope(prev => ({ ...prev, [dim]: v }))}
             />
           ))}
         </div>
 
-        <p className="text-meta text-text-muted">
-          Secret management and reveal authority can only be granted per workspace, never at the team level.
-        </p>
+        <p className="text-meta text-text-muted">Secret access is set per workspace.</p>
       </div>
 
       {error && <Notice tone="err" className="mt-3">{error}</Notice>}
 
-      {canEdit && <div className="mt-3 flex items-center gap-3">
+      <div className="mt-3 flex items-center gap-3">
         <button type="button" onClick={handleSave} disabled={saving} className="btn">
-          {saving ? 'Saving…' : saved ? 'Saved' : 'Save team ceiling'}
+          {saving ? 'Saving…' : saved ? 'Saved' : 'Save team limit'}
         </button>
-      </div>}
-    </fieldset>
+      </div>
+    </div>
   );
 }
 
@@ -287,14 +244,12 @@ function WorkspaceGrantRow({
   override,
   teamMetadata,
   onSaved,
-  canEdit = true,
 }: {
   roleId: string;
   workspace: WorkspaceOption;
   override: OperatorRoleRow | undefined;
   teamMetadata: unknown;
   onSaved: (override: OperatorRoleRow) => void;
-  canEdit?: boolean;
 }) {
   const initial = sanitizeOperatorGrantConfig((override?.metadata as { operator?: unknown } | null)?.operator) ?? {};
   const [expanded, setExpanded] = useState(false);
@@ -377,14 +332,14 @@ function WorkspaceGrantRow({
       >
         <span className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium text-text-primary">{workspace.name}</span>
-          {preview.enabled ? <TonePill tone="ok">Enabled</TonePill> : <TonePill tone="q">Disabled</TonePill>}
+          {preview.enabled ? <TonePill tone="ok">On</TonePill> : <TonePill tone="q">Off</TonePill>}
           {preview.capabilities.some(c => ELEVATED_AGENT_CAPABILITIES.has(c)) && <TonePill tone="dec">Elevated</TonePill>}
         </span>
         <span aria-hidden="true" className={`shrink-0 font-mono text-meta text-text-muted transition-transform ${expanded ? 'rotate-180' : ''}`}>▾</span>
       </button>
 
       {expanded && (
-        <fieldset disabled={!canEdit} className="min-w-0 space-y-4 pb-4">
+        <div className="min-w-0 space-y-4 pb-4">
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
@@ -404,10 +359,8 @@ function WorkspaceGrantRow({
             </div>
           </div>
 
-          <Notice tone="warn" title="Secret management and reveal: off by default">
-            <p className="mb-2 text-text-muted">
-              Lets the agent change or read a credential&apos;s plaintext, not just use it server-side.
-            </p>
+          <Notice tone="warn" title="Secret access">
+            <p className="mb-2 text-text-muted">Lets the agent change or read a credential&apos;s value.</p>
             <div className="space-y-2">
               {ELEVATED_CAPS.map(c => (
                 <CapabilityCheckbox key={c} capability={c} checked={elevatedCaps.has(c)} onToggle={() => toggleElevated(c)} elevated />
@@ -426,16 +379,14 @@ function WorkspaceGrantRow({
             ))}
           </div>
 
-          <EffectiveGrantPreview grant={preview} />
-
           {error && <Notice tone="err">{error}</Notice>}
 
-          {canEdit && <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3">
             <button type="button" onClick={handleSave} disabled={saving} className="btn">
               {saving ? 'Saving…' : saved ? 'Saved' : 'Save workspace grant'}
             </button>
-          </div>}
-        </fieldset>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -452,7 +403,7 @@ export function OperatorAccessSection({
   teamMetadata: unknown;
   overrides: OperatorRoleRow[];
   workspaces: WorkspaceOption[];
-  /** Holds `manage_agent_roles`. False: the ceiling and each grant read-only. Defaults to true. */
+  /** Holds `manage_agent_roles`. False: one line naming where the agent can deploy. Defaults to true. */
   canEdit?: boolean;
 }) {
   const [overrideList, setOverrideList] = useState<OperatorRoleRow[]>(overrides);
@@ -467,19 +418,37 @@ export function OperatorAccessSection({
     });
   }
 
-  return (
-    <Section title="Platform Operator access">
-      <div className="space-y-6">
-        <p className="text-sm text-text-muted">
-          Deploy and use capabilities are separate from secret management and reveal, which stays off by default.
+  if (!canEdit) {
+    const teamOperator = (teamMetadata as { operator?: unknown } | null)?.operator;
+    const deploysFrom = workspaces.filter(ws => {
+      const row = overrideList.find(o => o.workspaceId === ws.id);
+      return resolveOperatorGrant({
+        roleSlug: 'operator',
+        workspaceId: ws.id,
+        teamRow: { enabled: true, metadata: { operator: teamOperator } },
+        workspaceRow: row ? { enabled: true, metadata: row.metadata } : null,
+      }).enabled;
+    });
+    return (
+      <Section title="Deploy access">
+        <p className="text-sm text-text-secondary" data-testid="deploy-access-summary">
+          {deploysFrom.length === 0
+            ? "Can't deploy from any workspace."
+            : `Can deploy from ${deploysFrom.map(ws => ws.name).join(', ')}.`}
         </p>
+      </Section>
+    );
+  }
 
-        <TeamCeilingCard roleId={roleId} metadata={teamMetadata} canEdit={canEdit} />
+  return (
+    <Section title="Deploy access">
+      <div className="space-y-6">
+        <TeamCeilingCard roleId={roleId} metadata={teamMetadata} />
 
         <div>
-          <h3 className="mb-1 text-sm font-semibold text-text-primary">Workspace grants</h3>
+          <h3 className="mb-1 text-sm font-semibold text-text-primary">Workspaces</h3>
           {workspaces.length === 0 ? (
-            <p className="text-sm text-text-muted">No workspaces to configure.</p>
+            <p className="text-sm text-text-muted">No workspaces.</p>
           ) : (
             <div className="divide-y divide-border-default border-y border-border-default">
               {workspaces.map(ws => (
@@ -490,7 +459,6 @@ export function OperatorAccessSection({
                   override={overrideList.find(o => o.workspaceId === ws.id)}
                   teamMetadata={teamMetadata}
                   onSaved={handleSaved}
-                  canEdit={canEdit}
                 />
               ))}
             </div>

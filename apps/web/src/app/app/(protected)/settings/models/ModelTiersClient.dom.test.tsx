@@ -47,11 +47,11 @@ let root: ReturnType<typeof createRoot>;
 afterEach(() => { act(() => root.unmount()); host.remove(); document.body.innerHTML = ''; });
 
 const flush = async () => { await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
-async function mount(isAdmin = true) {
+async function mount(isAdmin = true, operator = true) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin={isAdmin} />); });
+  await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin={isAdmin} operator={operator} />); });
   await flush();
   await flush();
 }
@@ -135,18 +135,17 @@ describe('ModelTiersClient: the table', () => {
   });
 
   it('gives members the table without edit buttons', async () => {
-    await mount(false);
+    await mount(false, false);
     const cell = q('[data-testid="cell-agent-premium"]')!;
     expect(cell.tagName).toBe('DIV');
     await click(cell);
     expect(q('[data-testid="cell-editor"]')).toBeNull();
   });
 
-  it('a member can only open views: History and what ran, nothing that edits', async () => {
-    await mount(false);
+  it('a member reads the table with no controls: nothing that edits, no what-ran links', async () => {
+    await mount(false, false);
     const ids = formControls(host).map((el) => el.getAttribute('data-testid') ?? '');
-    expect(ids.length).toBeGreaterThan(0);
-    expect(ids.every((id) => id === 'tiers-history' || id.startsWith('tier-name-'))).toBe(true);
+    expect(ids.filter((id) => id !== 'tier-overrides')).toEqual([]);
     expect(host.querySelector('[aria-haspopup="dialog"]')).toBeNull();
     expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this/);
   });
@@ -219,6 +218,64 @@ describe('ModelTiersClient: the cell editor', () => {
     expect(q('[data-testid="cell-alternates"]')).toBeNull();
     expect(q('[data-testid="cell-routing"]')).toBeNull();
     expect(q('[data-testid="cell-learning"]')!.textContent).toBe('Premium-plus always uses its primary.');
+  });
+});
+
+describe('ModelTiersClient: a team admin picks the primary; traffic pools are operator-only', () => {
+  it('a team member or admin sees the primary only: no state line, no alternates, no what-ran link', async () => {
+    for (const isAdmin of [false, true]) {
+      await mount(isAdmin, false);
+      expect(document.querySelectorAll('[data-testid="cell-state"]').length).toBe(0);
+      expect(host.textContent).not.toMatch(/learning|matches ·|back to primary|no quality signal|always this model/);
+      expect(q('[data-testid="tier-name-standard"]')!.tagName).toBe('SPAN');
+      expect(q('[data-testid="cell-agent-standard"] [data-testid="cell-primary"]')!.textContent).toBe('claude-sonnet-5');
+      act(() => root.unmount()); host.remove(); document.body.innerHTML = '';
+    }
+    await mount(true, false); // afterEach unmounts this one
+  });
+
+  it('no testing chip and no History for a team admin', async () => {
+    await mount(true, false);
+    expect(document.querySelectorAll('[data-testid="cell-testing"]').length).toBe(0);
+    expect(q('[data-testid="tiers-history"]')).toBeNull();
+    expect(host.textContent).not.toContain('testing');
+  });
+
+  it('the editor holds only the primary: no alternates, no dial, no learning paragraph', async () => {
+    await mount(true, false);
+    await click(q('[data-testid="cell-agent-premium"]'));
+    const ed = q('[data-testid="cell-editor"]')!;
+    expect(ed.querySelector('[data-testid="cell-primary-picker"]')).not.toBeNull();
+    for (const gone of ['cell-alternates', 'cell-alternate-add', 'cell-routing', 'cell-advanced-toggle', 'cell-dial-3', 'cell-learning']) {
+      expect(`${gone}: ${!!ed.querySelector(`[data-testid="${gone}"]`)}`).toBe(`${gone}: false`);
+    }
+    expect(ed.textContent).not.toMatch(/May also use|Quality|Savings|dial|Advanced routing/);
+  });
+
+  it('a team admin pins the primary with one registry write and touches no pool route', async () => {
+    await mount(true, false);
+    await click(q('[data-testid="cell-agent-premium"]'));
+    await click(q('[data-testid="cell-primary-picker"]'));
+    await click(q('[data-testid="model-picker-band-all"]'));
+    const opt = [...document.querySelectorAll('[role="option"]')].find((o) => {
+      const key = o.getAttribute('data-key') ?? '';
+      return key.startsWith('anthropic::') && key !== 'anthropic::claude-opus-5' && o.getAttribute('aria-disabled') !== 'true';
+    }) as HTMLElement;
+    const model = opt.getAttribute('data-key')!.split('::')[1];
+    await click(opt);
+    await click(q('[data-testid="cell-save"]'));
+    const writes = requests.filter((r) => r.method !== 'GET');
+    expect(writes).toEqual([{ url: '/api/model-tiers', method: 'POST', body: { tier: 'premium', provider: 'anthropic', model, teamId: 'team-demo', surface: 'agent' } }]);
+    expect(requests.some((r) => r.url.startsWith('/api/model-tiers/pools'))).toBe(false);
+  });
+
+  it('a platform operator gets the alternates, the dial, the testing chip and History', async () => {
+    await mount(true, true);
+    expect(q('[data-testid="cell-agent-budget"] [data-testid="cell-testing"]')).not.toBeNull();
+    expect(q('[data-testid="tiers-history"]')).not.toBeNull();
+    await click(q('[data-testid="cell-agent-premium"]'));
+    expect(q('[data-testid="cell-alternates"]')).not.toBeNull();
+    expect(q('[data-testid="cell-advanced-toggle"]')).not.toBeNull();
   });
 });
 

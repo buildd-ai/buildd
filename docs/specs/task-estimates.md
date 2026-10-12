@@ -96,6 +96,7 @@ labelled "rough".
 - AC-4: GIVEN a member without `manage_team_settings`, or an admin of another team, WHEN they PATCH `taskEstimates` THEN the response is 403 and nothing is stored.
 - AC-5: GIVEN estimates are off WHEN an owner/admin opens Health › Estimates THEN the page links to Settings › Features. WHEN a member opens it THEN it says an owner or admin can turn them on, with no action of its own.
 - AC-6: GIVEN an estimate whose prior weight is ≥ 0.5 WHEN the task page shows it THEN it is labelled "rough" with a one-line reason, and the range is rounded to a 1/5/15/30-minute step.
+- AC-8: GIVEN any team WHEN Settings › Features or Health › Estimates renders THEN it shows the team's own state only: no line about other teams' default and no reason drawn from the rollout measurement.
 - AC-7: GIVEN the estimator throws or a source is unavailable WHEN a task is created THEN creation succeeds and the write returns `failed` or uses the remaining sources.
 
 **Rollout**:
@@ -116,7 +117,7 @@ Features › Turn off. Rows are kept. Full removal: `packages/core/TASK-ESTIMATE
 
 **Code surface**:
 
-- `packages/core/task-estimate-rollout.ts`: `TASK_ESTIMATES_GATE`, `evaluateTaskEstimatesGate`, `TASK_ESTIMATES_ROLLOUT`, `taskEstimatesDefaultOn`, `resolveTaskEstimatesState`, `defaultOffReason`
+- `packages/core/task-estimate-rollout.ts`: `TASK_ESTIMATES_GATE`, `evaluateTaskEstimatesGate`, `TASK_ESTIMATES_ROLLOUT`, `taskEstimatesDefaultOn`, `resolveTaskEstimatesState`
 - `packages/core/task-estimate-source.ts`: `loadTaskEstimatesState`, `taskEstimatesEnabled`, `writeTaskEstimate`
 - `packages/core/scripts/estimate-backtest.ts`: prints the gate
 - `apps/web/src/app/api/teams/[id]/route.ts`: PATCH `taskEstimates`
