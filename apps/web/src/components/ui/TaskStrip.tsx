@@ -126,9 +126,21 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
               title={c.title}
               tabIndex={i === focusIndex ? 0 : -1}
               onClick={() => onSelect?.(c.id)}
-              className={`state-cell h-14 md:h-16 rounded-[var(--radius-cell)] flex items-center justify-center font-mono text-chip font-semibold cursor-pointer ${selected ? '[outline:2px_solid_var(--text-primary)] [outline-offset:2px]' : ''}`}
+              className="flex h-11 min-w-0 cursor-pointer flex-col justify-end gap-[3px] rounded-[var(--radius-cell)] md:h-16 md:gap-0"
             >
-              {s.cellGlyph && <span aria-hidden="true">{s.glyph}</span>}
+              {/* Below md the cell is a slim bar in a full-height tap target; the
+                  selection is a separate ink marker above it, not a frame. */}
+              <span aria-hidden="true" data-testid="task-strip-marker" className={`h-[3px] w-full shrink-0 rounded-full md:hidden ${selected ? 'bg-text-primary' : ''}`} />
+              <span
+                aria-hidden="true"
+                data-testid="task-strip-fill"
+                data-tone={s.tone}
+                data-pattern={s.pattern}
+                data-frame={s.frame}
+                className={`state-cell flex h-4 w-full shrink-0 items-center justify-center rounded-[var(--radius-cell)] font-mono text-chip font-semibold leading-none md:h-full ${selected ? 'md:[outline:2px_solid_var(--text-primary)] md:[outline-offset:2px]' : ''}`}
+              >
+                {s.cellGlyph ? s.glyph : null}
+              </span>
             </button>
           );
         })}

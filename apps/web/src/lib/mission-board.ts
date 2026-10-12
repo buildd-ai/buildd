@@ -599,7 +599,9 @@ function criterionRow(
       return {
         label: 'open tasks',
         value: `${ctx.open} open`,
-        state: pass ? 'pass'
+        // A stored pass cannot stand beside "2 open": the figure is live, the
+        // verdict may predate the tasks that reopened.
+        state: pass && ctx.open === 0 ? 'pass'
           : unchecked && ctx.total > 0 && ctx.open === 0 ? 'unchecked'
           : ctx.landed > 0 ? 'partial' : 'pending',
         frac: ctx.total > 0 ? ctx.landed / ctx.total : 0,

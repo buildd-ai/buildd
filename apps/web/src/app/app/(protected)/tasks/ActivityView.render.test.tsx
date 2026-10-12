@@ -39,8 +39,10 @@ describe('ActivityView: Now', () => {
     expect(h1).toContain('md:not-sr-only');
   });
 
-  it('Now has no filters and no "Latest" line: the rows are the page', () => {
-    expect(html).not.toContain('data-testid="activity-filters"');
+  it('Now retains repair and attention filters without restoring the Latest line', () => {
+    expect(html).toContain('data-testid="activity-filters"');
+    expect(html).toContain('Had repairs');
+    expect(html).toContain('Needs attention');
     expect(html).not.toContain('data-testid="activity-latest"');
   });
 
@@ -106,10 +108,10 @@ describe('ActivityView: Now', () => {
 });
 
 describe('ActivityView: History', () => {
-  it('has the four outcome chips in the prototype’s words, and day sections with a tally', () => {
+  it('keeps the prototype outcome chips and adds the finished exception filter, with day tallies', () => {
     const html = render(ACTIVITY_SEQUENCE.length - 1, 'history');
     const chips = [...html.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map(m => m[2]);
-    expect(chips).toEqual(['All', 'Landed', 'Had repairs', 'Sent to you']);
+    expect(chips).toEqual(['All', 'Landed', 'Had repairs', 'Sent to you', 'Not landed']);
     expect(html).toContain('data-testid="activity-day"');
     expect(html).not.toContain('aria-label="Mission"');
   });
@@ -121,5 +123,23 @@ describe('ActivityView: History', () => {
     expect(html).not.toContain('[builder · after');
     expect(html).toContain('Automatic repair 1: review notes');
     expect(tag(html, 'activity-tab-history')).toContain('aria-current="page"');
+  });
+});
+
+describe('ActivityView: History root cap', () => {
+  const d = activityFixture(4);
+  const html = (reach: { oldestAt: string } | null) => renderToStaticMarkup(
+    <ActivityView mode="history" now={d.now} history={d.history.slice(0, 3)} latest={d.latest} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={hrefs} historyReach={reach} />,
+  );
+
+  it('says how far back History reaches and links on when the root cap was hit', () => {
+    const out = html({ oldestAt: new Date(ACTIVITY_FIXTURE_NOW - 3 * 86_400_000).toISOString() });
+    expect(out).toContain('data-testid="history-boundary"');
+    expect(out).toContain('Older work is not shown');
+    expect(out).toContain('href="/app/missions"');
+  });
+
+  it('shows no boundary when the window, not the cap, ended History', () => {
+    expect(html(null)).not.toContain('history-boundary');
   });
 });

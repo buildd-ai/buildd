@@ -13,8 +13,11 @@ describe('FocusCard', () => {
     expect(html).toContain('06.');
   });
 
-  it('a focused card carries the 1.5px ink frame', () => {
-    expect(renderToStaticMarkup(<FocusCard {...base} />)).toContain('border-[1.5px] border-text-primary');
+  it('a focused card carries the 1.5px ink frame from md, a quiet hairline on a phone', () => {
+    const html = renderToStaticMarkup(<FocusCard {...base} />);
+    expect(html).toContain('md:border-[1.5px] md:border-text-primary');
+    expect(html).toContain('border border-border-strong');
+    expect(html).not.toMatch(/ border-\[1\.5px\]/);
     expect(renderToStaticMarkup(<FocusCard {...base} focused={false} />)).not.toContain('border-[1.5px]');
   });
 
