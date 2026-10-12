@@ -132,7 +132,15 @@ mock.module('@/lib/dispatch-authority', () => ({
   DRAIN_BATCH: 25,
 }));
 
-import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers, resolveTasksOfReapedWorkers } from './stale-workers';
+const mockClearWorkerMessages = mock(async (_taskId: string, _ids: string[]) => true);
+mock.module('@buildd/core/worker-messages', () => ({
+  clearWorkerMessages: mockClearWorkerMessages,
+  enqueueWorkerMessage: mock(async () => true),
+  buildEnqueueContextSql: mock(() => ({})),
+  buildClearContextSql: mock(() => ({})),
+}));
+
+import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers, cleanupUnreadInteractiveAnswers, resolveTasksOfReapedWorkers } from './stale-workers';
 import { INTERACTIVE_ABANDONED_ERROR } from './worker-exit-taxonomy';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
 
@@ -3261,5 +3269,201 @@ describe('resolveTasksOfReapedWorkers — lost claim response', () => {
     await resolveTasksOfReapedWorkers([lost], 'never_started');
     expect(taskUpdateSet).toBeNull();
     expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cleanupUnreadInteractiveAnswers — an answer sent back to an interactive
+// session that then went quiet without reading it (the session died between
+// the answer and its next poll) goes to a follow-up task instead of sitting on
+// a `running` worker nobody will ever drive again.
+// ---------------------------------------------------------------------------
+describe('cleanupUnreadInteractiveAnswers', () => {
+  const QUIET = new Date(Date.now() - 60 * 60 * 1000);
+  const RECENT = new Date(Date.now() - 60 * 1000);
+
+  function interactiveWithUnreadAnswer(overrides: {
+    delivery?: Record<string, unknown>;
+    entry?: Record<string, unknown>;
+    worker?: Record<string, unknown>;
+  } = {}) {
+    return {
+      id: 'worker-1',
+      taskId: 'task-1',
+      accountId: 'account-1',
+      workspaceId: 'workspace-1',
+      runner: 'mcp',
+      status: 'running',
+      updatedAt: QUIET,
+      branch: 'buildd/task-1-thing',
+      milestones: [{ label: 'Read the route', timestamp: 1 }],
+      instructionHistory: [
+        { type: 'instruction', id: 'msg-1', message: 'Use Postgres', timestamp: 1, deliveryState: 'pending', ...overrides.entry },
+      ],
+      ...overrides.worker,
+      task: {
+        id: 'task-1',
+        title: 'Pick a database',
+        description: 'Choose and wire the store',
+        missionId: 'mission-1',
+        taskClass: 'work',
+        context: {
+          pendingWorkerMessages: [{ id: 'msg-1', type: 'answer', body: { source: 'human', text: 'Use Postgres', workerId: 'worker-1' } }],
+          answerDelivery: {
+            path: 'interactive',
+            reasonCode: 'interactive_session',
+            reason: 'live',
+            workerId: 'worker-1',
+            decidedAt: QUIET.toISOString(),
+            messageId: 'msg-1',
+            question: 'Which database?',
+            ...overrides.delivery,
+          },
+        },
+      },
+    };
+  }
+
+  const insertedValues: any[] = [];
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    insertedValues.length = 0;
+    mockTasksInsert.mockReset();
+    mockTasksInsert.mockReturnValue({
+      values: mock((v: any) => { insertedValues.push(v); return { returning: mock(() => [{ id: 'new-task-id' }]) }; }),
+    } as any);
+    mockTasksUpdate.mockReset();
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) } as any);
+    mockClearWorkerMessages.mockClear();
+    mockWakeTask.mockClear();
+    capturedInsertValues = null;
+    capturedWorkerUpdates.length = 0;
+    workersUpdateReturning = [{ id: 'worker-1' }];
+    capturedAccountsSet = null;
+    mockAccountsUpdate.mockReset();
+    mockAccountsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedAccountsSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    } as any);
+    mockWorkersUpdate.mockReset();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedWorkerUpdates.push(vals);
+        return {
+          where: mock(() => Object.assign(Promise.resolve(), {
+            returning: () => Promise.resolve(workersUpdateReturning),
+          })),
+        };
+      }),
+    } as any);
+  });
+
+  it('sends a quiet session\'s unread answer to a follow-up task and supersedes the worker', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+
+    const result = await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(result.degraded).toBe(1);
+    expect(capturedWorkerUpdates[0].status).toBe('superseded');
+    expect(insertedValues).toHaveLength(1);
+    expect(insertedValues[0].title).toBe('Continue: Pick a database');
+    expect(insertedValues[0].context.userInput).toBe('Use Postgres');
+    expect(insertedValues[0].context.answerDelivery.path).toBe('cold_continuation');
+    expect(insertedValues[0].context.answerDelivery.reasonCode).toBe('interactive_answer_not_read');
+    expect(insertedValues[0].description).toContain('Which database?');
+    // The superseded worker points at where the work went on.
+    expect(capturedWorkerUpdates.some(u => u.continuationTaskId === 'new-task-id')).toBe(true);
+    expect(mockWakeTask).toHaveBeenCalledWith('new-task-id', 'task.created');
+  });
+
+  it('takes the answer out of the old task\'s queue, so a session that comes back cannot also act on it', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+
+    await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(mockClearWorkerMessages).toHaveBeenCalledWith('task-1', ['msg-1']);
+  });
+
+  it('posts one warning note saying the session never read the answer', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+
+    await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(capturedInsertValues?.type).toBe('warning');
+    expect(capturedInsertValues?.taskId).toBe('task-1');
+    expect(capturedInsertValues?.body).toContain('went quiet without reading it');
+  });
+
+  it('leaves a session that was active recently alone', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer({ worker: { updatedAt: RECENT } })] as any);
+
+    const result = await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    expect(capturedWorkerUpdates).toHaveLength(0);
+  });
+
+  it('leaves an answer the session already read alone', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer({ entry: { deliveryState: 'acknowledged' } })] as any);
+
+    const result = await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+  });
+
+  it('ignores a delivery that was not sent to an interactive session', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer({ delivery: { path: 'resume' } })] as any);
+
+    expect((await cleanupUnreadInteractiveAnswers('account-1')).degraded).toBe(0);
+  });
+
+  it('ignores a delivery recorded for a different worker', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer({ delivery: { workerId: 'worker-2' } })] as any);
+
+    expect((await cleanupUnreadInteractiveAnswers('account-1')).degraded).toBe(0);
+  });
+
+  it('ignores a runner-managed worker', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer({ worker: { runner: 'buildd-runner' } })] as any);
+
+    expect((await cleanupUnreadInteractiveAnswers('account-1')).degraded).toBe(0);
+  });
+
+  // The session can read the answer, or check in, in the window between the
+  // read and the write. It wins.
+  it('does nothing when the claiming compare-and-swap matches no row', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+    workersUpdateReturning = [];
+
+    const result = await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+    expect(mockClearWorkerMessages).not.toHaveBeenCalled();
+  });
+
+  it('puts the worker back to running, answer still queued, when the follow-up insert fails', async () => {
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => Promise.reject(new Error('insert failed'))) })),
+    } as any);
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+
+    const result = await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    expect(capturedWorkerUpdates).toHaveLength(2);
+    expect(capturedWorkerUpdates[1].status).toBe('running');
+    expect(mockClearWorkerMessages).not.toHaveBeenCalled();
+    expect(capturedAccountsSet).toBeNull();
+  });
+
+  it('releases one OAuth seat per degraded worker', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+
+    await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(capturedAccountsSet).not.toBeNull();
   });
 });

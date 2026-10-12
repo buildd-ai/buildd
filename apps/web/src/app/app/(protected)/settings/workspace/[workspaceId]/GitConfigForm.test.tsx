@@ -52,7 +52,7 @@ describe('GitConfigForm without settings permission', () => {
 });
 
 // Goal grading is Auto everywhere. The control is gone; gitConfig.criteriaGrader
-// is still read by the evaluator and set from the admin app, so a save must not
+// is still read by the evaluator and set through the platform-owner API, so a save must not
 // overwrite it.
 describe('GitConfigForm goal grading', () => {
   it('has no grading control, editable or read-only', () => {
