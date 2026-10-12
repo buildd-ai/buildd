@@ -33,6 +33,7 @@ export const COMPOSE_FIXTURE_STATES = [
   'review-ready',
   'release',
   'error',
+  'not-enabled',
 ] as const;
 export type ComposeFixtureState = (typeof COMPOSE_FIXTURE_STATES)[number];
 
@@ -53,7 +54,8 @@ export interface ReleaseFlowFixture {
 
 export type ComposeFixture =
   | { kind: 'flow'; view: ReleaseFlowView; flowFixture: ReleaseFlowFixture }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  | { kind: 'not-enabled'; workspaces: { id: string; name: string }[] };
 
 const REPO = 'example/app';
 const SOURCE_SHA = '3f9c2a71be04d5a6c8e1f2b3a4c5d6e7f8091a2b';
@@ -234,5 +236,7 @@ export function composeFixture(state: ComposeFixtureState): ComposeFixture {
       );
     case 'error':
       return { kind: 'error', message: 'Could not read the release from GitHub: GitHub returned 502 for /repos/example/app/compare/main...3f9c2a71b' };
+    case 'not-enabled':
+      return { kind: 'not-enabled', workspaces: [{ id: 'qa-fixture-workspace', name: 'Sample workspace' }, { id: 'qa-fixture-workspace-docs', name: 'Docs site' }] };
   }
 }

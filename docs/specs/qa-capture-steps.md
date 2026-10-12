@@ -177,11 +177,11 @@ committing step MUST NOT run against a preview.
   window), without worker rows.
   `/app/health/insights/tasks?state=sample|large` (optionally `&band=<key>`) renders a
   synthetic band drill-down, typical or holding hundreds of rows, without band params or DB rows.
-  `/app/releases/compose?state=compose|compose-empty|confirm|reply-error|review-failing|review-exclude|review-refused|review-ready|release|error`
+  `/app/releases/compose?state=compose|compose-empty|confirm|reply-error|review-failing|review-exclude|review-refused|review-ready|release|error|not-enabled`
   (dev server only) renders the release flow from a static view: the populated picker, the
   disabled cut, the confirm card, an error reply, a candidate with failing and missing checks,
   the leave-out notice, a refused revert, a releasable candidate, the awaiting-production step
-  and a GitHub load error. It never POSTs.
+  a GitHub load error, and the empty state when no workspace cuts release candidates. It never POSTs.
   `/app/releases?state=candidates|history|multi-workspace` (dev server only) draws the list from
   synthetic rows: a pending candidate as the Next release card over healthy, degraded, failed and
   superseded history; history alone; and rows spanning two workspaces. No DB reads.

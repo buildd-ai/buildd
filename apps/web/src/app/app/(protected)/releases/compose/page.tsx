@@ -13,6 +13,7 @@ import { composeHref } from '@/lib/release/compose-href';
 import { loadFlowFor, resolveComposeTarget } from '@/lib/release/compose-runtime';
 import { resolveActiveTeamId } from '@/lib/team-access';
 import { composeFixture, resolveComposeFixtureState } from './compose-fixtures';
+import NoCandidateWorkspaces from './NoCandidateWorkspaces';
 import ReleaseFlow from './ReleaseFlow';
 
 export const dynamic = 'force-dynamic';
@@ -41,6 +42,7 @@ export default async function ComposeReleasePage({ searchParams }: { searchParam
   if (fixtureState) {
     const fixture = composeFixture(fixtureState);
     if (fixture.kind === 'error') return <Shell><Notice tone="err">{fixture.message}</Notice></Shell>;
+    if (fixture.kind === 'not-enabled') return <Shell><NoCandidateWorkspaces workspaces={fixture.workspaces} /></Shell>;
     return <Shell><ReleaseFlow view={fixture.view} fixture={fixture.flowFixture} /></Shell>;
   }
 
@@ -57,13 +59,7 @@ export default async function ComposeReleasePage({ searchParams }: { searchParam
     .where(and(inArray(workspaces.teamId, scope), wsParam ? eq(workspaces.id, wsParam) : undefined));
   const eligible = rows.filter((w) => w.releaseConfig?.enabled === true && releaseCandidatePolicy(w.releaseConfig));
   if (eligible.length === 0) {
-    return (
-      <Shell>
-        <p className="text-body text-text-secondary">
-          No workspace here cuts frozen release candidates. Turn them on in a workspace&apos;s release settings.
-        </p>
-      </Shell>
-    );
+    return <Shell><NoCandidateWorkspaces workspaces={rows} /></Shell>;
   }
   if (!wsParam && eligible.length === 1) redirect(composeHref(eligible[0].id));
   if (!wsParam) {
