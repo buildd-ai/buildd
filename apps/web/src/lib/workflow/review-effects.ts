@@ -34,7 +34,7 @@ import type { ClaimedEffect, EffectHandler, EffectHandlers } from './effects';
 import { insertFollowupEffectSql } from './effects';
 import { applyCommand, loadView, type Exec } from './kernel';
 import { ingestFact } from './facts';
-import { collectComposition, isCompositionPr } from './review-composition';
+import { collectComposition, compositionConstituentBase } from './review-composition';
 import { githubReader, workspaceRepo } from './github-facts';
 import type { KernelView, RoundSnapshot } from './types';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
@@ -111,7 +111,12 @@ async function tryCompositionAttestation(p: {
   const { d, round } = p;
   if (!d.repoFullName || d.prNumber == null || round.headSha !== d.currentHeadSha) return null;
   try {
-    const pull = (await githubApi(p.repo.installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`)) as { head?: { ref?: string; sha?: string }; base?: { ref?: string } } | null;
+    const pull = (await githubApi(p.repo.installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`)) as {
+      head?: { ref?: string; sha?: string; repo?: { full_name?: string } | null };
+      base?: { ref?: string; repo?: { full_name?: string } | null };
+      user?: { login?: string } | null;
+      body?: string | null;
+    } | null;
     // The live head first: an attestation computed against a head the PR has
     // already moved past proves nothing about what would merge. A mismatch (or
     // an unreadable head) attests nothing; the head webhook / floor re-rounds it.
@@ -124,12 +129,26 @@ async function tryCompositionAttestation(p: {
     const baseRef = pull?.base?.ref ?? d.baseRef;
     if (!headRef || !baseRef) return null;
     const missionWorkingBranch = p.mission?.workingBranch ?? null;
-    if (!isCompositionPr({ headRef, baseRef, missionWorkingBranch, releaseConfig: (p.workspace.releaseConfig ?? null) as never, refreshTrunk: p.refreshTrunk })) return null;
+    // A frozen release candidate is recognised only with its provenance (the
+    // author, the release workflow's metadata, and that metadata naming this
+    // exact head): a hand-made release/v* branch reviews in full.
+    const constituentBase = compositionConstituentBase({
+      headRef, baseRef, missionWorkingBranch, releaseConfig: (p.workspace.releaseConfig ?? null) as never, refreshTrunk: p.refreshTrunk,
+      pr: {
+        headSha: liveHead,
+        author: pull?.user?.login ?? null,
+        headRepoFullName: pull?.head?.repo?.full_name ?? null,
+        baseRepoFullName: pull?.base?.repo?.full_name ?? null,
+        body: pull?.body ?? null,
+      },
+    });
+    if (!constituentBase) return null;
     // A refresh PR is composed from trunk's PRs; a PR from the mission branch (its integration PR) is not a refresh.
     const refreshTrunk = p.refreshTrunk && missionWorkingBranch && baseRef === missionWorkingBranch.trim() ? p.refreshTrunk : null;
     const built = await collectComposition({
       api: githubApi, exec: dbExec, installationId: p.repo.installationId, workspaceId: d.workspaceId,
       repoFullName: d.repoFullName, prNumber: d.prNumber, baseRef, headRef, aggregateHeadSha: round.headSha, refreshTrunk,
+      constituentBase: refreshTrunk ? null : constituentBase,
     });
     if (built.attestation.novelDelta.result === 'unverifiable') {
       console.log(`[workflow] composition of ${d.repoFullName}#${d.prNumber} unverifiable (${built.attestation.novelDelta.reason}); full review`);

@@ -2392,6 +2392,15 @@ describe('POST /api/workers/claim', () => {
         return (await res.json()) as any;
       };
 
+      it('a reservation is cleared when the task is claimed, so a re-queue is not held from runners', async () => {
+        const sets = withTask({ context: { reservedBy: { accountId: 'a', at: 'then', expiresAt: '2999-01-01T00:00:00.000Z' }, model: 'x' } });
+        const data = await claim();
+        expect(data.workers.length).toBe(1);
+        const assigned = sets.find(v => v.status === 'assigned');
+        expect(assigned.context.reservedBy).toBeUndefined();
+        expect(assigned.context.model).toBe('x');
+      });
+
       it('no ceiling: the router pick and lookups are unchanged', async () => {
         const sets = withTask({ complexity: 'complex' });
         const data = await claim();

@@ -38,7 +38,7 @@ import {
   isMissionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
-import { isReleaseBranchPr } from '@buildd/core/release-strategy';
+import { classifyReleasePr } from '@buildd/core/release-candidate';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
@@ -156,7 +156,7 @@ async function fetchLiveChangedFilenames(
  *  - whether `opts.bound` may permit an unattended merge (below).
  *
  * `opts.releaseConfig` is the workspace's release config, read for the same
- * AGGREGATE LINE THRESHOLD decision via `isReleaseBranchPr`: a PR from the
+ * AGGREGATE LINE THRESHOLD decision via `classifyReleasePr` (legacy release branch or trusted frozen candidate): a PR from the
  * configured release branch into the configured prod branch (e.g. dev → main)
  * is a rollup of every commit since the last release, each of which was
  * already size-gated on its own way into the release branch — re-applying the
@@ -394,8 +394,10 @@ export async function evaluateAutoMergeSafety(
   // check below. The bound also requires a verified base ref.
   let prData: {
     mergeable_state?: string;
-    head?: { ref?: string | null; sha?: string | null };
-    base?: { ref?: string | null };
+    head?: { ref?: string | null; sha?: string | null; repo?: { full_name?: string | null } | null };
+    base?: { ref?: string | null; repo?: { full_name?: string | null } | null };
+    user?: { login?: string | null } | null;
+    body?: string | null;
   } | null = null;
   let prReadError: unknown = null;
   try {
@@ -434,14 +436,20 @@ export async function evaluateAutoMergeSafety(
       mission: opts?.mission ?? null,
     });
 
-    // Is this the workspace's release-branch → prod-branch PR (e.g. dev → main)?
-    // Unlike the mission check above, this compares BOTH refs — a release PR's
-    // own head and base are both configured (releaseBranch, prodBranch), so
-    // there is no single trunk-base assumption to lean on.
-    const isReleasePr = isReleaseBranchPr(opts?.releaseConfig ?? null, {
+    // Is this the workspace's release PR into the prod branch? Either the
+    // legacy fixed one (releaseBranch → prodBranch, e.g. dev → main), or a
+    // frozen candidate (e.g. release/v1.2.3 → main) that proves it was opened
+    // by the configured release workflow at the head its metadata records.
+    // A candidate-shaped branch that cannot prove that keeps the cap.
+    const isReleasePr = classifyReleasePr(opts?.releaseConfig ?? null, {
       headRef: prData?.head?.ref ?? null,
       baseRef: prData?.base?.ref ?? null,
-    });
+      headSha: prData?.head?.sha ?? null,
+      author: prData?.user?.login ?? null,
+      headRepoFullName: prData?.head?.repo?.full_name ?? null,
+      baseRepoFullName: prData?.base?.repo?.full_name ?? null,
+      body: prData?.body ?? null,
+    }).kind !== 'none';
 
     const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
     const sourceFiles = files.filter(

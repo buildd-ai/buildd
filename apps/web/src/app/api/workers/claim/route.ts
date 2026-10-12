@@ -81,7 +81,7 @@ import { CREDENTIAL_BLOCK_CONTEXT_KEY, credentialBlockFromDeferral, stampCredent
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { advisoryBlockingPeer, advisoryMutexApplies, findActiveClaimBlocker, producesNoFileEdits } from './coordination-gates';
 import { loadMissionCoordination, loadOpenPrTasksByWorkspace } from './coordination-snapshot';
-import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } from './held-gate';
+import { missionNotHeld, missionNotLocal, taskNotHeld, taskNotReserved, TASK_RESERVATION_KEY, checkTaskMissionLocal } from './held-gate';
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, explicitExclusionGateEvent, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
 // The workspace concurrency cap as a claim predicate (see the call site for the
@@ -684,6 +684,11 @@ export async function POST(req: NextRequest) {
   // A single task held by a person (PATCH { held: true }) waits for resume.
   explicitTaskGates.taskHeld = taskNotHeld();
   claimableConditions.push(explicitTaskGates.taskHeld);
+  // A task an interactive session reserved (context.reservedBy, live until its
+  // expiresAt) is that session's: runners and other accounts skip it. The
+  // reserving account's own explicit claim_task passes. Not lifted by force.
+  explicitTaskGates.taskReserved = taskNotReserved(taskId && interactiveSession ? account.id : undefined);
+  claimableConditions.push(explicitTaskGates.taskReserved);
 
   // Subject liveness gate (§6 of docs/design/task-subject-anchors.md):
   // exclude tasks whose subject PR has been reconciled (marked dead by the
@@ -2722,6 +2727,9 @@ export async function POST(req: NextRequest) {
     // Why this claim's backend differs from the stored one — or nothing, so a
     // previous attempt's flip never reads as this one's.
     delete (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY];
+    // The reservation did its job once the task is claimed; left in place it
+    // would hold the task from runners again if it is ever re-queued.
+    delete (patchedContext as Record<string, unknown>)[TASK_RESERVATION_KEY];
     // Claimed: it no longer waits on an entitlement.
     delete (patchedContext as Record<string, unknown>)[ENTITLEMENT_BLOCK_CONTEXT_KEY];
     delete (patchedContext as Record<string, unknown>)[CREDENTIAL_BLOCK_CONTEXT_KEY];
