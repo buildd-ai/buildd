@@ -316,6 +316,9 @@ Know when to stop and involve a human:
   has its answer sent to a follow-up task. Once answered, resume the `update_progress`
   cadence. Unanswered, it expires (24 h, 4 h in a mission) and the task fails
   with no runner retry.
+  The agent plugin refuses `AskUserQuestion` in such a session and points at
+  `ask_human`; also write the question in your reply, and if the person answers
+  by typing at the terminal (which withdraws the buildd question), use that.
 - **Everything else** — uncertainty, permission-seeking, a design choice you're
   capable of making, "should I do A or B": do **not** ask. Pick the more
   reasonable option, do the work, and state your reasoning in the summary. If

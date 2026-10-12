@@ -1,6 +1,6 @@
 ---
 title: Terminal Question Redirect
-status: draft
+status: active
 owner: max
 last_verified: 2026-10-12
 summary: A Claude Code session holding a live buildd claim MUST ask its questions through buildd, not the terminal-only prompt, and a reply typed at the terminal MUST withdraw the open buildd question.
@@ -8,6 +8,7 @@ domain: runners
 surfaces: [apps/runner/plugin/scripts/buildd-hook.mjs, apps/runner/plugin/hooks/hooks.json, apps/web/src/lib/local-session.ts, packages/shared/src/local-session.ts]
 related: [local-agent-presence, answered-question-resume, human-in-the-loop-protocol]
 keywords: [AskUserQuestion, ask_human, PreToolUse, permissionDecision, deny, UserPromptSubmit, terminal prompt, needs you, away from terminal, withdraw question, agent plugin, hooks]
+verified_by: [apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/lib/local-session.test.ts, apps/web/src/lib/terminal-answer.test.ts]
 supersedes: []
 ---
 
@@ -89,8 +90,9 @@ question. The typed reply is the answer, so the Needs-you card goes away and no
 answer from another device is applied afterwards.
 
 **Invariants**:
-- The `UserPromptSubmit` touch carries a new boolean, `prompted: true`, and no
-  other hook sets it. The strict contract (`parseLocalSessionEvent`) accepts it.
+- The `UserPromptSubmit` touch carries a new boolean, `prompted: true`, only
+  for a person's prompt (see "Verified in a live session": not a
+  `<task-notification>` wake-up), and no other hook sets it. The strict contract (`parseLocalSessionEvent`) accepts it.
   The prompt text itself is never sent.
 - On a `prompted` touch the server withdraws the question of every worker
   this presence holds that is `runner = 'mcp'`, `status = 'waiting_input'`
@@ -123,29 +125,37 @@ answer from another device is applied afterwards.
 - AC-TQR-12: GIVEN a withdrawn question WHEN the session's background waiter
   next polls THEN it exits non-zero (never 0, "answered"), and `await_answer`
   returns `stillWaiting: false`.
+- AC-TQR-13: GIVEN a UserPromptSubmit payload whose prompt starts with
+  `<task-notification>` WHEN the hook builds the touch THEN `prompted` is absent.
 
-## Must verify before building
+## Verified in a live session (Claude Code 2.1.296)
 
-- **UserPromptSubmit fires only for a person's prompt.** If Claude Code also
-  fires it when a background command finishes and wakes the model, the
-  background `waitCommand` would withdraw the question it is waiting on. Check in
-  a live session. If it does fire there, gate the withdrawal on the payload,
-  locally in the hook, without sending the prompt.
-- **A deny on AskUserQuestion reaches the model as its reason.** The hooks
-  reference documents deny reasons generally, plus a separate `allow` caveat for
-  AskUserQuestion. Confirm in a live session that a deny shows no prompt and
-  that the model reads the reason.
+- **A deny on AskUserQuestion reaches the model.** No prompt is shown. The model
+  gets the reason as a tool error (`PreToolUse:AskUserQuestion hook error:
+  <reason>`) and acts on it.
+- **UserPromptSubmit also fires when a background command finishes.** The
+  model is woken with a synthetic prompt that starts with `<task-notification>`,
+  and no payload field tells it apart from a person's prompt. So the hook
+  decides `prompted` locally: true only for a non-empty prompt that does NOT
+  start with `<task-notification>`. The prompt text is read on the machine and
+  never sent. Without this gate, the background `waitCommand` would withdraw
+  the very question it waits on.
 
 ## Code surface
 
 - `apps/runner/plugin/hooks/hooks.json`: the matcher entry.
 - `apps/runner/plugin/scripts/buildd-hook.mjs`: `normalizeHookEvent` (the
   `prompted` flag, the AskUserQuestion branch), `hookOutput` (the deny), and
-  the opt-out.
+  the opt-out; `askRedirectReason` is the deny text. The AskUserQuestion entry
+  runs the script as `buildd-hook.mjs claude ask` (ask mode).
+- `apps/runner/src/agent-plugin-install.ts`: `claudeLikeHookEntries` writes the
+  same entry for a non-plugin install (Claude Code only).
 - `packages/shared/src/local-session.ts`: `parseLocalSessionEvent` (accepts
   `prompted`), and the result type (`askVia`).
 - `apps/web/src/lib/local-session.ts`: `handleLocalSessionEvent` (computes
   `askVia`, runs the withdrawal on `prompted`).
+- `apps/web/src/lib/terminal-answer.ts`: `withdrawQuestionAnsweredInTerminal`
+  and its predicate `terminalWithdrawWhere`.
 - Tests: `apps/runner/__tests__/unit/agent-plugin.test.ts`,
   `apps/web/src/lib/local-session.test.ts`.
 - Docs: `.claude/skills/buildd-workflow/SKILL.md`, `.claude/skills/buildd-mcp-consumer/SKILL.md`,

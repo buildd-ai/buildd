@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (73)
+## Active (74)
 
 ### auth (9)
 
@@ -89,7 +89,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Release Flow](./release-flow.md) · @max — verified 2026-10-12
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
-### runners (11)
+### runners (12)
 
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-10-11
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
@@ -109,6 +109,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 - [Runner Pre-Merge, Derived Files and Mergiraf](./runner-pre-merge.md) · @max — verified 2026-10-10
   Before a conflict agent starts, the runner MUST merge the right base with derived-file and mergiraf drivers, MUST record every file mergiraf resolved, and MUST NOT push mergiraf's work without an agent.
+- [Terminal Question Redirect](./terminal-question-redirect.md) · @max — verified 2026-10-12
+  A Claude Code session holding a live buildd claim MUST ask its questions through buildd, not the terminal-only prompt, and a reply typed at the terminal MUST withdraw the open buildd question.
 - [Provider-Backed Browser for Visual Review](./visual-qa-browser-providers.md) · @max — verified 2026-10-07
   The visual-auditor role is eligible only after a selected browser provider proves usable; a cloud browser reaches registered container-local services through a task-scoped CDP relay.
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-07
@@ -182,7 +184,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task Estimates (Rollout and Team Switch)](./task-estimates.md) · @max — verified 2026-10-11
   Task estimates MUST be on for a team that turned them on, off for a team that turned them off, and follow a default that is on only when a pinned, evidence-backed quality gate passes; they never block or order work.
 
-## Draft (11)
+## Draft (10)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
@@ -202,8 +204,6 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Terminal Question Redirect](./terminal-question-redirect.md) · @max — verified 2026-10-12
-  A Claude Code session holding a live buildd claim MUST ask its questions through buildd, not the terminal-only prompt, and a reply typed at the terminal MUST withdraw the open buildd question.
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-11
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 
