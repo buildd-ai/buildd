@@ -1,5 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
-import { releaseCandidateConfigError } from '@buildd/core/release-candidate';
+import { releaseCandidateConfigError } from '@buildd/core/release-config-shape';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type ReleaseTrigger, type ReleaseStrategy, type BranchStrategy } from '@buildd/core/db/schema';
@@ -116,7 +116,7 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
         // branch_merge
         ...(typeof r.prodBranch === 'string' ? { prodBranch: r.prodBranch } : {}),
         ...(typeof r.releaseBranch === 'string' && r.releaseBranch.trim() ? { releaseBranch: r.releaseBranch.trim() } : {}),
-        // frozen release candidates (any strategy; see @buildd/core/release-candidate)
+        // frozen release candidates (any strategy; see @buildd/core/release-config-shape)
         ...(candidate ? { candidate } : {}),
         ...(r.deployTarget && (r.deployTarget as any).type === 'vercel'
             ? { deployTarget: { type: 'vercel', projectId: (r.deployTarget as any).projectId, teamId: (r.deployTarget as any).teamId } }

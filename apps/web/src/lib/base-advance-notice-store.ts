@@ -3,7 +3,7 @@
  * the instruct-queue write, and the gate-ledger record that doubles as the
  * debounce state.
  */
-import { hasReleasePrShape } from '@buildd/core/release-candidate';
+import { hasReleasePrShape } from '@buildd/core/release-config-shape';
 import { db } from '@buildd/core/db';
 import { gateEvents, workers, workspaces } from '@buildd/core/db/schema';
 import { recordGateEvent, GATE_SLUGS } from '@buildd/core/gate-events';
