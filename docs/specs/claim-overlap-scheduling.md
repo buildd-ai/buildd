@@ -9,6 +9,16 @@ surfaces: [apps/web/src/app/api/workers/claim/deps-gate.ts, apps/web/src/app/api
 related: [path-claim-ownership, orchestration-decisions-shadow, force-start, task-dispatch-authority, claim-ordering, runner-liveness]
 keywords: [path_overlap, soft_overlap, inferredDependsOn, softOverlaps, legacy_inferred, unstarted holder, schema lane, migration lane, starvation, claim_loop_deferral, update drain, claims halted, dependency.satisfied]
 verified_by: [apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts, apps/web/src/app/api/workers/claim/open-pr-target-base.test.ts, apps/web/src/lib/explain-coordination.test.ts, packages/core/__tests__/dispatch-dependents.test.ts, apps/web/src/lib/conflict-retry.test.ts]
+assertions:
+  - id: soft-overlap-evaluation
+    type: symbol
+    name: evaluateSoftOverlaps
+    path: apps/web/src/app/api/workers/claim/soft-overlap-gate.ts
+  - id: claim-route
+    type: route
+    method: POST
+    path: "/api/workers/claim"
+    file: apps/web/src/app/api/workers/claim/route.ts
 ---
 
 # Claim Overlap Scheduling

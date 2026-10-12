@@ -10,6 +10,20 @@ related: [usage-and-cost-accounting, local-agent-presence, auth-oauth-boundaries
 keywords: [cost_basis, real cost, virtual cost, list price, metered, seat, modelAuth, costUsd, Agent SDK credit pool, per-worker billing mode]
 verified_by: []
 supersedes: []
+assertions:
+  - id: workers-table
+    type: symbol
+    name: workers
+    path: packages/core/db/schema.ts
+  - id: agent-sdk-credit-pool
+    type: symbol
+    name: countsTowardAgentSdkCreditPool
+    path: packages/core/budget-alerts.ts
+  - id: worker-report-route
+    type: route
+    method: PATCH
+    path: "/api/workers/[id]"
+    file: apps/web/src/app/api/workers/[id]/route.ts
 ---
 # Real and Virtual Cost
 

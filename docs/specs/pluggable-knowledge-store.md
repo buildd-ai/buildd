@@ -9,6 +9,11 @@ surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowl
 related: [knowledge-store-retrieval, knowledge-ingest-pipeline, byo-evidence-storage]
 keywords: [turbopuffer, pgvector, index backend, dual-write, shadow read, outbox, dataClass, iterative_scan, recall@40, KNOWLEDGE_STORE]
 supersedes: []
+assertions:
+  - id: pg-vector-default-store
+    type: symbol
+    name: PgVectorStore
+    path: packages/core/knowledge-store/pg-vector-store.ts
 ---
 # Pluggable Knowledge Store
 

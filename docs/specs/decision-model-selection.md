@@ -9,6 +9,15 @@ surfaces: [packages/core/decision-model.ts, packages/core/decision-client.ts, pa
 related: [decision-kinds, orchestration-decisions-shadow, settings-models]
 keywords: [decision model, jev, clef, clef flash, threshold, calibration, top p, margin, wilson, comparison, replay, outcome, override, champion, challenger, optimizer, undo, signal collection]
 verified_by: []
+assertions:
+  - id: decision-model-lookup
+    type: symbol
+    name: decisionModelFor
+    path: packages/core/decision-model.ts
+  - id: decision-model-normalize
+    type: symbol
+    name: normalizeDecisionModel
+    path: packages/core/decision-model.ts
 ---
 
 # Decision Model Selection

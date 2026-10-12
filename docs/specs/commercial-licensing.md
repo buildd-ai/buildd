@@ -9,6 +9,15 @@ surfaces: [packages/core/license/verify.ts, packages/core/license/capability.ts]
 related: [managed-runner-entitlements, team-permissions]
 keywords: [BUILDD_LICENSE, BUILDD_LICENSE_FILE, Ed25519, license key, self-host, enterprise edition, grace period, kid, commercial capability]
 verified_by: [packages/core/__tests__/license.test.ts]
+assertions:
+  - id: offline-license-verify
+    type: symbol
+    name: verifyLicenseToken
+    path: packages/core/license/verify.ts
+  - id: scoped-capability-check
+    type: symbol
+    name: checkCommercialCapability
+    path: packages/core/license/capability.ts
 ---
 
 # Commercial Licensing Foundation

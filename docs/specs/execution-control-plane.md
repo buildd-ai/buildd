@@ -10,6 +10,14 @@ related: [workflow-state-kernel, task-dispatch-authority, artifacts-and-sharing]
 keywords: [control plane, extraction, cloudflare worker, web outage, execution path, ownership boundary, living specs, kernel, dispatch, cutover]
 verified_by: [packages/core/__tests__/state-ownership.test.ts, apps/control-plane/src/index.test.ts, apps/web/src/app/api/deploy-identity/route.test.ts, apps/web/src/lib/release-health-watcher.test.ts]
 supersedes: []
+assertions:
+  - id: control-plane-worker
+    type: symbol
+    name: default
+    path: apps/control-plane/src/index.ts
+  - id: control-plane-test
+    type: test_file
+    path: apps/control-plane/src/index.test.ts
 ---
 # Execution Control Plane
 
