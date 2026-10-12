@@ -38,7 +38,7 @@ import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
 import { isPlatformOperator } from '@/lib/platform-operator';
-import { ACCESS_NEEDS_YOU, DECISION_COLLECTION_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
+import { ACCESS_NEEDS_YOU, DECISION_COLLECTION_NEEDS_YOU, DECISION_HEALTH_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -1841,7 +1841,14 @@ export default async function HomePage({
           waitingOnYou.push(...await ACCESS_NEEDS_YOU(user?.id, wsIds));
         }
 
-        // 9. Decision features asked all day that never got a model answer:
+        // 9. A team whose decisions all fail at the provider (a token Workers AI
+        // refuses, a revoked key): one card per team for people who can change
+        // the decision model. Read from the ledgers; no push (DECISION_HEALTH_NEEDS_YOU in modules.ts).
+        if (wsIds.length > 0) {
+          waitingOnYou.push(...await DECISION_HEALTH_NEEDS_YOU(user?.id, wsIds));
+        }
+
+        // 10. Decision features asked all day that never got a model answer:
         // platform-wide, so the platform operator's only
         // (lib/decision-collection-needs-you.ts). Pulled here, never pushed.
         if (isPlatformOperator(user)) {
