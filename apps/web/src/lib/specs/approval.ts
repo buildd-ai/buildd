@@ -7,7 +7,7 @@ import { holdsInWorkspace } from '@/lib/team-access';
 import { appBaseUrl } from '@/lib/app-url';
 import { fail, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
 import { signSpecApprovalRequest, specApprovalConfirmPath, verifySpecApprovalRequest } from './approval-request';
-import { indexApprovedSpec } from './knowledge';
+import { emit } from '@/lib/core-emit';
 
 /**
  * Living Specs approval (G2, decision D-4): a person decides that one revision
@@ -121,8 +121,8 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   if (rowsOf(rows).length === 0) return conflictNow(specId);
   const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   const [revision] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, n))).limit(1);
-  // The approved text goes into recall and the graph. Fail-open: it never undoes the approval.
-  await indexApprovedSpec(specId).catch(() => undefined);
+  // Modules react (the knowledge index). emit never throws, so nothing undoes the approval.
+  await emit({ type: 'spec.approved', specId, workspaceId: after.workspaceId, revision: n });
   return { ok: true, spec: after, revision };
 }
 

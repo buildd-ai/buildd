@@ -313,7 +313,8 @@ without an approval ever depending on either.
 
 **Invariants**:
 - Only the approved revision is indexed. When a person's approval commits
-  (`approveSpecRevision`, which the confirmation link also goes through), that
+  (`approveSpecRevision`, which the confirmation link also goes through), it
+  emits the core event `spec.approved` and the knowledge module indexes it: that
   revision's body, exactly the artifact revision it pins, is chunked with the
   docs markdown chunker into the workspace's `spec` corpus
   (`{workspaceId}:spec`). Drafts and proposed revisions are never indexed: a
@@ -355,6 +356,8 @@ without an approval ever depending on either.
   THEN the spec is approved (`apps/web/tests/db/spec-knowledge.test.ts`).
 
 **Code surface**:
+- `apps/web/src/lib/specs/approval.ts` — emits `spec.approved` after the approval commits
+- `apps/web/src/lib/knowledge-subscribers.ts` — `living-spec-index` subscriber
 - `apps/web/src/lib/specs/knowledge.ts` — `indexApprovedSpec`, `specKnowledgeDeps`
 - `packages/core/knowledge-store/living-spec.ts` — `buildLivingSpecChunks`, `buildLivingSpecGraph`
 - `packages/core/knowledge-store/living-spec-graph.ts` — `replaceLivingSpecGraph`
