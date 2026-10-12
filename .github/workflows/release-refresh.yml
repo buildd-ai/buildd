@@ -1,5 +1,13 @@
 name: Release Refresh
 
+# LEGACY FLOW ONLY. With the repo variable RELEASE_CANDIDATE_CUT=enabled the
+# release PR is a frozen release/vX.Y.Z candidate (see release.yml and
+# scripts/release-candidate.ts): its version is fixed at cut time and only an
+# explicit amendment moves it, so nothing here may run. The job below is gated
+# off in that mode, and even in legacy mode it only ever looks at a PR whose
+# head is `dev`, never at a release/v* candidate. Delete this file once the
+# candidate flow has shipped a release and the rollback window is over.
+#
 # Keeps the open release PR (dev → main) honest as dev moves.
 #
 # A release PR's head IS dev, so every merge after the cut lands in it. Its
@@ -42,9 +50,12 @@ jobs:
     runs-on: ubuntu-latest
     # Skip the push this workflow itself made. Idempotency would make the
     # re-run a no-op anyway; this just saves the runner.
+    # Off entirely under the frozen-candidate flow: it would push version bumps
+    # onto dev, which the candidate flow never does.
     if: >-
+      vars.RELEASE_CANDIDATE_CUT != 'enabled' && (
       github.event_name != 'push' ||
-      !startsWith(github.event.head_commit.message, 'chore: bump version to ')
+      !startsWith(github.event.head_commit.message, 'chore: bump version to '))
     steps:
       - uses: actions/create-github-app-token@v3
         id: app-token

@@ -2,12 +2,13 @@
 title: Release Flow
 status: active
 owner: max
-last_verified: 2026-07-18
+last_verified: 2026-10-12
 summary: The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
-keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult]
+keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult, release candidate, release/v]
+verified_by: [packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/release-executor.test.ts]
 assertions:
   - id: trigger-release-route
     type: route
@@ -27,6 +28,19 @@ assertions:
     type: symbol
     name: effectiveStrategy
     path: packages/core/release-strategy.ts
+  - id: classify-release-pr
+    type: symbol
+    name: classifyReleasePr
+    path: packages/core/release-candidate.ts
+  - id: release-compose-route
+    type: route
+    method: POST
+    path: /api/releases/compose
+    file: apps/web/src/app/api/releases/compose/route.ts
+  - id: plan-composition
+    type: symbol
+    name: planComposition
+    path: packages/core/release-compose.ts
 supersedes: []
 ---
 # Release Flow
@@ -96,6 +110,22 @@ and URL.
   i.e. on the release PR head, and never gate a release; `release_status`
   reports them separately as `postMergeIntegration`, and the health watcher
   does not file CI-failing tasks for them.
+- Post-merge integration MUST be incremental against evidence, not against
+  `prodBranch`: a dev push is tested when server, runner or job-definition
+  code changed since the newest dev ancestor whose integration run actually
+  passed (`scripts/ci/post-merge-coverage.ts`). A run that failed, was
+  cancelled or was skipped is never that base, a push dev has already moved
+  past defers to the newer run, and missing evidence means test. A skipped
+  post-merge run is reported as `skipped`, never `passing`.
+- A release candidate PR (`release/vX.Y.Z` → `prodBranch`) MUST get its own
+  full API + runner integration run on its exact head SHA (check
+  `candidate integration / integration`, from `build.yml`). It is not
+  advisory: it counts toward `ciState`, and only a `success` conclusion counts
+  as passing (skipped, neutral and cancelled are failing). A green from any
+  other SHA, including the dev SHA it was cut from, is not evidence for it.
+  It is the only job that tests a candidate; `release candidate verified`
+  (also `build.yml`, reported on every PR into `prodBranch`) aggregates it
+  with the candidate's shape check and is the check to require on main.
 
 **Acceptance criteria**:
 - AC-5: GIVEN a properly configured `workflow_dispatch` workspace WHEN
@@ -111,6 +141,129 @@ and URL.
 - Trigger route: `apps/web/src/app/api/releases/trigger/route.ts`
 - Status route: `apps/web/src/app/api/releases/status/route.ts`
 - GitHub API wrapper: `apps/web/src/lib/github.ts`
+
+---
+
+## Release candidate recognition
+
+**Capability statement**: buildd MUST treat a PR into `prodBranch` as the
+workspace's frozen release candidate only when the workspace declares one
+(`releaseConfig.candidate`) and the PR proves it was opened by the release
+workflow at the head it records. Recognition narrows review to what the
+candidate's PRs did not already cover; it never relaxes CI, branch protection,
+path escalation or the migration inspector.
+
+**Invariants**:
+- `releaseConfig.candidate = { branches, sourceBranch, authors }` has no
+  defaults. Absent, or with any field empty, no PR is a candidate. A branch
+  pattern is an exact ref or a path prefix ending in `*`; a pattern matching
+  `prodBranch` or `sourceBranch` is refused on save.
+- `ref` stays the ref `workflow_dispatch` runs on. It is never read as the
+  candidate branch or the candidate source.
+- A PR is a candidate only when all hold: base is `prodBranch`; head matches a
+  pattern; head repo is the base repo; author is in `authors`; the body carries
+  the `<!-- release-candidate {...} -->` metadata naming this branch,
+  `prodBranch` and `sourceBranch`; and the metadata's `candidateSha` is the PR's
+  current head. A push that did not go through the workflow's explicit
+  amendment leaves `candidateSha` stale, and the PR reviews in full.
+- The legacy `releaseBranch` → `prodBranch` PR is still recognised by refs
+  alone.
+- Composition review of a candidate looks up constituent PRs merged into
+  `sourceBranch` (never into the candidate branch), and proves each landed
+  patch equals its approved reviewed head. The single release-only commit
+  (version bump + CHANGELOG) is a release artifact. Anything else (a
+  release-only change, an unapproved PR, a direct commit) is a novel delta
+  that gets its own review.
+- A candidate workspace's releases are `gated`: a successful release workflow
+  run moves its row to `pending_external` (the PR is open), never to
+  `deploying`. Only a merge into `prodBranch` whose head contains the row's sha
+  advances it, re-pointed at the merge commit, and only deploy verification of
+  that sha makes it `healthy`. A row for a `sourceBranch` commit that landed
+  after the cut is not contained by the candidate and stays in flight.
+- The stale-row heal searches merged PRs into `prodBranch` whose head is a
+  candidate branch (or the legacy head), since a candidate's head is not
+  `ref`.
+
+**Acceptance criteria**:
+- AC-C1: GIVEN `candidate.branches = ['release/v*']` WHEN `github-actions[bot]`
+  opens `release/v1.2.3` → `main` with metadata naming its head THEN
+  `classifyReleasePr` returns `kind: 'candidate'` with constituent base
+  `sourceBranch`.
+- AC-C2: GIVEN the same PR opened by another account, from a fork, without
+  metadata, or after a push moved its head THEN it is `kind: 'none'` and gets
+  the full review and the aggregate size cap.
+- AC-C3: GIVEN a candidate whose every commit is an approved dev PR plus the
+  version commit THEN its head is covered by composition and no aggregate
+  reviewer is dispatched; a migration still meets the migration inspector at
+  merge.
+
+**Code surface**:
+- Policy and classifier: `packages/core/release-candidate.ts` —
+  `classifyReleasePr()`, `releaseCandidatePolicy()`, `hasReleasePrShape()`
+- Composition: `apps/web/src/lib/workflow/review-composition.ts` —
+  `compositionConstituentBase()`; write site `review-effects.ts`
+- Merge gate: `apps/web/src/lib/auto-merge.ts`
+- Tracking: `packages/core/release-archetype.ts`,
+  `apps/web/src/lib/release/gated-merge.ts`,
+  `apps/web/src/app/api/cron/release-health-check/route.ts`
+- Config: `apps/web/src/app/api/workspaces/[id]/config/route.ts`,
+  workspace settings `ReleaseSection.tsx`
+
+---
+
+## Owner release flow: Compose → Cut → Review → Release
+
+**Capability statement**: A team owner or admin of a candidate workspace MUST
+be able to choose what a release ships, cut the frozen candidate, review its
+checks on the exact candidate SHA, and release it, each step an explicit
+button recorded with who pressed it and when (`release_flow_steps`). A release
+MUST NOT read as done on PR open or merge: only when production reports a
+deployed SHA that is, or descends from, the candidate's merge commit.
+
+**Invariants**:
+- Compose groups the source branch's first-parent PRs since `prodBranch` by
+  mission (through the worker that owns each PR): "on dev" missions, open
+  mission PRs into `sourceBranch` that are approved on their head with every
+  check passing ("ready"), and PRs with no mission ("other changes"). Default:
+  everything on dev in, ready missions out.
+- Including a ready mission merges its mission PR through the dashboard's gated
+  merge route, never a raw merge. Its refusal is the answer.
+- Leaving out a change already on dev is a candidate amendment: the release
+  engine (`scripts/release-candidate.ts exclude`) reverts that change's commit
+  on the candidate branch only, which makes a new candidate SHA, dismisses
+  approvals and voids checks. The owner reads that before confirming. A revert
+  that does not apply cleanly changes nothing and names the conflicting files.
+  A later `amend` keeps what was left out; sync-dev re-lands each left-out
+  change on dev (reverting the revert, trailer `Release-Excluded`) after main
+  merges back.
+- A cut is refused when the source branch moved since the page was read.
+- Review counts checks and approvals on the candidate SHA only; anything on an
+  earlier SHA counts for nothing. Nothing in the flow approves a candidate.
+- Release merges the candidate pinned to its SHA, only when every required
+  check passed and an approval stands on that SHA; branch protection still
+  applies.
+
+**Acceptance criteria**:
+- AC-F1: GIVEN PRs on dev from two missions and one with no mission THEN
+  Compose shows two "on dev" missions and one "other change", all selected,
+  and an approved green mission PR as "ready", unselected.
+- AC-F2: GIVEN a ready mission WHEN the owner presses Include THEN the mission
+  PR goes through `POST /api/prs/[n]/merge` and no other merge is attempted.
+- AC-F3: GIVEN an open candidate WHEN the owner leaves a mission out THEN the
+  candidate branch gets a new SHA without that mission's changes, `dev` is
+  unchanged, approvals on the old SHA are dismissed, and an approval or check
+  on the old SHA no longer enables Release.
+- AC-F4: GIVEN a merged candidate WHEN production reports a SHA that does not
+  contain the merge commit (or none) THEN "Mark released" is refused and
+  recorded as refused.
+
+**Code surface**:
+- Decisions: `packages/core/release-compose.ts`
+- Engine: `scripts/release-candidate.ts` (`exclude`), `.github/workflows/release.yml`,
+  `.github/workflows/sync-dev.yml`
+- Reads and buttons: `apps/web/src/lib/release/compose-source.ts`,
+  `apps/web/src/lib/release/compose-actions.ts`, `POST /api/releases/compose`
+- Page: `apps/web/src/app/app/(protected)/releases/compose/`
 
 ---
 

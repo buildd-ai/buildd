@@ -827,6 +827,23 @@ export interface WorkspaceReleaseConfig {
   // buildd merges it; CI failure or no open PR marks the release task FAILED.
   releaseBranch?: string;
 
+  // Frozen release candidates (packages/core/release-candidate.ts): the release
+  // workflow cuts a versioned branch (e.g. release/v1.2.3) from one captured
+  // sourceBranch SHA and opens it as the single PR into prodBranch. Declares
+  // which PRs into prodBranch are such candidates. Independent of `ref` (the
+  // ref a workflow_dispatch runs on) and of `releaseBranch` (the legacy fixed
+  // release-PR head). No defaults: absent ⇒ no PR is a candidate.
+  candidate?: {
+    // Head refs a candidate may come from: exact names or a prefix ending in
+    // one '*', e.g. ['release/v*'].
+    branches: string[];
+    // Branch candidates are cut from; their constituent PRs merged here (e.g. 'dev').
+    sourceBranch: string;
+    // GitHub logins allowed to open candidate PRs: the release workflow's
+    // identity (e.g. 'github-actions[bot]'). A PR by anyone else is ordinary.
+    authors: string[];
+  };
+
   // Deploy target for verifying the production deploy completed
   deployTarget?: {
     type: 'vercel';
@@ -5648,6 +5665,32 @@ export const releaseTasksRelations = relations(releaseTasks, ({ one }) => ({
 
 export type ReleaseTask = typeof releaseTasks.$inferSelect;
 export type NewReleaseTask = typeof releaseTasks.$inferInsert;
+
+// Append-only record of the owner's release flow (Compose → Cut → Review →
+// Release; packages/core/release-compose.ts): who pressed each button, when,
+// and what it did. GitHub stays the truth for the candidate itself; this is
+// the "who and when" GitHub cannot say (every push and PR is the App's).
+export const releaseFlowSteps = pgTable('release_flow_steps', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // Kept as a plain id: the record outlives the person's account.
+  actorUserId: uuid('actor_user_id'),
+  step: text('step').notNull().$type<'include' | 'cut' | 'exclude' | 'release' | 'confirm_production'>(),
+  outcome: text('outcome').notNull().$type<'succeeded' | 'refused' | 'pending' | 'failed'>(),
+  // The candidate's version and SHA when the step ran (null before the cut).
+  version: text('version'),
+  candidateSha: text('candidate_sha'),
+  prNumber: integer('pr_number'),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  // Step-specific facts: reverted SHAs, merge SHA, deployed SHA, refusal text.
+  detail: jsonb('detail').$type<Record<string, unknown>>(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceOccurredIdx: index('release_flow_steps_workspace_occurred_idx').on(t.workspaceId, t.occurredAt),
+}));
+
+export type ReleaseFlowStep = typeof releaseFlowSteps.$inferSelect;
+export type NewReleaseFlowStep = typeof releaseFlowSteps.$inferInsert;
 
 // Memories — absorbed from the standalone memory.buildd.dev service.
 // Team-scoped: all workspaces in a team share the same memory pool.
