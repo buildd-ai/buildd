@@ -19,6 +19,7 @@ const mockCreateReviewerTask = mock(() => ({ id: 'review-task-9' }) as any);
 const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'created', commentId: 1 }));
 const mockFindReviewTaskForPr = mock(() => null as any);
+const mockFindLiveReviewTaskForPr = mock(() => null as any);
 const mockFindPrOwningWorker = mock(() => null as any);
 const mockListWorkspaceRoles = mock(() => [{ slug: 'reviewer', isRole: true }] as any[]);
 const mockWaitForPrReviewStatus = mock(() => ({
@@ -70,6 +71,7 @@ mock.module('@/lib/gate-ledger', () => ({ GATE_SLUGS: REAL_GATE_SLUGS, fireGateE
 
 mock.module('@/lib/pr-review-request', () => ({
   findReviewTaskForPr: mockFindReviewTaskForPr,
+  findLiveReviewTaskForPr: mockFindLiveReviewTaskForPr,
   findPrOwningWorker: mockFindPrOwningWorker,
   listWorkspaceRoles: mockListWorkspaceRoles,
   waitForPrReviewStatus: mockWaitForPrReviewStatus,
@@ -693,13 +695,10 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(created.priorVerdict).toBeUndefined();
   });
 
-  it('falls back to generic lookup when createReviewerTask returns null (concurrent writer race)', async () => {
+  it('falls back to live task lookup when createReviewerTask returns null (concurrent writer race)', async () => {
     mockCreateReviewerTask.mockReturnValueOnce(null);
-    mockFindReviewTaskForPr.mockReturnValue({
+    mockFindLiveReviewTaskForPr.mockReturnValue({
       id: 'review-task-concurrent',
-      status: 'pending',
-      result: null,
-      context: { prNumber: 42 },
     });
 
     const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
@@ -708,13 +707,26 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(json.ok).toBe(true);
     expect(json.alreadyRequested).toBe(true);
     expect(json.reviewTaskId).toBe('review-task-concurrent');
+    expect(json.deduplicated).toBe(true);
     // Verify the fallback lookup was called
-    expect(mockFindReviewTaskForPr).toHaveBeenCalled();
+    expect(mockFindLiveReviewTaskForPr).toHaveBeenCalled();
   });
 
-  it('returns 500 when both createReviewerTask and fallback lookup fail', async () => {
+  it('does not adopt a completed review task when createReviewerTask returns null', async () => {
     mockCreateReviewerTask.mockReturnValueOnce(null);
-    mockFindReviewTaskForPr.mockReturnValue(null);
+    // findLiveReviewTaskForPr filters to live tasks, so it returns null for completed ones
+    mockFindLiveReviewTaskForPr.mockReturnValue(null);
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.error).toContain('Could not create the reviewer task');
+  });
+
+  it('returns 500 when createReviewerTask is null due to skipped dispatch (merged/closed PR)', async () => {
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+    // Even if there was an old completed task for this PR, we don't adopt it
+    mockFindLiveReviewTaskForPr.mockReturnValue(null);
 
     const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
     expect(res.status).toBe(500);

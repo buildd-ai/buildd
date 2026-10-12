@@ -33,6 +33,7 @@ import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import {
   findPrOwningWorker,
   findReviewTaskForPr,
+  findLiveReviewTaskForPr,
   listWorkspaceRoles,
   resolveOrAdoptPrOwner,
   waitForPrReviewStatus,
@@ -469,16 +470,17 @@ export async function POST(req: NextRequest) {
     // in createReviewerTask, try a broader lookup as a last resort.
     console.warn(`[pr-review] createReviewerTask returned null for PR #${prNumber}; attempting fallback lookup`);
 
-    // Retry with a generic lookup that doesn't require head SHA match.
+    // Retry with a live-task-only lookup that doesn't require head SHA match.
     // This catches cases where the concurrent winner was created just after
-    // our insert failed but before we found it.
+    // our insert failed but before we found it. Only returns pending/assigned/in_progress
+    // tasks — never completed ones from prior heads.
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-      const fallback = await findReviewTaskForPr(workspace.id, prNumber);
+      const fallback = await findLiveReviewTaskForPr(workspace.id, prNumber);
       if (fallback?.id) {
-        console.log(`[pr-review] Fallback lookup found reviewer task ${fallback.id} for PR #${prNumber}`);
+        console.log(`[pr-review] Fallback lookup found live reviewer task ${fallback.id} for PR #${prNumber}`);
         const policy = await resolveEffectivePolicy(workspace, originalTask.missionId);
         return NextResponse.json(
           {
