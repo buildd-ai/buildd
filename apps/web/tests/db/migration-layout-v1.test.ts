@@ -98,16 +98,19 @@ function legacySubset(src: string, label: string, keep: (e: JournalEntry, i: num
 }
 
 /**
- * A per-case copy of the real tree plus any probe folders `post` adds on top.
- * The migrator reads only `migration.sql`; the probe folders get a minimal v8
- * snapshot chained to the tip so the layout check and drift gate can still read
- * the tree.
+ * A per-case copy of the real tree as the cutover left it (the legacy folders
+ * and the rebase; migrations written after the cutover are not part of what
+ * this file proves) plus any probe folders `post` adds on top. The migrator
+ * reads only `migration.sql`; the probe folders get a minimal v8 snapshot
+ * chained to the rebase so the layout check and drift gate can still read the tree.
  */
 function convertToV1(label: string, post: Array<{ name: string; sql: string }>): V1Tree {
   const dir = join(work, label);
   cpSync(REAL_TREE, dir, { recursive: true });
   const legacy = loadLegacyMap(LEGACY_MIGRATIONS_PATH);
-  const tip = readMigrationTree(REAL_TREE).at(-1)!.name;
+  const cutover = new Set([...legacy.map((e) => e.name), REBASE]);
+  for (const m of readMigrationTree(dir)) if (!cutover.has(m.name)) rmSync(join(dir, m.name), { recursive: true, force: true });
+  const tip = REBASE;
   const tipSnapshot = JSON.parse(readFileSync(join(REAL_TREE, tip, 'snapshot.json'), 'utf8')) as { id: string; ddl: unknown[] };
   let prev = tipSnapshot.id;
   for (const p of post) {
@@ -227,8 +230,10 @@ const shapeOf = (url: string) =>
 
 const legacyJournal = readJournal(LEGACY_TREE);
 const legacyNames = new Set(loadLegacyMap(LEGACY_MIGRATIONS_PATH).map((e) => e.name));
-// The cutover's snapshot rebase: the one real folder that is not legacy history.
-const REBASE = readMigrationTree(REAL_TREE).map((m) => m.name).filter((n) => !legacyNames.has(n)).at(-1)!;
+// The cutover's snapshot rebase: the first real folder after the legacy history.
+// Migrations written after the cutover come later and are not part of the
+// conversion this file proves, so they are left out of its trees.
+const REBASE = readMigrationTree(REAL_TREE).map((m) => m.name).find((n) => !legacyNames.has(n))!;
 const REBASE_SQL = readFileSync(join(REAL_TREE, REBASE, 'migration.sql'), 'utf8');
 const maxWhen = Math.max(...legacyJournal.entries.map((e) => e.when), folderMillis(REBASE));
 const DAY = 86_400_000;
