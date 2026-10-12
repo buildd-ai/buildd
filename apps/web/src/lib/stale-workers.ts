@@ -1496,12 +1496,12 @@ export async function cleanupUnreadInteractiveAnswers(
   const quietSince = new Date(now - INTERACTIVE_ANSWER_READ_DEADLINE_MS);
 
   const candidates = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, accountId),
       eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
       eq(workers.status, 'running'),
       lt(workers.updatedAt, quietSince),
-    ),
+    )),
     columns: {
       id: true, taskId: true, accountId: true, workspaceId: true, branch: true,
       milestones: true, instructionHistory: true, runner: true, status: true, updatedAt: true,

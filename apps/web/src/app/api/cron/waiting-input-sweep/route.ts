@@ -89,14 +89,14 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // exactly what is missing when the account's runners are down. The
   // pre-filter is loose on purpose; the deadlines live in the sweeps.
   const answerCandidates = await db.query.workers.findMany({
-    where: or(
+    where: sqlWhere(or(
       and(eq(workers.status, 'waiting_input'), isNotNull(workers.pendingInstructions)),
       and(
         eq(workers.status, 'running'),
         eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
         lt(workers.updatedAt, new Date(Date.now() - INTERACTIVE_ANSWER_READ_DEADLINE_MS)),
       ),
-    ),
+    )),
     columns: { accountId: true },
   });
   const answerAccountIds = [
