@@ -280,13 +280,27 @@ describe('one verdict — tasks/[id]/page.tsx (lib/task-verdict.ts)', () => {
 });
 
 // U1 audit (task 01e6293b): below md the actions row (⋯ menu) stacked above the
-// title, left-aligned on a running task. It sits at the right of the title row
-// at every width.
-describe('task header — the menu stays on the title row', () => {
+// title, left-aligned on a running task. Task f36e76cb: beside the title the
+// actions reserved a column that wrapped a long PR title onto ~8 lines. Below
+// md the title takes the full width and the actions sit right-aligned on the
+// row under it (with the status pill); from md up they share the title row.
+describe('task header — full-width title on a phone, actions on the title row from md', () => {
   const header = pageSource.slice(pageSource.indexOf('data-testid="task-header"'), pageSource.indexOf('data-testid="task-subline"'));
-  it('the title and actions share one row at every width', () => {
+  const cls = (testid: string) => header.match(new RegExp(`data-testid="${testid}"[^>]*className=\\{?[\`"]([^\`"]*)`))?.[1] ?? '';
+  it('the actions never stack above the title', () => {
     expect(header).not.toContain('flex-col-reverse');
-    expect(header).toContain('data-testid="task-header-actions"');
+    expect(header.indexOf('<TaskTitle')).toBeLessThan(header.indexOf('data-testid="task-header-actions"'));
+  });
+  it('below md the title spans both columns and the actions take row 2; md puts them back on row 1', () => {
+    expect(header).toContain('className="min-w-0 col-span-2 row-start-1 md:col-span-1 md:col-start-1"');
+    expect(cls('task-header-actions')).toContain('row-start-2 md:row-start-1');
+    expect(cls('task-header-status')).toContain('row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start');
+  });
+  it('with no status pill the sub-line shares the actions\' row on a phone, and its PR link is a 44px target', () => {
+    const sub = pageSource.slice(pageSource.indexOf('data-testid="task-subline"'), pageSource.indexOf('{/* An attempt says what it is an attempt of'));
+    expect(sub).toContain("'col-span-2 row-start-3' : 'col-start-1 row-start-2 self-center'");
+    expect(sub).toContain('md:col-span-full md:col-start-1 md:row-start-2');
+    expect(sub).toContain('inline-flex min-h-11 items-center gap-1 text-accent-text');
   });
   it('the actions are right-aligned, never spread', () => {
     const actions = header.slice(header.indexOf('data-testid="task-header-actions"') - 200, header.indexOf('data-testid="task-header-actions"'));
