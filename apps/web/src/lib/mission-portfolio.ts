@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * The Missions portfolio: sort, filter and count rules over the shared
  * delivery projection (lib/delivery-projection.ts). Pure; the page loads the
@@ -90,9 +91,9 @@ export type PortfolioStatusFilter = 'all' | MissionSectionKey;
 export const PORTFOLIO_STATUS_FILTERS: ReadonlyArray<{ key: PortfolioStatusFilter; label: string; title: string }> = [
   { key: 'all', label: 'All', title: 'Every open mission' },
   { key: 'needs', label: 'Needs you', title: 'A decision only a person can make' },
-  { key: 'motion', label: 'In motion', title: 'Buildd is building, auditing, repairing or landing it' },
-  { key: 'waiting', label: 'Waiting', title: 'Waiting on capacity or earlier work, held, or not planned yet' },
-  { key: 'landed', label: 'On dev', title: 'Every task landed on dev; a goal criterion has not passed yet' },
+  { key: 'motion', label: 'In motion', title: 'buildd is building, auditing, repairing or landing it' },
+  { key: 'waiting', label: 'Waiting', title: 'Waiting on capacity or earlier work, held, or unplanned' },
+  { key: 'landed', label: 'Landed', title: 'Landed. A goal criterion hasn’t passed.' },
 ];
 
 const MATCH: Record<PortfolioStatusFilter, (r: PortfolioRow) => boolean> = {
@@ -159,7 +160,7 @@ export function portfolioCounts(rows: readonly PortfolioRow[], slots: { live: nu
 
 /** What each counter counts, shown as tooltips and in the "What these count" disclosure. */
 export const COUNTER_DEFINITIONS = {
-  open: 'Missions not yet completed or archived, whatever they are doing right now.',
+  open: 'Missions that aren’t completed or archived.',
   executing: 'Open missions with at least one agent working right now. Audits, CI and merges run without an agent and do not count.',
-  slots: 'Agents working now, out of the agent seats your team’s accounts allow.',
+  slots: 'Agents working now, out of your team’s limit.',
 } as const;

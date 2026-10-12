@@ -239,7 +239,7 @@ export default function MissionSettings({
       }
       setError(typeof body?.error === 'string' && body.error
         ? body.error
-        : `Could not complete the mission (HTTP ${res.status}). It is not completed.`);
+        : 'Couldn’t complete the mission. Try again.');
     } catch {
       setError('Could not reach buildd. The mission is not completed.');
     } finally {
@@ -488,7 +488,7 @@ export default function MissionSettings({
                 <button
                   onClick={handleManualRun}
                   disabled={manualRunLoading}
-                  title="Run the orchestrator once, then return to idle"
+                  title="Run the organizer once, then return to idle"
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-meta text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
                 >
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -524,7 +524,7 @@ export default function MissionSettings({
                 <button
                   onClick={handleManualRun}
                   disabled={manualRunLoading}
-                  title="Run the orchestrator now, ahead of the schedule"
+                  title="Run the organizer now, ahead of the schedule"
                   className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
                 >
                   {manualRunLoading ? '…' : 'Plan now'}
@@ -541,7 +541,7 @@ export default function MissionSettings({
                   onClick={handleToggleOrchestrationMode}
                   disabled={modeLoading}
                   className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
-                  title="Stop scheduled runs. You run the orchestrator with Plan now."
+                  title="Stop scheduled runs. You run the organizer with Plan now."
                 >
                   {modeLoading ? '…' : 'Disarm'}
                 </button>
@@ -782,7 +782,7 @@ function RunOutcomeStrip({
 
   switch (outcome.kind) {
     case 'starting':
-      return shell('border-card-border bg-surface-3 text-text-secondary', <>{spinner}<span>Starting the orchestrator…</span></>);
+      return shell('border-card-border bg-surface-3 text-text-secondary', <>{spinner}<span>Starting the organizer…</span></>);
 
     case 'planning':
       return shell(
@@ -790,7 +790,7 @@ function RunOutcomeStrip({
         <>
           {spinner}
           <span>
-            Planning{outcome.turns ? ` · ${outcome.turns} turn${outcome.turns === 1 ? '' : 's'}` : ''}. The planning agent is choosing the next tasks. This can take a few minutes.
+            Planning{outcome.turns ? ` · ${outcome.turns} turn${outcome.turns === 1 ? '' : 's'}` : ''}. The organizer is choosing the next tasks. This can take a few minutes.
           </span>
           {taskLink(outcome.taskId, 'View organizer →')}
         </>,

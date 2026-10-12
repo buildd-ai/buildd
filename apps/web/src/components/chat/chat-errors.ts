@@ -11,7 +11,7 @@ import { chatErrorLine as kitChatErrorLine, parseChatUnavailable as kitParse, ty
 /** buildd's wording where a refusal carries no message of its own. */
 export const BUILDD_CHAT_ERROR_LINES: Partial<ChatErrorLines> = {
   budget_exhausted: 'Today’s chat budget is used up. The mission form still works.',
-  failed: 'The turn didn’t finish. Your message is kept — send it again.',
+  failed: 'That reply didn’t finish. Send your message again.',
 };
 
 export function parseChatUnavailable(err: unknown): ChatUnavailableResponse | null {
