@@ -45,7 +45,7 @@ export const EVIDENCE_STORAGE_FIXTURE_STATE = 'evidence-storage';
 /** Settings → Connected apps with fake connections and a local api (ConnectionsFixture.tsx). */
 export const MCP_CONNECTIONS_FIXTURE_STATE = 'mcp-connections';
 
-/** Team settings → Platform Operator access, team ceiling + per-workspace grants (OperatorAccessFixture.tsx). */
+/** Agent settings → Deploy access, team limit + per-workspace grants (OperatorAccessFixture.tsx). */
 export const OPERATOR_ACCESS_FIXTURE_STATE = 'operator-access';
 /** Settings → Model providers with a gateway, a team agent endpoint and two overrides (ModelProvidersFixture.tsx). */
 export const MODEL_PROVIDERS_FIXTURE_STATE = 'model-providers';

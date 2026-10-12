@@ -217,6 +217,14 @@ describe('connect: one input, the format decides', () => {
     expect(detail.textContent!.split('abcd')).toHaveLength(2);
   });
 
+  it('a workspace page leaves out a row it cannot set there, unless the team has one', async () => {
+    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }] }, false, WORKSPACES, 'workspace');
+    expect($('[data-testid="provider-list-workspace"] [data-testid="provider-card-litellm"]')).toBeNull();
+    act(() => root.unmount()); host.remove();
+    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }, { provider: 'litellm', scope: 'team', shape: 'gateway' }] }, false, WORKSPACES, 'workspace');
+    expect($('[data-testid="provider-card-state"]', cardOf('litellm', 'workspace'))!.textContent).toBe('Team key');
+  });
+
   it('one provider: no Used for table, one line saying what it is used for', async () => {
     await mount({ rows: [{ provider: 'openrouter', scope: 'team' }] });
     expect($('[data-testid="used-for"]')).toBeNull();

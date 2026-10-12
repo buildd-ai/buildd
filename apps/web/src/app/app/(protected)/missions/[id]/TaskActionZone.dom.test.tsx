@@ -160,7 +160,17 @@ describe('TaskActionZone — inline Force start', () => {
 });
 
 describe('TaskActionZone — raise workspace cap stepper', () => {
-  const gatedCapBody = { gateReason: 'workspace_cap_reached', canForce: true, canExempt: true, blockClass: 'policy', cap: 3, active: 3, error: 'Workspace is full' };
+  const gatedCapBody = { gateReason: 'workspace_cap_reached', canForce: true, canExempt: true, canRaiseCap: true, blockClass: 'policy', cap: 3, active: 3, error: 'Workspace is full' };
+
+  it('hides raising the limit from someone who cannot change workspace settings; Start anyway stays', async () => {
+    stubFetch({ status: 422, body: { ...gatedCapBody, canRaiseCap: false } });
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-action="raise_cap"]')).toBeNull();
+    expect(container.textContent).not.toContain('Raise the workspace limit');
+    expect(container.querySelector('[data-action="cap_exempt"]')).not.toBeNull();
+  });
 
   it('keeps −/value/+ in their own group, separate from the label and Save & start, so they never split across lines', async () => {
     stubFetch({ status: 422, body: gatedCapBody });
@@ -361,7 +371,7 @@ describe('TaskActionZone — managed-runner plan limit', () => {
   });
 
   it('the workspace cap refusal is unchanged: an operational limit keeps its own controls', async () => {
-    stubFetch({ status: 422, body: { gateReason: 'workspace_cap_reached', blockClass: 'policy', active: 3, cap: 3, canExempt: true } });
+    stubFetch({ status: 422, body: { gateReason: 'workspace_cap_reached', blockClass: 'policy', active: 3, cap: 3, canExempt: true, canRaiseCap: true } });
     await mount();
     await act(async () => { button('Run now')!.click(); });
     await flush();

@@ -230,7 +230,7 @@ export function TeamGrid({
               <>
                 {unattributedWorkerCount > 0 && (
                   <p className="mb-2 text-sm text-text-muted">
-                    <span className="font-mono">{unattributedWorkerCount}</span> worker{unattributedWorkerCount !== 1 ? 's' : ''} running without an agent
+                    <span className="font-mono">{unattributedWorkerCount}</span> task{unattributedWorkerCount !== 1 ? 's' : ''} running without an agent
                   </p>
                 )}
                 <div className={ROWS}>

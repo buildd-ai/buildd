@@ -270,6 +270,29 @@ runner confirms the exact text it injected, and `supportsInstructionAck` records
 whether a runner speaks that protocol), `localUiUrl` (direct runner access),
 `currentAction`. Resumable: Claude via session id, Codex via thread id.
 
+**Interactive ask loop** (`docs/specs/answered-question-resume.md` § The
+interactive path). A worker minted by `claim_task` from a person's own MCP
+session (`runner = 'mcp'`) has no runner to park it, so it asks with
+`ask_human { question, options? }`: the worker goes `waiting_input` with
+`waitingFor` set, and the person gets the same Needs-you card and push as for a
+runner worker's `AskUserQuestion`. The reply carries `waitCommand`, a POSIX
+`sh` + `curl` script the session runs with `run_in_background` so waiting
+costs no turns. Its signed wait capability reveals only answered-or-not, never
+the answer or question text. It exits 0 once answered, and the session then
+reads and acks the answer with `await_answer { waitSeconds: 0 }`. A client
+without background commands loops on `await_answer` (≤45 s per call). The
+answer goes back to the same live session as an `answer` message on its own
+task, with no continuation task. Every poll stamps `waitingFor.sessionSeenAt`.
+A session that closes cleanly through the agent plugin withdraws its question
+and the task returns to pending. A session whose last poll is over 5 min old,
+or whose worker has otherwise ended, has its answer sent cold to a runner as a
+continuation task, with the reason recorded. An
+unanswered question expires with the normal park window (24 h, 4 h in a
+mission), and an expired interactive question files no retry unless its
+mission is `executor = 'local'`. `post_note` with `type=question` stays the
+non-blocking option. An operator MCP session answers any parked worker with
+`answer_question` (admin), which takes the dashboard's `/respond` path.
+
 ### Role / Skill (`workspace_skills`)
 A skill is a `SKILL.md` registered to a workspace. A **role** is a skill with
 `isRole: true` — an agent persona. Fields: `model` (`sonnet | opus | haiku | inherit`),
@@ -367,13 +390,19 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   account row (no-account callers) → provider env var (only outside production, or
   `BUILDD_ALLOW_ENV_INFERENCE_KEYS=1` for self-hosting). OAuth rows are never read.
   Runners never use these keys.
-- **Key policy** — `teams.inferenceKeyPolicy` (default `team`; Settings → Model
-  providers → "Whose key": "Team key" / "Each person's own key") binds every
-  server-side call: `team` = team key for everyone, personal keys ignored;
-  `team_or_own` = a person's own key wins, team key covers the rest; `own` = own
-  key only, no fallback, so work with no person (grading, cron) finds no key and
-  takes its runner path. Personal keys are managed via `/api/inference-keys` (any
-  member) and never served to anyone else.
+- **Key policy** — `teams.credentialPolicy` (`team` | `personal_first` |
+  `personal_only`; NULL = not chosen, read as `personal_first`) binds every
+  server-side call (`effectiveKeyPolicy` in `packages/core/inference-key-policy.ts`):
+  `personal_first` (the default) = a person's own key wins, team key covers the
+  rest; `team` = team key for everyone, personal keys ignored; `personal_only` =
+  own key only, no fallback, so work with no person (grading, cron) finds no key
+  and takes its runner path. The legacy `teams.inferenceKeyPolicy` (`team` |
+  `team_or_own` | `own`) is read only when `credentialPolicy` is NULL, and its
+  NOT NULL default `team` reads as not chosen. Settings → Models offers no
+  selector: a team that stored `team` or `personal_only` sees one line with a
+  way back to the default (`docs/specs/team-permissions.md` → "Credential
+  policy"). Personal keys are managed via `/api/inference-keys` (any member) and
+  never served to anyone else.
 - **Which calls may spend** (`packages/core/inference-policy.ts`, `isInferenceAllowed`):
   - *Interactive* (chat and its per-turn routing): always on, no switch; it
     runs whenever a key resolves (`teams.chatDisabled` is deprecated and
@@ -617,6 +646,9 @@ gated by the merge policy tier — see §4a), **`recall`** (read knowledge), **`
 (write knowledge), and **`buildd_memory`** (deprecated — superseded by
 recall/learn in #1944, still routed for compatibility). claude.ai and other MCP
 clients connect via workspace-scoped OAuth (`mcp-oauth/[workspace]`).
+A session that claimed a task with `claim_task` asks its owner a blocking
+question through `ask_human` / `await_answer` (the interactive ask loop, §2
+Worker).
 
 ---
 
