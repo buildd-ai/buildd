@@ -2162,6 +2162,79 @@ describe('PATCH /api/tasks/[id]', () => {
     });
   });
 
+  describe('reserve / release (reserved)', () => {
+    const pending = (context: Record<string, unknown> = { model: 'x' }, over: Record<string, unknown> = {}) => ({
+      id: TASK_ID, title: 'port migrator', status: 'pending', claimedBy: null, workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' }, context, ...over,
+    });
+    const live = (accountId: string) => ({ accountId, at: 'then', expiresAt: new Date(Date.now() + 600_000).toISOString() });
+    function capture() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1', ...v }]) })) }; }),
+      });
+      return sets;
+    }
+    const patch = (body: Record<string, unknown>) =>
+      callHandler(PATCH, createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_xxx' }, body }), TASK_ID);
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    });
+
+    it('reserved: true stamps context.reservedBy for the calling account and keeps the rest of the context', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending());
+      const sets = capture();
+      const res = await patch({ reserved: true });
+      expect(res.status).toBe(200);
+      expect(sets[0].context.model).toBe('x');
+      expect(sets[0].context.reservedBy.accountId).toBe('account-123');
+      expect(new Date(sets[0].context.reservedBy.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('renews its own reservation', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending({ reservedBy: live('account-123') }));
+      const sets = capture();
+      expect((await patch({ reserved: true })).status).toBe(200);
+      expect(sets[0].context.reservedBy.at).not.toBe('then');
+    });
+
+    it('refuses a second account while the first reservation is live, and takes over a lapsed one', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending({ reservedBy: live('someone-else') }));
+      capture();
+      expect((await patch({ reserved: true })).status).toBe(409);
+      mockTasksFindFirst.mockResolvedValue(pending({ reservedBy: { accountId: 'someone-else', at: 'old', expiresAt: '2020-01-01T00:00:00.000Z' } }));
+      const sets = capture();
+      expect((await patch({ reserved: true })).status).toBe(200);
+      expect(sets[0].context.reservedBy.accountId).toBe('account-123');
+    });
+
+    it('reserved: false releases only the caller\'s own reservation', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending({ model: 'x', reservedBy: live('account-123') }));
+      const sets = capture();
+      expect((await patch({ reserved: false })).status).toBe(200);
+      expect(sets[0].context).toEqual({ model: 'x' });
+      mockTasksFindFirst.mockResolvedValue(pending({ reservedBy: live('someone-else') }));
+      capture();
+      expect((await patch({ reserved: false })).status).toBe(409);
+    });
+
+    it('refuses a non-boolean, a task a worker has, a finished task, and a dashboard user with no account', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending());
+      capture();
+      expect((await patch({ reserved: 'yes' })).status).toBe(400);
+      mockTasksFindFirst.mockResolvedValue(pending({}, { claimedBy: 'worker-1' }));
+      expect((await patch({ reserved: true })).status).toBe(409);
+      mockTasksFindFirst.mockResolvedValue(pending({}, { status: 'completed' }));
+      expect((await patch({ reserved: true })).status).toBe(409);
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue(pending());
+      expect((await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { reserved: true } }), TASK_ID)).status).toBe(403);
+    });
+  });
+
   // Reschedule: move a queued task's start later (or back to ASAP) without
   // cancelling it. Only before a worker has it; a started task is refused.
   describe('reschedule (startAt / startIn)', () => {

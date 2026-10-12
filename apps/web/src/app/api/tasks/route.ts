@@ -70,6 +70,7 @@ import { checkStatedRole } from '@/lib/stated-role';
 import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
 import { loadRequestCeiling, previewUnderCeiling, rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { terminalAuditFields } from './audit-fields';
+import { TASK_RESERVATION_KEY, buildReservation } from '../workers/claim/held-gate';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -434,6 +435,9 @@ export async function POST(req: NextRequest) {
       requiredConnectors: rawRequiredConnectors,
       // Incoming context (from MCP or API callers — baseBranch, iteration, failureContext, etc.)
       context: rawIncomingContext,
+      // An interactive session creating a task it will claim itself: insert it
+      // already reserved so no runner can win the gap before its claim_task.
+      reserve: rawReserve,
       // Release override: 'true' | 'false' | 'inherit' (default inherit)
       release: rawRelease,
       // Agent backend that executes this task: 'claude' | 'codex'
@@ -1609,6 +1613,10 @@ export async function POST(req: NextRequest) {
           // Merge incoming context (MCP sends baseBranch, iteration, failureContext, model, effort, etc.)
           ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
           // Route-computed fields take precedence
+          // A reservation is the server's to write, from the authenticated account.
+          [TASK_RESERVATION_KEY]: rawReserve === true && apiAccount && !apiAccount.taskScope
+            ? buildReservation(apiAccount.id)
+            : undefined,
           ...prReachCtx,
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),

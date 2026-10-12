@@ -586,6 +586,33 @@ describe('POST /api/tasks', () => {
     expect((await response.json()).id).toBe('task-ci');
   });
 
+  describe('reserve: true (create and claim from a session)', () => {
+    const file = (body: Record<string, unknown>) => POST(createMockRequest({
+      method: 'POST', headers: { Authorization: 'Bearer bld_ci' }, body: { workspaceId: 'ws-1', title: 'Local task', ...body },
+    }));
+    const setup = () => {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const values = mock((_v: Record<string, unknown>) => ({ returning: mock(() => [{ id: 'task-r', workspaceId: 'ws-1', title: 'Local task', status: 'pending' }]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      return values;
+    };
+    const ctxOf = (values: ReturnType<typeof setup>) => (values.mock.calls[0][0] as { context: Record<string, any> }).context;
+
+    it('is inserted already reserved for the calling account, so no runner can win the gap before its claim', async () => {
+      const values = setup();
+      expect((await file({ reserve: true })).status).toBe(200);
+      expect(ctxOf(values).reservedBy.accountId).toBe('account-ci');
+      expect(new Date(ctxOf(values).reservedBy.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('is not reserved without reserve: true, and a reservation in the caller\'s context is dropped', async () => {
+      const values = setup();
+      expect((await file({ context: { reservedBy: { accountId: 'forged', expiresAt: '2999-01-01T00:00:00.000Z' } } })).status).toBe(200);
+      expect(ctxOf(values).reservedBy).toBeUndefined();
+    });
+  });
+
   describe('a task naming a Living Spec', () => {
     afterEach(() => { specPinImpl = null; });
     const file = (context: Record<string, unknown>) => POST(createMockRequest({
