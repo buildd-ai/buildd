@@ -740,6 +740,11 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
     });
     if (!w) return null;
     const live = (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status);
-    return { taskId: w.taskId, pendingInstructions: live && !!w.pendingInstructions?.trim(), live };
+    return {
+      taskId: w.taskId,
+      pendingInstructions: live && !!w.pendingInstructions?.trim(),
+      live,
+      interactive: w.runner === INTERACTIVE_WORKER_RUNNER,
+    };
   },
 };
