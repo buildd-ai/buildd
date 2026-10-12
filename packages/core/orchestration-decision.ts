@@ -41,6 +41,7 @@
 import { createHash } from 'node:crypto';
 import {
   applyDecisionPolicy,
+  decisionReceiptError,
   type Decision,
   type DecisionQuestions,
   type DecisionReceipt,
@@ -174,6 +175,8 @@ type ResolveAccessFn = (opts: {
   workspaceId?: string | null;
   accountId?: string | null;
   userId?: string | null;
+  /** The decision asked, so the team's model override for it answers (decision-model.ts `byKind`). */
+  kind?: string | null;
 }) => Promise<DecisionAccess>;
 
 export interface OrchestrationDecisionDeps {
@@ -423,6 +426,7 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
       workspaceId: scope.workspaceId,
       accountId: scope.accountId ?? null,
       userId: scope.userId ?? null,
+      kind: decision.id,
     }), remaining());
     if (access === DEADLINE) return await fallback('deadline');
     if (!access.ok) {
@@ -488,6 +492,7 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
       kind: 'decision', decisionId: decision.id, provider: 'openrouter', model: answeredModel,
       usage: result.ok ? { ...result.usage } : { inputTokens: 0, outputTokens: 0, costUsd: null },
       latencyMs: result.latencyMs, outcome: result.ok ? 'ok' : 'error', attempts: result.attempts,
+      ...(result.ok ? {} : { error: decisionReceiptError(result.error as Parameters<typeof decisionReceiptError>[0]) }),
     };
 
     if (!result.ok) {

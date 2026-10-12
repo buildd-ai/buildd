@@ -235,3 +235,12 @@ describe('Home page composes one list', () => {
     expect(page).toContain('data-testid="home-ask-link"');
   });
 });
+
+// Surface audit round 3: at phone width the setup card filled the first screen
+// while the one thing that needed the owner sat below it.
+it('puts what needs the owner before the setup card', () => {
+  const items = deriveHomeAttention({ queue: [{ subjectKey: 'd', chip: 'DECIDE', missionId: 'mission-a', escalationReason: 'Keep the old route?' }], questions: [], held: [], missions: [] });
+  const html = renderToStaticMarkup(<HomeBody items={items} ask={null} setup={<section data-testid="getting-started">Connect a runner</section>} runnerConnected={false} counts={counts} milestones={[]} quietMissions={0} />);
+  expect(html.indexOf('home-waiting-on-you')).toBeGreaterThan(-1);
+  expect(html.indexOf('home-waiting-on-you')).toBeLessThan(html.indexOf('getting-started'));
+});

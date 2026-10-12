@@ -51,6 +51,13 @@ mock.module('@/lib/artifact-team-files', () => ({
   removeTeamStoredFiles: async (teamId: string) => { fileCleanups.push(teamId); return { removed: 0, objectsRemoved: 0 }; },
 }));
 
+// Saving a decision model probes it first (packages/core/decision-probe.ts).
+const probeCalls: any[] = [];
+let probeResult: any = { ok: true, model: 'probe-model', latencyMs: 10 };
+mock.module('@/modules', () => ({
+  DECISION_MODEL_PROBE: async (config: any, scope: any) => { probeCalls.push({ config, scope }); return probeResult; },
+}));
+
 import { DELETE, GET, PATCH } from './route';
 
 const ctx = { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) };
@@ -69,6 +76,8 @@ beforeEach(() => {
   membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'admin' };
   teamRow = { id: '11111111-1111-4111-8111-111111111111', name: 'Team', slug: 'team', timezone: null };
   capturedUpdates.length = 0;
+  probeCalls.length = 0;
+  probeResult = { ok: true, model: 'probe-model', latencyMs: 10 };
 });
 
 describe('non-UUID id guard', () => {
@@ -360,15 +369,56 @@ describe('PATCH /api/teams/[id] — decision model', () => {
     expect(capturedUpdates[0]).toMatchObject({ decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } });
   });
 
-  it('clears back to Jev with null', async () => {
+  it('clears back to Jev with null, with no probe', async () => {
     await PATCH(patchReq({ decisionModel: null }), ctx);
     expect(capturedUpdates[0]).toMatchObject({ decisionModel: null });
+    expect(probeCalls).toHaveLength(0);
+  });
+
+  it('probes the model through its route for this team and person before saving', async () => {
+    const res = await PATCH(patchReq({ decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } }), ctx);
+    expect(res.status).toBe(200);
+    expect(probeCalls).toEqual([{ config: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' }, scope: { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1' } }]);
+    expect(capturedUpdates[0]).toMatchObject({ decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } });
+  });
+
+  it("refuses to save a model whose probe fails, with the provider's own words", async () => {
+    probeResult = { ok: false, error: 'Cloudflare rejected a test decision: HTTP 401: Authentication error (code 10000)' };
+    const res = await PATCH(patchReq({ decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } }), ctx);
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(data.error).toContain('Authentication error (code 10000)');
+    expect(data.error).toContain('not saved');
+    expect(capturedUpdates).toHaveLength(0);
   });
 
   it('rejects a System One model through the gateway, and a bad model id', async () => {
     expect((await PATCH(patchReq({ decisionModel: { endpoint: 'systemone', model: 'typesafe/jev-1.13', via: 'litellm' } }), ctx)).status).toBe(400);
     expect((await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'has space', via: 'openrouter' } }), ctx)).status).toBe(400);
     expect(capturedUpdates).toHaveLength(0);
+  });
+
+  const CLEF = { endpoint: 'systemone', model: 'clef', via: 'cloudflare' };
+
+  it('changing the team default keeps every per-decision override', async () => {
+    teamRow = { ...teamRow, decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm', byKind: { task_role: CLEF } } };
+    await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'qwen/qwen3-8b', via: 'openrouter' } }), ctx);
+    expect(capturedUpdates[0].decisionModel).toEqual({ endpoint: 'chat', model: 'qwen/qwen3-8b', via: 'openrouter', byKind: { task_role: CLEF } });
+  });
+
+  it('clearing the team default keeps the overrides; the rest goes back to Jev', async () => {
+    teamRow = { ...teamRow, decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm', byKind: { task_role: CLEF } } };
+    await PATCH(patchReq({ decisionModel: null }), ctx);
+    expect(capturedUpdates[0].decisionModel).toEqual({ byKind: { task_role: CLEF } });
+  });
+
+  it('GET answers the default and the overrides apart', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamRow = { ...teamRow, decisionModel: { byKind: { 'buildd.orchestration_claim_hold': CLEF } } };
+    const res = await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
+    const body = await res.json();
+    expect(body.team.decisionModel).toBeNull();
+    expect(body.team.decisionModelOverrides).toEqual([{ kind: 'buildd.orchestration_claim_hold', label: 'Start or wait', ...CLEF }]);
   });
 });
 

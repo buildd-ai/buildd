@@ -959,6 +959,10 @@ export interface TaskScheduleTemplate {
   // workspace (knowledge-base: buildd/design/role-routing.md §3.1); otherwise the task files
   // role-less.
   roleSlug?: string;
+  // The model tier every spawned task asks for, stated once: a hard override
+  // of the kind x complexity matrix, as `tier` on create_task. Unset: routed
+  // by kind and complexity as before.
+  tier?: 'premium-plus' | 'premium' | 'standard' | 'budget';
 }
 
 // Task result/deliverable snapshot - populated when worker completes
