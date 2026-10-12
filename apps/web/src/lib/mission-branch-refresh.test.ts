@@ -20,6 +20,8 @@ let prWorkerByTaskId: Record<string, { prNumber: number }> = {};
 let nextTaskId = 1;
 /** missionId → it has a non-terminal task (the backstop's activity test). */
 let liveWorkByMission: Record<string, boolean> = {};
+/** taskId → it has a non-terminal retry (a task whose parentTaskId is it). */
+let liveRetryByTask: Record<string, boolean> = {};
 const insertedNotes: any[] = [];
 const insertedTasks: any[] = [];
 const mockTaskInsert = mock(() => Promise.resolve());
@@ -29,6 +31,7 @@ function resetFixtures() {
     id: 'm-1',
     title: 'Example Mission',
     status: 'active',
+    isHeld: false,
     workspaceId: 'ws-1',
     workingBranch: 'mission/example-slug-0a1b2c3d',
     integrationBranchEnabled: true,
@@ -40,6 +43,7 @@ function resetFixtures() {
   tasksById = {};
   prWorkerByTaskId = {};
   liveWorkByMission = {};
+  liveRetryByTask = {};
   nextTaskId = 1;
   insertedNotes.length = 0;
   insertedTasks.length = 0;
@@ -104,6 +108,9 @@ mock.module('@buildd/core/db', () => ({
           if (byMission?.op === 'eq' && byMission.args?.[0] === 'missionId') {
             return Promise.resolve(liveWorkByMission[byMission.args[1]] ? { id: 'live-task' } : null);
           }
+          if (byMission?.op === 'eq' && byMission.args?.[0] === 'parentTaskId') {
+            return Promise.resolve(liveRetryByTask[byMission.args[1]] ? { id: 'live-retry' } : null);
+          }
           const id = args?.where?.args?.[1];
           const task = typeof id === 'string' ? tasksById[id] : undefined;
           return Promise.resolve(task ?? null);
@@ -116,7 +123,9 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 function matches(p: any): boolean {
+  if (p == null) return true;
   if ('isNull' in p) return missionRow[p.isNull] == null;
+  if (p.op === 'notInArray') return !p.args[1].includes(missionRow[p.args[0]]);
   if (p.op === 'and') return p.args.every(matches);
   if (p.op === 'or') return p.args.some(matches);
   const [field, value] = p.args;
@@ -196,6 +205,7 @@ function makeInsertChain(table: any) {
         return {
           onConflictDoNothing: () => ({ returning: async () => {
             await mockTaskInsert();
+            if (tasksById[id]) return []; // the primary key already exists
             tasksById[id] = row;
             insertedTasks.push(row);
             return [row];
@@ -212,9 +222,9 @@ function makeInsertChain(table: any) {
 }
 
 mock.module('@buildd/core/db/schema', () => ({
-  missions: Object.assign(new String('missions'), Object.fromEntries(['id', 'branchRefreshLeaseUntil', 'branchRefreshLeaseToken', 'branchRefreshConflictTaskId'].map(k => [k, k]))),
+  missions: Object.assign(new String('missions'), Object.fromEntries(['id', 'status', 'isHeld', 'branchRefreshLeaseUntil', 'branchRefreshLeaseToken', 'branchRefreshConflictTaskId'].map(k => [k, k]))),
   missionNotes: 'missionNotes',
-  tasks: Object.assign(new String('tasks'), { id: 'id', missionId: 'missionId', status: 'status' }),
+  tasks: Object.assign(new String('tasks'), { id: 'id', missionId: 'missionId', status: 'status', parentTaskId: 'parentTaskId' }),
   workers: { taskId: 'taskId', prNumber: 'prNumber', createdAt: 'createdAt' },
   workspaces: 'workspaces',
   githubRepos: 'githubRepos',
@@ -440,7 +450,7 @@ describe('refreshMissionIntegrationBranch', () => {
     expect(insertedTasks).toHaveLength(1);
   });
 
-  it('keeps an in-progress task reservation when insertion outlives the lease', async () => {
+  it('a reservation whose insert outlives the lease yields one task: the successor finishes it under the same id', async () => {
     const entered = deferred<void>();
     const resume = deferred<void>();
     mockTaskInsert.mockImplementationOnce(() => { entered.resolve(); return resume.promise; });
@@ -452,12 +462,39 @@ describe('refreshMissionIntegrationBranch', () => {
     const first = refreshMissionIntegrationBranch('m-1');
     await entered.promise;
     expect(insertedTasks).toHaveLength(0);
+    const reserved = missionRow.branchRefreshConflictTaskId;
     missionRow.branchRefreshLeaseUntil = new Date(Date.now() - 1);
-    expect(await refreshMissionIntegrationBranch('m-1')).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+    expect(await refreshMissionIntegrationBranch('m-1')).toEqual({ kind: 'conflict', conflictTaskId: reserved, dispatched: true });
     resume.resolve();
-    await first;
+    // The slow original finds its id already written: not a second task, not an error.
+    expect(await first).toEqual({ kind: 'conflict', conflictTaskId: reserved, dispatched: false });
     expect(insertedTasks).toHaveLength(1);
+    expect(insertedTasks[0].id).toBe(reserved);
+    expect(missionRow.branchRefreshConflictTaskId).toBe(reserved);
     expect(merges).toBe(1);
+  });
+
+  it('a caller that died between reserving and inserting does not stop refreshing for good', async () => {
+    // The crash: the pointer names an id with no row, and the lease was never released.
+    missionRow.branchRefreshConflictTaskId = 'reserved-by-dead-caller';
+    missionRow.branchRefreshLeaseUntil = new Date(Date.now() - 1);
+    missionRow.branchRefreshLeaseToken = 'dead-token';
+    let merges = 0;
+    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+      if (path.endsWith('/merges')) { merges++; return Promise.reject(githubError(409, 'conflict')); }
+      return Promise.resolve({ object: { sha: 'dev-new' } });
+    }) as any);
+
+    const outcome = await refreshMissionIntegrationBranch('m-1');
+
+    expect(outcome).toEqual({ kind: 'conflict', conflictTaskId: 'reserved-by-dead-caller', dispatched: true });
+    expect(insertedTasks).toHaveLength(1);
+    expect(insertedTasks[0].context).toMatchObject({ requireMergeCommit: true, refreshTrunkSha: 'dev-new' });
+    // The reservation is evidence of the 409: finishing it makes no second merge attempt.
+    expect(merges).toBe(0);
+    expect(missionRow.branchRefreshLeaseUntil).toBeNull();
+    expect(await refreshMissionIntegrationBranch('m-1')).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+    expect(insertedTasks).toHaveLength(1);
   });
 
   it('clears its reservation and releases the lease if task insertion fails', async () => {
@@ -508,6 +545,10 @@ describe('refreshMissionIntegrationBranch', () => {
     expect(insertedTasks[0].description).toContain('dev-sha'.slice(0, 7));
     // Generated files are regenerated by the resolver, not merged by hand.
     expect(insertedTasks[0].description).toContain('bun run conflicts:generated');
+    // A migration moves only through the tools, whose byte-identical renumber
+    // the merge-safety inspector reads as a renumber, not lineage (task 87c7e48d).
+    expect(insertedTasks[0].description).toContain('bun run migrations:renumber --base=origin/dev');
+    expect(insertedTasks[0].description).not.toContain('bun db:generate` so this branch');
   });
 
   describe('settling a finished conflict task by its PR', () => {
@@ -864,5 +905,528 @@ describe('refreshMissionBranchesBeforeStart (a mission task is starting)', () =>
   it('fails open: a refresh that throws never fails the claim', async () => {
     mockMissionsFindMany.mockRejectedValue(new Error('db down'));
     expect(await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH })])).toEqual({});
+  });
+});
+
+// ── Cross-operation interleavings (docs/specs/mission-branch-refresh.md, "Lifecycle and concurrency") ──
+
+describe('interleavings: mission state, unknown outcomes, and request termination', () => {
+  const BRANCH = 'mission/example-slug-0a1b2c3d';
+  beforeEach(() => {
+    resetFixtures();
+    mockTaskInsert.mockReset();
+    mockTaskInsert.mockResolvedValue(undefined);
+    mockMissionsFindMany.mockReset();
+    mockFindMissionPrOwner.mockReset();
+    mockFindMissionPrOwner.mockResolvedValue(null);
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: BRANCH, created: false });
+    mockAnnounceTaskCreated.mockReset();
+    mockAnnounceTaskCreated.mockResolvedValue(undefined);
+    mockWakeTask.mockReset();
+    mockWakeTask.mockResolvedValue(undefined);
+    mockGithubApi.mockReset();
+    gateEvents.length = 0;
+  });
+
+  /** Fake GitHub: dev's head, and a merges answer (counted). */
+  function github(merge: () => Promise<any>, devSha = 'dev-new') {
+    const calls = { merges: 0 };
+    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+      if (path.endsWith('/merges')) { calls.merges++; return merge(); }
+      if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: devSha } });
+      return Promise.resolve(null);
+    }) as any);
+    return calls;
+  }
+
+  it('a mission completed while the refresh is in flight gets no merge, and the lease is released', async () => {
+    const entered = deferred<void>();
+    const resume = deferred<any>();
+    mockEnsureMissionIntegrationBranch.mockImplementationOnce(() => { entered.resolve(); return resume.promise; });
+    const calls = github(() => Promise.resolve({ sha: 'merge-sha' }));
+
+    const inFlight = refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
+    await entered.promise;
+    missionRow.status = 'completed';
+    resume.resolve({ ok: true, created: false, branch: BRANCH });
+
+    expect(await inFlight).toEqual({ kind: 'skipped', reason: 'mission_terminal', detail: 'completed' });
+    expect(calls.merges).toBe(0);
+    expect(missionRow.branchRefreshHeadSha).toBeNull();
+    expect(missionRow.branchRefreshLeaseUntil).toBeNull();
+  });
+
+  it('a mission archived between a 409 and the conflict dispatch gets no conflict task', async () => {
+    const calls = github(() => {
+      missionRow.status = 'archived';
+      return Promise.reject(githubError(409, 'conflict'));
+    });
+
+    const outcome = await refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
+
+    expect(outcome).toEqual({ kind: 'skipped', reason: 'mission_terminal', detail: 'archived' });
+    expect(calls.merges).toBe(1);
+    expect(insertedTasks).toHaveLength(0);
+    expect(missionRow.branchRefreshConflictTaskId).toBeNull();
+  });
+
+  it('the mission PR merging while the refresh is in flight stops the write', async () => {
+    const entered = deferred<void>();
+    const resume = deferred<any>();
+    mockEnsureMissionIntegrationBranch.mockImplementationOnce(() => { entered.resolve(); return resume.promise; });
+    const calls = github(() => Promise.resolve({ sha: 'merge-sha' }));
+
+    const inFlight = refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
+    await entered.promise;
+    mockFindMissionPrOwner.mockResolvedValue({ state: 'merged' });
+    resume.resolve({ ok: true, created: false, branch: BRANCH });
+
+    expect(await inFlight).toEqual({ kind: 'skipped', reason: 'mission_pr_merged' });
+    expect(calls.merges).toBe(0);
+  });
+
+  it('a backstop refresh never writes to a paused or held mission; pausing mid-flight stops it', async () => {
+    const calls = github(() => Promise.resolve({ sha: 'merge-sha' }));
+    missionRow.status = 'paused';
+    expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' })).toMatchObject({ kind: 'skipped', reason: 'mission_paused' });
+    missionRow.status = 'budget_exhausted';
+    expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' })).toMatchObject({ kind: 'skipped', reason: 'mission_paused' });
+    missionRow.status = 'active';
+    missionRow.isHeld = true;
+    expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' })).toMatchObject({ kind: 'skipped', reason: 'mission_paused' });
+    missionRow.isHeld = false;
+
+    const entered = deferred<void>();
+    const resume = deferred<any>();
+    mockEnsureMissionIntegrationBranch.mockImplementationOnce(() => { entered.resolve(); return resume.promise; });
+    const inFlight = refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' });
+    await entered.promise;
+    missionRow.status = 'paused';
+    resume.resolve({ ok: true, created: false, branch: BRANCH });
+    expect(await inFlight).toMatchObject({ kind: 'skipped', reason: 'mission_paused' });
+    expect(calls.merges).toBe(0);
+  });
+
+  it('an authorized start refreshes a paused or held mission: the start is the resume', async () => {
+    const calls = github(() => Promise.resolve({ sha: 'merge-sha' }));
+    missionRow.status = 'paused';
+    missionRow.isHeld = true;
+    expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toEqual({ kind: 'merged', headSha: 'dev-new' });
+    expect(calls.merges).toBe(1);
+  });
+
+  it('an unknown merges outcome is retried idempotently: GitHub answers 204 and nothing is duplicated', async () => {
+    // The merge landed but the answer was lost (a 502 after the write).
+    let landed = false;
+    const calls = github(() => {
+      if (!landed) { landed = true; return Promise.reject(githubError(502, 'bad gateway')); }
+      return Promise.resolve(null); // 204: the branch already contains dev
+    });
+
+    const first = await refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
+    expect(first.kind).toBe('error');
+    expect(missionRow.branchRefreshHeadSha).toBeNull(); // nothing confirmed, nothing claimed
+    expect(missionRow.branchRefreshedAt).toBeNull();
+
+    const retry = await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' });
+    expect(retry).toEqual({ kind: 'skipped', reason: 'already_current' });
+    expect(missionRow.branchRefreshHeadSha).toBe('dev-new');
+    expect(calls.merges).toBe(2);
+    expect(insertedTasks).toHaveLength(0);
+  });
+
+  it('a failed conflict task whose retry is still running keeps the pointer: no second conflict task', async () => {
+    missionRow.branchRefreshConflictTaskId = 'task-failed';
+    tasksById['task-failed'] = { id: 'task-failed', status: 'failed', context: { requireMergeCommit: true } };
+    liveRetryByTask['task-failed'] = true;
+    const calls = github(() => Promise.reject(githubError(409, 'conflict')));
+
+    const outcome = await refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
+
+    expect(outcome).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open', conflictTaskId: 'task-failed' });
+    expect(calls.merges).toBe(0);
+    expect(insertedTasks).toHaveLength(0);
+
+    // The retry ends too: the repair is over, and the next refresh may try again.
+    liveRetryByTask['task-failed'] = false;
+    expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toMatchObject({ kind: 'conflict', dispatched: true });
+    expect(insertedTasks).toHaveLength(1);
+  });
+
+  it('claim timeout, then request termination: the start hands off, and the sweep finishes it after the lease expires', async () => {
+    // The refresh outlives the budget and the request is torn down mid-call:
+    // the GitHub read never answers, so the lease is never released.
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm-1', workingBranch: BRANCH, integrationBranchEnabled: true }]);
+    mockGithubApi.mockImplementation((() => new Promise(() => {})) as any);
+    const keptAlive: Promise<unknown>[] = [];
+
+    const out = await refreshMissionBranchesBeforeStart(
+      [{ missionId: 'm-1', context: { baseBranch: BRANCH } }],
+      { budgetMs: 20, keepAlive: (p) => keptAlive.push(p) },
+    );
+    expect(out).toEqual({ 'm-1': 'timed_out' });
+    expect(keptAlive).toHaveLength(1);
+    expect(missionRow.branchRefreshLeaseUntil).toBeInstanceOf(Date);
+
+    // A second start inside the lease coalesces into it (no second writer).
+    expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toMatchObject({ kind: 'skipped', reason: 'in_flight' });
+
+    // The lease expires. The branch was refreshed recently, so only the
+    // abandoned lease makes the mission due.
+    missionRow.branchRefreshLeaseUntil = new Date(Date.now() - 1);
+    missionRow.branchRefreshedAt = new Date(Date.now() - 60_000);
+    liveWorkByMission['m-1'] = true;
+    mockMissionsFindMany.mockResolvedValue([{
+      id: 'm-1', branchRefreshedAt: missionRow.branchRefreshedAt,
+      branchRefreshLeaseUntil: missionRow.branchRefreshLeaseUntil, branchRefreshConflictTaskId: null,
+    }]);
+    const calls = github(() => Promise.resolve({ sha: 'merge-sha' }));
+
+    expect(await sweepMissionBranchRefresh()).toMatchObject({ scanned: 1, merged: 1 });
+    expect(calls.merges).toBe(1);
+    expect(missionRow.branchRefreshHeadSha).toBe('dev-new');
+    expect(missionRow.branchRefreshLeaseUntil).toBeNull();
+  });
+
+  it('the sweep settles a conflict pointer within the hour, not a day', async () => {
+    missionRow.branchRefreshConflictTaskId = 'task-sync';
+    missionRow.branchRefreshedAt = new Date(Date.now() - 60_000);
+    tasksById['task-sync'] = { id: 'task-sync', status: 'completed', context: { requireMergeCommit: true, refreshTrunk: 'dev', refreshTrunkSha: 'dev-at-sync', refreshMissionHeadSha: 'mission-before' } };
+    prWorkerByTaskId['task-sync'] = { prNumber: 4019 };
+    liveWorkByMission['m-1'] = true;
+    mockMissionsFindMany.mockResolvedValue([{
+      id: 'm-1', branchRefreshedAt: missionRow.branchRefreshedAt, branchRefreshLeaseUntil: null, branchRefreshConflictTaskId: 'task-sync',
+    }]);
+    let merges = 0;
+    mockGithubApi.mockImplementation(((_i: number, path: string) => {
+      if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: 'dev-new' } });
+      if (path.endsWith(`/git/ref/heads/${BRANCH}`)) return Promise.resolve({ object: { sha: 'branch-head' } });
+      if (/\/pulls\/\d+$/.test(path)) return Promise.resolve({ state: 'closed', merged: true, head: { sha: 'pr-head' } });
+      if (path.includes('/compare/')) return Promise.resolve({ status: 'ahead' });
+      if (path.endsWith('/merges')) { merges++; return Promise.resolve(null); }
+      return Promise.resolve(null);
+    }) as any);
+
+    expect(await sweepMissionBranchRefresh()).toMatchObject({ scanned: 1 });
+    expect(missionRow.branchRefreshConflictTaskId).toBeNull();
+    expect(merges).toBe(1);
+  });
+
+  it('the sweep leaves a mission inside its window alone when nothing is unfinished', async () => {
+    mockMissionsFindMany.mockResolvedValue([{
+      id: 'm-1', branchRefreshedAt: new Date(Date.now() - 60_000), branchRefreshLeaseUntil: null, branchRefreshConflictTaskId: null,
+    }]);
+    liveWorkByMission['m-1'] = true;
+    expect(await sweepMissionBranchRefresh()).toMatchObject({ scanned: 1, skipped: 1 });
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('the sweep asks the database only for missions it may write to: not paused, held, exhausted or terminal', async () => {
+    mockMissionsFindMany.mockResolvedValue([]);
+    await sweepMissionBranchRefresh();
+    const where = JSON.stringify((mockMissionsFindMany.mock.calls[0] as any[])[0].where);
+    for (const s of ['completed', 'archived', 'paused', 'budget_exhausted']) expect(where).toContain(s);
+    expect(where).toContain('isHeld');
+  });
+});
+
+// ── Real Git: ancestry and lost-commit claims a mocked GitHub cannot prove ──
+//
+// A local repository stands in for GitHub. Each GitHub call is one atomic
+// operation on it, built from git plumbing the way GitHub performs it: the
+// merges API is `merge-tree` + a two-parent commit, a PR landing is pinned to
+// the head it was approved at (`sha`), and every ref write is a compare-and-swap
+// (`update-ref <ref> <new> <old>`). Interleavings are orderings of those calls,
+// which is exactly the granularity GitHub gives concurrent writers.
+
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resolveMergeMethod, verifyRefreshLanded } from './integration-refresh';
+
+function gitHubOverGit() {
+  const dir = mkdtempSync(join(tmpdir(), 'mission-refresh-git-'));
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid',
+    GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.invalid',
+    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+  };
+  const git = (args: string[], extra: Record<string, string> = {}, input?: string) =>
+    execFileSync('git', args, { cwd: dir, env: { ...env, ...extra }, encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  const ok = (args: string[]) => { try { git(args); return true; } catch { return false; } };
+  git(['init', '-q', '--bare']);
+
+  const head = (branch: string): string | null => { try { return git(['rev-parse', '--verify', `refs/heads/${branch}^{commit}`]); } catch { return null; } };
+  const isAncestor = (a: string, b: string) => ok(['merge-base', '--is-ancestor', a, b]);
+  /** A tree: `base`'s tree (if any) with `files` written over it. */
+  const tree = (base: string | null, files: Record<string, string>): string => {
+    const index = join(dir, `index-${Math.random().toString(36).slice(2)}`);
+    const e = { GIT_INDEX_FILE: index };
+    if (base) git(['read-tree', base], e); else git(['read-tree', '--empty'], e);
+    for (const [path, content] of Object.entries(files)) {
+      const blob = git(['hash-object', '-w', '--stdin'], {}, content);
+      git(['update-index', '--add', '--cacheinfo', `100644,${blob},${path}`], e);
+    }
+    const t = git(['write-tree'], e);
+    rmSync(index, { force: true });
+    return t;
+  };
+  const commitTree = (t: string, parents: string[], msg: string) =>
+    git(['commit-tree', t, ...parents.flatMap(p => ['-p', p]), '-m', msg]);
+  /** Compare-and-swap, as GitHub's ref writes are. */
+  const cas = (branch: string, next: string, prev: string | null): boolean =>
+    ok(['update-ref', `refs/heads/${branch}`, next, prev ?? '0000000000000000000000000000000000000000']);
+
+  const gh = {
+    dir,
+    head,
+    isAncestor,
+    read: (ref: string, path: string): string | null => { try { return git(['show', `${ref}:${path}`]); } catch { return null; } },
+    commit(branch: string, files: Record<string, string>, msg = `edit ${Object.keys(files).join(',')}`): string {
+      const prev = head(branch);
+      const sha = commitTree(tree(prev, files), prev ? [prev] : [], msg);
+      if (!cas(branch, sha, prev)) throw new Error(`ref ${branch} moved`);
+      return sha;
+    },
+    branch(name: string, from: string) { if (!cas(name, head(from)!, null)) throw new Error(`${name} exists`); },
+    /** `POST /merges`: 201 with a merge commit, 204 (null) when already contained, 409 on a conflict. */
+    mergesApi(base: string, from: string): { sha: string } | null {
+      const b = head(base)!; const h = head(from)!;
+      if (isAncestor(h, b)) return null;
+      let t: string;
+      try { t = git(['merge-tree', '--write-tree', b, h]).split('\n')[0]; } catch { throw githubError(409, { message: 'Merge conflict' }); }
+      const sha = commitTree(t, [b, h], `Merge ${from} into ${base}`);
+      if (!cas(base, sha, b)) throw githubError(409, { message: 'Base moved' });
+      return { sha };
+    },
+    /** `PUT /pulls/:n/merge` pinned to `expectedHeadSha`, with the method the door chose. */
+    landPr(p: { base: string; headBranch: string; expectedHeadSha: string; method: 'merge' | 'squash' }): { merged: boolean; status?: number; sha?: string } {
+      const h = head(p.headBranch);
+      if (h !== p.expectedHeadSha) return { merged: false, status: 409 }; // "Head branch was modified"
+      const b = head(p.base)!;
+      let t: string;
+      try { t = git(['merge-tree', '--write-tree', b, h]).split('\n')[0]; } catch { return { merged: false, status: 405 }; }
+      const sha = commitTree(t, p.method === 'merge' ? [b, h] : [b], `land ${p.headBranch}`);
+      return cas(p.base, sha, b) ? { merged: true, sha } : { merged: false, status: 409 };
+    },
+    /** An agent's conflict resolution: `git merge origin/<from>` on a branch cut from `onto`, conflicts settled by `resolved`. */
+    resolveMerge(branchName: string, onto: string, from: string, resolved: Record<string, string>): string {
+      const o = head(onto)!; const f = head(from)!;
+      let t: string;
+      try { t = git(['merge-tree', '--write-tree', o, f]).split('\n')[0]; } catch (e: any) { t = String(e.stdout).split('\n')[0]; }
+      const sha = commitTree(tree(t, resolved), [o, f], `Merge ${from} into ${branchName}`);
+      if (!cas(branchName, sha, null)) throw new Error(`${branchName} exists`);
+      return sha;
+    },
+    compare(a: string, b: string) {
+      const sa = git(['rev-parse', a]); const sb = git(['rev-parse', b]);
+      const status = sa === sb ? 'identical' : isAncestor(sa, sb) ? 'ahead' : isAncestor(sb, sa) ? 'behind' : 'diverged';
+      return { status, merge_base_commit: { sha: git(['merge-base', sa, sb]) } };
+    },
+    dispose: () => rmSync(dir, { recursive: true, force: true }),
+  };
+  return gh;
+}
+
+describe('real Git: refresh, task landings, the repair and the mission PR interleave without losing a commit', () => {
+  const BRANCH = 'mission/example-slug-0a1b2c3d';
+  let gh: ReturnType<typeof gitHubOverGit>;
+  let prs: Record<number, { state: string; merged: boolean; head: { sha: string } }>;
+  let mergesCalls = 0;
+
+  beforeEach(() => {
+    resetFixtures();
+    gh?.dispose();
+    gh = gitHubOverGit();
+    prs = {};
+    mergesCalls = 0;
+    mockTaskInsert.mockReset();
+    mockTaskInsert.mockResolvedValue(undefined);
+    mockFindMissionPrOwner.mockReset();
+    mockFindMissionPrOwner.mockResolvedValue(null);
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: BRANCH, created: false });
+    mockAnnounceTaskCreated.mockReset();
+    mockAnnounceTaskCreated.mockResolvedValue(undefined);
+    mockWakeTask.mockReset();
+    mockWakeTask.mockResolvedValue(undefined);
+    gateEvents.length = 0;
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation((async (_i: number, path: string, opts?: any) => {
+      const ref = /\/git\/ref\/heads\/(.+)$/.exec(path);
+      if (ref) {
+        const sha = gh.head(ref[1].split('/').map(decodeURIComponent).join('/'));
+        if (!sha) throw githubError(404, 'Not Found');
+        return { object: { sha } };
+      }
+      if (path.endsWith('/merges') && opts?.method === 'POST') {
+        mergesCalls++;
+        const body = JSON.parse(opts.body);
+        return gh.mergesApi(body.base, body.head);
+      }
+      const cmp = /\/compare\/(.+)\.\.\.(.+)$/.exec(path);
+      if (cmp) return gh.compare(decodeURIComponent(cmp[1]), decodeURIComponent(cmp[2]));
+      const pr = /\/pulls\/(\d+)$/.exec(path);
+      if (pr) return prs[Number(pr[1])] ?? null;
+      return null;
+    }) as any);
+
+    // dev and the mission diverge on one file; each also adds its own.
+    gh.commit('dev', { 'shared.ts': 'v0\n', 'README.md': 'base\n' }, 'base');
+    gh.branch(BRANCH, 'dev');
+    gh.commit(BRANCH, { 'shared.ts': 'mission\n', 'mission.ts': 'mission work\n' });
+    gh.commit('dev', { 'shared.ts': 'trunk\n', 'trunk.ts': 'trunk work\n' });
+  });
+
+  /** Land a task PR on the mission branch the way the kernel's merge door does: pinned, method by context. */
+  function landTaskPr(name: string, files: Record<string, string>, context: unknown = {}) {
+    gh.branch(name, BRANCH);
+    const prHead = gh.commit(name, files);
+    return gh.landPr({ base: BRANCH, headBranch: name, expectedHeadSha: prHead, method: resolveMergeMethod(context) as 'merge' | 'squash' });
+  }
+
+  const contains = (ref: string, files: Record<string, string>) => {
+    for (const [p, c] of Object.entries(files)) expect(gh.read(ref, p)).toBe(c.trim());
+  };
+
+  it('conflict → one repair task → merge-commit landing → ancestry proven → settled, across a task landing and further trunk moves', async () => {
+    const missionHeadAtConflict = gh.head(BRANCH)!;
+    const devAtConflict = gh.head('dev')!;
+
+    // 1. The refresh conflicts: one task, recording what it must prove.
+    const first = await refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
+    expect(first).toMatchObject({ kind: 'conflict', dispatched: true });
+    expect(insertedTasks).toHaveLength(1);
+    const repair = insertedTasks[0];
+    expect(repair.context).toMatchObject({ requireMergeCommit: true, refreshTrunkSha: devAtConflict, refreshMissionHeadSha: missionHeadAtConflict });
+    expect(gh.head(BRANCH)).toBe(missionHeadAtConflict); // a 409 wrote nothing
+
+    // 2. While it runs: a task PR lands on the mission branch, trunk moves again,
+    //    and more starts (a delayed or duplicate trigger) arrive. They coalesce.
+    expect(landTaskPr('buildd/task-x', { 'task-x.ts': 'task x\n' }).merged).toBe(true);
+    gh.commit('dev', { 'dev2.ts': 'more trunk\n' });
+    for (let i = 0; i < 3; i++) {
+      expect(await refreshMissionIntegrationBranch('m-1', { trigger: i % 2 ? 'backstop' : 'start' })).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+    }
+    expect(mergesCalls).toBe(1);
+    expect(insertedTasks).toHaveLength(1);
+
+    // 3. The worker finishes with its PR open: worker completion is not settlement.
+    tasksById[repair.id].status = 'completed';
+    prWorkerByTaskId[repair.id] = { prNumber: 101 };
+    const resolution = gh.resolveMerge('buildd/repair', BRANCH, 'dev', { 'shared.ts': 'resolved\n' });
+    prs[101] = { state: 'open', merged: false, head: { sha: resolution } };
+    expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+    expect(missionRow.branchRefreshConflictTaskId).toBe(repair.id);
+
+    // 4. The repair PR lands the way every merge door lands it: a merge commit.
+    const landed = gh.landPr({ base: BRANCH, headBranch: 'buildd/repair', expectedHeadSha: resolution, method: resolveMergeMethod(repair.context) as 'merge' });
+    expect(landed.merged).toBe(true);
+    prs[101] = { state: 'closed', merged: true, head: { sha: resolution } };
+
+    // 5. The next refresh proves ancestry on the live head, clears the pointer,
+    //    and finds trunk already contained: GitHub answers 204, no new commit.
+    const headBefore = gh.head(BRANCH);
+    const settled = await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' });
+    expect(settled).toEqual({ kind: 'skipped', reason: 'already_current' });
+    expect(missionRow.branchRefreshConflictTaskId).toBeNull();
+    expect(missionRow.branchRefreshHeadSha).toBe(gh.head('dev'));
+    expect(gh.head(BRANCH)).toBe(headBefore);
+    expect(insertedTasks).toHaveLength(1);
+
+    // No lost commits: every side's work and both starting heads are in the branch.
+    contains(BRANCH, { 'mission.ts': 'mission work', 'task-x.ts': 'task x', 'trunk.ts': 'trunk work', 'dev2.ts': 'more trunk', 'shared.ts': 'resolved' });
+    for (const sha of [missionHeadAtConflict, devAtConflict, gh.head('dev')!]) expect(gh.isAncestor(sha, gh.head(BRANCH)!)).toBe(true);
+  });
+
+  it('a squash-landed repair is caught by the live ancestry check; one real merge repairs it; no second task either way', async () => {
+    await refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
+    const repair = insertedTasks[0];
+    tasksById[repair.id].status = 'completed';
+    prWorkerByTaskId[repair.id] = { prNumber: 102 };
+    const resolution = gh.resolveMerge('buildd/repair', BRANCH, 'dev', { 'shared.ts': 'resolved\n' });
+    // A person merges it on GitHub with "Squash and merge": right tree, wrong ancestry.
+    expect(gh.landPr({ base: BRANCH, headBranch: 'buildd/repair', expectedHeadSha: resolution, method: 'squash' }).merged).toBe(true);
+    prs[102] = { state: 'closed', merged: true, head: { sha: resolution } };
+    expect(gh.read(BRANCH, 'trunk.ts')).toBe('trunk work'); // the content is there...
+    expect(gh.isAncestor(repair.context.refreshTrunkSha, gh.head(BRANCH)!)).toBe(false); // ...the history is not
+
+    const verdict = await verifyRefreshLanded({
+      installationId: 1, repoFullName: 'o/r', branch: BRANCH, trunk: 'dev',
+      refresh: { trunk: 'dev', trunkSha: repair.context.refreshTrunkSha, missionHeadSha: repair.context.refreshMissionHeadSha },
+      prHeadSha: resolution, api: mockGithubApi as any,
+    });
+    expect(verdict).toMatchObject({ ok: false, transient: false });
+
+    for (let i = 0; i < 2; i++) {
+      expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' })).toMatchObject({ kind: 'skipped', reason: 'refresh_unverified' });
+    }
+    expect(insertedTasks).toHaveLength(1);
+    expect(missionRow.branchRefreshHeadSha).toBeNull();
+
+    // The documented repair: a real merge of dev into the branch, landed as a merge commit.
+    const fix = gh.resolveMerge('buildd/repair-2', BRANCH, 'dev', {});
+    expect(gh.landPr({ base: BRANCH, headBranch: 'buildd/repair-2', expectedHeadSha: fix, method: 'merge' }).merged).toBe(true);
+    expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' })).toEqual({ kind: 'skipped', reason: 'already_current' });
+    expect(missionRow.branchRefreshConflictTaskId).toBeNull();
+    expect(insertedTasks).toHaveLength(1);
+  });
+
+  describe('a clean trunk', () => {
+    beforeEach(() => {
+      // Make the refresh clean: trunk's change no longer touches the mission's file.
+      gh.dispose();
+      gh = gitHubOverGit();
+      gh.commit('dev', { 'shared.ts': 'v0\n' }, 'base');
+      gh.branch(BRANCH, 'dev');
+      gh.commit(BRANCH, { 'mission.ts': 'mission work\n' });
+      gh.commit('dev', { 'trunk.ts': 'trunk work\n' });
+    });
+
+    it('refresh vs a task PR landing, in either order: both land and nothing is lost', async () => {
+      // Task lands first, then the refresh.
+      expect(landTaskPr('buildd/task-a', { 'a.ts': 'a\n' }).merged).toBe(true);
+      expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toMatchObject({ kind: 'merged' });
+      // Refresh first, then a task approved at its head before the base moved lands.
+      gh.commit('dev', { 'dev2.ts': 'more trunk\n' });
+      gh.branch('buildd/task-b', BRANCH);
+      const bHead = gh.commit('buildd/task-b', { 'b.ts': 'b\n' });
+      expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toMatchObject({ kind: 'merged' });
+      // The task PR's head did not move, so its pinned landing still lands; the base move is inside the result.
+      expect(gh.landPr({ base: BRANCH, headBranch: 'buildd/task-b', expectedHeadSha: bHead, method: 'squash' }).merged).toBe(true);
+
+      contains(BRANCH, { 'mission.ts': 'mission work', 'a.ts': 'a', 'b.ts': 'b', 'trunk.ts': 'trunk work', 'dev2.ts': 'more trunk' });
+      expect(gh.isAncestor(gh.head('dev')!, gh.head(BRANCH)!)).toBe(true);
+      expect(insertedTasks).toHaveLength(0);
+    });
+
+    it('refresh vs the mission PR landing: an approval pinned to the old head cannot land the moved head', async () => {
+      const approvedHead = gh.head(BRANCH)!;
+      // Trunk moves and a mission task starts: the refresh moves the mission PR's head.
+      gh.commit('dev', { 'dev2.ts': 'more trunk\n' });
+      expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toMatchObject({ kind: 'merged' });
+      const movedHead = gh.head(BRANCH)!;
+      expect(movedHead).not.toBe(approvedHead);
+
+      // The landing pinned to what was approved is refused, and nothing reaches trunk.
+      const devBefore = gh.head('dev');
+      expect(gh.landPr({ base: 'dev', headBranch: BRANCH, expectedHeadSha: approvedHead, method: 'squash' })).toEqual({ merged: false, status: 409 });
+      expect(gh.head('dev')).toBe(devBefore);
+
+      // The kernel re-binds to the moved head (carry-forward or a delta round, §8.3) and lands that.
+      expect(gh.landPr({ base: 'dev', headBranch: BRANCH, expectedHeadSha: movedHead, method: 'squash' }).merged).toBe(true);
+      contains('dev', { 'mission.ts': 'mission work', 'trunk.ts': 'trunk work', 'dev2.ts': 'more trunk' });
+
+      // After the mission PR merged, the refresh never writes to the branch again.
+      mockFindMissionPrOwner.mockResolvedValue({ state: 'merged' });
+      gh.commit('dev', { 'dev3.ts': 'after merge\n' });
+      const calls = mergesCalls;
+      expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toEqual({ kind: 'skipped', reason: 'mission_pr_merged' });
+      expect(mergesCalls).toBe(calls);
+      expect(gh.head(BRANCH)).toBe(movedHead);
+    });
   });
 });

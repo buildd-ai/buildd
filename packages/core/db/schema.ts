@@ -27,7 +27,7 @@ export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'hea
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
-import type { ScheduleDelegation } from '../token-delegation';
+import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
 import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -42,13 +42,7 @@ export const teams = pgTable('teams', {
   // active hours — where there is no single known viewer. Seeded from the detected zone
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
-  warmHandover: text('warm_handover').$type<'off' | 'repo' | 'deps'>().default('off').notNull(),
 
-  // Per-team permission grants: permission name -> team roles that hold it. An
-  // absent key = the registry default (apps/web/src/lib/permission-registry.ts).
-  // Read only through sanitizeOverrides; owners always hold everything, and
-  // locked permissions ignore this. Written by PUT /api/teams/[id]/permissions.
-  permissionOverrides: jsonb('permission_overrides').$type<Record<string, string[]>>().default({}).notNull(),
   // Hosted plan assignment for Buildd-managed runners: { plan, ...overrides }.
   // NULL = the deployment default (BUILDD_DEFAULT_MANAGED_PLAN), unlimited when
   // that is unset, so a self-hosted install has no commercial limit. Written by
@@ -132,6 +126,10 @@ export const teams = pgTable('teams', {
   // credentialPolicyOf (apps/web/src/lib/inference-key-policy.ts), which maps
   // team/team_or_own/own one-to-one. inferenceKeyPolicy is dropped later.
   credentialPolicy: text('credential_policy').$type<'team' | 'personal_first' | 'personal_only'>(),
+  // Which connected provider serves each surface (packages/core/providers/assignments.ts).
+  // NULL or a missing surface = the resolver's own ranking. A set surface puts
+  // that provider first within a scope; it never widens what the resolver may pick.
+  providerAssignments: jsonb('provider_assignments').$type<import('../providers/assignments').ProviderAssignments | null>(),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
@@ -510,7 +508,7 @@ export interface WorkspaceGitConfig {
   // Cloud-runner container class. Absent = derived from recent run reports
   // (apps/web/src/lib/runner-size.ts); an explicit value always wins.
   runnerSize?: 'standard' | 'large';
-  /** Null/absent inherits the team policy. */
+  /** `off` starts every task in a fresh container; null/absent takes the platform default. `repo`/`deps` are stored opt-ins from before the team setting was removed and raise nothing. */
   warmHandover?: 'off' | 'repo' | 'deps' | null;
   // Written by buildd, never by the settings form: the first derivation that
   // moved this workspace to `large`, kept so one light run does not move it back.
@@ -829,6 +827,23 @@ export interface WorkspaceReleaseConfig {
   // buildd merges it; CI failure or no open PR marks the release task FAILED.
   releaseBranch?: string;
 
+  // Frozen release candidates (packages/core/release-candidate.ts): the release
+  // workflow cuts a versioned branch (e.g. release/v1.2.3) from one captured
+  // sourceBranch SHA and opens it as the single PR into prodBranch. Declares
+  // which PRs into prodBranch are such candidates. Independent of `ref` (the
+  // ref a workflow_dispatch runs on) and of `releaseBranch` (the legacy fixed
+  // release-PR head). No defaults: absent ⇒ no PR is a candidate.
+  candidate?: {
+    // Head refs a candidate may come from: exact names or a prefix ending in
+    // one '*', e.g. ['release/v*'].
+    branches: string[];
+    // Branch candidates are cut from; their constituent PRs merged here (e.g. 'dev').
+    sourceBranch: string;
+    // GitHub logins allowed to open candidate PRs: the release workflow's
+    // identity (e.g. 'github-actions[bot]'). A PR by anyone else is ordinary.
+    authors: string[];
+  };
+
   // Deploy target for verifying the production deploy completed
   deployTarget?: {
     type: 'vercel';
@@ -961,6 +976,10 @@ export interface TaskScheduleTemplate {
   // workspace (knowledge-base: buildd/design/role-routing.md §3.1); otherwise the task files
   // role-less.
   roleSlug?: string;
+  // The model tier every spawned task asks for, stated once: a hard override
+  // of the kind x complexity matrix, as `tier` on create_task. Unset: routed
+  // by kind and complexity as before.
+  tier?: 'premium-plus' | 'premium' | 'standard' | 'budget';
 }
 
 // Task result/deliverable snapshot - populated when worker completes
@@ -1515,6 +1534,12 @@ export const tasks = pgTable('tasks', {
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
   // Enables reverse lookup: given a stray task, find the schedule that created it.
   scheduleId: uuid('schedule_id'),  // FK constraint defined in migration (circular ref with task_schedules)
+  // Explicit cross-workspace reach for this task's token, same shape as a
+  // schedule's (packages/core/token-delegation.ts). Written only by a person
+  // who reaches each target, by an approved tasks:create capability request,
+  // or copied from the task a continuation/retry replaces. Never read from
+  // context: a caller writes context, so a grant there could be forged.
+  delegation: jsonb('delegation').$type<TaskDelegation>(),
   // Identity of the schedule tick this cycle belongs to: `${scheduleId}:${schedule.lastRunAt}`.
   // Set by the cron dispatcher on every mission-linked cycle, and by the failure-triggered
   // auto-retry path (mission-loop.ts's retriggerMissionOnFailure) when retrying within the
@@ -1923,6 +1948,13 @@ export type WorkerWaitingFor = {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
+  /**
+   * Interactive (runner = 'mcp') worker parked by ask_human only: the last
+   * time its session polled for the answer (await_answer / receive_messages),
+   * ISO. Written by its own UPDATE that leaves updated_at (the park clock)
+   * alone. See INTERACTIVE_SESSION_POLL_STALE_MS in apps/web/src/lib/answer-resume.ts.
+   */
+  sessionSeenAt?: string;
 };
 
 /**
@@ -1975,6 +2007,10 @@ export const workers = pgTable('workers', {
   // No FK on purpose: a deleted user must not turn the claim back into an
   // account-owned (NULL) one.
   claimedByUserId: uuid('claimed_by_user_id'),
+  // Set at claim when a cloud container claimed this worker (executor 'cloud' or a
+  // task-token claim). There the task token is the runner's own credential, so its
+  // verification evidence counts as the runner's (lib/verification-provenance.ts).
+  claimedByCloud: boolean('claimed_by_cloud').default(false).notNull(),
   name: text('name').notNull(),
   runner: text('runner').notNull(),
   branch: text('branch').notNull(),
@@ -2316,6 +2352,13 @@ export const localSessions = pgTable('local_sessions', {
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
   endedAt: timestamp('ended_at', { withTimezone: true }),
   endReason: text('end_reason'),
+  /**
+   * Set when the plugin says a turn is in progress (prompt or tool call
+   * started), cleared at the turn's end. A long silent command sends nothing
+   * until it returns; while this is set the interactive reaper keeps the
+   * presence's claims, up to INTERACTIVE_WORKER_BUSY_MAX_MS after last_seen_at.
+   */
+  busySince: timestamp('busy_since', { withTimezone: true }),
   /**
    * Legacy: the single worker a session could hold before multi-claim. Read
    * (never written) so a session bound before localSessionWorkers existed still
@@ -3940,7 +3983,7 @@ export const memoryDecisions = pgTable('memory_decisions', {
 export const knowledgeEntities = pgTable('knowledge_entities', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: text('workspace_id').notNull(),
-  kind: text('kind').notNull().$type<'file' | 'symbol' | 'heading' | 'pr' | 'task' | 'mission' | 'initiative' | 'wikilink' | 'concept' | 'feature' | 'component'>(),
+  kind: text('kind').notNull().$type<'file' | 'symbol' | 'heading' | 'pr' | 'task' | 'mission' | 'initiative' | 'wikilink' | 'concept' | 'feature' | 'component' | 'spec' | 'spec_revision'>(),
   key: text('key').notNull(),
   canonicalName: text('canonical_name').notNull(),
   attributes: jsonb('attributes').default({}).$type<Record<string, unknown>>().notNull(),
@@ -5623,6 +5666,32 @@ export const releaseTasksRelations = relations(releaseTasks, ({ one }) => ({
 export type ReleaseTask = typeof releaseTasks.$inferSelect;
 export type NewReleaseTask = typeof releaseTasks.$inferInsert;
 
+// Append-only record of the owner's release flow (Compose → Cut → Review →
+// Release; packages/core/release-compose.ts): who pressed each button, when,
+// and what it did. GitHub stays the truth for the candidate itself; this is
+// the "who and when" GitHub cannot say (every push and PR is the App's).
+export const releaseFlowSteps = pgTable('release_flow_steps', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // Kept as a plain id: the record outlives the person's account.
+  actorUserId: uuid('actor_user_id'),
+  step: text('step').notNull().$type<'include' | 'cut' | 'exclude' | 'release' | 'confirm_production'>(),
+  outcome: text('outcome').notNull().$type<'succeeded' | 'refused' | 'pending' | 'failed'>(),
+  // The candidate's version and SHA when the step ran (null before the cut).
+  version: text('version'),
+  candidateSha: text('candidate_sha'),
+  prNumber: integer('pr_number'),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  // Step-specific facts: reverted SHAs, merge SHA, deployed SHA, refusal text.
+  detail: jsonb('detail').$type<Record<string, unknown>>(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceOccurredIdx: index('release_flow_steps_workspace_occurred_idx').on(t.workspaceId, t.occurredAt),
+}));
+
+export type ReleaseFlowStep = typeof releaseFlowSteps.$inferSelect;
+export type NewReleaseFlowStep = typeof releaseFlowSteps.$inferInsert;
+
 // Memories — absorbed from the standalone memory.buildd.dev service.
 // Team-scoped: all workspaces in a team share the same memory pool.
 // IDs are preserved from the service so knowledge_chunks source_ids remain valid.
@@ -5983,7 +6052,7 @@ export const platformAdminAuditEvents = pgTable('platform_admin_audit_events', {
   actorAccountId: uuid('actor_account_id'),
   // e.g. 'experiment.update', 'team.experiment_flags.update'
   action: text('action').notNull(),
-  targetType: text('target_type').notNull().$type<'experiment' | 'team'>(),
+  targetType: text('target_type').notNull().$type<'experiment' | 'team' | 'decision_feature' | 'decision_measurement'>(),
   targetId: text('target_id').notNull(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
   before: jsonb('before').$type<Record<string, unknown>>(),
@@ -5993,6 +6062,60 @@ export const platformAdminAuditEvents = pgTable('platform_admin_audit_events', {
 }));
 
 export type PlatformAdminAuditEvent = typeof platformAdminAuditEvents.$inferSelect;
+
+/**
+ * The platform owner's switch per decision feature: recording only, or acting
+ * (packages/core/decision-feature-modes.ts). One row per feature; no row means
+ * the feature's code default. A team still turns the feature on for itself
+ * (teams.enabledDecisionShadows); this decides what it does once on.
+ *
+ * `measuredFingerprint` and `threshold` pin what was switched: if the
+ * feature's questions or model change later, the row stops matching and the
+ * feature records again until it is switched on anew.
+ */
+export const decisionFeatureModes = pgTable('decision_feature_modes', {
+  feature: text('feature').primaryKey(),
+  mode: text('mode').notNull().$type<'acting' | 'recording'>(),
+  applyingFraction: real('applying_fraction').default(1).notNull(),
+  measuredFingerprint: text('measured_fingerprint'),
+  threshold: real('threshold'),
+  setByAccountId: uuid('set_by_account_id'),
+  setAt: timestamp('set_at', { withTimezone: true }).defaultNow().notNull(),
+  reason: text('reason'),
+});
+
+export type DecisionFeatureModeRow = typeof decisionFeatureModes.$inferSelect;
+
+/**
+ * Which model may act on which decision kind, and at what confidence
+ * (packages/core/decision-model-measurements.ts). One row per (kind, model):
+ * an eval measured the lowest threshold at which that model is right often
+ * enough on that kind, and the platform owner stored it. No row: Jev keeps the
+ * kind's own threshold and every other model records only.
+ *
+ * `measuredFingerprint` pins what was measured (the call site's prompt
+ * version or fingerprint): when it changes the row stops applying until the
+ * model is measured again. `retired` records only.
+ */
+export const decisionModelMeasurements = pgTable('decision_model_measurements', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  kind: text('kind').notNull(),
+  model: text('model').notNull(),
+  threshold: real('threshold').notNull(),
+  precisionLower: real('precision_lower'),
+  coverage: real('coverage'),
+  n: integer('n').notNull(),
+  evalRunId: text('eval_run_id'),
+  measuredFingerprint: text('measured_fingerprint').notNull(),
+  status: text('status').notNull().default('active').$type<'active' | 'retired'>(),
+  setByAccountId: uuid('set_by_account_id'),
+  setAt: timestamp('set_at', { withTimezone: true }).defaultNow().notNull(),
+  reason: text('reason'),
+}, (t) => ({
+  kindModelIdx: uniqueIndex('decision_model_measurements_kind_model_idx').on(t.kind, t.model),
+}));
+
+export type DecisionModelMeasurementRow = typeof decisionModelMeasurements.$inferSelect;
 
 /**
  * One row per worker session end, on every path — completed, failed, the
@@ -6278,6 +6401,11 @@ export const promptEvalRuns = pgTable('prompt_eval_runs', {
   costUsd: real('cost_usd'),
   // Why the run failed or was skipped: fixed phrases naming ids and counts, never text.
   problems: jsonb('problems').$type<string[]>(),
+  // A model comparison (several models over a case set): the models asked, and
+  // which case sources it read ('labelled' | 'collected' | 'both'). Null on a
+  // single-model prompt eval.
+  models: jsonb('models').$type<string[]>(),
+  caseSource: text('case_source'),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (t) => ({
@@ -6309,6 +6437,14 @@ export const promptEvalResults = pgTable('prompt_eval_results', {
   errors: integer('errors').notNull().default(0),
   notRun: integer('not_run').notNull().default(0),
   costUsd: real('cost_usd'),
+  // Model comparison rows only (null on a single-model eval row): where the
+  // cases came from ('labelled' | 'collected', never pooled), the origin
+  // ('prompts-repo', 'dataset:<name>/<version>', 'replay'), and the content-free
+  // scores (calibration per confidence source, threshold sweep, derived
+  // threshold, agreement, latency, cost per 1k). Ids, counts and rates only.
+  caseSource: text('case_source'),
+  caseOrigin: text('case_origin'),
+  metrics: jsonb('metrics').$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   runIdx: index('prompt_eval_results_run_idx').on(t.runId),

@@ -144,7 +144,8 @@ describe('verified_by ratchet', () => {
   test('no new spec joins the debt list', () => {
     // 19 pre-existing specs owed guards when the check landed on 2026-08-30, and
     // mcp-action-contracts paid its debt off with the on-demand-review guards,
-    // and credential-isolation with the runner-key exposure guards.
+    // credential-isolation with the runner-key exposure guards, and release-flow
+    // with the release-candidate guards.
     // The number is asserted so growing it requires editing this test and
     // explaining why.
     expect(VERIFIED_BY_DEBT.size).toBeLessThanOrEqual(17);

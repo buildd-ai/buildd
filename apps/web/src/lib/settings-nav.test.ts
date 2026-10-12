@@ -31,13 +31,35 @@ describe('SETTINGS_NAV', () => {
 
   it('lists everything the team shares under Team, Members first', () => {
     expect(ids('Team')).toEqual([
-      'team', 'roles', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations',
+      'team', 'agents', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations', 'apps', 'features',
     ]);
     expect(SETTINGS_ITEMS.find((i) => i.id === 'team')?.label).toBe('Members');
   });
 
+  it('splits connected apps: yours under You, the team\'s apps and agent access under Team', () => {
+    const yours = SETTINGS_ITEMS.find((i) => i.id === 'connections')!;
+    const team = SETTINGS_ITEMS.find((i) => i.id === 'apps')!;
+    expect(ids('You')).toContain('connections');
+    expect(ids('Team')).toContain('apps');
+    expect(team.href).toBe('/app/settings/apps');
+    expect(team.manage).toEqual(['manage_connectors']);
+    // Your page describes only your own connections.
+    expect(yours.description).not.toMatch(/agent|team/i);
+    const yoursPage = readFileSync(pageFor(yours.href), 'utf8');
+    expect(yoursPage).not.toContain('TeamAppsSection');
+    expect(yoursPage).not.toContain('AgentAccessSection');
+    const teamPage = readFileSync(pageFor(team.href), 'utf8');
+    expect(teamPage).toContain('TeamAppsSection');
+    expect(teamPage).toContain('AgentAccessSection');
+  });
+
+  it('describes Members by what is on the page', () => {
+    const members = SETTINGS_ITEMS.find((i) => i.id === 'team')!;
+    expect(members.description).not.toMatch(/what each person can change/);
+  });
+
   it('keeps sub-pages inside their section', () => {
-    expect(settingsItemFor('/app/settings/roles/builder/edit')?.id).toBe('roles');
+    expect(settingsItemFor('/app/settings/agents/builder/edit')?.id).toBe('agents');
     expect(settingsItemFor('/app/settings/team/new')?.id).toBe('team');
     expect(settingsItemFor('/app/settings/runners/tokens/new')?.id).toBe('runners');
     expect(settingsItemFor('/app/settings/keys')?.id).toBe('keys');
@@ -97,8 +119,8 @@ describe('settingsNavFor', () => {
 });
 
 describe('settingsReadOnly', () => {
-  const member = settingsPermissions({ role: 'member', slug: 'acme' }, 'u1', {});
-  const admin = settingsPermissions({ role: 'admin', slug: 'acme' }, 'u1', {});
+  const member = settingsPermissions({ role: 'member', slug: 'acme' }, 'u1');
+  const admin = settingsPermissions({ role: 'admin', slug: 'acme' }, 'u1');
   const teamIds = SETTINGS_NAV.find((g) => g.scope === 'team')!.items.map((i) => i.id);
 
   it('shows every team section read-only to a member', () => {
@@ -113,12 +135,6 @@ describe('settingsReadOnly', () => {
     for (const id of ['account', 'keys', 'notifications', 'connections'] as const) {
       expect(settingsReadOnly(id, NO_PERMISSIONS)).toBe(false);
     }
-  });
-
-  it('follows the team\'s overrides: a member granted a section\'s permission can change it', () => {
-    const granted = settingsPermissions({ role: 'member', slug: 'acme' }, 'u1', { manage_team_notifications: ['owner', 'admin', 'member'] });
-    expect(settingsReadOnly('alerts', granted)).toBe(false);
-    expect(settingsReadOnly('integrations', granted)).toBe(true);
   });
 
   it('says who manages it in one plain line', () => {
@@ -143,7 +159,7 @@ describe('settingsItemFor', () => {
 describe('settingsBackHref', () => {
   it('goes from a section back to the index, and from a sub-page back to its section', () => {
     expect(settingsBackHref('/app/settings/models')).toBe('/app/settings');
-    expect(settingsBackHref('/app/settings/roles/builder')).toBe('/app/settings/roles');
+    expect(settingsBackHref('/app/settings/agents/builder')).toBe('/app/settings/agents');
     expect(settingsBackHref('/app/settings/workspace/ws-1')).toBe('/app/settings/workspaces');
     expect(settingsBackHref('/app/settings')).toBeNull();
   });
@@ -159,7 +175,7 @@ describe('legacy settings links', () => {
     expect(legacySettingsTarget('#agent-backends')).toBe('/app/settings/models');
     expect(legacySettingsTarget('agent-backends')).toBe('/app/settings/models');
     expect(legacySettingsTarget('#inference-spending')).toBe('/app/settings/models');
-    expect(legacySettingsTarget('#connectors')).toBe('/app/settings/connections');
+    expect(legacySettingsTarget('#connectors')).toBe('/app/settings/apps');
     expect(legacySettingsTarget('#github')).toBe('/app/settings/integrations');
     expect(legacySettingsTarget('#vercel')).toBe('/app/settings/integrations');
     expect(legacySettingsTarget('#provider-keys')).toBe('/app/settings/models');

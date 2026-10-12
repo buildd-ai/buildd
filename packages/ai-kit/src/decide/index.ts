@@ -353,6 +353,57 @@ export interface DecisionReceipt {
   latencyMs: number;
   outcome: 'ok' | 'error';
   attempts: number;
+  /** On `outcome: 'error'` only (0.27.0+): why. See `decisionReceiptError`. */
+  error?: DecisionReceiptError;
+}
+
+/**
+ * Why a decision failed, small enough to store on every receipt. A
+ * `provider_error` keeps the provider's status and the start of its body
+ * (`PROVIDER_ERROR_EXCERPT_CHARS`), with the key redacted, so a ledger can say
+ * "Cloudflare: Authentication error" rather than only "provider_error".
+ */
+export interface DecisionReceiptError {
+  kind: DecideError['kind'];
+  status?: number;
+  body?: string;
+}
+
+/** How much of a provider's error body a receipt keeps. */
+export const PROVIDER_ERROR_EXCERPT_CHARS = 200;
+
+const BEARER_RE = /\b(Bearer)\s+[^\s"',;]+/gi;
+
+/** `text` with every given secret, and any bearer value, replaced by `[redacted]`. */
+export function redactSecrets(text: string, secrets: readonly (string | null | undefined)[] = []): string {
+  let out = typeof text === 'string' ? text : bodyText(text);
+  for (const s of secrets) {
+    // Short values are not secrets and would redact half the text.
+    if (s && s.length >= 8) out = out.split(s).join('[redacted]');
+  }
+  return out.replace(BEARER_RE, '$1 [redacted]');
+}
+
+/** A provider body folded to one line, redacted, and cut to `PROVIDER_ERROR_EXCERPT_CHARS`. */
+function excerptBody(body: string): string {
+  return redactSecrets(body).replace(/\s+/g, ' ').trim().slice(0, PROVIDER_ERROR_EXCERPT_CHARS);
+}
+
+/** `HTTP <status>: <first 200 chars of the body>`, redacted: what a person reads about a rejection. */
+export function providerErrorExcerpt(status: number, body: string): string {
+  const ex = excerptBody(body);
+  return ex ? `HTTP ${status}: ${ex}` : `HTTP ${status}`;
+}
+
+/** The receipt's `error` for a failed call. */
+export function decisionReceiptError(error: DecideError): DecisionReceiptError {
+  // A host's own invoker may hand back a failure with no error at all.
+  if (!error || typeof error !== 'object') return { kind: 'transport' };
+  if (error.kind === 'provider_error') {
+    const body = excerptBody(error.body);
+    return { kind: error.kind, status: error.status, ...(body ? { body } : {}) };
+  }
+  return { kind: error.kind };
 }
 
 export type UsageSink = (receipt: DecisionReceipt) => void | Promise<void>;
@@ -371,6 +422,7 @@ export function toDecisionReceipt<Q extends DecisionQuestions>(
     latencyMs: result.latencyMs,
     outcome: result.ok ? 'ok' : 'error',
     attempts: result.attempts,
+    ...(result.ok || !result.error ? {} : { error: decisionReceiptError(result.error) }),
   };
 }
 
@@ -690,8 +742,16 @@ export async function decide<Q extends DecisionQuestions>(params: DecideParams<Q
     }
     return result;
   };
+  // A provider may echo the key back in its error body; nothing downstream
+  // (a log line, a receipt, a ledger row) should ever carry it.
+  const secrets = [params.apiKey, ...Object.entries(headers).filter(([k]) => /auth|key|token/i.test(k)).map(([, v]) => v)];
   const fail = (error: DecideError, attempts: number): DecideResult<Q> =>
-    finish({ ok: false, error, latencyMs: now() - started, attempts });
+    finish({
+      ok: false,
+      error: error.kind === 'provider_error' ? { ...error, body: redactSecrets(bodyText(error.body), secrets) } : error,
+      latencyMs: now() - started,
+      attempts,
+    });
 
   if (!ep.ok) return fail({ kind: 'invalid_request', message: ep.message }, 0);
   if (!model) return fail({ kind: 'invalid_request', message: 'a chat endpoint needs a model id' }, 0);
@@ -1000,7 +1060,7 @@ export async function runDecisionPool<T, R>(
  */
 
 /** This package's version. `define.test.ts` asserts it matches package.json. Metadata, not identity. */
-export const KIT_VERSION = '0.26.0';
+export const KIT_VERSION = '0.28.0';
 
 /**
  * The version of the kit logic that turns a decision's definition into

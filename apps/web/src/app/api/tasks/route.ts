@@ -51,6 +51,8 @@ import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
 import { findIntakeWarnings } from '@buildd/core/spec-discrepancy-intake';
 import { isUuid } from '@/lib/uuid';
+import { resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
+import { FILING_TARGETS_CONTEXT_KEY, parseFilingTargets, type TaskDelegation } from '@buildd/core/token-delegation';
 import {
   GATE_SLUGS,
   fireGateEvent,
@@ -455,6 +457,10 @@ export async function POST(req: NextRequest) {
       loopConfig: rawLoopConfig,
       subjectAnchor: rawSubjectAnchor,
       fileAnywayReason,
+      // Cross-workspace reach for this task's token (person only) and the
+      // workspaces it declares it will file tasks in (lib/task-delegation.ts).
+      delegation: rawDelegation,
+      filingTargets: rawFilingTargets,
     } = body;
     let missionId: string | undefined = requestedMissionId;
 
@@ -585,25 +591,53 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) {
       return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
     }
-    // A task token files in its own workspace, or in one its schedule's
-    // delegation grants tasks:create on (packages/core/token-delegation.ts).
+    // A task token files in its own workspace, or in one its delegation (the
+    // schedule's or the task's own) grants tasks:create on
+    // (packages/core/token-delegation.ts).
     if (apiAccount && !taskScopeAllowsDelegated(apiAccount, workspaceId, 'tasks:create')) {
-      return NextResponse.json({ error: 'A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on' }, { status: 403 });
+      return NextResponse.json({
+        error: "A task token may create tasks only in its own workspace, or one its delegation grants tasks:create on. Ask for it with request_capability { capability: 'tasks:create', resource: '<workspace UUID>' }: a person approves it and the run keeps going.",
+        code: 'delegation_required',
+      }, { status: 403 });
     }
-    // A delegated follow-up is a plain task: it never joins a mission or a
-    // dependency graph in the other workspace, so it cannot steer work there.
-    // Its parent is the filing task itself (derived from the worker), which
-    // is the audit link back to the run that filed it.
+    // A delegated filing stays inside the delegated workspace: a mission link
+    // and dependencies only when the mission and every dependency are that
+    // workspace's own (dependsOn is confined to it by the check further down),
+    // so it cannot steer work anywhere the grant does not name. Its parent is
+    // the filing task itself (derived from the worker), the audit link back to
+    // the run that filed it.
+    let delegatedMissionChecked = false;
     if (apiAccount?.taskScope && isDelegatedReach(apiAccount, workspaceId)) {
       // MCP create_task fills in the filing task's own mission by default;
       // that link stays home rather than refusing the follow-up.
       if (missionId && await taskScopeAllowsMission(apiAccount, missionId)) missionId = undefined;
-      if (missionId || (Array.isArray(dependsOn) && dependsOn.length > 0)) {
-        return NextResponse.json({ error: 'A delegated task cannot set missionId or dependsOn' }, { status: 400 });
+      if (missionId) {
+        const mission = isUuid(missionId)
+          ? await db.query.missions.findFirst({ where: eq(missions.id, missionId), columns: { id: true, workspaceId: true } })
+          : null;
+        if (!mission || mission.workspaceId !== workspaceId) {
+          return NextResponse.json({ error: 'A delegated task may join a mission only in the workspace its delegation names' }, { status: 403 });
+        }
+        delegatedMissionChecked = true;
       }
       if (parentTaskId && parentTaskId !== apiAccount.taskScope.taskId) {
         return NextResponse.json({ error: 'A delegated task can only name its filing task as parent' }, { status: 400 });
       }
+    }
+    // A task's own delegation is a person's grant (lib/task-delegation.ts):
+    // only a dashboard or OAuth session that reaches each target may set it.
+    let taskDelegation: TaskDelegation | null = null;
+    if (rawDelegation !== undefined) {
+      const write = await resolveTaskDelegationWrite(rawDelegation, workspaceId, grantPerson);
+      if (!write.ok) return NextResponse.json({ error: write.error }, { status: write.status });
+      taskDelegation = write.value;
+    }
+    // Declared filing targets are a need, not a grant: the claim holds the
+    // task until a delegation covers them (claim/delegation-gate.ts).
+    const filingTargets = parseFilingTargets(rawFilingTargets ?? (incomingContext as Record<string, unknown> | undefined)?.[FILING_TARGETS_CONTEXT_KEY]);
+    if (!filingTargets.ok) return NextResponse.json({ error: filingTargets.error }, { status: 400 });
+    if (filingTargets.targets.length > 0) {
+      incomingContext = { ...(incomingContext ?? {}), [FILING_TARGETS_CONTEXT_KEY]: filingTargets.targets } as typeof rawIncomingContext;
     }
     gateWorkspaceId = workspaceId;
 
@@ -621,7 +655,7 @@ export async function POST(req: NextRequest) {
     }
     // A per-task token files work only onto its own task's mission, never
     // another mission on the team, whatever its level.
-    if (missionId && apiAccount && !(await taskScopeAllowsMission(apiAccount, missionId))) {
+    if (missionId && apiAccount && !delegatedMissionChecked && !(await taskScopeAllowsMission(apiAccount, missionId))) {
       return NextResponse.json(
         {
           error: "A task token may create tasks only in its own task's mission. This mission exists on your team but is outside your token's scope; ask a person or an organizer to file the task.",
@@ -1340,7 +1374,7 @@ export async function POST(req: NextRequest) {
       targetWorkspace.gitConfig?.enforceGreenCI === true &&
       outputRequirement === 'pr_required'
     ) {
-      loopConfig = parseLoopConfig({ exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }, undefined);
+      loopConfig = parseLoopConfig({ exitCondition: { type: 'pr_checks_green' }, maxLoops: 3, waitExpiryMinutes: 240 }, undefined);
     }
 
     // Who the task is for (resolveTaskRequesterUserId): decides which personal
@@ -1561,6 +1595,7 @@ export async function POST(req: NextRequest) {
         description: description || null,
         priority: priority || 0,
         status: 'pending',
+        ...(taskDelegation ? { delegation: taskDelegation } : {}),
         mode: emitsPlan ? 'planning' : 'execution',
         taskClass: isBookkeepingTitle ? 'bookkeeping' : 'work',
         runnerPreference: runnerPreference || 'any',
@@ -1846,6 +1881,7 @@ export async function POST(req: NextRequest) {
             title: task.title,
             taskClass: task.taskClass,
             pathManifest: (task.pathManifest as string[] | null) ?? null,
+            context: task.context,
           },
           targetWorkspace,
         });

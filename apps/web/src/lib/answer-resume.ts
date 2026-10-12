@@ -19,7 +19,13 @@
  * without a database. See docs/specs/answered-question-resume.md.
  */
 
-import { isTerminalWorkerStatus } from '@buildd/shared';
+import {
+  INTERACTIVE_WORKER_IDLE_TTL_MS,
+  INTERACTIVE_WORKER_RUNNER,
+  isTerminalWorkerStatus,
+  LIVE_WORKER_STATUSES,
+} from '@buildd/shared';
+import { FILING_TARGETS_CONTEXT_KEY, inheritTaskDelegation, readFilingTargets } from '@buildd/core/token-delegation';
 
 /**
  * How stale `workers.updatedAt` may be and still mean "the runner that holds
@@ -70,11 +76,40 @@ export const ANSWER_PATH_REASONS = {
     'the agent credential for this workspace is expired or revoked, so resuming would have died unauthenticated',
   resume_not_acknowledged:
     'the answer was queued for the parked session but never acknowledged before the deadline',
+  interactive_session:
+    'the question came from an interactive session that is still checking in, so the answer goes straight back to it',
+  interactive_session_gone:
+    'the interactive session that asked has ended or stopped checking in, so nobody was there to receive the answer',
+  interactive_session_stopped_polling:
+    'the interactive session that asked stopped waiting for the answer (its terminal likely closed), so nobody was there to receive it',
 } as const;
+
+/**
+ * How old an interactive session's poll heartbeat (`waitingFor.sessionSeenAt`,
+ * stamped by every await_answer and receive_messages call while parked) may
+ * be before the session is treated as gone.
+ *
+ * A session waiting correctly calls await_answer back to back: each call holds
+ * at most 45 s server-side, so a live session's heartbeat is never older than
+ * one wait plus the model turn between calls. 5 minutes is over 6x the wait —
+ * room for a slow turn, a dropped call and a retry — and above the ~3 minute
+ * update_progress cadence the skills ask for, so a session that falls back to
+ * polling receive_messages at that cadence is never judged gone. Far below the
+ * 2 h idle TTL: an answer to a closed terminal goes cold within minutes, not
+ * hours.
+ */
+export const INTERACTIVE_SESSION_POLL_STALE_MS = 5 * 60 * 1000;
 
 export type AnswerPathReason = keyof typeof ANSWER_PATH_REASONS;
 
-export type AnswerPath = 'resume' | 'cold_continuation';
+/**
+ * - `resume`: a runner holding the transcript injects the answer into it.
+ * - `interactive`: the worker is a person's own MCP session (claim_task,
+ *   `workers.runner = 'mcp'`); the answer is queued as an `answer` worker
+ *   message that its `receive_messages` returns. No runner, no new task.
+ * - `cold_continuation`: supersede + `Continue:` task.
+ */
+export type AnswerPath = 'resume' | 'interactive' | 'cold_continuation';
 
 /** Result of the backend credential check taken before choosing a path. */
 export type CredentialPreflightState = 'ok' | 'unhealthy' | 'unknown';
@@ -101,6 +136,16 @@ export interface AnswerPathInput {
    * the park bundle, not a live runner, holds them (G2).
    */
   parkedUntil?: Date | number | null;
+  /**
+   * `workers.runner`. `'mcp'` marks an interactive worker, which no runner
+   * holds — see `evaluateInteractiveAnswerPath`.
+   */
+  workerRunner?: string | null;
+  /**
+   * `workers.waitingFor.sessionSeenAt`: the parked interactive session's last
+   * poll (ISO). Absent when it never polled.
+   */
+  sessionSeenAt?: string | Date | number | null;
   /** Injectable clock. Defaults to now. */
   now?: number;
 }
@@ -118,14 +163,80 @@ export interface AnswerPathDecision {
   reason: string;
 }
 
-function cold(reasonCode: Exclude<AnswerPathReason, 'resume_eligible'>): AnswerPathDecision {
+function cold(reasonCode: Exclude<AnswerPathReason, 'resume_eligible' | 'interactive_session'>): AnswerPathDecision {
   return { path: 'cold_continuation', reasonCode, reason: ANSWER_PATH_REASONS[reasonCode] };
 }
 
-function toEpoch(value: Date | number | null | undefined): number | null {
+function toEpoch(value: Date | number | string | null | undefined): number | null {
   if (value == null) return null;
-  const ms = value instanceof Date ? value.getTime() : Number(value);
+  const ms = value instanceof Date ? value.getTime() : typeof value === 'string' ? Date.parse(value) : Number(value);
   return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Statuses in which an interactive session can still take an answer: the park
+ * itself (`waiting_input`) and the statuses its MCP calls keep alive.
+ */
+export const INTERACTIVE_ANSWER_LIVE_STATUSES: readonly string[] = LIVE_WORKER_STATUSES;
+
+/**
+ * The interactive gate, on its own: null for a runner-managed worker (the
+ * resume/cold gates decide), else `interactive` while the session is alive and
+ * `cold_continuation` with `interactive_session_gone` once it is not.
+ *
+ * Separate from `evaluateAnswerPath` so `/respond` can take it BEFORE the
+ * backend credential preflight. That preflight reads the workspace's managed
+ * agent credential, which an interactive session never uses — it runs on the
+ * person's own seat — so a revoked managed credential must not refuse an
+ * answer to it. The cold fallback does run on a runner, and is preflighted.
+ *
+ * Alive:
+ *  - `waiting_input` (parked on its question): alive, whatever `updatedAt`
+ *    says. While parked, `updatedAt` is frozen at the ask so the waiting_input
+ *    sweep can measure the park from it (PARK_MAX_MS / PARK_MISSION_MAX_MS);
+ *    judging it by the 2h idle TTL would send any answer slower than 2h cold
+ *    while the session is still polling. That sweep owns expiry: once it fails
+ *    the worker, the status check below sends the answer cold. `/respond` has
+ *    already required an answerable question before calling this. The one
+ *    exception is the poll heartbeat: a parked session whose last
+ *    await_answer / receive_messages poll is older than
+ *    INTERACTIVE_SESSION_POLL_STALE_MS has stopped waiting, and goes cold
+ *    with `interactive_session_stopped_polling`. No heartbeat at all = live.
+ *  - any other live status: checked in within INTERACTIVE_WORKER_IDLE_TTL_MS,
+ *    the same window the reaper uses before freeing an interactive claim.
+ */
+export function evaluateInteractiveAnswerPath(input: {
+  workerRunner: string | null | undefined;
+  workerStatus: string | null;
+  workerUpdatedAt: Date | number | null;
+  /** `waitingFor.sessionSeenAt`, see INTERACTIVE_SESSION_POLL_STALE_MS. */
+  sessionSeenAt?: string | Date | number | null;
+  now?: number;
+}): AnswerPathDecision | null {
+  if (input.workerRunner !== INTERACTIVE_WORKER_RUNNER) return null;
+  const now = input.now ?? Date.now();
+  const updatedAt = toEpoch(input.workerUpdatedAt);
+  const parked = input.workerStatus === 'waiting_input';
+  // A parked session that WAS polling and stopped has gone (its terminal
+  // closed mid-wait). One that never polled proves nothing either way — an
+  // older client, or a session that asked and is about to wait — so it keeps
+  // the parked-is-live rule below.
+  const seenAt = toEpoch(input.sessionSeenAt as Date | number | string | null | undefined);
+  if (parked && seenAt !== null && now - seenAt > INTERACTIVE_SESSION_POLL_STALE_MS) {
+    return cold('interactive_session_stopped_polling');
+  }
+  const alive = parked || (
+    input.workerStatus !== null
+    && INTERACTIVE_ANSWER_LIVE_STATUSES.includes(input.workerStatus)
+    && updatedAt !== null
+    && now - updatedAt <= INTERACTIVE_WORKER_IDLE_TTL_MS
+  );
+  if (!alive) return cold('interactive_session_gone');
+  return {
+    path: 'interactive',
+    reasonCode: 'interactive_session',
+    reason: ANSWER_PATH_REASONS.interactive_session,
+  };
 }
 
 /**
@@ -138,6 +249,16 @@ function toEpoch(value: Date | number | null | undefined): number | null {
  */
 export function evaluateAnswerPath(input: AnswerPathInput): AnswerPathDecision {
   const now = input.now ?? Date.now();
+
+  // G0: an interactive worker has no runner, so none of G1-G5 describe it.
+  const interactive = evaluateInteractiveAnswerPath({
+    workerRunner: input.workerRunner,
+    workerStatus: input.workerStatus,
+    workerUpdatedAt: input.workerUpdatedAt,
+    sessionSeenAt: input.sessionSeenAt,
+    now,
+  });
+  if (interactive) return interactive;
 
   // G1: parked. `/respond` accepts an answer for any status carrying
   // `waitingFor` — that is what keeps the question from being swallowed by a
@@ -206,6 +327,8 @@ export function explainNotWaiting(input: {
   continuationTaskId: string | null | undefined;
   /** An answer is queued on this worker for its resume (see `isAnswerQueued`). */
   answerQueued?: boolean;
+  /** The worker is an interactive session (`workers.runner = 'mcp'`). */
+  interactive?: boolean;
 }): NotWaitingExplanation {
   // `superseded` is written only by an answer (cold path) or a reassign.
   if (input.workerStatus === 'superseded') {
@@ -231,6 +354,16 @@ export function explainNotWaiting(input: {
     return {
       reasonCode: 'already_answered',
       message: 'This was already answered. The agent picks the answer up when it resumes.',
+      nextAction: { kind: 'refresh' },
+    };
+  }
+  // The interactive path flips the worker straight back to running, so its
+  // duplicate tap arrives on a running worker whose answer is still unread.
+  if (input.interactive && input.answerQueued && input.workerStatus !== null
+    && INTERACTIVE_ANSWER_LIVE_STATUSES.includes(input.workerStatus)) {
+    return {
+      reasonCode: 'already_answered',
+      message: 'This was already answered. The session that asked picks the answer up on its next check-in.',
       nextAction: { kind: 'refresh' },
     };
   }
@@ -294,9 +427,13 @@ export function isAnswerableWaitingFor(
 
 /** One owner-facing sentence naming which path ran and, when it degraded, why. */
 export function describeAnswerPath(decision: AnswerPathDecision): string {
-  return decision.path === 'resume'
-    ? 'Resumed the worker’s own session with your answer — it keeps everything it already worked out.'
-    : `Started a fresh continuation instead of resuming the original session, because ${decision.reason}.`;
+  if (decision.path === 'resume') {
+    return 'Resumed the worker’s own session with your answer — it keeps everything it already worked out.';
+  }
+  if (decision.path === 'interactive') {
+    return 'Sent your answer back to the session that asked — it picks it up on its next check-in and carries on where it stopped.';
+  }
+  return `Started a fresh continuation instead of resuming the original session, because ${decision.reason}.`;
 }
 
 /**
@@ -311,6 +448,17 @@ export interface AnswerDeliveryRecord {
   decidedAt: string;
   /** Resume path only: when an unacknowledged answer degrades to cold. */
   ackDeadlineAt?: string;
+  /**
+   * Interactive path only: the id of the `answer` worker message (and of its
+   * instruction-history entry). await_answer finds the answer by it after the
+   * capped message queue has evicted the message.
+   */
+  messageId?: string;
+  /**
+   * Interactive path only: the ask id the wait capability was minted for
+   * (`waitingFor.waitCapId`, lib/answer-wait-capability.ts), when one was.
+   */
+  waitCapId?: string;
   /**
    * The question being answered, kept so the deadline sweep can build a
    * continuation description after `waitingFor` has been cleared. Omitted when
@@ -371,6 +519,9 @@ export function buildContinuationDescription(opts: {
     '',
     '## User Response',
     opts.answer,
+    '',
+    '## Already Answered',
+    'The question above was asked by the run this task continues, and a person answered it. Act on that answer; do not ask it again. If you hit the same need again (e.g. access you were told you have), check whether the answer or the task\'s grants already cover it; if something is still missing, ask for that specific thing (request_capability for access), never the same question.',
   ].join('\n');
 }
 
@@ -395,6 +546,8 @@ export interface ContinuationParentTask {
   backend?: 'claude' | 'codex' | null;
   runnerPreference?: 'any' | 'user' | 'service' | 'action' | null;
   context?: unknown;
+  /** The task's own cross-workspace grant (packages/core/token-delegation.ts). */
+  delegation?: unknown;
 }
 
 /**
@@ -451,6 +604,11 @@ export function buildContinuationTaskValues(opts: {
 }) {
   const parentContext = (opts.task?.context as Record<string, unknown>) || {};
   const currentIteration = (parentContext.iteration as number) || 1;
+  // The same work keeps the same cross-workspace grant a person gave it, and
+  // the same declared need; without them the continuation would hit the wall
+  // its parent was granted past, or start without the claim pre-flight.
+  const delegation = opts.task?.id ? inheritTaskDelegation({ id: opts.task.id, delegation: opts.task.delegation }) : null;
+  const filingTargets = readFilingTargets(parentContext);
 
   return {
     workspaceId: opts.workspaceId,
@@ -477,6 +635,7 @@ export function buildContinuationTaskValues(opts: {
     // it goes where the parent was allowed to go (claim routing and webhook
     // dispatch both read it).
     runnerPreference: opts.task?.runnerPreference ?? undefined,
+    ...(delegation ? { delegation } : {}),
     context: {
       // Honored by the runner's worktree setup — but ONLY when `branch` already
       // exists on the remote, i.e. the original worker had already pushed. If
@@ -503,6 +662,7 @@ export function buildContinuationTaskValues(opts: {
       // continuation itself so a reader of the cold task sees it without
       // reconstructing anything.
       answerDelivery: opts.delivery,
+      ...(filingTargets.length ? { [FILING_TARGETS_CONTEXT_KEY]: filingTargets } : {}),
     },
   };
 }

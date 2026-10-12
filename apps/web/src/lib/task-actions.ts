@@ -21,6 +21,8 @@ export interface GateRefusal {
   canForce?: boolean;
   /** workspace_cap_reached: the person may start this one task past the cap. */
   canExempt?: boolean;
+  /** workspace_cap_reached: the person holds manage_workspace_settings, so raising the cap would be accepted. */
+  canRaiseCap?: boolean;
   backend?: string;
   /** capability_mismatch: backends the team does hold a credential for. */
   availableBackends?: string[];
@@ -345,7 +347,7 @@ export function getGateReasonSubtitle(refusal: GateRefusal, ctx: GateCopyContext
     case 'mission_budget_exhausted':
       return 'The parent mission spent its cost budget, so workers claim none of its tasks. Raise the mission budget to release them all, or force-start this task.';
     case 'connector_routing_mismatch':
-      return `The role requires connectors that are not available in this workspace.${refusal.missingConnectors?.length ? ` Missing: ${refusal.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${refusal.alternativeRole ? ` Or re-file it with role: ${refusal.alternativeRole}.` : ''}`;
+      return `This agent requires connectors that are not available in this workspace.${refusal.missingConnectors?.length ? ` Missing: ${refusal.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${refusal.alternativeRole ? ` Or re-file it with role: ${refusal.alternativeRole}.` : ''}`;
     case 'capability_mismatch':
       return 'The configured backend has no server credentials. Switch to an available backend to start this task.';
     case 'entitlement_blocked':
@@ -398,7 +400,7 @@ export function formatFleetStatus(fleet: RunnerFleetStatus | null, roleSlug?: st
   if (fleet.count === 0) {
     let msg = 'No runners online. The task starts when a runner connects.';
     if (roleSlug === 'visual-auditor') {
-      msg += ' This role requires a browser-capable runner.';
+      msg += ' This agent requires a browser-capable runner.';
     }
     return msg;
   }
@@ -411,7 +413,7 @@ export function formatFleetStatus(fleet: RunnerFleetStatus | null, roleSlug?: st
   }
   msg += '. If the runner is mid-task, it claims this task on its next poll.';
   if (roleSlug === 'visual-auditor') {
-    msg += ' This role requires a browser-capable runner.';
+    msg += ' This agent requires a browser-capable runner.';
   }
   return msg;
 }

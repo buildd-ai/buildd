@@ -34,7 +34,7 @@ import type { ClaimedEffect, EffectHandler, EffectHandlers } from './effects';
 import { insertFollowupEffectSql } from './effects';
 import { applyCommand, loadView, type Exec } from './kernel';
 import { ingestFact } from './facts';
-import { collectComposition, isCompositionPr } from './review-composition';
+import { collectComposition, compositionConstituentBase } from './review-composition';
 import { githubReader, workspaceRepo } from './github-facts';
 import type { KernelView, RoundSnapshot } from './types';
 
@@ -110,7 +110,12 @@ async function tryCompositionAttestation(p: {
   const { d, round } = p;
   if (!d.repoFullName || d.prNumber == null || round.headSha !== d.currentHeadSha) return null;
   try {
-    const pull = (await githubApi(p.repo.installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`)) as { head?: { ref?: string; sha?: string }; base?: { ref?: string } } | null;
+    const pull = (await githubApi(p.repo.installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`)) as {
+      head?: { ref?: string; sha?: string; repo?: { full_name?: string } | null };
+      base?: { ref?: string; repo?: { full_name?: string } | null };
+      user?: { login?: string } | null;
+      body?: string | null;
+    } | null;
     // The live head first: an attestation computed against a head the PR has
     // already moved past proves nothing about what would merge. A mismatch (or
     // an unreadable head) attests nothing; the head webhook / floor re-rounds it.
@@ -123,12 +128,26 @@ async function tryCompositionAttestation(p: {
     const baseRef = pull?.base?.ref ?? d.baseRef;
     if (!headRef || !baseRef) return null;
     const missionWorkingBranch = p.mission?.workingBranch ?? null;
-    if (!isCompositionPr({ headRef, baseRef, missionWorkingBranch, releaseConfig: (p.workspace.releaseConfig ?? null) as never, refreshTrunk: p.refreshTrunk })) return null;
+    // A frozen release candidate is recognised only with its provenance (the
+    // author, the release workflow's metadata, and that metadata naming this
+    // exact head): a hand-made release/v* branch reviews in full.
+    const constituentBase = compositionConstituentBase({
+      headRef, baseRef, missionWorkingBranch, releaseConfig: (p.workspace.releaseConfig ?? null) as never, refreshTrunk: p.refreshTrunk,
+      pr: {
+        headSha: liveHead,
+        author: pull?.user?.login ?? null,
+        headRepoFullName: pull?.head?.repo?.full_name ?? null,
+        baseRepoFullName: pull?.base?.repo?.full_name ?? null,
+        body: pull?.body ?? null,
+      },
+    });
+    if (!constituentBase) return null;
     // A refresh PR is composed from trunk's PRs; a PR from the mission branch (its integration PR) is not a refresh.
     const refreshTrunk = p.refreshTrunk && missionWorkingBranch && baseRef === missionWorkingBranch.trim() ? p.refreshTrunk : null;
     const built = await collectComposition({
       api: githubApi, exec: dbExec, installationId: p.repo.installationId, workspaceId: d.workspaceId,
       repoFullName: d.repoFullName, prNumber: d.prNumber, baseRef, headRef, aggregateHeadSha: round.headSha, refreshTrunk,
+      constituentBase: refreshTrunk ? null : constituentBase,
     });
     if (built.attestation.novelDelta.result === 'unverifiable') {
       console.log(`[workflow] composition of ${d.repoFullName}#${d.prNumber} unverifiable (${built.attestation.novelDelta.reason}); full review`);
@@ -392,8 +411,9 @@ const dispatchFix: EffectHandler = async (e) => {
 
 /**
  * The GitHub review body. A composition delta round (§5.9, S33) reviewed only
- * the release-only paths, so its approval says so: it is not a reviewer
- * verdict on the whole release.
+ * the paths new to the composed PR (a release's own changes, or what a mission
+ * branch refresh's merge resolved), so its approval says so: it is not a
+ * reviewer verdict on the whole PR.
  */
 export function postReviewBody(
   event: 'APPROVE' | 'REQUEST_CHANGES',
@@ -405,8 +425,8 @@ export function postReviewBody(
   if (sc?.compositionDelta === true) {
     const paths = Array.isArray(sc.paths) ? sc.paths.map(String) : [];
     const list = paths.length ? `\n\n${paths.map((p) => `- \`${p}\``).join('\n')}` : '';
-    const text = `Release-only changes approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}). `
-      + `This review covers only the ${paths.length} new ${paths.length === 1 ? 'path' : 'paths'} the release adds; `
+    const text = `New changes approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}). `
+      + `This review covers only the ${paths.length} ${paths.length === 1 ? 'path' : 'paths'} new to this PR; `
       + `every other change was reviewed at its own head and is not re-reviewed here.${list}\n\n${out.summary ?? ''}`;
     return text.trimEnd();
   }

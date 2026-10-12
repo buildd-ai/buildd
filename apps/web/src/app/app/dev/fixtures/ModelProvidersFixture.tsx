@@ -9,6 +9,13 @@
  * real page needs a team with all of that configured, so a route screenshot of
  * a fresh team shows only the empty state. Fixture values only: example.com
  * URLs, made-up last4s.
+ *
+ * `?state=model-providers-lone` (variant "lone"): one OpenRouter team key and
+ * nothing else, so Used for draws its one line instead of the table.
+ *
+ * `?state=model-providers-stored-policy` (variant "stored-policy"): the full
+ * page for a team that stored "team keys only" before the setting was removed,
+ * so Providers draws the key-rule line and its reset.
  */
 import { Suspense, useState } from 'react';
 import SettingsPage from '../../(protected)/settings/_components/SettingsPage';
@@ -77,12 +84,19 @@ const ROWS: FixtureRow[] = [
   { provider: 'anthropic', scope: 'mine', last4: 'm3n4' },
 ];
 
-function explain(url: URL): ExplainProviderResponse {
+/** One provider connected: no gateway, no endpoint, no other keys. */
+const LONE_ROWS: FixtureRow[] = [
+  { provider: 'openrouter', scope: 'team', last4: 'r7s8', lastVerifiedAt: ago(DAY) },
+];
+
+export type ModelProvidersFixtureVariant = 'full' | 'lone' | 'stored-policy';
+
+function explain(url: URL, rows: readonly FixtureRow[]): ExplainProviderResponse {
   const surface = url.searchParams.get('surface') as ExplainProviderResponse['surface'];
   const provider = url.searchParams.get('provider') ?? 'anthropic';
   const as = url.searchParams.get('as') === 'self' ? 'self' : 'team';
   const workspaceId = url.searchParams.get('workspaceId');
-  const row = ROWS.find((r) => r.provider === provider && (r.scope === 'team' || (as === 'self' && r.scope === 'mine')) && r.health !== 'revoked');
+  const row = rows.find((r) => r.provider === provider && (r.scope === 'team' || (as === 'self' && r.scope === 'mine')) && r.health !== 'revoked');
   if (!row) return { surface, as, workspaceId, result: { resolved: false, reason: `No usable ${provider} credential for this.` }, why: [`team ${provider}: none set`] };
   const scope = row.scope === 'mine' ? 'personal' : row.scope;
   return {
@@ -92,25 +106,38 @@ function explain(url: URL): ExplainProviderResponse {
   };
 }
 
-function installStub() {
+function installStub(variant: ModelProvidersFixtureVariant) {
   if (typeof window === 'undefined') return;
   const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
   const real = window.fetch.bind(window);
-  let credentialPolicy: CredentialPolicyValue | null = null;
+  const lone = variant === 'lone';
+  const rows = lone ? LONE_ROWS : ROWS;
+  let credentialPolicy: CredentialPolicyValue | null = variant === 'stored-policy' ? 'team' : null;
+  let assignments: Record<string, string> = {};
   window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.pathname : input.url;
     const parsed = new URL(url, window.location.origin);
-    if (parsed.pathname === '/api/providers/explain') return Promise.resolve(json(explain(parsed)));
+    if (parsed.pathname === '/api/providers/assignments') {
+      if (init?.method === 'PATCH') {
+        const { surface, provider } = JSON.parse(String(init.body)) as { surface: string; provider: string | null };
+        assignments = { ...assignments };
+        if (provider) assignments[surface] = provider;
+        else delete assignments[surface];
+      }
+      return Promise.resolve(json({ assignments }));
+    }
+    if (parsed.pathname === '/api/providers/explain') return Promise.resolve(json(explain(parsed, rows)));
     if (parsed.pathname === '/api/providers') {
       if (init?.method === 'PATCH') {
         credentialPolicy = JSON.parse(String(init.body)).credentialPolicy;
         return Promise.resolve(json({ policy: fixturePolicy(credentialPolicy) }));
       }
-      return Promise.resolve(json(fixtureResponse({ rows: ROWS, workspaceId: parsed.searchParams.get('workspaceId'), credentialPolicy, teamId: TEAM })));
+      return Promise.resolve(json(fixtureResponse({ rows, workspaceId: parsed.searchParams.get('workspaceId'), credentialPolicy, teamId: TEAM })));
     }
     if (url.startsWith('/api/inference-keys')) return Promise.resolve(json({ canManageTeamKeys: true, providers: [], keyPolicy: 'team' }));
     if (!url.startsWith(`/api/teams/${TEAM}`)) return real(input, init);
     if (url.endsWith('/litellm-gateway')) {
+      if (lone) return Promise.resolve(json({ gateway: null }));
       return Promise.resolve(json({ gateway: { baseURL: 'https://litellm.example.com/v1', last4: 'abcd', health: 'healthy', lastVerificationError: null } }));
     }
     if (url.endsWith('/agent-endpoint/models/suggest')) return Promise.resolve(json({ suggestions: [] }));
@@ -118,14 +145,14 @@ function installStub() {
       const rows = TIERS.map(([model, tier]) => ({ model, tiers: [tier], value: MODELS[model], source: 'alias', served: true }));
       return Promise.resolve(json({ available: true, listed: LISTED, rows }));
     }
-    if (url.includes('/agent-endpoint')) return Promise.resolve(json({ endpoints: endpoints() }));
+    if (url.includes('/agent-endpoint')) return Promise.resolve(json({ endpoints: lone ? [] : endpoints() }));
     return Promise.resolve(json({ team: { decisionModel: null } }));
   }) as typeof fetch;
 }
 
-export default function ModelProvidersFixture() {
+export default function ModelProvidersFixture({ variant = 'full' }: { variant?: ModelProvidersFixtureVariant }) {
   // Installed before the sections' mount effects fire, which a child effect would otherwise beat.
-  useState(() => installStub());
+  useState(() => installStub(variant));
   return (
     <div className="min-h-screen bg-surface-1">
       <SettingsPage title="Providers" description={PROVIDERS_DESCRIPTION}>

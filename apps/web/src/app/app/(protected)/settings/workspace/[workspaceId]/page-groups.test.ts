@@ -14,7 +14,7 @@ const GROUPS: Array<[string, string[]]> = [
   ['Readiness', ['<WorkspaceHealthCard', '<ReadinessCard', '<RepoAccessCard']],
   ['Repository', ['<GitConfigForm', '<MemberRepoAccessSection']],
   ['Delivery', ['<MergePolicyEditor', '<BranchStrategySection', '<CiRetrySection', '<ReleaseSection', '<SubjectPolicySection']],
-  ['Where work runs', ['<ExecutorSection', '<RunnerSizeSection', '<ConcurrencySection']],
+  ['Where work runs', ['<ExecutorSection', '<RunnerSizeSection', '<ConcurrencySection', '<PauseStartsSection']],
   ['Integrations', ['<WorkTrackerSection']],
   ['Danger zone', ['<MoveToTeamButton', '<DeleteWorkspaceButton']],
 ];
@@ -33,6 +33,12 @@ describe('workspace settings page', () => {
         expect(`${title} ${part}: ${at > -1 && at < end}`).toBe(`${title} ${part}: true`);
       }
     }
+  });
+
+  it('holds the workspace\'s own model keys, between Where work runs and Integrations', () => {
+    const at = PAGE.indexOf('<WorkspaceModels');
+    expect(at).toBeGreaterThan(PAGE.indexOf('title="Where work runs"'));
+    expect(at).toBeLessThan(PAGE.indexOf('title="Integrations"'));
   });
 
   it('offers Move to team once, under Danger zone, not again in the health card', () => {
@@ -66,7 +72,7 @@ describe('workspace settings page', () => {
     expect(readiness).toContain('{notices.readiness && <ReadinessCard');
     expect(readiness).toContain('{notices.repoAccess && repoAccessView && (');
     expect(PAGE).toContain('canManage: canManageSettings,');
-    expect(PAGE).toContain("roleHas(access.role, 'manage_workspace_settings', overrides)");
+    expect(PAGE).toContain("roleHas(access.role, 'manage_workspace_settings')");
   });
 
   it('names the workspace on a phone, where the shell header only says Workspaces', () => {

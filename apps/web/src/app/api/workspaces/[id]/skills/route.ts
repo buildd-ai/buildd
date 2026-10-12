@@ -14,7 +14,7 @@ import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 import { normalizeBackend } from '@/lib/normalize-backend';
-import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
 async function authenticateRequest(req: NextRequest) {
@@ -54,7 +54,7 @@ async function sessionMayManageRole(
     touchesRole: boolean,
 ): Promise<boolean> {
     if (!access || !touchesRole) return true;
-    return roleHas(access.role, 'manage_agent_roles', await getTeamPermissionOverrides(access.teamId));
+    return roleHas(access.role, 'manage_agent_roles');
 }
 
 const ROLE_FORBIDDEN = { error: 'Managing agent roles requires team admin' };
@@ -206,11 +206,11 @@ export async function POST(
             );
         }
 
-        // `/app/settings/roles/new` is a static route, so a role with this slug could
+        // `/app/settings/agents/new` is a static route, so a role with this slug could
         // never reach its own detail page. See lib/reserved-slugs.ts.
         if (isReservedRoleSlug(slug)) {
             return NextResponse.json(
-                { error: `"${slug}" is reserved because /app/settings/roles/${slug} is a built-in page. Pick a different slug.` },
+                { error: `"${slug}" is reserved because /app/settings/agents/${slug} is a built-in page. Pick a different slug.` },
                 { status: 400 }
             );
         }

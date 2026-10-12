@@ -33,6 +33,7 @@ import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import {
   findPrOwningWorker,
   findReviewTaskForPr,
+  findLiveReviewTaskForPr,
   listWorkspaceRoles,
   resolveOrAdoptPrOwner,
   waitForPrReviewStatus,
@@ -249,25 +250,31 @@ export async function POST(req: NextRequest) {
     console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
     return null;
   });
-  if (kernel?.handled) {
+  // §8.1: the reviewer that answers is the round's at the live head, never the
+  // newest reviewer row of the PR number (§14 Slice A retired that rule here).
+  // A reviewTaskId whose row is gone is no review task at all: fall through and
+  // queue one rather than report "already under review" with no status.
+  const kernelReviewTask = kernel?.handled && kernel.reviewTaskId
+    ? (await db.query.tasks.findFirst({
+        where: eq(tasks.id, kernel.reviewTaskId),
+        columns: { id: true, status: true, result: true, context: true },
+      })) ?? null
+    : null;
+  // Only an accepted result may fall through: a refusal (escalation, force) keeps its 409.
+  const kernelAccepted = !!kernel?.handled && (kernel.result.result === 'applied'
+    || (kernel.result.result === 'rejected' && (kernel.result.reason === 'review_in_flight' || kernel.result.reason === 'head_already_reviewed')));
+  const kernelReviewTaskMissing = kernelAccepted && !!kernel?.reviewTaskId && !kernelReviewTask;
+  if (kernel?.handled && !kernelReviewTaskMissing) {
     const r = kernel.result;
-    const accepted = r.result === 'applied'
-      || (r.result === 'rejected' && (r.reason === 'review_in_flight' || r.reason === 'head_already_reviewed'));
-    if (!accepted) {
+    const accepted = kernelAccepted;
+    if (!accepted && r.result !== 'applied') {
       return bad(`Review not requested: ${r.reason}`, 409, {
         code: r.reason, current: r.current, kernel: true,
         ...(r.reason === 'force_requires_human' ? { hint: FORCE_NEEDS_PERSON } : {}),
         ...(r.reason === 'escalation_needs_human' ? { hint: 'this PR is escalated to a person for a reason another review does not answer; the owner resolves it from the dashboard' } : {}),
       });
     }
-    // §8.1: the reviewer that answers is the round's at the live head, never the
-    // newest reviewer row of the PR number (§14 Slice A retired that rule here).
-    const latest = kernel.reviewTaskId
-      ? (await db.query.tasks.findFirst({
-          where: eq(tasks.id, kernel.reviewTaskId),
-          columns: { id: true, status: true, result: true, context: true },
-        })) ?? null
-      : null;
+    const latest = kernelReviewTask;
     if (latest && callbackUrl && r.result === 'applied') {
       await db.update(tasks)
         .set({ context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('reviewCallback', ${JSON.stringify({ url: callbackUrl, on: callbackOn })}::jsonb)` })
@@ -459,8 +466,49 @@ export async function POST(req: NextRequest) {
     // This may occur if a concurrent caller (e.g., create_pr's auto-review
     // request and the explicit review request in the same milliseconds) both
     // tried to create a reviewer task for the same PR. The first wins due to
-    // the DB constraint; if the winner was not found by the fallback lookup,
-    // escalate with context for diagnosis.
+    // the DB constraint; if the winner was not found by the fallback lookup
+    // in createReviewerTask, try a broader lookup as a last resort.
+    console.warn(`[pr-review] createReviewerTask returned null for PR #${prNumber}; attempting fallback lookup`);
+
+    // Retry with a live-task-only lookup that doesn't require head SHA match.
+    // This catches cases where the concurrent winner was created just after
+    // our insert failed but before we found it. Only returns pending/assigned/in_progress
+    // tasks — never completed ones from prior heads.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      const fallback = await findLiveReviewTaskForPr(workspace.id, prNumber);
+      if (fallback?.id) {
+        console.log(`[pr-review] Fallback lookup found live reviewer task ${fallback.id} for PR #${prNumber}`);
+        const policy = await resolveEffectivePolicy(workspace, originalTask.missionId);
+        return NextResponse.json(
+          {
+            ok: true,
+            adopted,
+            alreadyRequested: true,
+            prNumber,
+            prUrl: pr.html_url,
+            repoFullName: repo.fullName,
+            workspaceId: workspace.id,
+            taskId: originalTask.id,
+            reviewTaskId: fallback.id,
+            deduplicated: true,
+            reviewerRole: picked.role,
+            reviewerRoleSource: picked.source,
+            autoMergeExpected: autoMergeExpectedFor(policy),
+            callback: callbackUrl ? { url: callbackUrl, on: callbackOn } : null,
+            status: derivePrReviewStatus({
+              reviewTask: fallback as any,
+              worker: ownerWorker ?? null,
+              autoMergeExpected: autoMergeExpectedFor(policy),
+            }),
+          },
+          { status: 200 },
+        );
+      }
+    }
+
     console.error(`[pr-review] Failed to create or find reviewer task for PR #${prNumber} in workspace ${workspace.id}`);
     return bad('Could not create the reviewer task (or find concurrent writer; see logs)', 500);
   }

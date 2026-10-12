@@ -70,7 +70,7 @@ assertions:
 > |---|---|---|
 > | Storage | `workspace_skills.mcpServers` + `requiredEnvVars` | `connectors` + `connector_workspaces` |
 > | Auth | env-var secrets (`mcp_credential`) | `none`/`header`/`oauth` (`mcp_connector_credential`) |
-> | UI | RoleEditor "Connectors" + "Browse Registry" | Settings → Connected apps (`/app/settings/connections`) |
+> | UI | RoleEditor "Connectors" + "Browse Registry" | Settings → Team → Apps (`/app/settings/apps`) |
 > | Injection | R2 role tarball → `.mcp.json` | claim route → `cw.mcpConnectors` |
 > | Scope | per role | per workspace (role-blind, all workers) |
 >
@@ -108,7 +108,7 @@ assertions:
 >   213, 264) and `RoleConfigInput.mcpConfig`/`.envMapping` are `@deprecated`
 >   (role-config.ts 8–24). The normalizer that folded `workspaceSkills.mcpServers`
 >   into the bundle is deleted; there is no role-tarball MCP path left to read.
-> - `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx`
+> - `apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/RoleConnectorsSection.tsx`
 >   — role "Connectors" + the registry browser, mounted by the one role editor
 >   (`TeamRoleEditor.tsx`, which owns `connectorRefs` via `setConnectorRefs`)
 > - `apps/web/src/app/api/connectors/*` + `apps/web/src/lib/mcp-oauth.ts` — team
@@ -406,7 +406,7 @@ create (or reuse) a team `connectors` row and add its id to the role's
   installed again THEN no duplicate row is created (`409`-free reuse).
 
 **Code surface**:
-- UI: `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx`
+- UI: `apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/RoleConnectorsSection.tsx`
   (the registry browser's Add is wired to `installConnector`, which POSTs
   `/api/connectors` and appends the returned connector id to the role's
   `connectorRefs`; `TeamRoleEditor.tsx` holds that list via `setConnectorRefs`
@@ -421,7 +421,7 @@ the user connects.
 
 ## 5b. Built-in catalog + connector icons
 
-**Capability statement**: Settings → MCP connectors → Add connection MUST open
+**Capability statement**: Settings → Team → Apps → Add connection MUST open
 on a built-in catalog of remote MCP servers; picking one MUST create an
 ordinary team `connectors` row through the same `POST /api/connectors` path a
 custom URL uses. Every http connector SHOULD carry a display icon.
@@ -433,7 +433,8 @@ custom URL uses. Every http connector SHOULD carry a display icon.
   or serves anonymously; servers that fail discovery stay out. Exception: an
   official server whose vendor admits only reviewed MCP clients stays listed
   with `clientSupport: { status: 'needs_approved_client', … }` (Vercel today,
-  §5a), so the UI says why instead of omitting it.
+  §5a). A team admin sees it as "Not available" with no Connect; a member
+  does not see it. Why it is unavailable is operator detail, not team copy.
 - Creation stays team-admin only (`manage_connectors`, §6); the catalog does
   not widen who can add a connector.
 - `connectors.iconUrl` is resolved best-effort — catalog icon, then MCP
@@ -477,7 +478,7 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 - Icon resolver: `apps/web/src/lib/connector-icon.ts`, `apps/web/src/lib/connector-icon-refresh.ts`,
   `apps/web/src/lib/public-endpoint.ts`, `apps/web/src/lib/mcp-server-info.ts`
 - UI: `apps/web/src/app/app/(protected)/settings/connections/connectors/AddConnectionModal.tsx`,
-  `apps/web/src/app/app/(protected)/settings/connections/connectors/CatalogSection.tsx`,
+  `apps/web/src/app/app/(protected)/settings/connections/connectors/TeamAppsSection.tsx`, `apps/web/src/lib/team-apps-view.ts`,
   `apps/web/src/components/ConnectorIcon.tsx`
 - Route: `apps/web/src/app/api/connectors/route.ts`, `apps/web/src/app/api/connectors/catalog/route.ts`,
   `apps/web/src/app/api/connectors/catalog/policy/route.ts`, `apps/web/src/app/api/admin/connector-catalog/route.ts`
@@ -492,7 +493,8 @@ custom URL uses. Every http connector SHOULD carry a display icon.
   `apps/web/src/lib/connector-catalog-input.test.ts`
 - `apps/web/src/app/api/connectors/catalog/route.test.ts`, `apps/web/src/app/api/connectors/catalog/policy/route.test.ts`,
   `apps/web/src/app/api/admin/connector-catalog/route.test.ts`
-- `apps/web/src/app/app/(protected)/settings/connections/connectors/CatalogSection.dom.test.tsx`
+- `apps/web/src/app/app/(protected)/settings/connections/connectors/TeamAppsSection.dom.test.tsx`, `apps/web/src/lib/team-apps-view.test.ts`,
+  `apps/web/src/app/api/connectors/catalog/request/route.test.ts`
 - `apps/web/tests/db/connector-catalog.test.ts` (partial unique indexes, real Postgres)
 
 **Catalog layers (DB, team policy, preinstall)**:
@@ -522,7 +524,8 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/connectors/catalog` | Team member | merged catalog + policy (+`canManage`) |
+| `GET` | `/api/connectors/catalog` | Team member | merged catalog + policy (+`canManage`); an entry with `clientSupport` reads only `unavailable: true`, and members get neither blocked nor unavailable entries |
+| `POST` | `/api/connectors/catalog/request` | Team member (session) | ask the team's admins for an offered entry; pages the team, installs nothing |
 | `POST` | `/api/connectors/catalog` | Team admin | add a team-private entry |
 | `PATCH`/`DELETE` | `/api/connectors/catalog/[id]` | Team admin | edit/remove own team's entry |
 | `PUT` | `/api/connectors/catalog/policy` | Team admin | set blocked/available/preinstalled |
@@ -579,7 +582,11 @@ never as a generic failure and never worked around.
 - A DCR refusal that means "client not approved" (`invalid_redirect_uri`,
   `invalid_client_metadata`, software-statement errors, 401/403) is
   `ClientRegistrationRejectedError.needsApprovedClient`; create and preinstall
-  answer `422 needs_approved_client` with the catalog's `detail`/`actionUrl`.
+  answer `422 needs_approved_client` with a customer message ("Vercel isn't
+  available to connect.") and no link. The vendor's refusal, the catalog's
+  `clientSupport` detail and review link go to the structured log line
+  `connector.registration_refused` and the platform catalog
+  (`/api/admin/connector-catalog`), never to a team.
   buildd MUST NOT reuse another client's id, a global admin token, or a copied
   credential to get past it.
 
@@ -605,7 +612,10 @@ approved client would be impersonation. Re-run the probe with
 - AC-3: WHEN a member without `manage_connectors` calls connect THEN 403 and
   no state cookie.
 - AC-4: WHEN Vercel is added or preinstalled THEN `422 needs_approved_client`
-  with Vercel's review link, and no connector row is created.
+  with no review link or vendor wording, and no connector row is created.
+- AC-5: GIVEN an entry with `clientSupport` WHEN Settings → Team → Apps
+  renders it for an admin THEN the row reads "Not available" with no Connect
+  and no details; a member does not see it.
 
 **Code surface**:
 - Policy: `apps/web/src/lib/connector-access-policy.ts`, `apps/web/src/lib/connector-team-auth.ts`
@@ -636,6 +646,32 @@ grant work, task `d6b7501a`, consumes `status: 'blocked'` from the mounted
 list); the access-request UI (task `a35d01f0`).
 
 ---
+
+## 5c. Where team apps live in Settings
+
+**Capability statement**: The team's apps MUST live in the Team group of
+Settings, apart from the apps a person connected to buildd themselves.
+
+**Invariants**:
+- Settings → You → Connected apps (`/app/settings/connections`) lists only the
+  signed-in person's own connections to buildd.
+- Settings → Team → Apps (`/app/settings/apps`) holds Team apps (the team's
+  connectors) and Agent access (requests and the team's approval policy). Each
+  control follows `manage_connectors`; a member reads both and can request an
+  app.
+- Every team-app link points at `/app/settings/apps`: the connector OAuth
+  callback (`?connected=` / `?error=`), the reconnect banner (`?reconnect=`),
+  a capability request (`?request=<id>#agent-access`), the Home `RECONNECT`
+  chip and connector pushes. An old `/app/settings/connections` link carrying
+  one of those query keys, and `/app/settings/connectors`, redirect there
+  (`next.config.mjs` `SETTINGS_ROUTE_MOVES`).
+
+**Code surface**: `apps/web/src/app/app/(protected)/settings/apps/page.tsx`,
+`apps/web/src/app/app/(protected)/settings/connections/page.tsx`,
+`apps/web/src/lib/settings-nav.ts`, `apps/web/next.config.mjs`.
+
+**Verified by**: `apps/web/src/lib/settings-nav.test.ts`,
+`apps/web/src/lib/settings-route-moves.test.ts`.
 
 ## 6. API & auth surface (as shipped)
 
@@ -725,9 +761,9 @@ reconnect. Approaching expiry is deliberately silent.
 
 **Surfaces** (all read the same derivation — no second copy of the rule):
 
-1. Settings → MCP connectors — `Connected` / `Expired` badge + `Reconnect`.
+1. Settings → Team → Apps — `Connected` / `Expired` badge + `Reconnect`.
 2. Home action queue — a `RECONNECT` chip per connector where
-   `needsReconnect()`, ranked above `REVIEW`, linking to `/app/settings/connections`.
+   `needsReconnect()`, ranked above `REVIEW`, linking to `/app/settings/apps`.
 3. Push — `/api/cron/connector-block-notify` fires
    `notifyTeam(…, 'connectorBlocked')` once per broken episode, deduped by
    `secrets.expiryNotifiedAt`, cleared by the reconnect and refresh-success paths.

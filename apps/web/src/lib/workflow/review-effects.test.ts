@@ -317,6 +317,66 @@ describe('dispatch_review', () => {
       });
     });
 
+    describe('a frozen release candidate (release/v1.2.3 → main, cut from dev)', () => {
+      const meta = (o: Record<string, unknown> = {}) => `<!-- release-candidate ${JSON.stringify({
+        schema: 1, version: '1.2.3', branch: 'release/v1.2.3', sourceRef: 'dev', sourceSha: 'SQ1', candidateSha: 'H1', baseRef: 'main', baseSha: 'B0', ...o,
+      })} -->`;
+      const candidatePr = (pull: Record<string, unknown> = {}) => {
+        composed();
+        workspaceReleaseConfig = {
+          enabled: true, strategy: 'workflow_dispatch', workflowFile: 'release.yml', ref: 'dev', prodBranch: 'main',
+          candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+        };
+        const inner = ghApi;
+        ghApi = (path) => path === '/repos/acme/w/pulls/7'
+          ? {
+            head: { ref: 'release/v1.2.3', sha: 'H1', repo: { full_name: 'acme/w' } }, base: { ref: 'main', repo: { full_name: 'acme/w' } },
+            user: { login: 'github-actions[bot]' }, body: meta(), ...pull,
+          }
+          : inner(path);
+      };
+      const withLedger = async (fn: () => Promise<void>) => {
+        const db = (await import('@buildd/core/db')).db as any;
+        const realExec = db.execute;
+        db.execute = async (q: any) => {
+          const text = JSON.stringify(q.queryChunks?.map((c: any) => c.value ?? '').flat());
+          if (text.includes('composition_constituents')) return { rows: [{ id: 'd11', pr_number: 11, approved_heads: ['P11'], rounds: [{ id: 'r11', head_sha: 'P11', status: 'decided', effective_verdict: 'approve' }] }] };
+          return realExec(q);
+        };
+        try { await fn(); } finally { db.execute = realExec; }
+      };
+      const queued = () => { view = { delivery: D({ state: 'AWAITING_REVIEW' }) as any, rounds: [{ ...round1, status: 'queued', verdict: null, effectiveVerdict: null, reviewerTaskId: null }], attempts: [] }; };
+
+      test('a trusted candidate built from reviewed dev PRs is attested and gets no aggregate reviewer', async () => {
+        candidatePr();
+        queued();
+        await withLedger(async () => {
+          expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'ok:composition_attested' });
+        });
+        expect(mockCreateReviewer).not.toHaveBeenCalled();
+        expect(ingested[0]).toMatchObject({ kind: 'composition_attested', attestation: { aggregateHeadSha: 'H1', novelDelta: { result: 'none' } } });
+        // Constituents were looked up as PRs into dev, the candidate's source.
+        expect(ghCalls).toContain('/repos/acme/w/commits/SQ1/pulls');
+      });
+
+      test('a spoofed candidate (not opened by the release workflow) gets the full review, no composition read', async () => {
+        candidatePr({ user: { login: 'mallory' } });
+        queued();
+        expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'ok' });
+        expect(ingested).toHaveLength(0);
+        expect(ghCalls.some((p) => p.includes('/compare/'))).toBe(false);
+        expect(mockCreateReviewer).toHaveBeenCalledTimes(1);
+      });
+
+      test('a candidate whose head is not the recorded candidate SHA gets the full review', async () => {
+        candidatePr({ body: meta({ candidateSha: 'OLD' }) });
+        queued();
+        expect(await __handlers.dispatchReview(E('dispatch_review', { roundId: 'r1' }))).toEqual({ outcome: 'ok' });
+        expect(ingested).toHaveLength(0);
+        expect(mockCreateReviewer).toHaveBeenCalledTimes(1);
+      });
+    });
+
     test('an ordinary PR is never checked for composition', async () => {
       composed({ headRef: 'buildd/abc-feature' });
       view = { delivery: D({ state: 'AWAITING_REVIEW' }) as any, rounds: [{ ...round1, status: 'queued', verdict: null, effectiveVerdict: null, reviewerTaskId: null }], attempts: [] };
@@ -348,11 +408,12 @@ describe('post_review (§8.4)', () => {
     await __handlers.postReview(E('post_review', { roundId: 'r1', commitId: 'H1', event: 'REQUEST_CHANGES' }));
     expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({ headSha: 'H1', event: 'REQUEST_CHANGES', prNumber: 7 });
   });
-  test('a composition delta approve says it covers only the release-only paths (S33)', async () => {
+  test('a composition delta approve says it covers only the paths new to the PR, naming no PR kind (S33)', async () => {
     await __handlers.postReview(E('post_review', { roundId: 'r1', commitId: 'H1', event: 'APPROVE', scope: { compositionDelta: true, paths: ['packages/core/x.ts'] } }));
     const body = (mockPostPrReview.mock.calls[0][0] as { body: string }).body;
-    expect(body).toStartWith('Release-only changes approved');
-    expect(body).toContain('covers only the 1 new path');
+    expect(body).toStartWith('New changes approved');
+    expect(body).toContain('covers only the 1 path new to this PR');
+    expect(body).not.toMatch(/release/i);
     expect(body).toContain('`packages/core/x.ts`');
     expect(body).not.toStartWith('Approved by buildd reviewer');
   });

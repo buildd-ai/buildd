@@ -10,7 +10,10 @@ import { NextRequest } from 'next/server';
  */
 
 let role: string | null = 'admin';
-let user: { id: string } | null = { id: 'user-1' };
+process.env.BUILDD_OPERATOR_USER_EMAILS = 'op@example.com';
+const OPERATOR = { id: 'user-1', email: 'op@example.com' };
+const TEAM_ADMIN = { id: 'user-1', email: 'admin@example.com' };
+let user: { id: string; email: string } | null = OPERATOR;
 let tierEntry: any = { provider: 'anthropic', model: 'claude-sonnet-5', source: 'team' };
 let cred: any = { key: 'k', scope: 'team' };
 let addResult: any = { ok: true, armId: 'arm-2' };
@@ -76,7 +79,7 @@ const ctx = (params: Record<string, string>) => ({ params: Promise.resolve(param
 const add = (body: Record<string, unknown>) => pools.POST(req('/api/model-tiers/pools', 'POST', { teamId: 'team-1', tier: 'standard', surface: 'chat', route: 'openrouter', model: 'qwen/qwen3-coder', ...body }));
 
 beforeEach(() => {
-  role = 'admin'; user = { id: 'user-1' };
+  role = 'admin'; user = OPERATOR;
   tierEntry = { provider: 'anthropic', model: 'claude-sonnet-5', source: 'team' };
   cred = { key: 'k', scope: 'team' };
   addResult = { ok: true, armId: 'arm-2' };
@@ -107,8 +110,10 @@ describe('POST /api/model-tiers/pools — add a model', () => {
     cred = null;
     expect((await add({})).status).toBe(400);
     cred = { key: 'k' };
+    user = TEAM_ADMIN;
     role = 'member';
     expect((await add({})).status).toBe(403);
+    user = OPERATOR;
     role = null;
     expect((await add({})).status).toBe(404);
     expect(calls.addChallenger).toBeUndefined();
@@ -188,6 +193,7 @@ describe('PATCH /api/model-tiers/pools/[id] — traffic', () => {
   });
 
   it('members cannot change traffic', async () => {
+    user = TEAM_ADMIN;
     role = 'member';
     expect((await patch({ mode: 'pinned' })).status).toBe(403);
   });
@@ -225,5 +231,30 @@ describe('DELETE /api/model-tiers/pools/[id]/arms/[armId]', () => {
   it('a stale screen gets 409', async () => {
     removeVersion = null;
     expect((await del('ch')).status).toBe(409);
+  });
+});
+
+describe('pool writes are a platform operator control', () => {
+  it('a team owner or admin who is not an operator is refused every pool write, and nothing is written', async () => {
+    user = TEAM_ADMIN;
+    for (const r of ['owner', 'admin']) {
+      role = r;
+      const added = await add({});
+      expect(added.status).toBe(403);
+      expect((await added.json()).code).toBe('operator_only');
+      expect((await poolById.PATCH(req('/api/model-tiers/pools/pool-1', 'PATCH', { teamId: 'team-1', expectedVersion: 4, mode: 'explore' }), ctx({ id: 'pool-1' }))).status).toBe(403);
+      expect((await arm.DELETE(req('/api/model-tiers/pools/pool-1/arms/ch?teamId=team-1&expectedVersion=4', 'DELETE'), ctx({ id: 'pool-1', armId: 'ch' }))).status).toBe(403);
+    }
+    expect(calls.addChallenger).toBeUndefined();
+    expect(calls.writeAllocation).toBeUndefined();
+    expect(calls.removeChallenger).toBeUndefined();
+  });
+
+  it('a team admin still reads the pools; an operator writes them', async () => {
+    user = TEAM_ADMIN;
+    const read = await pools.GET(req('/api/model-tiers/pools?teamId=team-1', 'GET'));
+    expect(read.status).toBe(200);
+    user = OPERATOR;
+    expect((await add({})).status).toBe(201);
   });
 });

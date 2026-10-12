@@ -1,4 +1,5 @@
 import { isSilentCompletion } from '@/lib/silent-completion';
+import { inheritTaskDelegation } from '@buildd/core/token-delegation';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, asc, sql } from 'drizzle-orm';
@@ -6,7 +7,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, type LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
 import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@/lib/interactive-detach';
@@ -116,12 +117,12 @@ async function resolveStaleTask(
     }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${taskId}:`, err));
   };
 
-  // Reaper exemption: a task in condition_unmet with a pr_merged exit condition
-  // is waiting for a webhook event — no in-flight worker to kill. Leave as pending
-  // until the wait expires or the webhook fires and advances the loop.
+  // Reaper exemption: a task in condition_unmet with a pr_merged or pr_checks_green
+  // exit condition is waiting for a webhook event — no in-flight worker to kill. Leave
+  // as pending until the wait expires or the webhook fires and advances the loop.
   if (currentTask?.loopState === 'condition_unmet') {
     const loopCfg = currentTask.loopConfig as LoopConfig | null;
-    if (loopCfg?.exitCondition?.type === 'pr_merged') {
+    if (loopCfg?.exitCondition?.type === 'pr_merged' || loopCfg?.exitCondition?.type === 'pr_checks_green') {
       const waitExpiryMinutes = loopCfg.waitExpiryMinutes ?? 240;
       const waitExpiryMs = waitExpiryMinutes * 60 * 1000;
       const elapsed = Date.now() - (currentTask.updatedAt?.getTime() ?? 0);
@@ -131,11 +132,15 @@ async function resolveStaleTask(
         return;
       }
       // Wait expired — fail the task so the mission can move forward.
+      const conditionType = loopCfg.exitCondition.type;
+      const waitReason = conditionType === 'pr_merged'
+        ? `PR merge wait expired after ${waitExpiryMinutes} minutes`
+        : `PR checks green wait expired after ${waitExpiryMinutes} minutes`;
       await db
         .update(tasks)
         .set({
           status: 'failed',
-          result: { error: `PR merge wait expired after ${waitExpiryMinutes} minutes` } as any,
+          result: { error: waitReason } as any,
           updatedAt: new Date(),
         })
         .where(eq(tasks.id, taskId));
@@ -398,6 +403,31 @@ async function resolveStaleTask(
 }
 
 /**
+ * The task of an interactive worker the reaper released. Its session runs on
+ * someone's own machine and may well still be running (the release is a lease
+ * decision, not proof the client died), so none of the runner outcomes apply:
+ * the task is never completed from the worker's deliverables (a PR opened
+ * mid-work is not the work done), and never charged an infra retry or a
+ * backoff. An open task goes straight back to pending, so the same client can
+ * claim it again at once; a terminal one keeps its status. The same outcome as
+ * "Release slot" (lib/interactive-detach.ts).
+ */
+async function resolveAbandonedInteractiveTask(taskId: string, workspaceId: string) {
+  const current = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true } });
+  if (current && current.status !== 'pending' && !isTerminalTaskStatus(current.status)) {
+    await db
+      .update(tasks)
+      .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
+      .where(and(eq(tasks.id, taskId), eq(tasks.status, current.status)));
+    await wakeTask(taskId, 'task.requeued');
+  }
+  await releaseAndNotify(taskId, 'abandoned').catch(e =>
+    console.error(`[stale-workers] releaseAndNotify failed for task ${taskId}:`, e),
+  );
+  await resolveCompletedTask(taskId, workspaceId);
+}
+
+/**
  * Clean up stale workers for a specific account.
  *
  * 1. Expire workers with no update for 15+ minutes
@@ -563,7 +593,8 @@ export function heartbeatFreshnessScope(accountId: string, heartbeatCutoff: Date
  *    of these arms excludes it; without that the idle rule reaped live
  *    interactive work five minutes after claim_task (friction 92866723).
  *  - The interactive arm reaps an interactive worker only after
- *    INTERACTIVE_WORKER_IDLE_TTL_MS with no MCP activity at all.
+ *    INTERACTIVE_WORKER_IDLE_TTL_MS with no MCP or hook activity, unless the
+ *    plugin presence holding it says a turn is still in progress.
  */
 export function staleWorkerScope(accountId: string, now: Date = new Date()) {
   //    - 'running'/'starting': no update for WORKER_STALE_REAP_MS (runner hard
@@ -655,8 +686,10 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
       accountId: true,
       // Shadow-mode only: compared against the legacy verdict, never acted on.
       leaseExpiresAt: true,
-      // Interactive workers are booked under their own error text.
+      // Interactive workers are booked under their own error text, which names
+      // the signal that expired (the idle TTL or the hard backstop).
       runner: true,
+      updatedAt: true,
     },
   });
 
@@ -707,16 +740,18 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
   if (staleWorkers.length > 0) {
     // Book each reaped worker under the cause that actually applies. One UPDATE
     // per cause keeps this to at most three statements for the whole batch.
-    const byCause = new Map<WorkerExitCause, { ids: string[]; error: string }>();
+    // One write per (cause, text): rows of one cause can carry different text.
+    const byCause = new Map<string, { exitCause: WorkerExitCause; ids: string[]; error: string }>();
     for (const w of staleWorkers) {
       const { exitCause, error } = classifyStaleExit(w as any);
-      const group = byCause.get(exitCause);
+      const key = `${exitCause}\u0000${error}`;
+      const group = byCause.get(key);
       if (group) group.ids.push(w.id);
-      else byCause.set(exitCause, { ids: [w.id], error });
+      else byCause.set(key, { exitCause, ids: [w.id], error });
     }
 
     const reapedAt = new Date();
-    for (const [exitCause, group] of byCause) {
+    for (const { exitCause, ...group } of byCause.values()) {
       await db
         .update(workers)
         .set({
@@ -729,7 +764,7 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
         .where(inArray(workers.id, group.ids));
     }
 
-    const neverStartedCount = byCause.get('never_started')?.ids.length ?? 0;
+    const neverStartedCount = [...byCause.values()].filter(g => g.exitCause === 'never_started').reduce((n, g) => n + g.ids.length, 0);
     if (neverStartedCount > 0) {
       // "cleaned by" not "for": this arm is team-scoped, so some of these rows
       // may belong to a sibling account whose runner died holding them.
@@ -768,6 +803,7 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
 
 type ReapedWorker = Parameters<typeof resolveStaleTask>[2] & {
   taskId: string | null;
+  runner?: string | null;
   startedAt?: Date | string | null;
   status?: string | null;
 };
@@ -807,6 +843,10 @@ export async function resolveTasksOfReapedWorkers(
 
     if (otherActiveWorkers.length === 0) {
       const staleWorker = reaped.find(w => w.taskId === t.id);
+      if (staleWorker?.runner === INTERACTIVE_WORKER_RUNNER) {
+        await resolveAbandonedInteractiveTask(t.id, t.workspaceId);
+        continue;
+      }
       // Determine exit cause for this worker so reviewer tasks can distinguish
       // infra failures (retry) from genuine timeouts (escalate)
       let exitCauseForReview: WorkerExitCause | undefined = exitCauseOverride;
@@ -1057,8 +1097,8 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
       eq(workers.status, 'waiting_input'),
       lt(workers.updatedAt, missionCutoff),
     ),
-    columns: { id: true, taskId: true, accountId: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
-    with: { task: { columns: { missionId: true } } },
+    columns: { id: true, taskId: true, accountId: true, runner: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
+    with: { task: { columns: { missionId: true }, with: { mission: { columns: { executor: true } } } } },
   });
 
   // Mission tasks use 4h timeout, standalone tasks use 24h timeout
@@ -1076,12 +1116,24 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
   let retriedTasks = 0;
 
   for (const worker of stuckWorkers) {
+    const hours = (worker as any).task?.missionId ? '4' : '24';
+    // An interactive session (claim_task from a person's own session) chose to
+    // run this work itself. A retry cloned onto a runner mission would hand it
+    // to a background runner nobody asked for — the duplicate a person then
+    // finds rebuilt behind their back. So it is not retried, unless its
+    // mission is executor = 'local': only a person's session can claim that
+    // retry, which is the same arrangement the original claim had.
+    const interactive = (worker as { runner?: string | null }).runner === INTERACTIVE_WORKER_RUNNER;
+    const localMission = (worker as any).task?.mission?.executor === 'local';
+    const fileRetry = !interactive || localMission;
     // Fail the worker
     await db
       .update(workers)
       .set({
         status: 'failed',
-        error: `Worker timed out waiting for user input (${(worker as any).task?.missionId ? '4' : '24'}+ hours)`,
+        error: interactive && !fileRetry
+          ? `Question from an interactive session went unanswered for ${hours}+ hours; the task was not retried on a runner. Claim it again from your session, or retry it from the task page.`
+          : `Worker timed out waiting for user input (${hours}+ hours)`,
         // Not a code defect — an unanswered question timing out is the
         // correct terminal outcome for a hard-blocked worker. Must carry its
         // own exit cause so it stays out of the failure rate and
@@ -1142,6 +1194,11 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
       continue;
     }
 
+    if (!fileRetry) {
+      await resolveCompletedTask(originalTask.id, originalTask.workspaceId);
+      continue;
+    }
+
     // Create retry task with enriched context for branch continuity
     const existingCtx = (originalTask.context || {}) as Record<string, unknown>;
     const retryContext = {
@@ -1169,6 +1226,8 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         outputRequirement: originalTask.outputRequirement,
         outputSchema: originalTask.outputSchema,
         parentTaskId: originalTask.parentTaskId,
+        // A person's cross-workspace grant is part of the work, not the attempt.
+        ...(() => { const delegation = inheritTaskDelegation(originalTask); return delegation ? { delegation } : {}; })(),
         // Routing survives the retry: without it a visual-auditor audit would
         // be claimable by any runner and skip its evidence check.
         roleSlug: originalTask.roleSlug,

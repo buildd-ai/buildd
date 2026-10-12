@@ -15,7 +15,7 @@ interface Props {
   workspaces: Workspace[];
   currentTeamId: string | null;
   /**
-   * Holds `manage_team_notifications` in the team (overrides applied). False:
+   * Holds `manage_team_notifications` in the team. False:
    * which channels are set and which events fire, read-only. Defaults to true.
    */
   canManage?: boolean;
@@ -29,7 +29,7 @@ interface NotificationsState {
 }
 
 const EVENT_LABELS: { key: NotifyEvent; label: string; hint: string }[] = [
-  { key: 'taskClaimed', label: 'Task claimed', hint: 'A worker picked up a task.' },
+  { key: 'taskClaimed', label: 'Task claimed', hint: 'A runner picked up a task.' },
   { key: 'taskCompleted', label: 'Task completed', hint: 'A task finished.' },
   { key: 'taskFailed', label: 'Task failed', hint: 'A task failed or is retrying.' },
   { key: 'credentialExpired', label: 'Credential expired', hint: 'A Claude/Codex credential is invalid or expired.' },

@@ -37,7 +37,8 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
-import { ACCESS_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
+import { isPlatformOperator } from '@/lib/platform-operator';
+import { ACCESS_NEEDS_YOU, DECISION_COLLECTION_NEEDS_YOU, DECISION_HEALTH_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -64,7 +65,7 @@ import {
   type MissionCardSummary,
   type MissionCardView,
 } from '@/lib/mission-card-view';
-import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
+import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
@@ -94,7 +95,6 @@ import { firstTaskState, gettingStartedChecklist, type FirstTaskState } from '@/
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 // --- Helpers ---
 
@@ -282,7 +282,7 @@ export default async function HomePage({
   let idleStretches: IdleStretch[] = [];
   let teamTz: string | null = null;
   // Owners/admins run the fleet; members see their asks and missions first.
-  let audience: HomeAudience = 'operator';
+  let audience: HomeAudience = 'admin';
   // Agent chat on Home (knowledge-base: buildd/design/agent-chat.md, "Who sees what first").
   let chatPlacement: HomeChatPlacement = { kind: 'none' };
   let chatTeamId: string | null = null;
@@ -307,18 +307,17 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, overrides, agentKey, hostedBanner] = await Promise.all([
+        const [role, chatAvail, agentKey, hostedBanner] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
-          getTeamPermissionOverrides(activeTeamId),
           // A failed lookup reads as "has a key": never nag a working team.
           teamHasAgentCredential(activeTeamId).catch(() => true),
           teamHostedRunnerBanner(activeTeamId).catch(() => null),
         ]);
         hasAgentCredential = agentKey;
         hostedRunnerBanner = hostedBanner;
-        if (roleHasPermission(role, 'manage_model_tiers', overrides)) modelUpgradeTeamId = activeTeamId;
-        audience = homeAudience(role, overrides);
+        if (roleHasPermission(role, 'manage_model_tiers')) modelUpgradeTeamId = activeTeamId;
+        audience = homeAudience(role);
         chatPlacement = homeChatPlacement(audience, chatAvail);
         chatTeamId = activeTeamId;
       }
@@ -533,6 +532,7 @@ export default async function HomePage({
             with: {
               tasks: {
                 columns: MISSION_CARD_TASK_COLUMNS,
+                extras: MISSION_TASK_REFRESH_EXTRAS,
                 with: { workers: MISSION_CARD_WORKERS_WITH },
               },
               schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true, taskTemplate: true } },
@@ -1831,7 +1831,8 @@ export default async function HomePage({
         // 7. Sentinel incidents the escalation gate gave to the owner: the
         // stored verdict, read here with no model call (lib/failure-incident-escalation.ts
         // through the composition root).
-        if (wsIds.length > 0) {
+        // Operator-only: a team's Home never carries incident cards (lib/service-status.ts is its surface).
+        if (wsIds.length > 0 && isPlatformOperator(user)) {
           waitingOnYou.push(...await INCIDENT_NEEDS_YOU(wsIds));
         }
 
@@ -1839,6 +1840,20 @@ export default async function HomePage({
         // where this viewer can decide them (lib/capability-grants-needs-you.ts).
         if (wsIds.length > 0) {
           waitingOnYou.push(...await ACCESS_NEEDS_YOU(user?.id, wsIds));
+        }
+
+        // 9. A team whose decisions all fail at the provider (a token Workers AI
+        // refuses, a revoked key): one card per team, operator-only like the
+        // decision model itself. Read from the ledgers; no push (DECISION_HEALTH_NEEDS_YOU in modules.ts).
+        if (wsIds.length > 0 && isPlatformOperator(user)) {
+          waitingOnYou.push(...await DECISION_HEALTH_NEEDS_YOU(user, wsIds));
+        }
+
+        // 10. Decision features asked all day that never got a model answer:
+        // platform-wide, so the platform operator's only
+        // (lib/decision-collection-needs-you.ts). Pulled here, never pushed.
+        if (isPlatformOperator(user)) {
+          waitingOnYou.push(...await DECISION_COLLECTION_NEEDS_YOU());
         }
 
         // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d

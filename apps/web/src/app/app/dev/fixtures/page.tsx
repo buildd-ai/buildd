@@ -44,6 +44,7 @@ import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import TeamMembersFixture from './TeamMembersFixture';
 import RefinedComponentsFixture from './RefinedComponentsFixture';
 import MissionFlowFixture from './MissionFlowFixture';
+import MissionDetailCompactFixture from './MissionDetailCompactFixture';
 import HomeCardsFixture from './HomeCardsFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
@@ -55,6 +56,8 @@ import {
     HOSTED_RUNNER_FIXTURE_STATE,
     INTERACTIVE_SESSIONS_FIXTURE_STATE,
     MODEL_PROVIDERS_FIXTURE_STATE,
+    MODEL_PROVIDERS_LONE_FIXTURE_STATE,
+    MODEL_PROVIDERS_STORED_POLICY_FIXTURE_STATE,
     TOOL_BREAKDOWN_FIXTURE_STATE,
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
@@ -80,6 +83,7 @@ import {
     TEAM_MEMBERS_FIXTURE_STATE,
     REFINED_COMPONENTS_FIXTURE_STATE,
     MISSION_FLOW_FIXTURE_STATE,
+    MISSION_DETAIL_COMPACT_FIXTURE_STATE,
     HOME_CARDS_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -221,6 +225,12 @@ export default function DevFixturesPage() {
     if (state === MODEL_PROVIDERS_FIXTURE_STATE) {
         return <ModelProvidersFixture />;
     }
+    if (state === MODEL_PROVIDERS_LONE_FIXTURE_STATE) {
+        return <ModelProvidersFixture variant="lone" />;
+    }
+    if (state === MODEL_PROVIDERS_STORED_POLICY_FIXTURE_STATE) {
+        return <ModelProvidersFixture variant="stored-policy" />;
+    }
 
     if (state === RUN_ACTIVITY_FIXTURE_STATE) {
         return <RunActivityFixture />;
@@ -244,6 +254,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_FLOW_FIXTURE_STATE) {
         return <MissionFlowFixture />;
+    }
+
+    if (state === MISSION_DETAIL_COMPACT_FIXTURE_STATE) {
+        return <MissionDetailCompactFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {

@@ -2,13 +2,13 @@
 title: Artifacts and Sharing
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 summary: Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 domain: tasks
 surfaces: [apps/web/src/app/api/artifacts/[artifactId]/share/route.ts, apps/web/src/app/api/share/[token]/route.ts, apps/web/src/app/api/artifacts/upload-url/route.ts, apps/web/src/lib/storage-keys.ts]
 related: [mcp-action-contracts, team-namespace-scoping, mission-task-lifecycle, credential-isolation]
 keywords: [sharetoken, visibility public, presigned put, r2, artifacts_share_token_idx, http 413, dataclass sensitive, upsert by key]
-verified_by: [packages/core/__tests__/artifact-read.test.ts, packages/core/__tests__/mcp-tools-artifact-links.test.ts, apps/web/src/app/api/workers/claim/artifact-manifest.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts, apps/web/tests/db/artifact-links.test.ts, apps/web/tests/db/artifact-upload.test.ts, apps/web/tests/db/chat-paste-attachment.test.ts, apps/web/tests/db/chat-file-attachment.test.ts, apps/web/src/lib/chat/file-input.test.ts, apps/web/src/components/chat/upload-file.test.ts, apps/web/tests/db/chat-attachment-cleanup.test.ts]
+verified_by: [packages/core/__tests__/artifact-read.test.ts, packages/core/__tests__/mcp-tools-artifact-links.test.ts, apps/web/src/app/api/workers/claim/artifact-manifest.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts, apps/web/tests/db/artifact-links.test.ts, apps/web/tests/db/artifact-upload.test.ts, apps/web/tests/db/chat-paste-attachment.test.ts, apps/web/tests/db/chat-file-attachment.test.ts, apps/web/src/lib/chat/file-input.test.ts, apps/web/src/lib/chat/turn.test.ts, apps/web/src/components/chat/upload-file.test.ts, apps/web/tests/db/chat-attachment-cleanup.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -103,12 +103,18 @@ check, or was cancelled MUST never show as attached or be sent.
 - Never sent: an upload with no link is swept (§8) once older than 24 hours,
   `ready` included; a sent one is kept.
 - Model: an image goes as file input only to a model that takes images, a PDF
-  only to one that takes PDFs (`modelInputs`, an explicit map by provider and
-  family, since the catalog has no such field: Claude takes both, the OpenAI
-  GPT-4o, 4.1 and 5 families and o-series take images, Gemini both, anything
-  unnamed neither). Any other model, or a file over what the model takes
-  (5 MB an image, 10 MB a PDF), gets a note naming the file and saying it
-  cannot be read; never a silent drop. A text-like file is quoted as material,
+  only to one that takes PDFs (`modelInputs`). What a model takes is the
+  OpenRouter catalog's `input_modalities` (`image`; `file` for a PDF on
+  OpenRouter); a model the catalog does not describe falls back to a map by
+  provider and family (Claude both, the OpenAI GPT-4o, 4.1 and 5 families and
+  o-series images, Gemini both, anything unnamed neither).
+- A message carrying an image or PDF its tier's model cannot read is served by
+  the nearest other chat tier, inside the person's ceiling, whose model can
+  (`readerTier`; the cheaper of two as near). The turn reports the tier that
+  served it. A text-only message never changes tier.
+- With no such tier, or a file over what the model takes (5 MB an image,
+  10 MB a PDF), the model gets a note naming the file and saying it cannot be
+  read; never a silent drop. A text-like file is quoted as material,
   like a paste, up to 100,000 characters. Only the message being sent carries
   file content; an earlier message's file is a note naming it.
 - In a message, a file is a fixed-height card like a paste's (an image shows
@@ -126,6 +132,10 @@ check, or was cancelled MUST never show as attached or be sent.
   reads ready and cannot be sent.
 - AC-11.4: GIVEN another person THEN they cannot finalize, relay, cancel, send
   or download it.
+- AC-11.5: GIVEN an image sent in a tier whose model is text-only and another
+  tier inside the ceiling whose model reads images WHEN the turn runs THEN
+  that tier's model receives the image as file input; with none inside the
+  ceiling the routed model gets the note.
 
 **Not yet**: the agent tool `read_attachment` reads pastes only; files reach
 the model in the message that carries them. Retention on delete is §10's
@@ -133,7 +143,7 @@ the model in the message that carries them. Retention on delete is §10's
 
 **Code surface**:
 - `apps/web/src/lib/artifact-chat-files.ts`: `createChatUpload`, `finalizeChatUpload`, `storeChatUploadBytes`, `cancelChatUpload`, `fileDraftsOf`, `bindChatFiles`, `conversationFiles`
-- `apps/web/src/lib/chat/file-input.ts`: `modelInputs`, `modelFileParts`; `apps/web/src/lib/chat/turn.ts`
+- `apps/web/src/lib/chat/file-input.ts`: `modelInputs`, `modelFileParts`; `apps/web/src/lib/chat/turn.ts`: `readerTier`
 - `apps/web/src/app/api/chat/uploads/route.ts`, `apps/web/src/app/api/chat/uploads/[artifactId]/route.ts`, `apps/web/src/app/api/chat/uploads/[artifactId]/finalize/route.ts`, `apps/web/src/app/api/chat/uploads/[artifactId]/content/route.ts`, `apps/web/src/app/api/chat/[id]/attachments/[artifactId]/download/route.ts`
 - `packages/ai-kit/src/chat/react/Composer.tsx`, `packages/ai-kit/src/chat/react/AttachmentCard.tsx`, `apps/web/src/components/chat/upload-file.ts`
 
@@ -573,24 +583,42 @@ signed for, and an upload that never arrives MUST NOT linger.
 - `POST /api/artifacts/upload-url` creates the row with `upload_state =
   'pending'`. `upload_state` is set by the server only; metadata is
   caller-writable and cannot mark an upload ready.
+- An upload URL (this route and `POST /api/chat/uploads`) is signed for the
+  row's staging key (`uploadStagingKey(storageKey)`), never for `storageKey`.
+  Finalize copies the staged object to `storageKey` and checks the copy, so
+  every reader reads bytes no signed URL can write: a PUT through the URL after
+  finalize lands on the dead staging key and changes nothing served. One
+  finalize copies at a time (`metadata.finalizingAt`, taken over after 10
+  minutes), so a late copy never replaces bytes already hashed. With nothing
+  staged (a URL signed before staging), the object at `storageKey` is checked in
+  place.
 - Finalize (`POST /api/artifacts/[id]/finalize` or MCP `upload_artifact
   { artifactId, sha256? }`, the uploading worker only, or lazily on the first
-  read) HEADs the object, refuses a size other than the signed one, refuses a
+  read) HEADs the copy, refuses a size other than the signed one, refuses a
   content type other than the signed `mimeType` (compared case-insensitively
   without parameters: the URL signs only content-length, so the PUT does not
   pin the type), streams a sha256 (refusing a mismatch with one the uploader
   sent), fills it onto the revision, and sets `ready`; a mismatch sets
-  `failed` with `metadata.uploadError`.
+  `failed` with `metadata.uploadError`. The staged object is then deleted.
 - A `pending` or `failed` upload gets no download URL: GET reports
   `uploadState`, and the download route answers 409. Linking one is refused
   with 409 naming its state (a pending one is finalized first).
 - The maintenance cron finalizes uploads whose bytes arrived and, after 24
-  hours, deletes the row and object of one that never arrived or failed. It
+  hours, deletes the row and both its objects (staged and copied) of one that
+  never arrived or failed. It
   never deletes a row a typed link or a spec body refers to: that row and its
   object are skipped, checked again in the DELETE itself.
+- A deleted team's stored objects go with it. The team delete runs in one
+  transaction with a detach of every artifact of its workspaces that holds a
+  stored object (workspace, worker, mission and initiative cleared, made
+  private and unshared, marked `storageOrphan`), so the cascade cannot drop the
+  only record of the key; the same request then deletes each detached row and
+  its object, and the maintenance cron takes whatever a crash left. An object
+  another artifact row still holds is kept. Spec bodies are never detached.
 
 **Code surface**:
 - `apps/web/src/lib/artifact-upload.ts` — `finalizeArtifactUpload`, `sweepStaleUploads`
+- `apps/web/src/lib/artifact-team-files.ts` — `detachTeamStoredFiles`, `removeTeamStoredFiles`, `removeDetachedTeamFiles`
 
 ## 9. Typed links
 

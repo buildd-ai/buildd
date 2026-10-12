@@ -9,6 +9,7 @@ import { isUuid } from '@/lib/uuid';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { readPinnedSpecRevision } from './pin';
 import { specCriteria, type RequirementRef } from './requirements';
+import { inScope } from './scope';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
 /**
@@ -17,7 +18,8 @@ import { fail, reach, type SpecCaller, type SpecError } from './store';
  * whether the task completed or its PR merged.
  *
  * The criteria are the requirements (`R-n`) and acceptance criteria (`AC-n`)
- * of the pinned revision's body, parsed by ./requirements.ts. Decisions and
+ * of the pinned revision's body, parsed by ./requirements.ts, narrowed to the
+ * ones the task names in `specSource.criteria` when it names any (./scope.ts). Decisions and
  * invariants are context, not criteria. A verdict on one criterion is a row in
  * `spec_outcome_verdicts`, bound to the PR head it judged and the references it
  * read (F4 read-ledger ids); the newest row per criterion stands. The outcome
@@ -29,9 +31,11 @@ import { fail, reach, type SpecCaller, type SpecError } from './store';
  * outcome is reported as failed; the task stays completed and the PR merged.
  *
  * Who records: a person or an account with write access to the workspace, or
- * the per-task token of a task whose parent is the subject (the reviewer or a
- * verification task filed under it). A task never grades its own outcome, so
- * the subject's own token may read the outcome but not record a verdict.
+ * the per-task token of the kernel's review round for the subject's own PR
+ * delivery. A task never grades its own outcome: the subject's own token may
+ * read the outcome but not record a verdict, and neither may a builder fix
+ * attempt (CI, conflict or review fix) or any task filed under the subject.
+ * Criterion check runs record through recordCheckVerdict, not a token.
  */
 
 export const MAX_VERDICT_READS = 20;
@@ -59,10 +63,16 @@ async function mayAct(caller: SpecCaller, task: TaskRow, mode: Mode): Promise<bo
   const scope = caller.kind === 'account' ? (caller.account.taskScope as { taskId?: string } | undefined) : undefined;
   if (!scope) return true;
   if (mode === 'read' && scope.taskId === task.id) return true;
-  // A child of the subject (its reviewer, a verification task) may record; the subject itself may not.
+  // Only the review round of the subject's own delivery records. Its delivery
+  // role and delivery are set by the platform when it files the round, never
+  // by a task filing a child, so a fix attempt or a self-filed child cannot pass.
   if (!scope.taskId || !isUuid(scope.taskId)) return false;
-  const [own] = await db.select({ parentTaskId: tasks.parentTaskId }).from(tasks).where(eq(tasks.id, scope.taskId)).limit(1);
-  return own?.parentTaskId === task.id;
+  const [own] = await db.select({ parentTaskId: tasks.parentTaskId, deliveryRole: tasks.deliveryRole, deliveryId: tasks.deliveryId })
+    .from(tasks).where(eq(tasks.id, scope.taskId)).limit(1);
+  if (!own || own.parentTaskId !== task.id || own.deliveryRole !== 'review' || !own.deliveryId) return false;
+  // Read through the kernel's view: the round's delivery must be the one the subject owns.
+  const view = (await getDeliveryViewsForTasks([task.id])).get(task.id);
+  return view?.ownerTaskId === task.id && view.deliveryId === own.deliveryId;
 }
 
 const pinOf = (context: unknown): Record<string, unknown> | null => {
@@ -94,14 +104,14 @@ async function loadGoverned(caller: SpecCaller | null, taskId: unknown, mode: Mo
   const task = await loadTask(taskId);
   if (!task || (caller && !(await mayAct(caller, task, mode)))) {
     return task && caller && mode === 'record' && (await reach(caller, task.workspaceId, false))
-      ? fail(403, 'You may read this outcome but not record a verdict: that takes write access, and a task never grades its own outcome (a person, or a review or verification task filed under it, records verdicts)')
+      ? fail(403, 'You may read this outcome but not record a verdict: that takes write access, and a task never grades its own outcome (a person, or the review round of its PR, records verdicts)')
       : fail(404, 'Task not found');
   }
   const pin = pinOf(task.context);
   if (!pin || typeof pin.specId !== 'string') return fail(409, 'This task is not pinned to a Living Spec, so it has no governed outcome');
   const read = await readPinnedSpecRevision(pin);
   if (!read.ok) return fail(409, `The pinned spec revision is unavailable: ${read.reason}`);
-  return { task, pin, revision: read.revision, specRevisionId: pin.specRevisionId as string, specId: read.specId, criteria: specCriteria(read.body) };
+  return { task, pin, revision: read.revision, specRevisionId: pin.specRevisionId as string, specId: read.specId, criteria: inScope(pin, specCriteria(read.body)) };
 }
 
 async function fold(l: Loaded): Promise<OutcomeView> {
@@ -134,7 +144,7 @@ export async function recordSpecVerdict(caller: SpecCaller, taskId: unknown, inp
   const { criterionId, verdict, headSha } = input;
   if (typeof criterionId !== 'string' || !l.criteria.some((c) => c.id === criterionId)) {
     const ids = l.criteria.map((c) => c.id);
-    return fail(400, `criterionId must be a criterion of the pinned revision ${l.revision}: ${ids.length ? ids.join(', ') : 'it has none (no R-n or AC-n lines)'}`);
+    return fail(400, `criterionId must be a criterion this task answers for in pinned revision ${l.revision}: ${ids.length ? ids.join(', ') : 'it has none (no R-n or AC-n lines)'}`);
   }
   if (typeof verdict !== 'string' || !(VERIFICATION_VERDICTS as readonly string[]).includes(verdict)) {
     return fail(400, `verdict must be one of: ${VERIFICATION_VERDICTS.join(', ')}`);
@@ -165,6 +175,33 @@ export async function recordSpecVerdict(caller: SpecCaller, taskId: unknown, inp
     evidence: { refs, readIds, ...(observed ? { observed } : {}), recordedBy },
   }).returning({ id: specOutcomeVerdicts.id });
   return { ok: true, verdictId: row.id, outcome: await fold(l) };
+}
+
+/**
+ * Record a verdict a check run produced (./criterion-checks.ts): server-side,
+ * no caller. The verdict is the run's exit code, not anyone's word, so it is
+ * authored by the check (`recordedBy: check:<verification task id>`). Refused
+ * unless the task is still pinned to `specRevisionId` and the criterion is one
+ * of that revision's.
+ */
+export async function recordCheckVerdict(taskId: string, input: {
+  specRevisionId: string; criterionId: string; verdict: VerificationVerdict; headSha: string; verificationTaskId: string; evidence: Record<string, unknown>;
+}): Promise<{ ok: true; verdictId: string } | SpecError> {
+  const l = await loadGoverned(null, taskId, 'record');
+  if ('ok' in l) return l;
+  if (l.specRevisionId !== input.specRevisionId) return fail(409, 'The task is no longer pinned to the revision this check ran against');
+  if (!l.criteria.some((c) => c.id === input.criterionId)) return fail(400, `${input.criterionId} is not a criterion this task answers for in pinned revision ${l.revision}`);
+  if (!SHA.test(input.headSha)) return fail(400, 'headSha must be a commit SHA');
+  const [row] = await db.insert(specOutcomeVerdicts).values({
+    workspaceId: l.task.workspaceId,
+    taskId: l.task.id,
+    specRevisionId: l.specRevisionId,
+    criterionId: input.criterionId,
+    verdict: input.verdict,
+    headSha: input.headSha.toLowerCase(),
+    evidence: { ...input.evidence, verificationTaskId: input.verificationTaskId, recordedBy: `check:${input.verificationTaskId}` },
+  }).returning({ id: specOutcomeVerdicts.id });
+  return { ok: true, verdictId: row.id };
 }
 
 /**

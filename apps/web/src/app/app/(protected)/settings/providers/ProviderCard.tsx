@@ -11,7 +11,6 @@ import ConnectOpenRouterButton from '@/components/settings/ConnectOpenRouterButt
 import { formatCheckedAgo } from '@/lib/provider-keys-client';
 import {
   ADMINS_ONLY,
-  ADVANCED_ANCHOR,
   SHAPE_NOUN,
   cardView,
   detectPaste,
@@ -29,7 +28,7 @@ const TONE = { error: 'text-status-error', success: 'text-status-success', muted
  * Everything else opens inline on tap. Values are write-only: a row shows its
  * last four characters.
  */
-export default function ProviderRow({ group, scope, data, workspaceId, onChanged, open, onToggle, signIn = null }: {
+export default function ProviderRow({ group, scope, data, workspaceId, onChanged, open, onToggle, signIn = null, form: formSlot = null }: {
   group: ProviderGroup;
   scope: ProviderApiScope;
   data: ListProvidersResponse;
@@ -39,6 +38,8 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
   onToggle: (open: boolean) => void;
   /** The provider's subscription and runner sign-ins, drawn in the opened detail under the keys. */
   signIn?: ReactNode;
+  /** A provider set up with a form (gateway, custom endpoint): the form, drawn in the opened detail. */
+  form?: ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
   const views = group.members.map((p) => ({ p, v: cardView(p, scope, data) }));
@@ -51,6 +52,9 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
   const form = views.find(({ v }) => v.edit.kind === 'form');
   const state = rowState(rows, inherited, closed);
   const grouped = group.members.length > 1;
+  // Set up only through a form this page does not draw (the gateway on a
+  // workspace page), with nothing set or inherited: no row, not a dead "Not set".
+  if (form && !formSlot && !closed && rows.length === 0 && inherited.length === 0) return null;
 
   const action = paste.length > 0
     ? (rows.length > 0 ? 'Replace' : grouped ? `Connect ${group.label}` : 'Add key')
@@ -75,17 +79,19 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
           <span className={`text-meta ${TONE[state.tone]}`} data-testid="provider-card-state">{state.word}</span>
           {rows[0] && <span className={`text-meta text-text-muted ${maskedValue(rows[0]).startsWith('…') ? 'font-mono' : ''}`} data-testid="provider-masked">{maskedValue(rows[0])}</span>}
         </button>
+        {/* 44px to tap below md, the usual 32px .btn from md. */}
         {action && !editing && (
-          <button type="button" className="btn shrink-0" onClick={startEdit}>{action}</button>
+          <button type="button" className="btn shrink-0 min-h-11 md:min-h-0" onClick={startEdit}>{action}</button>
         )}
-        {!action && form && !form.v.closed && !form.v.readOnly && rows.length === 0 && (
-          <a href={`#${ADVANCED_ANCHOR}`} className="btn shrink-0">Set up</a>
+        {!action && form && formSlot && !form.v.closed && !form.v.readOnly && rows.length === 0 && !open && (
+          <button type="button" className="btn shrink-0 min-h-11 md:min-h-0" onClick={() => onToggle(true)}>Set up</button>
         )}
       </div>
 
       {open && (
         <div className="pb-3 space-y-2 text-body" data-testid="provider-detail">
-          {rows.map((row) => <CredentialRow key={row.id} row={row} scope={scope} teamId={data.teamId} workspaceId={workspaceId} canRemove={!readOnly && !closed} onChanged={onChanged} />)}
+          {/* A form (gateway, endpoint) shows its own masked key and Remove. */}
+          {!(form && formSlot) && rows.map((row) => <CredentialRow key={row.id} row={row} scope={scope} teamId={data.teamId} workspaceId={workspaceId} canRemove={!readOnly && !closed} onChanged={onChanged} />)}
           {inherited.length > 0 && (
             <p className="text-meta text-text-muted" data-testid="provider-inherits">
               Uses the team&apos;s {inherited.map((r) => `${SHAPE_NOUN[r.shape] ?? r.shape}${r.last4 ? ` …${r.last4}` : ''}`).join(', ')}
@@ -110,9 +116,7 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
           {editing && group.id === 'openrouter' && rows.length === 0 && scope !== 'workspace' && (
             <ConnectOpenRouterButton scope={scope === 'mine' ? 'user' : 'team'} teamId={data.teamId} returnTo={scope === 'mine' ? '/app/settings/keys' : '/app/settings/models'} />
           )}
-          {form && (
-            <p className="text-meta"><a href={`#${ADVANCED_ANCHOR}`} className="underline text-text-secondary hover:text-text-primary">Edit under Routing</a></p>
-          )}
+          {form && formSlot}
         </div>
       )}
       {/* Mounted while the row is shut: a device-code sign-in in progress survives a collapse. */}

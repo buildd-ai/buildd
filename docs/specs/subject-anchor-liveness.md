@@ -2,7 +2,7 @@
 title: Subject Anchor Liveness
 status: active
 owner: max
-last_verified: 2026-08-29
+last_verified: 2026-10-11
 summary: A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 domain: tasks
 surfaces: [apps/web/src/lib/subject-gate-contract.ts, apps/web/src/app/api/workers/claim/subject-gate.ts, apps/web/src/lib/subject-sweep.ts]
@@ -179,6 +179,33 @@ obligations:
 - AC-13: GIVEN a pending subject-dead task WHEN `deriveTaskPhase()` runs THEN it
   returns `subject_dead`, never `queued`.
 
+### 5. Workspace setting
+
+A team admin sees the workspace's `gitConfig.subjectPolicy` as one setting,
+**Repeat work**, on the workspace settings page. The page carries what an admin
+decides, not how the kernel works.
+
+**Invariants**:
+- **SA-14**: The section MUST show one switch, **Close older buildd PRs when a
+  newer one merges** (`autoCloseBuilddSupersededPrs`, default off). Only while
+  it is on does it show **Close conflicted PRs after (days)**
+  (`conflictDeadDays`, default 7).
+- **SA-15**: `priorWorkInjection` MUST NOT render. Its default (on) is right for
+  every workspace; a stored value keeps working, and a save from this section
+  MUST write the stored `subjectPolicy` back with only the two fields above
+  changed, so a stored `priorWorkInjection: false` survives and no default is
+  written for a key nobody set.
+- **SA-16**: Writing the section needs `manage_workspace_settings` (the
+  `gitConfig` gate on `PATCH /api/workspaces/[id]`); anyone else reads the
+  values as text.
+
+**Acceptance criteria**:
+- AC-14: GIVEN an admin WHEN the section renders THEN exactly one switch shows
+  and no prior-work control does.
+- AC-15: GIVEN a stored `{ priorWorkInjection: false }` WHEN the admin turns the
+  switch on THEN the PATCH body's `subjectPolicy` is
+  `{ priorWorkInjection: false, autoCloseBuilddSupersededPrs: true, conflictDeadDays: 7 }`.
+
 **Code surface**:
 - Contract: `apps/web/src/lib/subject-gate-contract.ts` —
   `SUBJECT_BINDING_SOURCES`, `SUBJECT_ADVISORY_CONFIDENCE`,
@@ -194,6 +221,7 @@ obligations:
   `apps/web/src/lib/dead-pr-shutdown.ts`
 - Override: `apps/web/src/app/api/tasks/[id]/start/route.ts`
 - Extraction: `packages/core/subject-anchor-extractor.ts`
+- Setting: `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/SubjectPolicySection.tsx`
 - Display: `apps/web/src/lib/task-presentation.ts` — `deriveTaskPhase()`;
   `apps/web/src/components/StageChip.tsx` — `deriveStage()`
 - Data model: `packages/core/db/schema.ts` — `tasks.subjectAnchor`,

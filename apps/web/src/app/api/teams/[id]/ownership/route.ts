@@ -18,7 +18,7 @@ import { clampCreatorKeys } from '@/lib/creator-key-clamp';
  * team never has zero owners.
  *
  * Once the caller is admin, their keys are clamped to what an admin may mint
- * (a no-op unless the team's overrides take manage_team_keys from admins);
+ * (a no-op today: admins hold manage_team_keys);
  * the response says how many changed as `clampedKeys`.
  */
 export async function POST(
@@ -38,7 +38,7 @@ export async function POST(
       where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, user.id)),
     });
 
-    if (!membership || !roleHas(membership.role, 'assign_team_owner', null /* locked */)) {
+    if (!membership || !roleHas(membership.role, 'assign_team_owner')) {
       return NextResponse.json({ error: 'Transferring ownership needs the assign_team_owner permission' }, { status: 403 });
     }
 

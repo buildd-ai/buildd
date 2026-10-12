@@ -289,7 +289,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                 title: 'Default runner preference',
                 facts: [
                     { label: 'Runner type', value: optionLabel(RUNNER_OPTIONS, defaultRunnerPreference) },
-                    { label: 'Default agent backend', value: optionLabel(BACKEND_OPTIONS, defaultBackend) },
+                    { label: 'Agent', value: optionLabel(BACKEND_OPTIONS, defaultBackend) },
                 ],
             },
         ];
@@ -390,7 +390,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             onChange={(e) => setRequiresPR(e.target.checked)}
                         />
                         <label htmlFor="requiresPR" className="text-sm">
-                            Changes require Pull Request
+                            Changes require a pull request
                         </label>
                     </div>
 
@@ -494,10 +494,10 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             value={fallbackModel}
                             onChange={(e) => setFallbackModel(e.target.value)}
                             className="w-full px-3 py-2 border border-border-default bg-surface-1 font-mono text-base md:text-sm"
-                            placeholder="premium-plus · premium · standard · budget · or an exact model id"
+                            placeholder="A tier or a model name"
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Model to use when the primary model fails, such as on a rate limit. Override per task with <code>context.fallbackModel</code>.
+                            Model to use when the primary model fails, such as on a rate limit. You can change this per task.
                         </p>
                     </div>
                 </div>
@@ -520,7 +520,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                         </label>
                     </div>
                     <p className="text-xs text-text-muted -mt-2">
-                        The SDK sandbox limits which files and network hosts workers can reach.
+                        The sandbox limits which files and sites agents can reach.
                     </p>
 
                     {sandboxEnabled && (
@@ -552,7 +552,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                                     placeholder={"api.github.com\nnpm.pkg.github.com\nregistry.npmjs.org"}
                                 />
                                 <p className="text-xs text-text-muted mt-1">
-                                    Domains workers can reach. Leave empty to block all outbound traffic.
+                                    Sites agents can reach. Leave empty to block all.
                                 </p>
                             </div>
 
@@ -568,7 +568,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                                 </label>
                             </div>
                             <p className="text-xs text-text-muted -mt-2">
-                                Lets workers start local dev servers, such as for tests that need one.
+                                Lets agents start local dev servers, such as for tests that need one.
                             </p>
 
                             <div>
@@ -604,11 +604,11 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             onChange={(e) => setDebug(e.target.checked)}
                         />
                         <label htmlFor="debug" className="text-sm">
-                            Enable SDK debug logging
+                            Write debug logs
                         </label>
                     </div>
                     <p className="text-xs text-text-muted -mt-2">
-                        Writes verbose SDK debug output to stderr, for troubleshooting workers.
+                        Writes detailed agent logs, for troubleshooting.
                     </p>
 
                     <div>
@@ -624,7 +624,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             placeholder="/tmp/buildd-debug.log"
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Writes SDK debug logs to this file instead of stderr.
+                            Writes the debug logs to this file.
                         </p>
                     </div>
                 </div>
@@ -634,8 +634,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
             <div className="py-4 first:pt-0">
                 <h3 className="text-sm font-medium text-text-primary mb-3">Thinking and effort</h3>
                 <p className="text-xs text-text-muted mb-4">
-                    Some models don&apos;t support these options. Workers check model capabilities at startup
-                    and skip what the model can&apos;t use. Worker logs show a warning when they skip one.
+                    Some models don&apos;t support these options. Agents skip what their model can&apos;t use.
                 </p>
 
                 <div className="space-y-4">
@@ -647,7 +646,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             options={THINKING_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Sets extended thinking. Override per task in task context.
+                            Sets extended thinking. You can change this per task.
                         </p>
                     </div>
 
@@ -679,7 +678,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             options={EFFORT_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Sets how much effort the model spends per response. Override per task in task context.
+                            Sets how much effort the model spends per response. You can change this per task.
                         </p>
                     </div>
                 </div>
@@ -698,19 +697,19 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             options={RUNNER_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Applies to new tasks in this workspace. Only runners of this type can claim them. Override per task.
+                            Applies to new tasks in this workspace. Only runners of this type can pick them up. You can change this per task.
                         </p>
                     </div>
 
                     <div>
-                        <label className="block text-sm text-text-primary mb-1">Default agent backend</label>
+                        <label className="block text-sm text-text-primary mb-1">Agent</label>
                         <Select
                             value={defaultBackend}
                             onChange={(v) => setDefaultBackend(v as typeof defaultBackend)}
                             options={BACKEND_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Agent engine for new tasks in this workspace. Order: per-task <code>backend</code> → role default → this workspace default → Claude. Codex tasks need a connected ChatGPT/OpenAI credential.
+                            Used for new tasks in this workspace unless a task or its agent sets one. Codex needs a connected ChatGPT or OpenAI account.
                         </p>
                     </div>
                 </div>

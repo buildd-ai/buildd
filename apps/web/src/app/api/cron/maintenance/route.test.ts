@@ -46,6 +46,8 @@ mock.module('@/lib/artifact-upload', () => ({ sweepStaleUploads: mockUploads }))
 mock.module('@/lib/storage', () => ({ isStorageConfigured: () => true }));
 const mockChatAttachments = mock(async (_opts: unknown) => ({ removed: 4, objectsRemoved: 2 }));
 mock.module('@/lib/artifact-attachment-cleanup', () => ({ removeOrphanChatAttachments: mockChatAttachments }));
+const mockTeamFiles = mock(async (_opts: unknown) => ({ removed: 5, objectsRemoved: 5 }));
+mock.module('@/lib/artifact-team-files', () => ({ removeDetachedTeamFiles: mockTeamFiles }));
 
 const { GET } = await import('./route');
 
@@ -94,9 +96,10 @@ describe('maintenance cron — the core sweeps', () => {
     const res = await GET(makeRequest());
     const uploads = { finalized: 2, removed: 1, waiting: 0 };
     const chatAttachments = { removed: 4, objectsRemoved: 2 };
-    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments });
+    const teamFiles = { removed: 5, objectsRemoved: 5 };
+    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles });
     const row = cronRunRows.find(r => r.job === 'maintenance');
-    expect(row).toMatchObject({ ok: true, changed: 13, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments } });
+    expect(row).toMatchObject({ ok: true, changed: 18, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles } });
   });
 
   it('a failing chat attachment sweep is logged and reads as nothing removed', async () => {
@@ -104,6 +107,13 @@ describe('maintenance cron — the core sweeps', () => {
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
     expect((await res.json()).chatAttachments).toEqual({ removed: 0, objectsRemoved: 0 });
+  });
+
+  it('a failing deleted-team file sweep is logged and reads as nothing removed', async () => {
+    mockTeamFiles.mockRejectedValueOnce(new Error('boom'));
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    expect((await res.json()).teamFiles).toEqual({ removed: 0, objectsRemoved: 0 });
   });
 });
 

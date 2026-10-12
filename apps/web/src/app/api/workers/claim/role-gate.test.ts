@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 import { and } from 'drizzle-orm';
 import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { roleSlugGate, isRoleClaimable } from './role-gate';
@@ -7,7 +7,7 @@ import { roleSlugGate, isRoleClaimable } from './role-gate';
 // The role gate is SQL-filtered in Postgres, so a mocked `db` can't observe it.
 // Render it through PgDialect instead. Safe: `bun run test` runs one process
 // per file, so route.test.ts's `drizzle-orm` mock never reaches this file.
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 
 function render(skills: string[] | undefined) {
   const clauses = roleSlugGate(skills);

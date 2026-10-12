@@ -2,10 +2,10 @@
 title: Capability Requests and Grants
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 summary: An agent MUST get access it lacked at start only by asking for a semantic need, resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
-surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
+surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
 keywords: [connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
 verified_by: [apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
@@ -124,6 +124,18 @@ without naming a connector id or seeing a credential.
 - One open row per (worker, target, exact ask): asking again, or two asks
   racing, returns the same row (partial unique index on `dedupe_key` over
   `pending`/`granted`). A denied ask is not re-opened for that worker.
+- `tasks:create` (filing tasks in another workspace of the team) is served by
+  buildd itself, not a connector: `resource` is the target workspace UUID,
+  `provider` is always `buildd`, risk is always `write`, so a person always
+  decides. Its own workspace is `existing`; another team's is `forbidden`
+  (no row); a target the task's delegation already grants is `existing`. A
+  `pending_approval` keeps the run alive: the next steps tell the agent to keep
+  working and ask again, never to end the run or ask_human for the same access.
+  The approver must reach the target themselves (`approver_lacks_reach`
+  otherwise). Approval writes the grant onto the task's own delegation
+  (`tasks.delegation`, lib/task-delegation.ts), which the task token re-reads
+  on every call; if that write fails the approval is undone. Revoking removes
+  it from the delegation.
 
 **Acceptance criteria**:
 - AC-1: GIVEN Axiom installed and connected but the team has blocked it in the catalog WHEN an agent asks for `observability:query` THEN the outcome is `forbidden` (`catalog_blocked`) and no row is written.
@@ -131,6 +143,7 @@ without naming a connector id or seeing a credential.
 - AC-3: GIVEN another role mounts Axiom and no rule WHEN an agent asks for a read THEN it is `auto_granted` with the requested TTL (narrowed by policy).
 - AC-4: GIVEN the role mounts a provider WHEN an agent asks for `write` THEN it is `pending_approval` (`write_needs_human`), whatever the team rule says.
 - AC-5: WHEN a body names a connector id THEN the route returns 400.
+- AC-5a: GIVEN a running task with no delegation WHEN its agent asks for `tasks:create` on a same-team workspace THEN the outcome is `pending_approval`; WHEN a person who reaches that workspace approves THEN the task's delegation grants `tasks:create` there and a repeat ask is `existing`; WHEN revoked THEN the grant leaves the delegation.
 
 ## Team policy
 
@@ -212,14 +225,19 @@ for, what they hold and the policy, without being able to change any of it.
 - Home lists a pending request only for teams where the viewer holds
   `manage_connectors`: one card per request (the store already keeps one open
   row per exact ask). The card names what, who, workspace, why and the lease,
-  and approves for the asked lease or denies in place; Settings → Connected apps
-  → Agent access (`?request=<id>`) offers a shorter lease.
+  and approves for the asked lease or denies in place; Settings → Team → Apps
+  → Agent access (`/app/settings/apps?request=<id>`) offers a shorter lease.
 - A new pending request pages the team once; a repeat ask (same row) does not.
-- Settings → Connected apps shows each catalog provider's real state from the
-  team's connector on the same host (installed, connected, expired, client
-  approval needed) and offers only the step the server can take. A provider
-  that has not approved buildd as a client offers no Connect. Members see
-  non-blocked entries, requests, grants and policy read-only.
+- Settings → Team → Apps → Team apps shows each app's real state from the
+  team's connector on the same host (Connected, Sign-in expired, Not
+  connected, Not set up, Not available, Blocked by your team) and offers only
+  the step the server can take. A provider that won't let buildd connect reads
+  "Not available" with no Connect and no reason. Members see offered entries,
+  requests, grants and policy read-only, and can request an app the team has
+  not set up (`POST /api/connectors/catalog/request`, which pages the team).
+- Agent access is compact: a one-line summary and the requests waiting for a
+  decision, never folded; what agents hold, history and policy open below it,
+  and open by themselves when `?request=<id>` points there.
 - The UI never decides: every control posts to the routes above and shows
   what they answered. A repeat decision reads as already done; one someone
   else made first reads as it stands; a refused approval shows the server's
@@ -330,4 +348,4 @@ both, and visibility never depends on `tools/list_changed`.
 - Tables: `capabilityPolicies`, `capabilityGrants` in `packages/core/db/schema.ts`
 - MCP: `request_capability` in `packages/core/mcp-tools.ts`
 - Gate and Home: `apps/web/src/lib/capability-grants-needs-you.ts` (`accessEscalationRule`, `loadAccessNeedsYou`, `notifyAccessRequest`), wired through `apps/web/src/modules.ts`
-- UI: `apps/web/src/lib/capability-grants-view.ts`, `apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.tsx`, `CatalogSection.tsx`
+- UI: `apps/web/src/lib/capability-grants-view.ts`, `apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.tsx`, `TeamAppsSection.tsx`

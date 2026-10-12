@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { releaseCandidateConfigError } from '@buildd/core/release-config-shape';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type ReleaseTrigger, type ReleaseStrategy, type BranchStrategy } from '@buildd/core/db/schema';
@@ -8,7 +9,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError, parseCopyReviewConfig } from '@buildd/shared';
 import type { CopyReviewConfig } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
@@ -87,6 +88,23 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
         }
     }
 
+    if (r.releaseBranch !== undefined && typeof r.releaseBranch !== 'string') {
+        return { ok: false, error: 'releaseBranch must be a string', status: 422 };
+    }
+    let candidate: WorkspaceReleaseConfig['candidate'];
+    if (r.candidate !== undefined && r.candidate !== null) {
+        const c = r.candidate as Record<string, unknown>;
+        const strings = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+        if (typeof c !== 'object' || !strings(c.branches) || !strings(c.authors) || typeof c.sourceBranch !== 'string') {
+            return { ok: false, error: 'candidate must be { branches: string[], sourceBranch: string, authors: string[] }', status: 422 };
+        }
+        candidate = {
+            branches: (c.branches as string[]).map((b) => b.trim()).filter(Boolean),
+            sourceBranch: c.sourceBranch.trim(),
+            authors: (c.authors as string[]).map((a) => a.trim()).filter(Boolean),
+        };
+    }
+
     const config: WorkspaceReleaseConfig = {
         enabled: Boolean(r.enabled ?? true),
         ...(strategy ? { strategy } : {}),
@@ -97,6 +115,9 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
         ...(r.inputs && typeof r.inputs === 'object' ? { inputs: r.inputs as Record<string, string> } : {}),
         // branch_merge
         ...(typeof r.prodBranch === 'string' ? { prodBranch: r.prodBranch } : {}),
+        ...(typeof r.releaseBranch === 'string' && r.releaseBranch.trim() ? { releaseBranch: r.releaseBranch.trim() } : {}),
+        // frozen release candidates (any strategy; see @buildd/core/release-config-shape)
+        ...(candidate ? { candidate } : {}),
         ...(r.deployTarget && (r.deployTarget as any).type === 'vercel'
             ? { deployTarget: { type: 'vercel', projectId: (r.deployTarget as any).projectId, teamId: (r.deployTarget as any).teamId } }
             : {}),
@@ -105,6 +126,9 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
         // script
         ...(typeof r.command === 'string' ? { command: r.command } : {}),
     };
+
+    const candidateError = releaseCandidateConfigError(config);
+    if (candidateError) return { ok: false, error: candidateError, status: 422 };
 
     return { ok: true, config };
 }
@@ -146,7 +170,7 @@ async function verifyWriteAccess(
     if (user && !apiAccount) {
         const access = await verifyWorkspaceAccess(user.id, workspaceId);
         if (!access) return 'not_found';
-        return roleHas(access.role, 'manage_workspace_settings', await getTeamPermissionOverrides(access.teamId)) ? 'ok' : 'forbidden';
+        return roleHas(access.role, 'manage_workspace_settings') ? 'ok' : 'forbidden';
     }
     if (apiAccount) {
         const ws = await db.query.workspaces.findFirst({

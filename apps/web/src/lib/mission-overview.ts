@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * The mission Overview's rules as data: which task is selected on arrival,
  * the strip's cells and marks, and the focus card's reason line. Pure, so it
@@ -55,9 +56,12 @@ export function overviewSelection(model: Model, order: readonly string[], select
   return { marks: sel.marks, reason: null };
 }
 
-/** `2 of 7 merged · 1 of 4 criteria`: the header's counts. */
-export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criteria' | 'criteriaPassed'>): string {
-  const parts = [`${model.landed.done} of ${model.landed.total} merged`];
-  if (model.criteria.length > 0) parts.push(`${model.criteriaPassed} of ${model.criteria.length} criteria`);
+/** `2 of 7 landed · 1 of 4 criteria`; `{ criteria: false }` leaves the criteria to the Verified pill. */
+export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criteria' | 'criteriaPassed'>, opts: { criteria?: boolean } = {}): string {
+  // "landed", not "merged": this counts every finished task, PR or not (the
+  // Board's LANDED cell), while the PRs merged criterion counts PR-bearing
+  // tasks only. Both called "merged" read as two contradictory merged counts.
+  const parts = [model.landed.total === 0 ? 'No tasks' : `${model.landed.done} of ${model.landed.total} landed`];
+  if (opts.criteria !== false && model.criteria.length > 0) parts.push(`${model.criteriaPassed} of ${model.criteria.length} criteria`);
   return parts.join(' · ');
 }

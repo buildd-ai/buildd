@@ -63,7 +63,7 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
 }));
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   users: { id: 'id', email: 'email' },
   accounts: { id: 'id' },
   accountWorkspaces: { accountId: 'accountId', workspaceId: 'workspaceId' },

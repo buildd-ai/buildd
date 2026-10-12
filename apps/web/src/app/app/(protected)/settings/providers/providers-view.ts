@@ -46,7 +46,6 @@ export const SHAPE_NOUN: Record<ProviderShapeId, string> = {
 };
 
 /** The LiteLLM gateway and custom endpoint forms: the Routing section further down this page. */
-export const ADVANCED_ANCHOR = 'routing';
 
 export const ADMINS_ONLY = 'Admins can change this.';
 export const POLICY_BLOCKS_MINE = "Your team's policy doesn't use personal keys.";
@@ -167,27 +166,29 @@ export function cardView(p: ProviderListing, scope: ProviderApiScope, res: Pick<
   return { ...base, closed: null, edit, readOnly: null };
 }
 
-// ── Credential policy ────────────────────────────────────────────────────────
+// ── Whose key ────────────────────────────────────────────────────────────────
 
-export const POLICY_OPTIONS: readonly { value: CredentialPolicyValue; label: string; hint: string }[] = [
-  { value: 'team', label: 'Team key', hint: "Everyone uses the team's key." },
-  { value: 'personal_first', label: "Mine, then the team's", hint: "Uses your key when you've added one." },
-  { value: 'personal_only', label: 'Mine only', hint: 'You need your own key to start work.' },
-];
+/** The one rule, for chat and agent runs alike. There is no setting for it. */
+export const KEY_RULE = "Your key goes first. The team's key is the fallback.";
+
+const STORED_POLICY_LABEL: Partial<Record<CredentialPolicyValue, string>> = {
+  team: 'team keys only',
+  personal_only: 'personal keys only',
+};
 
 /**
- * The policy in effect. Unset behaves as team keys only, so the page shows
- * Team key as chosen rather than a prompt to pick (copy rule
- * `warning-instead-of-default`).
+ * A team that stored a policy other than the default (before the setting was
+ * removed) gets one line saying so, e.g. "This team uses team keys only.".
+ * Null for every other team: the rule needs no line on Models.
  */
-export function effectivePolicy(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): CredentialPolicyValue {
-  return policy.credentialPolicy ?? 'team';
+export function storedPolicyLine(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): string | null {
+  const label = policy.credentialPolicy ? STORED_POLICY_LABEL[policy.credentialPolicy] : undefined;
+  return label ? `This team uses ${label}.` : null;
 }
 
-/** One line for whoever can't change the policy: "Who pays: Team key. Everyone uses the team's key." */
-export function policySentence(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): string {
-  const opt = POLICY_OPTIONS.find((o) => o.value === effectivePolicy(policy))!;
-  return `${opt.label}. ${opt.hint}`;
+/** The line on You › Keys: the stored exception if there is one, else the rule. */
+export function keyRuleLine(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): string {
+  return storedPolicyLine(policy) ?? KEY_RULE;
 }
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
@@ -233,50 +234,78 @@ export function detectPaste(groupId: string, value: string): { provider: string;
   return { error: 'Unknown provider.' };
 }
 
-// ── Coverage ─────────────────────────────────────────────────────────────────
 
-/** Where the work runs, in words a person picks a model for. */
-export const COVERAGE_LABEL: Record<ProviderSurfaceId, string> = {
-  chat: 'Chat',
-  'agent-claude': 'Claude Code (host runners)',
-  'agent-codex': 'Codex (host runners)',
-  'cloud-egress': 'Cloud coding',
-};
 
-export interface CoverageLine {
-  surface: ProviderSurfaceId;
-  label: string;
-  /** Providers with a stored row at a scope this view can see that a reader uses for this surface. */
-  usedBy: { provider: string; label: string; scopes: ProviderApiScope[] }[];
-  /** Nothing set serves it: providers that could, so the fix is a key away. */
-  couldUse: { provider: string; label: string }[];
+
+
+// ── Used for ─────────────────────────────────────────────────────────────────
+
+/** Providers the team has connected (a team row exists), in registry order. */
+export function connectedProviders(res: Pick<ListProvidersResponse, 'providers'>): ProviderListing[] {
+  return res.providers.filter((p) => (p.set.team ?? []).length > 0);
 }
 
+export interface UsedForOption { value: string; label: string; disabled: boolean; description?: string }
+export interface UsedForRow { surface: ProviderSurfaceId; label: string; value: string | null; options: UsedForOption[] }
+
+/** "Automatic": the team made no pick for this surface; the resolver's own order decides. */
+export const AUTOMATIC = '';
+
 /**
- * Per surface: which configured provider serves it, or which providers would.
- * Built from the listing only (`set` rows and `servesToday`), so a registry
- * change reaches it without an edit. Rows are described, never read.
+ * One connected provider: no rows (it serves what it can, and `loneProviderLine`
+ * says so). Two or more: one row per surface, every connected provider an
+ * option, the ones a surface cannot use disabled with the registry's reason.
  */
-export function coverageView(res: Pick<ListProvidersResponse, 'providers'>): CoverageLine[] {
+export function usedForView(
+  res: Pick<ListProvidersResponse, 'providers'>,
+  assignments: Partial<Record<ProviderSurfaceId, string>>,
+): UsedForRow[] | null {
+  const connected = connectedProviders(res);
+  if (connected.length < 2) return null;
+  // A group shows once per surface, named the way the list names its row
+  // ("Claude"): only its members that serve the surface, or the first one,
+  // disabled, when none does. Two members serving go by their own names.
+  const groupOf = (id: string) => PROVIDER_GROUPS.find((g) => g.members.includes(id));
   return SURFACE_ORDER.map((surface) => {
-    const usedBy: CoverageLine['usedBy'] = [];
-    for (const p of res.providers) {
-      const scopes = (['team', 'workspace', 'mine'] as const).filter((sc) => (p.set[sc] ?? []).some((r) => r.servesToday.includes(surface)));
-      if (scopes.length) usedBy.push({ provider: p.id, label: p.label, scopes });
-    }
-    const couldUse = usedBy.length
-      ? []
-      : res.providers.filter((p) => p.surfaces[surface]?.ok).map((p) => ({ provider: p.id, label: p.label }));
-    return { surface, label: COVERAGE_LABEL[surface], usedBy, couldUse };
+    const serves = (p: ProviderListing) => !!p.surfaces[surface]?.ok;
+    const shown = connected.filter((p) => {
+      const g = groupOf(p.id);
+      if (!g) return true;
+      const members = connected.filter((q) => groupOf(q.id) === g);
+      return members.some(serves) ? serves(p) : members[0] === p;
+    });
+    const label = (p: ProviderListing) => {
+      const g = groupOf(p.id);
+      return g && shown.filter((q) => groupOf(q.id) === g).length < 2 ? g.label : p.label;
+    };
+    const options: UsedForOption[] = shown.map((p) => {
+      const support = p.surfaces[surface];
+      if (support?.ok) {
+        // Every team key rejected: picking it would route this surface to a key that fails.
+        const broken = (p.set.team ?? []).every((r) => r.health === 'revoked' || !!r.lastVerificationError);
+        return broken
+          ? { value: p.id, label: label(p), disabled: true, description: 'Needs a working key' }
+          : { value: p.id, label: label(p), disabled: false };
+      }
+      // The limit as a fact where someone acts ("Needs OpenAI or OpenRouter"), not a list of what it can't do.
+      const instead = support?.instead?.map((id) => res.providers.find((q) => q.id === id)?.label ?? id) ?? [];
+      return { value: p.id, label: label(p), disabled: true, description: instead.length ? `Needs ${orList(instead)}` : support?.reason };
+    });
+    const picked = assignments[surface];
+    const value = picked && options.some((o) => o.value === picked && !o.disabled) ? picked : null;
+    return { surface, label: SURFACE_LABEL[surface], value, options };
   });
 }
 
-const SCOPE_WORD: Record<ProviderApiScope, string> = { team: 'team', workspace: 'workspace', mine: 'yours' };
+/** With one connected provider: "OpenRouter is used for chat, Claude agents and cloud agents." */
+export function loneProviderLine(res: Pick<ListProvidersResponse, 'providers'>): string | null {
+  const connected = connectedProviders(res);
+  if (connected.length !== 1) return null;
+  const p = connected[0];
+  const { serves } = servesLine(p);
+  return serves.length ? `${p.label} is used for ${surfaceList(serves)}.` : null;
+}
 
-/** "OpenAI (team, yours)" or "Nothing set — add Anthropic, OpenRouter or LiteLLM gateway." */
-export function coverageText(line: CoverageLine): string {
-  if (line.usedBy.length) return line.usedBy.map((u) => `${u.label} (${u.scopes.map((s) => SCOPE_WORD[s]).join(', ')})`).join(' · ');
-  if (!line.couldUse.length) return 'Unavailable';
-  const names = line.couldUse.map((c) => c.label);
-  return `Not set up. Add ${names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0]}.`;
+function orList(names: readonly string[]): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0] ?? '';
 }

@@ -58,6 +58,7 @@ import { findPromptLeaks, runPrivatePromptEval, type EvalReport, type SetReport 
 import { SETS } from './benchmark-sets';
 import { promptSurface } from './surfaces';
 import { promptsRepoConfig } from '../prompts-repo';
+import type { CollectedDeps, DatasetReader } from './cases';
 
 /** `benchmarkSet` of a row for a prompt id no benchmark set reads. */
 export const NO_EVAL_SET = 'none';
@@ -91,11 +92,15 @@ export interface PromptEvalRunRow {
   teamId: string | null;
   trigger: PromptEvalTrigger;
   status: 'running';
-  promptsRef: string;
+  /** Null: no prompts repo was read (a model comparison over datasets or replays only). */
+  promptsRef: string | null;
   evalModel: string;
   prodModel: string;
   modelMismatch: boolean;
   dryRun: boolean;
+  /** A model comparison only (`./compare-run.ts`). */
+  models?: string[];
+  caseSource?: string;
 }
 
 export interface PromptEvalRunPatch {
@@ -124,6 +129,10 @@ export interface PromptEvalResultRow {
   errors: number;
   notRun: number;
   costUsd: number;
+  /** A model comparison row only (`./compare-run.ts`). */
+  caseSource?: string;
+  caseOrigin?: string;
+  metrics?: Record<string, unknown>;
 }
 
 export interface PromptEvalDeps {
@@ -144,6 +153,10 @@ export interface PromptEvalDeps {
   insertRun: (row: PromptEvalRunRow) => Promise<string>;
   finishRun: (id: string, patch: PromptEvalRunPatch) => Promise<void>;
   insertResults: (rows: PromptEvalResultRow[]) => Promise<void>;
+  /** Model comparison: objects in the datasets bucket. Absent: no dataset is read. */
+  readDataset?: DatasetReader;
+  /** Model comparison: the replay corpus and its outcome gold. Absent: no collected case is read. */
+  collected?: CollectedDeps;
   decide?: typeof decisionCall;
   now?: () => number;
 }
@@ -167,7 +180,7 @@ export function evalModelConfig(model: string, prod: DecisionModelConfig | null)
 }
 
 /** A missing cases file reads as "no cases"; any other read failure is real. */
-function casesFrom(reader: PromptFileReader): (file: string) => Promise<string | null> {
+export function casesFrom(reader: PromptFileReader): (file: string) => Promise<string | null> {
   return async file => {
     try {
       return await reader.read(`evals/${file}`);

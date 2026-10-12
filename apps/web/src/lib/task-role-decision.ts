@@ -44,6 +44,7 @@ import type {
   decisionCall,
 } from '@buildd/core/decision-client';
 import type { TaskKind } from '@buildd/core/model-router';
+import type { DecisionReplayCapture } from '@buildd/core/decision-replay';
 import { readRoleRouting, renderRoutingCriterion } from './role-routing';
 import { registerValuePrompt } from '@buildd/core/prompts';
 
@@ -55,6 +56,8 @@ export const TASK_ROLE_CAPABILITY = 'task_role_shadow' as const;
 /** The separate opt-in that lets the answer be written (§6(c), task-role-apply.ts). */
 export const TASK_ROLE_APPLY_CAPABILITY = 'task_role_apply' as const;
 export type TaskRoleCapability = typeof TASK_ROLE_CAPABILITY | typeof TASK_ROLE_APPLY_CAPABILITY;
+/** This decision's name for a team's model override (decision-model.ts `byKind`). */
+export const TASK_ROLE_MODEL_KIND = 'task_role' as const;
 /** One in this many tasks that STATED a role is shadowed too, for free labels (§6(a)). */
 export const STATED_ROLE_SAMPLE_EVERY = 5;
 
@@ -410,7 +413,7 @@ export interface TaskRoleShadowInput extends TaskRoleStateInput, CandidateTask {
 }
 
 type DecideFn = typeof decisionCall<TaskRoleQuestions>;
-type ResolveAccess = (opts: { capability: TaskRoleCapability; teamId: string; workspaceId: string; accountId: string | null }) => Promise<DecisionAccess>;
+type ResolveAccess = (opts: { capability: TaskRoleCapability; teamId: string; workspaceId: string; accountId: string | null; kind?: string }) => Promise<DecisionAccess>;
 export type ReadClaimedAt = (taskId: string) => Promise<Date | null>;
 
 async function dbReadClaimedAt(taskId: string): Promise<Date | null> {
@@ -473,6 +476,13 @@ export interface TaskRoleShadowResult {
   applyEnabled?: boolean;
   /** Set once the candidate set is known, even on `too_few_candidates` or `error` (decision ledger). */
   fingerprint?: string;
+  /**
+   * What the model was asked, on `logged` only: the ledger rows that carry its
+   * answer keep it as a replayable copy (`@buildd/core/decision-replay`).
+   * Never logged. `state` adds the role options as they stood, since a role's
+   * routing text changes and the question cannot be rebuilt without it.
+   */
+  replay?: DecisionReplayCapture;
 }
 
 export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRoleShadowDeps = {}): Promise<TaskRoleShadowResult> {
@@ -488,9 +498,9 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
     const resolveAccess = deps.resolveAccess ?? (client!.resolveDecisionAccess as ResolveAccess);
     const scope = { teamId: input.teamId, workspaceId: input.workspaceId, accountId: input.accountId ?? null };
     let capability: TaskRoleCapability = TASK_ROLE_CAPABILITY;
-    let access = input.statedRoleSlug ? null : await resolveAccess({ capability: TASK_ROLE_APPLY_CAPABILITY, ...scope });
+    let access = input.statedRoleSlug ? null : await resolveAccess({ capability: TASK_ROLE_APPLY_CAPABILITY, ...scope, kind: TASK_ROLE_MODEL_KIND });
     if (access?.ok) capability = TASK_ROLE_APPLY_CAPABILITY;
-    else access = await resolveAccess({ capability: TASK_ROLE_CAPABILITY, ...scope });
+    else access = await resolveAccess({ capability: TASK_ROLE_CAPABILITY, ...scope, kind: TASK_ROLE_MODEL_KIND });
     if (!access.ok) {
       // Opted in but no key: a row, so it reads differently from a capability that is off.
       return access.error.kind === 'missing_key'
@@ -564,7 +574,14 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
     };
     // Ids, slugs and numbers only: never the task's text or a role's routing text.
     log(`${DECISION_SHADOW_LOG_PREFIX} ${JSON.stringify(record)}`);
-    return { outcome: 'logged', record, applyEnabled, fingerprint };
+    const roleOptions = Object.fromEntries([...roleQ.slugFor].map(([label, slug]) => [slug, { label, criterion: roleQ.question.criteria[label] }]));
+    const replay: DecisionReplayCapture = {
+      state: { ...state, roleOptions },
+      questionIds: Object.keys(questions),
+      candidates: record.candidates,
+      promptRef: { id: TASK_ROLE_PROMPT_ID, version: taskRolePromptVersion(), contentHash: null },
+    };
+    return { outcome: 'logged', record, applyEnabled, fingerprint, replay };
   } catch (err) {
     console.error(`${DECISION_SHADOW_LOG_PREFIX} task_role failed (non-fatal, task unaffected):`, err);
     return { outcome: 'error' };

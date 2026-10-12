@@ -117,7 +117,7 @@ async function getJson<T>(url: string): Promise<TransportResult<T>> {
   }
   const body = await res.json().catch(() => null) as (T & { error?: string }) | null;
   if (!res.ok || !body) {
-    return { ok: false, status: res.status, error: body?.error || `Request failed (${res.status})` };
+    return { ok: false, status: res.status, error: body?.error || 'Couldn’t load this file. Try again.' };
   }
   return { ok: true, body };
 }

@@ -69,6 +69,7 @@ import { deriveTaskOrigin } from '@/lib/task-origin';
 import { originLinkCards } from './origin-links';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
+import { livingSpecLoad } from '@/lib/specs/task-view';
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
@@ -82,13 +83,12 @@ import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-loa
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadRunnerReachDiagnosis } from '@/lib/runner-reach';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
 import { truncateExcerpt } from './error-excerpt';
 import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
-import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
+import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
@@ -96,13 +96,15 @@ import { HeaderStatusPill, FactSheet, SideDescription, type FactRow } from './Ta
 import { findTaskRole } from './role-lookup';
 import { headerLifecycle, taskHeading } from './task-header';
 import TaskChecks from './TaskChecks';
+import TaskSubjectLink from './TaskSubjectLink';
+import TaskTitle from './TaskTitle';
 import { deriveTaskChecks, taskSubjectOf } from '@/lib/task-checks';
 import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
 import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { displayTaskTitle } from '@/lib/task-title';
 import { linkQuestionNote } from './question-hero';
-import { buildLineage } from './pr-lineage';
+import { buildLineage, diffStatsRecorded } from './pr-lineage';
 import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
 import type { PrOutcome } from '@/components/task/PrCard';
 import { buildHeroPool, pickHeroShots } from '@/lib/mission-shipped';
@@ -120,7 +122,7 @@ import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
 import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
 import BookkeepingAttemptRow from './BookkeepingAttemptRow';
-import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision } from '@/lib/task-verdict';
+import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
@@ -267,6 +269,7 @@ export default async function TaskDetailPage({
           with: {
             tasks: {
               columns: MISSION_CARD_TASK_COLUMNS,
+                extras: MISSION_TASK_REFRESH_EXTRAS,
               with: { workers: MISSION_CARD_WORKERS_WITH },
             },
             schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
@@ -346,21 +349,18 @@ export default async function TaskDetailPage({
   // fix). Runner work only; a local mission's task is claimed from a session.
   // Shown only when the task can start (filtered below, once deps are known).
   const runnerReachLoad = task.status === 'pending' && missionExecutorOf(missionContextRow) !== 'local' && task.workspace
-    ? Promise.all([
-        loadRunnerReachDiagnosis({
-          id: task.workspace.id,
-          teamId: task.workspace.teamId,
-          accessMode: task.workspace.accessMode,
-        }),
-        getTeamPermissionOverrides(access.teamId),
-      ])
-        .then(([diagnosis, overrides]) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role, overrides) } : null)
+    ? loadRunnerReachDiagnosis({
+        id: task.workspace.id,
+        teamId: task.workspace.teamId,
+        accessMode: task.workspace.accessMode,
+      })
+        .then((diagnosis) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role) } : null)
         .catch(() => null)
     : Promise.resolve(null);
   // Cloud runs only: its time on the hosted runner, all attempts. Started
   // here, awaited below, so it adds no round trip of its own.
   const hostedRunnerUsagePromise = taskHostedRunnerUsage(id).catch(() => null);
-  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
+  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw, livingSpec] = await Promise.all([
     prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
     taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     // Artifacts for all workers on this task
@@ -450,6 +450,8 @@ export default async function TaskDetailPage({
     // Worker vs verification failure. Costs no query unless the task failed;
     // joined here rather than awaited after the phase is derived.
     loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
+    // The Living Spec the task is pinned to, with its outcome. No query unless it names one.
+    livingSpecLoad(task.id, task.context),
   ]);
   // CI-retry attempts numbered by (createdAt, id): "attempt N" never swaps.
   const ciAttemptTasks = oldestFirst(ciAttemptRows, compareTasksChrono)
@@ -849,11 +851,13 @@ export default async function TaskDetailPage({
 
 
   let prOutcome: PrOutcome | null = null;
+  // Claim to merge, for the status row (the one place a merged PR is stated).
+  let lineageClaimToMergeMs: number | null = null;
   if (prWorker) {
     const firstAttempt = {
       runner: runnerLabel(prWorker),
       roleName,
-      commits: prWorker.commitCount ?? 0,
+      commits: prWorker.commitCount ?? null,
       add: prWorker.linesAdded ?? 0,
       rem: prWorker.linesRemoved ?? 0,
       files: prWorker.filesChanged ?? 0,
@@ -869,7 +873,7 @@ export default async function TaskDetailPage({
       return {
         runner: runnerLabel(w),
         roleName,
-        commits: w.commitCount ?? 0,
+        commits: w.commitCount ?? null,
         add: w.linesAdded ?? 0,
         rem: w.linesRemoved ?? 0,
         files: w.filesChanged ?? 0,
@@ -890,11 +894,13 @@ export default async function TaskDetailPage({
       })),
       pr: { lifecycle: prWorker.prLifecycleStatus ?? null, mergedAt: prWorker.mergedAt?.getTime() ?? null },
     });
+    lineageClaimToMergeMs = lineage.totals.claimToMergeMs;
     prOutcome = {
       repoLabel: task.workspace?.repo ? normalizeRepoFullName(task.workspace.repo) : null,
       summary: ((task.result as { summary?: string } | null)?.summary) ?? null,
-      // Nothing reported a commit or a diff yet: the numbers are unknown, not 0.
-      totals: { ...lineage.totals, measured: attempts.some(a => a.headSha != null || a.commits > 0 || a.add > 0 || a.rem > 0 || a.files > 0) },
+      // No attempt recorded its counters: the numbers are unknown, not 0 (a
+      // recorded head SHA alone does not count; see diffStatsRecorded).
+      totals: { ...lineage.totals, measured: diffStatsRecorded(attempts) },
       attempts: attempts.map((a, i) => ({ add: a.add, rem: a.rem, files: a.files, running: i > 0 && a.completedAt == null, actions: a.actions })),
       lineage: lineage.steps,
       // The retry's own summary is what it did about the failure.
@@ -923,8 +929,12 @@ export default async function TaskDetailPage({
     deliveryPrState: deliveryView?.prState ?? null,
   }), review: reviewOutcome,
     // The platform updating the branch or merging: in progress, not "ready to merge".
-    deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null });
+    deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null,
+    // A merged PR is stated once, on the status row, and the time goes with it.
+    claimToMerge: lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : null });
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
+  // The status row names and links the PR: the side panel and the PR card do not say it again.
+  const prStatedAbove = verdictLinksPr(verdict, prWorker?.prUrl);
   // What each agent error means for the outcome. Every trace stays inspectable;
   // only the ones the record says still matter are counted or shown in red.
   const traceWorkers = [...taskWorkers, ...ciAttemptTasks.flatMap(t => t.workers)];
@@ -997,9 +1007,10 @@ export default async function TaskDetailPage({
     p50Minutes: taskEstimate?.p50Minutes ?? null,
     p80Minutes: taskEstimate?.p80Minutes ?? null,
     summary: taskEstimate?.explanation?.summary ?? null,
+    priorWeight: taskEstimate?.explanation?.priorWeight ?? null,
   });
   const factRows: FactRow[] = [
-    ...(prOutcome && prWorker && isTerminal
+    ...(prOutcome && prWorker && isTerminal && !prStatedAbove
       ? [{
           key: 'pr',
           label: 'PR',
@@ -1167,7 +1178,7 @@ export default async function TaskDetailPage({
   const workerHistorySection = workerHistory.length > 0 ? (
           <div data-testid="task-worker-history">
             <div className="section-label pb-2 border-b border-border-default mb-6">
-              Worker History
+              Attempts
             </div>
             <div className="border border-border-default overflow-hidden">
               {workerHistory.map(({ worker, attemptLabel }) => {
@@ -1180,7 +1191,7 @@ export default async function TaskDetailPage({
                       <p>Runner: {runnerLabel(worker) ?? worker.name}{worker.account && ` \u00B7 ${worker.account.name}`}</p>
                       <p className="font-mono">Branch: <span title={worker.branch}>{displayBranchName(worker.branch)}</span></p>
                       {shownError && <p className="font-mono" title={shownError.raw}>{shownError.text}</p>}
-                      <p className="font-mono">Worker {worker.id} · {worker.turns} turns</p>
+                      <p className="font-mono" title={worker.id}>{attemptLabel ?? 'Attempt'} · {worker.turns} turns</p>
                     </BookkeepingAttemptRow>
                   );
                 }
@@ -1381,7 +1392,7 @@ export default async function TaskDetailPage({
           <MissionContextBar bar={missionContextBar} />
         ) : (
           // Back only: the title is the h1 right below.
-          <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-2">
+          <nav aria-label="Breadcrumb" className="text-sm text-text-secondary -mt-2 mb-1 md:mt-0 md:mb-2">
             <Link
               href={task.mission ? missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' }) : '/app/tasks'}
               data-testid="task-back"
@@ -1397,23 +1408,24 @@ export default async function TaskDetailPage({
         {/* Header — eyebrow (type · scope · role), the subject as the title, and
             one status pill with the admin actions behind ⋯ (D9). Chips that
             used to crowd the title line sit on the quiet meta line below. */}
-        <div className="mb-5 md:mb-6" data-testid="task-header">
-          {/* The actions (⋯) sit at the right of the title at every width. A
-              status pill (only without a verdict) sits between them on desktop
-              and under the title on a phone, so the title keeps its width. */}
+        <div className="mb-4 md:mb-6" data-testid="task-header">
+          {/* Desktop: title, status pill (only without a verdict) and actions
+              (Ask, ⋯) on one row. Phone: the title takes the full width and the
+              pill and actions share the compact row under it, so no reserved
+              column narrows a long title (task-page spec §Mobile header). */}
           <div className={`grid items-start gap-x-3 gap-y-2 md:gap-x-4 ${!shippedView && !verdict ? 'grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_auto_auto]' : 'grid-cols-[minmax(0,1fr)_auto]'}`}>
             {shippedView ? (
-              <div className="min-w-0 col-start-1 row-start-1">
+              <div className="min-w-0 col-span-2 row-start-1 md:col-span-1 md:col-start-1">
                 <TaskShippedTitle view={shippedView} title={heading.heading} />
               </div>
             ) : (
-            <div className="min-w-0 col-start-1 row-start-1">
-              <h1 className="text-[22px] md:text-[24px] font-semibold leading-snug tracking-[-0.2px] break-words max-w-[760px]">{heading.heading}</h1>
+            <div className="min-w-0 col-span-2 row-start-1 md:col-span-1 md:col-start-1">
+              <TaskTitle title={heading.heading} />
             </div>
             )}
             {/* With a verdict, the verdict block carries the state (and this hook). */}
             {!shippedView && !verdict && (
-              <span data-testid="task-header-status" data-status={displayStatus} className="col-span-2 row-start-2 md:col-span-1 md:col-start-2 md:row-start-1 md:mt-0.5">
+              <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start md:mt-0.5">
                 <HeaderStatusPill
                   status={displayStatus}
                   merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
@@ -1421,7 +1433,7 @@ export default async function TaskDetailPage({
                 />
               </span>
             )}
-            <div data-testid="task-header-actions" className={`flex items-center justify-end gap-2 col-start-2 row-start-1 md:mt-0.5 ${!shippedView && !verdict ? 'md:col-start-3' : ''}`}>
+            <div data-testid="task-header-actions" className={`flex items-center justify-end gap-2 col-start-2 row-start-2 md:row-start-1 md:mt-0.5 ${!shippedView && !verdict ? 'md:col-start-3' : ''}`}>
               <AskAboutLink kind="task" id={task.id} teamId={(task.workspace as { teamId?: string } | null)?.teamId ?? null} workspaceId={task.workspaceId} />
               <TaskOverflowMenu>
                 <EditTaskButton
@@ -1458,11 +1470,11 @@ export default async function TaskDetailPage({
                 <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
               </TaskOverflowMenu>
             </div>
-          </div>
           {/* One mono sub-line: type · scope · role, the workspace, loop and ship
               state, the PR. Created, category, project and the error count live
-              in Details and the evidence below, not here. */}
-          <div data-testid="task-subline" className="mt-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono">
+              in Details and the evidence below, not here. On a phone with no
+              status pill it shares the actions' row instead of leaving them alone. */}
+          <div data-testid="task-subline" className={`${!shippedView && !verdict ? 'col-span-2 row-start-3' : 'col-start-1 row-start-2 self-center'} md:col-span-full md:col-start-1 md:row-start-2 min-w-0 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono`}>
             <span>
               {heading.eyebrow.length > 0 && <span data-testid="task-eyebrow">{heading.eyebrow.join(' · ')} · </span>}
               {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'}
@@ -1473,6 +1485,7 @@ export default async function TaskDetailPage({
                 maxLoops={task.loopConfig.maxLoops ?? 5}
                 loopState={task.loopState}
                 startAt={task.startAt?.toISOString() ?? null}
+                exitConditionType={task.loopConfig.exitCondition?.type ?? null}
               />
             )}
             {/* Release controls belong to the deliverable, never to a review or fix run. */}
@@ -1482,20 +1495,21 @@ export default async function TaskDetailPage({
                 href={workerWithPr.prUrl!}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-accent-text hover:underline font-medium"
+                className="inline-flex min-h-11 items-center gap-1 text-accent-text hover:underline font-medium md:min-h-0"
               >
                 PR #{workerWithPr.prNumber} ↗
               </a>
             )}
           </div>
+          </div>
           {/* An attempt says what it is an attempt of, and links the deliverable. */}
-          {deliverableLink && (
-            <p data-testid="task-subject-link" className="mt-2 text-meta text-text-secondary [overflow-wrap:anywhere]">
-              {subject.kind === 'review' ? 'Review of' : 'Fix for'}{' '}
-              <Link href={taskPageHref({ taskId: deliverableLink.taskId, missionId: task.missionId })} className="inline-flex min-h-11 items-center text-accent-text hover:underline md:min-h-0">
-                {deliverableLink.title ? displayTaskTitle(deliverableLink.title) : 'the original task'} ›
-              </Link>
-            </p>
+          {deliverableLink && subject.kind !== 'deliverable' && (
+            <TaskSubjectLink
+              kind={subject.kind}
+              href={taskPageHref({ taskId: deliverableLink.taskId, missionId: task.missionId })}
+              prNumber={deliveryView?.prNumber ?? (typeof task.context?.prNumber === 'number' ? task.context.prNumber : null)}
+              title={deliverableLink.title ? displayTaskTitle(deliverableLink.title) : null}
+            />
           )}
           {/* The one track, in the delivery's words (task-page State mapping). A
               live run's own view leads with it, so it is drawn here only between runs. */}
@@ -1520,6 +1534,7 @@ export default async function TaskDetailPage({
             prUrl={prWorker?.prUrl ?? (deliveryView.repoFullName && deliveryView.prNumber != null ? `https://github.com/${deliveryView.repoFullName}/pull/${deliveryView.prNumber}` : null)}
             headSha={deliveryView.headSha}
             findings={deliveryContext.findings}
+            findingsUnavailable={deliveryContext.findingsUnavailable}
             currentTaskId={task.id}
           />
         )}
@@ -1684,7 +1699,7 @@ export default async function TaskDetailPage({
               <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
               </svg>
-              Mission budget spent. No worker can claim this task.
+              Mission budget spent. This task can’t start.
             </div>
             <p className="text-[12px] text-text-secondary ml-6">
               Every task in{' '}
@@ -1745,7 +1760,7 @@ export default async function TaskDetailPage({
         ) : hasRelatedTasks && (
           <div className="mb-6">
             <div className="section-label pb-2 border-b border-border-default mb-4">
-              Related Tasks
+              Related tasks
             </div>
             <div className="card p-4 space-y-3">
               {task.parentTask && showParentRow && (
@@ -1896,6 +1911,7 @@ export default async function TaskDetailPage({
             // The header carries the summary and the one action.
             outcome: prOutcome && shippedView ? { ...prOutcome, summary: null } : prOutcome,
             hideAction: !!shippedView,
+            statedAbove: prStatedAbove,
             openAttempt,
           };
           return (
@@ -2029,7 +2045,7 @@ export default async function TaskDetailPage({
                 {result.structuredOutput && (
                   <div className="mt-4">
                     <div className="section-label mb-2">
-                      Structured Output
+                      Output
                     </div>
                     <pre className="p-4 bg-surface-2 border border-border-default overflow-x-auto text-sm font-mono text-text-primary">
                       {JSON.stringify(result.structuredOutput, null, 2)}
@@ -2072,7 +2088,7 @@ export default async function TaskDetailPage({
               <>
                 <p className="text-text-secondary mb-2">Not started</p>
                 <p className="text-sm text-text-muted">
-                  Start it above, or a worker will claim it from the queue.
+                  Start it above, or a runner picks it up next.
                 </p>
               </>
             )}
@@ -2109,7 +2125,7 @@ export default async function TaskDetailPage({
             </SideDescription>
           )}
 
-          <SpecSourceBlock specSource={specSource} />
+          <SpecSourceBlock specSource={specSource} living={livingSpec} />
 
           {dependentTasks.length > 0 && (
             <section data-testid="task-unblocked">

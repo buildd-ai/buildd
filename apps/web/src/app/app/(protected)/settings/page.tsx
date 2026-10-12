@@ -4,16 +4,15 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { isBillingEnforced } from '@buildd/core/entitlements';
 import { legacySettingsTarget, settingsNavFor } from '@/lib/settings-nav';
 import Eyebrow from '@/components/ui/Eyebrow';
-import Lede from '@/components/ui/Lede';
 import LegacyAnchorRedirect from './_components/LegacyAnchorRedirect';
+import DesktopIndexRedirect from './_components/DesktopIndexRedirect';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * Settings index. On a phone this is the list half of list → detail: every
  * section, grouped, one tap each. On desktop the sub-nav already lists them, so
- * the page is a short landing: one sentence, then the same list as unframed
- * rows with a line on what each one holds.
+ * the page redirects to the first section instead of repeating the list.
  *
  * Old links: `?section=agent-backends` resolves here on the server;
  * `#agent-backends` resolves in the browser (LegacyAnchorRedirect).
@@ -30,15 +29,14 @@ export default async function SettingsIndexPage({
   const legacy = legacySettingsTarget(section);
   if (legacy) redirect(legacy);
 
+  const nav = settingsNavFor({ billing: isBillingEnforced() });
+
   return (
-    <div className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+    <div className="md:hidden pt-[4.5rem] px-4 pb-24">
       <LegacyAnchorRedirect />
+      <DesktopIndexRedirect href={nav[0].items[0].href} />
       <div className="max-w-2xl space-y-7">
-        <header className="hidden md:block">
-          <h1 className="text-xl font-semibold text-text-primary">Settings</h1>
-          <Lede className="mt-1.5">Pick a section here or in the column on the left.</Lede>
-        </header>
-        {settingsNavFor({ billing: isBillingEnforced() }).map((group) => (
+        {nav.map((group) => (
           <section key={group.label} aria-labelledby={`settings-group-${group.label}`}>
             <Eyebrow as="h2" tone="muted" id={`settings-group-${group.label}`} className="mb-1">{group.label}</Eyebrow>
             <ul className="divide-y divide-border-default" data-testid="settings-index-group">

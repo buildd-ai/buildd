@@ -3,11 +3,11 @@
  * (a mocked db would make every predicate unobservable).
  */
 import { describe, expect, it } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 import type { SQL } from 'drizzle-orm';
 import { buildMissionListWhere, missionListOrderBy, parseMissionListSort, escapeLike } from './mission-list-query';
 
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 const render = (s: SQL | undefined) => dialect.sqlToQuery(s!);
 
 describe('buildMissionListWhere', () => {

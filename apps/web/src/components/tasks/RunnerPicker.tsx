@@ -35,17 +35,17 @@ export default function RunnerPicker({ workspaceId, value, onChange, disabled }:
         disabled={disabled}
         className="min-h-11 self-start px-3 font-mono text-meta text-text-secondary hover:text-text-primary border border-border-default disabled:opacity-50"
       >
-        {value ? available.find(ui => ui.localUiUrl === value)?.accountName ?? 'Worker' : 'Any available worker'}{' '}
+        {value ? available.find(ui => ui.localUiUrl === value)?.accountName ?? 'Runner' : 'Any runner'}{' '}
         {open ? '▲' : '▾'}
       </button>
       {open && (
         <div className="max-w-md space-y-2 max-h-48 overflow-y-auto border border-border-default p-2">
           <button type="button" onClick={() => pick('')} disabled={disabled} className={option(value === '')}>
             <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">Any available worker</span>
+              <span className="text-sm font-medium">Any runner</span>
               {value === '' && check}
             </div>
-            <p className="text-xs text-text-muted mt-0.5">Queued for the next available worker</p>
+            <p className="text-xs text-text-muted mt-0.5">Queued for the next free runner</p>
           </button>
           {available.map(ui => (
             <button key={ui.localUiUrl} type="button" onClick={() => pick(ui.localUiUrl)} disabled={disabled} className={option(value === ui.localUiUrl)}>

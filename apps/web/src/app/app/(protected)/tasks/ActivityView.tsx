@@ -20,8 +20,8 @@ import Disclosure from '@/components/ui/Disclosure';
 import { STATES, TONE_TEXT as STATE_TONE_TEXT, type StateKey } from '@/components/ui/states';
 import { DELIVERY_KIND, repairBadge, type DeliveryKind } from '@/lib/delivery-projection';
 import {
-  filterEpisodes,
-  type ActivityNow, type ActivityOutcome, type EvidenceEntry, type Episode, type NowGroup, type NowRow,
+  age, filterEpisodes, filterNow,
+  type ActivityNow, type ActivityOutcome, type ActivityScope, type EvidenceEntry, type Episode, type NowGroup, type NowRow,
 } from '@/lib/activity-delivery';
 import type { LocalSessionView } from '@/lib/local-session-view';
 import { groupSessionsForDisplay } from '@/lib/local-session-display';
@@ -46,6 +46,12 @@ export interface ActivityViewProps {
   localSessions?: LocalSessionView[];
   /** Rows whose evidence starts expanded (fixtures and deep links). */
   openRowIds?: readonly string[];
+  /** The rows could not be read. Shown as a failure, never as an empty Now or History. */
+  loadError?: boolean;
+  /** The load hit its root cap: History reaches back only to this time, not the full window. */
+  historyReach?: { oldestAt: string } | null;
+  /** Filters to start with (fixtures). The filters are kept across Now and History. */
+  initialFilters?: { scope?: ActivityScope; outcome?: ActivityOutcome };
 }
 
 /** History's outcome chips, in the prototype's words. */
@@ -54,6 +60,7 @@ const OUTCOMES: ReadonlyArray<{ key: ActivityOutcome; label: string }> = [
   { key: 'landed', label: 'Landed' },
   { key: 'retries', label: 'Had repairs' },
   { key: 'you', label: 'Sent to you' },
+  { key: 'exceptions', label: 'Not landed' },
 ];
 
 /** The headline's breakdown, in delivery order; anything not yet started folds into "N waiting". */
@@ -90,16 +97,14 @@ export function deliveryBreakdown(now: ActivityNow): { kind: DeliveryKind | 'wai
   return out;
 }
 
-export function age(ms: number, nowMs: number): string {
-  const min = Math.max(0, Math.round((nowMs - ms) / 60_000));
-  if (min < 1) return 'now';
-  if (min < 60) return `${min}m`;
-  if (min < 1440) return `${Math.round(min / 60)}h`;
-  return `${Math.round(min / 1440)}d`;
-}
+export { age };
 
-export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [] }: ActivityViewProps) {
+export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, historyReach = null, initialFilters }: ActivityViewProps) {
   const breakdown = deliveryBreakdown(now);
+  const [nowOutcome, setNowOutcome] = useState<ActivityOutcome>(initialFilters?.outcome ?? 'any');
+  // A History-only outcome stays selected there, but cannot hide all of Now.
+  const nowFilterOutcome = nowOutcome === 'landed' || nowOutcome === 'you' ? 'any' : nowOutcome;
+  const groups = useMemo(() => filterNow(now, { scope: initialFilters?.scope ?? 'all', outcome: nowFilterOutcome }), [now, initialFilters?.scope, nowFilterOutcome]);
   return (
     <div className="h-full overflow-y-auto">
       <div data-testid="activity-view" data-mode={mode} className="mx-auto max-w-[1000px] px-4 pb-10 pt-14 md:px-6 md:pt-8">
@@ -129,7 +134,13 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
           <Link href="/app/chat" className="ml-auto inline-flex min-h-11 items-center text-meta text-text-muted">↳ Ask</Link>
         </nav>
 
-        {mode === 'now' ? (
+        {loadError ? (
+          <div role="alert" data-testid="activity-load-error" className="mt-8 border-2 border-status-error px-4 py-3 text-body text-text-primary">
+            <p className="font-semibold">Activity could not load.</p>
+            <p className="mt-1 text-text-secondary">Your tasks could not be read. Try again.</p>
+            <a href={hrefs[mode]} className="mt-2 inline-flex min-h-11 items-center text-meta text-accent-text">Try again ›</a>
+          </div>
+        ) : mode === 'now' ? (
           <>
             <div className="mt-4" data-testid="activity-headline">
               <p className="text-heading font-semibold text-text-primary">
@@ -144,12 +155,17 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
               )}
             </div>
             {!missionFilter && <SessionsLine sessions={localSessions} nowMs={nowMs} />}
-            {now.groups.length === 0
-              ? <Empty text="Nothing in motion. Finished work is in History." />
-              : now.groups.map(g => <NowGroupView key={g.missionId ?? '__standalone__'} group={g} nowMs={nowMs} openRowIds={openRowIds} />)}
+            <div className="mt-3" data-testid="activity-filters">
+              <FilterGroup label="Filter" options={[{ key: 'any', label: 'All' }, { key: 'retries', label: 'Had repairs' }, { key: 'exceptions', label: 'Needs attention' }]} value={nowFilterOutcome} onChange={setNowOutcome} />
+            </div>
+            {groups.length === 0
+              ? (now.groups.length === 0
+                ? <Empty text="Nothing in motion. Finished work is in History." />
+                : <FilteredEmpty text="Nothing in motion matches these filters." available={`${now.groups.reduce((n, g) => n + g.rows.length + g.moreWaiting, 0)} deliveries in Now`} onClear={() => setNowOutcome('any')} />)
+              : groups.map(g => <NowGroupView key={g.missionId ?? '__standalone__'} group={g} nowMs={nowMs} openRowIds={openRowIds} />)}
           </>
         ) : (
-          <HistoryView history={history} nowMs={nowMs} />
+          <HistoryView history={history} nowMs={nowMs} historyReach={historyReach} outcome={nowOutcome} onOutcomeChange={setNowOutcome} />
         )}
       </div>
     </div>
@@ -178,8 +194,7 @@ function SessionsLine({ sessions, nowMs }: { sessions: LocalSessionView[]; nowMs
   );
 }
 
-function HistoryView({ history, nowMs }: { history: Episode[]; nowMs: number }) {
-  const [outcome, setOutcome] = useState<ActivityOutcome>('any');
+function HistoryView({ history, nowMs, historyReach, outcome, onOutcomeChange: setOutcome }: { history: Episode[]; nowMs: number; historyReach: { oldestAt: string } | null; outcome: ActivityOutcome; onOutcomeChange: (outcome: ActivityOutcome) => void }) {
   const [shown, setShown] = useState(HISTORY_PAGE);
   // The team's zone, else the browser's once mounted; UTC until then so the server render matches.
   const tz = useDisplayTimezone() ?? 'UTC';
@@ -192,7 +207,9 @@ function HistoryView({ history, nowMs }: { history: Episode[]; nowMs: number }) 
         <FilterGroup label="Outcome" options={OUTCOMES} value={outcome} onChange={k => { setOutcome(k); setShown(HISTORY_PAGE); }} />
       </div>
       {episodes.length === 0
-        ? <Empty text={outcome === 'any' ? 'Nothing finished in the last 30 days.' : 'No deliveries match this filter.'} />
+        ? (history.length === 0 || outcome === 'any'
+          ? <Empty text="Nothing finished in the last 30 days." />
+          : <FilteredEmpty text="No deliveries match this filter." available={`${history.length} ${history.length === 1 ? 'episode' : 'episodes'} in History`} onClear={() => { setOutcome('any'); setShown(HISTORY_PAGE); }} />)
         : days.map(d => (
             <section key={d.key} data-testid="activity-day" className="mt-5">
               <div className="flex items-baseline justify-between gap-3 border-b border-border-default pb-1">
@@ -202,6 +219,12 @@ function HistoryView({ history, nowMs }: { history: Episode[]; nowMs: number }) 
               {d.episodes.map(e => <EpisodeView key={e.id} episode={e} nowMs={nowMs} />)}
             </section>
           ))}
+      {episodes.length > 0 && remaining === 0 && historyReach && (
+        <p data-testid="history-boundary" className="mt-4 text-meta text-text-muted">
+          Older work is not shown. History reaches back to {age(Date.parse(historyReach.oldestAt), nowMs)} ago.{' '}
+          <Link href="/app/missions" className="inline-flex min-h-11 items-center text-accent-text md:min-h-0">Browse missions ›</Link>
+        </p>
+      )}
       {remaining > 0 && (
         <button type="button" data-testid="activity-history-more" onClick={() => setShown(n => n + HISTORY_PAGE)} className="btn mt-4 min-h-11 md:min-h-0">
           Show {Math.min(remaining, HISTORY_PAGE)} more
@@ -231,7 +254,19 @@ function FilterGroup<K extends string>({ label, options, value, onChange }: { la
 }
 
 function Empty({ text }: { text: string }) {
-  return <p className="mt-8 text-center text-body text-text-muted">{text}</p>;
+  return <p data-testid="activity-empty" className="mt-8 text-center text-body text-text-muted">{text}</p>;
+}
+
+/** Empty because of the filters, not because there is nothing: says what is there and clears them. */
+function FilteredEmpty({ text, available, onClear }: { text: string; available: string; onClear: () => void }) {
+  return (
+    <div data-testid="activity-filtered-empty" className="mt-8 flex flex-col items-center gap-2 text-center">
+      <p className="text-body text-text-muted">{text} {available}.</p>
+      <button type="button" data-testid="activity-clear-filters" onClick={onClear} className="inline-flex min-h-11 items-center border-2 border-border-strong px-3.5 font-mono text-body font-semibold text-text-primary md:min-h-9">
+        Clear filters
+      </button>
+    </div>
+  );
 }
 
 // ── Now ─────────────────────────────────────────────────────────────────────
@@ -278,6 +313,7 @@ function NowRowView({ row, nowMs, startOpen }: { row: NowRow; nowMs: number; sta
         {/* Before Build the track has no current step, so the state word says where it stands. */}
         {STEP_OF[state] < 0 && <StatePill state={state} label={DELIVERY_KIND[row.delivery.kind].label} variant="plain" data-testid="delivery-state" />}
         <Lifecycle state={state} repairs={rounds} />
+        {row.quietHold && <span data-testid="activity-quiet-hold" className="text-meta text-text-muted">session {row.quietHold.state === 'ended' ? 'ended' : 'quiet'} · slot held</span>}
       </span>
       <span className="col-span-2 text-meta text-text-secondary">{row.line}</span>
     </>
@@ -289,6 +325,9 @@ function NowRowView({ row, nowMs, startOpen }: { row: NowRow; nowMs: number; sta
         <button type="button" aria-expanded={open} aria-controls={`ev-${row.id}`} onClick={() => setOpen(o => !o)} className={grid}>{head}</button>
       ) : (
         <Link href={row.href} className={grid}>{head}</Link>
+      )}
+      {row.quietHold && (
+        <Link href={row.href} data-testid="activity-release-slot" className="mb-2 inline-flex min-h-11 items-center font-mono text-meta text-accent-text md:min-h-0">Release slot ›</Link>
       )}
       {repairs.length > 0 && (
         <ul data-testid="activity-repairs" aria-label="Repair attempts" className="mb-2 ml-3 border-l border-border-strong pl-3">

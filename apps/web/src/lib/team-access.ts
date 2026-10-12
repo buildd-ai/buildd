@@ -8,7 +8,7 @@ import { isValidTimezone } from '@buildd/core/timezone';
 import { getTeamTimezoneSetting } from './team-timezone';
 import { isUuid } from './uuid';
 import { accountReachesWorkspace } from './workspace-reach';
-import { getTeamPermissionOverrides, roleHas, type Permission, type TeamScopeCaller } from './permissions';
+import { roleHas, type Permission, type TeamScopeCaller } from './permissions';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -413,6 +413,8 @@ export type UserTeam = {
   slug: string;
   role: string;
   memberCount: number;
+  /** Owners on the team, for the last-owner rule on Leave. Absent when the count failed. */
+  ownerCount?: number;
 };
 
 /**
@@ -434,17 +436,20 @@ export const getUserTeamsWithDetails = cache(async (userId: string): Promise<Use
   const memberTeamIds = validMemberships.map(m => m.teamId);
 
   let countMap = new Map<string, number>();
+  let ownerMap = new Map<string, number>();
   try {
     const memberCounts = await db
       .select({
         teamId: teamMembers.teamId,
         count: sql<number>`count(*)::int`,
+        owners: sql<number>`count(*) filter (where ${teamMembers.role} = 'owner')::int`,
       })
       .from(teamMembers)
       .where(inArray(teamMembers.teamId, memberTeamIds))
       .groupBy(teamMembers.teamId);
 
     countMap = new Map(memberCounts.map(mc => [mc.teamId, mc.count]));
+    ownerMap = new Map(memberCounts.map(mc => [mc.teamId, mc.owners]));
   } catch {
     // Member counts are non-critical, default to 1
   }
@@ -457,14 +462,15 @@ export const getUserTeamsWithDetails = cache(async (userId: string): Promise<Use
       slug: m.team.slug,
       role: m.role,
       memberCount: countMap.get(m.teamId) || 1,
+      ownerCount: ownerMap.get(m.teamId),
     }));
 });
 
 /**
  * Whether a signed-in user holds `permission` in the team that owns
- * `workspaceId`, with that team's overrides applied. No workspace access = false.
+ * `workspaceId`. No workspace access = false.
  */
 export async function holdsInWorkspace(userId: string, workspaceId: string, permission: Permission): Promise<boolean> {
   const access = await verifyWorkspaceAccess(userId, workspaceId);
-  return !!access && roleHas(access.role, permission, await getTeamPermissionOverrides(access.teamId));
+  return !!access && roleHas(access.role, permission);
 }

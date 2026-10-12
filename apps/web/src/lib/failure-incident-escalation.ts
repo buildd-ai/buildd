@@ -34,6 +34,8 @@
  * incident nothing is fixing). It is not wired yet: the Sentinel files a fix
  * task before paging whenever it can, so a high incident with no fix task has
  * no machine step for Jev to hand it to, and it goes to the owner by rule.
+ * A judged row files the judge's answer as its verdict, the rule's as
+ * `ruleAnswer`, and keeps what the judge was asked as a replayable copy.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -44,6 +46,7 @@ import {
   type EscalationVerdict,
 } from '@buildd/core/escalation-gate';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
+import type { DecisionReplayCapture } from '@buildd/core/decision-replay';
 import type { FailureIncidentRule, FailureIncidentSeverity, FailureIncidentStatus } from '@buildd/shared';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import type { WaitingOnYouRawItem } from './action-queue';
@@ -119,7 +122,16 @@ export interface IncidentGateDeps {
   record: (input: DecisionLedgerInput) => Promise<string | null | void>;
   notify: (teamId: string, payload: { title: string; message: string; url: string; urlTitle: string; priority: 0 | 1 }) => Promise<void>;
   /** Jev, asked only for a concern no rule answers (a high incident nothing is fixing). Absent: the owner. */
-  judge?: (s: IncidentSubject) => Promise<EscalationVerdict | null>;
+  judge?: (s: IncidentSubject) => Promise<IncidentJudgement | null>;
+}
+
+/**
+ * The judge's answer, and what it was asked (`@buildd/core/decision-replay`):
+ * the row filed for it keeps that as a replayable copy.
+ */
+export interface IncidentJudgement {
+  verdict: EscalationVerdict;
+  replay?: DecisionReplayCapture | null;
 }
 
 async function subjectFor(a: IncidentAlert, teamId: string, deps: IncidentGateDeps): Promise<IncidentSubject> {
@@ -152,15 +164,17 @@ export function createGatedIncidentSender(deps: IncidentGateDeps): IncidentAlert
     const stored = await deps.loadStored(teamId, s.key).catch(() => null);
     if (stored && stored.fingerprint === fingerprint && verdictFromCode(stored.appliedAnswer)) return false;
 
-    let verdict = incidentEscalationRule(s);
-    if (verdict.owner === 'person' && verdict.rail === 'no_next_step' && deps.judge) {
-      verdict = (await deps.judge(s).catch(() => null)) ?? verdict;
-    }
+    const rule = incidentEscalationRule(s);
+    const judged = rule.owner === 'person' && rule.rail === 'no_next_step' && deps.judge
+      ? await deps.judge(s).catch(() => null)
+      : null;
+    const verdict = judged?.verdict ?? rule;
     const code = verdictCode(verdict);
     const record = () => deps.record({
       teamId, workspaceId: inc.workspaceId, capability: ESCALATION_GATE_CAPABILITY, fingerprint,
       promptVersion: ESCALATION_GATE_PROMPT_VERSION, subjectType: INCIDENT_SUBJECT_TYPE, subjectId: s.key,
-      ruleAnswer: code, appliedAnswer: code, applied: true, status: 'applied',
+      ruleAnswer: verdictCode(rule), appliedAnswer: code, applied: true, status: 'applied',
+      ...(judged ? { verdict: code, replay: judged.replay ?? null } : {}),
       reason: verdict.owner === 'person' ? `rule:${verdict.rail ?? 'person'}` : `rule:${verdict.action}`,
     }).catch(() => {});
 

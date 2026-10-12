@@ -434,7 +434,10 @@ an ordinary task PR into the same branch is not one). `isCompositionPr` recognis
    (`renumberedMigrations`). That means a mission-side `.sql` the merge dropped, paired
    one to one with a new `.sql` that holds the same blob and is on neither side. This
    is what the generated-conflict resolver's renumber produces. A moved migration whose
-   content changed, or one written in the merge, stays novel.
+   content changed, or one written in the merge, stays novel. The merge-safety
+   inspector reads the same shape in a refresh PR's diff as a renumber, not lineage,
+   using the same pairing (`pairMovedMigrations`, db-migration-gates.md "A renumber in
+   a refresh PR is not lineage").
 
 A truncated or unreadable tree makes the result `unverifiable` (full review). With
 nothing left novel, the refresh is approved on composition with no reviewer. Otherwise a
@@ -449,8 +452,9 @@ composition` and the head in `composition_heads`; `approved_heads` is untouched 
 round is decided at the aggregate head. With `present` a `delta` round scoped to the
 novel paths is queued. An approve of that delta round (S33) keeps `approval_basis =
 composition`, adds the head to `composition_heads` only, and records the delta round id
-in the transition evidence. Its GitHub review and the headline ("Release-only changes
-approved") say it covers the novel paths only. `unverifiable` or any failed check claims
+in the transition evidence. Its GitHub review and the headline ("New changes
+approved") say it covers the novel paths only. The copy names no PR kind, because a
+release, a mission integration PR and a mission branch refresh PR all compose this way. `unverifiable` or any failed check claims
 nothing (`rejected`). Ordinary verdicts stay exact-head (§8): `headCoverage` reports
 `verdict`, `human`, `composition` or `none`, and `PrMerged` records which one covered
 the merged head.
@@ -1310,8 +1314,8 @@ PR-less task is absent from every map below and keeps today's projection:
   reviewer. A novel delta → a delta round scoped to those paths, with the
   attestation in the reviewer's prompt. Unverifiable → the normal full review. CI
   still gates the aggregate through the unchanged landing rails. The headline reads
-  "Release composition verified", or "Release-only changes approved" once a delta
-  round approved the novel paths.
+  "Composition verified", or "New changes approved" once a delta round approved the
+  novel paths.
 - **S37 conflict recovery** (`dispatchConflictRetry`, `classifyConflictFix`,
   `recoverStalledConflictFix` in `lib/conflict-retry.ts`): a live conflict fix is
   the canonical remediation. A pending one unclaimed for 30 minutes is re-dispatched,

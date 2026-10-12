@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { displayTaskTitle } from './task-title';
+import { displayTaskTitle, taskShortName } from './task-title';
 
 describe('displayTaskTitle', () => {
   it('shortens a mission refresh title', () => {
@@ -21,28 +21,33 @@ describe('displayTaskTitle', () => {
     expect(displayTaskTitle('Ship mission: Widget Polish')).toBe('Ship Widget Polish');
   });
 
-  it('shortens a ship title behind a retry wrap, keeping the wrap', () => {
+  it('shortens a ship title behind a retry wrap, dropping the wrap', () => {
     expect(displayTaskTitle('[builder · after review #2] Ship mission: Widget Polish'))
-      .toBe('[builder · after review #2] Ship Widget Polish');
+      .toBe('Ship Widget Polish');
   });
 
-  it('strips a conventional-commit type and scope, and capitalises the subject', () => {
-    expect(displayTaskTitle('fix(deps): pin the widget parser')).toBe('Pin the widget parser');
-    expect(displayTaskTitle('chore(mission): merge dev')).toBe('Merge dev');
-    expect(displayTaskTitle('feat: add invoices')).toBe('Add invoices');
-    expect(displayTaskTitle('refactor(ui)!: drop the old board')).toBe('Drop the old board');
-    expect(displayTaskTitle('polish(home): tighten the rail')).toBe('Tighten the rail');
-  });
-
-  it('strips the type behind a retry wrap, keeping the wrap', () => {
-    expect(displayTaskTitle('[builder · after CI #1] feat(invoices): render invoices'))
-      .toBe('[builder · after CI #1] Render invoices');
-  });
-
-  it('leaves a plain title and a bare prefix alone', () => {
-    expect(displayTaskTitle('Investigate the flaky login test')).toBe('Investigate the flaky login test');
-    expect(displayTaskTitle('fix:')).toBe('fix:');
-    expect(displayTaskTitle('Note: the parser is slow')).toBe('Note: the parser is slow');
+  it.each([
+    ['feat(estimates): one estimator that blends neighbours', 'One estimator that blends neighbours'],
+    ['fix(deps): pin the widget parser', 'Pin the widget parser'],
+    ['refactor(core)!: drop the old queue', 'Drop the old queue'],
+    ['feat: onboarding checklist', 'Onboarding checklist'],
+    ['polish(mission-detail): compact phone header', 'Compact phone header'],
+    ['[builder · after CI #1] fix(timeline): keep rows disjoint', 'Keep rows disjoint'],
+    ['[surface audit] fix(home): needs-you card', 'Needs-you card'],
+    ['[reviewer] PR #12: feat(settings): clear maximum model tier', 'Clear maximum model tier'],
+    ['Fix the thing: carefully', 'Fix the thing: carefully'],
+    ['already plain title', 'Already plain title'],
+    ['chore(mission): merge dev', 'Merge dev'],
+    ['feat: add invoices', 'Add invoices'],
+    ['refactor(ui)!: drop the old board', 'Drop the old board'],
+    ['polish(home): tighten the rail', 'Tighten the rail'],
+    ['design: revise the card', 'Revise the card'],
+    ['[builder · after CI #1] feat(invoices): render invoices', 'Render invoices'],
+    ['Investigate the flaky login test', 'Investigate the flaky login test'],
+    ['fix:', 'fix:'],
+    ['Note: the parser is slow', 'Note: the parser is slow'],
+  ])('%s -> %s', (input, out) => {
+    expect(displayTaskTitle(input)).toBe(out);
   });
 
   it('strips a research: prefix like a conventional type', () => {
@@ -57,7 +62,26 @@ describe('displayTaskTitle', () => {
   });
 });
 
+describe('taskShortName', () => {
+  it('prefers the label alone, never label plus title', () => {
+    expect(taskShortName({ title: 'polish(mission-detail): compact header', label: 'polish' })).toBe('Polish');
+  });
+  it('falls back to the cleaned title when there is no label', () => {
+    expect(taskShortName({ title: 'feat(x): activity accurate now', label: null })).toBe('Activity accurate now');
+    expect(taskShortName({ title: 'fix: y', label: 'untitled' })).toBe('Y');
+  });
+  it('cuts at a word boundary with no dangling punctuation', () => {
+    const n = taskShortName({ title: "interactive- don't release live local sessions while the runner restarts in place" });
+    expect(n.length).toBeLessThanOrEqual(40);
+    expect(n).not.toMatch(/[(\-\s]$/);
+    expect(n.startsWith('Interactive')).toBe(true);
+  });
+  it('is empty for nothing', () => {
+    expect(taskShortName({ title: '' })).toBe('');
+  });
+});
+
 it('strips research prefixes, scopes and retry wraps through the shared prefix pattern', () => {
   expect(displayTaskTitle('research: compare providers')).toBe('Compare providers');
-  expect(displayTaskTitle('[retry] RESEARCH(api): compare providers')).toBe('[retry] Compare providers');
+  expect(displayTaskTitle('[retry] RESEARCH(api): compare providers')).toBe('Compare providers');
 });

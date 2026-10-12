@@ -1,10 +1,11 @@
 /**
  * /api/experiments — the team's experiment registry.
  *
- * GET   list the experiments the caller can see. `visibility: 'admins'` rows
- *       are filtered out below admin, not flagged — they do not exist for a
- *       member (see apps/web/src/lib/experiments.ts).
- * POST  create a draft. admin|owner only. Nothing enrolls until the
+ * GET   list the experiments the caller can see. `visibility: 'admins'`
+ *       (operator-only) rows are filtered out for anyone but a platform
+ *       operator, not flagged — they do not exist for them (see
+ *       apps/web/src/lib/experiments.ts).
+ * POST  create a draft. Platform operators only (no team role). Nothing enrolls until the
  *       experiment is started with PATCH /api/experiments/[id] {status:'running'}.
  *
  * `?workspaceId=` (optional) resolves the team through that workspace; without
@@ -17,11 +18,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { bearerOf, resolveExperimentViewer, taskTokenExperimentViewer, type ViewerResult } from '@/lib/experiment-access';
 import { isTaskToken } from '@/lib/task-token';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
-import { canViewExperiment, isExperimentAdmin, parseCreateExperiment, toExperimentDTO } from '@/lib/experiments';
+import { canViewExperiment, isExperimentOperator, parseCreateExperiment, toExperimentDTO } from '@/lib/experiments';
 import { insertExperiment, listTeamExperiments } from '@/lib/experiments-store';
 import { runExperimentHealth } from '@buildd/core/experiment-health-source';
 import type { ExperimentHealthFinding } from '@buildd/core/experiment-health';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+
 
 export async function GET(req: NextRequest) {
   const workspaceParam = req.nextUrl.searchParams.get('workspaceId');
@@ -41,8 +42,7 @@ export async function GET(req: NextRequest) {
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   const { viewer } = who;
 
-  const overrides = await getTeamPermissionOverrides(viewer.teamId);
-  const rows = (await listTeamExperiments(viewer.teamId)).filter(r => canViewExperiment(r.visibility, viewer.role, overrides));
+  const rows = (await listTeamExperiments(viewer.teamId)).filter(r => canViewExperiment(r.visibility, viewer));
   const experiments = rows.map(toExperimentDTO);
   // Enrolment health of the running ones (at most one per kind per team), so a
   // starved or unbalanced experiment shows up where it is listed. A failed
@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
     const findings = await runExperimentHealth(r).catch(() => null);
     if (findings) health[r.id] = findings;
   }));
-  return NextResponse.json({ experiments, canManage: isExperimentAdmin(viewer.role, overrides), health });
+  return NextResponse.json({ experiments, canManage: isExperimentOperator(viewer), health });
 }
 
 export async function POST(req: NextRequest) {
@@ -62,8 +62,8 @@ export async function POST(req: NextRequest) {
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   const { viewer } = who;
-  if (!isExperimentAdmin(viewer.role, await getTeamPermissionOverrides(viewer.teamId))) {
-    return NextResponse.json({ error: 'Creating an experiment requires team admin or owner' }, { status: 403 });
+  if (!isExperimentOperator(viewer)) {
+    return NextResponse.json({ error: 'Creating an experiment is for buildd platform operators' }, { status: 403 });
   }
 
   let body: unknown;
@@ -77,8 +77,8 @@ export async function POST(req: NextRequest) {
 
   const row = await insertExperiment(viewer.teamId, viewer.userId, parsed.value);
   if (row === 'duplicate_key') {
-    // Same answer whether the clashing row is team- or admins-visible: only
-    // admins reach this line, and admins can see both.
+    // Same answer whether the clashing row is team- or operator-visible: only
+    // operators reach this line, and operators can see both.
     return NextResponse.json({ error: `An experiment with key "${parsed.value.key}" already exists on this team` }, { status: 409 });
   }
   return NextResponse.json({ experiment: toExperimentDTO(row) }, { status: 201 });

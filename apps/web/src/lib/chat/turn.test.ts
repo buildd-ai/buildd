@@ -112,9 +112,9 @@ function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: ()
     now: () => new Date('2026-09-26T21:30:00Z'),
     allowedToolGroups: new Set(opts.allowedGroups ?? []) as any,
     limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
-    permissionOverrides: async () => ({}),
     route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
     routingAccess: async () => ({ ok: false as const, error: { kind: 'missing_key' as const } }),
+    catalog: async () => [],
     resolveModel: async (o: any) => { resolveCalls.push(o); tiersAsked.push(o.tier); return (opts.key ?? true)
       ? { ok: true as const, model: opts.model!, provider: 'openrouter' as const, modelId: 'test-model', tier: o.tier, keyScope: 'team' as const, ...(opts.pool ? { pool: opts.pool } : {}) }
       : { ok: false as const, reason: 'no_key' as const, provider: 'anthropic', tier: o.tier }; },
@@ -1713,6 +1713,54 @@ describe('a long paste rides as an attachment', () => {
   });
 });
 
+// ── files count toward the turn size before spend (close-out ce209846) ─────
+describe('a message\'s files count toward what one turn may send', () => {
+  const textRef = (i: number, chars: number) => ({ artifactId: `3c1e2a40-5b3d-4f6e-9a8b-0c1d2e3f4a${String(i).padStart(2, '0')}`, revision: 1, sha256: 'c'.repeat(64), name: `notes-${i}.txt`, mediaType: 'text/plain', sizeBytes: chars });
+  const textFiles = (sizes: number[]) => {
+    const refs = sizes.map((n, i) => textRef(i, n));
+    const bound: string[] = [];
+    const byId = new Map(refs.map(r => [r.artifactId, r]));
+    const resolve = (drafts: Array<{ id: string }>) => ({ ok: true as const, refs: drafts.map(d => byId.get(d.id)!) });
+    return {
+      refs, bound,
+      deps: {
+        check: async (_c: { id: string }, _u: string, drafts: Array<{ id: string }>) => resolve(drafts),
+        bind: async (_c: { id: string }, _u: string, drafts: Array<{ id: string }>) => { bound.push(...drafts.map(d => d.id)); return resolve(drafts); },
+        read: async (r: { sizeBytes: number }) => Buffer.from('x'.repeat(r.sizeBytes)),
+      },
+    };
+  };
+  const noLinks = { store: async () => ({ ok: true as const, refs: [] }), link: async () => {}, bodies: async () => new Map<string, string>() };
+  const msgWith = (refs: Array<{ artifactId: string; name: string; mediaType: string; sizeBytes: number }>) => ({
+    id: 'client-t', role: 'user',
+    parts: [{ type: 'text', text: 'summarise these' }, ...refs.map(r => ({ type: 'data-file', data: { kind: 'file', id: r.artifactId, name: r.name, mediaType: r.mediaType, sizeBytes: 1 } }))],
+  });
+
+  it('ten text files of 100,000 characters are refused before routing, any model call or any write', async () => {
+    const f = textFiles(Array(10).fill(100_000));
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const h = harness({ model, extraDeps: { files: f.deps, attachments: noLinks } });
+    const { res, text } = await h.turn(msgWith(f.refs));
+    expect(res.status).toBe(400);
+    expect(JSON.parse(text).code).toBe('message_too_long_for_model');
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(h.resolveCalls).toHaveLength(0);
+    expect(f.bound).toHaveLength(0);
+    expect(messages.filter(m => m.role === 'user')).toHaveLength(0);
+  });
+
+  it('two small text files pass, each quoted whole', async () => {
+    const f = textFiles([40, 60]);
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const h = harness({ model, extraDeps: { files: f.deps, attachments: noLinks } });
+    expect((await h.turn(msgWith(f.refs))).res.status).toBe(200);
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('x'.repeat(40));
+    expect(prompt).toContain('x'.repeat(60));
+    expect(f.bound).toEqual(f.refs.map(r => r.artifactId));
+  });
+});
+
 // ── images and files (Living Specs C3) ──────────────────────────────────────
 describe('an image or file rides as a ready upload', () => {
   const FILE_ID = '7c1e2a40-5b3d-4f6e-9a8b-0c1d2e3f4a5b';
@@ -1727,6 +1775,9 @@ describe('an image or file rides as a ready upload', () => {
           bound.push(...drafts.map(d => d.id));
           return { ok: true as const, refs: drafts.map(d => ({ artifactId: d.id, revision: 1, sha256: 'b'.repeat(64), name: 'chart.png', mediaType: 'image/png', sizeBytes: PNG.byteLength })) };
         },
+        check: async (_conv: { id: string }, _userId: string, drafts: Array<{ id: string }>) => (ready
+          ? { ok: true as const, refs: drafts.map(d => ({ artifactId: d.id, revision: 1, sha256: 'b'.repeat(64), name: 'chart.png', mediaType: 'image/png', sizeBytes: PNG.byteLength })) }
+          : { ok: false as const, status: 409 as const, code: 'file_not_ready', error: 'this file has not finished uploading' }),
         read: async () => PNG,
       },
     };
@@ -1776,6 +1827,57 @@ describe('an image or file rides as a ready upload', () => {
     expect(prompt).toContain('chart.png');
     expect(prompt).toContain('cannot view images');
     expect(prompt).not.toContain('"type":"file"');
+  });
+
+  describe('a turn whose model cannot view the image goes to a tier that can', () => {
+    const entry = (openRouterId: string, inputModalities: string[], input = 0.1) => ({
+      id: openRouterId.split('/')[1], canonicalId: null, openRouterId, provider: 'other' as const, displayName: openRouterId,
+      contextLength: 1_000_000, created: 1, input, output: input * 4, cacheRead: 0, cacheWrite: 0, inputModalities,
+    });
+    const byTier: Record<string, string> = { budget: 'v/text-only', standard: 'v/sees', premium: 'v/sees-too' };
+    const catalog = async () => [entry('v/text-only', ['text']), entry('v/sees', ['text', 'image'], 2), entry('v/sees-too', ['text', 'image'], 5)];
+    const tiered = (models: Record<string, MockLanguageModelV4>, asked: string[]) => async (o: any) => {
+      asked.push(o.tier);
+      return { ok: true as const, model: models[o.tier], provider: 'openrouter' as const, modelId: byTier[o.tier], tier: o.tier, keyScope: 'team' as const };
+    };
+    const models = () => ({
+      budget: new MockLanguageModelV4({ doStream: textStream('blind') as any }),
+      standard: new MockLanguageModelV4({ doStream: textStream('A bar chart.') as any }),
+      premium: new MockLanguageModelV4({ doStream: textStream('A bar chart.') as any }),
+    });
+    const budgetRoute = async () => ({ tier: 'budget' as const, allowWrites: true, source: 'decision' as const });
+
+    it('the image goes as file input to the nearest tier whose model reads images', async () => {
+      const m = models();
+      const asked: string[] = [];
+      const { turn } = harness({ route: budgetRoute, extraDeps: { catalog, files: fakeFiles().deps, attachments: linkDeps().deps, resolveModel: tiered(m, asked) } });
+      const { res } = await turn(fileMsg('what is this?'));
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-buildd-chat-tier')).toBe('standard');
+      expect(m.budget.doStreamCalls).toHaveLength(0);
+      expect(JSON.stringify(m.standard.doStreamCalls[0].prompt)).toContain('"type":"file"');
+      expect(asked).toEqual(['budget', 'standard']);
+    });
+
+    it('no tier inside the ceiling reads images: the note stays and the routed model answers', async () => {
+      ceilingTest.inputs = { team: { team: { chat: 'budget' } } };
+      try {
+        const m = models();
+        const { turn } = harness({ route: budgetRoute, extraDeps: { catalog, files: fakeFiles().deps, attachments: linkDeps().deps, resolveModel: tiered(m, []) } });
+        expect((await turn(fileMsg(''))).res.status).toBe(200);
+        expect(m.standard.doStreamCalls).toHaveLength(0);
+        expect(JSON.stringify(m.budget.doStreamCalls[0].prompt)).toContain('cannot view images');
+      } finally { ceilingTest.inputs = {}; }
+    });
+
+    it('a text-only turn never leaves its tier', async () => {
+      const m = models();
+      const asked: string[] = [];
+      const { turn } = harness({ route: budgetRoute, extraDeps: { catalog, resolveModel: tiered(m, asked) } });
+      await turn(userMsg('hi'));
+      expect(asked).toEqual(['budget']);
+      expect(m.budget.doStreamCalls).toHaveLength(1);
+    });
   });
 
   it('an upload that is not ready is refused before the model, and nothing is saved', async () => {

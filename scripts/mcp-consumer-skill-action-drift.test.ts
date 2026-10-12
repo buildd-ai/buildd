@@ -108,6 +108,8 @@ const NOT_AN_ACTION = new Set([
   'verified_by',
   'head_not_owned',
   'head_claimed',
+  // Claude Code's Bash tool parameter, how the skill says to run waitCommand.
+  'run_in_background',
 ]);
 
 async function knownActions(): Promise<{ topLevel: Set<string>; known: Set<string> }> {

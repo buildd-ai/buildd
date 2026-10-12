@@ -23,9 +23,8 @@ describe('formatEstimatedUsd', () => {
 });
 
 describe('ESTIMATED_COST_TITLE', () => {
-  it('says the figure is a list-price equivalent, not a charge, on seat auth', () => {
+  it('says the figure is a list-price estimate that a subscription is not billed', () => {
     expect(ESTIMATED_COST_TITLE).toContain('list price');
-    expect(ESTIMATED_COST_TITLE).toContain('OAuth');
-    expect(ESTIMATED_COST_TITLE).toContain('not a charge');
+    expect(ESTIMATED_COST_TITLE).toContain('subscription you aren’t billed');
   });
 });

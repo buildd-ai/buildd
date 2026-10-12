@@ -330,11 +330,12 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     case 'BLOCKED_ON_TRUNK': headline = 'Blocked on a red base branch'; break;
     case 'APPROVED':
       if (compositionVerified) {
-        // §5.9 / S33: a delta round approved the release-only paths; it is not a whole-release verdict.
+        // §5.9 / S33: a delta round approved only the paths new to this composed PR
+        // (release, integration or refresh); it is not a verdict on the whole PR.
         const delta = input.view.rounds.find((r) => r.scope?.composition === true && r.status === 'decided'
           && r.effectiveVerdict === 'approve' && r.headSha === d.currentHeadSha);
         const n = delta && Array.isArray(delta.scope?.novelDeltaPaths) ? (delta.scope!.novelDeltaPaths as unknown[]).length : 0;
-        headline = delta ? 'Release-only changes approved' : 'Release composition verified';
+        headline = delta ? 'New changes approved' : 'Composition verified';
         detail = delta
           ? `every other change was reviewed at its own head; this review covered only ${n} new ${n === 1 ? 'path' : 'paths'}`
           : 'every change in it was reviewed at its own head; nothing new was added';

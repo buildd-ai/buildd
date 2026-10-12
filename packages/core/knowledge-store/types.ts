@@ -189,11 +189,12 @@ export interface KnowledgeStore {
   /**
    * Delete every chunk for a given source file (all `path#idx` chunks).
    * Used by code/docs ingestion to clean up before re-chunking a file, so a
-   * file that shrank doesn't leave orphaned tail chunks.
+   * file that shrank doesn't leave orphaned tail chunks. `sourceIdPrefix`
+   * clears every chunk of a source that has no path (a Living Spec's chunks).
    */
   deleteBySource?(
     namespace: string,
-    selector: { sourcePath?: string; sourceType?: string },
+    selector: { sourcePath?: string; sourceType?: string; sourceIdPrefix?: string },
   ): Promise<void>;
   /**
    * Return the stored `file_hash` for each given source path (only paths that
@@ -244,7 +245,10 @@ export type EntityKind =
   | 'wikilink'
   | 'concept'
   | 'feature'
-  | 'component';
+  | 'component'
+  /** A Living Spec (key: spec id) and one of its revisions (key: `<specId>@<revision>`). */
+  | 'spec'
+  | 'spec_revision';
 
 export interface EntityRef {
   kind: EntityKind;

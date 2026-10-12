@@ -227,7 +227,6 @@ export interface BillingRedirectResponse {
 }
 
 export interface Team {
-  warmHandover?: import('./warm-handover').WarmHandover;
   id: string;
   name: string;
   slug: string;
@@ -1743,6 +1742,13 @@ export interface ClaimDiagnostics {
      */
     role_env_unsatisfied?: number;
     /**
+     * Its cross-workspace needs are not covered by the token this claim would
+     * mint: a declared filing target no delegation grants tasks:create on, or
+     * a grant naming a workspace the claiming account does not reach. Held
+     * before any agent turn; not forceable. See claim/delegation-gate.ts.
+     */
+    delegation_unmet?: number;
+    /**
      * Commercial entitlement, managed-runner claims only (accounts.managedRunner):
      * the team is at its plan's parallel managed-run limit. Not an error; the
      * task stays pending and starts when a managed run ends.
@@ -2181,6 +2187,12 @@ export interface PathDeclaration {
    * could not be trusted and nothing was narrowed; `reason` says why.
    */
   prScope?: PrScopeRecord;
+  /**
+   * Set when the file-prediction decision supplied this task's scope (the
+   * platform owner switched it to acting): `declared` stays what the filer
+   * gave, `pathManifest` is the prediction.
+   */
+  predicted?: { source: 'orchestration_manifest'; decisionId: string; candidatePolicyVersion: string; fingerprints: string[]; threshold: number; at: string };
   /**
    * The last enforce-mode checkpoint collision (lib/path-collision-deferral.ts):
    * a path this task had already changed was held by another live task, so the
@@ -3736,6 +3748,8 @@ export interface FleetSlotWorker {
   /** One-word task name ("checkout") and its short label. */
   label: string;
   rest: string;
+  /** The single display name for a narrow row: the task label or its cleaned title, never both. */
+  name?: string;
   /** The task's full title, for a readable name when the label is a machine identifier. */
   title?: string | null;
   roleSlug: string | null;

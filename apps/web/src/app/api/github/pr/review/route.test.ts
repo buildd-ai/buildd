@@ -19,6 +19,7 @@ const mockCreateReviewerTask = mock(() => ({ id: 'review-task-9' }) as any);
 const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'created', commentId: 1 }));
 const mockFindReviewTaskForPr = mock(() => null as any);
+const mockFindLiveReviewTaskForPr = mock(() => null as any);
 const mockFindPrOwningWorker = mock(() => null as any);
 const mockListWorkspaceRoles = mock(() => [{ slug: 'reviewer', isRole: true }] as any[]);
 const mockWaitForPrReviewStatus = mock(() => ({
@@ -70,6 +71,7 @@ mock.module('@/lib/gate-ledger', () => ({ GATE_SLUGS: REAL_GATE_SLUGS, fireGateE
 
 mock.module('@/lib/pr-review-request', () => ({
   findReviewTaskForPr: mockFindReviewTaskForPr,
+  findLiveReviewTaskForPr: mockFindLiveReviewTaskForPr,
   findPrOwningWorker: mockFindPrOwningWorker,
   listWorkspaceRoles: mockListWorkspaceRoles,
   waitForPrReviewStatus: mockWaitForPrReviewStatus,
@@ -527,6 +529,25 @@ describe('POST /api/github/pr/review — idempotency', () => {
       mockFindReviewTaskForPr.mockReturnValue(null);
     });
 
+    it('a reviewTaskId whose row is missing falls through to queueing a review, never a null status', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current }, reviewTaskId: 'ghost-task' });
+      mockTasksFindFirst.mockImplementation(async () => null);
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      const json = await res.json();
+      expect(json.kernel).toBeUndefined();
+      expect(json.status ?? null).not.toBeNull();
+      expect(mockCreateReviewerTask).toHaveBeenCalled();
+    });
+
+    it('a refused result with a missing reviewTaskId row keeps its 409 and queues nothing', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'escalation_needs_human', current }, reviewTaskId: 'ghost-task' });
+      mockTasksFindFirst.mockImplementation(async () => null);
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('escalation_needs_human');
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
     it('force is a recorded bypass actor, never a second reviewer on a running round', async () => {
       mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current } });
       const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
@@ -672,6 +693,45 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
     const created = mockCreateReviewerTask.mock.calls[0][0] as any;
     expect(created.priorVerdict).toBeUndefined();
+  });
+
+  it('falls back to live task lookup when createReviewerTask returns null (concurrent writer race)', async () => {
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+    mockFindLiveReviewTaskForPr.mockReturnValue({
+      id: 'review-task-concurrent',
+    });
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.ok).toBe(true);
+    expect(json.alreadyRequested).toBe(true);
+    expect(json.reviewTaskId).toBe('review-task-concurrent');
+    expect(json.deduplicated).toBe(true);
+    // Verify the fallback lookup was called
+    expect(mockFindLiveReviewTaskForPr).toHaveBeenCalled();
+  });
+
+  it('does not adopt a completed review task when createReviewerTask returns null', async () => {
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+    // findLiveReviewTaskForPr filters to live tasks, so it returns null for completed ones
+    mockFindLiveReviewTaskForPr.mockReturnValue(null);
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.error).toContain('Could not create the reviewer task');
+  });
+
+  it('returns 500 when createReviewerTask is null due to skipped dispatch (merged/closed PR)', async () => {
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+    // Even if there was an old completed task for this PR, we don't adopt it
+    mockFindLiveReviewTaskForPr.mockReturnValue(null);
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.error).toContain('Could not create the reviewer task');
   });
 });
 

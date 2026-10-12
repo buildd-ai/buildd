@@ -13,6 +13,7 @@ let teamRow: any = { id: '11111111-1111-4111-8111-111111111111', name: 'Team', s
 const capturedUpdates: any[] = [];
 const teamQueries: any[] = [];
 let deletedTeams = 0;
+const batches: any[][] = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -23,7 +24,8 @@ mock.module('@buildd/core/db', () => ({
     update: (_t: any) => ({
       set: (vals: any) => ({ where: (_c: any) => { capturedUpdates.push(vals); return Promise.resolve(); } }),
     }),
-    delete: (_t: any) => ({ where: (_c: any) => { deletedTeams++; return Promise.resolve(); } }),
+    delete: (_t: any) => ({ where: (_c: any) => { deletedTeams++; return 'delete-team'; } }),
+    batch: (stmts: any[]) => { batches.push(stmts); return Promise.resolve(stmts.map(() => [])); },
   },
 }));
 
@@ -41,6 +43,25 @@ mock.module('@buildd/core/db/schema', () => ({
 const chatCleanups: string[] = [];
 mock.module('@/lib/artifact-attachment-cleanup', () => ({
   removeTeamChatAttachments: async (teamId: string) => { chatCleanups.push(teamId); return { removed: 0, objectsRemoved: 0 }; },
+}));
+
+const fileCleanups: string[] = [];
+mock.module('@/lib/artifact-team-files', () => ({
+  detachTeamStoredFiles: (teamId: string) => `detach:${teamId}`,
+  removeTeamStoredFiles: async (teamId: string) => { fileCleanups.push(teamId); return { removed: 0, objectsRemoved: 0 }; },
+}));
+
+// Saving a decision model probes it first (packages/core/decision-probe.ts).
+const probeCalls: any[] = [];
+let probeResult: any = { ok: true, model: 'probe-model', latencyMs: 10 };
+mock.module('@/modules', () => ({
+  DECISION_MODEL_PROBE: async (config: any, scope: any) => { probeCalls.push({ config, scope }); return probeResult; },
+  // The real operator check and refusal (lib/admin/platform-operator-caller.ts), through the slot.
+  IS_PLATFORM_OPERATOR_CALLER: async (c: { user?: { email?: string | null } | null }) => {
+    const { isPlatformOperator } = await import('@/lib/platform-operator');
+    return isPlatformOperator(c.user);
+  },
+  OPERATOR_ONLY_RESPONSE: () => NextResponse.json({ error: 'buildd manages this setting.', code: 'operator_only' }, { status: 403 }),
 }));
 
 import { DELETE, GET, PATCH } from './route';
@@ -61,6 +82,8 @@ beforeEach(() => {
   membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'admin' };
   teamRow = { id: '11111111-1111-4111-8111-111111111111', name: 'Team', slug: 'team', timezone: null };
   capturedUpdates.length = 0;
+  probeCalls.length = 0;
+  probeResult = { ok: true, model: 'probe-model', latencyMs: 10 };
 });
 
 describe('non-UUID id guard', () => {
@@ -299,62 +322,89 @@ describe('PATCH /api/teams/[id] — key policy', () => {
   });
 });
 
-describe('PATCH /api/teams/[id] — optional decision capabilities', () => {
-  for (const role of ['owner', 'admin']) {
-    it(`allows a signed-in ${role} to save and clear optional decisions`, async () => {
+describe('PATCH /api/teams/[id] — platform-only fields are refused to every team role', () => {
+  // enabledDecisionShadows and inferenceFeatureModes are platform machinery:
+  // their one write path is PATCH /api/admin/teams/[id]/experiment-flags.
+  const PLATFORM_ONLY: Record<string, unknown>[] = [
+    { enabledDecisionShadows: ['orchestration_manifest'] },
+    { enabledDecisionShadows: null },
+    { inferenceFeatureModes: { criteria_grading: 'runner' } },
+    { inferenceFeatureModes: null },
+  ];
+  for (const role of ['owner', 'admin', 'member']) {
+    it(`a signed-in ${role} is refused and nothing is written`, async () => {
       membership.role = role;
-      const enabled = ['orchestration_manifest', 'orchestration_claim'];
-      expect((await PATCH(patchReq({ enabledDecisionShadows: enabled }), ctx)).status).toBe(200);
-      expect(capturedUpdates[0].enabledDecisionShadows).toEqual(enabled);
-      for (const cleared of [[], null]) {
-        capturedUpdates.length = 0;
-        expect((await PATCH(patchReq({ enabledDecisionShadows: cleared }), ctx)).status).toBe(200);
-        expect(capturedUpdates[0].enabledDecisionShadows).toBeNull();
+      for (const body of PLATFORM_ONLY) {
+        const res = await PATCH(patchReq(body), ctx);
+        expect(res.status).toBe(403);
+        if (role !== 'member') expect((await res.json()).error).toContain('/api/admin/teams/');
       }
+      expect(capturedUpdates).toHaveLength(0);
     });
   }
 
-  it('rejects a member without writing optional decision settings', async () => {
-    membership.role = 'member';
-    for (const enabledDecisionShadows of [['orchestration_manifest'], null]) {
-      expect((await PATCH(patchReq({ enabledDecisionShadows }), ctx)).status).toBe(403);
-    }
-    expect(capturedUpdates).toHaveLength(0);
-  });
-
-  it('requires the session guard for an admin MCP API key', async () => {
-    principal = { kind: 'api_key', account: { level: 'admin', teamId: teamRow.id } };
-    mockRequireSessionUser.mockResolvedValue({ response: NextResponse.json(
-      { error: 'This action requires a signed-in session' }, { status: 403 },
-    ) });
-    const req = patchReq({ enabledDecisionShadows: ['orchestration_manifest'] });
-    req.headers.set('authorization', 'Bearer bld_test');
-    const res = await PATCH(req, ctx);
+  it('refuses the whole PATCH when a platform-only field rides along with a team setting', async () => {
+    const res = await PATCH(patchReq({ name: 'Renamed', enabledDecisionShadows: ['orchestration_claim'] }), ctx);
     expect(res.status).toBe(403);
-    expect((await res.json()).error).toContain('signed-in session');
-    expect(mockRequireSessionUser).toHaveBeenCalledWith(req);
     expect(capturedUpdates).toHaveLength(0);
-    principal = null;
   });
 
-  it('rejects invalid capabilities and preserves the setting when omitted', async () => {
-    expect((await PATCH(patchReq({ enabledDecisionShadows: ['unknown'] }), ctx)).status).toBe(400);
-    expect(capturedUpdates).toHaveLength(0);
+  it('leaves both untouched on an ordinary settings change', async () => {
     expect((await PATCH(patchReq({ name: 'Renamed' }), ctx)).status).toBe(200);
     expect(capturedUpdates[0]).not.toHaveProperty('enabledDecisionShadows');
+    expect(capturedUpdates[0]).not.toHaveProperty('inferenceFeatureModes');
   });
 });
 
 describe('PATCH /api/teams/[id] — decision model', () => {
+  // The decision model is a platform operator control (lib/admin/platform-operator-caller.ts).
+  beforeEach(() => {
+    process.env.BUILDD_OPERATOR_USER_EMAILS = 'op@example.com';
+    mockRequireSessionUser.mockResolvedValue({ user: { id: 'user-1', email: 'op@example.com' } });
+  });
+
+  it('a team owner or admin who is not an operator is refused, and nothing is written', async () => {
+    mockRequireSessionUser.mockResolvedValue({ user: { id: 'user-1', email: 'admin@example.com' } });
+    for (const role of ['admin', 'owner']) {
+      membership = { ...membership, role };
+      const res = await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } }), ctx);
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe('operator_only');
+      expect((await PATCH(patchReq({ decisionModel: null }), ctx)).status).toBe(403);
+    }
+    expect(capturedUpdates).toHaveLength(0);
+    expect(probeCalls).toHaveLength(0);
+    // The rest of the team settings still save for that admin.
+    expect((await PATCH(patchReq({ name: 'Renamed' }), ctx)).status).toBe(200);
+  });
+
   it('stores a chat model via the LiteLLM gateway', async () => {
     const res = await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } }), ctx);
     expect(res.status).toBe(200);
     expect(capturedUpdates[0]).toMatchObject({ decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } });
   });
 
-  it('clears back to Jev with null', async () => {
+  it('clears back to Jev with null, with no probe', async () => {
     await PATCH(patchReq({ decisionModel: null }), ctx);
     expect(capturedUpdates[0]).toMatchObject({ decisionModel: null });
+    expect(probeCalls).toHaveLength(0);
+  });
+
+  it('probes the model through its route for this team and person before saving', async () => {
+    const res = await PATCH(patchReq({ decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } }), ctx);
+    expect(res.status).toBe(200);
+    expect(probeCalls).toEqual([{ config: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' }, scope: { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1' } }]);
+    expect(capturedUpdates[0]).toMatchObject({ decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } });
+  });
+
+  it("refuses to save a model whose probe fails, with the provider's own words", async () => {
+    probeResult = { ok: false, error: 'Cloudflare rejected a test decision: HTTP 401: Authentication error (code 10000)' };
+    const res = await PATCH(patchReq({ decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } }), ctx);
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(data.error).toContain('Authentication error (code 10000)');
+    expect(data.error).toContain('not saved');
+    expect(capturedUpdates).toHaveLength(0);
   });
 
   it('rejects a System One model through the gateway, and a bad model id', async () => {
@@ -362,43 +412,43 @@ describe('PATCH /api/teams/[id] — decision model', () => {
     expect((await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'has space', via: 'openrouter' } }), ctx)).status).toBe(400);
     expect(capturedUpdates).toHaveLength(0);
   });
+
+  const CLEF = { endpoint: 'systemone', model: 'clef', via: 'cloudflare' };
+
+  it('changing the team default keeps every per-decision override', async () => {
+    teamRow = { ...teamRow, decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm', byKind: { task_role: CLEF } } };
+    await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'qwen/qwen3-8b', via: 'openrouter' } }), ctx);
+    expect(capturedUpdates[0].decisionModel).toEqual({ endpoint: 'chat', model: 'qwen/qwen3-8b', via: 'openrouter', byKind: { task_role: CLEF } });
+  });
+
+  it('clearing the team default keeps the overrides; the rest goes back to Jev', async () => {
+    teamRow = { ...teamRow, decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm', byKind: { task_role: CLEF } } };
+    await PATCH(patchReq({ decisionModel: null }), ctx);
+    expect(capturedUpdates[0].decisionModel).toEqual({ byKind: { task_role: CLEF } });
+  });
+
+  it('GET answers the default and the overrides apart', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamRow = { ...teamRow, decisionModel: { byKind: { 'buildd.orchestration_claim_hold': CLEF } } };
+    const res = await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
+    const body = await res.json();
+    expect(body.team.decisionModel).toBeNull();
+    expect(body.team.decisionModelOverrides).toEqual([{ kind: 'buildd.orchestration_claim_hold', label: 'Start or wait', ...CLEF }]);
+  });
 });
 
 describe('PATCH /api/teams/[id] — server-side feature overrides', () => {
-  it('stores overrides, dropping unknown features and "default"', async () => {
-    const res = await PATCH(patchReq({ inferenceFeatureModes: { criteria_grading: 'runner', visual_qa: 'default', chat: 'runner' } }), ctx);
-    expect(res.status).toBe(200);
-    expect(capturedUpdates[0]).toMatchObject({ inferenceFeatureModes: { criteria_grading: 'runner' } });
-  });
-
-  it('clears every override with null or an all-default map', async () => {
-    await PATCH(patchReq({ inferenceFeatureModes: null }), ctx);
-    await PATCH(patchReq({ inferenceFeatureModes: { criteria_grading: 'default' } }), ctx);
-    expect(capturedUpdates.map((u) => u.inferenceFeatureModes)).toEqual([null, null]);
-  });
-
-  it('rejects a non-object', async () => {
-    const res = await PATCH(patchReq({ inferenceFeatureModes: ['runner'] }), ctx);
-    expect(res.status).toBe(400);
-    expect(capturedUpdates).toHaveLength(0);
-  });
-
   it('ignores the retired allowlist field instead of writing it', async () => {
     const res = await PATCH(patchReq({ enabledInferenceCapabilities: ['chat'] }), ctx);
     expect(res.status).toBe(200);
     expect(capturedUpdates[0]).not.toHaveProperty('enabledInferenceCapabilities');
   });
 
-  it('a member cannot change them', async () => {
-    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
-    expect((await PATCH(patchReq({ inferenceFeatureModes: { criteria_grading: 'runner' } }), ctx)).status).toBe(403);
-  });
-
-  it('GET returns them', async () => {
+  it('GET still returns them', async () => {
     principal = { kind: 'user', user: { id: 'user-1' } };
     teamQueries.length = 0;
     await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
-    expect(teamQueries[0].columns).toMatchObject({ inferenceFeatureModes: true });
+    expect(teamQueries[0].columns).toMatchObject({ inferenceFeatureModes: true, enabledDecisionShadows: true });
     principal = null;
   });
 });
@@ -407,13 +457,14 @@ describe('DELETE /api/teams/[id]', () => {
   const del = () =>
     DELETE(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111', { method: 'DELETE' }), ctx);
 
-  beforeEach(() => { deletedTeams = 0; chatCleanups.length = 0; });
+  beforeEach(() => { deletedTeams = 0; chatCleanups.length = 0; fileCleanups.length = 0; batches.length = 0; });
 
   it('a member cannot delete the team', async () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     expect((await del()).status).toBe(403);
     expect(deletedTeams).toBe(0);
     expect(chatCleanups).toEqual([]);
+    expect(fileCleanups).toEqual([]);
   });
 
   it('an admin cannot delete the team', async () => {
@@ -434,6 +485,14 @@ describe('DELETE /api/teams/[id]', () => {
     expect(deletedTeams).toBe(1);
     // Its conversations cascade; their chat attachments are removed in the same request.
     expect(chatCleanups).toEqual(['11111111-1111-4111-8111-111111111111']);
+  });
+
+  it('the team delete runs in one batch with the detach of its stored files, then removes them', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
+    expect((await del()).status).toBe(200);
+    // Detach first, in the same transaction as the delete: a failed delete detaches nothing.
+    expect(batches).toEqual([['detach:11111111-1111-4111-8111-111111111111', 'delete-team']]);
+    expect(fileCleanups).toEqual(['11111111-1111-4111-8111-111111111111']);
   });
 
   it('an owner still cannot delete a personal team', async () => {
@@ -469,6 +528,12 @@ describe('PATCH /api/teams/[id] — task estimates experiment switch', () => {
     expect(capturedUpdates).toHaveLength(0);
   });
 
+  it('an admin of another team cannot change this team\'s switch', async () => {
+    membership = null;
+    expect((await PATCH(patchReq({ taskEstimates: { enabled: false } }), ctx)).status).toBe(403);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
   it('an API key (no session) cannot change it', async () => {
     mockRequireSessionUser.mockResolvedValue({ response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) });
     expect((await PATCH(patchReq({ taskEstimates: { enabled: true } }), ctx)).status).toBe(401);
@@ -491,11 +556,18 @@ describe('PATCH /api/teams/[id] — task estimates experiment switch', () => {
   });
 });
 describe('warm handover team settings', () => {
-  it('stores all supported modes and rejects invalid policy', async () => {
-    for (const mode of ['off', 'repo', 'deps']) {
-      expect((await PATCH(patchReq({ warmHandover: mode }), ctx)).status).toBe(200);
-      expect(capturedUpdates.at(-1).warmHandover).toBe(mode);
+  it('is no longer a team setting: a PATCH that sends it is refused by name, not ignored', async () => {
+    for (const mode of ['off', 'repo', 'deps', null]) {
+      const res = await PATCH(patchReq({ warmHandover: mode }), ctx);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('warmHandover');
     }
-    for (const value of [null, true, 'unknown']) expect((await PATCH(patchReq({ warmHandover: value }), ctx)).status).toBe(400);
+  });
+  it('GET no longer reads it', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
+    expect(teamQueries[0].columns.warmHandover).toBeUndefined();
+    principal = null;
   });
 });

@@ -247,10 +247,12 @@ export type HealthLoad = { kind: 'no-workspaces' } | { kind: 'ok'; data: HealthD
  * checked there is a user and a team).
  */
 export async function loadHealth({
-  page, userId, teamIds, searchParams,
+  page, userId, teamIds, searchParams, operator = false,
 }: {
   page: HealthPageKey;
   userId: string;
+  /** The viewer is a buildd platform operator: experiments are theirs to manage. */
+  operator?: boolean;
   teamIds: string[];
   searchParams: { workspace?: string; window?: string; failureWindow?: string };
 }): Promise<HealthLoad> {
@@ -579,12 +581,14 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
         limit: FAILURE_GROUP_WORKER_LIMIT,
       });
       const ids = (failed as Array<{ id: string }>).map(w => w.id);
-      const traces = ids.length
-        ? await db
-            .selectDistinct({ workerId: workerErrorTraces.workerId, pattern: workerErrorTraces.pattern })
-            .from(workerErrorTraces)
-            .where(inArray(workerErrorTraces.workerId, ids))
-        : [];
+      const [traces] = await Promise.all([
+        ids.length
+          ? db
+              .selectDistinct({ workerId: workerErrorTraces.workerId, pattern: workerErrorTraces.pattern })
+              .from(workerErrorTraces)
+              .where(inArray(workerErrorTraces.workerId, ids))
+          : [],
+      ]);
       const view = buildFailureGroups({
         failures: (failed as any[]).map(w => ({
           workerId: w.id,
@@ -675,15 +679,15 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
     })))
     .catch(() => [] as OrphanedPrRow[]);
 
-  // Team experiments (model routing A/B). Admins-only rows are dropped for
-  // members inside the loader; a failure hides the section, never the page.
+  // Team experiments (model routing A/B). Operator-only rows are dropped for
+  // everyone else inside the loader; a failure hides the section, never the page.
   const runnerLanes = need('runnerLanes')
     ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now })
       .then(async lanes => ({ ...lanes, missions: await loadLaneMissions(lanes.fleet, activeTeamId).catch(() => ({})) }))
       .catch(() => null)
     : null;
 
-  const experiments = need('experiments') ? await loadHealthExperiments(activeTeamId, userId).catch(() => null) : null;
+  const experiments = need('experiments') ? await loadHealthExperiments(activeTeamId, userId, operator).catch(() => null) : null;
 
   return {
     kind: 'ok',

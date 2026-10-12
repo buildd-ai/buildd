@@ -2,15 +2,14 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 let session: any = { user: { id: 'u-1' } };
-// The caller's team roles and the team's permission overrides, read by the
+// The caller's team roles, read by the
 // real permission check (lib/permissions.ts) through this db mock.
 let roles: Record<string, string> = { 't-1': 'admin' };
-let overrides: Record<string, unknown> | null = null;
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       teamMembers: { findMany: async () => Object.entries(roles).map(([teamId, role]) => ({ teamId, role })) },
-      teams: { findFirst: async () => ({ id: 'not-a-personal-team', permissionOverrides: overrides }) },
+      teams: { findFirst: async () => ({ id: 'not-a-personal-team' }) },
     },
   },
 }));
@@ -46,7 +45,7 @@ function call(state: string, qs: string, cookie: string | null = flowCookie()) {
 const outcome = (res: Response) => new URL(res.headers.get('location')!).searchParams;
 
 beforeEach(() => {
-  session = { user: { id: 'u-1' } }; roles = { 't-1': 'admin' }; overrides = null; policy = 'team';
+  session = { user: { id: 'u-1' } }; roles = { 't-1': 'admin' }; policy = 'team';
   exchange = { ok: true, key: 'sk-or-v1-created-by-oauth' }; stored.length = 0;
 });
 
@@ -77,17 +76,6 @@ describe('GET /api/inference-keys/openrouter/callback/[state]', () => {
     roles = { 't-1': 'member' };
     expect(outcome(await call('st', 'code=abc')).get('provider_error')).toBe('not_admin');
     expect(stored).toHaveLength(0);
-  });
-
-  it('a team key follows the team permission overrides for manage_inference_providers', async () => {
-    overrides = { manage_inference_providers: ['owner'] };
-    expect(outcome(await call('st', 'code=abc')).get('provider_error')).toBe('not_admin');
-    expect(stored).toHaveLength(0);
-
-    roles = { 't-1': 'member' };
-    overrides = { manage_inference_providers: ['owner', 'admin', 'member'] };
-    expect(outcome(await call('st', 'code=abc')).get('connected')).toBe('openrouter');
-    expect(stored).toEqual([{ teamId: 't-1', userId: 'u-1', provider: 'openrouter', scope: 'team', value: 'sk-or-v1-created-by-oauth' }]);
   });
 
   it('a personal key follows the team policy', async () => {
