@@ -827,6 +827,23 @@ export interface WorkspaceReleaseConfig {
   // buildd merges it; CI failure or no open PR marks the release task FAILED.
   releaseBranch?: string;
 
+  // Frozen release candidates (packages/core/release-candidate.ts): the release
+  // workflow cuts a versioned branch (e.g. release/v1.2.3) from one captured
+  // sourceBranch SHA and opens it as the single PR into prodBranch. Declares
+  // which PRs into prodBranch are such candidates. Independent of `ref` (the
+  // ref a workflow_dispatch runs on) and of `releaseBranch` (the legacy fixed
+  // release-PR head). No defaults: absent ⇒ no PR is a candidate.
+  candidate?: {
+    // Head refs a candidate may come from: exact names or a prefix ending in
+    // one '*', e.g. ['release/v*'].
+    branches: string[];
+    // Branch candidates are cut from; their constituent PRs merged here (e.g. 'dev').
+    sourceBranch: string;
+    // GitHub logins allowed to open candidate PRs: the release workflow's
+    // identity (e.g. 'github-actions[bot]'). A PR by anyone else is ordinary.
+    authors: string[];
+  };
+
   // Deploy target for verifying the production deploy completed
   deployTarget?: {
     type: 'vercel';
