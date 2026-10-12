@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { capturedOrderBy, capturedWhere } from '@buildd/core/db/relational-sql';
 
 // ── DB mocks ────────────────────────────────────────────────────────────────
 //
@@ -541,8 +542,8 @@ describe('loadInvariantSnapshot base drift', () => {
     await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
 
     expect(baseMergeArgs?.limit).toBe(MAX_BASE_MERGES);
-    expect(baseMergeArgs?.orderBy).toMatchObject({ type: 'desc', f: 'mergedAt' });
-    const windowClause = (baseMergeArgs?.where?.c ?? []).find(
+    expect(capturedOrderBy(baseMergeArgs?.orderBy, {})).toMatchObject([{ type: 'desc', f: 'mergedAt' }]);
+    const windowClause = (capturedWhere(baseMergeArgs?.where)?.c ?? []).find(
       (c: any) => c?.type === 'gt' && c?.f === 'mergedAt',
     );
     expect(windowClause?.v).toEqual(new Date(NOW.getTime() - BASE_MERGE_WINDOW_DAYS * 86_400_000));

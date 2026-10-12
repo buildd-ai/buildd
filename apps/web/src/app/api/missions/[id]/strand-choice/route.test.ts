@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { capturedOrderBy, capturedWhere, capturedWhereFn } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/missions/[id]/strand-choice: the owner's tap on a stranded local
@@ -30,7 +31,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findFirst: () => Promise.resolve(missionRow) },
-      decisionRecords: { findFirst: (q: any) => { query = q; if (typeof q.where === 'function') q.where({}); return Promise.resolve(decisionRow); } },
+      decisionRecords: { findFirst: (q: any) => { query = q; capturedWhereFn(q.where)({}, {}); return Promise.resolve(decisionRow); } },
     },
     insert: () => ({ values: () => ({ catch: () => Promise.resolve() }) }),
   },
@@ -113,8 +114,8 @@ describe("POST /api/missions/[id]/strand-choice - gated mode", () => {
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]).toMatchObject({ decisionRecordId: 'decision-1', source: 'human',
       label: 'human_choice', metadata: { button: 'wait-for-local', order: 'local-first' } });
-    expect(query.where._op).toBe('and');
-    expect(query.orderBy._op).toBe('desc');
+    expect(capturedWhere(query.where)._op).toBe('and');
+    expect(capturedOrderBy(query.orderBy, {})[0]._op).toBe('desc');
   });
   it('a tap on the other button than an applied pick put first is a correction of that pick', async () => {
     decisionRow = { id: 'decision-1', missionId: ID, teamId: 'team-1', capability: 'mission_strand_choice', applied: true, appliedAnswer: 'wait-for-local' };

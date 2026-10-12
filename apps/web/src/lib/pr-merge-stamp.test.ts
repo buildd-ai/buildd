@@ -1,6 +1,7 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { and, isNull } from 'drizzle-orm';
+import { normaliseSqlGrouping } from '@buildd/core/db/sql-grouping';
 
 // Several worker rows can carry one PR: a CI-retry attempt pushes to its
 // parent's branch and adopts the PR number when it completes. The merge used to
@@ -134,6 +135,6 @@ describe('noRowOfPrMerged', () => {
 
   it('composes with the column references of the outer query', () => {
     const outer = dialect.sqlToQuery(and(isNull(workers.mergedAt), noRowOfPrMerged()) as any);
-    expect(norm(outer.sql)).toContain('"workers"."merged_at" is null and not exists');
+    expect(norm(normaliseSqlGrouping(outer.sql))).toContain('"workers"."merged_at" is null and not exists');
   });
 });
