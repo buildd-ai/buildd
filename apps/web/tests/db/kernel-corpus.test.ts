@@ -86,7 +86,8 @@ describe('export', () => {
     expect(text).not.toContain('acme');
     expect(text).not.toContain(SEED_BRANCH);
     expect(text).not.toContain(SEED_PROSE);
-    expect(text).not.toMatch(/\b2026-/);
+    // A date, not a UUID group that happens to read 2026 (`c4bed578-2026-4c3e-…`).
+    expect(text).not.toMatch(/(?<![\w-])2026-\d\d-\d\d/);
     expect(text).toContain('[redacted]');
     // Pseudonyms are stable: the same workspace pseudonym on every line.
     const ws = new Set(readCorpus(join(dir, 'all.jsonl')).map((c) => c.delivery.workspaceId));
