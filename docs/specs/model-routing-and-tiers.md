@@ -2,12 +2,12 @@
 title: Model Routing and Tiers
 status: active
 owner: max
-last_verified: 2026-10-05
+last_verified: 2026-10-11
 summary: A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 domain: tasks
 surfaces: [packages/core/model-router.ts, packages/core/model-tier-registry.ts, packages/core/model-policy.ts, apps/web/src/app/api/workers/claim/route.ts]
 related: [model-policy, provider-failover, mcp-connectors-and-roles, usage-and-cost-accounting, external-cron-triggers]
-verified_by: [packages/core/__tests__/model-router.test.ts, packages/core/__tests__/role-model-routing.test.ts, packages/core/__tests__/model-tier-registry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/models/route.test.ts, packages/core/__tests__/routing-analytics.test.ts]
+verified_by: [packages/core/__tests__/model-router.test.ts, packages/core/__tests__/role-model-routing.test.ts, packages/core/__tests__/model-tier-registry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/models/route.test.ts, packages/core/__tests__/routing-analytics.test.ts, apps/web/src/app/api/model-tiers/policy/route.test.ts]
 keywords: [model_tier_registry, predicted_model, model_aliases, system_cache, task_outcomes, downshift, role floor, routing_paused, catalogComplete]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
@@ -219,6 +219,14 @@ standalone model policy (`docs/specs/model-policy.md`) over the team's registry
   catalog is complete (`apps/web/src/app/api/models/route.ts:87-131`,
   `apps/web/src/components/ModelPicker.tsx:34-44`).
 
+- Who writes it: a team admin (`manage_model_tiers`) picks each tier's
+  primary model and the upgrade policy, Automatic (`latest-compatible`) or
+  Manual. Everything that routes traffic beyond the primary (tier pools, the
+  dial, the `soak` upgrade mode) is a platform operator control
+  (`isPlatformOperatorCaller`, `apps/web/src/lib/admin/platform-operator-caller.ts`): its writes
+  refuse a team admin with 403 and Settings › Models renders it only for an
+  operator. A stored `soak` policy keeps working.
+
 **Acceptance criteria**:
 - AC-6: GIVEN team T with both a `(T, W, premium)` row and a `(T, NULL, premium)`
   row WHEN `resolveTierEntry('premium', T, W)` runs THEN it returns the
@@ -235,6 +243,9 @@ standalone model policy (`docs/specs/model-policy.md`) over the team's registry
   `GET /api/models` is called THEN the response is HTTP 200 carrying the three
   tier models with `catalogComplete: false`, and no request is made to
   `api.anthropic.com`.
+- AC-21 (failure path): GIVEN a team admin who is not a platform operator
+  WHEN they `PUT /api/model-tiers/policy` with `mode: 'soak'` THEN 403 and the
+  stored policy is unchanged; `latest-compatible` and `manual` save.
 
 **Code surface**: `packages/core/model-tier-registry.ts`
 (`resolveTierEntry`, `resolveAllTiers`, `invalidateTierCache`,
