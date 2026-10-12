@@ -70,6 +70,8 @@ import { checkStatedRole } from '@/lib/stated-role';
 import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
 import { loadRequestCeiling, previewUnderCeiling, rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { terminalAuditFields } from './audit-fields';
+import { TASK_RESERVATION_KEY, buildReservation } from '../workers/claim/held-gate';
+import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -434,6 +436,9 @@ export async function POST(req: NextRequest) {
       requiredConnectors: rawRequiredConnectors,
       // Incoming context (from MCP or API callers — baseBranch, iteration, failureContext, etc.)
       context: rawIncomingContext,
+      // An interactive session creating a task it will claim itself: insert it
+      // already reserved so no runner can win the gap before its claim_task.
+      reserve: rawReserve,
       // Release override: 'true' | 'false' | 'inherit' (default inherit)
       release: rawRelease,
       // Agent backend that executes this task: 'claude' | 'codex'
@@ -462,6 +467,17 @@ export async function POST(req: NextRequest) {
       delegation: rawDelegation,
       filingTargets: rawFilingTargets,
     } = body;
+    // A reservation is only for a verified interactive session (the one the claim
+    // route lets claim its own reserved task). Refused before anything is filed, so
+    // create_task claim:true can never leave a task parked from every claimer.
+    const reserveVerified = rawReserve === true && !!apiAccount && !apiAccount.taskScope
+      && !!verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), apiAccount.id);
+    if (rawReserve !== undefined && typeof rawReserve !== 'boolean') {
+      return NextResponse.json({ error: 'reserve must be true or false' }, { status: 400 });
+    }
+    if (rawReserve === true && !reserveVerified) {
+      return NextResponse.json({ error: 'A task is only filed reserved from your own interactive session, the one claim_task would run as.' }, { status: 403 });
+    }
     let missionId: string | undefined = requestedMissionId;
 
     gateCaller = gateCallerOrigin({ apiAccount, user, workerId: createdByWorkerId });
@@ -1609,6 +1625,8 @@ export async function POST(req: NextRequest) {
           // Merge incoming context (MCP sends baseBranch, iteration, failureContext, model, effort, etc.)
           ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
           // Route-computed fields take precedence
+          // A reservation is the server's to write, from the authenticated account.
+          [TASK_RESERVATION_KEY]: reserveVerified ? buildReservation(apiAccount!.id) : undefined,
           ...prReachCtx,
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
