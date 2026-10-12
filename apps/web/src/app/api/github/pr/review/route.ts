@@ -465,8 +465,48 @@ export async function POST(req: NextRequest) {
     // This may occur if a concurrent caller (e.g., create_pr's auto-review
     // request and the explicit review request in the same milliseconds) both
     // tried to create a reviewer task for the same PR. The first wins due to
-    // the DB constraint; if the winner was not found by the fallback lookup,
-    // escalate with context for diagnosis.
+    // the DB constraint; if the winner was not found by the fallback lookup
+    // in createReviewerTask, try a broader lookup as a last resort.
+    console.warn(`[pr-review] createReviewerTask returned null for PR #${prNumber}; attempting fallback lookup`);
+
+    // Retry with a generic lookup that doesn't require head SHA match.
+    // This catches cases where the concurrent winner was created just after
+    // our insert failed but before we found it.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      const fallback = await findReviewTaskForPr(workspace.id, prNumber);
+      if (fallback?.id) {
+        console.log(`[pr-review] Fallback lookup found reviewer task ${fallback.id} for PR #${prNumber}`);
+        const policy = await resolveEffectivePolicy(workspace, originalTask.missionId);
+        return NextResponse.json(
+          {
+            ok: true,
+            adopted,
+            alreadyRequested: true,
+            prNumber,
+            prUrl: pr.html_url,
+            repoFullName: repo.fullName,
+            workspaceId: workspace.id,
+            taskId: originalTask.id,
+            reviewTaskId: fallback.id,
+            deduplicated: true,
+            reviewerRole: picked.role,
+            reviewerRoleSource: picked.source,
+            autoMergeExpected: autoMergeExpectedFor(policy),
+            callback: callbackUrl ? { url: callbackUrl, on: callbackOn } : null,
+            status: derivePrReviewStatus({
+              reviewTask: fallback as any,
+              worker: ownerWorker ?? null,
+              autoMergeExpected: autoMergeExpectedFor(policy),
+            }),
+          },
+          { status: 200 },
+        );
+      }
+    }
+
     console.error(`[pr-review] Failed to create or find reviewer task for PR #${prNumber} in workspace ${workspace.id}`);
     return bad('Could not create the reviewer task (or find concurrent writer; see logs)', 500);
   }

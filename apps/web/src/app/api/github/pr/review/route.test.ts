@@ -692,6 +692,35 @@ describe('POST /api/github/pr/review — idempotency', () => {
     const created = mockCreateReviewerTask.mock.calls[0][0] as any;
     expect(created.priorVerdict).toBeUndefined();
   });
+
+  it('falls back to generic lookup when createReviewerTask returns null (concurrent writer race)', async () => {
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+    mockFindReviewTaskForPr.mockReturnValue({
+      id: 'review-task-concurrent',
+      status: 'pending',
+      result: null,
+      context: { prNumber: 42 },
+    });
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.ok).toBe(true);
+    expect(json.alreadyRequested).toBe(true);
+    expect(json.reviewTaskId).toBe('review-task-concurrent');
+    // Verify the fallback lookup was called
+    expect(mockFindReviewTaskForPr).toHaveBeenCalled();
+  });
+
+  it('returns 500 when both createReviewerTask and fallback lookup fail', async () => {
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+    mockFindReviewTaskForPr.mockReturnValue(null);
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.error).toContain('Could not create the reviewer task');
+  });
 });
 
 describe('GET /api/github/pr/review', () => {
