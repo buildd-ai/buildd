@@ -22,15 +22,12 @@ const dialect = new PgDialect();
 function capturingSession(rowsFor: (query: string) => unknown[] = () => []) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
   const session: MigrateSession = {
+    // Shaped like neon-http's `db.execute` result on both drizzle 0.45 and v1:
+    // the full query result, rows under `rows`.
     async execute(query: SQL) {
       const rendered = dialect.sqlToQuery(query);
       queries.push({ sql: rendered.sql, params: rendered.params });
-      return undefined;
-    },
-    async all(query: SQL) {
-      const rendered = dialect.sqlToQuery(query);
-      queries.push({ sql: rendered.sql, params: rendered.params });
-      return rowsFor(rendered.sql);
+      return { rows: rowsFor(rendered.sql) };
     },
   };
   return { session, queries };
@@ -98,20 +95,17 @@ describe('lockDriver SQL', () => {
 describe('readDbShape', () => {
   it('maps introspection rows into the assertion targets the backfill checks', async () => {
     const session: MigrateSession = {
-      async execute() {
-        return undefined;
-      },
-      async all(query: SQL) {
+      async execute(query: SQL) {
         const sql = dialect.sqlToQuery(query).sql;
-        if (sql.includes('information_schema.tables')) return [{ table_name: 'tasks' }];
+        if (sql.includes('information_schema.tables')) return { rows: [{ table_name: 'tasks' }] };
         if (sql.includes('information_schema.columns')) {
-          return [{ table_name: 'tasks', column_name: 'path_manifest' }];
+          return { rows: [{ table_name: 'tasks', column_name: 'path_manifest' }] };
         }
-        if (sql.includes('pg_indexes')) return [{ indexname: 'tasks_status_idx' }];
+        if (sql.includes('pg_indexes')) return { rows: [{ indexname: 'tasks_status_idx' }] };
         if (sql.includes('table_constraints')) {
-          return [{ table_name: 'tasks', constraint_name: 'tasks_pkey' }];
+          return { rows: [{ table_name: 'tasks', constraint_name: 'tasks_pkey' }] };
         }
-        return [];
+        return { rows: [] };
       },
     };
 

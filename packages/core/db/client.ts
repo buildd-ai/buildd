@@ -42,7 +42,7 @@ export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
       throw new Error(`[DISABLE_WRITES] Mutation blocked: db.${prop}() called in read-only mode`);
     }
     if (!_db) {
-      _db = drizzle(getSql(), { schema });
+      _db = drizzle({ client: getSql(), schema });
     }
     return (_db as any)[prop];
   },

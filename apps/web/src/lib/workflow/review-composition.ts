@@ -21,7 +21,8 @@
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { isCiVerifiedGeneratedPath, isMigrationSqlPath, pairMovedMigrations } from '@buildd/core/generated-artifacts';
-import { isReleaseBranchPr } from '@buildd/core/release-strategy';
+import { classifyReleasePr, releaseConstituentBase, type ReleasePrFacts } from '@buildd/core/release-candidate';
+import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import type { Exec } from './kernel';
 import type { CompositionAttestation, CompositionConstituent, ConstituentEvidence, NovelDelta, RoundStatus, Verdict } from './types';
 
@@ -32,7 +33,13 @@ export interface CompositionPrRefs {
   baseRef: string | null;
   /** The owner task's mission working (integration) branch, when it has one. */
   missionWorkingBranch?: string | null;
-  releaseConfig?: Parameters<typeof isReleaseBranchPr>[0];
+  releaseConfig?: WorkspaceReleaseConfig | null;
+  /**
+   * The rest of the live PR, which a frozen release candidate needs to prove
+   * where it came from (author, body metadata, head sha, same repo); see
+   * `classifyReleasePr`. Without them a candidate-shaped PR is ordinary.
+   */
+  pr?: Omit<ReleasePrFacts, 'headRef' | 'baseRef'>;
   /**
    * The trunk a mission branch refresh merges in, when the owner task is that
    * refresh (`integrationRefreshOf` its context); null for every other task.
@@ -42,18 +49,31 @@ export interface CompositionPrRefs {
 
 /**
  * A mission's integration PR (its working branch merging into trunk), a
- * release PR (releaseBranch → prodBranch), or a mission branch refresh PR
- * (trunk merged into the mission's working branch, opened by the refresh
+ * release PR (the legacy releaseBranch → prodBranch, or a trusted frozen
+ * candidate such as release/v1.2.3 → prodBranch), or a mission branch refresh
+ * PR (trunk merged into the mission's working branch, opened by the refresh
  * conflict task). Every other PR, including an ordinary task PR INTO a mission
- * branch, is ordinary and stays exact-head bound.
+ * branch and a candidate-shaped PR that fails provenance, is ordinary and
+ * stays exact-head bound.
  */
 export function isCompositionPr(r: CompositionPrRefs): boolean {
+  return compositionConstituentBase(r) !== null;
+}
+
+/**
+ * Where a composed PR's constituent PRs merged, or null when it is not a
+ * composed PR. A mission integration PR's constituents merged into its head
+ * (the working branch), a refresh's into the trunk it brings in, a legacy
+ * release PR's into its head (dev), and a release candidate's into its source
+ * branch (dev): a candidate branch is cut, never merged into.
+ */
+export function compositionConstituentBase(r: CompositionPrRefs): string | null {
   const head = r.headRef?.trim() || null;
   const base = r.baseRef?.trim() || null;
-  if (!head || !base || head === base) return false;
-  if (r.missionWorkingBranch && head === r.missionWorkingBranch.trim()) return true;
-  if (r.refreshTrunk && r.missionWorkingBranch && base === r.missionWorkingBranch.trim()) return true;
-  return isReleaseBranchPr(r.releaseConfig ?? null, { headRef: head, baseRef: base });
+  if (!head || !base || head === base) return null;
+  if (r.missionWorkingBranch && head === r.missionWorkingBranch.trim()) return head;
+  if (r.refreshTrunk && r.missionWorkingBranch && base === r.missionWorkingBranch.trim()) return r.refreshTrunk.trim();
+  return releaseConstituentBase(classifyReleasePr(r.releaseConfig ?? null, { ...r.pr, headRef: head, baseRef: base }));
 }
 
 // ── Deterministic release artifacts ─────────────────────────────────────────
@@ -441,6 +461,13 @@ export async function collectComposition(p: {
   aggregateHeadSha: string;
   /** The trunk a mission branch refresh PR merges in (see `isCompositionPr`); absent otherwise. */
   refreshTrunk?: string | null;
+  /**
+   * The branch the constituent PRs merged into, from `compositionConstituentBase`.
+   * Absent = the head branch (a mission integration or legacy release PR).
+   * A release candidate passes its source branch: its commits landed on dev
+   * through PRs into dev, and the candidate branch itself never had a PR.
+   */
+  constituentBase?: string | null;
 }): Promise<CompositionResult> {
   const { api, installationId: inst, repoFullName: repo } = p;
   const cmp = (await api(inst, `/repos/${repo}/compare/${encodeURIComponent(p.baseRef)}...${p.aggregateHeadSha}?per_page=${COMPARE_COMMIT_CAP}`)) as GhCompare | null;
@@ -451,8 +478,9 @@ export async function collectComposition(p: {
   const aggregateFiles = cmp?.files && cmp.files.length < DIFF_FILE_CAP ? cmp.files.map((f) => f.filename) : null;
 
   const refreshTrunk = p.refreshTrunk?.trim() || null;
-  // A refresh's constituents landed on trunk; anything else's landed on its head branch.
-  const constituentBase = refreshTrunk ?? p.headRef;
+  // A refresh's constituents landed on trunk; a candidate's on its source
+  // branch; anything else's on its head branch.
+  const constituentBase = refreshTrunk ?? (p.constituentBase?.trim() || p.headRef);
   const commits: CommitFacts[] = [];
   const prsByCommit: Record<string, { prNumber: number; mergedHeadSha: string } | null> = {};
   for (const c of rawCommits) {

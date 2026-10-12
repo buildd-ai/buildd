@@ -5,10 +5,11 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
-import Card from '@/components/ui/Card';
-import Eyebrow from '@/components/ui/Eyebrow';
-import { ReleaseRow } from './ReleaseRow';
-import { isSupersededRelease, pickNextRelease, releaseCountLine, supersededById } from './release-display';
+import { teamIdsWhere } from '@/lib/permissions';
+import { releaseCandidatePolicy } from '@buildd/core/release-candidate';
+import { supersededById } from './release-display';
+import { ReleasesHeader, ReleasesList } from './ReleasesList';
+import { releasesFixture, resolveReleasesFixtureState } from './releases-fixtures';
 import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
@@ -16,24 +17,18 @@ export const dynamic = 'force-dynamic';
 /** How many releases the list shows; the count line says when there are more. */
 const LIST_LIMIT = 100;
 
-/** The page header: the shell's mobile header already says "Releases", so the h1 shows from md up only. */
-function ReleasesHeader({ countLine }: { countLine?: string }) {
-  return (
-    <div className="mb-5">
-      <h1 data-testid="releases-headline" className="sr-only md:not-sr-only text-xl font-semibold text-text-primary">Releases</h1>
-      {countLine && <p data-testid="releases-count" className="font-mono text-meta text-text-muted md:mt-1">{countLine}</p>}
-    </div>
-  );
-}
-
 export default async function ReleasesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ workspace?: string }>;
+  searchParams: Promise<{ workspace?: string; state?: string | string[] }>;
 }) {
-  const { workspace: wsFilter } = await searchParams;
+  const { workspace: wsFilter, state } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
+
+  // `?state=` (dev server only) draws the list from synthetic rows; see ./releases-fixtures.ts.
+  const fixtureState = resolveReleasesFixtureState(state);
+  if (fixtureState) return <ReleasesList {...releasesFixture(fixtureState)} />;
 
   const teamIds = await getUserTeamIds(user.id);
   if (teamIds.length === 0) {
@@ -133,58 +128,21 @@ export default async function ReleasesPage({
     : [];
   const supersededReleaseMap = new Map(supersededReleases.map(r => [r.id, r.version]));
 
-  // The workspace name is the row's context only when the list spans several;
-  // with one, the switcher already names it.
-  const multiWorkspace = new Set(allReleases.map(r => r.workspaceId)).size > 1;
-
-  function renderRow(release: typeof allReleases[number], bare = false) {
-    const ws = wsMap.get(release.workspaceId);
-    const gitConfig = ws?.gitConfig as any;
-    const commitRangeUrl =
-      gitConfig?.fullName && release.previousSha && release.headSha
-        ? `https://github.com/${gitConfig.fullName}/compare/${release.previousSha}...${release.headSha}`
-        : null;
-    const successorId = isSupersededRelease(release) ? supersededById(release.failureReason) : null;
-    const resolved = successorId != null && supersededReleaseMap.has(successorId);
-    return (
-      <ReleaseRow
-        key={release.id}
-        release={release}
-        workspaceName={multiWorkspace ? ws?.name ?? null : null}
-        commitRangeUrl={commitRangeUrl}
-        metrics={releaseMetrics.get(release.id) ?? { taskCount: 0, missionCount: 0 }}
-        supersededByVersion={resolved ? supersededReleaseMap.get(successorId) : null}
-        supersededByReleaseId={resolved ? successorId : null}
-        bare={bare}
-      />
-    );
-  }
-
-  const next = pickNextRelease(allReleases);
-  const history = next ? allReleases.filter(r => r.id !== next.id) : allReleases;
+  // The owner's release flow, for a workspace that cuts frozen candidates and a
+  // person who may release it (team owner or admin).
+  const canRelease = (await teamIdsWhere({ kind: 'user', userId: user.id }, 'manage_releases')).includes(activeTeamId);
+  const composeWorkspace = canRelease
+    ? releaseEnabledWorkspaces.find(ws => targetWsIds.includes(ws.id) && releaseCandidatePolicy(ws.releaseConfig as any))
+    : undefined;
 
   return (
-    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-3xl">
-      <ReleasesHeader countLine={allReleases.length > 0 ? releaseCountLine(allReleases.length, Number(total)) : undefined} />
-
-      {allReleases.length === 0 ? (
-        <p className="text-body text-text-secondary">No releases.</p>
-      ) : (
-        <>
-          {/* The next release: the one L2 card on the page, everything below is
-              L1 history. This is the future home of the release candidate
-              (choose missions → RC → review CI → release). */}
-          {next && (
-            <Card data-testid="next-release" className="mb-6 flex flex-col gap-2">
-              <Eyebrow tone="muted">Next release</Eyebrow>
-              {renderRow(next, true)}
-            </Card>
-          )}
-          <div className="border-t border-border-default">
-            {history.map(release => renderRow(release))}
-          </div>
-        </>
-      )}
-    </div>
+    <ReleasesList
+      releases={allReleases}
+      total={Number(total)}
+      workspaces={wsMap}
+      metrics={releaseMetrics}
+      supersededVersions={supersededReleaseMap}
+      composeWorkspaceId={composeWorkspace?.id ?? null}
+    />
   );
 }
