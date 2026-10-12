@@ -148,7 +148,14 @@ export interface LocalSessionStore {
    */
   recordUsage(u: WorkerUsageWrite): Promise<boolean>;
   /** Whether the worker has an instruction queued that no consumer picked up. */
-  workerState(workerId: string): Promise<{ taskId: string | null; pendingInstructions: boolean; live: boolean } | null>;
+  workerState(workerId: string): Promise<{ taskId: string | null; pendingInstructions: boolean; live: boolean; interactive?: boolean } | null>;
+  /**
+   * Withdraw the open ask_human question of a held interactive worker, because
+   * the person answered at the terminal. Same compare-and-swap /respond claims
+   * an answer with (`waitingFor IS NOT NULL`), so exactly one of the two wins.
+   * True if this call withdrew it.
+   */
+  withdrawQuestion(workerId: string, now: Date): Promise<boolean>;
 }
 
 /** What one held worker's usage report writes. */
@@ -244,15 +251,18 @@ export function hashClientSessionId(clientKind: string, clientSessionId: string)
   return createHash('sha256').update(`${clientKind}:${clientSessionId}`).digest('hex');
 }
 
+type HeldState = { taskId: string | null; pendingInstructions: boolean; askVia?: { workerId: string } | null };
+
 const result = (
   outcome: string,
   presence: PresenceRow | null,
-  state: { taskId: string | null; pendingInstructions: boolean } | null = null,
+  state: HeldState | null = null,
 ): LocalSessionEventResult => ({
   ok: true,
   sessionId: presence?.id ?? null,
   taskId: state?.taskId ?? null,
   pendingInstructions: state?.pendingInstructions ?? false,
+  askVia: state?.askVia ?? null,
   outcome,
 });
 
@@ -310,13 +320,19 @@ export async function handleLocalSessionEvent(
 
   // Across every held worker: a pending instruction on any of them is flagged
   // (naming that task), else the most recently bound live task is reported.
-  const boundState = async (presence: PresenceRow) => {
+  // askVia: the most recently bound live interactive worker, where a question
+  // the session asks belongs (docs/specs/terminal-question-redirect.md).
+  const boundState = async (presence: PresenceRow): Promise<HeldState | null> => {
     if (presence.workerIds.length === 0) return null;
-    const states = (await Promise.all(presence.workerIds.map(id => store.workerState(id)))).filter(s => s !== null);
-    const pending = states.find(s => s.pendingInstructions);
-    if (pending) return pending;
-    const live = states.filter(s => s.live);
-    return live[live.length - 1] ?? null;
+    const held = (await Promise.all(presence.workerIds.map(async id => ({ id, s: await store.workerState(id) }))))
+      .filter((h): h is { id: string; s: NonNullable<typeof h.s> } => h.s !== null);
+    const interactive = held.filter(h => h.s.live && h.s.interactive);
+    const askVia = interactive.length > 0 ? { workerId: interactive[interactive.length - 1].id } : null;
+    const pending = held.find(h => h.s.pendingInstructions);
+    if (pending) return { ...pending.s, askVia };
+    const live = held.filter(h => h.s.live);
+    const last = live[live.length - 1];
+    return last ? { ...last.s, askVia } : (askVia ? { taskId: null, pendingInstructions: false, askVia } : null);
   };
 
   // `/clear` keeps the process (and its MCP connection) but gives the
@@ -366,7 +382,19 @@ export async function handleLocalSessionEvent(
       for (const workerId of presence.workerIds) {
         await store.touchBoundWorker(workerId, isLocalSessionPerson(principal) ? null : principal.id, now);
       }
-      return result(wrote ? 'touched' : 'coalesced', presence, await boundState(presence));
+      // A person typed into the session: they are at the terminal, so an open
+      // ask_human question of a held worker is answered there, not in buildd.
+      let withdrew = false;
+      if (event.prompted) {
+        for (const workerId of presence.workerIds) {
+          try {
+            if (await store.withdrawQuestion(workerId, now)) withdrew = true;
+          } catch (err) {
+            console.warn('[local-session] question withdrawal failed:', err instanceof Error ? err.message : err);
+          }
+        }
+      }
+      return result(withdrew ? 'question_withdrawn' : wrote ? 'touched' : 'coalesced', presence, await boundState(presence));
     }
 
     case 'bind': {
@@ -702,13 +730,22 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
       .returning({ id: workers.id });
     return rows.length > 0;
   },
+  async withdrawQuestion(workerId, now) {
+    const { withdrawQuestionAnsweredInTerminal } = await import('@/lib/terminal-answer');
+    return withdrawQuestionAnsweredInTerminal(workerId, now);
+  },
   async workerState(workerId) {
     const w = await db.query.workers.findFirst({
       where: sqlWhere(eq(workers.id, workerId)),
-      columns: { taskId: true, pendingInstructions: true, status: true },
+      columns: { taskId: true, pendingInstructions: true, status: true, runner: true },
     });
     if (!w) return null;
     const live = (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status);
-    return { taskId: w.taskId, pendingInstructions: live && !!w.pendingInstructions?.trim(), live };
+    return {
+      taskId: w.taskId,
+      pendingInstructions: live && !!w.pendingInstructions?.trim(),
+      live,
+      interactive: w.runner === INTERACTIVE_WORKER_RUNNER,
+    };
   },
 };
