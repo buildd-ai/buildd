@@ -27,7 +27,7 @@ export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'hea
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
-import type { ScheduleDelegation } from '../token-delegation';
+import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
 import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -1534,6 +1534,12 @@ export const tasks = pgTable('tasks', {
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
   // Enables reverse lookup: given a stray task, find the schedule that created it.
   scheduleId: uuid('schedule_id'),  // FK constraint defined in migration (circular ref with task_schedules)
+  // Explicit cross-workspace reach for this task's token, same shape as a
+  // schedule's (packages/core/token-delegation.ts). Written only by a person
+  // who reaches each target, by an approved tasks:create capability request,
+  // or copied from the task a continuation/retry replaces. Never read from
+  // context: a caller writes context, so a grant there could be forged.
+  delegation: jsonb('delegation').$type<TaskDelegation>(),
   // Identity of the schedule tick this cycle belongs to: `${scheduleId}:${schedule.lastRunAt}`.
   // Set by the cron dispatcher on every mission-linked cycle, and by the failure-triggered
   // auto-retry path (mission-loop.ts's retriggerMissionOnFailure) when retrying within the

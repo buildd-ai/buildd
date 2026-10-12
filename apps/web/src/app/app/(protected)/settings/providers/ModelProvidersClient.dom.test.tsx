@@ -86,12 +86,12 @@ let root: ReturnType<typeof createRoot>;
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 async function flush() { await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); }
-async function mount(o: FixtureOpts = {}, withSignIns = false, workspaces = WORKSPACES, scope: 'team' | 'workspace' | 'mine' = 'team') {
+async function mount(o: FixtureOpts = {}, withSignIns = false, workspaces = WORKSPACES, scope: 'team' | 'workspace' | 'mine' = 'team', operator = false) {
   opts = o;
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<ModelProvidersClient teamId="t" isAdmin={o.admin !== false} workspaces={workspaces} signIns={withSignIns ? { workspaces: workspaces.map((w) => ({ ...w, teamId: 't' })), currentTeamId: 't' } : undefined} scope={scope} workspaceId={scope === 'workspace' ? workspaces[0]?.id ?? null : null} />); });
+  await act(async () => { root.render(<ModelProvidersClient teamId="t" isAdmin={o.admin !== false} workspaces={workspaces} signIns={withSignIns ? { workspaces: workspaces.map((w) => ({ ...w, teamId: 't' })), currentTeamId: 't' } : undefined} scope={scope} operator={operator} workspaceId={scope === 'workspace' ? workspaces[0]?.id ?? null : null} />); });
   await flush();
   await flush();
 }
@@ -235,7 +235,19 @@ describe('connect: one input, the format decides', () => {
     await mount({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] });
     expect($('[data-testid="used-for"]')).toBeTruthy();
     for (const s of ['chat', 'agent-claude', 'agent-codex', 'cloud-egress']) expect($(`[data-testid="used-for-${s}"]`)).toBeTruthy();
-    expect($('[data-testid="used-for-decisions"]')).toBeTruthy();
+  });
+
+  it('a team admin sees no decision model: it is a platform operator control', async () => {
+    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] });
+    expect($('[data-testid="used-for"]')).toBeTruthy();
+    expect($('[data-testid="used-for-decisions"]')).toBeNull();
+    expect($('[data-testid="decision-model"]')).toBeNull();
+    expect(host.textContent).not.toContain('Decisions');
+  });
+
+  it('a platform operator gets the decision model row under Used for', async () => {
+    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] }, false, WORKSPACES, 'team', true);
+    expect($('[data-testid="used-for-decisions"] [data-testid="decision-model"]')).toBeTruthy();
   });
 
   it('remove asks first, then deletes at the tab scope', async () => {
