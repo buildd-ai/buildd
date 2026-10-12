@@ -10,6 +10,30 @@ related: [local-agent-presence, answered-question-resume, human-in-the-loop-prot
 keywords: [AskUserQuestion, ask_human, PreToolUse, permissionDecision, deny, UserPromptSubmit, terminal prompt, needs you, away from terminal, withdraw question, agent plugin, hooks]
 verified_by: [apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/lib/local-session.test.ts, apps/web/src/lib/terminal-answer.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "deny-reason"
+    type: "symbol"
+    name: "askRedirectReason"
+    path: "apps/runner/plugin/scripts/buildd-hook.mjs"
+  - id: "terminal-withdrawal"
+    type: "symbol"
+    name: "withdrawQuestionAnsweredInTerminal"
+    path: "apps/web/src/lib/terminal-answer.ts"
+  - id: "withdrawal-predicate"
+    type: "symbol"
+    name: "terminalWithdrawWhere"
+    path: "apps/web/src/lib/terminal-answer.ts"
+  - id: "withdrawal-reachable-from-presence"
+    type: "symbol_reachable"
+    symbol: "withdrawQuestionAnsweredInTerminal"
+    entry: "apps/web/src/lib/local-session.ts"
+  - id: "plugin-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/agent-plugin.test.ts"
+  - id: "withdrawal-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/terminal-answer.test.ts"
 ---
 
 # Terminal Question Redirect
