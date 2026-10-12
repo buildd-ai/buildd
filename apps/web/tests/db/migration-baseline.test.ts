@@ -28,6 +28,7 @@ import pg from 'pg';
 import { LAST_RELEASE_BEFORE_SQUASH } from '@buildd/core/db/migrate-plan';
 import { assertDbConfigured, fingerprint, prepareRollbackMigrator, synthesizeLegacyTree, withDb } from './harness';
 import { readMigrationTree } from '@buildd/core/db/migrate-tree';
+import { LEGACY_MIGRATIONS_PATH, loadLegacyMap } from '@buildd/core/db/legacy-migrations';
 
 const ROOT = join(import.meta.dir, '..', '..', '..', '..');
 const CORE = join(ROOT, 'packages', 'core');
@@ -141,6 +142,14 @@ const publicRowCount = (url: string) =>
 const newJournal = readJournal(LEGACY_TREE);
 const baseline = newJournal.entries[0]!;
 const postCut = newJournal.entries.slice(1);
+// Migrations written after the drizzle v1 cutover exist only as v1 folders: no
+// released database ran them through the previous migrator, and the new one
+// applies them on top of any history (comment-only folders are recorded, not run).
+const LEGACY_NAMES = new Set(loadLegacyMap(LEGACY_MIGRATIONS_PATH).map((e) => e.name));
+const isCommentOnly = (sqlText: string) => sqlText.replace(/--[^\n]*/g, '').replace(/--> statement-breakpoint/g, '').trim() === '';
+const postCutover = readMigrationTree(join(CORE, 'drizzle'))
+  .filter((e) => !LEGACY_NAMES.has(e.name))
+  .filter((e) => !isCommentOnly(readFileSync(join(CORE, 'drizzle', e.name, 'migration.sql'), 'utf8')));
 
 beforeAll(() => {
   work = mkdtempSync(join(tmpdir(), 'migration-baseline-'));
@@ -194,6 +203,8 @@ describe('squashed baseline', () => {
     expect(out).toContain(`(${V1_TREE_ENTRIES - 1} applied, 0 backfilled, 1 recorded without executing)`);
     freshNew = newUrl;
 
+    // A released database then gets the post-cutover folders from the new migrator.
+    if (postCutover.length > 0) migrateNewOk(oldUrl);
     const [a, b] = await Promise.all([fingerprint(oldUrl), fingerprint(newUrl)]);
     expect(a.length).toBeGreaterThan(1000);
     expect(b).toEqual(a);
@@ -208,11 +219,11 @@ describe('squashed baseline', () => {
     const before = await trackingRows(url);
 
     const out = migrateNewOk(url);
-    expect(out).toContain(`(${postCut.length} applied, 0 backfilled, 1 recorded without executing)`);
+    expect(out).toContain(`(${postCut.length + postCutover.length} applied, 0 backfilled, 1 recorded without executing)`);
     // Legacy rows keep their exact-ms created_at, so the previous release's reading of them is unchanged.
     const after = await trackingRows(url);
     // Released databases hold one row per pre-squash migration, not the baseline's: they gain the post-cut rows and the rebase.
-    expect(after.length).toBe(before.length + postCut.length + 1);
+    expect(after.length).toBe(before.length + postCut.length + postCutover.length + 1);
     for (const when of [...before, ...postCut.map((e) => e.when)]) expect(after).toContain(when);
     expect(await fingerprint(url)).toEqual(await fingerprint(freshNew));
 
