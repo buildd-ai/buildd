@@ -17,7 +17,9 @@ import { systemCache } from './db/schema';
 import { eq } from 'drizzle-orm';
 import { fetchOpenRouterCatalog, type CatalogEntry } from './model-catalog';
 
-const CACHE_KEY = 'openrouter_catalog';
+// Versioned by shape: v2 rows carry `inputModalities`. A row written before
+// would otherwise hide what models read for a whole TTL after a deploy.
+const CACHE_KEY = 'openrouter_catalog_v2';
 // Matches the TTL `/api/models` already uses for the same public list — model
 // prices and lineups change on the order of months, not hours.
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
