@@ -6,7 +6,7 @@
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/roles' });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/agents' });
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
@@ -40,8 +40,8 @@ describe('TurnedOffRoles', () => {
     expect(container.textContent).toContain('Scout');
     expect(container.textContent).toContain('Workspace 1');
     const links = [...container.querySelectorAll('a')].map(a => a.getAttribute('href'));
-    expect(links).toContain('/app/settings/roles/scout/edit?id=r-1');
-    expect(links).toContain('/app/settings/roles/qa/edit?id=r-2');
+    expect(links).toContain('/app/settings/agents/scout/edit?id=r-1');
+    expect(links).toContain('/app/settings/agents/qa/edit?id=r-2');
   });
 
   it('renders nothing when no role is turned off', async () => {

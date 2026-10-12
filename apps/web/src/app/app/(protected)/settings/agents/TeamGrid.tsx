@@ -25,8 +25,8 @@ interface Props {
   canCreateTeamRole?: boolean;
 }
 
-const NEW_ROLE = '/app/settings/roles/new';
-const NEW_PERSONAL_ROLE = '/app/settings/roles/new?kind=personal';
+const NEW_ROLE = '/app/settings/agents/new';
+const NEW_PERSONAL_ROLE = '/app/settings/agents/new?kind=personal';
 
 function RoleAvatar({ name, size = 32 }: { name: string; size?: number }) {
   return (
@@ -61,7 +61,7 @@ function ScopeLine({ role }: { role: RoleWithActivity }) {
 /** A role at work: a standalone card with what it is doing now. */
 function ActiveRoleCard({ role }: { role: RoleWithActivity }) {
   return (
-    <Card as={Link} href={`/app/settings/roles/${role.slug}`} interactive className="block">
+    <Card as={Link} href={`/app/settings/agents/${role.slug}`} interactive className="block">
       <div className="flex items-start gap-3">
         <RoleAvatar name={role.name} />
         <div className="min-w-0 flex-1">
@@ -99,7 +99,7 @@ function ActiveRoleCard({ role }: { role: RoleWithActivity }) {
 function IdleRoleRow({ role }: { role: RoleWithActivity }) {
   return (
     <Link
-      href={`/app/settings/roles/${role.slug}`}
+      href={`/app/settings/agents/${role.slug}`}
       className="flex min-h-14 items-center gap-3 py-2.5 hover:bg-surface-3 transition-colors"
     >
       <RoleAvatar name={role.name} size={28} />

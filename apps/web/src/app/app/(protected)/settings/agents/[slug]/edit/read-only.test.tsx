@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 mock.module('next/navigation', () => ({
   useRouter: () => ({ refresh: () => {}, push: () => {}, replace: () => {} }),
-  usePathname: () => '/app/settings/roles/builder/edit',
+  usePathname: () => '/app/settings/agents/builder/edit',
   useSearchParams: () => new URLSearchParams(''),
 }));
 

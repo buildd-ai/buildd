@@ -19,7 +19,7 @@ export type SettingsSectionId =
   | 'notifications'
   | 'connections'
   | 'team'
-  | 'roles'
+  | 'agents'
   | 'billing'
   | 'models'
   | 'workspaces'
@@ -105,9 +105,9 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         manage: ['manage_team_members', 'assign_team_roles', 'assign_team_owner', 'manage_team_settings', 'delete_team'],
       },
       {
-        id: 'roles',
+        id: 'agents',
         label: 'Agents',
-        href: '/app/settings/roles',
+        href: '/app/settings/agents',
         description: 'The agents on the team: what each one does, its model and its tools.',
         manage: ['manage_agent_roles'],
       },
