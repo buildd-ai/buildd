@@ -7,7 +7,7 @@ import { eq, and, lt, inArray, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
-import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from '@/lib/stale-workers';
+import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnreadInteractiveAnswers, cleanupUnresumedAnswers } from '@/lib/stale-workers';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { kernelDeliveryById } from '@/lib/workflow/authority';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -325,6 +325,9 @@ export async function POST(req: NextRequest) {
   //     between receiving it and its next sync. See
   //     docs/specs/answered-question-resume.md.
   let unresumedAnswersDegraded = 0;
+  // 4c. Same for an answer sent back to an interactive session that went quiet
+  //     without reading it: it goes to a follow-up task.
+  let unreadInteractiveAnswersDegraded = 0;
 
   // 5. The offline-runner rule (fail workers whose runner went offline) runs
   //    inside cleanupStaleWorkers via failWorkersOfOfflineRunners — the one
@@ -351,6 +354,11 @@ export async function POST(req: NextRequest) {
     } catch {
       // Non-fatal — same reasoning as the sweep above
     }
+    try {
+      unreadInteractiveAnswersDegraded += (await cleanupUnreadInteractiveAnswers(accountId)).degraded;
+    } catch {
+      // Non-fatal — same reasoning as the sweep above
+    }
   }
 
   // 7. Delete heartbeat rows of runners presumed dead. Same "not dead" window
@@ -372,6 +380,7 @@ export async function POST(req: NextRequest) {
       stuckWaitingInput: waitingInputFailedWorkers,
       retriedTasks: waitingInputRetriedTasks,
       unresumedAnswers: unresumedAnswersDegraded,
+      unreadInteractiveAnswers: unreadInteractiveAnswersDegraded,
       heartbeatOrphans,
       staleHeartbeats: deletedHeartbeats.length,
     },

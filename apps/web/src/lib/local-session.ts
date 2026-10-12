@@ -157,6 +157,18 @@ export interface LocalSessionStore {
   withdrawQuestion(workerId: string, now: Date): Promise<boolean>;
 }
 
+/**
+ * Whether the task's message queue holds an answer to this worker's own
+ * ask_human question. /respond's interactive path queues it there, not in
+ * `pendingInstructions`, and the hook's nudge ("call receive_messages") is
+ * what reaches a session that stopped waiting for it.
+ */
+export function hasUnreadAnswerFor(workerId: string, taskContext: unknown): boolean {
+  const queue = (taskContext as { pendingWorkerMessages?: unknown } | null | undefined)?.pendingWorkerMessages;
+  if (!Array.isArray(queue)) return false;
+  return queue.some(m => m?.type === 'answer' && m?.body?.workerId === workerId);
+}
+
 /** What one held worker's usage report writes. */
 export interface WorkerUsageWrite {
   workerId: string;
@@ -737,12 +749,15 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
     const w = await db.query.workers.findFirst({
       where: eq(workers.id, workerId),
       columns: { taskId: true, pendingInstructions: true, status: true, runner: true },
+      with: { task: { columns: { context: true } } },
     });
     if (!w) return null;
     const live = (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status);
+    const waiting = !!w.pendingInstructions?.trim()
+      || hasUnreadAnswerFor(workerId, (w as { task?: { context?: unknown } | null }).task?.context);
     return {
       taskId: w.taskId,
-      pendingInstructions: live && !!w.pendingInstructions?.trim(),
+      pendingInstructions: live && waiting,
       live,
       interactive: w.runner === INTERACTIVE_WORKER_RUNNER,
     };

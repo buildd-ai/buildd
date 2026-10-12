@@ -27,6 +27,7 @@ const {
   boundWorkerTouchWhere,
   bindInsertSql,
   usageWriteWhere,
+  hasUnreadAnswerFor,
   LocalSessionError,
 } = await import('./local-session');
 type Store = import('./local-session').LocalSessionStore;
@@ -442,6 +443,28 @@ describe('terminal question redirect', () => {
     expect(parseLocalSessionEvent({ event: 'touch', client: 'claude', clientSessionId: 's', prompted: true }).ok).toBe(true);
     expect(parseLocalSessionEvent({ event: 'touch', client: 'claude', clientSessionId: 's', prompted: 'yes' }).ok).toBe(false);
     expect(parseLocalSessionEvent({ event: 'start', client: 'claude', clientSessionId: 's', prompted: true }).ok).toBe(false);
+  });
+});
+
+// An answer to the session's own ask_human question waits in the task's
+// message queue, not in pendingInstructions: the hook's turn-boundary nudge
+// must fire for it too, or a session that stopped waiting never hears of it.
+describe('hasUnreadAnswerFor', () => {
+  const W = 'worker-1';
+  const answer = { id: 'msg-1', type: 'answer', body: { source: 'human', text: 'Use Postgres', workerId: W } };
+
+  it('flags an answer queued for this worker', () => {
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [answer] })).toBe(true);
+  });
+
+  it('ignores an answer for another worker on the same task', () => {
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [{ ...answer, body: { ...answer.body, workerId: 'worker-2' } }] })).toBe(false);
+  });
+
+  it('ignores other queued messages, and an empty or missing queue', () => {
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [{ id: 'm', type: 'path_released', body: {} }] })).toBe(false);
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [] })).toBe(false);
+    expect(hasUnreadAnswerFor(W, null)).toBe(false);
   });
 });
 
