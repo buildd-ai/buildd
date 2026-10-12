@@ -41,7 +41,7 @@ export interface StateDef {
 export const STATES: Record<StateKey, StateDef> = {
   running:    { glyph: '▶', word: 'Building',   tone: 'act', pattern: 'hatch-bold',       frame: 'none',     cellGlyph: false, means: 'An agent is producing a revision' },
   review:     { glyph: '◐', word: 'Auditing',   tone: 'run', pattern: 'hatch-vertical',   frame: 'none',     cellGlyph: false, means: 'Required checks are running on the current revision' },
-  fixing:     { glyph: '↻', word: 'Repairing',  tone: 'act', pattern: 'hatch-45',         frame: 'none',     cellGlyph: true,  means: 'A check failed; Buildd is fixing it' },
+  fixing:     { glyph: '↻', word: 'Repairing',  tone: 'act', pattern: 'hatch-45',         frame: 'none',     cellGlyph: true,  means: 'A check failed; buildd is fixing it' },
   waiting:    { glyph: '◇', word: 'Waiting',    tone: 'act', pattern: 'empty',            frame: 'heavy',    cellGlyph: true,  means: 'The agent is paused, waiting on an answer' },
   ci_failed:  { glyph: '⊗', word: 'CI failed',  tone: 'bad', pattern: 'dots',             frame: 'none',     cellGlyph: true,  means: 'A required check failed on the current revision' },
   failed:     { glyph: '⊠', word: 'Failed',     tone: 'bad', pattern: 'crosshatch',       frame: 'none',     cellGlyph: true,  means: 'The task stopped without a revision to land' },
@@ -50,7 +50,7 @@ export const STATES: Record<StateKey, StateDef> = {
   ready:      { glyph: '□', word: 'Ready',      tone: 'q',   pattern: 'empty',            frame: 'hairline', cellGlyph: false, means: 'Nothing holds it; it starts when a slot frees' },
   blocked:    { glyph: '▦', word: 'Blocked',    tone: 'q',   pattern: 'hatch-dense',      frame: 'none',     cellGlyph: false, means: 'Waits on a dependency that is moving; starts by itself' },
   queued:     { glyph: '░', word: 'Queued',     tone: 'q',   pattern: 'hatch-sparse',     frame: 'none',     cellGlyph: false, means: 'Queued behind a chain that is itself waiting' },
-  recovering: { glyph: '⊘', word: 'Recovering', tone: 'q',   pattern: 'flat',             frame: 'hairline', cellGlyph: true,  means: "A check can't run; Buildd is restoring it" },
+  recovering: { glyph: '⊘', word: 'Recovering', tone: 'q',   pattern: 'flat',             frame: 'hairline', cellGlyph: true,  means: "A check can't run; buildd is restoring it" },
   not_landed: { glyph: '✕', word: 'Not landed', tone: 'bad', pattern: 'flat',             frame: 'none',     cellGlyph: true,  means: 'The PR closed without merging' },
   needs_you:  { glyph: '!', word: 'Needs you',  tone: 'dec', pattern: 'flat',             frame: 'decision', cellGlyph: true,  means: 'A decision only a person can make' },
 };
@@ -95,13 +95,13 @@ export const STATUS_PILL: Record<string, { state: StateKey; label: string }> = {
   waiting_on_you: { state: 'needs_you',  label: 'Needs input' },
   // The subject-liveness claim gate excludes this task: no worker can ever
   // pick it up. See lib/subject-gate-contract.ts.
-  subject_dead:   { state: 'not_landed', label: 'Subject closed' },
+  subject_dead:   { state: 'not_landed', label: 'Superseded' },
   completed:      { state: 'landed',     label: 'Completed' },
   failed:         { state: 'failed',     label: 'Failed' },
   cancelled:      { state: 'not_landed', label: 'Cancelled' },
   idle:           { state: 'ready',      label: 'Idle' },
   budget_limited: { state: 'waiting',    label: 'Waiting' },
-  infra_failure:  { state: 'failed',     label: 'Infra error' },
+  infra_failure:  { state: 'failed',     label: 'Runner error' },
   infra_stalled:  { state: 'recovering', label: 'Stalled' },
   // Not real task failures: a row no runner started, and a session that
   // streamed nothing. Neutral so they don't read as agent errors.

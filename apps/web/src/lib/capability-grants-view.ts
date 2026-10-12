@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * How a capability request, a grant and a provider's state read to a person:
  * Settings → Connected apps → Agent access, and the Needs You card. Client-safe

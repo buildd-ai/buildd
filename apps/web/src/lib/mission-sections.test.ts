@@ -99,7 +99,7 @@ describe('mission sections', () => {
   it('an open mission whose every task landed is On dev, criteria pending, not In motion', () => {
     const s = buildMissionSections([row('done', [merged('a'), merged('b')]), row('a', [audit('t')])]);
     expect(s.map(x => x.key)).toEqual(['motion', 'landed']);
-    expect(s[1].label).toBe('On dev, criteria pending');
+    expect(s[1].label).toBe('Landed, checks pending');
     expect(sectionOf(s[1].rows[0])).toBe('landed');
   });
 

@@ -39,7 +39,7 @@ export default function StoredSeatNotice({ kinds }: { kinds: StoredSeatKind[] })
   return (
     <Notice tone="warn" title="Moving to your runner" className="mx-4 my-3" data-testid="stored-seat-notice">
       <p className="text-xs text-text-secondary">
-        This team stores {what} in buildd. Buildd will stop storing subscription logins, and
+        This team stores {what} in buildd. buildd will stop storing subscription logins, and
         stored ones will be removed. Your runners keep working until then.
       </p>
       <p className="mt-2 text-xs text-text-secondary">

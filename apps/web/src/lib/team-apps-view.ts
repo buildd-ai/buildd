@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * Settings → Connected apps → Team apps: one row per app the team's agents
  * can call. A catalog entry and the team's installed connector on the same

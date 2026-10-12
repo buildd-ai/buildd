@@ -103,7 +103,7 @@ describe('dependency-blocked work is not an ask', () => {
 
   it('nextAction names the blocking PRs instead of "Dispatch a worker"', () => {
     const view = deriveMissionStateView(depBlockedOnPrs);
-    expect(view.nextAction).toBe('Nothing to do yet. Unblocks when #3319 and #3317 merge.');
+    expect(view.nextAction).toBe('Unblocks when #3319 and #3317 merge.');
   });
 
   it('explain shape (completion says pending_deliverables) reads the same', () => {
@@ -112,7 +112,7 @@ describe('dependency-blocked work is not an ask', () => {
       completion: { ok: false, code: 'pending_deliverables', reason: 'open', pendingDeliverables: 1, pendingByStatus: { pending: 1 } },
     });
     expect(view.kind).toBe('waiting');
-    expect(view.nextAction).toBe('Nothing to do yet. Unblocks when #3319 and #3317 merge.');
+    expect(view.nextAction).toBe('Unblocks when #3319 and #3317 merge.');
   });
 
   it('dependencies still running: unblocks when they finish', () => {
@@ -120,7 +120,7 @@ describe('dependency-blocked work is not an ask', () => {
       ...base,
       openTasks: [{ id: 'x', status: 'pending', waitingOnTaskIds: ['a', 'b'] }],
     });
-    expect(view.nextAction).toBe('Nothing to do yet. Unblocks when 2 upstream tasks finish.');
+    expect(view.nextAction).toBe('Unblocks when 2 upstream tasks finish.');
     expect(missionNeedsYou(view)).toBe(false);
   });
 
@@ -129,7 +129,7 @@ describe('dependency-blocked work is not an ask', () => {
       ...base,
       openTasks: [{ id: 'x', status: 'pending', waitingOnTaskIds: ['a', 'b'], waitingOnPrs: { a: 12 } }],
     });
-    expect(view.nextAction).toBe('Nothing to do yet. Unblocks when #12 merges and 1 upstream task finishes.');
+    expect(view.nextAction).toBe('Unblocks when #12 merges and 1 upstream task finishes.');
   });
 
   it('a claimable sibling still reads as the stall it is', () => {

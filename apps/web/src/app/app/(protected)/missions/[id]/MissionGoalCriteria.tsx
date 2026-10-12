@@ -369,7 +369,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         // state had already been updated optimistically and router.refresh()
         // reverted it, with no clue that the write was rejected.
         const body = await res.json().catch(() => ({}));
-        setRunError(plainCriteriaError(body.error ?? `Could not save criteria (HTTP ${res.status})`));
+        setRunError(plainCriteriaError(body.error ?? 'Couldn’t save the criteria. Try again.'));
         setCriteria(criteria);
         return;
       }

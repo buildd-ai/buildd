@@ -422,7 +422,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   <>
                     {' '}
                     <Link href="/app/settings/integrations" className="underline text-text-primary hover:no-underline">
-                      Add one in Settings, GitHub and Vercel
+                      Add one in Settings › Integrations
                     </Link>
                   </>
                 )}

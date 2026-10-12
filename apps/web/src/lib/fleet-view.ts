@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * Home's fleet panel model: runners × slots, each slot's live worker and its
  * day on a lane timeline. Pure and client-safe — `lib/home-fleet.ts` loads the
@@ -399,7 +400,7 @@ export function homeHeadline(input: { live: number; needsYou: number; shipped?: 
     return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing needs input.' }];
   }
   if (shipped) return [{ text: `No agents working. ${shipped} ` }, { text: 'shipped', tone: 'success' }, { text: '.' }];
-  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'Nothing needs you right now.' }];
+  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'No agents working. Nothing needs input.' }];
 }
 
 /** Midnight of `now`'s calendar day in `tz` (IANA), epoch ms. Invalid zone → UTC. */
