@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx]
 supersedes: []
 ---
 # Living Specs
@@ -261,9 +261,8 @@ later ones are proposed (D-4).
 **Not yet**:
 - The pin is taken when a task is filed, not when it is claimed: a task filed
   under N and claimed after N+1 is approved still runs on N, by design.
-- No dashboard page lists specs yet. The one spec page is the approval
-  confirm page; approving directly is over the routes from a dashboard
-  session. The task page shows the pinned revision.
+- The task page shows the pinned revision as text; it does not link to the
+  spec page yet (§9).
 - No horizontal overflow at 320px is held by the wrapping the DOM test
   asserts and was measured on screenshots at 320, 390 and 1280px; no CI test
   renders the page at a real width yet.
@@ -363,7 +362,8 @@ without an approval ever depending on either.
   Chunks carry `specId`, `revision`, `contentHash`, `parentSpecId`, `scope`,
   `workspaceId` and `approvedAt`, source type `living_spec`, and no source
   path: the repo ingest prunes paths it did not see on disk, and these are not
-  repo files.
+  repo files. Their source URL is the spec page, `/app/specs/<specId>` (§9),
+  so a recall hit opens the spec, not an approval.
 - The graph comes only from what the spec stores: the spec `part_of` its
   parent spec; the approved revision `references_doc` each repo file it cites
   (the same `file` entity, keyed by repo path, that the repo ingest makes; the
@@ -403,3 +403,100 @@ without an approval ever depending on either.
 **Not yet**:
 - Nothing retires or deletes a spec yet (`retired` and `superseded` are only
   read). When that lands, it must remove the spec's chunks and edges too.
+
+## 9. Reading specs in the dashboard
+
+**Capability statement**: A person MUST be able to find every spec of a
+workspace they can read, read the revision in force, see what is waiting for
+approval and what each revision changed, and approve the waiting one from the
+same page, without an agent in between.
+
+**Invariants**:
+- The list is per workspace, at `/app/workspaces/[id]/specs`, linked from the
+  workspace page beside Memory, Schedules and Artifacts. It is not a primary
+  nav item: the primary surfaces each answer one question
+  (surface-ia-home-missions-initiatives.md) and a spec belongs to one
+  workspace, like the workspace's memory and schedules.
+- Who can see a spec on any of these pages is exactly who can read it over
+  `GET /api/specs/[id]` from a dashboard session (`reach`, §4): another
+  team's workspace or spec is a 404 and its title never appears.
+- The list shows specs as a tree: a spec with a parent in the same workspace
+  sits under it; a spec whose parent is not in the list sits at the top. Each
+  row says in words its title, scope, where it stands ("approved at revision
+  N", "draft, never approved", "retired", "superseded"), "revision M waiting
+  for approval" when the head is newer than the approved revision, and when it
+  last changed. A workspace with no specs says how specs get made (an agent
+  over MCP, or chat) and shows no counts.
+- The spec page `/app/specs/[specId]` reads the approved revision by default,
+  the head when nothing is approved, or `?revision=N`. One line names the
+  revision being read and, when the head is newer than the approved
+  revision, that revision M is waiting for approval. The body is that
+  revision's text exactly, rendered as Markdown with images shown as links.
+  It comes after the related specs and the revision history, so a long spec
+  never pushes them out of reach.
+- The page lists every revision, newest first: its number, whether a person
+  or an agent wrote it, its change summary, and who approved it and when, or
+  nothing when it was never approved.
+- Picking two revisions shows the changes between them with `SpecDiffView`,
+  from `diffSpecRevisions` (`apps/web/src/lib/specs/diff.ts`): the same
+  bounded diff the API returns, and both reads are recorded in the read
+  ledger like any other diff. The rendered body is read with `getSpec`, the
+  same read `GET /api/specs/[id]` serves.
+- A recall hit on an approved spec links here (§8: the chunk's source URL
+  is `/app/specs/<specId>`).
+- The page links to the parent spec and to each child spec in the same
+  workspace. Each repo reference of the revision being read shows as
+  `path @ <12-character sha>`, linking to that file at that commit on GitHub
+  in the workspace's linked repo (`github_repos`, never the free-text
+  `workspaces.repo`); with no linked repo it is plain text.
+- When the head is not approved, the spec is neither retired nor superseded,
+  and the reader may approve it (§6: `specApprover`), the page offers to
+  review revision M. Reviewing shows the changes from the approved revision
+  to M (or M rendered when nothing is approved), with one Approve action that
+  sends `POST /api/specs/[id]/approve { revision: M, expectedVersion }` for the
+  version the page was rendered at. That route, its one-statement approval and
+  its 409 on a moved spec are §6's; this page adds no approval path. A reader
+  who may not approve sees no approve action.
+
+**Acceptance criteria**:
+- AC-21: GIVEN a workspace whose specs include a parent with one child and a
+  spec with an approved revision and a newer draft WHEN its list renders THEN
+  the child sits under its parent, and the rows read "approved at revision N",
+  "draft, never approved" and "revision M waiting for approval"
+  (`apps/web/src/lib/specs/page-view.test.ts`,
+  `apps/web/src/components/SpecList.dom.test.tsx`).
+- AC-22: GIVEN a workspace with no specs WHEN its list renders THEN it says
+  how specs are made and shows no count (`apps/web/src/components/SpecList.dom.test.tsx`).
+- AC-23: GIVEN a person of another team WHEN they open a workspace's spec
+  list or one of its specs THEN nothing about the spec is returned
+  (`apps/web/tests/db/spec-pages.test.ts`).
+- AC-24: GIVEN revision 1 approved and revision 2 a draft WHEN the spec page
+  opens with no revision named THEN it reads revision 1 rendered and says
+  revision 2 is waiting for approval; WHEN `?revision=2` THEN it reads revision
+  2 (`apps/web/tests/db/spec-pages.test.ts`, `apps/web/src/components/SpecPage.dom.test.tsx`).
+- AC-25: GIVEN two revisions picked WHEN the page shows their changes THEN
+  the rows are the ones `diffSpecRevisions` returns for that pair
+  (`apps/web/tests/db/spec-pages.test.ts`).
+- AC-26: GIVEN a revision citing `docs/specs/x.md` at a commit in a workspace
+  with a linked repo WHEN the page renders THEN the reference links to that
+  file at that commit (`apps/web/src/lib/specs/page-view.test.ts`).
+- AC-27: GIVEN an approver reviewing waiting revision M WHEN they press
+  Approve THEN exactly one `POST /api/specs/[id]/approve` is sent naming M and
+  the version the page was rendered at; GIVEN a reader who may not approve
+  THEN no approve action renders (`apps/web/src/components/SpecPage.dom.test.tsx`,
+  `apps/web/tests/db/spec-pages.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/page-view.ts` — `specListView`, `specPageView`, `specTree`, `specStanding`, `repoRefHref`
+- `apps/web/src/app/app/(protected)/workspaces/[id]/specs/page.tsx` — the list
+- `apps/web/src/app/app/(protected)/specs/[specId]/page.tsx` — the spec page
+- `apps/web/src/components/SpecList.tsx` — `SpecList`
+- `apps/web/src/components/SpecPage.tsx` — `SpecPage`, `readingLine`
+- `apps/web/src/components/SpecRevisionPanes.tsx` — `SpecRevisionPanes` (the Spec / Changes switch, shared with the confirm page)
+- `apps/web/src/lib/specs/repo-source.ts` — `linkedRepoFullName`
+
+**Not yet**:
+- The task page names the pinned revision but does not link to the spec page.
+- Reading the rendered body is not recorded in the read ledger, matching
+  `GET /api/specs/[id]`, which does not record either; diffs are recorded.
+- There is no list across a team's workspaces; each workspace has its own.
