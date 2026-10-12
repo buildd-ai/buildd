@@ -20,7 +20,7 @@ interface ActionReply {
   runUrl?: string | null;
 }
 
-const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 9) : '—');
+const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 9) : 'none');
 
 function Steps({ step }: { step: ReleaseFlowView['step'] }) {
   const at = stepIndex(step);
@@ -190,7 +190,7 @@ export default function ReleaseFlow({ view }: { view: ReleaseFlowView }) {
               <a href={view.merged.url} target="_blank" rel="noreferrer" className="text-text-primary underline-offset-2 hover:underline">v{view.merged.version}</a>{' '}
               merged into {view.prodBranch} as <span className="font-mono">{short(view.merged.mergeSha)}</span>. Production runs{' '}
               <span className="font-mono">{view.merged.deployedSha ? short(view.merged.deployedSha) : 'an unknown SHA'}</span>
-              {view.merged.production === 'released' ? ', which contains it.' : ', which does not contain it yet.'}
+              {view.merged.production === 'released' ? ', which contains it.' : ', which does not contain it.'}
             </p>
           </div>
           <div className="mt-4">

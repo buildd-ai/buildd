@@ -108,7 +108,7 @@ describe('Release', () => {
       step: 'release',
       merged: { prNumber: 99, url: 'u', version: '1.4.0', mergeSha: 'm'.repeat(40), mergedAt: '', deployedSha: 'x'.repeat(40), production: 'awaiting_production', confirmed: false },
     }));
-    expect(html).toContain('which does not contain it yet');
+    expect(html).toContain('which does not contain it.');
     const btn = html.match(/<button[^>]*data-testid="release-flow-confirm-production"[^>]*>/)?.[0] ?? '';
     expect(btn).toContain('disabled');
   });

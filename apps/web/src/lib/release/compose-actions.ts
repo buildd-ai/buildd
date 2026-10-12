@@ -126,7 +126,7 @@ export async function runComposeAction(
     case 'release':
       return release(target, view, input.expectedCandidateSha, base, deps);
     case 'confirm':
-      return confirm(view, base, deps);
+      return confirmProduction(view, base, deps);
   }
 }
 
@@ -307,7 +307,7 @@ async function release(
   return result(409, `GitHub refused the merge: ${merged.message}`);
 }
 
-async function confirm(
+async function confirmProduction(
   view: ReleaseFlowView,
   base: Pick<NewReleaseFlowStep, 'workspaceId' | 'actorUserId'>,
   deps: ComposeActionDeps,

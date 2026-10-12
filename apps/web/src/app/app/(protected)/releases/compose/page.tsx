@@ -18,7 +18,7 @@ export const dynamic = 'force-dynamic';
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-3xl">
+    <div className="px-4 sm:px-7 md:px-10 pt-4 md:pt-8 pb-10 max-w-3xl">
       <Link href="/app/releases" className="text-meta text-text-muted underline-offset-2 hover:underline">Releases</Link>
       <div className="mt-3">{children}</div>
     </div>
