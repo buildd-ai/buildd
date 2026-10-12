@@ -1037,8 +1037,9 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     expect(taskSets.some(v => v.status === 'completed')).toBe(false);
     const requeue = taskSets.find(v => v.status === 'pending');
     expect(requeue).toBeDefined();
-    expect(requeue.startAt).toBeUndefined();
-    expect(requeue.context).toBeUndefined(); // no infraRetryCount charged
+    expect(requeue.startAt).toBeNull();
+    expect(requeue.context.infraRetryCount).toBe(0); // no infra retry charged
+    expect(requeue.context.resumeBranch).toBe('b');
     expect(mockWakeTask).toHaveBeenCalledWith('task-1', 'task.requeued');
   });
 

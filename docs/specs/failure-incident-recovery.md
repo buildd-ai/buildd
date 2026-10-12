@@ -798,7 +798,7 @@ repair records as `wait_machine` with the assessment's own sentence.
 - `apps/web/src/lib/task-recovery-hold.ts`: `planCredentialHold`, `holdTaskForCredential`, `releaseCredentialHolds`, `resolveCredentialIdentity`, `taskRecoverySentence` (§18.3)
 - `apps/web/src/lib/failure-incident-recovery-worker-infra.ts`: `evaluateWorkerInfra`, `dbObserveWorkerInfraRecovery`, `workerInfraRecoveryFamily` (§18.4)
 - `apps/web/src/lib/failure-pattern-sentinel.ts`: `WorkerInfraFact`, `workerInfraSignature` (§18.4); `apps/web/src/lib/failure-pattern-sweep.ts`: `countsTowardFailureRate` (§18.7)
-- `apps/web/src/lib/stale-workers.ts`: the interactive arm of `resolveStaleTask` (§18.3)
+- `apps/web/src/lib/stale-workers.ts`: `resolveAbandonedInteractiveTask`, the interactive arm of `resolveTasksOfReapedWorkers` (§18.3)
 - `apps/web/src/lib/credential-recovery.ts`: `requeueAuthFailedTasks` (releases holds, §18.3), `requeueFailedTasks` (the requeue writer, §16.4)
 - `apps/web/src/lib/failure-incident-recovery-capture.ts`: `evaluateCaptureFailure`, `freshCaptureSucceeded`, `runCaptureAdapters`, `dbObserveCaptureRecovery`, `dbCollectCaptureFailures`, `legacyRollout` (§16.3, §16.4)
 - `apps/web/src/lib/failure-incident-recovery-infrastructure.ts`: `createInfrastructureRecoveryFamily` (routes `infrastructure_failure` by component)

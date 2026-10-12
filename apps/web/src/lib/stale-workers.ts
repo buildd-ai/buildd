@@ -344,30 +344,10 @@ async function resolveStaleTask(
       const existingCtx = (currentTask?.context || {}) as Record<string, unknown>;
       const infraRetryCount = (existingCtx.infraRetryCount as number) || 0;
 
-      if (staleWorker?.runner === INTERACTIVE_WORKER_RUNNER) {
-        // An interactive (local executor) session went quiet: the task goes back
-        // to pending for a session to re-claim — no floor, no infra charge, and
-        // never `failed` (failure-incident-recovery §18.3, I-15). A person's
-        // session is the scheduler here; the detach path does the same
-        // (interactive-detach.ts requeueOpenTask).
-        await db
-          .update(tasks)
-          .set({
-            status: 'pending',
-            claimedBy: null,
-            claimedAt: null,
-            startAt: null,
-            context: {
-              ...withoutForceClaim(existingCtx),
-              ...(staleWorker.branch ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch } : {}),
-              failureContext: staleWorker.error || 'The local session went quiet; a session can re-claim this task',
-              infraRetryCount,
-            },
-            updatedAt: new Date(),
-          })
-          .where(and(eq(tasks.id, taskId), not(eq(tasks.status, 'cancelled'))));
-        await wakeTask(taskId, 'task.requeued');
-      } else if (infraRetryCount >= MAX_INFRA_RETRIES) {
+      // An interactive worker never reaches here: resolveTasksOfReapedWorkers
+      // routes it to resolveAbandonedInteractiveTask, and the heartbeat-orphan
+      // scope excludes it.
+      if (infraRetryCount >= MAX_INFRA_RETRIES) {
         // Infra retry cap reached — mark as stalled so mission health surfaces the issue
         // and operators know it needs attention (not just queued like a fresh task).
         await db
@@ -431,15 +411,35 @@ async function resolveStaleTask(
  * the task is never completed from the worker's deliverables (a PR opened
  * mid-work is not the work done), and never charged an infra retry or a
  * backoff. An open task goes straight back to pending, so the same client can
- * claim it again at once; a terminal one keeps its status. The same outcome as
- * "Release slot" (lib/interactive-detach.ts).
+ * claim it again at once, on the worker's branch; a terminal one keeps its
+ * status (failure-incident-recovery §18.3, I-15: never `failed`). The same
+ * outcome as "Release slot" (lib/interactive-detach.ts).
  */
-async function resolveAbandonedInteractiveTask(taskId: string, workspaceId: string) {
-  const current = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true } });
+async function resolveAbandonedInteractiveTask(
+  taskId: string,
+  workspaceId: string,
+  staleWorker: { branch?: string | null; error?: string | null } | undefined,
+) {
+  const current = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true, context: true } });
   if (current && current.status !== 'pending' && !isTerminalTaskStatus(current.status)) {
+    const existingCtx = (current.context || {}) as Record<string, unknown>;
     await db
       .update(tasks)
-      .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
+      .set({
+        status: 'pending',
+        claimedBy: null,
+        claimedAt: null,
+        expiresAt: null,
+        startAt: null,
+        context: {
+          ...withoutForceClaim(existingCtx),
+          ...(staleWorker?.branch ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch } : {}),
+          failureContext: staleWorker?.error || 'The local session went quiet; a session can re-claim this task',
+          // Carried as it was: an interactive release is never charged.
+          infraRetryCount: (existingCtx.infraRetryCount as number) || 0,
+        },
+        updatedAt: new Date(),
+      })
       .where(and(eq(tasks.id, taskId), eq(tasks.status, current.status)));
     await wakeTask(taskId, 'task.requeued');
   }
@@ -866,7 +866,7 @@ export async function resolveTasksOfReapedWorkers(
     if (otherActiveWorkers.length === 0) {
       const staleWorker = reaped.find(w => w.taskId === t.id);
       if (staleWorker?.runner === INTERACTIVE_WORKER_RUNNER) {
-        await resolveAbandonedInteractiveTask(t.id, t.workspaceId);
+        await resolveAbandonedInteractiveTask(t.id, t.workspaceId, staleWorker);
         continue;
       }
       // Determine exit cause for this worker so reviewer tasks can distinguish
