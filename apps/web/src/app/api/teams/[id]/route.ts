@@ -12,6 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
 import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
+import { DECISION_MODEL_PROBE } from '@/modules';
 import { detachTeamStoredFiles, removeTeamStoredFiles } from '@/lib/artifact-team-files';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
@@ -223,6 +224,15 @@ export async function PATCH(
       // Which model answers decision calls. null = Jev on OpenRouter.
       const normalized = normalizeDecisionModel(decisionModel);
       if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 });
+      // A model that cannot answer fails silently at run time (every call falls
+      // back to its rule), so one test decision goes through its exact route
+      // now, while someone is looking. Jev (null) is the default and not probed.
+      if (normalized.value) {
+        const probe = await DECISION_MODEL_PROBE(normalized.value, { teamId: id, userId: user.id });
+        if (!probe.ok) {
+          return NextResponse.json({ error: `${probe.error} The decision model was not saved.` }, { status: 422 });
+        }
+      }
       updates.decisionModel = normalized.value;
     }
     if (timezone !== undefined) {

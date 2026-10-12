@@ -41,6 +41,7 @@ import ReleaseSection from './ReleaseSection';
 import SubjectPolicySection from './SubjectPolicySection';
 import ExecutorSection from './ExecutorSection';
 import RunnerSizeSection from './RunnerSizeSection';
+import WorkspaceModels from './WorkspaceModels';
 import ConcurrencySection from './ConcurrencySection';
 import WorkTrackerSection from './WorkTrackerSection';
 import DeleteWorkspaceButton from './DeleteWorkspaceButton';
@@ -303,6 +304,8 @@ export default async function WorkspaceSettingsPage({
           </p>
         </div>
       </Section>
+
+      <WorkspaceModels workspaceId={workspace.id} teamId={workspace.teamId} />
 
       <Section title="Integrations" id="integrations">
         <WorkTrackerSection

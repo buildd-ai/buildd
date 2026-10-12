@@ -45,7 +45,7 @@ describe('QuestionHero on a phone', () => {
     const desc = host.querySelectorAll('[data-testid="question-option"] [data-clamped]');
     expect(desc[0].className).toContain('line-clamp-3'); // recommended
     expect(desc[1].className).toContain('line-clamp-2');
-    expect(desc[0].className).toContain('md:line-clamp-none'); // desktop unchanged
+    expect(desc[0].className).toContain('@md:line-clamp-none'); // desktop unchanged
     const ctx = host.querySelector('[data-testid="question-brief-context"]')!;
     expect(ctx.className).toContain('line-clamp-2');
     // Only overflowing text gets a toggle: two options + the context.

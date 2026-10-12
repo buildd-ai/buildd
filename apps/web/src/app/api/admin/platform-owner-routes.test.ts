@@ -92,6 +92,14 @@ mock.module('@/lib/admin/data', () => ({
     { capability: 'task_role_shadow', count: 4, applied: 3, suggested: 1, fallback: 0, overridden: 1, costUsd: 0.0002, inputTokens: 900 },
     { capability: 'orchestration_claim', count: 2, applied: 0, suggested: 2, fallback: 0, overridden: 0, costUsd: 0.001, inputTokens: 300 },
   ],
+  loadDecisionHealthRows: async () => ({
+    rows: [1, 2, 3].map(i => ({
+      id: `r${i}`, capability: 'task_role_shadow', status: 'fallback', applied: false, verdict: null,
+      reason: 'insufficient_candidates', latencyMs: null, costUsd: null, overridden: false,
+    })),
+    outcomes: [],
+    truncated: false,
+  }),
   loadDecisionStats: async () => ({ decisions: { total: 7 }, manifestPredictions: { total: 0 } }),
   listExperiments: async () => [experimentRow()],
   loadExperimentHealth: async () => ({ [EXP]: [] }),
@@ -240,6 +248,15 @@ describe('GET decisions/features', () => {
     expect(body.totals).toMatchObject({ count: 6, costUsd: 0.0012 });
     // Data only: no labels or descriptions.
     expect(JSON.stringify(body)).not.toContain('description');
+  });
+
+  it('gives each feature one health readout that leads with whether it is deciding at all', async () => {
+    const body = await (await routes.decisionFeatures.GET(req('decisions/features'))).json();
+    const shadow = body.groups.flatMap((g: any) => g.features).find((f: any) => f.id === 'task_role_shadow');
+    expect(shadow.health.collection).toMatchObject({ state: 'not_collecting', reason: 'insufficient_candidates' });
+    expect(shadow.health.collection.sentence).toStartWith('Not deciding: fewer than two roles say when to use them.');
+    expect(shadow.health).toMatchObject({ calls: 3, acted: { n: 0, pct: 0 }, fallback: { pct: 100 }, graded: { n: 0, accuracy: null } });
+    expect(body.healthTruncated).toBe(false);
   });
 });
 

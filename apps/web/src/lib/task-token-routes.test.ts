@@ -90,6 +90,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/[id]/page-source/route.ts',
   // await_answer: an interactive session long-polls for the answer to its own question.
   'apps/web/src/app/api/workers/[id]/answer/route.ts',
+  // ask_human: mint the wait capability for its own parked question (callerOwnsWorker).
+  'apps/web/src/app/api/workers/[id]/answer/capability/route.ts',
   'apps/web/src/app/api/workers/[id]/park/route.ts',
   'apps/web/src/app/api/workers/[id]/prompt-bundles/route.ts',
   'apps/web/src/app/api/workers/[id]/reattach/route.ts',

@@ -3,7 +3,8 @@ import { NextRequest } from 'next/server';
 
 const mockAuth = mock(async () => null as any);
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuth }));
-mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mock(async () => null) }));
+const mockUser = mock(async () => null as any);
+mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockUser }));
 const mockAccess = mock(async () => true);
 mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: mockAccess,
@@ -47,6 +48,17 @@ describe('POST /api/health/incidents/[id]', () => {
     mockAuth.mockImplementation(async () => ({ id: 'a', level: 'worker', scopes: null }));
     expect((await call({ action: 'resolve' })).status).toBe(403);
     expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('403 for a team member or admin session, without touching the incident', async () => {
+    mockAuth.mockImplementation(async () => null);
+    mockUser.mockImplementation(async () => ({ id: 'u', email: 'admin@team.example' }));
+    try {
+      expect((await call({ action: 'resolve' })).status).toBe(403);
+      expect(mockUpdate).not.toHaveBeenCalled();
+    } finally {
+      mockUser.mockImplementation(async () => null);
+    }
   });
 
   it('400 on a bad action', async () => {

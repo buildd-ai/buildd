@@ -324,7 +324,20 @@ describe('runOrchestrationDecision', () => {
     const fivexx = harness({ call: (async () => ({ ok: false, error: { kind: 'provider_error', status: 503, body: 'x' }, latencyMs: 3, attempts: 2 })) as any });
     expect(await runOrchestrationDecision(base(fivexx))).toMatchObject({ effective: 'HOLD', status: 'fallback', reason: 'error' });
     expect(fivexx.rows[0]).toMatchObject({ errorKind: 'provider_error' });
-    expect(JSON.stringify(fivexx.rows[0])).not.toContain('"body"');
+    // The provider's status and the start of its own body, so the ledger says why. Never the state.
+    expect(fivexx.rows[0].receipt?.error).toEqual({ kind: 'provider_error', status: 503, body: 'x' });
+    expect(JSON.stringify(fivexx.rows[0])).not.toContain('holderLive');
+  });
+
+  it('a provider rejection keeps its words on the receipt, the key redacted and cut to 200 characters', async () => {
+    const body = JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }], echo: 'Bearer synthetic-token-123', pad: 'p'.repeat(400) });
+    const h = harness({ call: (async () => ({ ok: false, error: { kind: 'provider_error', status: 401, body }, latencyMs: 40, attempts: 1 })) as any });
+    await runOrchestrationDecision(base(h));
+    const err = h.rows[0].receipt?.error;
+    expect(err).toMatchObject({ kind: 'provider_error', status: 401 });
+    expect(err?.body).toContain('Authentication error');
+    expect(err?.body).not.toContain('synthetic-token-123');
+    expect(err?.body?.length).toBeLessThanOrEqual(200);
   });
 
   it('a decision timeout is a deadline fallback', async () => {

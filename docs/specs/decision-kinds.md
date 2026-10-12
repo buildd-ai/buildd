@@ -2,14 +2,22 @@
 title: Decision Kinds (First-Party Adapters and Migration Seam)
 status: active
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-11
 summary: A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 domain: tasks
 surfaces: [packages/core/decision-kinds.ts, packages/core/decision-policy.ts, packages/core/decision-kind-post-session-triage.ts, packages/core/decision-kind-scout-probe-selection.ts]
 related: [orchestration-decisions-shadow, mission-goal-criteria-quality, model-routing-and-tiers]
-keywords: [decision policy platform, decision kind, post_session_triage, scout_probe_selection, challenger, escalation, shadow, decision_records, decision_outcomes, readout, collection health]
-verified_by: [packages/core/__tests__/decision-kind-adapters.test.ts, packages/core/__tests__/decision-kinds-e2e.test.ts, packages/core/__tests__/decision-policy.test.ts, packages/core/__tests__/decision-readout.test.ts]
+keywords: [decision audit, agent_audit, feature health, decision policy platform, decision kind, post_session_triage, scout_probe_selection, challenger, escalation, shadow, decision_records, decision_outcomes, readout, collection health]
+verified_by: [packages/core/__tests__/decision-feature-health.test.ts, packages/core/__tests__/decision-kind-adapters.test.ts, packages/core/__tests__/decision-kinds-e2e.test.ts, packages/core/__tests__/decision-policy.test.ts, packages/core/__tests__/decision-readout.test.ts]
 assertions:
+  - id: "feature-health-readout"
+    type: "symbol"
+    name: "computeFeatureHealth"
+    path: "packages/core/decision-feature-health.ts"
+  - id: "agent-audit-objective"
+    type: "symbol"
+    name: "agentAuditObjective"
+    path: "packages/core/decision-feature-health.ts"
   - id: "post-session-triage-kind"
     type: "symbol"
     name: "postSessionTriageKind"
@@ -71,6 +79,38 @@ is the substrate's.
   (decision, source). The readout (`computeDecisionReadout`) reports collection
   health before sample size, and scores quality only through the kind's
   objective.
+
+## Feature health and the agent audit
+
+Every decision feature (an inference capability, or a kind writing its own
+`buildd.<name>` id) gets one health readout (`computeFeatureHealth`), served
+on the platform owner's decision features list and on `get_decision_stats`
+(per capability, and `capability: "*"` for every feature in a workspace):
+
+- **Collection first, in plain words.** When every call fell back before a
+  model answered, the state is `not_collecting` (or `disabled` /
+  `misconfigured`) and the sentence names the cause and its fix, e.g.
+  "Not deciding: fewer than two roles say when to use them." Each fallback
+  reason the ledgers write has one sentence (`FALLBACK_REASON_SENTENCES`).
+- Then: calls, acted %, fallback % by reason, latency p50/p95, cost,
+  agent-graded accuracy right / (right + wrong) with a Wilson 95% interval
+  and n, the rule's accuracy on the same sample, and the human override rate.
+
+Grades come from a weekly scheduled researcher task (`decision-audit-schedule.ts`)
+that samples up to 20 decisions per feature, judges each from the subject's
+later evidence through `get_decision`, and writes it with `label_decision`:
+source `agent_audit` for the model's answer (or the answer in effect when it
+gave none) and `agent_audit_rule` for the rule's. Both are ordinary outcome
+labels: first label per source stands. `agentAuditObjective` scores them in
+the shared readout for any kind without an objective of its own. Only the
+platform owner, or whoever holds `run_experiments` on the decision's team, may
+read or grade a decision; another team's decision is not found.
+
+A feature that was asked over the last 24 hours and never once got a model
+answer raises one Home card for the platform operator (pulled, never pushed).
+
+- AC-9: GIVEN a week of rows all fallback `insufficient_candidates` WHEN the health is read THEN the state is `not_collecting` and the sentence starts "Not deciding: fewer than two roles say when to use them."
+- AC-10: GIVEN an admin key of team A WHEN it labels a decision of team B THEN the answer is 404 and nothing is written.
 
 ## First-party kinds
 
@@ -181,6 +221,8 @@ code anyway. The seam is the same for all of them:
 - `packages/core/decision-kind-failure-incident-triage.ts` — `failureIncidentTriageKind`, `FAILURE_INCIDENT_TRIAGE_CONFIG`
 - `packages/core/decision-shadow-harness.ts` — synthetic ledger and comparison table
 - `packages/core/decision-outcomes.ts`, `packages/core/decision-readout.ts` — labels and readout
+- `packages/core/decision-feature-health.ts` — per-feature health readout, fallback sentences, agent audit labels
+- `packages/core/decision-audit-schedule.ts` — the weekly audit's schedule fields and instructions
 - `packages/core/inference-policy.ts` — the `post_session_triage`, `scout_probe_selection` and `failure_incident_triage` capabilities
 
 ## Out of scope

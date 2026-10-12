@@ -33,6 +33,7 @@
 import {
   normalizeDecisionFailure,
   resolveDecisionEndpoint,
+  providerErrorExcerpt,
   runChallenger,
   runDecisionKind,
   type DecisionQuestions,
@@ -194,12 +195,16 @@ export function toDecisionLedgerInput(response: DecisionResponse, scope: BuilddD
   const applied = response.attempts.find(a => a.applied) ?? null;
   const answered = applied ?? [...response.attempts].reverse().find(a => a.decision !== null) ?? null;
   const deterministic = response.source !== 'model';
+  // The last rejection's own words (status + body excerpt, key redacted), so
+  // the ledger says why a provider_error happened, not only that it did.
+  const rejection = [...response.attempts].reverse().find(a => a.failure?.kind === 'provider_error')?.failure ?? null;
   const reason = [
     `${response.source}:${response.reasonCode}`,
     response.fallbackCause ? `cause=${response.fallbackCause}` : null,
     response.attempts.length ? `chain=${response.escalationChain.join('>')}` : null,
     response.escalationSkipped ? `escalation=${response.escalationSkipped}` : null,
     response.unavailable ? `unavailable=${response.unavailable.detail}` : null,
+    rejection?.status ? `provider_error=${providerErrorExcerpt(rejection.status, rejection.body ?? '')}` : null,
   ].filter(Boolean).join('; ');
   const inputTokens = response.attempts.reduce((s, a) => s + a.usage.inputTokens, 0);
   const failureClass = response.source !== 'fallback' ? null

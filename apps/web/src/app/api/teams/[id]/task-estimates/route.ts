@@ -2,7 +2,10 @@
  * GET /api/teams/[id]/task-estimates — the task-estimates model's live
  * readout, read-only (experiment; removal in packages/core/TASK-ESTIMATES-REMOVAL.md).
  *
- * → { enabled, estimatorVersion, readout, workspaces: [{ workspaceId, workspaceName, tasks, clusters }] }
+ * → { enabled, source, defaultOn, estimatorVersion, readout, workspaces: [{ workspaceId, workspaceName, tasks, clusters }] }
+ *
+ * `source` is 'team' when the team chose, 'default' when it follows the
+ * platform default (`defaultOn`, packages/core/task-estimate-rollout.ts).
  *
  * `readout` is how close the frozen estimates were to what finished tasks
  * actually took (packages/core/task-estimate-accuracy.ts: the backtest's scorer
@@ -19,7 +22,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { teamMembers, teams } from '@buildd/core/db/schema';
 import { ESTIMATOR_VERSION } from '@buildd/core/task-estimate';
-import { readTaskEstimatesSetting } from '@buildd/core/task-estimate-source';
+import { resolveTaskEstimatesState } from '@buildd/core/task-estimate-rollout';
 import { loadTeamClusters, runTaskEstimateReadout } from '@buildd/core/task-estimate-accuracy-source';
 import { getRequestPrincipal } from '@/lib/auth-helpers';
 import { isUuid } from '@/lib/uuid';
@@ -48,7 +51,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     const [readout, workspaces] = await Promise.all([runTaskEstimateReadout(id), loadTeamClusters(id)]);
     return NextResponse.json({
-      enabled: readTaskEstimatesSetting(team.taskEstimates),
+      ...resolveTaskEstimatesState(team.taskEstimates),
       estimatorVersion: ESTIMATOR_VERSION,
       readout,
       workspaces,

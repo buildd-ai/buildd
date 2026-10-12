@@ -9,7 +9,6 @@
   "long-copy": {},
   "not-this-its-that": {
     "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/connections/connectors/ConnectionsClient.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/OperatorAccessSection.tsx": 1,
     "apps/web/src/app/app/(protected)/tasks/InteractiveSessions.tsx": 1,
     "apps/web/src/components/FlightDetailSheet.tsx": 1,

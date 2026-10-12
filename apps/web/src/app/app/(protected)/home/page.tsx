@@ -37,7 +37,8 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
-import { ACCESS_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
+import { isPlatformOperator } from '@/lib/platform-operator';
+import { ACCESS_NEEDS_YOU, DECISION_COLLECTION_NEEDS_YOU, DECISION_HEALTH_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -1829,7 +1830,8 @@ export default async function HomePage({
         // 7. Sentinel incidents the escalation gate gave to the owner: the
         // stored verdict, read here with no model call (lib/failure-incident-escalation.ts
         // through the composition root).
-        if (wsIds.length > 0) {
+        // Operator-only: a team's Home never carries incident cards (lib/service-status.ts is its surface).
+        if (wsIds.length > 0 && isPlatformOperator(user)) {
           waitingOnYou.push(...await INCIDENT_NEEDS_YOU(wsIds));
         }
 
@@ -1837,6 +1839,20 @@ export default async function HomePage({
         // where this viewer can decide them (lib/capability-grants-needs-you.ts).
         if (wsIds.length > 0) {
           waitingOnYou.push(...await ACCESS_NEEDS_YOU(user?.id, wsIds));
+        }
+
+        // 9. A team whose decisions all fail at the provider (a token Workers AI
+        // refuses, a revoked key): one card per team for people who can change
+        // the decision model. Read from the ledgers; no push (DECISION_HEALTH_NEEDS_YOU in modules.ts).
+        if (wsIds.length > 0) {
+          waitingOnYou.push(...await DECISION_HEALTH_NEEDS_YOU(user?.id, wsIds));
+        }
+
+        // 10. Decision features asked all day that never got a model answer:
+        // platform-wide, so the platform operator's only
+        // (lib/decision-collection-needs-you.ts). Pulled here, never pushed.
+        if (isPlatformOperator(user)) {
+          waitingOnYou.push(...await DECISION_COLLECTION_NEEDS_YOU());
         }
 
         // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d

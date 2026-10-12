@@ -444,7 +444,14 @@ async function respondToInteractiveSession(args: {
     // it (recordAnswerDelivery) would delete the answer from the queue. The
     // record names the message so await_answer can find the answer by it even
     // after the capped queue has evicted it.
-    const record = { ...deliveryRecord, messageId: answerMessage.id };
+    // waitCapId: the ask the wait capability names (answer/capability), so the
+    // shell waiter can tell the answer to its own ask from a later one's.
+    const waitCapId = (worker.waitingFor as { waitCapId?: unknown } | null)?.waitCapId;
+    const record = {
+      ...deliveryRecord,
+      messageId: answerMessage.id,
+      ...(typeof waitCapId === 'string' && waitCapId ? { waitCapId } : {}),
+    };
     await db
       .update(tasks)
       .set({

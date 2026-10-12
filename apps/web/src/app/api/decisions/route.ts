@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
-import { readDecisionLedgerPage, summarizeDecisionLedger } from '@buildd/core/decision-ledger';
+import { readDecisionHealthRows, readDecisionLedgerPage, summarizeDecisionLedger } from '@buildd/core/decision-ledger';
 import {
   isOrchestrationCapability, readOrchestrationDecisionPage, summarizeOrchestrationDecisions,
 } from '@buildd/core/orchestration-decision-ledger';
+import { computeFeatureHealth, featureHealthByCapability } from '@buildd/core/decision-feature-health';
 import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
@@ -74,6 +75,25 @@ export async function GET(req: NextRequest) {
   const limitParam = params.get('limit');
   const limit = limitParam ? Math.max(1, Math.min(500, Number.parseInt(limitParam, 10) || 0)) : undefined;
 
+  if (params.get('features') === '1') {
+    try {
+      const read = await readDecisionHealthRows({ teamId: match.teamId, workspaceId: match.id, since, until });
+      const features = [...featureHealthByCapability(read.rows, read.outcomes)].map(([id, health]) => ({ capability: id, health }));
+      return NextResponse.json({
+        status: features.length ? 'OK' : 'NO_DATA',
+        workspaceId: match.id,
+        window: sinceParam || untilParam ? 'explicit' : windowParam,
+        since: since.toISOString(),
+        until: (until ?? new Date()).toISOString(),
+        truncated: read.truncated,
+        features,
+      });
+    } catch (err) {
+      console.error('[decisions] feature health read failed:', (err as Error)?.message ?? err);
+      return NextResponse.json({ status: 'TOOL_UNAVAILABLE', error: 'The decision ledger could not be read. This is not an empty result.' }, { status: 503 });
+    }
+  }
+
   if (isOrchestrationCapability(capability)) {
     // orchestration_* decisions live in orchestration_decisions, not decision_records.
     try {
@@ -91,6 +111,7 @@ export async function GET(req: NextRequest) {
         truncated: page.truncated,
         nextUntil: page.truncated && oldest ? new Date(oldest).toISOString() : null,
         summary: summarizeOrchestrationDecisions(page.rows),
+        health: computeFeatureHealth(page.rows.map(r => ({ ...r, overridden: false })), []),
         decisions: page.rows,
       });
     } catch (err) {
@@ -135,6 +156,9 @@ export async function GET(req: NextRequest) {
     truncated: page.truncated,
     nextUntil: page.truncated && oldest ? new Date(oldest).toISOString() : null,
     summary: summarizeDecisionLedger(page.rows, page.outcomes.length),
+    health: capability
+      ? computeFeatureHealth(page.rows.map(r => ({ ...r, verdict: r.verdict ?? null, overridden: r.overriddenAt != null })), page.outcomes)
+      : null,
     decisions,
   });
 }
