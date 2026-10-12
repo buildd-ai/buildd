@@ -2,13 +2,16 @@
 
 import { useState } from 'react';
 import Card from '@/components/ui/Card';
-import Disclosure from '@/components/ui/Disclosure';
 import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
+import Segmented from '@/components/ui/Segmented';
+import MarkdownContent from '@/components/MarkdownContent';
+import SpecDiffView from '@/components/SpecDiffView';
 import type { ApprovalRequestView } from '@/lib/specs/approval-view';
 
-const KIND_LABEL = { added: 'Added', removed: 'Removed', changed: 'Changed' } as const;
+type Pane = 'spec' | 'changes';
+const PANES = [{ value: 'spec', label: 'Spec' }, { value: 'changes', label: 'Changes' }] as const;
 
 /** States with nothing to approve: one line each. */
 const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'info' | 'warn' | 'ok' | 'err'; text: string }> = {
@@ -21,11 +24,15 @@ const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'in
 };
 
 /**
- * The confirm step for a spec approval asked for over MCP or chat: what this
- * revision changes, and one Approve action that sends the request token to
+ * The confirm step for a spec approval asked for over MCP or chat: the
+ * revision itself (rendered Markdown) or what it changes (a numbered diff),
+ * and one Approve action that sends the request token to
  * POST /api/specs/[specId]/approve/confirm from this signed-in session.
+ * A first approval opens on the spec, since its diff is every line added;
+ * a later one opens on the changes.
  */
 export default function SpecApprovalRequest({ specId, token, view }: { specId: string; token: string; view: ApprovalRequestView }) {
+  const [pane, setPane] = useState<Pane>(view.state === 'ready' && view.replaces ? 'changes' : 'spec');
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<{ tone: 'ok' | 'err' | 'warn'; text: string } | null>(null);
 
@@ -69,27 +76,22 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
       <Lede>
         {view.replaces ? `Revision ${view.revision} replaces revision ${view.replaces}.` : `Revision ${view.revision} is the first to be approved.`}
       </Lede>
-      <Card padding="sm" data-testid="spec-approval-sections">
-        {view.sections.length === 0 ? (
-          <p className="text-sm text-text-secondary">No changes.</p>
-        ) : (
-          <ul className="flex flex-col gap-1 text-sm">
-            {view.sections.map((s) => (
-              <li key={`${s.kind}:${s.path}`} className="flex gap-2">
-                <span className="font-mono text-text-secondary">{KIND_LABEL[s.kind]}</span>
-                <span className="text-text-primary">{s.path}</span>
-                <span className="ml-auto font-mono text-text-secondary">+{s.linesAdded} −{s.linesRemoved}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-      {view.diff ? (
-        <Disclosure summary="Line changes">
-          <pre className="overflow-x-auto whitespace-pre text-xs font-mono text-text-primary" data-testid="spec-approval-diff">{view.diff}</pre>
-          {view.omittedLines > 0 ? <p className="mt-2 text-xs text-text-secondary">{view.omittedLines} more lines</p> : null}
-        </Disclosure>
-      ) : null}
+      <div className="flex flex-wrap items-center gap-3">
+        <Segmented items={PANES} value={pane} onChange={setPane} label="Show" />
+        <span className="font-mono text-meta text-text-muted" data-testid="spec-approval-sections">
+          {view.sections.length} {view.sections.length === 1 ? 'section' : 'sections'}
+          {' · '}
+          <span className="text-status-success">+{view.sections.reduce((n, x) => n + x.linesAdded, 0)}</span>{' '}
+          <span className="text-status-error">−{view.sections.reduce((n, x) => n + x.linesRemoved, 0)}</span>
+        </span>
+      </div>
+      {pane === 'spec' ? (
+        <Card data-testid="spec-approval-rendered">
+          <MarkdownContent content={view.body} images="link" />
+        </Card>
+      ) : (
+        <SpecDiffView hunks={view.hunks} omittedLines={view.omittedLines} />
+      )}
       {result ? (
         <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice>
       ) : (

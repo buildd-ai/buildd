@@ -32,11 +32,25 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
+const LONG = `R-1: ${'a very long requirement line that has to wrap rather than run off the edge '.repeat(4)}`;
 const ready = {
-  state: 'ready' as const, title: 'Checkout', revision: 3, replaces: 2,
+  state: 'ready' as const, title: 'Checkout', revision: 3, replaces: 2 as number | null,
   sections: [{ kind: 'changed' as const, path: 'Checkout > Totals', level: 2, linesAdded: 1, linesRemoved: 1 }],
-  diff: '@@ Checkout > Totals @@\n-old\n+new', omittedLines: 0,
+  hunks: [{
+    kind: 'changed' as const, path: 'Checkout > Totals', linesAdded: 1, linesRemoved: 1,
+    rows: [
+      { op: ' ' as const, oldLine: 3, newLine: 3, text: '## Totals' },
+      { op: 'gap' as const, oldLine: null, newLine: null, text: '' },
+      { op: '-' as const, oldLine: 9, newLine: null, text: 'R-1: old' },
+      { op: '+' as const, oldLine: null, newLine: 9, text: LONG },
+    ],
+  }],
+  omittedLines: 0,
+  body: '# Checkout\n\n## Totals\n\n- R-1: **Totals** are in the shopper currency.\n',
 };
+const first = { ...ready, replaces: null, sections: [{ kind: 'added' as const, path: 'Checkout', level: 1, linesAdded: 5, linesRemoved: 0 }] };
+const q = (id: string) => container.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
+const radio = (label: string) => [...container.querySelectorAll('[role="radio"]')].find((b) => b.textContent === label) as HTMLButtonElement;
 const approveButton = () => container.querySelector('[data-testid="spec-approval-approve"]') as HTMLButtonElement | null;
 
 describe('SpecApprovalRequest', () => {
@@ -69,6 +83,55 @@ describe('SpecApprovalRequest', () => {
     await act(async () => { approveButton()!.click(); });
     expect(container.textContent).toContain('Ask for a new link.');
     expect(approveButton()).toBeNull();
+  });
+
+  it('a first approval opens on the spec itself, rendered as Markdown', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={first} />));
+    const rendered = q('spec-approval-rendered');
+    expect(rendered).not.toBeNull();
+    expect(rendered!.querySelector('h2')!.textContent).toBe('Totals');
+    expect(rendered!.querySelector('strong')!.textContent).toBe('Totals');
+    expect(q('spec-approval-diff')).toBeNull();
+    expect(radio('Spec').getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('a later approval opens on the changes, and the toggle switches to the spec', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={ready} />));
+    expect(q('spec-approval-diff')).not.toBeNull();
+    expect(q('spec-approval-rendered')).toBeNull();
+    act(() => radio('Spec').click());
+    expect(q('spec-approval-rendered')).not.toBeNull();
+    expect(q('spec-approval-diff')).toBeNull();
+    act(() => radio('Changes').click());
+    expect(q('spec-approval-diff')).not.toBeNull();
+  });
+
+  it('changes read like a code review: section header, line numbers, added and removed rows', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={ready} />));
+    const hunk = container.querySelector('[data-testid="spec-diff-hunk"]')!;
+    expect(hunk.querySelector('[data-testid="spec-diff-hunk-header"]')!.textContent).toContain('Checkout > Totals');
+    expect(hunk.querySelector('[data-testid="spec-diff-hunk-header"]')!.textContent).toContain('+1');
+    const rows = [...hunk.querySelectorAll('[data-testid="spec-diff-row"]')] as HTMLElement[];
+    expect(rows.map((r) => r.dataset.op)).toEqual(['ctx', 'gap', 'del', 'add']);
+    const nums = (r: HTMLElement) => [...r.querySelectorAll('[data-line]')].map((n) => n.textContent);
+    expect(nums(rows[0])).toEqual(['3', '3']);
+    expect(nums(rows[2])).toEqual(['9', '']);
+    expect(nums(rows[3])).toEqual(['', '9']);
+  });
+
+  it('long lines wrap instead of being cut off', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={ready} />));
+    const add = [...container.querySelectorAll('[data-testid="spec-diff-row"]')].find((r) => (r as HTMLElement).dataset.op === 'add')!;
+    const code = add.querySelector('[data-testid="spec-diff-text"]')!;
+    expect(code.textContent).toBe(LONG);
+    expect(code.className).toContain('whitespace-pre-wrap');
+    expect(code.className).toContain('[overflow-wrap:anywhere]');
+    expect(q('spec-approval-diff')!.className).not.toContain('overflow-x-auto');
+  });
+
+  it('says how much of a long diff it left out', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={{ ...ready, omittedLines: 42 }} />));
+    expect(q('spec-approval-diff')!.textContent).toContain('42 more lines');
   });
 
   it('closed states have no Approve action', () => {
