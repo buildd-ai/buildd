@@ -145,6 +145,39 @@ describe('source guards', () => {
     expect(offenders).toEqual([]);
   });
 
+  it("never imports drizzle's stock migrate() or upgradeIfNeeded()", () => {
+    // Stock v1 migrate()/upgradeIfNeeded() throw on our append-only tracking
+    // table (rows matching no local folder) and apply by name with no legacy
+    // map, so a lost row replays its DDL (#1288 class). Our migrator owns
+    // planning, the tracking-table upgrade and apply (db/migrate*.ts). The only
+    // drizzle migrator export allowed is readMigrationFiles, which the legacy
+    // layout still reads until the cutover.
+    const offenders: string[] = [];
+    for (const f of tracked) {
+      if (f.endsWith('migrate-driver-contract.test.ts')) continue;
+      const src = readFileSync(join(root, f), 'utf8');
+      src.split('\n').forEach((line, i) => {
+        if (/^\s*(\/\/|\*)/.test(line)) return;
+        const stockMigrator = /from\s+['"]drizzle-orm\/[\w-]+\/migrator['"]/.test(line);
+        const stockUpgrade = /\bupgradeIfNeeded\s*\(/.test(line) || /import[^;]*\bupgradeIfNeeded\b/.test(line);
+        const otherImport = /import\s*\{([^}]*)\}\s*from\s*['"]drizzle-orm\/migrator['"]/.exec(line);
+        const disallowed = otherImport?.[1]!.split(',').map((s) => s.trim()).filter((s) => s && s !== 'readMigrationFiles');
+        if (stockMigrator || stockUpgrade || (disallowed && disallowed.length > 0)) offenders.push(`${f}:${i + 1}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('CI fetches the release tag the rollback case runs the previous migrator from', () => {
+    // A shallow checkout has no tags; bumping ROLLBACK_MIGRATOR_REF without
+    // the fetch fails the db-architecture job on `git archive`, not here.
+    const testSrc = readFileSync(join(root, 'apps/web/tests/db/migration-layout-v1.test.ts'), 'utf8');
+    const ref = /const ROLLBACK_MIGRATOR_REF = '([^']+)'/.exec(testSrc)?.[1];
+    expect(ref).toBeDefined();
+    const workflow = readFileSync(join(root, '.github/workflows/build.yml'), 'utf8');
+    expect(workflow).toContain(`+refs/tags/${ref}:refs/tags/${ref}`);
+  });
+
   it('no neon-http drizzle() is initialised with a positional client', () => {
     // v1 reads drizzle(client) as drizzle(config) and silently connects with
     // a client of its own. Use drizzle({ client, ... }).
