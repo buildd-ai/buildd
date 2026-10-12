@@ -599,7 +599,8 @@ async function dispatchBranchRefreshConflictTask(args: {
    \`\`\`
 2. Where the repo defines it, run \`bun run conflicts:generated\` first. It regenerates the conflicted files a script writes (a specs index, the Drizzle journal, snapshots and migrations, a lint baseline) instead of merging their text, and lists every conflict left. Exit 0 means nothing is left: go to step 4.
 3. Resolve what it lists on the merits — keep both intents, do NOT use blanket \`--ours\`/\`--theirs\` — then run \`bun run conflicts:generated\` again to finish the generated files it was waiting on. If it says a regenerated migration's SQL differs from the one it replaced, re-add the missing hand-written statement with \`bun db:generate --custom\`, never by editing an existing file.
-   Without that script: if both sides added Drizzle migrations at the same index, do NOT hand-resolve the journal/snapshot conflict. Take \`${trunk}\`'s \`.sql\`/snapshot/journal files as-is, then run \`cd packages/core && bun db:generate\` so this branch's own schema changes land at the next free index on top.
+   Without that script: if both sides added Drizzle migrations at the same index, do NOT hand-resolve the journal/snapshot conflict. Resolve the rest, then run \`bun run migrations:renumber --base=origin/${trunk}\`: it takes \`${trunk}\`'s drizzle files as-is and regenerates this branch's migration at the next free index on top.
+   These two scripts are the only sanctioned way to move a migration. Never rename, renumber or edit a migration \`.sql\`, journal or snapshot by hand: the merge-safety check accepts a moved migration only when the new file holds exactly the old one's SQL, and treats anything else as rewriting migration history, which needs a person.
 4. Run \`bun run test\`, \`bun run type-check\`, \`bun run specs:check\` — all green.
 5. Push your branch and open a PR with base \`${branch}\`.
 

@@ -68,6 +68,34 @@ export async function findReviewTaskForPr(
   return rows[0] ?? null;
 }
 
+/**
+ * The newest live reviewer task for a PR (any head SHA, but must have pending/assigned/in_progress status).
+ * Used as a fallback when the concurrent-producer race causes a lost insert — only adopts
+ * live tasks, never completed or terminal ones from prior heads.
+ */
+export async function findLiveReviewTaskForPr(
+  workspaceId: string,
+  prNumber: number,
+): Promise<{ id: string; status: string } | null> {
+  const rows = await db
+    .select({
+      id: tasks.id,
+      status: tasks.status,
+    })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.workspaceId, workspaceId),
+        eq(tasks.category, 'review'),
+        sql`${tasks.context}->>'prNumber' = ${String(prNumber)}`,
+        sql`${tasks.status} IN ('pending', 'assigned', 'in_progress')`,
+      ),
+    )
+    .orderBy(desc(tasks.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 /** The worker row that owns this PR in this workspace, if any. */
 export async function findPrOwningWorker(workspaceId: string, prNumber: number) {
   return db.query.workers.findFirst({

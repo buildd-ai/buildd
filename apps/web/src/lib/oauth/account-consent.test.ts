@@ -2,7 +2,12 @@ import { describe, expect, it } from 'bun:test';
 import {
   CONSENT_PAGE_SIZE,
   applyNav,
+  classifyResource,
+  clientIdentity,
   grantedScopeString,
+  pickerTeams,
+  renderLegacyConsentPage,
+  workspaceDetail,
   initialConsentState,
   isAccountResource,
   parseRequestedAccess,
@@ -131,14 +136,20 @@ describe('approval validation', () => {
 });
 
 describe('render', () => {
-  it('escapes names, has no script, and disables person when not asked', () => {
+  it('escapes names, has no script, and offers no person choice when not asked', () => {
     const evil: ConsentTeam[] = [{ id: 't1', name: '<b>T</b>', role: 'member', workspaces: [{ id: 'w1', name: '"><script>x</script>' }] }];
     const html = renderAccountConsentPage({ clientName: '<i>C</i>', redirectHost: 'h', hidden: [['state', '"x']], teams: evil, state: initialConsentState(evil, agentOnly, null), requested: agentOnly });
     expect(html).not.toMatch(/<script/i);
     expect(html).toContain('&lt;i&gt;C&lt;/i&gt;');
     expect(html).toContain('<input type="hidden" name="state" value="&quot;x">');
-    expect(html).toMatch(/id="kind-person" name="acts_as" value="person" disabled/);
-    expect(html).toMatch(/id="kind-agent" name="acts_as" value="agent" checked/);
+    expect(html).not.toContain('id="kind-person"');
+    expect(html).toContain('<input type="hidden" name="acts_as" value="agent">');
+  });
+  it('offers both kinds, agent first, when the app asks to act as the person', () => {
+    const html = renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams, state: initialConsentState(teams, both, null), requested: both });
+    expect(html).toMatch(/id="kind-agent" name="acts_as" value="agent"/);
+    expect(html).toMatch(/id="kind-person" name="acts_as" value="person" checked/);
+    expect(html.indexOf('id="kind-agent"')).toBeLessThan(html.indexOf('id="kind-person"'));
   });
   it('the first submit button is Search, so Enter in the search box never approves', () => {
     const html = renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams, state: initialConsentState(teams, agentOnly, null), requested: agentOnly });
@@ -147,6 +158,169 @@ describe('render', () => {
   });
   it('page size is bounded', () => {
     expect(CONSENT_PAGE_SIZE).toBeLessThanOrEqual(50);
+  });
+});
+
+const ISSUER_MCP = 'https://buildd.dev/api/mcp';
+const UUID = '0b6f3a52-6d0e-4d8e-9a43-2f1c7e5b9a10';
+
+describe('resource classification', () => {
+  it('no resource is none: the account level is the default for a new connection', () => {
+    expect(classifyResource(null, ISSUER_MCP)).toEqual({ kind: 'none' });
+    expect(classifyResource('', ISSUER_MCP)).toEqual({ kind: 'none' });
+  });
+  it('the account resource, with a trailing slash or a connection hint', () => {
+    expect(classifyResource('https://buildd.dev/api/mcp', ISSUER_MCP).kind).toBe('account');
+    expect(classifyResource('https://buildd.dev/api/mcp/', ISSUER_MCP).kind).toBe('account');
+    expect(classifyResource('https://buildd.dev/api/mcp?repo=acme/api', ISSUER_MCP).kind).toBe('account');
+  });
+  it('an older per-workspace address names exactly its workspace', () => {
+    expect(classifyResource(`https://buildd.dev/api/mcp-oauth/${UUID}`, ISSUER_MCP)).toEqual({ kind: 'legacy', workspaceId: UUID });
+    expect(classifyResource(`https://buildd.dev/api/mcp-oauth/${UUID}/`, ISSUER_MCP)).toEqual({ kind: 'legacy', workspaceId: UUID });
+  });
+  it('another host, another path, or a fragment is unknown, never redirected', () => {
+    expect(classifyResource('https://evil.example/api/mcp', ISSUER_MCP).kind).toBe('unknown');
+    expect(classifyResource(`https://evil.example/api/mcp-oauth/${UUID}`, ISSUER_MCP).kind).toBe('unknown');
+    expect(classifyResource('https://buildd.dev', ISSUER_MCP).kind).toBe('unknown');
+    expect(classifyResource('https://buildd.dev/api/mcp/c/x', ISSUER_MCP).kind).toBe('unknown');
+    expect(classifyResource('https://buildd.dev/api/mcp#x', ISSUER_MCP).kind).toBe('unknown');
+    expect(classifyResource('not a url', ISSUER_MCP).kind).toBe('unknown');
+  });
+});
+
+describe('client identity', () => {
+  it('names ChatGPT and Claude as verified only on their own redirect hosts', () => {
+    expect(clientIdentity('ChatGPT connector 123', 'https://chatgpt.com/connector_platform_oauth_redirect')).toEqual({ name: 'ChatGPT', verified: true });
+    expect(clientIdentity('claudeai', 'https://claude.ai/api/mcp/auth_callback')).toEqual({ name: 'Claude', verified: true });
+  });
+  it('keeps a registered name unverified elsewhere, even one that claims to be ChatGPT', () => {
+    expect(clientIdentity('ChatGPT', 'https://chatgpt.com.evil.example/cb')).toEqual({ name: 'ChatGPT', verified: false });
+    expect(clientIdentity('ChatGPT', 'http://chatgpt.com/cb')).toEqual({ name: 'ChatGPT', verified: false });
+    expect(clientIdentity('Claude Code', 'http://localhost:41776/callback')).toEqual({ name: 'Claude Code', verified: false });
+  });
+  it('the page says Authorize <app>, marks verification, and shows where an unverified app returns', () => {
+    const v = renderAccountConsentPage({ clientName: 'ChatGPT', clientVerified: true, redirectHost: 'chatgpt.com', hidden: [], teams, state: initialConsentState(teams, agentOnly, null), requested: agentOnly });
+    expect(v).toContain('<h1>Authorize ChatGPT</h1>');
+    expect(v).toContain('Choose the teams and workspaces ChatGPT can access.');
+    expect(v).toContain('data-client-verified="true"');
+    const u = renderAccountConsentPage({ clientName: 'Some app', redirectHost: 'apps.example', hidden: [], teams, state: initialConsentState(teams, agentOnly, null), requested: agentOnly });
+    expect(u).toContain('data-client-verified="false"');
+    expect(u).toContain('apps.example');
+  });
+});
+
+const sysTeams: ConsentTeam[] = [
+  { id: 'ta', name: 'Alpha', role: 'owner', workspaces: [
+    { id: 'coord-a', name: '__coordination', repo: null, system: true },
+    { id: 'api-a', name: 'api', repo: 'acme/api', system: false },
+  ] },
+  { id: 'tb', name: 'Beta', role: 'member', workspaces: [
+    { id: 'coord-b', name: '__coordination', repo: null, system: true },
+  ] },
+];
+
+describe('internal workspaces', () => {
+  it('are left out of the picker, and a team with nothing else is dropped', () => {
+    const t = pickerTeams(sysTeams, null);
+    expect(t.map((x) => x.id)).toEqual(['ta']);
+    expect(t[0].workspaces.map((w) => w.id)).toEqual(['api-a']);
+  });
+  it('stay choosable when the app named one explicitly and the person is a team admin', () => {
+    expect(pickerTeams(sysTeams, 'coord-a')[0].workspaces.map((w) => w.id)).toEqual(['coord-a', 'api-a']);
+    // a member of the team gets no internal workspace, named or not
+    expect(pickerTeams(sysTeams, 'coord-b').map((x) => x.id)).toEqual(['ta']);
+  });
+  it('an internal workspace that was not offered is refused on approval', () => {
+    const r = validateApproval(form([['ws', 'api-a'], ['ws', 'coord-a']]), pickerTeams(sysTeams, null), agentOnly);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.status).toBe(403);
+  });
+  it('a named one reads as Organizer, never as its raw name', () => {
+    const t = pickerTeams(sysTeams, 'coord-a');
+    const html = renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams: t, state: initialConsentState(t, agentOnly, 'coord-a'), requested: agentOnly });
+    expect(html).toContain('Organizer');
+    expect(html).not.toContain('__coordination');
+  });
+});
+
+describe('telling workspaces apart', () => {
+  const dupTeam: ConsentTeam = { id: 't', name: 'T', role: 'member', workspaces: [
+    { id: 'aaaaaaaa-1', name: 'api', repo: 'acme/api' },
+    { id: 'bbbbbbbb-2', name: 'api', repo: 'acme/api-v2' },
+    { id: 'cccccccc-3', name: 'docs', repo: null },
+    { id: 'dddddddd-4', name: 'docs', repo: null },
+    { id: 'eeeeeeee-5', name: 'site', repo: null },
+  ] };
+  it('shows the repo, and a short id only when name and repo still clash', () => {
+    expect(workspaceDetail(dupTeam, dupTeam.workspaces[0])).toBe('acme/api');
+    expect(workspaceDetail(dupTeam, dupTeam.workspaces[1])).toBe('acme/api-v2');
+    expect(workspaceDetail(dupTeam, dupTeam.workspaces[2])).toBe('id cccccccc');
+    expect(workspaceDetail(dupTeam, dupTeam.workspaces[4])).toBeNull();
+  });
+  it('the page never prints a full workspace id as text', () => {
+    const t: ConsentTeam[] = [{ id: 'tt', name: 'Acme', role: 'member', workspaces: [{ id: UUID, name: 'api', repo: 'acme/api' }] }];
+    const html = renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams: t, state: initialConsentState(t, agentOnly, null), requested: agentOnly });
+    expect(html.split(UUID).length - 1).toBe(1); // only the checkbox value
+    expect(html).toContain('acme/api');
+  });
+  it('search matches the repo', () => {
+    const s = applyNav(readConsentForm(form([['q', 'api-v2']]), [dupTeam], agentOnly), 'search', [dupTeam]);
+    expect(applyNav(s, 'select_all', [dupTeam]).selected).toEqual(['bbbbbbbb-2']);
+  });
+  it('says so when a search matches nothing', () => {
+    const s = applyNav(readConsentForm(form([['q', 'zzz']]), teams, agentOnly), 'search', teams);
+    const html = renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams, state: s, requested: agentOnly });
+    expect(html).toContain('data-empty="search"');
+    expect(html).toContain('No workspaces match');
+  });
+});
+
+describe('select all is the workspaces of now', () => {
+  it('an approval of every current workspace grants exactly those ids', () => {
+    const all = applyNav(readConsentForm(form([]), teams, agentOnly), 'select_all', teams);
+    const r = validateApproval(form(all.selected.map((id) => ['ws', id] as [string, string])), teams, agentOnly);
+    expect(r.ok && r.workspaceIds.length).toBe(47);
+    // a workspace created after the page rendered is not part of the approval
+    const later: ConsentTeam[] = [{ ...teams[0], workspaces: [...teams[0].workspaces, { id: 'ta-new', name: 'new' }] }, teams[1]];
+    const again = validateApproval(form(all.selected.map((id) => ['ws', id] as [string, string])), later, agentOnly);
+    expect(again.ok && again.workspaceIds.includes('ta-new')).toBe(false);
+  });
+});
+
+describe('actions and copy', () => {
+  it('says Allow access and Cancel, never one connector per workspace', () => {
+    const html = renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams, state: initialConsentState(teams, agentOnly, null), requested: agentOnly });
+    expect(html).toContain('>Allow access</button>');
+    expect(html).toContain('>Cancel</button>');
+    expect(html).not.toMatch(/separate connector/i);
+    expect(html).not.toContain('—');
+  });
+});
+
+describe('older per-workspace address', () => {
+  const page = () => renderLegacyConsentPage({
+    clientName: 'ChatGPT',
+    clientVerified: true,
+    redirectHost: 'chatgpt.com',
+    hidden: [['resource', `https://buildd.dev/api/mcp-oauth/${UUID}`]],
+    workspace: { name: 'api', teamName: 'Acme', repo: 'acme/api' },
+    level: 'worker',
+    canonicalUrl: ISSUER_MCP,
+  });
+  it('offers that one workspace, named by team and repo, with no picker', () => {
+    const html = page();
+    expect(html).toContain('data-consent="legacy"');
+    expect(html).toContain('Acme');
+    expect(html).toContain('acme/api');
+    expect(html).not.toContain('<input type="checkbox" name="ws"');
+    expect(html).not.toMatch(/<script/i);
+  });
+  it('points at the one address that reaches several workspaces, not at more connectors', () => {
+    const html = page();
+    expect(html).toContain(`<span class="addr">${ISSUER_MCP}</span>`);
+    expect(html).not.toMatch(/separate connector/i);
+    expect(html).toContain('>Allow access</button>');
+    expect(html).not.toContain('—');
   });
 });
 

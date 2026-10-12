@@ -70,6 +70,38 @@ describe('ModelUpgradePolicySection: one row, no second tier list', () => {
   });
 });
 
+describe('ModelUpgradePolicySection: a team admin picks Automatic or Manual', () => {
+  async function mountAdmin() {
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => { root.render(<ModelUpgradePolicySection teamId="team-demo" isAdmin />); });
+    await flush();
+  }
+  const optionLabels = async () => {
+    await act(async () => { (host.querySelector('[data-testid="model-upgrade-mode"]') as HTMLElement).click(); });
+    return [...document.querySelectorAll('[role="option"]')].map((o) => ({ text: o.textContent ?? '', disabled: o.getAttribute('aria-disabled') === 'true' }));
+  };
+
+  it('offers Automatic and Manual only: no soak, no hours field', async () => {
+    policy = { mode: 'latest-compatible' };
+    await mountAdmin();
+    const opts = await optionLabels();
+    expect(opts.map((o) => o.text.split('Move')[0].split('Never')[0])).toEqual(['Automatic', 'Manual']);
+    expect(host.querySelector('[data-testid="model-upgrade-soak-hours"]')).toBeNull();
+    expect(document.body.textContent).not.toContain('Soak');
+  });
+
+  it('a stored soak shows as the value but cannot be picked', async () => {
+    policy = { mode: 'soak', soakHours: 48 };
+    await mountAdmin();
+    expect(host.querySelector('[data-testid="model-upgrade-mode"]')!.textContent).toContain('Soak first for 48 hours');
+    const soak = (await optionLabels()).find((o) => o.text.startsWith('Soak'))!;
+    expect(soak.disabled).toBe(true);
+    expect(host.querySelector('[data-testid="model-upgrade-soak-hours"]')).toBeNull();
+  });
+});
+
 describe('ModelUpgradePolicySection: a member reads it', () => {
   async function mountMember() {
     host = document.createElement('div');

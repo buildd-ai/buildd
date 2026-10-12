@@ -11,11 +11,14 @@
  * DELETE ?workspaceId | ?teamId   clear that level (inherit the next one)
  *
  * Writes need manage_model_tiers, exactly like registry rows: the policy sets
- * which model every catalog-resolved tier runs. The actor is stamped on the
- * stored value (setBy/setAt) and logged.
+ * which model every catalog-resolved tier runs. The `soak` mode is a platform
+ * operator's only (lib/admin/platform-operator-caller.ts): a team chooses latest-compatible
+ * (Automatic) or manual. A stored soak keeps working. The actor is stamped on
+ * the stored value (setBy/setAt) and logged.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticate, resolveTeam } from '@/lib/model-tier-access';
+import { isPlatformOperatorCaller, operatorOnlyResponse } from '@/lib/admin/platform-operator-caller';
 import { buildUpgradePolicy } from '@buildd/core/model-upgrade-policy';
 import { readStoredUpgradePolicy, writeUpgradePolicy } from '@buildd/core/model-upgrade-policy-store';
 import { readUpgradePolicy } from '@buildd/core/model-upgrade-policy';
@@ -96,6 +99,8 @@ export async function PUT(req: NextRequest) {
     const actor = auth.user?.id ?? auth.apiAccount?.id ?? null;
     const built = buildUpgradePolicy({ mode: body.mode, soakHours: body.soakHours }, actor, Date.now());
     if ('error' in built) return NextResponse.json({ error: built.error }, { status: 400 });
+    // A team picks Automatic or Manual; soak is a platform operator's tuning.
+    if (built.policy.mode === 'soak' && !(await isPlatformOperatorCaller({ user: auth.user, account: auth.apiAccount }))) return operatorOnlyResponse();
     await writeUpgradePolicy(scopeOf(resolved.teamId, workspaceId), built.policy);
     console.log(`[model-upgrade-policy] ${workspaceId ? 'workspace' : 'team'} policy set to ${built.policy.mode} by ${actor}`);
     return NextResponse.json({ ok: true, policy: built.policy, scope: workspaceId ? 'workspace' : 'team' });
