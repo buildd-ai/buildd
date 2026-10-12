@@ -257,7 +257,7 @@ jobs:
 
       # The dependency handover fixture exercises a real frozen pnpm install.
       - name: Setup Node for pnpm
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
