@@ -84,4 +84,10 @@ describe('compose fixtures', () => {
   it('error: a page-level load error, not a flow', () => {
     expect(composeFixture('error').kind).toBe('error');
   });
+
+  it('not-enabled: the empty state, with workspaces to link to release settings', () => {
+    const f = composeFixture('not-enabled');
+    expect(f.kind).toBe('not-enabled');
+    if (f.kind === 'not-enabled') expect(f.workspaces.length).toBeGreaterThan(0);
+  });
 });
