@@ -79,11 +79,12 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
           <span className={`text-meta ${TONE[state.tone]}`} data-testid="provider-card-state">{state.word}</span>
           {rows[0] && <span className={`text-meta text-text-muted ${maskedValue(rows[0]).startsWith('…') ? 'font-mono' : ''}`} data-testid="provider-masked">{maskedValue(rows[0])}</span>}
         </button>
+        {/* 44px to tap below md, the usual 32px .btn from md. */}
         {action && !editing && (
-          <button type="button" className="btn shrink-0" onClick={startEdit}>{action}</button>
+          <button type="button" className="btn shrink-0 min-h-11 md:min-h-0" onClick={startEdit}>{action}</button>
         )}
         {!action && form && formSlot && !form.v.closed && !form.v.readOnly && rows.length === 0 && !open && (
-          <button type="button" className="btn shrink-0" onClick={() => onToggle(true)}>Set up</button>
+          <button type="button" className="btn shrink-0 min-h-11 md:min-h-0" onClick={() => onToggle(true)}>Set up</button>
         )}
       </div>
 

@@ -46,6 +46,8 @@ const build = mock(async (_opts: any) => ({ capabilities: [{ capability: 'orches
 mock.module('@buildd/core/orchestration-readout', () => ({ buildOrchestrationReadout: build }));
 const trigger = mock(async () => {});
 mock.module('@/lib/pusher', () => ({ triggerEvent: trigger, channels: { mission: (id: string) => id, workspace: (id: string) => id }, events: { MISSION_NOTE_POSTED: 'note' } }));
+const strandGrades = mock(async (_opts: any) => ({ scanned: 2, labelled: 1, duplicates: 0, conflicts: 0, unknown: { window_open: 1 }, errors: 0 }));
+mock.module('@/lib/strand-choice-grading', () => ({ gradeStrandChoiceDecisions: strandGrades }));
 const { GET } = await import('./route');
 const req = (token = 'test-secret') => new NextRequest('http://localhost/api/cron/orchestration-readout', { headers: { authorization: `Bearer ${token}` } });
 
@@ -54,7 +56,7 @@ beforeEach(() => {
   process.env.BUILDD_CRON_RUN_RECORD_IN_TESTS = '0';
   workspaces = []; writes = [];
   insertedNotes.clear();
-  for (const fn of [select, claim, manifest, scheduling, build, target, trigger]) fn.mockClear();
+  for (const fn of [select, claim, manifest, scheduling, build, target, trigger, strandGrades]) fn.mockClear();
 });
 
 it('refuses unauthorized requests before querying', async () => {
@@ -72,6 +74,13 @@ it('no opted-in workspace performs one query and no work', async () => {
   expect(query.sql).toContain('&&');
   expect(String(query.params[0])).toContain('orchestration_manifest');
   expect(String(query.params[0])).toContain('orchestration_claim');
+});
+
+it('grades the strand choice decisions once per run and reports the counts', async () => {
+  const res = await GET(req());
+  expect(strandGrades).toHaveBeenCalledTimes(1);
+  expect(strandGrades.mock.calls[0][0].now).toBeInstanceOf(Date);
+  expect((await res.json()).strandGrades).toMatchObject({ scanned: 2, labelled: 1 });
 });
 
 it('writes a private workspace aggregate and one eligible note without promotion', async () => {
