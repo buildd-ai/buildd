@@ -39,6 +39,7 @@ import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/mod
 import { TIERS } from '@buildd/core/model-tier-defaults';
 import { appBaseUrl } from '@/lib/app-url';
 import { TASK_RESERVATION_KEY, buildReservation } from '../../workers/claim/held-gate';
+import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
 
@@ -544,8 +545,11 @@ export async function PATCH(
       if (typeof reserved !== 'boolean') {
         return NextResponse.json({ error: 'reserved must be true or false' }, { status: 400 });
       }
-      if (!apiAccount) {
-        return NextResponse.json({ error: 'A reservation belongs to the session that claim_task would run as; call this from that session.' }, { status: 403 });
+      // Only a verified interactive session may hold a reservation: it is what the
+      // claim route lets the reserver's own claim_task through for. A caller that
+      // is not one would park the task from every claimer, itself included.
+      if (!apiAccount || !verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), apiAccount.id)) {
+        return NextResponse.json({ error: 'A reservation belongs to the interactive session that claim_task would run as; call this from that session.' }, { status: 403 });
       }
       if (task.status !== 'pending' || task.claimedBy) {
         return NextResponse.json({ error: `This task is already ${task.status === 'pending' ? 'claimed by a worker' : task.status}; only a waiting task can be reserved.` }, { status: 409 });

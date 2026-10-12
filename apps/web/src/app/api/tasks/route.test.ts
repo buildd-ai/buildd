@@ -45,6 +45,7 @@ mock.module('@/lib/subject-intake', () => ({
 }));
 import { NextRequest } from 'next/server';
 import { canAccessTokenRoute } from '@/lib/token-route-policy';
+import { signInteractiveSession } from '@/lib/interactive-session';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -587,8 +588,12 @@ describe('POST /api/tasks', () => {
   });
 
   describe('reserve: true (create and claim from a session)', () => {
-    const file = (body: Record<string, unknown>) => POST(createMockRequest({
-      method: 'POST', headers: { Authorization: 'Bearer bld_ci' }, body: { workspaceId: 'ws-1', title: 'Local task', ...body },
+    const SAVED = process.env.AUTH_SECRET;
+    beforeEach(() => { process.env.AUTH_SECRET = 'test-secret-for-interactive-marker'; });
+    afterEach(() => { if (SAVED === undefined) delete process.env.AUTH_SECRET; else process.env.AUTH_SECRET = SAVED; });
+    const interactive = () => ({ 'x-buildd-interactive-session': signInteractiveSession({ accountId: 'account-ci', userId: null })! });
+    const file = (body: Record<string, unknown>, extra: Record<string, string> = {}) => POST(createMockRequest({
+      method: 'POST', headers: { Authorization: 'Bearer bld_ci', ...extra }, body: { workspaceId: 'ws-1', title: 'Local task', ...body },
     }));
     const setup = () => {
       mockAccountsFindFirst.mockResolvedValue({ id: 'account-ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team-1' });
@@ -601,15 +606,31 @@ describe('POST /api/tasks', () => {
 
     it('is inserted already reserved for the calling account, so no runner can win the gap before its claim', async () => {
       const values = setup();
-      expect((await file({ reserve: true })).status).toBe(200);
+      expect((await file({ reserve: true }, interactive())).status).toBe(200);
       expect(ctxOf(values).reservedBy.accountId).toBe('account-ci');
       expect(new Date(ctxOf(values).reservedBy.expiresAt).getTime()).toBeGreaterThan(Date.now());
     });
 
+    it('is refused, and nothing is filed, from a caller that is not a verified interactive session', async () => {
+      const values = setup();
+      // No marker at all, a marker for another account, and a forged one.
+      const other = { 'x-buildd-interactive-session': signInteractiveSession({ accountId: 'someone-else', userId: null })! };
+      for (const headers of [{}, other, { 'x-buildd-interactive-session': 'v2.1.a.b.c.forged' }]) {
+        const res = await file({ reserve: true }, headers);
+        expect(res.status).toBe(403);
+      }
+      expect(values).not.toHaveBeenCalled();
+    });
+
     it('is not reserved without reserve: true, and a reservation in the caller\'s context is dropped', async () => {
       const values = setup();
-      expect((await file({ context: { reservedBy: { accountId: 'forged', expiresAt: '2999-01-01T00:00:00.000Z' } } })).status).toBe(200);
+      expect((await file({ context: { reservedBy: { accountId: 'forged', expiresAt: '2999-01-01T00:00:00.000Z' } } }, interactive())).status).toBe(200);
       expect(ctxOf(values).reservedBy).toBeUndefined();
+    });
+
+    it('rejects a non-boolean reserve', async () => {
+      setup();
+      expect((await file({ reserve: 'yes' }, interactive())).status).toBe(400);
     });
   });
 

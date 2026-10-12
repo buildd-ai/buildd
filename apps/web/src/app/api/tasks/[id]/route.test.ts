@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { signInteractiveSession } from '@/lib/interactive-session';
 
 // Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
 // a per-test policy instead of the DB. No ceiling unless a test sets one.
@@ -2175,9 +2176,13 @@ describe('PATCH /api/tasks/[id]', () => {
       });
       return sets;
     }
-    const patch = (body: Record<string, unknown>) =>
-      callHandler(PATCH, createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_xxx' }, body }), TASK_ID);
+    const SAVED = process.env.AUTH_SECRET;
+    const interactive = () => ({ 'x-buildd-interactive-session': signInteractiveSession({ accountId: 'account-123', userId: null })! });
+    const patch = (body: Record<string, unknown>, headers: Record<string, string> = interactive()) =>
+      callHandler(PATCH, createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_xxx', ...headers }, body }), TASK_ID);
+    afterEach(() => { if (SAVED === undefined) delete process.env.AUTH_SECRET; else process.env.AUTH_SECRET = SAVED; });
     beforeEach(() => {
+      process.env.AUTH_SECRET = 'test-secret-for-interactive-marker';
       mockGetCurrentUser.mockResolvedValue(null);
       mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
       mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
@@ -2218,6 +2223,17 @@ describe('PATCH /api/tasks/[id]', () => {
       mockTasksFindFirst.mockResolvedValue(pending({ reservedBy: live('someone-else') }));
       capture();
       expect((await patch({ reserved: false })).status).toBe(409);
+    });
+
+    it('refuses a caller that is not a verified interactive session, and writes nothing', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending());
+      const sets = capture();
+      const wrongAccount = { 'x-buildd-interactive-session': signInteractiveSession({ accountId: 'someone-else', userId: null })! };
+      for (const headers of [{}, wrongAccount, { 'x-buildd-interactive-session': 'v2.1.a.b.c.forged' }]) {
+        expect((await patch({ reserved: true }, headers)).status).toBe(403);
+        expect((await patch({ reserved: false }, headers)).status).toBe(403);
+      }
+      expect(sets).toEqual([]);
     });
 
     it('refuses a non-boolean, a task a worker has, a finished task, and a dashboard user with no account', async () => {
