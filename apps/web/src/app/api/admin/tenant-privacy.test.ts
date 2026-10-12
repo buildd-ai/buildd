@@ -84,6 +84,8 @@ mock.module('@/lib/admin/data', () => ({
     family: o.errorPrefix ? { prefix: o.errorPrefix, topSignatures: o.workspaceIds.map((ws: string) => ({ signature: text(ws, 'family'), count: 1 })) } : null,
     stalledIngest: { stalled: o.workspaceIds.length, jobs: o.workspaceIds.map((ws: string) => ({ id: `job-${ws}`, workspaceId: ws, repo: text(ws, 'repo'), lastError: text(ws, 'ingest error') })) },
   }),
+  loadRecoveryQueue: async () => null,
+  loadRecoveryCause: async () => null,
   loadOperatorData: async (o: any) => ({
     subagentDelegation: null, errorPatterns: null,
     orphanedPrs: o.workspaceIds.map((ws: string) => ({ workspaceId: ws, taskId: `task-${ws}`, prUrl: `https://github.com/x/${text(ws, 'pr').replace(' ', '-')}`, prNumber: 7, reason: text(ws, 'pr reason') })),
