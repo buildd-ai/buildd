@@ -53,6 +53,8 @@ export interface ReadoutOutcomeRow {
   source: string;
   label: string;
   value: number | null;
+  /** The labeller's notes; an audit grade names the answer it graded (`answer`). */
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface ReadoutChallengerRow {
@@ -92,7 +94,7 @@ export interface DecisionObjective {
   /** Which labelling source to score. Default: any (the first label per record). */
   source?: string;
   /** Was `answer` right, given this outcome? Null: the outcome does not say. */
-  score(outcome: { label: string; value: number | null }, answer: string): boolean | null;
+  score(outcome: { label: string; value: number | null; metadata?: Record<string, unknown> | null }, answer: string): boolean | null;
 }
 
 /**
@@ -224,7 +226,7 @@ export function computeDecisionReadout(rows: ReadoutRows, config: CollectionConf
     const o = outcomeOf.get(r.id);
     if (!o || !objective || answer === null) return null;
     try {
-      return objective.score({ label: o.label, value: o.value }, answer);
+      return objective.score({ label: o.label, value: o.value, metadata: o.metadata ?? null }, answer);
     } catch {
       return null;
     }

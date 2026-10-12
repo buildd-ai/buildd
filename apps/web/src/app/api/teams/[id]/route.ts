@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { normalizeDecisionShadows, normalizeFeatureModes } from '@buildd/core/inference-policy';
 import { isInferenceKeyPolicy, isCredentialPolicy, policyColumns, effectiveKeyPolicy, toCredentialPolicy, DEFAULT_KEY_POLICY } from '@buildd/core/inference-key-policy';
 import { normalizeTeamCodingPolicy, parseCodingPolicyLayer, resolveCodingPolicy, describeEffectiveCodingPolicy } from '@buildd/core/coding-policy';
-import { normalizeDecisionModel } from '@buildd/core/decision-model';
+import { DECISION_MODEL_KINDS, decisionModelKindLabel, normalizeDecisionModel, readDecisionModel, readDecisionModelOverrides, withDecisionModelDefault } from '@buildd/core/decision-model';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers, users, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -12,6 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
 import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
+import { DECISION_MODEL_PROBE } from '@/modules';
 import { detachTeamStoredFiles, removeTeamStoredFiles } from '@/lib/artifact-team-files';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
@@ -128,7 +129,10 @@ export async function GET(
     }));
 
     return NextResponse.json({
-      team: { ...team, inferenceKeyPolicy: effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY, credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY),
+      team: { ...team,
+        // The team default, and apart from it the per-decision overrides (decision-model.ts).
+        decisionModel: readDecisionModel(team.decisionModel), decisionModelOverrides: decisionModelOverrideList(team.decisionModel),
+        inferenceKeyPolicy: effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY, credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY),
         // What the team layer allows for Coding, for the Models page. Workspace
         // and personal layers narrow it further per task at claim time.
         effectiveCodingPolicy: describeEffectiveCodingPolicy(resolveCodingPolicy({ team: parseCodingPolicyLayer(team.codingPolicy?.team) })) },
@@ -221,9 +225,21 @@ export async function PATCH(
     }
     if (decisionModel !== undefined) {
       // Which model answers decision calls. null = Jev on OpenRouter.
+      // This sets the team default only; per-decision overrides are kept
+      // (they are set through setDecisionModelForKind).
       const normalized = normalizeDecisionModel(decisionModel);
       if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 });
-      updates.decisionModel = normalized.value;
+      // A model that cannot answer fails silently at run time (every call falls
+      // back to its rule), so one test decision goes through its exact route
+      // now, while someone is looking. Jev (null) is the default and not probed.
+      if (normalized.value) {
+        const probe = await DECISION_MODEL_PROBE(normalized.value, { teamId: id, userId: user.id });
+        if (!probe.ok) {
+          return NextResponse.json({ error: `${probe.error} The decision model was not saved.` }, { status: 422 });
+        }
+      }
+      const current = await db.query.teams.findFirst({ where: eq(teams.id, id), columns: { decisionModel: true } });
+      updates.decisionModel = withDecisionModelDefault(current?.decisionModel ?? null, normalized.value);
     }
     if (timezone !== undefined) {
       // The team's canonical working zone — used wherever a shared artifact needs a
@@ -328,6 +344,15 @@ export async function PATCH(
     console.error('Update team error:', error);
     return NextResponse.json({ error: 'Failed to update team' }, { status: 500 });
   }
+}
+
+/** Each decision with its own model, in a fixed order, named the way Settings shows it. */
+function decisionModelOverrideList(stored: unknown) {
+  const byKind = readDecisionModelOverrides(stored);
+  return DECISION_MODEL_KINDS.flatMap(kind => {
+    const route = byKind[kind];
+    return route ? [{ kind, label: decisionModelKindLabel(kind), ...route }] : [];
+  });
 }
 
 export async function DELETE(

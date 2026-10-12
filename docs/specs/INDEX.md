@@ -159,7 +159,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A behind-only PR MUST be refreshed agent-free via a head-pinned branch update; only a verified textual conflict dispatches a conflict agent, and an unknown semantic verdict never clears a merge.
 - [Claim Ordering (Batch Planner)](./claim-ordering.md) · @max — verified 2026-10-04
   The claim route MUST order auto-claims through planClaimBatch only when a workspace opts in, MUST never co-schedule across a hard edge, and MUST use predicted scope only above pinned, evidence-backed thresholds.
-- [Decision Kinds (First-Party Adapters and Migration Seam)](./decision-kinds.md) · @max — verified 2026-10-07
+- [Decision Kinds (First-Party Adapters and Migration Seam)](./decision-kinds.md) · @max — verified 2026-10-11
   A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 - [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-11
   A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
