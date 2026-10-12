@@ -24,6 +24,7 @@
  *
  * Pure. Loading the evidence and persisting the label live elsewhere.
  */
+import { isTerminalTaskStatus } from '@buildd/shared';
 import type { DecisionObjective } from './decision-readout';
 
 export type ClaimGoldAnswer = 'START' | 'HOLD';
@@ -70,8 +71,6 @@ export type ClaimGold =
   | { status: 'labelled'; right: ClaimGoldAnswer; decisionWasRight: boolean; reason: ClaimGoldReason }
   | { status: 'unknown'; reason: ClaimUnknownReason };
 
-const SETTLED = new Set(['completed', 'failed']);
-
 const unknown = (reason: ClaimUnknownReason): ClaimGold => ({ status: 'unknown', reason });
 
 function labelled(answer: ClaimGoldAnswer, right: ClaimGoldAnswer, reason: ClaimGoldReason): ClaimGold {
@@ -92,7 +91,7 @@ function normalizeFiles(files: readonly string[]): Set<string> {
 function settledness(name: 'candidate' | 'holder', side: ClaimGoldSide | null): ClaimUnknownReason | null {
   if (!side) return `${name}_missing`;
   if (side.taskStatus === 'cancelled') return `${name}_cancelled`;
-  if (!SETTLED.has(side.taskStatus)) return `${name}_not_settled`;
+  if (!isTerminalTaskStatus(side.taskStatus)) return `${name}_not_settled`;
   return null;
 }
 
