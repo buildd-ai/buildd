@@ -12,3 +12,5 @@ export * from './outcome';
 export * from './hash';
 export * from './shapes';
 export * from './source';
+export * from './confluence-markdown';
+export * from './confluence';
