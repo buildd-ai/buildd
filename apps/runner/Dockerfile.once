@@ -12,7 +12,7 @@
 # The runner source is baked in and never updates itself: --once returns before
 # the self-updater is constructed, and BUILDD_DISABLE_AUTO_UPDATE=1 is set too.
 
-FROM oven/bun:1.4.2-slim
+FROM oven/bun:1.4.3-slim
 
 # Cloudflare Containers only run linux/amd64. Refuse other arches unless asked
 # (ALLOW_ANY_ARCH=1 gives a native arm64 build for quick local iteration).
