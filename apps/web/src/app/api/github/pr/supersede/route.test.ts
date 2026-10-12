@@ -18,6 +18,7 @@ mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'id' } }));
 mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ type: 'eq', a, b }), and: (...c: any[]) => ({ type: 'and', c }) }));
 
 import { POST } from './route';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 function makeRequest(body?: Record<string, unknown>, apiKey = 'test-key'): NextRequest {
   return new NextRequest('http://localhost/api/github/pr/supersede', {
@@ -333,7 +334,7 @@ describe('agent run on its runner key: the PR must be its own', () => {
     actingWorkerIs(callerWorker());
     await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
     const lookup = mockWorkersFindFirst.mock.calls.map((c: any) => c[0]).find((o: any) => o?.where?.b === 'w-caller');
-    expect(lookup?.where).toEqual({ type: 'eq', a: 'id', b: 'w-caller' });
+    expect(capturedWhere(lookup?.where)).toEqual({ type: 'eq', a: 'id', b: 'w-caller' });
     expect(lookup?.with?.task).toBeTruthy();
   });
 

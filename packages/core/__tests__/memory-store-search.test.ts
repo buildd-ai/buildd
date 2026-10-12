@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { capturedWhere } from '../db/relational-sql';
 
 // Mocked drizzle-orm combinators build plain tuples (['op', ...args]) instead
 // of real SQL fragments — evalCondition below interprets them against a row so
@@ -58,7 +59,7 @@ mock.module('../db', () => ({
       memories: {
         findMany: (args: Record<string, unknown>) => {
           findManyArgs.push(args);
-          return Promise.resolve(allRows.filter(r => evalCondition(args.where, r)));
+          return Promise.resolve(allRows.filter(r => evalCondition(capturedWhere(args.where), r)));
         },
       },
     },

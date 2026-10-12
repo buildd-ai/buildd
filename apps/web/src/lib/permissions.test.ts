@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 // The registry must reproduce today's call-site rules exactly. EXPECTED is
 // written out by hand from the inventory in docs/specs/team-permissions.md —
@@ -167,7 +168,7 @@ describe('can: no per-team grants (AC-G1)', () => {
     // Legacy per-team grants on the rows: team-a widens, team-b narrows. The
     // personal-team lookup (by slug) finds nothing.
     mockTeamsFindFirst.mockImplementation(async (q: { where?: unknown }) => {
-      const values = boundValues(q?.where);
+      const values = boundValues(capturedWhere(q?.where));
       if (values.some(v => v.startsWith('personal-'))) return null;
       const everyone = Object.fromEntries(ALL.map(p => [p, ['owner', 'admin', 'member']]));
       const ownersOnly = Object.fromEntries(ALL.map(p => [p, ['owner']]));
@@ -188,7 +189,7 @@ describe('can: no per-team grants (AC-G1)', () => {
     for (const p of ALL) await can(caller, p, 'team-a');
     expect(mockTeamsFindFirst).toHaveBeenCalled();
     for (const [q] of mockTeamsFindFirst.mock.calls as unknown as [{ where?: unknown }][]) {
-      expect(boundValues(q?.where).every(v => v.startsWith('personal-'))).toBe(true);
+      expect(boundValues(capturedWhere(q?.where)).every(v => v.startsWith('personal-'))).toBe(true);
     }
   });
 });

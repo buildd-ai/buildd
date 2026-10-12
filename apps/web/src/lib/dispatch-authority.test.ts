@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 // The pre-outbox direct-send behaviour (dispatchNewTask / Unblocked / Retried /
 // PlanChild) re-expressed per cause. Every rule the old task-dispatch tests
@@ -53,7 +54,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     execute: mockExecute,
     query: {
-      tasks: { findFirst: mock(async (args: { where: unknown }) => { const id = idIn(args.where); return id ? taskRows.get(id) : undefined; }) },
+      tasks: { findFirst: mock(async (args: { where: unknown }) => { const id = idIn(capturedWhere(args.where)); return id ? taskRows.get(id) : undefined; }) },
     },
   },
 }));
