@@ -118,7 +118,7 @@ export const PERMISSIONS = {
     minKeyLevel: null,
   },
   manage_model_tiers: {
-    description: 'Change which model backs a tier, and model traffic pools.',
+    description: 'Pick the primary model for each tier, and the upgrade policy (Automatic or Manual).',
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
   },

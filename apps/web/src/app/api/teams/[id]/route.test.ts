@@ -56,6 +56,12 @@ const probeCalls: any[] = [];
 let probeResult: any = { ok: true, model: 'probe-model', latencyMs: 10 };
 mock.module('@/modules', () => ({
   DECISION_MODEL_PROBE: async (config: any, scope: any) => { probeCalls.push({ config, scope }); return probeResult; },
+  // The real operator check and refusal (lib/admin/platform-operator-caller.ts), through the slot.
+  IS_PLATFORM_OPERATOR_CALLER: async (c: { user?: { email?: string | null } | null }) => {
+    const { isPlatformOperator } = await import('@/lib/platform-operator');
+    return isPlatformOperator(c.user);
+  },
+  OPERATOR_ONLY_RESPONSE: () => NextResponse.json({ error: 'buildd manages this setting.', code: 'operator_only' }, { status: 403 }),
 }));
 
 import { DELETE, GET, PATCH } from './route';
@@ -351,6 +357,27 @@ describe('PATCH /api/teams/[id] — platform-only fields are refused to every te
 });
 
 describe('PATCH /api/teams/[id] — decision model', () => {
+  // The decision model is a platform operator control (lib/admin/platform-operator-caller.ts).
+  beforeEach(() => {
+    process.env.BUILDD_OPERATOR_USER_EMAILS = 'op@example.com';
+    mockRequireSessionUser.mockResolvedValue({ user: { id: 'user-1', email: 'op@example.com' } });
+  });
+
+  it('a team owner or admin who is not an operator is refused, and nothing is written', async () => {
+    mockRequireSessionUser.mockResolvedValue({ user: { id: 'user-1', email: 'admin@example.com' } });
+    for (const role of ['admin', 'owner']) {
+      membership = { ...membership, role };
+      const res = await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } }), ctx);
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe('operator_only');
+      expect((await PATCH(patchReq({ decisionModel: null }), ctx)).status).toBe(403);
+    }
+    expect(capturedUpdates).toHaveLength(0);
+    expect(probeCalls).toHaveLength(0);
+    // The rest of the team settings still save for that admin.
+    expect((await PATCH(patchReq({ name: 'Renamed' }), ctx)).status).toBe(200);
+  });
+
   it('stores a chat model via the LiteLLM gateway', async () => {
     const res = await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } }), ctx);
     expect(res.status).toBe(200);

@@ -2,13 +2,13 @@
 title: Model Policy Cells and the Dial
 status: active
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-11
 summary: Each tier x surface cell MUST serve its primary until the team's own graded coding outcomes show an alternate keeps up within the dial's tolerance, and MUST revert, recorded, when it slips.
 domain: integrations
 surfaces: [packages/core/tier-dial.ts, packages/core/tier-dial-chat.ts, packages/core/tier-dial-source.ts, apps/web/src/lib/chat-retro/policy-signal.ts, apps/web/src/app/api/model-tiers/cells/route.ts, packages/shared/src/model-policy-cells.ts]
 related: [model-policy, model-routing-and-tiers]
 keywords: [dial, cell, primary, alternates, may also use, always, learning, shifted, reverted, shadow, threshold, non-inferiority, auto-revert, tier_pools.dial, dial_state]
-verified_by: [packages/core/__tests__/tier-dial.test.ts, packages/core/__tests__/tier-dial-chat.test.ts, apps/web/src/lib/chat-retro/policy-signal.test.ts, packages/core/__tests__/tier-dial-source.test.ts, packages/core/__tests__/tier-pool-source.test.ts, apps/web/src/app/api/model-tiers/cells/route.test.ts, apps/web/src/app/api/cron/tier-pools/route.test.ts]
+verified_by: [packages/core/__tests__/tier-dial.test.ts, packages/core/__tests__/tier-dial-chat.test.ts, apps/web/src/lib/chat-retro/policy-signal.test.ts, packages/core/__tests__/tier-dial-source.test.ts, packages/core/__tests__/tier-pool-source.test.ts, apps/web/src/app/api/model-tiers/cells/route.test.ts, apps/web/src/app/api/cron/tier-pools/route.test.ts, apps/web/src/app/api/model-tiers/pools/route.test.ts, apps/web/src/app/app/(protected)/settings/models/ModelTiersClient.dom.test.tsx]
 supersedes: []
 assertions:
   - id: "decide-dial-cell"
@@ -83,6 +83,16 @@ stops keeping up.
 - A cell is run by the dial when its pool's `mode` is `dial`. `pinned`,
   `split` and `explore` pools keep working unchanged; an exact split is still
   a `split` pool and shows `experimentRunning`.
+- **Who edits what.** A team admin (`manage_model_tiers`) sets only a cell's
+  primary. Alternates, the dial, `split` / `explore` and weights are platform
+  operator controls (`isPlatformOperatorCaller`, `apps/web/src/lib/admin/platform-operator-caller.ts`):
+  every pool write (`PATCH /api/model-tiers/cells`, `POST
+  /api/model-tiers/pools`, `PATCH /api/model-tiers/pools/[id]`, `DELETE
+  .../arms/[armId]`) refuses anyone else with 403. The settings page renders
+  the pool machinery (each cell's state line and alternates, what ran, the
+  editor's alternates and dial, the "testing" chip, the tier History) only for
+  an operator; a team member or admin sees each cell's primary and price. Pinning the primary keeps the pool's incumbent in step on the
+  server, so a team admin never touches a pool.
 
 ## Signals
 
@@ -172,7 +182,7 @@ that same `z`.
 - AC-4: GIVEN a shifted cell whose alternate's merged rate slips past the
   margin WHEN the step runs THEN the cell is `reverted` with `revertReason`
   and a `revert` change row.
-- AC-5: WHEN an admin sets dial 1 THEN all traffic returns to the primary in
+- AC-5: WHEN an operator sets dial 1 THEN all traffic returns to the primary in
   the same write.
 - AC-6: GIVEN a `split` pool WHEN a task is claimed THEN the draw follows the
   admin's allocation exactly.
@@ -184,15 +194,18 @@ that same `z`.
   alternate WHEN the step runs THEN it is `reverted` with a `revert` row whose
   evidence names `signal: 'thumbs'`.
 - AC-7: `GET /api/model-tiers/cells?teamId=` returns `ModelPolicyCellsResponse`
-  to any team member; `PATCH` (dial) is owner/admin only and 409s on a stale
-  `expectedVersion`.
+  to any team member; `PATCH` (dial) is platform-operator only (a team owner
+  or admin gets 403) and 409s on a stale `expectedVersion`.
+- AC-11: GIVEN a team admin who is not a platform operator WHEN they add an
+  alternate, change a pool's mode or weights, or remove an arm THEN 403 and
+  nothing is written; WHEN they pin a tier's primary THEN it saves.
 
 ## Out of scope
 
 Chat cells have no `whatRan` yet (the optional chat fields stay absent until
 the chat-learning work fills them). Fireworks / FireRouter. The settings page
 (`apps/web/src/app/app/(protected)/settings/models/`) renders this read model
-verbatim and is not part of this contract.
+and is not part of this contract beyond which controls it shows to whom.
 
 ## Code surface
 
@@ -210,5 +223,6 @@ verbatim and is not part of this contract.
 - Data: `tier_pools.mode = 'dial'`, `tier_pools.dial`, `tier_pools.dial_state`
   (`packages/core/db/schema.ts`).
 - Routes: `apps/web/src/app/api/model-tiers/cells/route.ts`;
+  write gate `apps/web/src/lib/tier-pool-access.ts` (`tierPoolAccess`);
   `apps/web/src/app/api/cron/tier-pools/route.ts` (hourly step).
 - Contract types: `packages/shared/src/model-policy-cells.ts`.

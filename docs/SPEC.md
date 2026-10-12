@@ -488,6 +488,10 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).
   Thresholds were measured on Jev, so a call site that auto-applies (task
   category) records another model's pick without applying it.
+  A platform operator control, not a team setting (see "Platform operator"): only an operator
+  sees it under Settings › Models › Used
+  for or may PATCH `decisionModel`, and only an operator gets the "Decisions are
+  failing" Home card.
 - **Decision calls** (`decisionCall`) — fixed-label classifications. Chat uses them
   to pick each turn's tier and tool set, confidence-gated, defaulting to `standard`
   with all tools. The task-category check is shadow only
@@ -498,14 +502,17 @@ per-request form, so server-side calls **structurally cannot** use a seat.
 Callers ask for a **tier**, never a vendor model: `premium-plus` (opt-in only;
 nothing routes there on its own) · `premium` · `standard` · `budget`
 (`packages/core/model-tier-defaults.ts`). An admin maps tier → `(provider, model)` in
-`model_tier_registry` (Settings → Model tiers, or `manage_model_tiers`); provider ∈
+`model_tier_registry` (Settings › Models, or `manage_model_tiers`); provider ∈
 `anthropic | openai | openai-codex | openrouter`. Resolution (`resolveTierEntry`,
 60s cache): workspace row → team row → the catalog's newest in-band release →
 `TIER_DEFAULTS`. Agent runs resolve at **claim** time, so a remap applies to queued
 tasks. Chat and inference calls resolve per call; for chat, a tier on Anthropic or
 OpenAI with only an OpenRouter key is served through OpenRouter. An explicit `model` on a task or a
-role's full-ID pin bypasses tiers. **Tier model pools** (several models per tier with
-traffic splits) are proposed, not shipped (`knowledge-base: buildd/design/tier-model-pools.md`).
+role's full-ID pin bypasses tiers. A team admin picks each tier's primary model and an
+Automatic or Manual upgrade policy. **Tier model pools** (several models per tier, the
+Quality↔Savings dial, splits; `docs/specs/model-policy-cells.md`) and the soak upgrade mode
+are platform operator controls: their writes refuse a team admin and the page renders them
+only for an operator.
 
 ---
 
@@ -689,7 +696,10 @@ is refused. API keys and runners are unaffected (`lib/member-repo-access.ts`).
 registry in `apps/web/src/lib/permission-registry.ts`) never reach buildd's own
 platform machinery: experiments (create, change, start, pause, conclude, and
 operator-only ones), grading decisions, decision shadows,
-per-feature inference modes and chat retro. Those are gated on the platform
+per-feature inference modes, chat retro, and on Settings › Models the model
+traffic pools, the soak upgrade mode, `overCapAuto` and the decision model (a
+team admin picks only each tier's primary and Automatic or Manual upgrades).
+Those are gated on the platform
 operator: a signed-in person in `BUILDD_OPERATOR_USER_EMAILS`, the same person
 over OAuth, or an admin-level key of an account in
 `BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS` (`lib/admin/platform-operator-caller.ts`,
