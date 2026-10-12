@@ -261,7 +261,7 @@ export function uiChangeFromImpact(
   a: VisualImpactAssessment | null | undefined,
   headSha: string | null,
 ): VisualReviewStateInput['uiChange'] {
-  if (a?.basis === 'policy') return { state: 'no', source: null, uiFiles: 0 };
+  if (a?.basis === 'policy' && a.verdict === 'not_applicable') return { state: 'no', source: null, uiFiles: 0 };
   if (!a || !isImpactAssessmentCurrent(a, headSha)) return { state: 'unknown', source: null, uiFiles: 0 };
   if (a.verdict === 'not_applicable') return { state: 'no', source: 'diff', uiFiles: 0 };
   return { state: 'yes', source: 'diff', uiFiles: a.evidence.protectedFiles + a.evidence.ambiguousFiles };

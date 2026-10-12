@@ -177,4 +177,14 @@ describe('head SHA invalidation', () => {
     expect(mk(uiChangeFromImpact(await run({ files: [ambiguous], decide: deciderOf(new Error('x')) }), 'sha1')).status).toBe('needed');
     expect(mk(uiChangeFromImpact(await run({ policy: policy('off'), files: null }), 'sha1'), 'off').status).toBe('not_applicable');
   });
+  it('strict on an ambiguous change still runs the audit (policy basis is not a policy-off skip)', async () => {
+    const a = await run({ policy: policy('strict'), files: [ambiguous] });
+    expect(uiChangeFromImpact(a, 'sha1')).toMatchObject({ state: 'yes' });
+    expect(uiChangeFromImpact(a, 'sha2')).toMatchObject({ state: 'unknown' });
+    const state = deriveMissionVisualReview({
+      policy: policy('strict'), uiChange: uiChangeFromImpact(a, 'sha1'), audit: null, review: null, waiver: null,
+      branch: { headSha: 'sha1', base: 'dev', integrationPr: null, workLanded: true },
+    });
+    expect(state.status).toBe('needed');
+  });
 });
