@@ -12,7 +12,8 @@
  *   On dev     oldest first        (every task landed; a goal criterion has
  *                                   not passed yet, so the mission is open)
  */
-import type { DeliveryKind } from './delivery-projection';
+import type { StateKey } from '@/components/ui/states';
+import { STATE_OF_KIND, type DeliveryKind } from './delivery-projection';
 import type { PortfolioRow } from './mission-portfolio';
 
 export type MissionSectionKey = 'needs' | 'motion' | 'waiting' | 'landed';
@@ -27,18 +28,24 @@ export const SECTION_META: Record<MissionSectionKey, { label: string; order: str
 export const SECTION_KEYS: readonly MissionSectionKey[] = ['needs', 'motion', 'waiting', 'landed'];
 
 const SECTION_OF: Record<DeliveryKind, MissionSectionKey> = {
-  needs: 'needs', notlanded: 'needs',
-  unavailable: 'motion', repair: 'motion', audit: 'motion', landing: 'motion', build: 'motion',
+  // `notlanded` is split in `sectionOf`: only a closed PR still being reconciled
+  // is moving; an abandoned PR or a failed task is a person's call.
+  needs: 'needs', notlanded: 'needs', unavailable: 'motion', repair: 'motion', audit: 'motion', landing: 'motion', build: 'motion',
   waiting: 'waiting', held: 'waiting', planning: 'waiting',
   // Open with every task landed: on dev, waiting on a goal criterion. A
   // mission-branch mission in that state is `landing` (not on trunk yet).
   landed: 'landed',
 };
 
-export const sectionOf = (r: PortfolioRow): MissionSectionKey => SECTION_OF[r.delivery.kind];
+export const sectionOf = (r: PortfolioRow): MissionSectionKey =>
+  r.delivery.kind === 'notlanded' && r.delivery.reconciling ? 'motion' : SECTION_OF[r.delivery.kind];
 
 // Lives with the projection so Home's mission rows can read it too.
 export { STATE_OF_KIND } from './delivery-projection';
+
+/** The state pill for a mission: a closed PR being reconciled reads Recovering, not Not landed. */
+export const stateOfDelivery = (d: PortfolioRow['delivery']): StateKey | null =>
+  d.kind === 'notlanded' && d.reconciling ? 'recovering' : STATE_OF_KIND[d.kind];
 
 const byId = (a: PortfolioRow, b: PortfolioRow) => a.delivery.id.localeCompare(b.delivery.id);
 /** Epoch ms, a missing time last. */

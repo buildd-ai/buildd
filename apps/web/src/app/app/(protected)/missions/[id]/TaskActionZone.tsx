@@ -102,6 +102,12 @@ export interface TaskActionZoneProps {
   /** The task's title, named in the Force start confirmation. */
   taskTitle?: string | null;
   onChanged?: () => void | Promise<void>;
+  /**
+   * False inside a card that already frames the task (the mission Overview's
+   * focus card, the strip drawer): the Blocked notice and the Run now group
+   * drop their own boxes.
+   */
+  framed?: boolean;
 }
 
 const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 border-2 border-border-strong px-3 font-mono text-meta font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50';
@@ -127,6 +133,7 @@ export default function TaskActionZone({
   credentialBlock = null,
   taskTitle = null,
   onChanged,
+  framed = true,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
   const [retrying, setRetrying] = useState<'same' | 'switch' | null>(null);
@@ -333,7 +340,7 @@ export default function TaskActionZone({
         </div>
       )}
       {has('blocked') && start.status === 'idle' && !held?.waitingReasons && (
-        <div className="border border-status-warning p-4">
+        <div data-testid="task-blocked" className={framed ? 'border border-status-warning p-4' : undefined}>
           <p className="font-mono text-[12px] font-medium text-status-warning">
             Blocked · waiting on {blockedByCount} {blockedByCount === 1 ? 'dependency' : 'dependencies'}
           </p>
@@ -351,7 +358,7 @@ export default function TaskActionZone({
 
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
-        <div className="space-y-3 border border-border-default p-4">
+        <div data-testid="task-run-now" className={framed ? 'space-y-3 border border-border-default p-4' : 'space-y-2'}>
           {held?.waitingReasons ? (
             <WaitingLine reasons={held.waitingReasons}>
               {waiting?.forceStart ? (

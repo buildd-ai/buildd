@@ -58,20 +58,22 @@ export interface FocusCardProps {
 
 /**
  * L2: the selected task under the strip. A 6px card on --card; focused, a
- * 1.5px ink frame. Lifecycle first, then Next / reason / Time / Needs you.
+ * 1.5px ink frame from md and a 1px strong hairline on a phone, where the
+ * card already fills the width. Lifecycle first, then Next / reason / Time /
+ * Needs you.
  */
 export default function FocusCard({ meta, title, state, repairs, next, reason, estimate, needs, note, children, footer, focused = true, className = '' }: FocusCardProps) {
   return (
     <section
       data-testid="focus-card"
       aria-live="polite"
-      className={`flex flex-col gap-3 rounded-[var(--radius-card)] bg-card px-4 py-[18px] ${focused ? 'border-[1.5px] border-text-primary' : 'border border-border-default'} ${className}`}
+      className={`flex flex-col gap-2.5 rounded-[var(--radius-card)] bg-card px-3.5 py-3.5 md:gap-3 md:px-4 md:py-[18px] ${focused ? 'border border-border-strong md:border-[1.5px] md:border-text-primary' : 'border border-border-default'} ${className}`}
     >
       <div className="font-mono text-meta text-text-muted">
         {meta}
         {HELD.has(state) && <> · <StatePill state={state} variant="plain" /></>}
       </div>
-      <h2 className="text-heading font-semibold leading-tight text-text-primary [overflow-wrap:anywhere]">{title}</h2>
+      <h2 className="text-lede font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] md:text-[18px]">{title}</h2>
       <Lifecycle state={state} repairs={repairs} />
       {children}
       <dl className="grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 text-title">
