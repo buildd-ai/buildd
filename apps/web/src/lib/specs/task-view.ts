@@ -35,3 +35,10 @@ export async function loadLivingSpecView(taskId: string, specId: string, pin: un
     return null;
   }
 }
+
+/** The page's entry: the view for a task whose context names a Living Spec, else null without a query. */
+export function livingSpecLoad(taskId: string, context: unknown): Promise<LivingSpecView | null> {
+  const pin = (context as { specSource?: unknown } | null)?.specSource;
+  const specId = pin && typeof pin === 'object' ? (pin as { specId?: unknown }).specId : undefined;
+  return typeof specId === 'string' ? loadLivingSpecView(taskId, specId, pin) : Promise.resolve(null);
+}

@@ -69,7 +69,7 @@ import { deriveTaskOrigin } from '@/lib/task-origin';
 import { originLinkCards } from './origin-links';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
-import { loadLivingSpecView } from '@/lib/specs/task-view';
+import { livingSpecLoad } from '@/lib/specs/task-view';
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
@@ -360,7 +360,7 @@ export default async function TaskDetailPage({
   // Cloud runs only: its time on the hosted runner, all attempts. Started
   // here, awaited below, so it adds no round trip of its own.
   const hostedRunnerUsagePromise = taskHostedRunnerUsage(id).catch(() => null);
-  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
+  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw, livingSpec] = await Promise.all([
     prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
     taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     // Artifacts for all workers on this task
@@ -450,6 +450,8 @@ export default async function TaskDetailPage({
     // Worker vs verification failure. Costs no query unless the task failed;
     // joined here rather than awaited after the phase is derived.
     loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
+    // The Living Spec the task is pinned to, with its outcome. No query unless it names one.
+    livingSpecLoad(task.id, task.context),
   ]);
   // CI-retry attempts numbered by (createdAt, id): "attempt N" never swaps.
   const ciAttemptTasks = oldestFirst(ciAttemptRows, compareTasksChrono)
@@ -501,8 +503,6 @@ export default async function TaskDetailPage({
         ...(typeof specSourceRaw.contentHash === 'string' ? { contentHash: specSourceRaw.contentHash } : {}),
       }
     : null;
-
-  const livingSpec = specSource?.specId ? await loadLivingSpecView(task.id, specSource.specId, specSourceRaw) : null;
 
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'

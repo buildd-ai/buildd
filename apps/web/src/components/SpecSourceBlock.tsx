@@ -66,35 +66,33 @@ export function SpecSourceBlock({ specSource, living }: SpecSourceBlockProps) {
 
   return (
     <div className="mb-6" data-testid="task-spec-source">
-      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-        Spec
-      </div>
+      <div className="section-label border-b border-border-default pb-2 mb-4">Spec</div>
       <div className="card p-4 space-y-1">
         {pinned && living && (
           <Link
             href={`/app/specs/${pinned.specId}`}
-            className="block text-[13px] font-medium text-primary hover:underline"
+            className="block text-body font-medium text-primary hover:underline"
             data-testid="task-spec-source-title"
           >
             {living.title}
           </Link>
         )}
         {pinned && (
-          <div className="text-[13px] text-text-primary" data-testid="task-spec-source-pin">
+          <div className="text-body text-text-primary" data-testid="task-spec-source-pin">
             Pinned to revision {pinned.revision}
             {pinned.contentHash && (
-              <span className="font-mono text-[11px] text-text-muted"> · {pinned.contentHash.slice(0, 12)}</span>
+              <span className="font-mono text-meta text-text-muted"> · {pinned.contentHash.slice(0, 12)}</span>
             )}
           </div>
         )}
         {pinned && living?.approvedRevision != null && living.approvedRevision > pinned.revision! && (
-          <div className="text-[12px] text-text-muted" data-testid="task-spec-source-newer">
+          <div className="text-meta text-text-muted" data-testid="task-spec-source-newer">
             Revision {living.approvedRevision} is approved now
           </div>
         )}
         {pinned && living?.outcome && (
           <div className="pt-2 space-y-1" data-testid="task-spec-outcome">
-            <div className="text-[13px]">
+            <div className="text-body">
               <span className={`font-medium ${OUTCOME_TONE[living.outcome.outcome]}`} data-testid="task-spec-outcome-label">
                 {OUTCOME_LABEL[living.outcome.outcome]}
               </span>
@@ -106,7 +104,7 @@ export function SpecSourceBlock({ specSource, living }: SpecSourceBlockProps) {
               {[...living.outcome.criteria].sort((a, b) => rank(a) - rank(b)).slice(0, CRITERIA_SHOWN).map((c) => {
                 const st = standingLabel(c);
                 return (
-                  <li key={c.criterionId} className="text-[12px] flex gap-2 min-w-0" data-testid="task-spec-criterion">
+                  <li key={c.criterionId} className="text-meta flex gap-2 min-w-0" data-testid="task-spec-criterion">
                     <span className="font-mono text-text-muted shrink-0">{c.criterionId}</span>
                     <span className="truncate text-text-secondary min-w-0" title={c.text}>{c.text}</span>
                     <span className={`shrink-0 ml-auto ${st.tone}`}>{st.label}</span>
@@ -115,21 +113,21 @@ export function SpecSourceBlock({ specSource, living }: SpecSourceBlockProps) {
               })}
             </ul>
             {living.outcome.criteria.length > CRITERIA_SHOWN && (
-              <Link href={`/app/specs/${pinned.specId}`} className="text-[12px] text-primary hover:underline">
+              <Link href={`/app/specs/${pinned.specId}`} className="text-meta text-primary hover:underline">
                 {living.outcome.criteria.length - CRITERIA_SHOWN} more on the spec page
               </Link>
             )}
           </div>
         )}
         {repoDoc && (
-          <div className="text-[13px] font-medium text-text-primary break-all" data-testid="task-spec-source-path">
+          <div className="text-body font-medium text-text-primary break-all" data-testid="task-spec-source-path">
             {repoDoc}
           </div>
         )}
         {specSource?.planningTaskId && (
           <Link
             href={`/app/tasks/${specSource.planningTaskId}`}
-            className="text-[13px] text-primary hover:underline"
+            className="text-body text-primary hover:underline"
             data-testid="task-spec-source-link"
           >
             Planning task
