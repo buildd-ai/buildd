@@ -38,6 +38,8 @@ import { parseLoopConfig } from '@buildd/core/loop-config';
 import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/model-pin';
 import { TIERS } from '@buildd/core/model-tier-defaults';
 import { appBaseUrl } from '@/lib/app-url';
+import { TASK_RESERVATION_KEY, buildReservation } from '../../workers/claim/held-gate';
+import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
 
@@ -316,7 +318,7 @@ export async function PATCH(
         }, { status: 403 });
       }
     }
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest, startAt, startIn, abort } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, reserved, pathManifest, startAt, startIn, abort } = body;
 
     // delegation: a person grants (or clears) this task's cross-workspace
     // reach before it is claimed (lib/task-delegation.ts). Its own request:
@@ -531,6 +533,38 @@ export async function PATCH(
         };
       } else {
         delete baseCtx.heldBy;
+      }
+      updateData.context = baseCtx;
+    }
+    // Reserve / release a waiting task for the calling interactive session
+    // (the claim route's taskNotReserved gate reads context.reservedBy). Runners
+    // and other accounts skip it until it lapses; re-sending reserved: true
+    // renews it. Only an account identity can hold one, the same identity
+    // claim_task authenticates as, so a dashboard user is refused.
+    if (reserved !== undefined) {
+      if (typeof reserved !== 'boolean') {
+        return NextResponse.json({ error: 'reserved must be true or false' }, { status: 400 });
+      }
+      // Only a verified interactive session may hold a reservation: it is what the
+      // claim route lets the reserver's own claim_task through for. A caller that
+      // is not one would park the task from every claimer, itself included.
+      if (!apiAccount || !verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), apiAccount.id)) {
+        return NextResponse.json({ error: 'A reservation belongs to the interactive session that claim_task would run as; call this from that session.' }, { status: 403 });
+      }
+      if (task.status !== 'pending' || task.claimedBy) {
+        return NextResponse.json({ error: `This task is already ${task.status === 'pending' ? 'claimed by a worker' : task.status}; only a waiting task can be reserved.` }, { status: 409 });
+      }
+      const baseCtx = { ...((updateData.context ?? task.context ?? {}) as Record<string, unknown>) };
+      const current = baseCtx[TASK_RESERVATION_KEY] as { accountId?: string; expiresAt?: string } | undefined;
+      const liveOther = !!current && current.accountId !== apiAccount.id
+        && !!current.expiresAt && new Date(current.expiresAt).getTime() > Date.now();
+      if (liveOther) {
+        return NextResponse.json({ error: 'Another session holds this reservation. It lapses on its own if that session goes quiet.' }, { status: 409 });
+      }
+      if (reserved) {
+        baseCtx[TASK_RESERVATION_KEY] = buildReservation(apiAccount.id);
+      } else {
+        delete baseCtx[TASK_RESERVATION_KEY];
       }
       updateData.context = baseCtx;
     }
