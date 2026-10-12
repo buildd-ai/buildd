@@ -10,6 +10,18 @@ related: [local-agent-presence, answered-question-resume, human-in-the-loop-prot
 keywords: [AskUserQuestion, ask_human, PreToolUse, permissionDecision, deny, UserPromptSubmit, terminal prompt, needs you, away from terminal, withdraw question, agent plugin, hooks]
 verified_by: [apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/lib/local-session.test.ts, apps/web/src/lib/terminal-answer.test.ts]
 supersedes: []
+assertions:
+  - id: "withdraw-on-terminal-answer"
+    type: "symbol"
+    name: "withdrawQuestionAnsweredInTerminal"
+    path: "apps/web/src/lib/terminal-answer.ts"
+  - id: "terminal-answer-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/terminal-answer.test.ts"
+  - id: "ask-matcher-hook"
+    type: "config_key"
+    file: "apps/runner/plugin/hooks/hooks.json"
+    key: "AskUserQuestion"
 ---
 
 # Terminal Question Redirect
