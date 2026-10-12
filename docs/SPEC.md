@@ -283,8 +283,10 @@ reads and acks the answer with `await_answer { waitSeconds: 0 }`. A client
 without background commands loops on `await_answer` (≤45 s per call). The
 answer goes back to the same live session as an `answer` message on its own
 task, with no continuation task. Every poll stamps `waitingFor.sessionSeenAt`.
-A session whose last poll is over 5 min old, or that has ended, has its answer
-sent cold to a runner as a continuation task, with the reason recorded. An
+A session that closes cleanly through the agent plugin withdraws its question
+and the task returns to pending. A session whose last poll is over 5 min old,
+or whose worker has otherwise ended, has its answer sent cold to a runner as a
+continuation task, with the reason recorded. An
 unanswered question expires with the normal park window (24 h, 4 h in a
 mission), and an expired interactive question files no retry unless its
 mission is `executor = 'local'`. `post_note` with `type=question` stays the
