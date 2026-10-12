@@ -2,13 +2,13 @@
 title: Task Page
 status: active
 owner: max
-last_verified: 2026-10-11
-summary: The task page MUST lead with the deliverable, its Build → Audit → Land track and one compact outcome, list checks by review round from delivery facts, and frame a review or fix run as an attempt of its parent.
+last_verified: 2026-10-12
+summary: The task page MUST lead with the deliverable, its track and one outcome, list checks by round from delivery facts, frame attempts by their parent, fit a phone's first screen, and open Code review only to substance.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
-keywords: [task detail, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx]
+keywords: [task detail, mobile header, show full title, review queued, no findings yet, review of PR, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
+verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -38,6 +38,13 @@ assertions:
   - id: "task-result-tests"
     type: "test_file"
     path: "apps/web/src/lib/task-result.test.ts"
+  - id: "review-detail"
+    type: "symbol"
+    name: "reviewDetailOf"
+    path: "apps/web/src/lib/task-checks.ts"
+  - id: "review-detail-tests"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx"
 ---
 
 # Task Page
@@ -108,16 +115,19 @@ Cases the model handles explicitly:
 Phone (390px), top to bottom; desktop is the same column beside the fact sheet.
 
 ```
-‹ Mission or Activity
+‹ Mission or Activity                              (compact; see §Mobile header)
 [eyebrow: result heading]                         (Review of PR #N / Fix for PR #N / Result / What shipped)
-<Title>                                           h1
+<Title, ≤3 lines on a phone>                      h1, full width; "Show full title" when clipped
+[● status pill]                     [↳ Ask] [⋯]    (phone: one compact row under the title;
+                                                    desktop: pill and actions on the title row)
 type · scope · role · workspace · PR #N ↗         (role once, never twice; release badge on a deliverable only)
-Review of <deliverable title> ›                   (attempts only; the link is the deliverable)
+Review of PR #N ›                                 (attempts only; links the deliverable; its full title
+                                                    is the link's accessible name and tooltip)
 ✓ Build → ◐ Audit · in review → Land              (the one track, phrase per §State mapping)
 [● Review approved]  <one line of cause, if any>  (compact outcome row; a card only when it carries an action)
 
 CHECKS · PR #4413 · head e49b25b
-  ✓ Code review      Approved · round 2          ›  (expands: verdict, summary prose, findings, review run link)
+  ✓ Code review      Approved · round 2          ›  (expands per §Code review detail)
   ◐ Tests            Checking                    ›  (expands: link to the PR's checks)
   ↻ Merge            Updating branch                (no expansion)
   ▸ Earlier rounds (1)                              (round 1 · changes requested → fix 1 of 3 completed)
@@ -220,8 +230,10 @@ never described as released.
 
 - A check row with detail is a native disclosure (`<details>`), keyboard and
   screen-reader operable, 44px minimum target. Opening it never navigates.
-- Code review detail: verdict word, the reviewer's summary as wrapping prose
-  (paragraphs kept), and "Open review run ›" to the reviewer task.
+- Code review detail: per §Code review detail. The verdict word is the row's
+  own result; the detail adds the round and head it read, then the reviewer's
+  summary as wrapping prose (paragraphs kept) or a plain account of why there
+  is none, and "Open review run ›" when the reviewer task is not this page.
 - A failed check's detail names the attached repair (Fix N of M · queued /
   running / completed / failed) with a link to the repair task.
 - Earlier rounds is one disclosure listing rounds oldest first, each with its
@@ -230,6 +242,75 @@ never described as released.
   the attempt scoped, with "Review of:" / "Fix for:" naming and linking the
   deliverable, and the deliverable's track and checks with this attempt's round
   marked current.
+
+## Mobile header
+
+The header is the page's first screen on a phone; it must not spend it on
+chrome. On a reviewer run of a PR with a long conventional-commit title the
+old header wrapped the title onto about eight lines (Ask and ⋯ reserved a
+column beside it), repeated the same title under "Review of", and pushed the
+checks below the first screen.
+
+- **Top spacing.** No app-owned space above the back link beyond the page
+  scroller's own padding: the breadcrumb pulls up into it below `md`, the
+  mission masthead keeps `mb-3` below `md`, and the header block keeps `mb-4`.
+  The breadcrumb link stays a 44px target. The app does not opt into
+  `viewport-fit=cover`, so the browser keeps the top inset; the bottom nav
+  owns the bottom inset (`env(safe-area-inset-bottom)`), and the scroller
+  reserves its height (`pb-16`).
+- **Title.** `text-heading` (20px phone / 24px desktop), full available width
+  below `md`. Clamped to three lines below `md`; when it is clipped a "Show
+  full title" button (44px, `aria-expanded`, `aria-controls` the h1) expands it
+  in place and "Show less" collapses it. Expanded, it wraps anywhere and never
+  scrolls sideways. From `md` the title is unclamped and the button absent. A
+  reviewer title keeps its leading `PR #N:`, so the clamp never hides which
+  PR the run is about.
+- **Actions.** Below `md` the status pill (only without a verdict) and Ask / ⋯
+  share one row under the title, actions right-aligned, each ≥44px. They never
+  sit beside the title on a phone, never stack above it. From `md` they return
+  to the title row.
+- **Attempt link.** "Review of PR #N ›" / "Fix for PR #N ›", naming the
+  deliverable by its PR; the deliverable's full title is the link's
+  accessible name (visually hidden) and tooltip. Without a PR the title is the
+  reference, held to one line. The link is ≥44px below `md`.
+- **One track, one outcome.** Unchanged: the delivery's track and the
+  subject's outcome row per §State mapping; the header adds no second state.
+- **First screen.** At 390×844 the long-title pending reviewer fixture, title
+  collapsed, shows the Checks heading and the Code review and Tests rows above
+  the bottom nav without scrolling. At 320 and 360 the page reads top to
+  bottom with no sideways scroll.
+
+## Code review detail
+
+What the Code review row opens to, from `reviewDetailOf` (lib/task-checks.ts)
+over the round the row reads and the reviewer task the page loaded
+(lib/task-delivery-context.ts: its `result` and `status`). Every detail opens
+with "Round N · head abc1234" (plus "carried to the current head after a
+branch update" for a carried approval), binding what follows to that round.
+
+| Row's round / reviewer | Detail |
+|---|---|
+| no round on this head (Awaiting review), or policy-skipped | none: the row is not a disclosure |
+| round `queued`, reviewer task not claimed | "Review queued · no findings yet" |
+| round `reviewing`, or the reviewer task claimed / running | "Review in progress · no findings yet" |
+| round `decided`, reviewer left a summary | the summary as prose |
+| round `decided`, reviewer row read, no summary (or no row) | "The review finished without written findings" |
+| round `decided`, reviewer rows could not be read | "Couldn’t load the review’s findings" + "Try again" (reloads the page) |
+| round `failed` | "The review run ended before giving a verdict" |
+
+- A bare "This review run" is never detail. On the reviewer's own page the
+  detail is the same as anywhere else, without "Open review run ›"; on any
+  other page that link follows the detail.
+- Missing output never reads as approval: the detail never states a verdict
+  the reviewer did not write; the row's verdict is the kernel's round verdict.
+- Findings belong to the current round's reviewer only. An approval on an
+  earlier head is history (Earlier rounds) and its prose never appears under
+  the current row.
+- No timing is shown: review rounds record no start or decision time today,
+  and the page does not invent one. When the kernel records one it joins the
+  round line.
+- Findings load with the page (one query, no client fetch), so there is no
+  separate loading state; a failed read is the "Couldn’t load" row above.
 
 ## Acceptance criteria
 
@@ -245,6 +326,12 @@ never described as released.
 - AC-10: GIVEN no kernel-owned delivery, or a delivery with no PR, WHEN the page renders THEN no checks list is drawn (no invented rows).
 - AC-11: GIVEN a `pr_checks_green` loop satisfied on its 2nd evaluation (`loopIteration` 2, `maxLoops` 3, two history rows) WHEN the chip and Loop history render THEN the chip reads "LOOP SATISFIED · 2/3", the list shows two iterations, and no full UUID or `pr_checks_green` appears.
 - AC-12: GIVEN a completed task whose PR merged with no recorded diff counters and one attempt WHEN the page renders THEN the status row reads "Shipped · PR #N merged" with the claim-to-merge time and a "View PR #N" link, the side panel has no PR row, no element repeats "#N · repo · merged", no Claim → merge figure is drawn, and PR history is still shown.
+- AC-13: GIVEN the reviewer run's own page, round 1 `queued` on the current head and the reviewer task `pending` WHEN the checks render THEN Code review is a disclosure opening to "Round 1 · head <sha7>" and "Review queued · no findings yet", with no "This review run" and no link to the page itself; with the reviewer task `in_progress` (or the round `reviewing`) it reads "Review in progress · no findings yet" and states no start time.
+- AC-14: GIVEN the reviewer's own page and a `decided` round whose reviewer left a summary WHEN the row opens THEN the summary renders as prose and no "Open review run" link is drawn; GIVEN another page THEN the same detail is followed by a 44px "Open review run ›".
+- AC-15: GIVEN a `decided` round whose reviewer left no summary WHEN the row opens THEN it reads "The review finished without written findings" and the detail contains no "approv…"; GIVEN the reviewer rows could not be read THEN it reads "Couldn’t load the review’s findings" with a 44px "Try again".
+- AC-16: GIVEN an approval with findings on head A and a current head B with no round WHEN the checks render THEN Code review reads Awaiting review, is not a disclosure, and none of head A's prose appears in it; the approval is under Earlier rounds.
+- AC-17: GIVEN a title longer than three phone lines WHEN the header renders below `md` THEN the h1 is `text-heading`, spans the full width, is clamped to three lines with a 44px "Show full title" (`aria-expanded=false`) that expands it in place and "Show less" that collapses it; Ask and ⋯ sit on the row under the title, never beside it.
+- AC-18: GIVEN a review attempt of a deliverable with PR #N WHEN the header renders THEN the attempt link reads "Review of PR #N ›" and the deliverable's full title is in its accessible name and tooltip, not its visible text.
 
 ## Code surface
 
@@ -253,7 +340,10 @@ never described as released.
 - `apps/web/src/app/app/(protected)/tasks/[id]/task-header.ts` — `taskHeading`, `headerLifecycle`.
 - `apps/web/src/components/ui/Lifecycle.tsx` — the track; `phrase` prop.
 - `apps/web/src/lib/task-checks.ts` — `deriveTaskChecks`, `taskSubjectOf`.
-- `apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.tsx` — the checks list.
+- `apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.tsx` — the checks list; `reviewDetailOf` (lib/task-checks.ts) decides what Code review opens to.
+- `apps/web/src/lib/task-delivery-context.ts` — the delivery view, deliverable title and each reviewer's findings and status, in one load.
+- `apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.tsx` — the clamped h1 and its "Show full title" toggle.
+- `apps/web/src/app/app/(protected)/tasks/[id]/TaskSubjectLink.tsx` — "Review of PR #N ›" / "Fix for PR #N ›".
 - `apps/web/src/lib/task-result.ts` — `readableTaskResult`.
 - `apps/web/src/app/app/(protected)/tasks/[id]/TaskShippedHeader.tsx` — result heading, Technical summary, Run details and Raw output.
 - `apps/web/src/lib/task-verdict.ts` — the review-attempt outcome rule.
@@ -263,10 +353,18 @@ never described as released.
 
 ## Regression cases (visual)
 
-Each at 390px and desktop: reviewer approved with parent open; branch refresh;
-actual CI repair running; merged; failed task; escalation needing a person.
+Fixture: `/app/dev/fixtures?state=task-page&case=<case>` (illustrative data,
+dev/fixtures/task-page-fixtures.ts), header laid out like the page's.
+
+Each at 390px and desktop: reviewer queued with a long PR title
+(`review-pending`, the default case); reviewer approved with parent open;
+branch refresh; actual CI repair running; merged; failed task; escalation
+needing a person. `review-pending` also at 390×844 (title collapsed: Checks,
+Code review and Tests above the bottom nav), 320 and 360 wide, light and dark,
+with the title expanded and with Code review opened.
 No Why this, no duplicated Done, no "Repairing" for a refresh, no "What
-shipped" before a merge, no horizontal scroll in Raw output.
+shipped" before a merge, no "This review run" as detail, no horizontal scroll
+in Raw output or at 320px.
 
 ## Out of scope
 

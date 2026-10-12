@@ -622,10 +622,6 @@ export async function fixCompletionGate(p: { task: AttemptTask; localHeadSha: st
     }
   } else if (live.headSha !== attempt.boundHeadSha) {
     return null;
-  } else if (p.task.deliveryRole === 'ci_fix' && (await readerFor(deps, repo.installationId).ciGreen?.(d.repoFullName, live.headSha)) === true) {
-    // The failure was not in the code (e.g. a PR-body check fixed by editing the
-    // body): CI on the unchanged head is green now, so there is nothing to push.
-    return null;
   }
   return {
     code: 'delivery_not_advanced',

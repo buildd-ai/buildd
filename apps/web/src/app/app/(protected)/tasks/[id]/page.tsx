@@ -95,6 +95,8 @@ import { HeaderStatusPill, FactSheet, SideDescription, type FactRow } from './Ta
 import { findTaskRole } from './role-lookup';
 import { headerLifecycle, taskHeading } from './task-header';
 import TaskChecks from './TaskChecks';
+import TaskSubjectLink from './TaskSubjectLink';
+import TaskTitle from './TaskTitle';
 import { deriveTaskChecks, taskSubjectOf } from '@/lib/task-checks';
 import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
 import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
@@ -1387,7 +1389,7 @@ export default async function TaskDetailPage({
           <MissionContextBar bar={missionContextBar} />
         ) : (
           // Back only: the title is the h1 right below.
-          <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-2">
+          <nav aria-label="Breadcrumb" className="text-sm text-text-secondary -mt-2 mb-1 md:mt-0 md:mb-2">
             <Link
               href={task.mission ? missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' }) : '/app/tasks'}
               data-testid="task-back"
@@ -1403,23 +1405,24 @@ export default async function TaskDetailPage({
         {/* Header — eyebrow (type · scope · role), the subject as the title, and
             one status pill with the admin actions behind ⋯ (D9). Chips that
             used to crowd the title line sit on the quiet meta line below. */}
-        <div className="mb-5 md:mb-6" data-testid="task-header">
-          {/* The actions (⋯) sit at the right of the title at every width. A
-              status pill (only without a verdict) sits between them on desktop
-              and under the title on a phone, so the title keeps its width. */}
+        <div className="mb-4 md:mb-6" data-testid="task-header">
+          {/* Desktop: title, status pill (only without a verdict) and actions
+              (Ask, ⋯) on one row. Phone: the title takes the full width and the
+              pill and actions share the compact row under it, so no reserved
+              column narrows a long title (task-page spec §Mobile header). */}
           <div className={`grid items-start gap-x-3 gap-y-2 md:gap-x-4 ${!shippedView && !verdict ? 'grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_auto_auto]' : 'grid-cols-[minmax(0,1fr)_auto]'}`}>
             {shippedView ? (
-              <div className="min-w-0 col-start-1 row-start-1">
+              <div className="min-w-0 col-span-2 row-start-1 md:col-span-1 md:col-start-1">
                 <TaskShippedTitle view={shippedView} title={heading.heading} />
               </div>
             ) : (
-            <div className="min-w-0 col-start-1 row-start-1">
-              <h1 className="text-[22px] md:text-[24px] font-semibold leading-snug tracking-[-0.2px] break-words max-w-[760px]">{heading.heading}</h1>
+            <div className="min-w-0 col-span-2 row-start-1 md:col-span-1 md:col-start-1">
+              <TaskTitle title={heading.heading} />
             </div>
             )}
             {/* With a verdict, the verdict block carries the state (and this hook). */}
             {!shippedView && !verdict && (
-              <span data-testid="task-header-status" data-status={displayStatus} className="col-span-2 row-start-2 md:col-span-1 md:col-start-2 md:row-start-1 md:mt-0.5">
+              <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:mt-0.5">
                 <HeaderStatusPill
                   status={displayStatus}
                   merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
@@ -1427,7 +1430,7 @@ export default async function TaskDetailPage({
                 />
               </span>
             )}
-            <div data-testid="task-header-actions" className={`flex items-center justify-end gap-2 col-start-2 row-start-1 md:mt-0.5 ${!shippedView && !verdict ? 'md:col-start-3' : ''}`}>
+            <div data-testid="task-header-actions" className={`flex items-center justify-end gap-2 col-start-2 row-start-2 md:row-start-1 md:mt-0.5 ${!shippedView && !verdict ? 'md:col-start-3' : ''}`}>
               <AskAboutLink kind="task" id={task.id} teamId={(task.workspace as { teamId?: string } | null)?.teamId ?? null} workspaceId={task.workspaceId} />
               <TaskOverflowMenu>
                 <EditTaskButton
@@ -1496,13 +1499,13 @@ export default async function TaskDetailPage({
             )}
           </div>
           {/* An attempt says what it is an attempt of, and links the deliverable. */}
-          {deliverableLink && (
-            <p data-testid="task-subject-link" className="mt-2 text-meta text-text-secondary [overflow-wrap:anywhere]">
-              {subject.kind === 'review' ? 'Review of' : 'Fix for'}{' '}
-              <Link href={taskPageHref({ taskId: deliverableLink.taskId, missionId: task.missionId })} className="inline-flex min-h-11 items-center text-accent-text hover:underline md:min-h-0">
-                {deliverableLink.title ? displayTaskTitle(deliverableLink.title) : 'the original task'} ›
-              </Link>
-            </p>
+          {deliverableLink && subject.kind !== 'deliverable' && (
+            <TaskSubjectLink
+              kind={subject.kind}
+              href={taskPageHref({ taskId: deliverableLink.taskId, missionId: task.missionId })}
+              prNumber={deliveryView?.prNumber ?? (typeof task.context?.prNumber === 'number' ? task.context.prNumber : null)}
+              title={deliverableLink.title ? displayTaskTitle(deliverableLink.title) : null}
+            />
           )}
           {/* The one track, in the delivery's words (task-page State mapping). A
               live run's own view leads with it, so it is drawn here only between runs. */}
@@ -1527,6 +1530,7 @@ export default async function TaskDetailPage({
             prUrl={prWorker?.prUrl ?? (deliveryView.repoFullName && deliveryView.prNumber != null ? `https://github.com/${deliveryView.repoFullName}/pull/${deliveryView.prNumber}` : null)}
             headSha={deliveryView.headSha}
             findings={deliveryContext.findings}
+            findingsUnavailable={deliveryContext.findingsUnavailable}
             currentTaskId={task.id}
           />
         )}
