@@ -58,7 +58,7 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
     <div className="flex flex-col gap-4">
       {heading}
       <Lede>
-        {view.replaces ? `Revision ${view.revision} replaces revision ${view.replaces}.` : `Revision ${view.revision} is the first to be approved.`}
+        {view.replaces ? `Revision ${view.revision} replaces revision ${view.replaces}.` : `Nothing is approved yet. Approving puts revision ${view.revision} in force.`}
       </Lede>
       <SpecRevisionPanes
         body={view.body}
