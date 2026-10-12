@@ -263,20 +263,43 @@ function list(items: string[]): string {
   return items.length > LIST_CAP ? `${shown}, and ${items.length - LIST_CAP} more` : shown;
 }
 
+/**
+ * `<route> @ <cell>` items grouped per route, `/a (mobile, desktop); /b (dark theme)`.
+ * Never capped: the auditor works from this list, and a capped one left an
+ * audit with dozens of missing routes unable to finish.
+ */
+function byRoute(cells: string[]): string {
+  const grouped = new Map<string, string[]>();
+  for (const c of cells) {
+    const at = c.lastIndexOf(' @ ');
+    const route = at < 0 ? c : c.slice(0, at);
+    grouped.set(route, [...(grouped.get(route) ?? []), ...(at < 0 ? [] : [c.slice(at + 3)])]);
+  }
+  return [...grouped].map(([route, of]) => (of.length > 0 ? `${route} (${of.join(', ')})` : route)).join('; ');
+}
+
 /** The 400 body's `error`: what is missing and how to fix it. */
 export function formatVisualEvidenceRejection(v: VisualEvidenceVerdict): string {
   const parts = ['Visual audit evidence incomplete.'];
   if (v.providerFailures?.length) parts.push(`Unusable browser provider evidence: ${list(v.providerFailures)}. Restore a working browser session and capture again.`);
+  if ((v.missing.length > 0 || v.missingThemes?.length) && v.requiredRoutes.length > 0) {
+    // The gate recomputes routes from the audit's current dependencies; the
+    // description's list was written at creation and can be out of date.
+    parts.push(
+      `Required routes, computed now from this audit's dependencies (this list, not the description's, is the contract), ` +
+        `all ${v.requiredRoutes.length}: ${v.requiredRoutes.join(', ')}.`,
+    );
+  }
   if (v.missing.length > 0) {
     parts.push(
-      `Missing screenshots (route @ viewport): ${list(v.missing)}. Upload each with upload_artifact ` +
+      `Missing screenshots (route (viewports)): ${byRoute(v.missing)}. Upload each with upload_artifact ` +
         `(type: 'screenshot', metadata.qa = { runKey, route, viewport: 'mobile' | 'desktop', finding, verdict: 'ok' | 'issue' | 'unsure' }) ` +
         'and PUT the bytes.',
     );
   }
   if (v.missingThemes?.length) {
     parts.push(
-      `Missing themes (route @ theme): ${list(v.missingThemes)}. Capture each route again with QA_THEME=light or ` +
+      `Missing themes (route (themes)): ${byRoute(v.missingThemes)}. Capture each route again with QA_THEME=light or ` +
         "QA_THEME=dark and record it as metadata.qa.theme: 'light' | 'dark' on the shot.",
     );
   }
@@ -330,9 +353,9 @@ export async function loadVisualAuditEvidence(opts: {
   });
   const deps = Array.isArray(task?.dependsOn) ? (task!.dependsOn as string[]) : [];
   const depRows = deps.length > 0
-    ? await db.query.tasks.findMany({ where: inArray(tasks.id, deps), columns: { pathManifest: true } })
+    ? await db.query.tasks.findMany({ where: inArray(tasks.id, deps), columns: { pathManifest: true, title: true, context: true } })
     : [];
-  const requiredRoutes = auditRequiredRoutes({ context: task?.context }, depRows.map((t) => t.pathManifest));
+  const requiredRoutes = auditRequiredRoutes({ context: task?.context }, depRows);
 
   // THIS worker's screenshots only. Unlike hasDeliverableArtifact there is no
   // mission-artifact arm: a sibling's shot must never satisfy the audit.

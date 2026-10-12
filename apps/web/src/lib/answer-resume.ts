@@ -454,6 +454,11 @@ export interface AnswerDeliveryRecord {
    */
   messageId?: string;
   /**
+   * Interactive path only: the ask id the wait capability was minted for
+   * (`waitingFor.waitCapId`, lib/answer-wait-capability.ts), when one was.
+   */
+  waitCapId?: string;
+  /**
    * The question being answered, kept so the deadline sweep can build a
    * continuation description after `waitingFor` has been cleared. Omitted when
    * a sensitive workspace redacted the prompt away.

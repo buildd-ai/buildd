@@ -43,10 +43,6 @@ export const teams = pgTable('teams', {
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
 
-  // Unused: which roles hold a permission is fixed in permission-registry.ts
-  // (docs/specs/team-permissions.md, "No per-team grants"). Nothing reads or
-  // writes it; a follow-up migration drops the column.
-  permissionOverrides: jsonb('permission_overrides').$type<Record<string, string[]>>().default({}).notNull(),
   // Hosted plan assignment for Buildd-managed runners: { plan, ...overrides }.
   // NULL = the deployment default (BUILDD_DEFAULT_MANAGED_PLAN), unlimited when
   // that is unset, so a self-hosted install has no commercial limit. Written by
@@ -130,6 +126,10 @@ export const teams = pgTable('teams', {
   // credentialPolicyOf (apps/web/src/lib/inference-key-policy.ts), which maps
   // team/team_or_own/own one-to-one. inferenceKeyPolicy is dropped later.
   credentialPolicy: text('credential_policy').$type<'team' | 'personal_first' | 'personal_only'>(),
+  // Which connected provider serves each surface (packages/core/providers/assignments.ts).
+  // NULL or a missing surface = the resolver's own ranking. A set surface puts
+  // that provider first within a scope; it never widens what the resolver may pick.
+  providerAssignments: jsonb('provider_assignments').$type<import('../providers/assignments').ProviderAssignments | null>(),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
@@ -6348,6 +6348,11 @@ export const promptEvalRuns = pgTable('prompt_eval_runs', {
   costUsd: real('cost_usd'),
   // Why the run failed or was skipped: fixed phrases naming ids and counts, never text.
   problems: jsonb('problems').$type<string[]>(),
+  // A model comparison (several models over a case set): the models asked, and
+  // which case sources it read ('labelled' | 'collected' | 'both'). Null on a
+  // single-model prompt eval.
+  models: jsonb('models').$type<string[]>(),
+  caseSource: text('case_source'),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (t) => ({
@@ -6379,6 +6384,14 @@ export const promptEvalResults = pgTable('prompt_eval_results', {
   errors: integer('errors').notNull().default(0),
   notRun: integer('not_run').notNull().default(0),
   costUsd: real('cost_usd'),
+  // Model comparison rows only (null on a single-model eval row): where the
+  // cases came from ('labelled' | 'collected', never pooled), the origin
+  // ('prompts-repo', 'dataset:<name>/<version>', 'replay'), and the content-free
+  // scores (calibration per confidence source, threshold sweep, derived
+  // threshold, agreement, latency, cost per 1k). Ids, counts and rates only.
+  caseSource: text('case_source'),
+  caseOrigin: text('case_origin'),
+  metrics: jsonb('metrics').$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   runIdx: index('prompt_eval_results_run_idx').on(t.runId),

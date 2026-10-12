@@ -8,6 +8,7 @@ import {
   buildSurfaceAuditDescription,
   isSurfaceAuditTask,
   isSurfaceFixTask,
+  isTrunkRefreshTask,
   planSurfaceFixFollowUp,
   surfaceAuditRound,
   surfaceAuditTitle,
@@ -31,6 +32,8 @@ export interface EnsureSurfaceAuditParams {
     title: string;
     taskClass: string | null;
     pathManifest: string[] | null;
+    /** Read for the trunk-refresh marks (`isTrunkRefreshTask`). */
+    context?: unknown;
   };
   targetWorkspace: {
     id?: string;
@@ -78,6 +81,9 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   // tasks, friction reports, etc.) as "builder work".
   if (createdTask.taskClass !== 'work') return;
   if (isSurfaceAuditTask(createdTask.title)) return;
+  // Merging trunk in is upkeep, not mission work: its manifest widens to
+  // trunk's whole diff, which would make the audit demand every route.
+  if (isTrunkRefreshTask(createdTask)) return;
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
@@ -163,9 +169,9 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
       eq(tasks.missionId, missionId),
       eq(tasks.taskClass, 'work'),
     ),
-    columns: { id: true, title: true, pathManifest: true },
+    columns: { id: true, title: true, pathManifest: true, context: true },
   });
-  const nonAuditBuilderTasks = builderTasks.filter(t => !isSurfaceAuditTask(t.title));
+  const nonAuditBuilderTasks = builderTasks.filter(t => !isSurfaceAuditTask(t.title) && !isTrunkRefreshTask(t));
   const dependsOn = nonAuditBuilderTasks.map(t => t.id);
   const scopedPaths = Array.from(new Set(
     nonAuditBuilderTasks
@@ -258,7 +264,7 @@ export async function planMissionSurfaceAudit(missionId: string): Promise<Surfac
   if (!targetWorkspace) return { ok: false, reason: 'no_workspace' };
 
   const builders = missionTasks.filter(t =>
-    t.taskClass === 'work' && !isSurfaceAuditTask(t.title ?? '') && !finishedWithoutLooking(t.status));
+    t.taskClass === 'work' && !isSurfaceAuditTask(t.title ?? '') && !isTrunkRefreshTask(t) && !finishedWithoutLooking(t.status));
   const gate = await evaluateSurfaceAuditGate(mission, missionTasks).catch(() => null);
   const scopedPaths = Array.from(new Set([
     ...(gate?.required ? gate.uiPaths : []),

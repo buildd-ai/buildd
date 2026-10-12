@@ -109,6 +109,24 @@ export function isSurfaceAuditTask(title: string): boolean {
   return title.startsWith(SURFACE_AUDIT_TITLE_PREFIX);
 }
 
+const TRUNK_MERGE_TITLE_RE = /\bmerge\s+`?(?:origin\/)?(?:dev|main|master|trunk)`?\s+into\b/i;
+
+/**
+ * A task that merges trunk into a branch: the automated mission-branch refresh
+ * (`context.requireMergeCommit` / `context.refreshTrunk`) or a hand-filed one
+ * (`chore(mission): merge dev into ...`). Its claim manifest widens to trunk's
+ * whole diff once its leases are promoted, so its paths say nothing about what
+ * the mission changed. An audit neither depends on it nor derives routes from it.
+ */
+export function isTrunkRefreshTask(task: { title?: string | null; context?: unknown }): boolean {
+  const ctx = task.context;
+  if (ctx && typeof ctx === 'object' && !Array.isArray(ctx)) {
+    const c = ctx as Record<string, unknown>;
+    if (c.requireMergeCommit === true || (typeof c.refreshTrunk === 'string' && c.refreshTrunk.length > 0)) return true;
+  }
+  return TRUNK_MERGE_TITLE_RE.test(task.title ?? '');
+}
+
 /**
  * Round 1 keeps the original title. A later round keeps the audit prefix, so
  * every caller that excludes audits by title (isNoOpenTasksCandidate, the

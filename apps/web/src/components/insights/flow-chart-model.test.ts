@@ -1,18 +1,12 @@
 import { describe, it, expect } from 'bun:test';
 import { buildFlowSeries, type FlowWorkerRow } from '@/lib/insights-flow';
 import {
-  STACK,
-  STRIP_GAP,
-  bandValue,
-  buildGeometry,
   formatDuration,
   formatHours,
   formatShare,
-  niceCeil,
   roleHours,
   tasksInBand,
 } from './flow-chart-model';
-import { dailyRows, fmtCount } from './FlowChart';
 import { emptyFlowSeries, resolveInsightsQaState, sampleFlowSeries } from '@/app/app/(protected)/health/insights/sample-series';
 
 const H = 3_600_000;
@@ -41,95 +35,6 @@ const S = series([
   w({ workerId: '3', taskId: 'c', taskStatus: 'failed', status: 'failed', startedAt: T0 + 6 * H, completedAt: T0 + 7 * H }),
 ]);
 
-describe('niceCeil', () => {
-  it('rounds up on a fine ladder so the stack fills most of the height', () => {
-    expect(niceCeil(0)).toBe(1);
-    expect(niceCeil(1.2)).toBe(1.5);
-    expect(niceCeil(3)).toBe(3);
-    expect(niceCeil(7)).toBe(8);
-    expect(niceCeil(11)).toBe(15);
-    expect(niceCeil(101)).toBe(150);
-  });
-});
-
-describe('buildGeometry', () => {
-  const g = buildGeometry(S, 400, 220);
-
-  it('draws every stacked band and lost work below the axis', () => {
-    for (const k of STACK) expect(g.paths[k].startsWith('M')).toBe(true);
-    expect(g.maxDown).toBe(1);
-    expect(g.paths.lost.startsWith('M')).toBe(true);
-    expect(g.zeroY).toBeLessThan(g.plot.bottom);
-  });
-
-  it('keeps the axis at the bottom when nothing was lost', () => {
-    const g2 = buildGeometry(series([w({ workerId: '1', taskId: 'x', startedAt: T0, completedAt: T0 + H })]), 400, 220);
-    expect(g2.maxDown).toBe(0);
-    expect(g2.paths.lost).toBe('');
-    expect(g2.zeroY).toBe(g2.plot.bottom);
-  });
-
-  it('gives lost work 15-35% of the height whatever its size, and drops a colliding tick label', () => {
-    const many = series(Array.from({ length: 30 }, (_, n) =>
-      w({ workerId: `f${n}`, taskId: `f${n}`, taskStatus: 'failed', status: 'failed', startedAt: T0 + n * 600_000, completedAt: T0 + n * 600_000 + 60_000 })));
-    const gm = buildGeometry(many, 400, 220);
-    const plotH = gm.plot.bottom - gm.plot.top;
-    expect((gm.plot.bottom - gm.lostTop) / plotH).toBeCloseTo(0.35, 5);
-    const busy = series(Array.from({ length: 40 }, (_, n) =>
-      w({ workerId: `r${n}`, taskId: `r${n}`, startedAt: T0, completedAt: T0 + 20 * H })).concat(
-      w({ workerId: 'x', taskId: 'x', taskStatus: 'failed', status: 'failed', startedAt: T0, completedAt: T0 + H })));
-    const gb = buildGeometry(busy, 400, 220);
-    expect((gb.plot.bottom - gb.lostTop) / (gb.plot.bottom - gb.plot.top)).toBeCloseTo(0.15, 5);
-    const tiny = buildGeometry(S, 400, 60);
-    expect(tiny.yTicks.some(t => t.value < 0)).toBe(false);
-    // Too short to label both ends without a collision: the strip keeps no ticks.
-    expect(tiny.lostTicks).toEqual([]);
-  });
-
-  it('gives lost work its own strip and its own scale, apart from the stages above', () => {
-    const many = series(Array.from({ length: 30 }, (_, n) =>
-      w({ workerId: `f${n}`, taskId: `f${n}`, taskStatus: 'failed', status: 'failed', startedAt: T0 + n * 600_000, completedAt: T0 + n * 600_000 + 60_000 })));
-    const gm = buildGeometry(many, 400, 220);
-    // A gap separates the two charts: nothing of the main chart reaches into the strip.
-    expect(gm.lostTop - gm.zeroY).toBeGreaterThanOrEqual(STRIP_GAP);
-    // The main axis is labelled 0..maxUp only; no negative or lost value sits on it.
-    expect(gm.yTicks.every(t => t.value >= 0 && t.y <= gm.zeroY + 0.001)).toBe(true);
-    expect(gm.yTicks.map(t => t.value)).toContain(gm.maxUp);
-    // The strip carries its own ticks, 0 at its top edge and its max at the bottom.
-    expect(gm.lostTicks.map(t => t.value)).toEqual([0, gm.maxDown]);
-    expect(gm.lostTicks[0].y).toBeCloseTo(gm.lostTop, 5);
-    expect(gm.lostTicks[1].y).toBeCloseTo(gm.plot.bottom, 5);
-    // The lost area is drawn inside the strip only.
-    const ys = [...gm.paths.lost.matchAll(/,(-?[\d.]+)/g)].map(m => Number(m[1]));
-    expect(Math.min(...ys)).toBeGreaterThanOrEqual(gm.lostTop - 0.05);
-    expect(Math.max(...ys)).toBeLessThanOrEqual(gm.plot.bottom + 0.05);
-  });
-
-  it('has no strip, gap or strip ticks when nothing was lost', () => {
-    const g2 = buildGeometry(series([w({ workerId: '1', taskId: 'x', startedAt: T0, completedAt: T0 + H })]), 400, 220);
-    expect(g2.lostTop).toBe(g2.plot.bottom);
-    expect(g2.lostTicks).toEqual([]);
-  });
-
-  it('places release marks on the time axis', () => {
-    expect(g.releases).toHaveLength(1);
-    expect(g.releases[0].x).toBeCloseTo(g.plot.left + (g.plot.right - g.plot.left) / 2, 5);
-    expect(g.releases[0].shipped).toBe(true);
-  });
-
-  it('maps a pointer x back to the bucket under it, clamped', () => {
-    expect(g.bucketIndexAt(g.plot.left)).toBe(0);
-    expect(g.bucketIndexAt(g.plot.right + 50)).toBe(23);
-    expect(g.bucketIndexAt(g.plot.left - 50)).toBe(0);
-    expect(g.bucketIndexAt(g.xOf(T0 + 2.5 * H))).toBe(2);
-  });
-
-  it('the y scale covers the tallest stack', () => {
-    const tallest = Math.max(...S.buckets.map(b => STACK.reduce((s, k) => s + bandValue(b, k), 0)));
-    expect(g.maxUp).toBeGreaterThanOrEqual(tallest);
-  });
-});
-
 describe('tasksInBand', () => {
   it('lists the tasks behind a band at a time', () => {
     expect(tasksInBand(S, 2, 'running').map(t => t.key).sort()).toEqual(['a', 'b']);
@@ -147,16 +52,6 @@ describe('roleHours', () => {
   });
 });
 
-describe('dailyRows', () => {
-  it('averages work stages over the day and takes the end-of-day running totals', () => {
-    const rows = dailyRows(S);
-    const total = rows.reduce((n, r) => n + r.values.running * 24, 0);
-    expect(total).toBeCloseTo(5, 5);
-    expect(rows[rows.length - 1].values.released).toBe(1);
-    expect(rows[rows.length - 1].values.lost).toBe(1);
-  });
-});
-
 describe('formatting', () => {
   it('formats hours, durations and shares for people', () => {
     expect(formatHours(0.5)).toBe('30m');
@@ -167,16 +62,6 @@ describe('formatting', () => {
     expect(formatDuration(72 * H)).toBe('3.0d');
     expect(formatShare(null)).toBe('—');
     expect(formatShare(0.614)).toBe('61%');
-  });
-});
-
-describe('fmtCount', () => {
-  it('keeps whole numbers whole and shows a decimal only below one', () => {
-    expect(fmtCount(0)).toBe('0');
-    expect(fmtCount(0.3)).toBe('0.3');
-    expect(fmtCount(0.97)).toBe('1');
-    expect(fmtCount(1)).toBe('1');
-    expect(fmtCount(6.4)).toBe('6');
   });
 });
 

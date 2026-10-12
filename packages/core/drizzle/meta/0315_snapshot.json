@@ -1,5 +1,5 @@
 {
-  "id": "b59ffc09-324c-442d-835c-cb2b1fd296e8",
+  "id": "4376de38-14e4-4ab5-ab2e-356571c69e63",
   "prevId": "49b68fd7-e181-4eda-8746-663dd275b4bb",
   "version": "7",
   "dialect": "postgresql",
@@ -9734,12 +9734,6 @@
         "end_reason": {
           "name": "end_reason",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "busy_since": {
-          "name": "busy_since",
-          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -21525,13 +21519,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "permission_overrides": {
-          "name": "permission_overrides",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
         },
         "managed_runner_plan": {
           "name": "managed_runner_plan",

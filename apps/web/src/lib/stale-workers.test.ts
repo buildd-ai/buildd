@@ -2269,12 +2269,13 @@ describe('cleanupStaleWorkers — pr_merged reaper exemption (B.3)', () => {
     expect(JSON.stringify(failedTaskUpdate.result)).toContain('PR merge wait expired');
   });
 
-  it('does not exempt a task with pr_checks_green condition from normal staleness', async () => {
+  it('exempts a task with pr_checks_green condition within wait expiry', async () => {
+    // Similar to pr_merged: pr_checks_green tasks are exempt while waiting for webhook
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
     mockWorkersFindMany
-      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: 42, commitCount: 0, branch: null, error: null }])
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: 42, commitCount: 1, branch: 'buildd/feat', error: null }])
       .mockResolvedValueOnce([])   // no other active workers
-      .mockResolvedValueOnce([]);  // failed workers for cap check
-    mockWorkersFindMany.mockResolvedValueOnce([]); // heartbeat orphans
+      .mockResolvedValueOnce([]);  // heartbeat orphans
 
     mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
     mockTasksFindFirst
@@ -2282,12 +2283,11 @@ describe('cleanupStaleWorkers — pr_merged reaper exemption (B.3)', () => {
         status: 'pending',
         context: {},
         category: null,
-        loopConfig: { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 },
+        loopConfig: { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3, waitExpiryMinutes: 240 },
         loopState: 'condition_unmet',
-        updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+        updatedAt: twoHoursAgo,
       })
-      .mockResolvedValueOnce([]) // failed workers
-      .mockResolvedValueOnce({ parentTaskId: null });
+      .mockResolvedValueOnce({ parentTaskId: null }); // resolveCompletedTask dep resolution
 
     const taskUpdates: any[] = [];
     mockTasksUpdate.mockReturnValue({
@@ -2299,8 +2299,45 @@ describe('cleanupStaleWorkers — pr_merged reaper exemption (B.3)', () => {
 
     await cleanupStaleWorkers('account-1');
 
-    // pr_checks_green tasks are NOT exempt — they go through normal stale handling
-    expect(taskUpdates.some(u => u.status === 'pending' || u.status === 'failed')).toBe(true);
+    // Task must NOT be failed or set to pending with a retry — reaper exemption applies
+    expect(taskUpdates.filter(u => u.status === 'failed' || u.status === 'pending')).toHaveLength(0);
+  });
+
+  it('fails a task with pr_checks_green condition after wait expiry', async () => {
+    const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: 42, commitCount: 1, branch: 'buildd/feat', error: null }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+
+    // updatedAt is 5h ago — past the 240-min ceiling
+    mockTasksFindFirst
+      .mockResolvedValueOnce({
+        status: 'pending',
+        context: {},
+        category: null,
+        loopConfig: { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3, waitExpiryMinutes: 240 },
+        loopState: 'condition_unmet',
+        updatedAt: fiveHoursAgo,
+      })
+      .mockResolvedValueOnce({ parentTaskId: null }); // resolveCompletedTask dep resolution
+
+    let failedTaskUpdate: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        if (vals.status === 'failed') failedTaskUpdate = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Task must be failed after expiry
+    expect(failedTaskUpdate).not.toBeNull();
+    expect(failedTaskUpdate.status).toBe('failed');
+    expect(JSON.stringify(failedTaskUpdate.result)).toContain('PR checks green wait expired');
   });
 });
 

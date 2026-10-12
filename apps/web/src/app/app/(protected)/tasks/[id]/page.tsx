@@ -119,7 +119,7 @@ import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
 import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
 import BookkeepingAttemptRow from './BookkeepingAttemptRow';
-import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision } from '@/lib/task-verdict';
+import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
@@ -846,6 +846,8 @@ export default async function TaskDetailPage({
 
 
   let prOutcome: PrOutcome | null = null;
+  // Claim to merge, for the status row (the one place a merged PR is stated).
+  let lineageClaimToMergeMs: number | null = null;
   if (prWorker) {
     const firstAttempt = {
       runner: runnerLabel(prWorker),
@@ -887,6 +889,7 @@ export default async function TaskDetailPage({
       })),
       pr: { lifecycle: prWorker.prLifecycleStatus ?? null, mergedAt: prWorker.mergedAt?.getTime() ?? null },
     });
+    lineageClaimToMergeMs = lineage.totals.claimToMergeMs;
     prOutcome = {
       repoLabel: task.workspace?.repo ? normalizeRepoFullName(task.workspace.repo) : null,
       summary: ((task.result as { summary?: string } | null)?.summary) ?? null,
@@ -921,8 +924,12 @@ export default async function TaskDetailPage({
     deliveryPrState: deliveryView?.prState ?? null,
   }), review: reviewOutcome,
     // The platform updating the branch or merging: in progress, not "ready to merge".
-    deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null });
+    deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null,
+    // A merged PR is stated once, on the status row, and the time goes with it.
+    claimToMerge: lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : null });
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
+  // The status row names and links the PR: the side panel and the PR card do not say it again.
+  const prStatedAbove = verdictLinksPr(verdict, prWorker?.prUrl);
   // What each agent error means for the outcome. Every trace stays inspectable;
   // only the ones the record says still matter are counted or shown in red.
   const traceWorkers = [...taskWorkers, ...ciAttemptTasks.flatMap(t => t.workers)];
@@ -995,9 +1002,10 @@ export default async function TaskDetailPage({
     p50Minutes: taskEstimate?.p50Minutes ?? null,
     p80Minutes: taskEstimate?.p80Minutes ?? null,
     summary: taskEstimate?.explanation?.summary ?? null,
+    priorWeight: taskEstimate?.explanation?.priorWeight ?? null,
   });
   const factRows: FactRow[] = [
-    ...(prOutcome && prWorker && isTerminal
+    ...(prOutcome && prWorker && isTerminal && !prStatedAbove
       ? [{
           key: 'pr',
           label: 'PR',
@@ -1895,6 +1903,7 @@ export default async function TaskDetailPage({
             // The header carries the summary and the one action.
             outcome: prOutcome && shippedView ? { ...prOutcome, summary: null } : prOutcome,
             hideAction: !!shippedView,
+            statedAbove: prStatedAbove,
             openAttempt,
           };
           return (

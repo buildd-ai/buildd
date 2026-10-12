@@ -37,6 +37,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { ACCESS_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
@@ -1830,7 +1831,8 @@ export default async function HomePage({
         // 7. Sentinel incidents the escalation gate gave to the owner: the
         // stored verdict, read here with no model call (lib/failure-incident-escalation.ts
         // through the composition root).
-        if (wsIds.length > 0) {
+        // Operator-only: a team's Home never carries incident cards (lib/service-status.ts is its surface).
+        if (wsIds.length > 0 && isPlatformOperator(user)) {
           waitingOnYou.push(...await INCIDENT_NEEDS_YOU(wsIds));
         }
 

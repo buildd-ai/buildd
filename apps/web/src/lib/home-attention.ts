@@ -187,7 +187,7 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
       return make({ label: 'check needed', tone: 'warning', title: subject, sentence: pr ? 'The last known tests and review are out of date. Check the PR before deciding.' : null, actionType: 'check', primary: { label: 'Check PR', href: pr ?? '' } });
     case 'INCIDENT':
       // The stored escalation-gate verdict (lib/failure-incident-escalation.ts) put it here; its reason is the sentence.
-      return make({ label: 'incident', tone: 'error', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'Open incident', href: text(i.fixHref) ?? '' } });
+      return make({ label: 'incident', tone: 'error', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'View details', href: text(i.fixHref) ?? '' } });
     case 'ACCESS':
       // A pending capability request (lib/capability-grants-needs-you.ts): what was asked is the title,
       // who asked and why is the sentence. The card approves or denies in place; the link is the fallback.

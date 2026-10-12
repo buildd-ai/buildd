@@ -109,7 +109,7 @@
     "apps/web/src/components/FlightDetailSheet.tsx": 7,
     "apps/web/src/components/GroupSection.tsx": 3,
     "apps/web/src/components/KeyHints.tsx": 1,
-    "apps/web/src/components/LoopStatus.tsx": 11,
+    "apps/web/src/components/LoopStatus.tsx": 8,
     "apps/web/src/components/MarkdownContent.tsx": 5,
     "apps/web/src/components/MergeConfirmButton.tsx": 9,
     "apps/web/src/components/MissionAuthorshipStats.tsx": 2,
@@ -210,13 +210,11 @@
   },
   "handRolledSheets": {
     "apps/web/src/app/app/(protected)/settings/connections/connectors/AddConnectionModal.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/connections/connectors/ConnectionsClient.tsx": 2,
+    "apps/web/src/app/app/(protected)/settings/connections/connectors/SharingDialog.tsx": 1,
     "apps/web/src/components/FlightDetailSheet.tsx": 1,
     "apps/web/src/components/chat/ChatCanvas.tsx": 1
   },
-  "localStatusBadges": {
-    "apps/web/src/app/app/(protected)/settings/connections/connectors/ConnectionsClient.tsx": 1
-  },
+  "localStatusBadges": {},
   "framedBoxes": {
     "apps/web/src/app/app/(protected)/artifacts/[id]/page.tsx": 1,
     "apps/web/src/app/app/(protected)/health/ExperimentsSection.tsx": 4,
@@ -239,7 +237,6 @@
     "apps/web/src/app/app/(protected)/missions/[id]/RaiseBudgetButton.tsx": 2,
     "apps/web/src/app/app/(protected)/missions/[id]/ScheduleWizard.tsx": 3,
     "apps/web/src/app/app/(protected)/settings/connections/connectors/AddConnectionModal.tsx": 11,
-    "apps/web/src/app/app/(protected)/settings/connections/connectors/ConnectionsClient.tsx": 3,
     "apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/OperatorAccessSection.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/TeamRoleEditor.tsx": 7,
@@ -328,7 +325,7 @@
     "apps/web/src/components/ArtifactViewer.tsx": 2,
     "apps/web/src/components/ConnectorIcon.tsx": 1,
     "apps/web/src/components/FlightDetailSheet.tsx": 1,
-    "apps/web/src/components/LoopStatus.tsx": 5,
+    "apps/web/src/components/LoopStatus.tsx": 4,
     "apps/web/src/components/MergeBlockerCard.tsx": 1,
     "apps/web/src/components/PolicyRescanSheet.tsx": 1,
     "apps/web/src/components/ResolvedEscalationsGroup.tsx": 1,
@@ -480,7 +477,6 @@
     "apps/web/src/app/app/(protected)/missions/[id]/RaiseBudgetButton.tsx": 2,
     "apps/web/src/app/app/(protected)/missions/[id]/ScheduleWizard.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/connections/connectors/AddConnectionModal.tsx": 6,
-    "apps/web/src/app/app/(protected)/settings/connections/connectors/ConnectionsClient.tsx": 2,
     "apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx": 1,
     "apps/web/src/app/app/(protected)/tasks/[id]/DeleteTaskButton.tsx": 2,
     "apps/web/src/app/app/(protected)/tasks/[id]/EditTaskModal.tsx": 1,

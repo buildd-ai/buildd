@@ -44,6 +44,7 @@ import type {
   decisionCall,
 } from '@buildd/core/decision-client';
 import type { TaskKind } from '@buildd/core/model-router';
+import type { DecisionReplayCapture } from '@buildd/core/decision-replay';
 import { readRoleRouting, renderRoutingCriterion } from './role-routing';
 import { registerValuePrompt } from '@buildd/core/prompts';
 
@@ -473,6 +474,13 @@ export interface TaskRoleShadowResult {
   applyEnabled?: boolean;
   /** Set once the candidate set is known, even on `too_few_candidates` or `error` (decision ledger). */
   fingerprint?: string;
+  /**
+   * What the model was asked, on `logged` only: the ledger rows that carry its
+   * answer keep it as a replayable copy (`@buildd/core/decision-replay`).
+   * Never logged. `state` adds the role options as they stood, since a role's
+   * routing text changes and the question cannot be rebuilt without it.
+   */
+  replay?: DecisionReplayCapture;
 }
 
 export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRoleShadowDeps = {}): Promise<TaskRoleShadowResult> {
@@ -564,7 +572,14 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
     };
     // Ids, slugs and numbers only: never the task's text or a role's routing text.
     log(`${DECISION_SHADOW_LOG_PREFIX} ${JSON.stringify(record)}`);
-    return { outcome: 'logged', record, applyEnabled, fingerprint };
+    const roleOptions = Object.fromEntries([...roleQ.slugFor].map(([label, slug]) => [slug, { label, criterion: roleQ.question.criteria[label] }]));
+    const replay: DecisionReplayCapture = {
+      state: { ...state, roleOptions },
+      questionIds: Object.keys(questions),
+      candidates: record.candidates,
+      promptRef: { id: TASK_ROLE_PROMPT_ID, version: taskRolePromptVersion(), contentHash: null },
+    };
+    return { outcome: 'logged', record, applyEnabled, fingerprint, replay };
   } catch (err) {
     console.error(`${DECISION_SHADOW_LOG_PREFIX} task_role failed (non-fatal, task unaffected):`, err);
     return { outcome: 'error' };

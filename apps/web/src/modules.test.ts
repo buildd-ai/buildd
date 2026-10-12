@@ -96,7 +96,7 @@ describe('composition root', () => {
     expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);
     // The ledger records the red head before the CI-fix retry is asked.
     expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed', 'reviews:ci-failure-retry', 'jev-decisions:verdict-on-ci-failed']);
-    expect(byEvent('pr.ci_passed')).toEqual(['jev-decisions:verdict-on-ci-passed']);
+    expect(byEvent('pr.ci_passed')).toEqual(['missions:loop-advance-on-ci-green', 'jev-decisions:verdict-on-ci-passed']);
     // The push is noted on the PR before a reviewer is re-dispatched.
     expect(byEvent('pr.synchronized')).toEqual(['reviews:pr-activity-changes-pushed', 'reviews:reviewer-redispatch-on-push', 'reviews:spec-checks-on-push', 'jev-decisions:verdict-on-push']);
   });

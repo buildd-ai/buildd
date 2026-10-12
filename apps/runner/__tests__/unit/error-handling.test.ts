@@ -977,7 +977,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: a loaded CI runner can take longer than 200ms.
+      for (let i = 0; i < 100 && manager.getWorker('w-fk-violation')?.status !== 'done'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       const worker = manager.getWorker('w-fk-violation');
       expect(worker?.status).toBe('done');

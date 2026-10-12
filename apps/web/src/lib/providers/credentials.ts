@@ -273,6 +273,24 @@ export async function countPersonalKeys(teamId: string): Promise<number> {
 }
 
 /**
+ * Workspaces of the team that hold model credentials of their own (a
+ * workspace-scoped row, never a personal one): the team Models page names
+ * how many, and links to each. Ids only.
+ */
+export async function workspacesWithKeys(teamId: string): Promise<string[]> {
+  try {
+    const rows = await db.query.secrets.findMany({
+      where: and(eq(secrets.teamId, teamId), inArray(secrets.purpose, modelCredentialPurposes() as never[]), isNotNull(secrets.workspaceId), isNull(secrets.userId)),
+      columns: { teamId: true, workspaceId: true, userId: true },
+    });
+    return [...new Set(rows.filter((r) => r.teamId === teamId && r.workspaceId && !r.userId).map((r) => r.workspaceId!))].sort();
+  } catch (error) {
+    console.warn('[providers] workspace key lookup failed:', error);
+    return [];
+  }
+}
+
+/**
  * Every provider, in Settings order, with its rows per scope. `userId` is the
  * signed-in person (their own rows fill `mine`); null for a key or task token.
  */

@@ -46,7 +46,6 @@ export const SHAPE_NOUN: Record<ProviderShapeId, string> = {
 };
 
 /** The LiteLLM gateway and custom endpoint forms: the Routing section further down this page. */
-export const ADVANCED_ANCHOR = 'routing';
 
 export const ADMINS_ONLY = 'Admins can change this.';
 export const POLICY_BLOCKS_MINE = "Your team's policy doesn't use personal keys.";
@@ -235,50 +234,57 @@ export function detectPaste(groupId: string, value: string): { provider: string;
   return { error: 'Unknown provider.' };
 }
 
-// ── Coverage ─────────────────────────────────────────────────────────────────
 
-/** Where the work runs, in words a person picks a model for. */
-export const COVERAGE_LABEL: Record<ProviderSurfaceId, string> = {
-  chat: 'Chat',
-  'agent-claude': 'Claude Code (host runners)',
-  'agent-codex': 'Codex (host runners)',
-  'cloud-egress': 'Cloud coding',
-};
 
-export interface CoverageLine {
-  surface: ProviderSurfaceId;
-  label: string;
-  /** Providers with a stored row at a scope this view can see that a reader uses for this surface. */
-  usedBy: { provider: string; label: string; scopes: ProviderApiScope[] }[];
-  /** Nothing set serves it: providers that could, so the fix is a key away. */
-  couldUse: { provider: string; label: string }[];
+
+
+// ── Used for ─────────────────────────────────────────────────────────────────
+
+/** Providers the team has connected (a team row exists), in registry order. */
+export function connectedProviders(res: Pick<ListProvidersResponse, 'providers'>): ProviderListing[] {
+  return res.providers.filter((p) => (p.set.team ?? []).length > 0);
 }
 
+export interface UsedForOption { value: string; label: string; disabled: boolean; description?: string }
+export interface UsedForRow { surface: ProviderSurfaceId; label: string; value: string | null; options: UsedForOption[] }
+
+/** "Automatic": the team made no pick for this surface; the resolver's own order decides. */
+export const AUTOMATIC = '';
+
 /**
- * Per surface: which configured provider serves it, or which providers would.
- * Built from the listing only (`set` rows and `servesToday`), so a registry
- * change reaches it without an edit. Rows are described, never read.
+ * One connected provider: no rows (it serves what it can, and `loneProviderLine`
+ * says so). Two or more: one row per surface, every connected provider an
+ * option, the ones a surface cannot use disabled with the registry's reason.
  */
-export function coverageView(res: Pick<ListProvidersResponse, 'providers'>): CoverageLine[] {
+export function usedForView(
+  res: Pick<ListProvidersResponse, 'providers'>,
+  assignments: Partial<Record<ProviderSurfaceId, string>>,
+): UsedForRow[] | null {
+  const connected = connectedProviders(res);
+  if (connected.length < 2) return null;
   return SURFACE_ORDER.map((surface) => {
-    const usedBy: CoverageLine['usedBy'] = [];
-    for (const p of res.providers) {
-      const scopes = (['team', 'workspace', 'mine'] as const).filter((sc) => (p.set[sc] ?? []).some((r) => r.servesToday.includes(surface)));
-      if (scopes.length) usedBy.push({ provider: p.id, label: p.label, scopes });
-    }
-    const couldUse = usedBy.length
-      ? []
-      : res.providers.filter((p) => p.surfaces[surface]?.ok).map((p) => ({ provider: p.id, label: p.label }));
-    return { surface, label: COVERAGE_LABEL[surface], usedBy, couldUse };
+    const options: UsedForOption[] = connected.map((p) => {
+      const support = p.surfaces[surface];
+      if (support?.ok) return { value: p.id, label: p.label, disabled: false };
+      // The limit as a fact where someone acts ("Needs OpenAI or OpenRouter"), not a list of what it can't do.
+      const instead = support?.instead?.map((id) => res.providers.find((q) => q.id === id)?.label ?? id) ?? [];
+      return { value: p.id, label: p.label, disabled: true, description: instead.length ? `Needs ${orList(instead)}` : support?.reason };
+    });
+    const picked = assignments[surface];
+    const value = picked && options.some((o) => o.value === picked && !o.disabled) ? picked : null;
+    return { surface, label: SURFACE_LABEL[surface], value, options };
   });
 }
 
-const SCOPE_WORD: Record<ProviderApiScope, string> = { team: 'team', workspace: 'workspace', mine: 'yours' };
+/** With one connected provider: "OpenRouter is used for chat, Claude agents and cloud agents." */
+export function loneProviderLine(res: Pick<ListProvidersResponse, 'providers'>): string | null {
+  const connected = connectedProviders(res);
+  if (connected.length !== 1) return null;
+  const p = connected[0];
+  const { serves } = servesLine(p);
+  return serves.length ? `${p.label} is used for ${surfaceList(serves)}.` : null;
+}
 
-/** "OpenAI (team, yours)" or "Nothing set — add Anthropic, OpenRouter or LiteLLM gateway." */
-export function coverageText(line: CoverageLine): string {
-  if (line.usedBy.length) return line.usedBy.map((u) => `${u.label} (${u.scopes.map((s) => SCOPE_WORD[s]).join(', ')})`).join(' · ');
-  if (!line.couldUse.length) return 'Unavailable';
-  const names = line.couldUse.map((c) => c.label);
-  return `Not set up. Add ${names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0]}.`;
+function orList(names: readonly string[]): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0] ?? '';
 }
