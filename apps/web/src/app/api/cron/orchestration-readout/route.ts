@@ -8,6 +8,7 @@ import { buildSchedulingMetricsReadout, type WeekReadoutRow } from '@buildd/core
 import { arrayOverlaps, desc, eq } from 'drizzle-orm';
 import { withCronRun } from '@/lib/cron-run';
 import { channels, events, triggerEvent } from '@/lib/pusher';
+import { gradeStrandChoiceDecisions } from '@/lib/strand-choice-grading';
 
 export const maxDuration = 60;
 const KEY = 'conflict-aware-orchestration-readout';
@@ -108,7 +109,9 @@ export async function GET(req: NextRequest) {
         errors++;
       }
     }
-    const result = { processed: optedIn.length, changed, errors, notes };
+    // Outcome gold for the strand choice (lib/strand-choice-grading.ts); never throws.
+    const strandGrades = await gradeStrandChoiceDecisions({ now: until });
+    const result = { processed: optedIn.length, changed, errors, notes, strandGrades };
     report({ ...result, result });
     return NextResponse.json(result);
   });

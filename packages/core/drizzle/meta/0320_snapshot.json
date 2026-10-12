@@ -1,6 +1,6 @@
 {
-  "id": "ef5edbaf-f377-4111-98b3-8318796a1d09",
-  "prevId": "035a0075-9dd2-46ae-af18-e2d79865d057",
+  "id": "c3567a55-312b-464d-acb7-aa49dcf2ab49",
+  "prevId": "75f68973-7951-4053-9a61-d04da5072871",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -20415,6 +20415,12 @@
         "schedule_id": {
           "name": "schedule_id",
           "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "delegation": {
+          "name": "delegation",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

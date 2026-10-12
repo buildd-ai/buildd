@@ -120,6 +120,11 @@ export interface HealthRow {
   costUsd: number | null;
   /** A person later corrected the answer in effect. */
   overridden: boolean;
+  /**
+   * A replayable copy of the input exists (decision-replay.ts). Undefined or
+   * null: the caller cannot tell; the ledger row does not record it.
+   */
+  replayed?: boolean | null;
 }
 
 export interface HealthOutcome {
@@ -158,6 +163,15 @@ export interface FeatureHealth {
   rule: Accuracy;
   /** Human corrections of an acted answer; rate over acted. */
   overrides: { n: number; rate: number | null };
+  /**
+   * What the feature is collecting to be measured with. `labelled`: decisions
+   * with any outcome label, from any source. `replay`: decisions with a
+   * replayable input copy; null when the rows do not say. pct is 0-100.
+   */
+  coverage: {
+    labelled: { n: number; pct: number | null; bySource: Array<{ source: string; n: number }> };
+    replay: { n: number; pct: number | null } | null;
+  };
 }
 
 const pct = (k: number, n: number) => (n > 0 ? Math.round((k / n) * 1000) / 10 : null);
@@ -231,6 +245,18 @@ export function computeFeatureHealth(
   const rule = accuracyOf(ids, outcomes, AGENT_AUDIT_RULE_SOURCE);
   const overridden = rows.filter(r => r.applied && r.overridden).length;
 
+  const labelledIds = new Set<string>();
+  const sourceIds = new Map<string, Set<string>>();
+  for (const o of outcomes) {
+    if (!ids.has(o.decisionRecordId)) continue;
+    labelledIds.add(o.decisionRecordId);
+    (sourceIds.get(o.source) ?? sourceIds.set(o.source, new Set()).get(o.source)!).add(o.decisionRecordId);
+  }
+  const bySource = [...sourceIds].map(([source, set]) => ({ source, n: set.size }))
+    .sort((a, b) => b.n - a.n || a.source.localeCompare(b.source));
+  const replayKnown = rows.length > 0 && rows.every(r => typeof r.replayed === 'boolean');
+  const replayed = rows.filter(r => r.replayed === true).length;
+
   return {
     collection: collectionOf(rows, graded, byReason, minGraded),
     calls,
@@ -241,6 +267,10 @@ export function computeFeatureHealth(
     graded,
     rule,
     overrides: { n: overridden, rate: acted > 0 ? overridden / acted : null },
+    coverage: {
+      labelled: { n: labelledIds.size, pct: pct(labelledIds.size, calls), bySource },
+      replay: replayKnown ? { n: replayed, pct: pct(replayed, calls) } : null,
+    },
   };
 }
 

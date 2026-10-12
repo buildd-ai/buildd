@@ -288,3 +288,27 @@ describe('labelDecisionAudit', () => {
     expect(rows).toHaveLength(0);
   });
 });
+
+describe('computeFeatureHealth — collection coverage', () => {
+  it('reports the share of decisions with any outcome label, by source', () => {
+    const rows = [row({ id: 'a' }), row({ id: 'b' }), row({ id: 'c' }), row({ id: 'd' })];
+    const h = computeFeatureHealth(rows, [
+      { decisionRecordId: 'a', source: 'human', label: 'overridden' },
+      { decisionRecordId: 'a', source: 'strand_followup', label: 'wait-for-local' },
+      { decisionRecordId: 'b', source: 'strand_followup', label: 'continue-on-runner' },
+      { decisionRecordId: 'other', source: 'human', label: 'overridden' },
+    ]);
+    expect(h.coverage.labelled).toEqual({ n: 2, pct: 50, bySource: [{ source: 'strand_followup', n: 2 }, { source: 'human', n: 1 }] });
+  });
+
+  it('a feature with no labels reads 0%, never missing', () => {
+    expect(computeFeatureHealth([row({ id: 'a' })], []).coverage.labelled).toEqual({ n: 0, pct: 0, bySource: [] });
+    expect(computeFeatureHealth([], []).coverage.labelled).toEqual({ n: 0, pct: null, bySource: [] });
+  });
+
+  it('replay coverage only when every row says whether it has a copy', () => {
+    expect(computeFeatureHealth([row({ id: 'a' })], []).coverage.replay).toBeNull();
+    expect(computeFeatureHealth([row({ id: 'a', replayed: true }), row({ id: 'b', replayed: null })], []).coverage.replay).toBeNull();
+    expect(computeFeatureHealth([row({ id: 'a', replayed: true }), row({ id: 'b', replayed: false })], []).coverage.replay).toEqual({ n: 1, pct: 50 });
+  });
+});

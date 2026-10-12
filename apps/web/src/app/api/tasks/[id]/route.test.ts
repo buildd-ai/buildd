@@ -193,6 +193,14 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 // Import handlers AFTER mocks
+// A person's delegation write (lib/task-delegation-checks.ts, tested in
+// task-delegation-scenario.test.ts and api/tasks/route.test.ts); here only
+// how PATCH routes it.
+const mockResolveTaskDelegationWrite = mock(async (input: unknown, _ws: string, person: string | null): Promise<any> =>
+  person ? { ok: true, value: input ? { ...(input as object), grantedByUserId: person, grantedByAccountId: null, grantedAt: 'now' } : null }
+    : { ok: false, status: 403, error: 'Only a person can grant a task delegation' });
+mock.module('@/lib/task-delegation-checks', () => ({ resolveTaskDelegationWrite: mockResolveTaskDelegationWrite }));
+
 import { GET, PATCH, DELETE } from './route';
 
 // Helper to create mock NextRequest
@@ -716,6 +724,58 @@ describe('PATCH /api/tasks/[id]', () => {
     mockTasksFindMany.mockResolvedValue([]);
     mockIsMissionLinkable.mockReset();
     mockIsMissionLinkable.mockResolvedValue(true);
+  });
+
+  describe('delegation (update_task before claim)', () => {
+    const TARGET = '22222222-2222-4222-8222-222222222222';
+    const grant = { grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }] };
+    const task = (status = 'pending') => ({ id: TASK_ID, title: 'T', status, workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' } });
+    const patch = (body: Record<string, unknown>, headers?: Record<string, string>) =>
+      callHandler(PATCH, createMockRequest({ method: 'PATCH', body, ...(headers ? { headers } : {}) }), TASK_ID);
+
+    it('a person grants it on a pending task; it is written to the task row, guarded on pending', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-owner', email: 'o@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      const set = mock((_v: any) => ({ where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, delegation: { ...grant, grantedByUserId: 'user-owner' } }]) })) }));
+      mockTasksUpdate.mockReturnValue({ set });
+      const res = await patch({ delegation: grant });
+      expect(res.status).toBe(200);
+      expect(mockResolveTaskDelegationWrite.mock.calls.at(-1)).toEqual([grant, 'ws-1', 'user-owner']);
+      expect(set.mock.calls[0][0].delegation).toMatchObject({ ...grant, grantedByUserId: 'user-owner' });
+      expect((await res.json()).delegation.grants[0].workspaceId).toBe(TARGET);
+    });
+
+    it('is refused once the task is claimed: a running agent asks with request_capability', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-owner', email: 'o@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task('in_progress'));
+      const res = await patch({ delegation: grant });
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toContain('request_capability');
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+
+    it('a claim racing the write answers 409, not a silent grant on a running task', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-owner', email: 'o@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) });
+      expect((await patch({ delegation: grant })).status).toBe(409);
+    });
+
+    it('is sent on its own', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-owner', email: 'o@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      expect((await patch({ delegation: grant, title: 'x' })).status).toBe(400);
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+
+    it('an API key is not a person: refused, nothing written', async () => {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'acct-admin', level: 'admin', teamId: 'team-1' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      const res = await patch({ delegation: grant }, { Authorization: 'Bearer bld_admin' });
+      expect(res.status).toBe(403);
+      expect(mockResolveTaskDelegationWrite.mock.calls.at(-1)![2]).toBeNull();
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
   });
 
   // Review of #3053: a dependsOn edge may only name tasks in the task's own

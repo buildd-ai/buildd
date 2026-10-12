@@ -238,6 +238,8 @@ const DEFERRED_TASK_EXCLUSION_CODES = new Set<string>([
   'provider_unavailable', 'budget_paused', 'routing_paused', 'sibling_retry_open',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'ordered_behind',
   'path_overlap', 'connector_mismatch', 'role_env_unsatisfied',
+  // Cross-workspace reach not granted yet: held until a person grants it.
+  'delegation_unmet',
   // personal_only and the requester has no key yet (or this runner is too
   // old to receive one): queued until they add a key or the runner updates.
   'no_personal_credential', 'provider_not_allowed',
