@@ -1,17 +1,26 @@
 import { describe, it, expect } from 'bun:test';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   classifyExtraSchemaObjects,
   classifyMissingSchemaObjects,
   createTableColumns,
+  expectedColumnsFromSnapshot,
   loadMigrationSources,
+  loadMigrationSourcesV1,
   loadSnapshotMetas,
+  loadSnapshotMetasV1,
   reconcileAppliedCount,
   resolveSnapshotSelection,
+  resolveSnapshotSelectionV1,
+  snapshotChainGaps,
   type MigrationSource,
   type SnapshotMeta,
+  type SnapshotMetaV1,
 } from '../db/migrate-drift';
+import { predictedFolderName, type LegacyMigration } from '../db/legacy-migrations';
+import { readMigrationTree } from '../db/migrate-tree';
 
 /**
  * Guard for finding C32b: `scripts/check-schema-drift.ts` printed `[pending]`
@@ -665,5 +674,159 @@ describe('build.yml migration check does not trust db:generate exit code', () =>
         'code or on `git status --porcelain drizzle/` alone lets a broken generate ' +
         'report success, because a generate that fails writes nothing.'
     ).toMatch(/grep -qE .\^Error:/);
+  });
+});
+
+// ─── drizzle v1 folder layout ────────────────────────────────────────────────
+
+const V1_FIXTURE = join(import.meta.dir, 'fixtures', 'drizzle-v1-rc4');
+const ROOT_ID = '00000000-0000-0000-0000-000000000000';
+const metaV1 = (file: string, id: string, prevIds: string[]): SnapshotMetaV1 => ({ file, id, prevIds });
+
+describe('v1 snapshots (rc property f: v8 snapshots carry id / prevIds)', () => {
+  it('reads id and prevIds from every folder snapshot, in folder-name order', () => {
+    const metas = loadSnapshotMetasV1(V1_FIXTURE);
+    expect(metas.map((m) => m.file)).toEqual([
+      '20261012153026_init/snapshot.json',
+      '20261012153027_add_extra/snapshot.json',
+    ]);
+    expect(metas[0]!.prevIds).toEqual([ROOT_ID]);
+    expect(metas[1]!.prevIds).toEqual([metas[0]!.id]);
+  });
+
+  it('walks from the newest snapshot to the root through prevIds with no gap', () => {
+    expect(snapshotChainGaps(loadSnapshotMetasV1(V1_FIXTURE))).toEqual([]);
+  });
+
+  it('reports a prevId that names no snapshot in the tree', () => {
+    expect(snapshotChainGaps([metaV1('a/snapshot.json', 'A', [ROOT_ID]), metaV1('b/snapshot.json', 'B', ['gone'])])).toEqual([
+      'b/snapshot.json: prevId gone is not in the tree',
+    ]);
+  });
+
+  it('reads the expected table -> columns from a v8 (ddl[]) snapshot', () => {
+    const snapshot = JSON.parse(readFileSync(join(V1_FIXTURE, '20261012153027_add_extra', 'snapshot.json'), 'utf8'));
+    expect(expectedColumnsFromSnapshot(snapshot)).toEqual(new Map([['widgets', new Set(['id', 'name', 'kind', 'extra'])]]));
+  });
+
+  it('still reads a v7 (tables{}) snapshot', () => {
+    const snapshot = { tables: { 'public.t': { name: 't', schema: 'public', columns: { a: { name: 'a' } } } } };
+    expect(expectedColumnsFromSnapshot(snapshot)).toEqual(new Map([['t', new Set(['a'])]]));
+  });
+
+  it('refuses a snapshot it cannot read rather than expecting nothing', () => {
+    expect(() => expectedColumnsFromSnapshot({ version: '9' })).toThrow(/snapshot/);
+  });
+});
+
+describe('resolveSnapshotSelectionV1', () => {
+  it('resolves the newest folder on a linear chain', () => {
+    const metas = [metaV1('a/snapshot.json', 'A', [ROOT_ID]), metaV1('b/snapshot.json', 'B', ['A'])];
+    expect(resolveSnapshotSelectionV1(metas)).toEqual({ kind: 'resolved', file: 'b/snapshot.json', siblings: [] });
+  });
+
+  it('REFUSES when another snapshot shares a parent with the tip (two branches, no merge snapshot)', () => {
+    const metas = [
+      metaV1('a/snapshot.json', 'A', [ROOT_ID]),
+      metaV1('b/snapshot.json', 'B', ['A']),
+      metaV1('c/snapshot.json', 'C', ['A']),
+    ];
+    expect(resolveSnapshotSelectionV1(metas)).toEqual({ kind: 'forked', file: 'c/snapshot.json', siblings: ['b/snapshot.json'], prevId: 'A' });
+  });
+
+  it('resolves a merge snapshot whose prevIds name both branch leaves', () => {
+    const metas = [
+      metaV1('a/snapshot.json', 'A', [ROOT_ID]),
+      metaV1('b/snapshot.json', 'B', ['A']),
+      metaV1('c/snapshot.json', 'C', ['A']),
+      metaV1('d/snapshot.json', 'D', ['B', 'C']),
+    ];
+    expect(resolveSnapshotSelectionV1(metas).kind).toBe('resolved');
+  });
+
+  it('does not call two roots a fork', () => {
+    const metas = [metaV1('a/snapshot.json', 'A', [ROOT_ID]), metaV1('b/snapshot.json', 'B', [ROOT_ID])];
+    expect(resolveSnapshotSelectionV1(metas).kind).toBe('resolved');
+  });
+
+  it('reports having nothing to resolve', () => {
+    expect(resolveSnapshotSelectionV1([])).toEqual({ kind: 'empty' });
+  });
+});
+
+describe('loadMigrationSourcesV1 and name-keyed classification', () => {
+  let dir = '';
+  const legacyWhen = Date.UTC(2025, 0, 1) + 321;
+  const legacyTag = '0007_add_tasks_flag';
+  const legacyName = predictedFolderName(legacyTag, legacyWhen);
+  const postName = '20260601000000_add_tasks_note';
+
+  function tree() {
+    dir = mkdtempSync(join(tmpdir(), 'drift-v1-'));
+    mkdirSync(join(dir, legacyName));
+    writeFileSync(join(dir, legacyName, 'migration.sql'), 'ALTER TABLE "tasks" ADD COLUMN "flag" boolean;');
+    mkdirSync(join(dir, postName));
+    writeFileSync(join(dir, postName, 'migration.sql'), 'ALTER TABLE "tasks" ADD COLUMN "note" text;');
+    const hash = readMigrationTree(dir).find((m) => m.name === legacyName)!.hash;
+    const legacy: LegacyMigration[] = [{ name: legacyName, tag: legacyTag, when: legacyWhen, hash }];
+    return legacy;
+  }
+
+  it('legacy folders carry their ms when; post-cutover folders are keyed by name only', () => {
+    const legacy = tree();
+    try {
+      expect(loadMigrationSourcesV1(dir, legacy)).toEqual([
+        { tag: legacyName, name: legacyName, when: legacyWhen, statements: ['ALTER TABLE "tasks" ADD COLUMN "flag" boolean;'] },
+        { tag: postName, name: postName, when: null, statements: ['ALTER TABLE "tasks" ADD COLUMN "note" text;'] },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a pre-upgrade DB (legacy rows unnamed) still reads legacy migrations as applied, via the exact-ms when', () => {
+    const legacy = tree();
+    try {
+      const result = classifyMissingSchemaObjects({
+        sources: loadMigrationSourcesV1(dir, legacy),
+        appliedWhens: new Set([legacyWhen]),
+        appliedNames: new Set(),
+        expected: new Map([['tasks', new Set(['id', 'flag', 'note'])]]),
+        actual: new Map([['tasks', new Set(['id'])]]),
+      });
+      expect(result.drift.map((d) => d.split(' ')[0])).toEqual(['tasks.flag']);
+      expect(result.pending.map((d) => d.split(' ')[0])).toEqual(['tasks.note']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a post-cutover migration recorded by name is APPLIED; a matching created_at alone is not', () => {
+    const legacy = tree();
+    try {
+      const sources = loadMigrationSourcesV1(dir, legacy);
+      const input = {
+        sources,
+        expected: new Map([['tasks', new Set(['id', 'note'])]]),
+        actual: new Map([['tasks', new Set(['id'])]]),
+      };
+      const byWhenOnly = classifyMissingSchemaObjects({ ...input, appliedWhens: new Set([Date.UTC(2026, 5, 1)]), appliedNames: new Set() });
+      expect(byWhenOnly.drift).toEqual([]);
+      const byName = classifyMissingSchemaObjects({ ...input, appliedWhens: new Set(), appliedNames: new Set([postName]) });
+      expect(byName.drift.map((d) => d.split(' ')[0])).toEqual(['tasks.note']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reconcileAppliedCount counts a source recorded by name or by legacy when, once', () => {
+    const sources: MigrationSource[] = [
+      { tag: 'l', name: 'l', when: 100, statements: [] },
+      { tag: 'p', name: 'p', when: null, statements: [] },
+      { tag: 'q', name: 'q', when: null, statements: [] },
+    ];
+    expect(
+      reconcileAppliedCount({ sources, appliedWhens: new Set([100, 7, 8]), appliedNames: new Set(['l', 'p']), appliedTotal: 4 })
+    ).toEqual({ journalEntries: 3, appliedTotal: 4, appliedFromJournal: 2, pending: 1, historicalOutsideRef: 2, reconciles: true });
   });
 });

@@ -175,6 +175,36 @@ describe('drizzle migrations at the same index', () => {
     expect(exitCodeFor(report)).toBe(2);
   });
 
+  it('trunk on drizzle v1, branch still on the journal: renumber refuses, a person regenerates', () => {
+    // dev deleted the journal at the cutover; the branch modified it: a
+    // modify/delete conflict the legacy renumber must not "resolve".
+    diverge({
+      base: () => { write('packages/core/db/schema.ts', 's0\n'); write('packages/core/drizzle/0000_base.sql', 'SELECT 1;\n'); write('packages/core/drizzle/meta/_journal.json', journal(['0000_base'])); },
+      trunk: () => {
+        realRun('git', ['rm', '-q', '-r', 'packages/core/drizzle'], { cwd: root });
+        write('packages/core/drizzle/20260101000000_base/migration.sql', 'SELECT 1;\n');
+        write('packages/core/drizzle/20260101000000_base/snapshot.json', '{}\n');
+      },
+      mission: () => { write('packages/core/drizzle/0001_mission.sql', 'SELECT 2;\n'); write('packages/core/drizzle/meta/_journal.json', journal(['0000_base', '0001_mission'])); },
+    });
+    const report = resolveGeneratedConflicts(root, runWith({}));
+    expect(report.steps[0]).toMatchObject({ path: 'packages/core/drizzle/', result: 'needs_person' });
+    expect((report.steps[0] as { reason: string }).reason).toMatch(/drizzle v1/);
+    expect(exitCodeFor(report)).toBe(2);
+  });
+
+  it('does not call it resolved when the repair leaves a legacy .sql next to v1 folders', () => {
+    journalsCollide();
+    const report = resolveGeneratedConflicts(root, runWith({}), (dir) => {
+      const r = renumbered()(dir);
+      write('packages/core/drizzle/20260101000000_x/migration.sql', 'SELECT 1;\n');
+      write('packages/core/drizzle/0002_left_behind.sql', 'SELECT 1;\n');
+      return r;
+    });
+    expect(report.steps[0]).toMatchObject({ path: 'packages/core/drizzle/', result: 'needs_person' });
+    expect((report.steps[0] as { reason: string }).reason).toContain('layout check');
+  });
+
   it('leaves it for a person when the renumber itself fails', () => {
     journalsCollide();
     const report = resolveGeneratedConflicts(root, runWith({}), renumbered({ throws: 'drizzle-kit generate failed' }));

@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
 import { LAST_RELEASE_BEFORE_SQUASH } from '@buildd/core/db/migrate-plan';
-import { assertDbConfigured } from './harness';
+import { assertDbConfigured, fingerprint, withDb } from './harness';
 
 const ROOT = join(import.meta.dir, '..', '..', '..', '..');
 const CORE = join(ROOT, 'packages', 'core');
@@ -96,55 +96,6 @@ function migrateOk(url: string, tree: string): string {
   if (r.status !== 0) throw new Error(`migrate failed (${r.status}):\n${r.out.slice(-3000)}`);
   return r.out;
 }
-
-/**
- * Everything a migration can create in `public`, rendered by Postgres itself.
- * Column order is by position among live columns, so a column dropped and the
- * gap it leaves do not count as a difference — the baseline cannot reproduce
- * attnum gaps and nothing observable depends on them.
- */
-const FINGERPRINT = `
-  SELECT 'ext' AS k, extname AS v FROM pg_extension WHERE extname <> 'plpgsql'
-  UNION ALL
-  SELECT 'type', t.typname || ':' || string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
-    FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid JOIN pg_namespace n ON n.oid = t.typnamespace
-   WHERE n.nspname = 'public' GROUP BY t.typname
-  UNION ALL
-  SELECT 'rel', c.relname || ':' || c.relkind::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND c.relkind IN ('r','v','m','S','p','f')
-  UNION ALL
-  SELECT 'col', c.relname || '#' || row_number() OVER (PARTITION BY c.oid ORDER BY a.attnum) || ':' || a.attname || ' '
-       || format_type(a.atttypid, a.atttypmod) || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END
-       || coalesce(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), '') || ' gen=' || a.attgenerated::text || ' id=' || a.attidentity::text
-    FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-    LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-   WHERE n.nspname = 'public' AND c.relkind IN ('r','v','m','p') AND a.attnum > 0 AND NOT a.attisdropped
-  UNION ALL
-  SELECT 'con', conrelid::regclass::text || ':' || conname || ' ' || pg_get_constraintdef(oid)
-    FROM pg_constraint WHERE connamespace = 'public'::regnamespace
-  UNION ALL
-  SELECT 'idx', indexdef FROM pg_indexes WHERE schemaname = 'public'
-  UNION ALL
-  SELECT 'fn', pg_get_functiondef(p.oid) FROM pg_proc p
-   WHERE p.pronamespace = 'public'::regnamespace AND p.prokind = 'f'
-     AND NOT EXISTS (SELECT 1 FROM pg_depend dep WHERE dep.objid = p.oid AND dep.deptype = 'e')
-  UNION ALL
-  SELECT 'trg', pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-   WHERE c.relnamespace = 'public'::regnamespace AND NOT t.tgisinternal
-  ORDER BY 1, 2`;
-
-async function withDb<T>(url: string, fn: (c: pg.Client) => Promise<T>): Promise<T> {
-  const c = new pg.Client({ connectionString: url });
-  await c.connect();
-  try {
-    return await fn(c);
-  } finally {
-    await c.end();
-  }
-}
-
-const fingerprint = (url: string) =>
-  withDb(url, async (c) => (await c.query<{ k: string; v: string }>(FINGERPRINT)).rows.map((r) => `${r.k} ${r.v}`));
 
 const trackingRows = (url: string) =>
   withDb(url, async (c) =>

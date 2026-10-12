@@ -684,10 +684,14 @@ jobs:
       # apps/web/tests/db/migration-baseline.test.ts replays the pre-squash
       # migration tree from this tag (LAST_RELEASE_BEFORE_SQUASH in
       # packages/core/db/migrate-plan.ts) to prove the baseline equivalent; a
-      # shallow checkout carries no tags.
-      - name: Fetch the pre-squash release tag
+      # shallow checkout carries no tags. migration-layout-v1.test.ts also runs
+      # the previous release's migrator out of git (ROLLBACK_MIGRATOR_REF there)
+      # to prove a rollback applies nothing against the upgraded tracking table.
+      - name: Fetch the pre-squash and rollback-migrator release tags
         if: steps.dedupe.outputs.redundant != 'true'
-        run: git fetch --no-tags --depth=1 origin +refs/tags/v0.284.0:refs/tags/v0.284.0
+        run: |
+          git fetch --no-tags --depth=1 origin +refs/tags/v0.284.0:refs/tags/v0.284.0
+          git fetch --no-tags --depth=1 origin +refs/tags/v0.327.1:refs/tags/v0.327.1
       - uses: oven-sh/setup-bun@v2
         if: steps.dedupe.outputs.redundant != 'true'
         with:

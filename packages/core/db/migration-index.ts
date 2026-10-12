@@ -21,11 +21,18 @@
  *
  * Open-PR-vs-open-PR collisions (neither merged yet) are caught at landing by
  * `classifyPullRequestMigrations`, which dispatches the same renumber retry.
+ *
+ * drizzle v1 (folder-per-migration, `<YYYYMMDDHHMMSS>_<slug>/`) has no index,
+ * so neither rule applies to it. `check` runs a fail-closed layout check first
+ * (`layoutProblems`): a legacy-layout file on a v1 tree, or a legacy tree over a
+ * v1 base, is a migration drizzle v1 would never read. `renumber` refuses a v1
+ * tree outright.
  */
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
+import { detectLayout, MigrationLayoutError, V1_FOLDER, v1LayoutProblems, type MigrationLayout } from './migrate-tree';
 
 const MIGRATION_FILE = /^(\d{4,})_([A-Za-z0-9_]+)\.sql$/;
 
@@ -137,6 +144,42 @@ export function checkAgainstBase(paths: RepoPaths, base: string): IndexCollision
   return findIndexCollisions(added, baseMigrationFiles(paths, base));
 }
 
+// ── layout ───────────────────────────────────────────────────────────────────
+
+/** True when `base`'s drizzle dir holds v1 migration folders. */
+export function baseIsV1(paths: RepoPaths, base: string): boolean {
+  const files = lines(git(paths.root, ['ls-tree', '-r', '--name-only', base, `${paths.drizzleDir}/`]));
+  return files.some((f) => {
+    const parts = relative(paths.drizzleDir, f).split('/');
+    return parts.length === 2 && V1_FOLDER.test(parts[0]!) && parts[1] === 'migration.sql';
+  });
+}
+
+/**
+ * Everything that makes the working tree's migrations unreadable in its layout,
+ * or inconsistent with the base's. Empty means clean (and, for a legacy tree,
+ * that the index rules below are the ones that apply).
+ */
+export function layoutProblems(paths: RepoPaths, base: string): string[] {
+  const dir = join(paths.root, paths.drizzleDir);
+  let layout: MigrationLayout;
+  try {
+    layout = detectLayout(dir);
+  } catch (err) {
+    if (err instanceof MigrationLayoutError) return [err.message];
+    throw err;
+  }
+  if (layout === 'v1') return v1LayoutProblems(dir, { requireSnapshot: true });
+  if (baseIsV1(paths, base)) {
+    return [
+      `${paths.drizzleDir} is in the legacy journal layout but the base ${base} uses drizzle v1 folders. ` +
+        `A legacy migration is never read there. Merge the base, then regenerate the branch's schema change ` +
+        `with the base's drizzle-kit (bun install, then bun db:generate).`,
+    ];
+  }
+  return [];
+}
+
 // ── renumber ─────────────────────────────────────────────────────────────────
 
 export interface RenumberResult {
@@ -223,6 +266,13 @@ function shiftGenerated(absDrizzle: string, generated: string[], minIndex: numbe
 export function renumberAgainstBase(paths: RepoPaths, base: string, opts: { minIndex?: number } = {}): RenumberResult {
   const { root, drizzleDir } = paths;
   const pkgDir = resolve(root, drizzleDir, '..');
+  if (baseIsV1(paths, base) || detectLayout(join(root, drizzleDir)) === 'v1') {
+    throw new MigrationLayoutError(
+      `renumber only handles the legacy journal layout; ${drizzleDir} (or ${base}'s) uses drizzle v1 folders, ` +
+        `whose names cannot collide. To redo the branch's schema change against the base, reset ${drizzleDir}/ ` +
+        `to ${base} and run bun db:generate.`
+    );
+  }
   const baseSha = git(root, ['rev-parse', '--verify', `${base}^{commit}`]).trim();
   const mergeHead = git(root, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], true).trim();
   const contains = (rev: string) => spawnSync('git', ['merge-base', '--is-ancestor', baseSha, rev], { cwd: root }).status === 0;
@@ -299,6 +349,15 @@ if (import.meta.main) {
   const { cmd, base, minIndex, paths } = parseArgs(process.argv.slice(2));
   try {
     if (cmd === 'check') {
+      const problems = layoutProblems(paths, base);
+      if (problems.length > 0) {
+        for (const p of problems) console.error(`::error file=${paths.drizzleDir}::Migration layout: ${p}`);
+        process.exit(1);
+      }
+      if (detectLayout(join(paths.root, paths.drizzleDir)) === 'v1') {
+        console.log(`Migration layout is clean (drizzle v1 folders; names cannot collide against ${base}).`);
+        process.exit(0);
+      }
       const collisions = checkAgainstBase(paths, base);
       if (collisions.length === 0) {
         console.log(`Migration indices are free against ${base}.`);

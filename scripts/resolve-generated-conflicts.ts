@@ -14,6 +14,10 @@
  *     change regenerated at the next free index. Runs last and waits while any
  *     other conflict remains (`schema.ts` must hold both sides). If the
  *     regenerated SQL is not the SQL it replaced, a person checks the result.
+ *     Once trunk uses drizzle v1 folders (no journal), renumber refuses and the
+ *     conflict goes to a person with the regenerate recipe; and whatever the
+ *     repair leaves must pass the fail-closed layout check (no legacy `.sql`
+ *     next to v1 folders), or it is not called resolved.
  *   - `scripts/design-check.baseline.json`: a three-way merge of the per-file
  *     counts (ours + theirs - base), then `bun run design:check --update`
  *     lowers it to today's counts. Waits while a file under apps/web/src is
@@ -35,6 +39,7 @@ import {
   isGeneratedArtifactPath,
 } from '../packages/core/generated-artifacts';
 import { renumberAgainstBase, type RenumberResult } from '../packages/core/db/migration-index';
+import { detectLayout, v1LayoutProblems } from '../packages/core/db/migrate-tree';
 
 export interface Run {
   (cmd: string, args: string[], opts?: { cwd?: string }): { status: number; stdout: string; stderr: string };
@@ -138,6 +143,10 @@ function resolveDrizzle(root: string, conflicted: string[], renumber: Renumber):
   } catch (err) {
     return { path: DRIZZLE_DIR, result: 'needs_person', reason: err instanceof Error ? err.message : String(err) };
   }
+  const layout = layoutAfterRepair(join(root, DRIZZLE_DIR));
+  if (layout.length > 0) {
+    return { path: DRIZZLE_DIR, result: 'needs_person', reason: `the repaired migrations dir fails the layout check: ${layout.join('; ')}` };
+  }
   if (r.sqlChanged) {
     return {
       path: DRIZZLE_DIR,
@@ -146,6 +155,15 @@ function resolveDrizzle(root: string, conflicted: string[], renumber: Renumber):
     };
   }
   return { path: DRIZZLE_DIR, result: 'resolved' };
+}
+
+/** Fail-closed: a legacy file left next to v1 folders would never be applied. */
+function layoutAfterRepair(dir: string): string[] {
+  try {
+    return detectLayout(dir) === 'v1' ? v1LayoutProblems(dir) : [];
+  } catch (err) {
+    return [err instanceof Error ? err.message : String(err)];
+  }
 }
 
 /** Where design:check counts violations: a conflicted file there still holds both sides' text. */

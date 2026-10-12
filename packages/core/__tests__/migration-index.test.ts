@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,6 +8,7 @@ import {
   describeCollision,
   findDrizzleKit,
   findIndexCollisions,
+  layoutProblems,
   renumberAgainstBase,
   type RepoPaths,
 } from '../db/migration-index';
@@ -254,4 +255,86 @@ describe('parallel branches against a real drizzle repo', () => {
     commitAll('branch minted');
     expect(checkAgainstBase(paths, 'mission').map((c) => c.file)).toEqual(['0050_branch_minted.sql']);
   }, 60_000);
+});
+
+/**
+ * The fail-closed layout check `migrations:index-check` runs before the index
+ * rules. On a drizzle v1 tree names cannot collide, so the index rules do not
+ * apply; what can go wrong is a legacy-layout file landing next to (or instead
+ * of) v1 folders, which drizzle v1 never reads, so its DDL never runs and the
+ * deploy stays green. That is refused here, in CI, before it can merge.
+ */
+describe('layout check (drizzle v1 folders)', () => {
+  let dir: string;
+  const paths = (): RepoPaths => ({ root: dir, drizzleDir: 'pkg/drizzle' });
+  const drizzle = () => join(dir, 'pkg', 'drizzle');
+  const GIT_ENV = {
+    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com',
+    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+  };
+  const git = (...args: string[]) => {
+    const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+    return r.stdout;
+  };
+  const folder = (name: string, snapshot = true) => {
+    mkdirSync(join(drizzle(), name), { recursive: true });
+    writeFileSync(join(drizzle(), name, 'migration.sql'), 'SELECT 1;');
+    if (snapshot) writeFileSync(join(drizzle(), name, 'snapshot.json'), '{}');
+  };
+  const legacyTree = () => {
+    mkdirSync(join(drizzle(), 'meta'), { recursive: true });
+    writeFileSync(join(drizzle(), '0000_init.sql'), 'SELECT 1;');
+    writeFileSync(join(drizzle(), 'meta', '_journal.json'), '{"entries":[]}');
+  };
+
+  function repo(base: 'v1' | 'legacy') {
+    dir = mkdtempSync(join(tmpdir(), 'migration-layout-'));
+    git('init', '-q', '-b', 'dev');
+    if (base === 'v1') folder('20260101000000_init');
+    else legacyTree();
+    git('add', '-A');
+    git('commit', '-q', '-m', 'base');
+    git('checkout', '-q', '-b', 'feat');
+  }
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a clean v1 tree over a v1 base passes', () => {
+    repo('v1');
+    folder('20260102000000_add_x');
+    expect(layoutProblems(paths(), 'dev')).toEqual([]);
+  });
+
+  it('refuses a legacy .sql merged in next to v1 folders', () => {
+    repo('v1');
+    writeFileSync(join(drizzle(), '0261_late_branch.sql'), 'ALTER TABLE t ADD COLUMN c text;');
+    expect(layoutProblems(paths(), 'dev').join('\n')).toMatch(/0261_late_branch\.sql/);
+  });
+
+  it('refuses a v1 folder without its snapshot (the next generate could not diff)', () => {
+    repo('v1');
+    folder('20260102000000_add_x', false);
+    expect(layoutProblems(paths(), 'dev')).toEqual(['20260102000000_add_x: missing snapshot.json']);
+  });
+
+  it('refuses a legacy tree over a v1 base (a 0.31 kit run on a v1 checkout)', () => {
+    repo('v1');
+    git('rm', '-q', '-r', 'pkg/drizzle');
+    legacyTree();
+    expect(layoutProblems(paths(), 'dev').join('\n')).toMatch(/base .* drizzle v1/);
+  });
+
+  it('a legacy tree over a legacy base has no layout problem (the index rules apply as before)', () => {
+    repo('legacy');
+    writeFileSync(join(drizzle(), '0001_next.sql'), 'SELECT 1;');
+    expect(layoutProblems(paths(), 'dev')).toEqual([]);
+  });
+
+  it('renumber refuses a v1 tree: there is no index to move', () => {
+    repo('v1');
+    expect(() => renumberAgainstBase(paths(), 'dev')).toThrow(/drizzle v1/);
+  });
 });
