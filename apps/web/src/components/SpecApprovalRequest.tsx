@@ -60,6 +60,14 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
       <Lede>
         {view.replaces ? `Revision ${view.revision} replaces revision ${view.replaces}.` : `Nothing is approved yet. Approving puts revision ${view.revision} in force.`}
       </Lede>
+      {result ? <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice> : null}
+      {!result || retry ? (
+        <div>
+          <PrimaryAction onClick={approve} fullWidthOnMobile data-testid="spec-approval-approve">
+            Approve revision {view.revision}
+          </PrimaryAction>
+        </div>
+      ) : null}
       <SpecRevisionPanes
         body={view.body}
         hunks={view.hunks}
@@ -69,14 +77,6 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
         linesRemoved={view.sections.reduce((n, x) => n + x.linesRemoved, 0)}
         initial={view.replaces ? 'changes' : 'spec'}
       />
-      {result ? <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice> : null}
-      {!result || retry ? (
-        <div>
-          <PrimaryAction onClick={approve} fullWidthOnMobile data-testid="spec-approval-approve">
-            Approve revision {view.revision}
-          </PrimaryAction>
-        </div>
-      ) : null}
     </div>
   );
 }
