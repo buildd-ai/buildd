@@ -191,6 +191,15 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: bun run migrations:index-check "--base=origin/$BASE_REF"
 
+      # Two branches that each ran generate off the same base produce snapshots
+      # sharing a parent: git merges them cleanly and the second one's DDL is
+      # computed against a schema the first already changed. drizzle-kit check
+      # exits non-zero on that (the installed kit, patched on 0.31; see
+      # drizzle-kit-patch.test.ts). Unlike the index check it needs no base ref,
+      # so it also runs on push. Fix: `bun run migrations:regenerate`.
+      - name: Check migrations commute
+        run: bun run migrations:commute
+
       - name: Lint hardcoded model IDs
         # The self-test runs first: it plants a known violation outside the
         # allowlist and requires the scan to catch it, so a pattern or allowlist

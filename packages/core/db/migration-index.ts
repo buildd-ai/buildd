@@ -225,6 +225,19 @@ function runDrizzleGenerate(pkgDir: string, extra: string[]): void {
 }
 
 /**
+ * `drizzle-kit check`: exits non-zero when two migrations do not commute (two
+ * snapshots sharing a parent, which is what two branches that each ran
+ * generate off the same base look like once merged). The installed kit, never
+ * `bun x` (see findDrizzleKit). Output is passed through for the CI log.
+ */
+export function runDrizzleCheck(pkgDir: string): { ok: boolean; output: string } {
+  const r = spawnSync(findDrizzleKit(pkgDir), ['check'], { cwd: pkgDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
+  const output = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  // A killed or unspawnable kit has no status; that is a failure, not a pass.
+  return { ok: r.status === 0 && !/^Error:/m.test(output), output };
+}
+
+/**
  * Move freshly generated migrations up so the first sits at `minIndex`. Only
  * the number changes (file names, journal `idx`/`tag`): the SQL and snapshot
  * content were just generated against the base, so nothing goes stale. drizzle
@@ -366,7 +379,16 @@ if (import.meta.main) {
       for (const c of collisions) console.error(`::error file=${paths.drizzleDir}/${c.file}::Migration index collision: ${describeCollision(c)}`);
       console.error(`\nFix: git merge ${base} && bun run migrations:renumber --base=${base}  (regenerates at the next free index; never hand-edit the journal)`);
       process.exit(1);
-    } else if (cmd === 'renumber') {
+    } else if (cmd === 'commute') {
+      const { ok, output } = runDrizzleCheck(resolve(paths.root, paths.drizzleDir, '..'));
+      if (!ok) {
+        console.error(`::error file=${paths.drizzleDir}::Migrations do not commute: drizzle-kit check failed\n${output.trim()}`);
+        console.error(`\nTwo branches each generated a migration from the same base. Merge the base, then run bun run migrations:regenerate --base=${base}.`);
+        process.exit(1);
+      }
+      console.log('Migrations commute (drizzle-kit check passed).');
+      process.exit(0);
+    } else if (cmd === 'renumber' || cmd === 'regenerate') {
       const r = renumberAgainstBase(paths, base, { minIndex });
       if (r.removed.length === 0 && r.generated.length === 0) {
         console.log(`No branch migrations; ${paths.drizzleDir}/ now matches ${base}.`);
@@ -388,7 +410,7 @@ if (import.meta.main) {
       console.log('Staged. Commit and push.');
       process.exit(0);
     } else {
-      console.error('usage: bun packages/core/db/migration-index.ts <check|renumber> [--base=origin/dev] [--min-index=N] [--drizzle-dir=packages/core/drizzle]');
+      console.error('usage: bun packages/core/db/migration-index.ts <check|commute|regenerate|renumber> [--base=origin/dev] [--min-index=N] [--drizzle-dir=packages/core/drizzle]');
       process.exit(2);
     }
   } catch (err) {

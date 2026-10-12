@@ -62,6 +62,20 @@ once that PR lands, merging dev and re-running without the flag closes the gap.
 `packages/core/db/migration-index.ts`; proof in
 `packages/core/__tests__/migration-index.test.ts`.
 
+**Two names, one repair.** `bun run migrations:regenerate` is the forward name of
+`migrations:renumber`; both run the same repair in this (journal) layout. CI also runs
+`bun run migrations:commute` (`drizzle-kit check`): two branches that each generated
+from the same base leave snapshots sharing a parent, which git merges cleanly and
+which fails there. The fix is the same: merge the base, regenerate.
+
+**Drizzle v1 folders (when the repo adopts them).** A migration is then
+`drizzle/<YYYYMMDDHHMMSS>_name/migration.sql` plus `snapshot.json`, with no journal
+and no index. Names cannot collide, so there is nothing to renumber; the failure
+mode becomes a numbered `NNNN_name.sql` left over from an old checkout, which v1
+never reads (its DDL would be silently skipped). `migrations:index-check` and the
+merge inspector both refuse that. Regenerate with the base's own drizzle-kit
+(`bun install`, then `bun db:generate`) rather than moving files.
+
 **Only the tools move a migration.** `bun run migrations:renumber --base=origin/dev`
 (or, for a conflicted merge, `bun run conflicts:generated`, which calls it) is the
 only sanctioned way. On a dev→mission refresh PR the merge-safety inspector reads

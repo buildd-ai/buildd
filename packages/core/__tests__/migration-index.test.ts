@@ -184,6 +184,27 @@ describe('parallel branches against a real drizzle repo', () => {
     expect(generate().stdout).toContain('No schema changes');
   }, 120_000);
 
+  it('commute: passes a linear snapshot chain and fails one that forks (two snapshots sharing a prevId)', () => {
+    const cli = (...a: string[]) => sh('bun', [join(repoRoot, 'packages/core/db/migration-index.ts'), 'commute', '--drizzle-dir=pkg/drizzle', ...a], dir, true);
+    sh('git', ['checkout', '-q', 'feat-y']);
+    expect(cli().status).toBe(0);
+
+    // Fork the chain: 0002's snapshot claims the same parent as 0001's.
+    const snap1 = join(drizzle(), 'meta/0001_snapshot.json');
+    const snap2 = join(drizzle(), 'meta/0002_snapshot.json');
+    const original = readFileSync(snap2, 'utf8');
+    const parentOf1 = JSON.parse(readFileSync(snap1, 'utf8')).prevId;
+    writeFileSync(snap2, JSON.stringify({ ...JSON.parse(original), prevId: parentOf1 }, null, 2));
+    try {
+      const forked = cli();
+      expect(forked.status).toBe(1);
+      expect(forked.stderr).toContain('do not commute');
+    } finally {
+      writeFileSync(snap2, original);
+    }
+    expect(cli().status).toBe(0);
+  }, 60_000);
+
   it('carries a hand-written (--custom) migration to the next free index verbatim', () => {
     // dev is at 0001_add_x; feat-y (0002_add_y) has not landed yet.
     sh('git', ['checkout', '-q', '-b', 'feat-z', 'dev']);
