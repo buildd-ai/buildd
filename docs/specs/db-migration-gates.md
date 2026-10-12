@@ -2,12 +2,12 @@
 title: DB Migration Operation-Class Gate
 status: active
 owner: builder
-last_verified: 2026-10-10
+last_verified: 2026-10-12
 summary: Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
 domain: releases
 surfaces: [apps/web/src/lib/migration-safety.ts, apps/web/src/lib/migration-inspector.ts, apps/web/src/lib/auto-merge.ts, packages/core/db/schema.ts]
 related: [release-flow, scheduled-task-merge-policy]
-keywords: [expand, contract, classifymigrationsql, schema drift, drizzle, escalatetopaths]
+keywords: [expand, contract, classifymigrationsql, schema drift, drizzle, escalatetopaths, lineage, renumber, integration refresh]
 assertions:
   - id: classify-migration-sql
     type: symbol
@@ -29,6 +29,10 @@ assertions:
     type: symbol
     name: renumberAgainstBase
     path: packages/core/db/migration-index.ts
+  - id: pair-moved-migrations
+    type: symbol
+    name: pairMovedMigrations
+    path: packages/core/generated-artifacts.ts
   - id: evaluate-auto-merge-safety
     type: symbol
     name: evaluateAutoMergeSafety
@@ -69,7 +73,8 @@ assertions:
 - A `schema.ts` change without a corresponding generated migration MUST classify as CONTRACT (schema drift without migration).
 - A CONTRACT verdict whose only CONTRACT statements move data (`INSERT/UPDATE/DELETE/MERGE`) MUST carry `kind: 'data'`. Any destructive statement in the same file or PR MUST win over it, whatever the order, so a backfill cannot hide a `DROP`.
 - CI MUST fail a PR that adds a migration numbered at or below its base branch's newest (`bun run migrations:index-check`), naming the colliding file and the next free index. drizzle-kit takes the next index from the local journal, so parallel branches mint the same number; no claim-time reservation can change that without hand-editing journals, so the index is checked against the base and repaired by regeneration instead.
-- The renumber MUST regenerate, not rename: `bun run migrations:renumber` resets the drizzle dir to the base's exact state and re-runs `drizzle-kit generate`. The migration-collision retry brief runs it (with `--min-index` past an open PR's slot that is not on the base yet).
+- The renumber MUST regenerate, not rename: `bun run migrations:renumber` resets the drizzle dir to the base's exact state and re-runs `drizzle-kit generate`. The migration-collision retry brief runs it (with `--min-index` past an open PR's slot that is not on the base yet). It, and `bun run conflicts:generated` for a conflicted merge, are the only sanctioned ways to move a migration; a hand-written rename or edit is lineage.
+- **A renumber in a refresh PR is not lineage.** For an integration-refresh PR (a trunk→integration-branch merge, `integrationRefreshOf`), a deleted migration `.sql` (or a GitHub `renamed` entry's previous path) paired one to one with a new migration `.sql` holding the same bytes is a renumber: the mission's own migration moved past trunk's. It MUST NOT classify as `kind: 'lineage'`, at pre-flight or at the verdict-time re-check. The journal and snapshots it regenerates are compared by CI. The moved SQL is still classified, so a renumbered `DROP` stays CONTRACT. A move whose SQL differs, a deletion with no paired addition, a side that cannot be read, and the same shape in any PR that is not an integration refresh all stay lineage. The pairing is `pairMovedMigrations`, which the refresh-merge review exemption also uses (workflow-state-kernel §5.9 item 4), so both gates read the same shape the same way. Both gates also judge the refresh on its trunk delta (`trunk...head`) where it can be read.
 - A data-only migration whose number collides with another open PR MUST report the collision first (a mechanical renumber); the data verdict applies again on the renumbered head.
 - **Data-migration policy** (`mergePolicy.dataMigrations`): `'person'` (default) keeps a data migration a person's decision. `'agent-review'`, under tier `agent-review` only, lets the reviewer agent decide it: the reviewer pre-check, auto-merge and the escalation gate MUST NOT force a person for `kind: 'data'`, and the reviewer prompt asks the reviewer to judge the data change. A risk class the policy preset maps to `human` still applies. Destructive DDL, rewritten migrations, mixed PRs and uninspectable migrations are unaffected.
 
@@ -81,9 +86,10 @@ assertions:
 - AC-4: GIVEN a migration file containing an unrecognised SQL statement (e.g. `DO $$ BEGIN ... END $$`) WHEN classified THEN `operationClass` is `CONTRACT`.
 - AC-5: GIVEN a `schema.ts` change with no accompanying generated migration WHEN evaluated THEN `operationClass` is `CONTRACT` with reason `schema changed without a generated SQL migration`.
 - AC-6: GIVEN a workspace whose path configuration (detected risk-class paths, or a legacy stored `escalateToPaths`) does NOT contain `drizzle/` WHEN a PR with an EXPAND migration is submitted THEN the inspector still runs, classifies it as EXPAND, and the PR passes auto-merge safety. (Removing `drizzle/` from path config does NOT disable the gate.)
-- AC-7: GIVEN a PR that modifies or deletes an existing generated migration file WHEN evaluated THEN `operationClass` is `CONTRACT` (immutable migration history invariant).
+- AC-7: GIVEN a PR that modifies or deletes an existing generated migration file WHEN evaluated THEN `operationClass` is `CONTRACT` (immutable migration history invariant), except a renumber in an integration-refresh PR (AC-10).
 - AC-8: GIVEN two open PRs whose migrations share the same sequence number WHEN either is evaluated THEN `operationClass` is `CONTRACT` (collision guard).
 - AC-9: GIVEN an agent-review workspace with `mergePolicy.dataMigrations: 'agent-review'` WHEN a reviewer-approved PR's only CONTRACT statement is an `UPDATE` THEN the pre-check does not escalate and auto-merge safety passes; GIVEN the default WHEN the same PR is evaluated THEN auto-merge is refused with `runs data migration UPDATE on <table>`.
+- AC-10: GIVEN an integration-refresh PR whose diff deletes `0309_x.sql` and adds `0318_y.sql` with identical SQL WHEN evaluated THEN it is not `lineage` and an additive migration passes; GIVEN the same with different SQL, or the deletion alone, THEN `kind` is `lineage`.
 
 **Verification gate (EXPAND migrations)**
 
@@ -110,6 +116,7 @@ Neon PITR is enabled. Recovery path for an EXPAND migration that causes data pro
 | `inspectPullRequestMigrations` | `apps/web/src/lib/migration-inspector.ts` |
 | `evaluateAutoMergeSafety` | `apps/web/src/lib/auto-merge.ts` |
 | `findIndexCollisions` / `renumberAgainstBase` | `packages/core/db/migration-index.ts` |
+| `pairMovedMigrations` | `packages/core/generated-artifacts.ts` |
 
 **Out of scope**
 
