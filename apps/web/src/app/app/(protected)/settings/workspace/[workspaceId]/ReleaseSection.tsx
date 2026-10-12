@@ -351,8 +351,8 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                     <span className="min-w-0">
                       <span className="block text-sm text-text-primary">Release candidates</span>
                       <span className="block text-xs text-text-muted mt-0.5">
-                        Your release workflow cuts a versioned branch from one commit and opens it as the release PR.
-                        buildd reviews only what its PRs did not already cover, and counts it shipped once production runs the merge.
+                        Versioned release PRs from your release workflow skip re-review of already-reviewed changes.
+                        Shipped once production runs the merge.
                       </span>
                     </span>
                   </label>

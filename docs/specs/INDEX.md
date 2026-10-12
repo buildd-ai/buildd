@@ -86,7 +86,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-09-15
   For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
-- [Release Flow](./release-flow.md) · @max — verified 2026-07-18
+- [Release Flow](./release-flow.md) · @max — verified 2026-10-12
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
 ### runners (11)
