@@ -10,7 +10,6 @@ import { computeFeatureHealth, featureHealthByCapability } from '@buildd/core/de
 import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
-import { isPlatformOperatorCaller } from '@/lib/admin/platform-operator-caller';
 
 const WINDOWS = { '24h': 1, '7d': 7, '30d': 30 } as const;
 type Window = keyof typeof WINDOWS;
@@ -29,14 +28,8 @@ function parseInstant(value: string | null): Date | null | 'invalid' {
  * ledger"). The weekly review run pulls a window of decisions with one call
  * here instead of grepping shadow log lines.
  *
- * Platform operators only (admin/platform-operator-caller.ts): a signed-in
- * operator, an operator's own OAuth session, or an admin-level credential of
- * an account in BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS (a `bld_` key, or a per-task
- * token it minted). The raw ledger is platform machinery: a team owner, admin
- * or admin key is refused (403, FORBIDDEN). Reach still applies: a
- * workspace outside the caller's teams is a 404 first. A per-task token reads
- * its own task's workspace, or one its schedule's delegation grants
- * analytics:read on (packages/core/token-delegation.ts).
+ * A per-task token reads its own task's workspace, or one its schedule's
+ * delegation grants analytics:read on (packages/core/token-delegation.ts).
  *
  * The answer always carries `status`: OK when rows matched, NO_DATA when the
  * read succeeded and nothing matched. A store failure is a 503, never an
@@ -61,9 +54,6 @@ export async function GET(req: NextRequest) {
   const allowed = account ? teamWorkspaces.filter(w => taskScopeAllowsDelegated(account, w.id, 'analytics:read')) : teamWorkspaces;
   const match = allowed.find(w => w.id === workspaceId);
   if (!match) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-  if (!(await isPlatformOperatorCaller({ user, account }))) {
-    return NextResponse.json({ status: 'FORBIDDEN', error: 'The decision ledger is for buildd platform operators' }, { status: 403 });
-  }
 
   const windowParam = params.get('window') ?? '7d';
   if (!(windowParam in WINDOWS)) return NextResponse.json({ error: 'Invalid window' }, { status: 400 });

@@ -644,12 +644,13 @@ is refused. API keys and runners are unaffected (`lib/member-repo-access.ts`).
 **Platform operator.** Team roles (`owner` / `admin` / `member`, the fixed
 registry in `apps/web/src/lib/permission-registry.ts`) never reach buildd's own
 platform machinery: experiments (create, change, start, pause, conclude, and
-operator-only ones), the raw decision ledger and its grading, decision shadows,
+operator-only ones), grading decisions, decision shadows,
 per-feature inference modes and chat retro. Those are gated on the platform
 operator: a signed-in person in `BUILDD_OPERATOR_USER_EMAILS`, the same person
 over OAuth, or an admin-level key of an account in
 `BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS` (`lib/admin/platform-operator-caller.ts`,
-`/api/admin/*`). Team members still read `visibility: 'team'` experiments.
+`/api/admin/*`). Team members still read `visibility: 'team'` experiments and their own team's
+decision ledger.
 Full rule: `docs/specs/team-permissions.md` "Platform operator".
 
 ---

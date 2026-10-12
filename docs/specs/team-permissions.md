@@ -270,7 +270,7 @@ is in `BUILDD_OPERATOR_USER_EMAILS` (`apps/web/src/lib/platform-operator.ts`,
 admin-level `bld_` key of an account in `BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS`
 (`apps/web/src/lib/platform-admin.ts`; `/api/admin/*` through
 `requirePlatformOwner`, `apps/web/src/lib/admin/owner-gate.ts`). Routes outside
-`/api/admin/*` ask `isPlatformOperatorCaller`
+`/api/admin/*` ask `isPlatformOperatorCaller` or its parts
 (`apps/web/src/lib/admin/platform-operator-caller.ts`), which combines both: a
 session by its person, an OAuth bearer by the person it was issued to (never
 by the team's shared session account), a key or a per-task token it minted by
@@ -282,11 +282,16 @@ its account and level. Both lists unset: nobody is an operator.
   and only an operator sees one stored `visibility: 'admins'` (operator-only).
   A team member of any role still reads `visibility: 'team'` experiments on
   their own team. An operator-only experiment is a 404 to everyone else.
-- The raw decision ledger (`GET /api/decisions`, MCP `get_decision_stats` with
-  `capability`, including `"*"`) and grading (`GET /api/decisions/[id]`,
+- Grading a decision (`GET /api/decisions/[id]`,
   `POST /api/decisions/[id]/label`, MCP `get_decision` / `label_decision`):
-  operators only. A workspace or decision outside the caller's reach is still
-  a 404 first.
+  operators only. A decision outside the caller's reach is still a 404 first.
+- Reading the decision ledger of one's own team (`GET /api/decisions`, MCP
+  `get_decision_stats` with `capability`, including `"*"`) is NOT operator
+  machinery: it is the team's own data. Any member session, `analytics:read`
+  key or per-task token reaches its own team's workspaces (and delegated
+  ones), as before; another team's workspace is a 404. Runner accounts are
+  never added to `BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS` to make this work: that
+  would give every run on them operator power.
 - `teams.enabledDecisionShadows` and `teams.inferenceFeatureModes` have one
   write path, `PATCH /api/admin/teams/[id]/experiment-flags`; team settings
   (`PATCH /api/teams/[id]`) refuse either field to every team role (403,
@@ -303,9 +308,13 @@ its account and level. Both lists unset: nobody is an operator.
   who is not an operator WHEN they create, start or change an experiment THEN
   it is a 403 (a 404 for an operator-only one) and nothing is written; GIVEN
   an operator THEN it succeeds.
-- AC-P2: GIVEN a team owner or admin who is not an operator WHEN they read the
-  decision ledger or grade a decision on their own team THEN it is a 403 and
+- AC-P2: GIVEN a team owner or admin who is not an operator WHEN they grade
+  a decision on their own team, or read it for grading, THEN it is a 403 and
   nothing is read or written; GIVEN an operator THEN it is served.
+- AC-P2b: GIVEN a team admin key (or a member session) that is not an
+  operator WHEN it reads its own team's decision ledger THEN it is served;
+  WHEN it names another team's workspace THEN it is a 404 and nothing is
+  read.
 - AC-P3: GIVEN a team owner or admin WHEN they PATCH `/api/teams/[id]` with
   `enabledDecisionShadows` or `inferenceFeatureModes` THEN it is a 403 and
   nothing is written; GIVEN the platform admin key WHEN it PATCHes
@@ -566,7 +575,6 @@ path. See Platform operator.
 | `apps/web/src/lib/experiments.ts:69` | `isExperimentOperator`: create, edit, start, pause, conclude; see operator-only (`canViewExperiment`, `:73`) | operator | admin key of a platform admin account; OAuth by its person (`apps/web/src/lib/experiment-access.ts:78`, `:82`) | platform operator |
 | `apps/web/src/app/api/experiments/route.ts:65` | POST create an experiment | operator | as above | platform operator |
 | `apps/web/src/app/api/experiments/[id]/route.ts:65` | PATCH an experiment | operator | as above | platform operator |
-| `apps/web/src/app/api/decisions/route.ts:64` | read the raw decision ledger (MCP `get_decision_stats` with `capability`) | operator | admin key or per-task token of a platform admin account; OAuth by its person | platform operator |
 | `apps/web/src/lib/decision-audit-access.ts:42` | read a decision for grading, grade it (MCP `get_decision`, `label_decision`; session `:46`) | operator | admin key of a platform admin account (no per-task token); OAuth by its person | platform operator |
 | `apps/web/src/app/api/admin/teams/[id]/experiment-flags/route.ts:30` | write `enabledDecisionShadows`, `inferenceFeatureModes`, `chatRetro` | — | admin key of a platform admin account (`requirePlatformOwner`) | platform admin |
 | `apps/web/src/app/app/(protected)/health/_lib/render-health.tsx:32` | UI: experiment controls on Health → Operator | operator | — | platform operator |

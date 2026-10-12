@@ -103,17 +103,18 @@ source `agent_audit` for the model's answer (or the answer in effect when it
 gave none) and `agent_audit_rule` for the rule's. Both are ordinary outcome
 labels: first label per source stands. `agentAuditObjective` scores them in
 the shared readout for any kind without an objective of its own. Only a
-buildd platform operator may read the ledger (`GET /api/decisions`) or read or
-grade a decision; no team role may, and a team owner or admin key is refused
+buildd platform operator may read a decision for grading or grade it; no team
+role may, and a team owner or admin key is refused
 (`docs/specs/team-permissions.md` "Platform operator"). Another team's
-decision is not found.
+decision is not found. Reading the ledger itself (`GET /api/decisions`) stays
+open to the team's own members and keys: it is the team's own data.
 
 A feature that was asked over the last 24 hours and never once got a model
 answer raises one Home card for the platform operator (pulled, never pushed).
 
 - AC-9: GIVEN a week of rows all fallback `insufficient_candidates` WHEN the health is read THEN the state is `not_collecting` and the sentence starts "Not deciding: fewer than two roles say when to use them."
 - AC-10: GIVEN an admin key of team A WHEN it labels a decision of team B THEN the answer is 404 and nothing is written.
-- AC-10b: GIVEN an admin key of team A that is not a platform admin account, or a signed-in owner of team A who is not a platform operator, WHEN it reads the ledger or labels a decision of team A THEN the answer is 403 and nothing is read or written.
+- AC-10b: GIVEN an admin key of team A that is not a platform admin account, or a signed-in owner of team A who is not a platform operator, WHEN it labels a decision of team A (or reads it for grading) THEN the answer is 403 and nothing is written; WHEN it reads team A's ledger THEN it is served.
 
 ## First-party kinds
 

@@ -338,10 +338,9 @@ current manifests.
 - `apps/web/src/lib/orchestration-decision-stats-query.ts`:
   `fetchOrchestrationDecisionStats`, the DB-free evidence count (rows by
   decision group / UTC day / fallback reason, labelled vs unlabelled, opt-in
-  state) behind MCP `get_decision_stats` without `capability`. With
-  `capability` it reads the raw ledger (`GET /api/decisions`), which is for
-  platform operators only. The readout script needs `DATABASE_URL`; this does
-  not.
+  state) behind MCP `get_decision_stats` without `capability`; with it, the
+  raw ledger (`GET /api/decisions`) of the caller's own team. The readout
+  script needs `DATABASE_URL`; this does not.
 - Data model: `orchestration_decisions`, `orchestration_touch_labels`,
   `orchestration_manifest_predictions` in `packages/core/db/schema.ts`.
 

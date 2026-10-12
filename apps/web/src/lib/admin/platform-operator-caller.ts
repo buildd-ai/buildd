@@ -1,8 +1,8 @@
 /**
  * Whether the caller behind a request is a buildd platform operator, whatever
  * credential it came with. The one answer for the platform machinery that
- * routes outside `/api/admin/*` also serve (experiments, the raw decision
- * ledger): a team role never makes anyone an operator.
+ * routes outside `/api/admin/*` also serve (experiments, grading decisions):
+ * a team role never makes anyone an operator.
  *
  *  - A session: the signed-in person is in `BUILDD_OPERATOR_USER_EMAILS`
  *    (platform-operator.ts).

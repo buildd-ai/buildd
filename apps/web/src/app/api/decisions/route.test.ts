@@ -27,10 +27,6 @@ mock.module('@buildd/core/orchestration-decision-ledger', () => ({
   summarizeOrchestrationDecisions: (rows: unknown[]) => ({ total: rows.length, byAppliedAnswer: { START: rows.length } }),
 }));
 
-process.env.BUILDD_OPERATOR_USER_EMAILS = 'op@example.com';
-process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS = 'platform-account';
-const OPERATOR = { id: 'user', email: 'op@example.com' };
-
 const { GET } = await import('./route');
 
 beforeEach(() => {
@@ -47,24 +43,24 @@ it('requires authentication', async () => {
 });
 
 it('requires a workspaceId', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   expect((await GET(req())).status).toBe(400);
   expect(ledger).not.toHaveBeenCalled();
 });
 
 it('rejects an inaccessible workspace before reading the ledger', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   expect((await GET(req('?workspaceId=other'))).status).toBe(404);
   expect(ledger).not.toHaveBeenCalled();
 });
 
 it('validates the reporting window', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   expect((await GET(req('?workspaceId=ws&window=forever'))).status).toBe(400);
 });
 
 it('resolves the workspace team and passes filters through', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   const res = await GET(req('?workspaceId=ws&capability=task_role_shadow&window=24h&disagreementOnly=true&overriddenOnly=true'));
   expect(res.status).toBe(200);
   expect(ledger).toHaveBeenCalledTimes(1);
@@ -78,7 +74,7 @@ it('resolves the workspace team and passes filters through', async () => {
 });
 
 it('says NO_DATA when the read succeeded and nothing matched', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   ledger.mockImplementation(async () => ({ rows: [], outcomes: [], truncated: false }));
   const res = await GET(req('?workspaceId=ws&capability=question_gate'));
   expect(res.status).toBe(200);
@@ -88,7 +84,7 @@ it('says NO_DATA when the read succeeded and nothing matched', async () => {
 });
 
 it('a store failure is a 503 TOOL_UNAVAILABLE, never an empty page', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   ledger.mockImplementation(async () => { throw new Error('connection reset'); });
   const res = await GET(req('?workspaceId=ws&capability=question_gate'));
   expect(res.status).toBe(503);
@@ -98,7 +94,7 @@ it('a store failure is a 503 TOOL_UNAVAILABLE, never an empty page', async () =>
 });
 
 it('pins an explicit since/until window and attaches outcome labels', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   ledger.mockImplementation(async () => ({
     rows: [{ id: 'd1', createdAt: new Date('2026-01-03T00:00:00Z') }, { id: 'd2', createdAt: new Date('2026-01-02T00:00:00Z') }],
     outcomes: [{ decisionRecordId: 'd2', source: 'human', label: 'wrong' }],
@@ -116,43 +112,37 @@ it('pins an explicit since/until window and attaches outcome labels', async () =
 });
 
 it('rejects a malformed or oversized explicit window', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   expect((await GET(req('?workspaceId=ws&since=yesterday'))).status).toBe(400);
   expect((await GET(req('?workspaceId=ws&since=2026-01-08T00:00:00Z&until=2026-01-01T00:00:00Z'))).status).toBe(400);
   expect((await GET(req('?workspaceId=ws&since=2026-01-01T00:00:00Z&until=2026-03-01T00:00:00Z'))).status).toBe(400);
   expect(ledger).not.toHaveBeenCalled();
 });
 
-it('serves an admin-level analytics:read key of a platform admin account', async () => {
-  account.mockResolvedValue({ id: 'platform-account', level: 'admin', scopes: ['analytics:read'], teamId: 'team' });
+it('serves an authenticated worker key scoped to analytics:read', async () => {
+  account.mockResolvedValue({ id: 'account', level: 'worker', scopes: ['analytics:read'], teamId: 'team' });
   const request = new NextRequest('http://localhost/api/decisions?workspaceId=ws', { headers: { authorization: 'Bearer bld_test' } });
   expect((await GET(request)).status).toBe(200);
 });
 
-it('refuses a team key, even admin-level, before reading the ledger: the ledger is operator-only', async () => {
-  for (const level of ['worker', 'admin']) {
-    account.mockResolvedValue({ id: 'team-account', level, scopes: ['analytics:read'], teamId: 'team' });
-    const request = new NextRequest('http://localhost/api/decisions?workspaceId=ws&capability=task_role_shadow', { headers: { authorization: 'Bearer bld_test' } });
-    const res = await GET(request);
-    expect(res.status).toBe(403);
-    expect((await res.json()).status).toBe('FORBIDDEN');
-  }
+// Reading the ledger is the team's own data, not platform tuning: a team
+// admin (or an admin-level runner key) that is no platform operator still
+// reads its own team's ledger, and only its own. Grading stays operator-only
+// (decisions/[id]/label/route.test.ts).
+it("a team admin key that is no platform operator reads its own team's ledger, and not another team's", async () => {
+  account.mockResolvedValue({ id: 'team-account', level: 'admin', scopes: null, teamId: 'team' });
+  const own = new NextRequest('http://localhost/api/decisions?workspaceId=ws&capability=task_role_shadow', { headers: { authorization: 'Bearer bld_admin' } });
+  expect((await GET(own)).status).toBe(200);
+  expect(ledger).toHaveBeenCalledTimes(1);
+  ledger.mockClear();
+  const other = new NextRequest('http://localhost/api/decisions?workspaceId=ws-other-team&capability=task_role_shadow', { headers: { authorization: 'Bearer bld_admin' } });
+  expect((await GET(other)).status).toBe(404);
   expect(ledger).not.toHaveBeenCalled();
 });
 
-it('refuses a platform admin account below admin level', async () => {
-  account.mockResolvedValue({ id: 'platform-account', level: 'worker', scopes: ['analytics:read'], teamId: 'team' });
-  const request = new NextRequest('http://localhost/api/decisions?workspaceId=ws', { headers: { authorization: 'Bearer bld_test' } });
-  expect((await GET(request)).status).toBe(403);
-});
-
-it('refuses a signed-in team owner or admin who is not a platform operator', async () => {
-  user.mockResolvedValue({ id: 'owner', email: 'owner@example.com' });
-  const res = await GET(req('?workspaceId=ws&capability=task_role_shadow'));
-  expect(res.status).toBe(403);
-  expect(ledger).not.toHaveBeenCalled();
-  expect((await GET(req('?workspaceId=ws&features=1'))).status).toBe(403);
-  expect(healthRows).not.toHaveBeenCalled();
+it("a signed-in team admin reads their own team's feature health", async () => {
+  user.mockResolvedValue({ id: 'admin-user' });
+  expect((await GET(req('?workspaceId=ws&features=1'))).status).toBe(200);
 });
 
 it('denies a token without analytics:read', async () => {
@@ -177,7 +167,7 @@ it('refuses an unfiltered request for a workspace-scoped token', async () => {
 });
 
 it('routes orchestration_* capabilities to orchestration_decisions, not decision_records', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   const res = await GET(req('?workspaceId=ws&capability=orchestration_claim'));
   expect(res.status).toBe(200);
   expect(ledger).not.toHaveBeenCalled();
@@ -189,7 +179,7 @@ it('routes orchestration_* capabilities to orchestration_decisions, not decision
 });
 
 it('carries the feature health readout for one capability: not deciding, and why in plain words', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   ledger.mockImplementation(async () => ({
     rows: [1, 2, 3].map(i => ({
       id: `d${i}`, capability: 'task_role_shadow', status: 'fallback', applied: false, verdict: null,
@@ -205,13 +195,13 @@ it('carries the feature health readout for one capability: not deciding, and why
 });
 
 it('carries no health readout across capabilities: one readout per feature', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   const body = await (await GET(req('?workspaceId=ws'))).json();
   expect(body.health).toBeNull();
 });
 
 it('carries a health readout for an orchestration capability too', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   orchRead.mockImplementationOnce(async () => ({
     rows: [{ id: 'o1', capability: 'orchestration_claim', status: 'applied', applied: true, verdict: 'START', reason: null, latencyMs: 40, costUsd: 0.001, createdAt: new Date('2026-01-01T00:00:00Z') }],
     truncated: false,
@@ -221,7 +211,7 @@ it('carries a health readout for an orchestration capability too', async () => {
 });
 
 it('features=1 gives one readout per capability over the window, quiet features included', async () => {
-  user.mockResolvedValue(OPERATOR);
+  user.mockResolvedValue({ id: 'user' });
   healthRows.mockImplementationOnce(async () => ({
     rows: [
       { id: 'a', capability: 'task_role_shadow', status: 'fallback', applied: false, verdict: null, reason: 'insufficient_candidates', latencyMs: null, costUsd: null, overridden: false },
