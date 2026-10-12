@@ -461,6 +461,7 @@ export async function runChatTurn(args: {
     if (!v.ok) return Response.json(v.denied, { status: 403 });
     route = { ...route, tier: v.tier as ChatTier };
   }
+  const loadCatalog = deps.catalog ?? (() => getCachedOpenRouterCatalog().catch(() => []));
   let model = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: modelWs, userId: user.id, pool });
   if (!model.ok && route.tier !== FALLBACK_TIER && tierWithin(FALLBACK_TIER, ceiling.max)) {
     model = await resolveModel({ tier: FALLBACK_TIER, teamId: conv.teamId, workspaceId: modelWs, userId: user.id, pool });
@@ -470,7 +471,7 @@ export async function runChatTurn(args: {
     // By what the served model costs, not its tier label: a pool arm or a
     // registry row priced above the ceiling falls back to the incumbent, and
     // a team mapping that itself crosses the ceiling is refused.
-    const catalog = await (deps.catalog ?? (() => getCachedOpenRouterCatalog().catch(() => [])))();
+    const catalog = await loadCatalog();
     if (!enforceModelCeiling({ ceiling, model: model.modelId, origin: 'auto', catalog }).ok) {
       const incumbent = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: modelWs, userId: user.id });
       const served = incumbent.ok ? enforceModelCeiling({ ceiling, model: incumbent.modelId, origin: 'auto', catalog }) : null;
@@ -479,7 +480,7 @@ export async function runChatTurn(args: {
       model = incumbent;
     }
   }
-  const resolved = model;
+  let resolved = model;
 
   // A rule stated in this message: its card is proposed off the critical path
   // and lands just before the stream finishes (./directives.ts). Only once the
@@ -525,7 +526,25 @@ export async function runChatTurn(args: {
     if (refs.length + fileRefs.length > 0) await attachments.link(saved.id, conv.teamId, user.id, [...refs, ...fileRefs]);
     void pingConversation(conv.id, 'message', saved.id);
     // Images and PDFs as file input where the model takes them; otherwise a note naming each.
-    const fileParts = fileRefs.length > 0 ? await modelFileParts(fileRefs, modelInputs(resolved.provider, resolved.modelId), files.read, { textParts }) : [];
+    // A turn whose model cannot read an image or PDF it carries is served by
+    // another chat tier that can, inside the ceiling; with none, the note stays.
+    let fileParts: Awaited<ReturnType<typeof modelFileParts>> = [];
+    if (fileRefs.length > 0) {
+      const catalog = fileRefs.some(isModelFile) ? await loadCatalog() : [];
+      let inputs = modelInputs(resolved.provider, resolved.modelId, catalog);
+      const needs = fileInputsNeeded(fileRefs);
+      if ((needs.images && !inputs.images) || (needs.pdf && !inputs.pdf)) {
+        const reader = await readerTier({
+          from: resolved.tier, needs, ceiling, catalog,
+          resolve: tier => resolveModel({ tier, teamId: conv.teamId, workspaceId: modelWs, userId: user.id }),
+        });
+        if (reader) {
+          resolved = reader;
+          inputs = modelInputs(reader.provider, reader.modelId, catalog);
+        }
+      }
+      fileParts = await modelFileParts(fileRefs, inputs, files.read, { textParts });
+    }
     uiMessages = [...history, { id: saved.id, role: 'user', parts: [...(modelText ? [{ type: 'text' as const, text: modelText }] : []), ...fileParts] } as UIMessage];
   } else {
     uiMessages = history.map(m => (m.id === continuing!.id ? { ...m, parts: continuing!.parts } as UIMessage : m));
@@ -820,4 +839,40 @@ export function turnGroups(args: {
   // A member asking about roles gets their own (create/share_personal_role, in workers) instead.
   if (!args.canAdmin && groups.delete('admin')) groups.add('workers');
   return groups;
+}
+
+const CHAT_TIERS: readonly ChatTier[] = ['budget', 'standard', 'premium'];
+
+const isModelFile = (ref: ChatFileRef): boolean => ref.mediaType.startsWith('image/') || ref.mediaType === 'application/pdf';
+
+/** The kinds of file input a message's files need from the model serving it. */
+function fileInputsNeeded(refs: readonly ChatFileRef[]): { images: boolean; pdf: boolean } {
+  return { images: refs.some(r => r.mediaType.startsWith('image/')), pdf: refs.some(r => r.mediaType === 'application/pdf') };
+}
+
+/**
+ * The nearest other chat tier, inside the ceiling, whose model reads every
+ * kind of file the message carries (the cheaper one first when two are as
+ * near). Served on its incumbent model, never a pool arm. Null when none does.
+ */
+export async function readerTier(opts: {
+  from: ChatTier;
+  needs: { images: boolean; pdf: boolean };
+  ceiling: TierCeiling;
+  catalog: readonly CatalogEntry[];
+  resolve: (tier: ChatTier) => Promise<ResolvedChatModel>;
+}): Promise<(ResolvedChatModel & { ok: true }) | null> {
+  const at = CHAT_TIERS.indexOf(opts.from);
+  const order = CHAT_TIERS
+    .filter(t => t !== opts.from && tierWithin(t, opts.ceiling.max))
+    .sort((a, b) => Math.abs(CHAT_TIERS.indexOf(a) - at) - Math.abs(CHAT_TIERS.indexOf(b) - at) || CHAT_TIERS.indexOf(a) - CHAT_TIERS.indexOf(b));
+  for (const tier of order) {
+    const m = await opts.resolve(tier).catch(() => null);
+    if (!m?.ok) continue;
+    const inputs = modelInputs(m.provider, m.modelId, opts.catalog);
+    if ((opts.needs.images && !inputs.images) || (opts.needs.pdf && !inputs.pdf)) continue;
+    if (opts.ceiling.max && !enforceModelCeiling({ ceiling: opts.ceiling, model: m.modelId, origin: 'auto', catalog: opts.catalog }).ok) continue;
+    return m;
+  }
+  return null;
 }

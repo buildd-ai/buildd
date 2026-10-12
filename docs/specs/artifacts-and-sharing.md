@@ -2,13 +2,13 @@
 title: Artifacts and Sharing
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 summary: Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 domain: tasks
 surfaces: [apps/web/src/app/api/artifacts/[artifactId]/share/route.ts, apps/web/src/app/api/share/[token]/route.ts, apps/web/src/app/api/artifacts/upload-url/route.ts, apps/web/src/lib/storage-keys.ts]
 related: [mcp-action-contracts, team-namespace-scoping, mission-task-lifecycle, credential-isolation]
 keywords: [sharetoken, visibility public, presigned put, r2, artifacts_share_token_idx, http 413, dataclass sensitive, upsert by key]
-verified_by: [packages/core/__tests__/artifact-read.test.ts, packages/core/__tests__/mcp-tools-artifact-links.test.ts, apps/web/src/app/api/workers/claim/artifact-manifest.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts, apps/web/tests/db/artifact-links.test.ts, apps/web/tests/db/artifact-upload.test.ts, apps/web/tests/db/chat-paste-attachment.test.ts, apps/web/tests/db/chat-file-attachment.test.ts, apps/web/src/lib/chat/file-input.test.ts, apps/web/src/components/chat/upload-file.test.ts, apps/web/tests/db/chat-attachment-cleanup.test.ts]
+verified_by: [packages/core/__tests__/artifact-read.test.ts, packages/core/__tests__/mcp-tools-artifact-links.test.ts, apps/web/src/app/api/workers/claim/artifact-manifest.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts, apps/web/tests/db/artifact-links.test.ts, apps/web/tests/db/artifact-upload.test.ts, apps/web/tests/db/chat-paste-attachment.test.ts, apps/web/tests/db/chat-file-attachment.test.ts, apps/web/src/lib/chat/file-input.test.ts, apps/web/src/lib/chat/turn.test.ts, apps/web/src/components/chat/upload-file.test.ts, apps/web/tests/db/chat-attachment-cleanup.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -103,12 +103,18 @@ check, or was cancelled MUST never show as attached or be sent.
 - Never sent: an upload with no link is swept (§8) once older than 24 hours,
   `ready` included; a sent one is kept.
 - Model: an image goes as file input only to a model that takes images, a PDF
-  only to one that takes PDFs (`modelInputs`, an explicit map by provider and
-  family, since the catalog has no such field: Claude takes both, the OpenAI
-  GPT-4o, 4.1 and 5 families and o-series take images, Gemini both, anything
-  unnamed neither). Any other model, or a file over what the model takes
-  (5 MB an image, 10 MB a PDF), gets a note naming the file and saying it
-  cannot be read; never a silent drop. A text-like file is quoted as material,
+  only to one that takes PDFs (`modelInputs`). What a model takes is the
+  OpenRouter catalog's `input_modalities` (`image`; `file` for a PDF on
+  OpenRouter); a model the catalog does not describe falls back to a map by
+  provider and family (Claude both, the OpenAI GPT-4o, 4.1 and 5 families and
+  o-series images, Gemini both, anything unnamed neither).
+- A message carrying an image or PDF its tier's model cannot read is served by
+  the nearest other chat tier, inside the person's ceiling, whose model can
+  (`readerTier`; the cheaper of two as near). The turn reports the tier that
+  served it. A text-only message never changes tier.
+- With no such tier, or a file over what the model takes (5 MB an image,
+  10 MB a PDF), the model gets a note naming the file and saying it cannot be
+  read; never a silent drop. A text-like file is quoted as material,
   like a paste, up to 100,000 characters. Only the message being sent carries
   file content; an earlier message's file is a note naming it.
 - In a message, a file is a fixed-height card like a paste's (an image shows
@@ -126,6 +132,10 @@ check, or was cancelled MUST never show as attached or be sent.
   reads ready and cannot be sent.
 - AC-11.4: GIVEN another person THEN they cannot finalize, relay, cancel, send
   or download it.
+- AC-11.5: GIVEN an image sent in a tier whose model is text-only and another
+  tier inside the ceiling whose model reads images WHEN the turn runs THEN
+  that tier's model receives the image as file input; with none inside the
+  ceiling the routed model gets the note.
 
 **Not yet**: the agent tool `read_attachment` reads pastes only; files reach
 the model in the message that carries them. Retention on delete is §10's
@@ -133,7 +143,7 @@ the model in the message that carries them. Retention on delete is §10's
 
 **Code surface**:
 - `apps/web/src/lib/artifact-chat-files.ts`: `createChatUpload`, `finalizeChatUpload`, `storeChatUploadBytes`, `cancelChatUpload`, `fileDraftsOf`, `bindChatFiles`, `conversationFiles`
-- `apps/web/src/lib/chat/file-input.ts`: `modelInputs`, `modelFileParts`; `apps/web/src/lib/chat/turn.ts`
+- `apps/web/src/lib/chat/file-input.ts`: `modelInputs`, `modelFileParts`; `apps/web/src/lib/chat/turn.ts`: `readerTier`
 - `apps/web/src/app/api/chat/uploads/route.ts`, `apps/web/src/app/api/chat/uploads/[artifactId]/route.ts`, `apps/web/src/app/api/chat/uploads/[artifactId]/finalize/route.ts`, `apps/web/src/app/api/chat/uploads/[artifactId]/content/route.ts`, `apps/web/src/app/api/chat/[id]/attachments/[artifactId]/download/route.ts`
 - `packages/ai-kit/src/chat/react/Composer.tsx`, `packages/ai-kit/src/chat/react/AttachmentCard.tsx`, `apps/web/src/components/chat/upload-file.ts`
 

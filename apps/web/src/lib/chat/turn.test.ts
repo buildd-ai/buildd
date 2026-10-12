@@ -114,6 +114,7 @@ function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: ()
     limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
     route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
     routingAccess: async () => ({ ok: false as const, error: { kind: 'missing_key' as const } }),
+    catalog: async () => [],
     resolveModel: async (o: any) => { resolveCalls.push(o); tiersAsked.push(o.tier); return (opts.key ?? true)
       ? { ok: true as const, model: opts.model!, provider: 'openrouter' as const, modelId: 'test-model', tier: o.tier, keyScope: 'team' as const, ...(opts.pool ? { pool: opts.pool } : {}) }
       : { ok: false as const, reason: 'no_key' as const, provider: 'anthropic', tier: o.tier }; },
@@ -1826,6 +1827,57 @@ describe('an image or file rides as a ready upload', () => {
     expect(prompt).toContain('chart.png');
     expect(prompt).toContain('cannot view images');
     expect(prompt).not.toContain('"type":"file"');
+  });
+
+  describe('a turn whose model cannot view the image goes to a tier that can', () => {
+    const entry = (openRouterId: string, inputModalities: string[], input = 0.1) => ({
+      id: openRouterId.split('/')[1], canonicalId: null, openRouterId, provider: 'other' as const, displayName: openRouterId,
+      contextLength: 1_000_000, created: 1, input, output: input * 4, cacheRead: 0, cacheWrite: 0, inputModalities,
+    });
+    const byTier: Record<string, string> = { budget: 'v/text-only', standard: 'v/sees', premium: 'v/sees-too' };
+    const catalog = async () => [entry('v/text-only', ['text']), entry('v/sees', ['text', 'image'], 2), entry('v/sees-too', ['text', 'image'], 5)];
+    const tiered = (models: Record<string, MockLanguageModelV4>, asked: string[]) => async (o: any) => {
+      asked.push(o.tier);
+      return { ok: true as const, model: models[o.tier], provider: 'openrouter' as const, modelId: byTier[o.tier], tier: o.tier, keyScope: 'team' as const };
+    };
+    const models = () => ({
+      budget: new MockLanguageModelV4({ doStream: textStream('blind') as any }),
+      standard: new MockLanguageModelV4({ doStream: textStream('A bar chart.') as any }),
+      premium: new MockLanguageModelV4({ doStream: textStream('A bar chart.') as any }),
+    });
+    const budgetRoute = async () => ({ tier: 'budget' as const, allowWrites: true, source: 'decision' as const });
+
+    it('the image goes as file input to the nearest tier whose model reads images', async () => {
+      const m = models();
+      const asked: string[] = [];
+      const { turn } = harness({ route: budgetRoute, extraDeps: { catalog, files: fakeFiles().deps, attachments: linkDeps().deps, resolveModel: tiered(m, asked) } });
+      const { res } = await turn(fileMsg('what is this?'));
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-buildd-chat-tier')).toBe('standard');
+      expect(m.budget.doStreamCalls).toHaveLength(0);
+      expect(JSON.stringify(m.standard.doStreamCalls[0].prompt)).toContain('"type":"file"');
+      expect(asked).toEqual(['budget', 'standard']);
+    });
+
+    it('no tier inside the ceiling reads images: the note stays and the routed model answers', async () => {
+      ceilingTest.inputs = { team: { team: { chat: 'budget' } } };
+      try {
+        const m = models();
+        const { turn } = harness({ route: budgetRoute, extraDeps: { catalog, files: fakeFiles().deps, attachments: linkDeps().deps, resolveModel: tiered(m, []) } });
+        expect((await turn(fileMsg(''))).res.status).toBe(200);
+        expect(m.standard.doStreamCalls).toHaveLength(0);
+        expect(JSON.stringify(m.budget.doStreamCalls[0].prompt)).toContain('cannot view images');
+      } finally { ceilingTest.inputs = {}; }
+    });
+
+    it('a text-only turn never leaves its tier', async () => {
+      const m = models();
+      const asked: string[] = [];
+      const { turn } = harness({ route: budgetRoute, extraDeps: { catalog, resolveModel: tiered(m, asked) } });
+      await turn(userMsg('hi'));
+      expect(asked).toEqual(['budget']);
+      expect(m.budget.doStreamCalls).toHaveLength(1);
+    });
   });
 
   it('an upload that is not ready is refused before the model, and nothing is saved', async () => {

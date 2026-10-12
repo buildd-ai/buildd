@@ -53,6 +53,12 @@ export interface CatalogEntry extends TokenPrice {
   vendor?: string;
   /** OpenRouter's `expiration_date`, unix seconds, when the model is scheduled to go away. */
   expiresAt?: number | null;
+  /**
+   * What the model reads (`architecture.input_modalities`: `text`, `image`,
+   * `file`, ...). Optional because persisted catalog rows predate it; absent
+   * means unknown, not text-only.
+   */
+  inputModalities?: string[];
 }
 
 /**
@@ -114,7 +120,7 @@ interface RawModel {
   name?: unknown;
   created?: unknown;
   context_length?: unknown;
-  architecture?: { output_modalities?: unknown };
+  architecture?: { output_modalities?: unknown; input_modalities?: unknown };
   pricing?: Record<string, unknown>;
   supported_parameters?: unknown;
   expiration_date?: unknown;
@@ -180,6 +186,7 @@ export function normalizeCatalog(raw: unknown): CatalogEntry[] {
       : null;
 
     const id = nativeId(slug, provider);
+    const inputModalities = item.architecture?.input_modalities;
 
     out.push({
       id,
@@ -192,6 +199,7 @@ export function normalizeCatalog(raw: unknown): CatalogEntry[] {
       created,
       vendor: orId.slice(0, orId.indexOf('/')),
       expiresAt: parseExpiry(item.expiration_date),
+      ...(Array.isArray(inputModalities) ? { inputModalities: inputModalities.filter((m): m is string => typeof m === 'string') } : {}),
       input,
       output,
       // Cache rates are optional in the feed. The vendor ratios (~0.1x read,

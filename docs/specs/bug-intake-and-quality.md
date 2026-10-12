@@ -10,6 +10,25 @@ related: [decision-kinds, living-specs, subject-anchor-liveness, path-claim-owne
 keywords: [bug intake, friction, frictionSignature, gate refusal, incident_reports, failure_incidents, Failure Pattern Sentinel, reconciliation, attach_to, new_pattern, noise, needs_owner, intake_reconcile, Jev, fix task, introducing release, release_tasks, escape rate, defect rate, recurrence, time to resolve, report a problem, duplicate friction tasks]
 verified_by: []
 supersedes: []
+assertions:
+  - id: failure-incident-triage
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: triageIncident
+    path: apps/web/src/lib/failure-incident-actions.ts
+  - id: failure-incidents-table
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: failureIncidents
+    path: packages/core/db/schema.ts
+  - id: release-attribution
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: attributeRelease
+    path: packages/core/release-attribution.ts
 ---
 
 # Bug Intake and Quality
