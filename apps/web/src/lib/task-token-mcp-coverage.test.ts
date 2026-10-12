@@ -183,6 +183,8 @@ const REFUSED_ADMIN_ACTIONS: Record<string, string> = {
   update_incident: 'acknowledges or resolves a team-wide sentinel incident, not one mission',
   consolidate_knowledge: "maintains the team's knowledge store; archives entries",
   memory_delete: "permanently deletes from the team's memory",
+  get_decision: "reads any decision in the team's ledger, not one mission's",
+  label_decision: "grades decisions across the team's ledger, not one mission's",
 };
 
 /** Calls inside an allowed admin action that a task token is refused, and why. */
