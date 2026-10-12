@@ -30,8 +30,17 @@ token, cloud provider or gateway), `virtual` (a subscription login) or
 Code's own credential order; no key or config value is sent.
 `BUILDD_HOOK_USAGE=0` turns this off.
 
+In a Claude Code session that has claimed a buildd task, the built-in
+`AskUserQuestion` prompt (which only that terminal ever sees) is refused with a
+pointer to buildd's `ask_human`, so the question reaches you in Needs-you on any
+device. The terminal stays a place to answer: typing a reply there withdraws the
+buildd question. The hook decides "a person typed" on this machine and sends only
+that flag, never the prompt. Any doubt (no claim, buildd unreachable) leaves the
+terminal prompt as it was. `BUILDD_ASK_IN_TERMINAL=1` turns this off.
+
 The contract and server behaviour are specified in
-`docs/specs/local-agent-presence.md` in the buildd repo.
+`docs/specs/local-agent-presence.md` and `docs/specs/terminal-question-redirect.md`
+in the buildd repo.
 
 ## Install
 
@@ -137,4 +146,5 @@ config without one (an older login) falls back to the API key.
 | `BUILDD_API_KEY`, `BUILDD_SERVER` | Override `~/.buildd/config.json` |
 | `BUILDD_HOOKS_DISABLED=1` | Hooks do nothing (MCP-only mode) |
 | `BUILDD_HOOK_USAGE=0` | Don't read or report session token usage |
+| `BUILDD_ASK_IN_TERMINAL=1` | Keep `AskUserQuestion` in the terminal, even in a session holding a claim |
 | `BUILDD_HOOK_DEBUG=1` | Log hook decisions to stderr |
