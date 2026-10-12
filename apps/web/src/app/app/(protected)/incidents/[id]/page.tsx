@@ -10,6 +10,7 @@ import Section from '@/components/ui/Section';
 import { displayTaskTitle } from '@/lib/task-title';
 import { incidentAffected, incidentStateLine } from '@/lib/incident-view';
 import { INCIDENT_VERDICTS } from '@/modules';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,14 +28,14 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
   if (!isPlatformOperator(user)) redirect('/app/health');
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
 
-  const incident = await db.query.failureIncidents.findFirst({ where: eq(failureIncidents.id, id) });
+  const incident = await db.query.failureIncidents.findFirst({ where: sqlWhere(eq(failureIncidents.id, id)) });
   if (!incident?.workspaceId) notFound();
   const wsIds = await getUserWorkspaceIds(user.id);
   if (!wsIds.includes(incident.workspaceId)) notFound();
 
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, incident.workspaceId), columns: { name: true, teamId: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, incident.workspaceId)), columns: { name: true, teamId: true } });
   const fixTask = incident.linkedFixTaskId
-    ? await db.query.tasks.findFirst({ where: eq(tasks.id, incident.linkedFixTaskId), columns: { id: true, title: true, status: true } })
+    ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, incident.linkedFixTaskId)), columns: { id: true, title: true, status: true } })
     : null;
   const verdict = ws?.teamId ? (await INCIDENT_VERDICTS(ws.teamId, [incident.id])).get(incident.id) ?? null : null;
   const affected = incidentAffected(incident.affectedRefs);

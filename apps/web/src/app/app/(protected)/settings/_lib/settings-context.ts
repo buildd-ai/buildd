@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
 import { settingsPermissions, type SettingsPermissions } from './settings-permissions';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface SettingsWorkspace {
   id: string;
@@ -62,7 +63,7 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
 
   const rows = wsIds.length > 0
     ? await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
+        where: sqlWhere(inArray(workspaces.id, wsIds)),
         columns: { id: true, name: true, repo: true, teamId: true },
       }).catch(() => [] as SettingsWorkspace[])
     : [];
@@ -128,8 +129,8 @@ export interface RunnerAccountDto {
 export async function loadRunnerAccounts(teamIds: string[]): Promise<RunnerAccountDto[]> {
   if (teamIds.length === 0) return [];
   const rows = await db.query.accounts.findMany({
-    where: inArray(accounts.teamId, teamIds),
-    orderBy: desc(accounts.createdAt),
+    where: sqlWhere(inArray(accounts.teamId, teamIds)),
+    orderBy: sqlOrderBy(desc(accounts.createdAt)),
     columns: RUNNER_ACCOUNT_COLUMNS,
     with: {
       team: { columns: { name: true } },

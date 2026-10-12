@@ -163,6 +163,7 @@ import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from '
 import { loadSoftOverlapHolders } from './soft-overlap-store';
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
 import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -315,11 +316,11 @@ export async function POST(req: NextRequest) {
       // 1. Open workspaces of the account's own team ("open" = open within the team)
       // 2. Any workspace where the account has an explicit canClaim link
       const openWorkspaces = await db.query.workspaces.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(workspaces.accessMode, 'open'),
           eq(workspaces.teamId, account.teamId),
           workspaceId ? eq(workspaces.id, workspaceId) : undefined
-        ),
+        )),
       });
 
       // Get cached account→workspace permissions (avoids DB hit on every claim)
@@ -335,7 +336,7 @@ export async function POST(req: NextRequest) {
       let restrictedIds: string[] = [];
       if (restrictedWsIds.length > 0) {
         const restrictedWorkspaces = await db.query.workspaces.findMany({
-          where: inArray(workspaces.id, restrictedWsIds),
+          where: sqlWhere(inArray(workspaces.id, restrictedWsIds)),
           columns: { id: true },
         });
         restrictedIds = restrictedWorkspaces.map((ws) => ws.id);
@@ -436,10 +437,10 @@ export async function POST(req: NextRequest) {
 
   // Check current active workers (after expiring stale ones)
   const activeWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, account.id),
       inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-    ),
+    )),
   });
 
   // The account's worker limit is the slots its runners are assigned, never a
@@ -528,7 +529,7 @@ export async function POST(req: NextRequest) {
     // Also count open workspaces of the account's own team — those are
     // claimable without an explicit link.
     const openCount = await db.query.workspaces.findMany({
-      where: and(eq(workspaces.accessMode, 'open'), eq(workspaces.teamId, account.teamId)),
+      where: sqlWhere(and(eq(workspaces.accessMode, 'open'), eq(workspaces.teamId, account.teamId))),
       columns: { id: true },
     });
     for (const w of openCount) accessibleWorkspaceIds.add(w.id);
@@ -594,7 +595,7 @@ export async function POST(req: NextRequest) {
 
   if (forceRequested) {
     const target = await db.query.tasks.findMany({
-      where: and(eq(tasks.id, taskId!), inArray(tasks.workspaceId, workspaceIds)),
+      where: sqlWhere(and(eq(tasks.id, taskId!), inArray(tasks.workspaceId, workspaceIds))),
       columns: { id: true, workspaceId: true },
       with: { workspace: { columns: { teamId: true } } },
       limit: 1,
@@ -815,8 +816,8 @@ export async function POST(req: NextRequest) {
   // pre-filter below re-runs after backend flips.
   const candidateLimit = Math.min(Math.max(availableSlots * 5, 25), 100);
   const fetchCandidatePage = (offset: number) => db.query.tasks.findMany({
-    where: and(...claimableConditions),
-    orderBy: (tasks, { desc, asc }) => [desc(tasks.priority), asc(tasks.createdAt)],
+    where: sqlWhere(and(...claimableConditions)),
+    orderBy: sqlOrderByFn((tasks, { desc, asc }) => [desc(tasks.priority), asc(tasks.createdAt)]),
     limit: candidateLimit,
     offset,
     with: { workspace: true },
@@ -879,7 +880,7 @@ export async function POST(req: NextRequest) {
     if (teamBackendMask.has(teamId)) return teamBackendMask.get(teamId)!;
     let enabled: AgentBackend[] | null = null;
     try {
-      const team = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { enabledBackends: true } });
+      const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { enabledBackends: true } });
       enabled = (team?.enabledBackends as AgentBackend[] | null) ?? null;
     } catch (err) {
       console.warn(`[claim] team backend mask lookup failed for ${teamId}:`, err);
@@ -1209,7 +1210,7 @@ export async function POST(req: NextRequest) {
       filteredTasks.map(t => (t as any).workspace?.teamId as string | undefined).filter(Boolean) as string[],
     )];
     roleModelRows = await db.query.workspaceSkills.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(workspaceSkills.slug, uniqueRoleSlugs),
         eq(workspaceSkills.isRole, true),
         eq(workspaceSkills.enabled, true),
@@ -1221,7 +1222,7 @@ export async function POST(req: NextRequest) {
             ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, taskTeamIds))
             : undefined,
         ),
-      ),
+      )),
       // Personal rows ride along (team-level, workspaceId NULL); which one a
       // task may use is decided per task by its requester below.
       columns: { ...ROLE_VISIBILITY_COLUMNS, model: true },
@@ -1378,7 +1379,7 @@ export async function POST(req: NextRequest) {
     // `backend = 'codex'` WHERE missed every failover-started Codex worker and
     // the next claim request flipped another task onto the same window.
     const activeTasks = await db.query.tasks.findMany({
-      where: inArray(tasks.id, activeTaskIds),
+      where: sqlWhere(inArray(tasks.id, activeTaskIds)),
       columns: { workspaceId: true, backend: true, context: true },
     });
     for (const t of activeTasks) {
@@ -2175,10 +2176,10 @@ export async function POST(req: NextRequest) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
       if (workspaceTeamId) {
         const tenantBudget = await db.query.tenantBudgets.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(tenantBudgets.tenantId, tenantCtx.tenantId),
             eq(tenantBudgets.teamId, workspaceTeamId),
-          ),
+          )),
         });
         if (tenantBudget) {
           if (new Date() >= new Date(tenantBudget.budgetResetsAt)) {
@@ -2987,10 +2988,10 @@ export async function POST(req: NextRequest) {
       // The conditional insert can no-op for two reasons. Only one of them
       // justifies rolling the task back to pending.
       const liveWorkers = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.taskId, task.id),
           inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input']),
-        ),
+        )),
         columns: { id: true },
         limit: 1,
       });
@@ -3404,10 +3405,10 @@ export async function POST(req: NextRequest) {
     if (!task?.parentTaskId) continue;
 
     const siblings = await db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.parentTaskId, task.parentTaskId),
         not(eq(tasks.id, task.id))
-      ),
+      )),
       columns: { id: true, title: true, status: true, result: true },
     });
 

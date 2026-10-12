@@ -5,6 +5,7 @@ import { workspaces, githubInstallations, accountWorkspaces } from '@buildd/core
 import { eq, inArray } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { listOpenWorkspaces } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 interface RepoDescriptor {
   path: string;
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
 
     // Get workspaces accessible to this account
     const accountWs = await db.query.accountWorkspaces.findMany({
-      where: eq(accountWorkspaces.accountId, account.id),
+      where: sqlWhere(eq(accountWorkspaces.accountId, account.id)),
       with: { workspace: true },
     });
 
@@ -79,7 +80,7 @@ export async function POST(req: NextRequest) {
       allWorkspaces.clear();
       const granted = constrainToGranted(account, account.workspaceIds ?? []);
       if (granted.length > 0) {
-        const rows = await db.query.workspaces.findMany({ where: inArray(workspaces.id, granted), columns: { id: true, name: true, repo: true } });
+        const rows = await db.query.workspaces.findMany({ where: sqlWhere(inArray(workspaces.id, granted)), columns: { id: true, name: true, repo: true } });
         for (const ws of rows) allWorkspaces.set(ws.id, ws);
       }
     }

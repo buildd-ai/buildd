@@ -17,14 +17,15 @@ import { join } from 'path';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q } from './harness';
 
-const META = join(import.meta.dir, '../../../../packages/core/drizzle/meta');
+const DRIZZLE = join(import.meta.dir, '../../../../packages/core/drizzle');
 
-type SnapshotColumn = { name: string; notNull?: boolean };
-type Snapshot = { tables: Record<string, { name: string; schema?: string; columns: Record<string, SnapshotColumn> }> };
+/** drizzle v1 snapshots are v8: a flat `ddl[]` of entities, columns among them. */
+type SnapshotColumn = { entityType: string; name: string; table: string; schema?: string; notNull?: boolean };
 
-function latestSnapshot(): Snapshot {
-  const files = readdirSync(META).filter((f) => /^\d+_snapshot\.json$/.test(f)).sort();
-  return JSON.parse(readFileSync(join(META, files[files.length - 1]), 'utf8'));
+function latestSnapshotColumns(): SnapshotColumn[] {
+  const tip = readdirSync(DRIZZLE).filter((f) => /^\d{14}_/.test(f)).sort().at(-1)!;
+  const snapshot = JSON.parse(readFileSync(join(DRIZZLE, tip, 'snapshot.json'), 'utf8')) as { ddl: SnapshotColumn[] };
+  return snapshot.ddl.filter((e) => e.entityType === 'columns');
 }
 
 let live: Map<string, boolean>;
@@ -37,10 +38,9 @@ beforeAll(async () => {
 });
 
 describe('migrated schema matches the latest snapshot', () => {
-  const snapshot = latestSnapshot();
-  const expected = Object.values(snapshot.tables)
-    .filter((t) => (t.schema || 'public') === 'public')
-    .flatMap((t) => Object.values(t.columns).map((c) => ({ key: `${t.name}.${c.name}`, notNull: !!c.notNull })));
+  const expected = latestSnapshotColumns()
+    .filter((c) => (c.schema || 'public') === 'public')
+    .map((c) => ({ key: `${c.table}.${c.name}`, notNull: !!c.notNull }));
 
   test('every snapshot column exists', () => {
     expect(expected.filter((c) => !live.has(c.key)).map((c) => c.key)).toEqual([]);

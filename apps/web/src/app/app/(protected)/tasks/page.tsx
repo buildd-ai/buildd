@@ -12,6 +12,7 @@ import {
 } from './activity-data';
 import { listLocalSessions, type LocalSessionView } from '@/lib/local-session-view';
 import { localHoldsByWorker } from '@/lib/local-session-display';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export default async function TasksPage({
   searchParams,
@@ -48,7 +49,7 @@ export default async function TasksPage({
         if (initiativeId) {
           try {
             const init = await db.query.initiatives.findFirst({
-              where: eq(initiatives.id, initiativeId),
+              where: sqlWhere(eq(initiatives.id, initiativeId)),
               columns: { title: true },
             });
             initiativeTitle = init?.title || null;
@@ -102,13 +103,13 @@ export default async function TasksPage({
           const windowStart = new Date(Date.now() - ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
           const [recentTasks, liveRootIds] = await Promise.all([
             db.query.tasks.findMany({
-              where: and(
+              where: sqlWhere(and(
                 inArray(tasks.workspaceId, wsIds),
                 gte(tasks.updatedAt, windowStart),
                 isNull(tasks.parentTaskId),
-              ),
+              )),
               columns: taskColumns,
-              orderBy: [desc(tasks.updatedAt)],
+              orderBy: sqlOrderBy([desc(tasks.updatedAt)]),
               limit: ACTIVITY_ROOT_LIMIT,
             }),
             loadLiveRootIds(wsIds),
@@ -120,7 +121,7 @@ export default async function TasksPage({
           const missingLiveIds = liveRootIds.filter(id => !loadedRootIds.has(id));
           const liveRoots = missingLiveIds.length > 0
             ? await db.query.tasks.findMany({
-                where: and(inArray(tasks.workspaceId, wsIds), inArray(tasks.id, missingLiveIds)),
+                where: sqlWhere(and(inArray(tasks.workspaceId, wsIds), inArray(tasks.id, missingLiveIds))),
                 columns: taskColumns,
               })
             : [];
@@ -131,9 +132,9 @@ export default async function TasksPage({
           const rootIds = rootTasks.map(t => t.id);
           const childTasks = rootIds.length > 0
             ? await db.query.tasks.findMany({
-                where: and(inArray(tasks.workspaceId, wsIds), inArray(tasks.parentTaskId, rootIds)),
+                where: sqlWhere(and(inArray(tasks.workspaceId, wsIds), inArray(tasks.parentTaskId, rootIds))),
                 columns: taskColumns,
-                orderBy: [desc(tasks.createdAt)],
+                orderBy: sqlOrderBy([desc(tasks.createdAt)]),
                 limit: ACTIVITY_CHILD_LIMIT,
               })
             : [];
@@ -144,7 +145,7 @@ export default async function TasksPage({
           const missionTitleMap = new Map<string, string>();
           if (missionIds.length > 0) {
             const misns = await db.query.missions.findMany({
-              where: inArray(missions.id, missionIds),
+              where: sqlWhere(inArray(missions.id, missionIds)),
               columns: { id: true, title: true, initiativeId: true },
             });
             for (const m of misns) {
@@ -176,7 +177,7 @@ export default async function TasksPage({
   if (missionId && user) {
     try {
       const mission = await db.query.missions.findFirst({
-        where: eq(missions.id, missionId),
+        where: sqlWhere(eq(missions.id, missionId)),
         columns: { title: true },
       });
       missionTitle = mission?.title || null;

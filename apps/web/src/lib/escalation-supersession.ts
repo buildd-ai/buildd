@@ -1,5 +1,6 @@
 import { missionNotes, tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type CoreDbModule = typeof import('@buildd/core/db');
 type SupersessionDb = Pick<CoreDbModule['db'], 'query' | 'update'>;
@@ -26,7 +27,7 @@ export async function supersedeAncestorEscalations(
     visited.add(taskId);
     ancestorTaskIds.push(taskId);
     const parent: { parentTaskId: string | null } | undefined = await database.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { parentTaskId: true },
     });
     taskId = parent?.parentTaskId ?? null;

@@ -17,6 +17,7 @@ import { isStorageConfigured } from '@/lib/storage';
 import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 import { normalizeBackend } from '@/lib/normalize-backend';
 import { can } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 function generateSlug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -67,12 +68,12 @@ export async function GET(req: NextRequest) {
       ? ((apiAccount as { sessionUserId?: string | null }).sessionUserId ?? null)
       : user!.id;
     const personalRows = teamIds.length === 0 ? [] : (await db.query.workspaceSkills.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(workspaceSkills.teamId, teamIds),
         isNotNull(workspaceSkills.ownerUserId),
         eq(workspaceSkills.isRole, true),
         eq(workspaceSkills.enabled, true),
-      ),
+      )),
       columns: {
         id: true, teamId: true, slug: true, name: true, model: true, color: true,
         description: true, ownerUserId: true, visibility: true,
@@ -81,7 +82,7 @@ export async function GET(req: NextRequest) {
 
     const ownerIds = [...new Set(personalRows.map(r => r.ownerUserId!))];
     const owners = ownerIds.length === 0 ? [] : await db.query.users.findMany({
-      where: inArray(users.id, ownerIds),
+      where: sqlWhere(inArray(users.id, ownerIds)),
       columns: { id: true, name: true },
     });
     const ownerName = new Map(owners.map(o => [o.id, o.name ?? null]));
@@ -108,14 +109,14 @@ export async function GET(req: NextRequest) {
     // slugs that a team role or workspace override actually backs; personal
     // roles are listed on their own below, filtered by visibility.
     const teamRoleSlugs = new Set((await db.query.workspaceSkills.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workspaceSkills.isRole, true),
         isNull(workspaceSkills.ownerUserId),
         or(
           teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
           inArray(workspaceSkills.workspaceId, wsIds),
         ),
-      ),
+      )),
       columns: { slug: true },
     })).map(r => r.slug));
 
@@ -227,11 +228,11 @@ export async function POST(req: NextRequest) {
       // One slug per owner per team (ws_skills_owner_slug_idx). A private
       // personal role may share a team role's slug; sharing it may not.
       const own = await db.query.workspaceSkills.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(workspaceSkills.teamId, teamId),
           eq(workspaceSkills.ownerUserId, user.id),
           eq(workspaceSkills.slug, slug),
-        ),
+        )),
         columns: { id: true },
       });
       if (own) {

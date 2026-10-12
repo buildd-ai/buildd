@@ -55,7 +55,7 @@ When modifying `packages/core/db/schema.ts`:
 
 CI will **fail** if you change schema.ts without generating/committing migrations.
 
-Parallel branches that each generated a migration collide (`bun run migrations:index-check`, and `bun run migrations:commute` for forked snapshots). Never hand-edit the journal or snapshots: merge the base and run `bun run migrations:regenerate --base=origin/dev`. See `.claude/skills/schema-change/`.
+Migrations are drizzle v1 folders (`packages/core/drizzle/<YYYYMMDDHHMMSS>_<slug>/` with `migration.sql` and `snapshot.json`): no journal, no index, so names cannot collide. Two branches can still generate from one base and touch the same thing: before pushing, merge dev and run `bun run migrations:layout-check`, `bun run migrations:commute` and `bun db:generate` (it must report no changes). Never hand-edit a migration or snapshot, or rename a folder: run `bun run migrations:regenerate --base=origin/dev`. See `.claude/skills/schema-change/`.
 
 **Do NOT use `db:push`** in production - it bypasses migration tracking.
 

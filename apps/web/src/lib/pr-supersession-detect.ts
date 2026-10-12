@@ -41,6 +41,7 @@ import { recordPrSupersession, supersessionRepoScope } from '@/lib/pr-supersessi
 import { verifyByContent, verifyByPatchId, mapPath, parseSupersessionClaims, significantAddedLines, type DiffFile } from '@/lib/pr-supersession-verify';
 import { normalizeRepoFullName, prUrlFor, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { installationIdForRepo } from '@/lib/workspace-installation';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** `kernel`: the workflow kernel's `scan_supersession` effect for a PR it owns (T18). */
 export type DetectVia = 'webhook' | 'sweep' | 'kernel';
@@ -220,7 +221,7 @@ export async function detectPrSupersession(opts: {
 }): Promise<DetectResult> {
   const now = opts.now ?? new Date();
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, opts.workerId),
+    where: sqlWhere(eq(workers.id, opts.workerId)),
     columns: {
       id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true, mergedAt: true,
       prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true, supersessionScan: true,
@@ -285,7 +286,7 @@ export async function detectPrSupersession(opts: {
   const missionId = worker.task?.missionId ?? null;
   if (missionId) {
     const siblings = await db.query.tasks.findMany({
-      where: eq(tasks.missionId, missionId),
+      where: sqlWhere(eq(tasks.missionId, missionId)),
       columns: { id: true, title: true },
       with: { workers: { columns: { prUrl: true, prNumber: true, mergedAt: true } } },
     });

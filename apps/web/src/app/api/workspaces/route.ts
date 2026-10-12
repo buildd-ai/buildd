@@ -14,6 +14,7 @@ import { toPublicWorkspace } from '@/lib/workspace-public';
 import { emit } from '@/lib/core-emit';
 import { can } from '@/lib/permissions';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The account fields a workspace listing may carry. The response spreads each
@@ -49,7 +50,7 @@ export async function GET(req: NextRequest) {
       const ids = reachable.filter(id =>
         taskScopeAllowsDelegated(apiAccount, id, 'analytics:read') || taskScopeAllowsDelegated(apiAccount, id, 'tasks:create'));
       const rows = ids.length
-        ? await db.query.workspaces.findMany({ where: inArray(workspaces.id, ids), orderBy: desc(workspaces.createdAt) })
+        ? await db.query.workspaces.findMany({ where: sqlWhere(inArray(workspaces.id, ids)), orderBy: sqlOrderBy(desc(workspaces.createdAt)) })
         : [];
       // No runner or connected-account detail: a task token needs the name, not the fleet.
       return NextResponse.json({ workspaces: rows.map(ws => toPublicWorkspace(ws)) });
@@ -65,8 +66,8 @@ export async function GET(req: NextRequest) {
 
       allWorkspaces = allIds.length > 0
         ? await db.query.workspaces.findMany({
-            where: inArray(workspaces.id, allIds),
-            orderBy: desc(workspaces.createdAt),
+            where: sqlWhere(inArray(workspaces.id, allIds)),
+            orderBy: sqlOrderBy(desc(workspaces.createdAt)),
             with: {
               accountWorkspaces: {
                 with: { account: { columns: CONNECTED_ACCOUNT_COLUMNS } },
@@ -92,8 +93,8 @@ export async function GET(req: NextRequest) {
 
       allWorkspaces = wsIds.length > 0
         ? await db.query.workspaces.findMany({
-            where: whereClause,
-            orderBy: desc(workspaces.createdAt),
+            where: sqlWhere(whereClause),
+            orderBy: sqlOrderBy(desc(workspaces.createdAt)),
             with: {
               accountWorkspaces: {
                 with: {

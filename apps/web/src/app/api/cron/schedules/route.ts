@@ -37,6 +37,7 @@ import { sweepTaskCategories } from '@/lib/task-category-sweep';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { resolveEffectiveRoleSlugs } from '@/lib/effective-roles';
 import { assertScheduleSkillsAvailable, fileMissingSkillFriction, MissingScheduleSkillError } from '@/lib/schedule-skill-preflight';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const SCHEDULE_TIERS: ReadonlySet<string> = new Set(['premium-plus', 'premium', 'standard', 'budget']);
 
@@ -161,10 +162,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   try {
     // Find due schedules: enabled=true AND nextRunAt <= now
     const dueSchedules = await db.query.taskSchedules.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(taskSchedules.enabled, true),
         lte(taskSchedules.nextRunAt, now)
-      ),
+      )),
       limit: MAX_SCHEDULES_PER_RUN,
     });
 
@@ -173,7 +174,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const scheduleIds = dueSchedules.map(s => s.id);
     const linkedMissionsBatch = scheduleIds.length > 0
       ? await db.query.missions.findMany({
-          where: inArray(missions.scheduleId, scheduleIds),
+          where: sqlWhere(inArray(missions.scheduleId, scheduleIds)),
           columns: { id: true, scheduleId: true, priority: true },
         })
       : [];
@@ -187,10 +188,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     )] as string[];
     const wsAccountLinks = scheduleWorkspaceIds.length > 0
       ? await db.query.accountWorkspaces.findMany({
-          where: and(
+          where: sqlWhere(and(
             inArray(accountWorkspaces.workspaceId, scheduleWorkspaceIds),
             eq(accountWorkspaces.canClaim, true),
-          ),
+          )),
           columns: { accountId: true, workspaceId: true },
         })
       : [];
@@ -205,7 +206,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const uniqueAccountIds = [...new Set(wsAccountLinks.map(l => l.accountId))];
     const accountRecords = uniqueAccountIds.length > 0
       ? await db.query.accounts.findMany({
-          where: inArray(accounts.id, uniqueAccountIds),
+          where: sqlWhere(inArray(accounts.id, uniqueAccountIds)),
           columns: { id: true, authType: true, maxConcurrentSessions: true, maxConcurrentWorkers: true },
         })
       : [];
@@ -215,10 +216,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const activeWorkerCounts = new Map<string, number>();
     if (uniqueAccountIds.length > 0) {
       const activeWorkerRows = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(workers.accountId, uniqueAccountIds),
           inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-        ),
+        )),
         columns: { id: true, accountId: true },
       });
       for (const w of activeWorkerRows) {
@@ -430,7 +431,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
         // Check if this schedule is linked to a mission
         const linkedMission = await db.query.missions.findFirst({
-          where: eq(missions.scheduleId, schedule.id),
+          where: sqlWhere(eq(missions.scheduleId, schedule.id)),
           columns: {
             id: true,
             title: true,
@@ -961,7 +962,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
         // Dispatch task
         const workspace = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, taskWorkspaceId),
+          where: sqlWhere(eq(workspaces.id, taskWorkspaceId)),
         });
 
         if (workspace) {

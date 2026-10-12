@@ -24,6 +24,7 @@ import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { callerOwnsWorker } from '@/lib/worker-owner';
 import { isUuid } from '@/lib/uuid';
 import { attachRoleConfig, attachSkillBundles } from '../../claim/skill-and-role-injection';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +40,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!isUuid(id)) return notFound();
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true },
     with: {
       task: {

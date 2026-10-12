@@ -12,6 +12,7 @@ import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential'
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { roleHas } from '@/lib/permissions';
 import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -31,8 +32,8 @@ export async function GET() {
     const teamIds = await getUserTeamIds(user.id);
     const allAccounts = teamIds.length > 0
       ? await db.query.accounts.findMany({
-          where: inArray(accounts.teamId, teamIds),
-          orderBy: desc(accounts.createdAt),
+          where: sqlWhere(inArray(accounts.teamId, teamIds)),
+          orderBy: sqlOrderBy(desc(accounts.createdAt)),
         })
       : [];
 
@@ -117,7 +118,7 @@ export async function POST(req: NextRequest) {
     const requestedLinks: string[] | null = workspaceIds ?? (scopes === undefined && typeof workspaceId === 'string' && workspaceId ? [workspaceId] : null);
     if (scopes !== undefined || requestedLinks != null) {
       const keyTeamId: string = teamId;
-      const teamWorkspaces = await db.query.workspaces.findMany({ where: eq(workspaces.teamId, teamId), columns: { id: true, teamId: true, accessMode: true } });
+      const teamWorkspaces = await db.query.workspaces.findMany({ where: sqlWhere(eq(workspaces.teamId, teamId)), columns: { id: true, teamId: true, accessMode: true } });
       const byId = new Map(teamWorkspaces.map(w => [w.id, w]));
       if (requestedLinks != null) {
         if (requestedLinks.some(id => !byId.has(id))) return NextResponse.json({ error: 'Workspace is outside this team' }, { status: 403 });

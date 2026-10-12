@@ -7,6 +7,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/ta
 import { getUserTeamIds } from '@/lib/team-access';
 import { getReleaseWithTaskEdges } from '@/lib/release-queries';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(
   req: NextRequest,
@@ -36,7 +37,7 @@ export async function GET(
   const { release, edges } = found;
 
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, release.workspaceId),
+    where: sqlWhere(eq(workspaces.id, release.workspaceId)),
     columns: { id: true, name: true, teamId: true, githubRepoId: true },
   });
 
@@ -58,7 +59,7 @@ export async function GET(
   let repoFullName: string | null = null;
   if (ws.githubRepoId) {
     const repoRow = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, ws.githubRepoId),
+      where: sqlWhere(eq(githubRepos.id, ws.githubRepoId)),
       columns: { fullName: true },
     });
     repoFullName = repoRow?.fullName ?? null;

@@ -34,6 +34,7 @@ import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 import type { LinkedGithubRepo } from '@/lib/agent-capabilities/github';
 import { mintRepoScopedInstallationToken, scopedTokenPermissions, type PermissionLevel, type ScopedInstallationToken } from '@/lib/github-scoped-token';
 import type { ScoutCaptureMint } from '@/lib/quality-scout-runner-host';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** What a capture token may do: `visual-qa.yml` dispatch, its runs, its artifact. */
 export const SCOUT_CAPTURE_TOKEN_PERMISSIONS: Readonly<Record<string, PermissionLevel>> = {
@@ -89,7 +90,7 @@ export interface ScoutCaptureGrantDeps {
 export const dbScoutCaptureGrantDeps: ScoutCaptureGrantDeps = {
   async loadWorkspace(workspaceId, teamId) {
     const ws = await db.query.workspaces.findFirst({
-      where: and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, teamId)),
+      where: sqlWhere(and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, teamId))),
       columns: { id: true, gitConfig: true, githubRepoId: true },
       with: {
         githubRepo: {

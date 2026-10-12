@@ -26,6 +26,7 @@ import {
 } from '@/lib/answer-resume';
 import type { WaitingFor } from '@buildd/shared';
 import { waitingForOptionLabels } from '@/lib/waiting-for-options';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -80,7 +81,7 @@ async function resolveStaleTask(
   // Read current task status and context upfront. A cancelled task must never
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { kind: true, pathManifest: true, outputRequirement: true, taskClass: true, status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true, deliveryId: true, deliveryRole: true },
   });
   // A visual-auditor mission task is settled only by its own evidence check
@@ -103,7 +104,7 @@ async function resolveStaleTask(
     : null;
   const kernelAttemptEnded = async () => {
     if (!kernelDeliveryId || !currentTask) return;
-    const after = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true } });
+    const after = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true } });
     if (after?.status !== 'failed') return;
     // Lazy: the seam loads the effect handlers, which load half the app.
     const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
@@ -304,10 +305,10 @@ async function resolveStaleTask(
     // NOT consume a retry slot (they reflect external constraints, not task bugs).
     // Workers predating exitCause (null) are treated as code_failure for safety.
     const failedWorkers = await db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workers.taskId, taskId),
         eq(workers.status, 'failed'),
-      ),
+      )),
       columns: { id: true, exitCause: true },
     });
     const chargeableFailures = failedWorkers.filter(w => consumesRetryAttempt(w.exitCause));
@@ -413,7 +414,7 @@ async function resolveStaleTask(
  * "Release slot" (lib/interactive-detach.ts).
  */
 async function resolveAbandonedInteractiveTask(taskId: string, workspaceId: string) {
-  const current = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true } });
+  const current = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true } });
   if (current && current.status !== 'pending' && !isTerminalTaskStatus(current.status)) {
     await db
       .update(tasks)
@@ -674,7 +675,7 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
 
   // 1. Auto-expire stale workers. The rules live in staleWorkerScope.
   const staleWorkers = await db.query.workers.findMany({
-    where: staleWorkerScope(accountId),
+    where: sqlWhere(staleWorkerScope(accountId)),
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       // Needed to tell a never-started row and a silent session apart from a
@@ -824,7 +825,7 @@ export async function resolveTasksOfReapedWorkers(
   if (taskIds.length === 0) return;
   // Fetch workspace IDs before updating, for dependency resolution
   const staleTasks = await db.query.tasks.findMany({
-    where: inArray(tasks.id, taskIds),
+    where: sqlWhere(inArray(tasks.id, taskIds)),
     columns: { id: true, workspaceId: true },
   });
 
@@ -832,11 +833,11 @@ export async function resolveTasksOfReapedWorkers(
   const reapedIds = reaped.map(w => w.id);
   for (const t of staleTasks) {
     const otherActiveWorkers = await db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workers.taskId, t.id),
         inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
         not(inArray(workers.id, reapedIds)),
-      ),
+      )),
       columns: { id: true },
       limit: 1,
     });
@@ -902,7 +903,7 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   const heartbeatCutoff = new Date(now.getTime() - HEARTBEAT_STALE_MS);
 
   const freshHeartbeat = await db.query.workerHeartbeats.findFirst({
-    where: heartbeatFreshnessScope(accountId, heartbeatCutoff),
+    where: sqlWhere(heartbeatFreshnessScope(accountId, heartbeatCutoff)),
     columns: { id: true },
   });
   if (freshHeartbeat) return 0;
@@ -910,7 +911,7 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   const orphanedByHeartbeat = await db.query.workers.findMany({
     // Account-scoped on purpose — NOT widened to the team. See
     // heartbeatOrphanScope for why widening it is unsafe either way.
-    where: heartbeatOrphanScope(accountId, heartbeatCutoff, now),
+    where: sqlWhere(heartbeatOrphanScope(accountId, heartbeatCutoff, now)),
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
@@ -957,18 +958,18 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   if (orphanTaskIds.length > 0) {
     // Fetch workspace IDs for dependency resolution
     const orphanTasks = await db.query.tasks.findMany({
-      where: inArray(tasks.id, orphanTaskIds),
+      where: sqlWhere(inArray(tasks.id, orphanTaskIds)),
       columns: { id: true, workspaceId: true },
     });
 
     // Only reset tasks that have NO other active workers
     for (const task of orphanTasks) {
       const otherActiveWorkers = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.taskId, task.id),
           inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
           not(inArray(workers.id, orphanIds)),
-        ),
+        )),
         columns: { id: true },
         limit: 1,
       });
@@ -1004,14 +1005,14 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
   const recoveryCutoff = new Date(Date.now() - RECOVERY_CUTOFF_MS);
 
   const staleWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, accountId),
       inArray(workers.status, ['running', 'starting']),
       lt(workers.updatedAt, staleThreshold),
       // Don't attempt recovery on workers that have been stale for 30+ minutes
       // (they already had their chance)
       gt(workers.updatedAt, recoveryCutoff),
-    ),
+    )),
     columns: { id: true, taskId: true, localUiUrl: true },
   });
 
@@ -1024,11 +1025,11 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
       // Only attempt recovery if runner has a fresh heartbeat
       if (worker.localUiUrl) {
         const heartbeat = await db.query.workerHeartbeats.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workerHeartbeats.accountId, accountId),
             eq(workerHeartbeats.localUiUrl, worker.localUiUrl),
             gt(workerHeartbeats.lastHeartbeatAt, staleThreshold),
-          ),
+          )),
           columns: { id: true },
         });
 
@@ -1036,10 +1037,10 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
       } else {
         // No localUiUrl on the worker — check if ANY heartbeat for the account is fresh
         const anyHeartbeat = await db.query.workerHeartbeats.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workerHeartbeats.accountId, accountId),
             gt(workerHeartbeats.lastHeartbeatAt, staleThreshold),
-          ),
+          )),
           columns: { id: true },
         });
 
@@ -1092,11 +1093,11 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
   const standaloneCutoff = new Date(Date.now() - WAITING_INPUT_STALE_MS);
 
   const allWaitingWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, accountId),
       eq(workers.status, 'waiting_input'),
       lt(workers.updatedAt, missionCutoff),
-    ),
+    )),
     columns: { id: true, taskId: true, accountId: true, runner: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
     with: { task: { columns: { missionId: true }, with: { mission: { columns: { executor: true } } } } },
   });
@@ -1149,7 +1150,7 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
 
     // Fetch original task to clone
     const originalTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, worker.taskId),
+      where: sqlWhere(eq(tasks.id, worker.taskId)),
     });
 
     if (!originalTask) continue;
@@ -1294,11 +1295,11 @@ export async function cleanupUnresumedAnswers(
   const now = Date.now();
 
   const candidates = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, accountId),
       eq(workers.status, 'waiting_input'),
       isNotNull(workers.pendingInstructions),
-    ),
+    )),
     columns: {
       id: true, taskId: true, accountId: true, workspaceId: true, branch: true,
       milestones: true, pendingInstructions: true, instructionHistory: true,

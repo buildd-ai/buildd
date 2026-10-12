@@ -12,6 +12,7 @@ import type { LoopHistoryEntry } from '@buildd/shared';
 import type { LoopInput, LoopVerdict } from '@/lib/completion-policy';
 import { dispatchLoopIteration } from '@/lib/loop-dispatcher';
 import { laterStartAt } from '@/lib/deferred-start';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** PR states where CI has not reported yet: a check_suite webhook is still coming. */
 const CHECKS_PENDING = new Set<string | null>([null, 'pr_open', 'ci_running']);
@@ -33,15 +34,15 @@ export async function loopPolicy(input: LoopInput): Promise<LoopVerdict> {
 
   const prColumns = { prLifecycleStatus: true, prNumber: true, mergedAt: true } as const;
   let prWorker = await db.query.workers.findFirst({
-    where: eq(workers.id, input.workerId),
+    where: sqlWhere(eq(workers.id, input.workerId)),
     columns: prColumns,
   });
   // A later session on the same task (a requeue, an interactive pickup) often
   // opens no PR of its own: the task's PR is the one an earlier worker opened.
   if (!prWorker?.prNumber) {
     prWorker = (await db.query.workers.findFirst({
-      where: and(eq(workers.taskId, input.taskId), isNotNull(workers.prNumber)),
-      orderBy: desc(workers.createdAt),
+      where: sqlWhere(and(eq(workers.taskId, input.taskId), isNotNull(workers.prNumber))),
+      orderBy: sqlOrderBy(desc(workers.createdAt)),
       columns: prColumns,
     })) ?? prWorker;
   }

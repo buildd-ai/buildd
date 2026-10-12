@@ -3,6 +3,7 @@ import { secrets } from '@buildd/core/db/schema';
 import { encrypt, decrypt } from '@buildd/core/secrets';
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from './credential-health';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const PURPOSE = 'codex_credential' as const;
@@ -256,12 +257,12 @@ export async function resolveCodexCredential(opts: {
   workspaceId?: string | null;
 }): Promise<CodexCredential | null> {
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, opts.teamId),
       eq(secrets.purpose, PURPOSE),
       or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    ),
+    )),
     columns: { encryptedValue: true, accountId: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true, healthStatus: true },
   });
   if (rows.length === 0) return null;
@@ -318,14 +319,14 @@ export async function hasCodexCredential(opts: {
 }): Promise<boolean> {
   const anyAccount = opts.accountId === 'any';
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, opts.teamId),
       eq(secrets.purpose, PURPOSE),
       ...(anyAccount
         ? []
         : [or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`)]),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    ),
+    )),
     columns: { tokenExpiresAt: true, healthStatus: true },
   });
   // Expired credentials still count — the CLI refreshes via refresh_token. Revoked
@@ -338,7 +339,7 @@ export async function hasCodexCredential(opts: {
 /** Connection status (no token values) for the credential stored at an exact scope. */
 export async function getCodexStatus(scope: CodexScope): Promise<CodexStatus> {
   const row = await db.query.secrets.findFirst({
-    where: scopeMatch(scope),
+    where: sqlWhere(scopeMatch(scope)),
     columns: {
       encryptedValue: true,
       workspaceId: true,
@@ -391,7 +392,7 @@ export async function deleteCodexCredential(scope: CodexScope): Promise<void> {
 /** Secret id of the Codex credential at an exact scope, or null. Used by the refresh route. */
 export async function getCodexSecretId(scope: CodexScope): Promise<string | null> {
   const row = await db.query.secrets.findFirst({
-    where: scopeMatch(scope),
+    where: sqlWhere(scopeMatch(scope)),
     columns: { id: true },
   });
   return row?.id ?? null;
@@ -438,7 +439,7 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
 
   if (!claimed) {
     const exists = await db.query.secrets.findFirst({
-      where: and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)),
+      where: sqlWhere(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE))),
       columns: { id: true },
     });
     return exists ? 'locked' : 'no_credential';
@@ -630,12 +631,12 @@ export async function writeBackCodexTokens(
 ): Promise<boolean> {
   // Find the credential row to update (most specific scope wins).
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, opts.teamId),
       eq(secrets.purpose, PURPOSE),
       or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    ),
+    )),
     columns: { id: true, encryptedValue: true, accountId: true, workspaceId: true },
   });
   if (rows.length === 0) return false;
@@ -727,7 +728,7 @@ const OPENAI_MODELS_URL = 'https://api.openai.com/v1/models';
  */
 export async function verifyCodexCredential(secretId: string): Promise<VerifyResult> {
   const row = await db.query.secrets.findFirst({
-    where: and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)),
+    where: sqlWhere(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE))),
     columns: { encryptedValue: true, healthStatus: true },
   });
 

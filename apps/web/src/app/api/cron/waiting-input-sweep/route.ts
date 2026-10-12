@@ -34,6 +34,7 @@ import { workers } from '@buildd/core/db/schema';
 import { and, eq, lt } from 'drizzle-orm';
 import { cleanupStuckWaitingInput } from '@/lib/stale-workers';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
 
@@ -55,7 +56,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   const cutoff = new Date(Date.now() - CANDIDATE_CUTOFF_MS);
 
   const candidates = await db.query.workers.findMany({
-    where: and(eq(workers.status, 'waiting_input'), lt(workers.updatedAt, cutoff)),
+    where: sqlWhere(and(eq(workers.status, 'waiting_input'), lt(workers.updatedAt, cutoff))),
     columns: { accountId: true },
   });
 

@@ -13,6 +13,7 @@ import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { effectiveVisibleRoles, personalRoleVisibleSql, TEAM_SCOPED_BY_QUERY } from '@buildd/core/role-visibility';
 import type { TaskHandoff } from '@buildd/shared';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Flatten active tasks' pathManifests into concrete search paths for the
@@ -133,8 +134,8 @@ const CRITERIA_DECISION_PATTERN = /goal.?criteria|criteri(?:a|on)\b|NOT_EVALUATE
  */
 async function buildNotesContext(missionId: string, criteriaEvaluatedAt?: string | Date | null): Promise<string[]> {
   const recentNotes = await db.query.missionNotes.findMany({
-    where: eq(missionNotes.missionId, missionId),
-    orderBy: [desc(missionNotes.createdAt)],
+    where: sqlWhere(eq(missionNotes.missionId, missionId)),
+    orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
     limit: 20,
   });
 
@@ -214,12 +215,12 @@ export function isWithinActiveHours(currentHour: number, start: number, end: num
  */
 export async function getWorkspaceRoles(workspaceId: string, requesterUserId: string | null = null) {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
 
   const allRoles = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.isRole, true),
       eq(workspaceSkills.enabled, true),
       ws
@@ -229,7 +230,7 @@ export async function getWorkspaceRoles(workspaceId: string, requesterUserId: st
           )
         : eq(workspaceSkills.workspaceId, workspaceId),
       personalRoleVisibleSql(requesterUserId),
-    ),
+    )),
     columns: {
       id: true,
       slug: true,
@@ -312,20 +313,20 @@ export async function getWorkspaceRoles(workspaceId: string, requesterUserId: st
  */
 async function getInitiativeRollup(initiativeId: string) {
   const initiative = await db.query.initiatives.findFirst({
-    where: eq(initiatives.id, initiativeId),
+    where: sqlWhere(eq(initiatives.id, initiativeId)),
     columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, contextArtifactIds: true },
   });
   if (!initiative) return null;
 
   const childMissions = await db.query.missions.findMany({
-    where: eq(missions.initiativeId, initiativeId),
+    where: sqlWhere(eq(missions.initiativeId, initiativeId)),
     columns: { id: true, title: true, status: true, priority: true },
     with: {
       tasks: {
         columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true },
       },
     },
-    orderBy: [desc(missions.priority), desc(missions.createdAt)],
+    orderBy: sqlOrderBy([desc(missions.priority), desc(missions.createdAt)]),
   });
 
   const children: ChildMissionProgress[] = [];
@@ -349,8 +350,8 @@ export async function buildInitiativeContext(initiativeId: string) {
   if (!rollup) return null;
 
   const initiativeArtifacts = await db.query.artifacts.findMany({
-    where: eq(artifacts.initiativeId, initiativeId),
-    orderBy: [desc(artifacts.updatedAt)],
+    where: sqlWhere(eq(artifacts.initiativeId, initiativeId)),
+    orderBy: sqlOrderBy([desc(artifacts.updatedAt)]),
     limit: 10,
     columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
   });
@@ -407,7 +408,7 @@ export async function buildInitiativeContext(initiativeId: string) {
  */
 export async function buildMissionContext(missionId: string, templateContext?: Record<string, unknown>) {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: {
       id: true,
       title: true,
@@ -438,7 +439,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   let scheduleContext: Record<string, unknown> | undefined;
   if (mission.scheduleId) {
     const schedule = await db.query.taskSchedules.findFirst({
-      where: eq(taskSchedules.id, mission.scheduleId),
+      where: sqlWhere(eq(taskSchedules.id, mission.scheduleId)),
       columns: { taskTemplate: true },
     });
     scheduleContext = schedule?.taskTemplate?.context as Record<string, unknown> | undefined;
@@ -472,7 +473,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     let heartbeatSensitive = false;
     if (mission.workspaceId) {
       const hbWs = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
+        where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
         columns: { dataClass: true },
       });
       heartbeatSensitive = (hbWs?.dataClass as string) === 'sensitive';
@@ -505,7 +506,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   let missionWorkspaceSensitive = false;
   if (mission.workspaceId) {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, mission.workspaceId),
+      where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
       columns: { id: true, name: true, repo: true, githubInstallationId: true, dataClass: true },
     });
     if (ws) {
@@ -521,7 +522,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   if (mission.teamId) {
     teamWorkspacesList = await db.query.workspaces.findMany({
-      where: eq(workspaces.teamId, mission.teamId),
+      where: sqlWhere(eq(workspaces.teamId, mission.teamId)),
       columns: { id: true, name: true, repo: true },
       limit: 20,
     });
@@ -530,11 +531,11 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   // ── Standard mission context ──
   // Last 10 completed tasks
   const completedTasks = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       eq(tasks.status, 'completed')
-    ),
-    orderBy: [desc(tasks.createdAt)],
+    )),
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: 10,
     columns: { id: true, title: true, mode: true, result: true, createdAt: true, roleSlug: true },
   });
@@ -546,11 +547,11 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   let taskPRs: Array<{ title: string; prUrl: string; prNumber: number }> = [];
   if (isBuild) {
     const tasksWithPRs = await db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.missionId, missionId),
         eq(tasks.status, 'completed'),
         sql`${tasks.result}->>'prUrl' IS NOT NULL`
-      ),
+      )),
       limit: 20,
       columns: { id: true, title: true, result: true },
     });
@@ -562,10 +563,10 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   // Active tasks — separate out budget-waiting ones so the organizer knows not to retry them
   const allActiveTasks = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
-    ),
+    )),
     limit: 20,
     columns: { id: true, title: true, status: true, description: true, dependsOn: true, context: true, pathManifest: true },
   });
@@ -578,19 +579,19 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   // Recent failed tasks (include more for grouping)
   const failedTasks = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       eq(tasks.status, 'failed')
-    ),
-    orderBy: [desc(tasks.createdAt)],
+    )),
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: 15,
     columns: { id: true, title: true, result: true, description: true },
   });
 
   // Prior artifacts linked to this mission
   const priorArtifacts = await db.query.artifacts.findMany({
-    where: eq(artifacts.missionId, mission.id),
-    orderBy: [desc(artifacts.updatedAt)],
+    where: sqlWhere(eq(artifacts.missionId, mission.id)),
+    orderBy: sqlOrderBy([desc(artifacts.updatedAt)]),
     limit: 10,
     columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
   });
@@ -604,7 +605,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   let referencedArtifacts: typeof priorArtifacts = [];
   if (referencedIds.length) {
     referencedArtifacts = await db.query.artifacts.findMany({
-      where: contextArtifactsWhere(referencedIds, mission.teamId),
+      where: sqlWhere(contextArtifactsWhere(referencedIds, mission.teamId)),
       limit: 10,
       columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
     });
@@ -769,9 +770,9 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   // Tasks blocked on user input (worker in waiting_input state)
   const waitingTasks = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.status, 'waiting_input'),
-    ),
+    )),
     with: { task: { columns: { id: true, title: true, missionId: true } } },
     columns: { id: true, waitingFor: true },
     limit: 5,
@@ -950,7 +951,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   // Inject evaluation feedback from the last incomplete evaluation
   if (mission.lastEvaluationTaskId) {
     const evalTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, mission.lastEvaluationTaskId),
+      where: sqlWhere(eq(tasks.id, mission.lastEvaluationTaskId)),
       columns: { result: true, status: true },
     });
     if (evalTask?.status === 'completed') {
@@ -1079,57 +1080,57 @@ async function buildHeartbeatContext(mission: {
   const [priorHeartbeats, completedTasks, activeTasks, failedTasks, missionArtifacts, tasksWithPRs] = await Promise.all([
     // Last 3 completed runs (the "Prior organizer runs" section)
     db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.missionId, mission.id),
         eq(tasks.status, 'completed')
-      ),
-      orderBy: [desc(tasks.createdAt)],
+      )),
+      orderBy: sqlOrderBy([desc(tasks.createdAt)]),
       limit: 3,
       columns: { result: true, createdAt: true },
     }),
     // All completed tasks (with role info)
     db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.missionId, mission.id),
         eq(tasks.status, 'completed')
-      ),
-      orderBy: [desc(tasks.createdAt)],
+      )),
+      orderBy: sqlOrderBy([desc(tasks.createdAt)]),
       limit: 20,
       columns: { id: true, title: true, roleSlug: true, result: true, createdAt: true },
     }),
     // Active/pending tasks
     db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.missionId, mission.id),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
-      ),
+      )),
       limit: 10,
       columns: { id: true, title: true, status: true, roleSlug: true, pathManifest: true },
     }),
     // Failed tasks (include more for grouping)
     db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.missionId, mission.id),
         eq(tasks.status, 'failed')
-      ),
-      orderBy: [desc(tasks.createdAt)],
+      )),
+      orderBy: sqlOrderBy([desc(tasks.createdAt)]),
       limit: 20,
       columns: { id: true, title: true, result: true },
     }),
     // Mission artifacts (non-heartbeat)
     db.query.artifacts.findMany({
-      where: eq(artifacts.missionId, mission.id),
-      orderBy: [desc(artifacts.updatedAt)],
+      where: sqlWhere(eq(artifacts.missionId, mission.id)),
+      orderBy: sqlOrderBy([desc(artifacts.updatedAt)]),
       limit: 10,
       columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
     }),
     // Tasks that created PRs
     db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.missionId, mission.id),
         eq(tasks.status, 'completed'),
         sql`${tasks.result}->>'prUrl' IS NOT NULL`
-      ),
+      )),
       limit: 20,
       columns: { title: true, result: true },
     }),

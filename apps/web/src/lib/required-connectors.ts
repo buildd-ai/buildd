@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { personalRoleVisibleSql, pickVisibleRoleRow, ROLE_VISIBILITY_COLUMNS } from '@buildd/core/role-visibility';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Validation for `tasks.requiredConnectors` — the task-level opt-in that turns a
@@ -37,13 +38,13 @@ export async function resolveRoleConnectorRefs(
   requesterUserId: string | null = null,
 ): Promise<string[]> {
   const roleRows = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.slug, roleSlug),
       eq(workspaceSkills.enabled, true),
       eq(workspaceSkills.teamId, teamId),
       or(eq(workspaceSkills.workspaceId, workspaceId), isNull(workspaceSkills.workspaceId)),
       personalRoleVisibleSql(requesterUserId),
-    ),
+    )),
     columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
   });
   const roleRow = pickVisibleRoleRow(roleRows, roleSlug, { teamId, workspaceId, requesterUserId });

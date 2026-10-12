@@ -14,6 +14,7 @@ import {
   resolveCodingPolicy,
   type EffectiveCodingPolicy,
 } from './coding-policy';
+import { sqlWhere } from './db/relational-sql';
 
 export interface CodingPolicySubject {
   teamId: string | null | undefined;
@@ -24,7 +25,7 @@ export interface CodingPolicySubject {
 
 export async function loadCodingPolicy(subject: CodingPolicySubject): Promise<EffectiveCodingPolicy> {
   if (!subject.teamId) return resolveCodingPolicy({});
-  const row = await db.query.teams.findFirst({ where: eq(teams.id, subject.teamId), columns: { codingPolicy: true } });
+  const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, subject.teamId)), columns: { codingPolicy: true } });
   const stored = row?.codingPolicy ?? null;
   const workspace = subject.workspaceId ? stored?.workspaces?.[subject.workspaceId] : undefined;
   let member = null;
@@ -33,7 +34,7 @@ export async function loadCodingPolicy(subject: CodingPolicySubject): Promise<Ef
     const userId = typeof subject.userId === 'function' ? await subject.userId() : subject.userId ?? null;
     if (userId) {
       const m = await db.query.teamMembers.findFirst({
-        where: and(eq(teamMembers.teamId, subject.teamId), eq(teamMembers.userId, userId)),
+        where: sqlWhere(and(eq(teamMembers.teamId, subject.teamId), eq(teamMembers.userId, userId))),
         columns: { codingPolicy: true },
       });
       member = parseCodingPolicyLayer(m?.codingPolicy);

@@ -86,6 +86,7 @@ import { withCronRun, type CronReport } from '@/lib/cron-run';
 // reach one.
 import { detectFleetIdle } from './fleet-idle';
 import { readModelPin } from '@buildd/core/model-pin';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
 
@@ -516,7 +517,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   const renotifyMs = RENOTIFY_HOURS * 3_600_000;
 
   const candidateRows = await db.query.tasks.findMany({
-    where: and(eq(tasks.status, 'pending'), lt(tasks.createdAt, threshold)),
+    where: sqlWhere(and(eq(tasks.status, 'pending'), lt(tasks.createdAt, threshold))),
     columns: {
       id: true,
       title: true,
@@ -550,7 +551,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         columns: { id: true, name: true, teamId: true, repo: true, maxConcurrentTasks: true },
       },
     },
-    orderBy: asc(tasks.createdAt),
+    orderBy: sqlOrderBy(asc(tasks.createdAt)),
     limit: MAX_CANDIDATES,
   });
   const candidates = candidateRows as unknown as Candidate[];
@@ -571,7 +572,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // ── Filter out tasks that were successfully claimed at least once ─────────
   const candidateIds = candidates.map(t => t.id);
   const candidateWorkerRows = await db.query.workers.findMany({
-    where: inArray(workers.taskId, candidateIds),
+    where: sqlWhere(inArray(workers.taskId, candidateIds)),
     columns: { taskId: true, status: true },
   });
   const progressed = new Set<string>();
@@ -604,7 +605,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   const deps: DepIndex = { byId: new Map(), openPrByTaskId: new Map() };
   if (depIds.length > 0) {
     const depRows = await db.query.tasks.findMany({
-      where: inArray(tasks.id, depIds),
+      where: sqlWhere(inArray(tasks.id, depIds)),
       columns: { id: true, title: true, status: true },
     });
     for (const d of depRows as Array<{ id: string; title: string; status: string }>) {
@@ -612,11 +613,11 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     }
 
     const depPrRows = await db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(workers.taskId, depIds),
         isNotNull(workers.prUrl),
         isNull(workers.mergedAt),
-      ),
+      )),
       columns: { taskId: true, prUrl: true, prNumber: true, prLifecycleStatus: true },
     });
     for (const w of depPrRows as Array<{
@@ -646,7 +647,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   )];
   if (advisoryMissionIds.length > 0) {
     const peerRows = await db.query.tasks.findMany({
-      where: inArray(tasks.missionId, advisoryMissionIds),
+      where: sqlWhere(inArray(tasks.missionId, advisoryMissionIds)),
       columns: { id: true, title: true, missionId: true, pathManifest: true },
       with: {
         // LIVE_WORKER_STATUSES is the same in-flight set the claim loop's guard

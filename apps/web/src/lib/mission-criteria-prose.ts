@@ -8,6 +8,7 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { AGENT_INFERENCE_KEY_LABELS } from '@/lib/getting-started';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * `description` (prose) goal criteria under the `runner` grader: one read-only
@@ -151,13 +152,13 @@ function quote(text: string): string {
  */
 async function findProseEvalTask(missionId: string, criterionIndex: number) {
   const rows = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       sql`${tasks.context} -> 'criteriaProseEval' ->> 'missionId' = ${missionId}`,
       sql`${tasks.context} -> 'criteriaProseEval' ->> 'criterionIndex' = ${String(criterionIndex)}`,
-    ),
+    )),
     columns: { id: true, status: true, context: true, result: true, createdAt: true, updatedAt: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: 5,
   });
   // Re-check in JS so a mocked or loose `where` can never widen the match.
@@ -175,14 +176,14 @@ async function findProseEvalTask(missionId: string, criterionIndex: number) {
 async function hasAgentBackendCredential(teamId: string | null): Promise<boolean> {
   if (!teamId) return false;
   const row = await db.query.secrets.findFirst({
-    where: or(
+    where: sqlWhere(or(
       and(
         eq(secrets.teamId, teamId),
         or(...AGENT_BACKEND_PURPOSES.map(p => eq(secrets.purpose, p))),
       ),
       // The team's Anthropic / OpenAI key in canonical storage (provider parity).
       ...AGENT_INFERENCE_KEY_LABELS.map(label => teamCredentialWhere({ teamId, purpose: 'inference_key', label })),
-    ),
+    )),
     columns: { id: true },
   });
   return !!row;
@@ -240,7 +241,7 @@ export async function resolveProseCriterion(opts: ProseCriterionInput): Promise<
   const now = opts.now ?? Date.now();
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, title: true, description: true, teamId: true, workspaceId: true },
   });
   if (!mission) return { kind: 'unavailable', evidence: `Mission ${missionId} not found` };
@@ -365,7 +366,7 @@ async function dispatchProseEvalTask(opts: {
   if (!mission.workspaceId) return { ok: false, reason: 'Prose criterion cannot be verified: mission has no workspace' };
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, mission.workspaceId),
+    where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
   });
   if (!workspace) return { ok: false, reason: 'Prose criterion cannot be verified: workspace not found' };
 
@@ -429,7 +430,7 @@ export async function handleProseEvalOutcome(
   structuredOutput?: unknown,
 ): Promise<{ applied: boolean }> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, status: true, context: true, result: true, missionId: true },
   });
   if (!task) return { applied: false };
@@ -439,7 +440,7 @@ export async function handleProseEvalOutcome(
   if (!isTerminalTaskStatus(task.status)) return { applied: false };
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, task.missionId),
+    where: sqlWhere(eq(missions.id, task.missionId)),
     columns: { id: true, goalCriteria: true, goalCriteriaState: true },
   });
   const state = (mission?.goalCriteriaState ?? null) as GoalCriteriaState | null;

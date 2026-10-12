@@ -64,6 +64,7 @@ export {
 } from '@buildd/core/mission-completion-codes';
 export type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
 import type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Which caller asked. Recorded on the decision event for diagnosis. */
 export type CompletionPath =
@@ -288,7 +289,7 @@ export async function canCompleteMission(
   const evaluateCriteria = opts.evaluateCriteria !== false;
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: {
       id: true,
       title: true,
@@ -357,7 +358,7 @@ export async function canCompleteMission(
   base.criteriaEvaluatedAt = storedState?.evaluatedAt ?? null;
 
   const allTasks = await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: {
       id: true, status: true, title: true, mode: true, kind: true,
       taskClass: true, creationSource: true, category: true, result: true,
@@ -376,7 +377,7 @@ export async function canCompleteMission(
           supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
           abandonedAt: true, abandonedReason: true, supersessionScan: true,
         },
-        orderBy: (w, { desc: d }) => [d(w.startedAt)],
+        orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]),
         limit: 1,
       },
     },
@@ -956,9 +957,9 @@ async function attemptMissionRelease(missionId: string): Promise<void> {
   if (!candidate?.workspaceId) return;
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.taskId, candidate.taskId),
+    where: sqlWhere(eq(workers.taskId, candidate.taskId)),
     columns: { id: true },
-    orderBy: (w, { desc: d }) => [d(w.startedAt)],
+    orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]),
   });
   if (!worker) return;
 
@@ -990,11 +991,11 @@ async function postAwaitingVerificationNote(
   try {
     const since = new Date(Date.now() - BLOCK_NOTE_WINDOW_MS);
     const recent = await db.query.missionNotes.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(missionNotes.missionId, missionId),
         eq(missionNotes.title, AWAITING_VERIFICATION_NOTE_TITLE),
         gte(missionNotes.createdAt, since),
-      ),
+      )),
       columns: { body: true },
       limit: 20,
     });

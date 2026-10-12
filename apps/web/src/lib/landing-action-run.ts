@@ -29,6 +29,7 @@ import {
   settleActionNonce,
 } from '@/lib/pr-landing-alert-deps';
 import { LANDING_ACTION_LABELS } from '@/lib/pr-landing-alert';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type RouteName = 'retry-ci' | 're-review' | 'merge';
 type RouteReply = { status: number; json: Record<string, any> };
@@ -84,7 +85,7 @@ export function makeLandingRunner(ports: LandingRunPorts): LandingActionDeps['ru
 
 async function repoFor(workspaceId: string): Promise<{ installationId: number; repoFullName: string } | null> {
   const ws = (await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     with: { githubRepo: { with: { installation: true } } },
   })) as any;
   const installationId = ws?.githubRepo?.installation?.installationId;

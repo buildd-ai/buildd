@@ -22,6 +22,7 @@ import { connectors, connectorShares, secrets, workspaceSkills } from '@buildd/c
 import { and, eq, inArray, isNull, isNotNull, ne, or } from 'drizzle-orm';
 import { can } from '@/lib/permissions';
 import { getUserTeamIds } from '@/lib/team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type RoleVisibility = 'private' | 'team';
 
@@ -106,7 +107,7 @@ export async function validatePersonalRoleConfig(
     const labels = [...new Set(entries.map(([, label]) => label as string))];
     if (labels.length > 0) {
       const own = await db.query.secrets.findMany({
-        where: and(eq(secrets.teamId, teamId), eq(secrets.userId, ownerUserId), inArray(secrets.label, labels)),
+        where: sqlWhere(and(eq(secrets.teamId, teamId), eq(secrets.userId, ownerUserId), inArray(secrets.label, labels))),
         columns: { label: true },
       });
       const ownLabels = new Set(own.map(s => s.label));
@@ -128,15 +129,15 @@ export async function validatePersonalRoleConfig(
     const ids = [...new Set(refs as string[])];
     if (ids.length > 0) {
       const shares = await db.query.connectorShares.findMany({
-        where: and(eq(connectorShares.sharedWithTeamId, teamId), inArray(connectorShares.connectorId, ids)),
+        where: sqlWhere(and(eq(connectorShares.sharedWithTeamId, teamId), inArray(connectorShares.connectorId, ids))),
         columns: { connectorId: true },
       });
       const sharedIds = shares.map(s => s.connectorId);
       const rows = await db.query.connectors.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(connectors.id, ids),
           sharedIds.length > 0 ? or(eq(connectors.teamId, teamId), inArray(connectors.id, sharedIds)) : eq(connectors.teamId, teamId),
-        ),
+        )),
         columns: { id: true },
       });
       // Catalog policy (a blocked provider) is not checked here: every
@@ -165,7 +166,7 @@ export async function findSharedSlugClash(
 ) {
   const { teamId, slug, excludeId } = input;
   return db.query.workspaceSkills.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.teamId, teamId),
       eq(workspaceSkills.slug, slug),
       isNull(workspaceSkills.workspaceId),
@@ -174,7 +175,7 @@ export async function findSharedSlugClash(
         isNull(workspaceSkills.ownerUserId),
         and(isNotNull(workspaceSkills.ownerUserId), eq(workspaceSkills.visibility, 'team')),
       ),
-    ),
+    )),
     columns: { id: true, slug: true, name: true, ownerUserId: true },
   });
 }
@@ -207,11 +208,11 @@ export async function findVisibleTeamLevelRole(roleId: string, userId: string) {
   const teamIds = await getUserTeamIds(userId);
   if (teamIds.length === 0) return undefined;
   const row = await db.query.workspaceSkills.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.id, roleId),
       isNull(workspaceSkills.workspaceId),
       inArray(workspaceSkills.teamId, teamIds),
-    ),
+    )),
   });
   return row && canSeeRole(row, userId) ? row : undefined;
 }

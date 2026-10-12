@@ -21,14 +21,14 @@ assertions:
     type: symbol
     name: inspectPullRequestMigrations
     path: apps/web/src/lib/migration-inspector.ts
-  - id: find-index-collisions
+  - id: layout-problems
     type: symbol
-    name: findIndexCollisions
-    path: packages/core/db/migration-index.ts
-  - id: renumber-against-base
+    name: layoutProblems
+    path: packages/core/db/migration-layout.ts
+  - id: regenerate-against-base
     type: symbol
-    name: renumberAgainstBase
-    path: packages/core/db/migration-index.ts
+    name: regenerateAgainstBase
+    path: packages/core/db/migration-layout.ts
   - id: pair-moved-migrations
     type: symbol
     name: pairMovedMigrations
@@ -72,8 +72,8 @@ assertions:
 - `packages/core/db/schema.ts` MUST NOT be treated as a standalone escalation path. It travels with its generated migration and is gated by the operation-class verdict on that migration.
 - A `schema.ts` change without a corresponding generated migration MUST classify as CONTRACT (schema drift without migration).
 - A CONTRACT verdict whose only CONTRACT statements move data (`INSERT/UPDATE/DELETE/MERGE`) MUST carry `kind: 'data'`. Any destructive statement in the same file or PR MUST win over it, whatever the order, so a backfill cannot hide a `DROP`.
-- CI MUST fail a PR that adds a migration numbered at or below its base branch's newest (`bun run migrations:index-check`), naming the colliding file and the next free index. drizzle-kit takes the next index from the local journal, so parallel branches mint the same number; no claim-time reservation can change that without hand-editing journals, so the index is checked against the base and repaired by regeneration instead.
-- The renumber MUST regenerate, not rename: `bun run migrations:renumber` resets the drizzle dir to the base's exact state and re-runs `drizzle-kit generate`. The migration-collision retry brief runs it (with `--min-index` past an open PR's slot that is not on the base yet). It, and `bun run conflicts:generated` for a conflicted merge, are the only sanctioned ways to move a migration; a hand-written rename or edit is lineage.
+- CI MUST run `bun run migrations:layout-check` on every PR: a numbered `NNNN_x.sql` or a `meta/` directory in a repo on drizzle v1 is a migration v1 never reads, so its DDL would be silently skipped. On v1 names cannot collide, so there is no index rule; the legacy index rule (a migration numbered at or below the base's newest) is gone from this repo, while the *server-side* inspector still applies slot rules to other workspaces' legacy repos.
+- A repair MUST regenerate, not rename: `bun run migrations:regenerate` resets the drizzle dir to the base's exact state and re-runs `drizzle-kit generate`. The migration-collision retry brief runs it. In a legacy repo the same repair was `migrations:renumber`.
 - **A renumber in a refresh PR is not lineage.** For an integration-refresh PR (a trunk→integration-branch merge, `integrationRefreshOf`), a deleted migration `.sql` (or a GitHub `renamed` entry's previous path) paired one to one with a new migration `.sql` holding the same bytes is a renumber: the mission's own migration moved past trunk's. It MUST NOT classify as `kind: 'lineage'`, at pre-flight or at the verdict-time re-check. The journal and snapshots it regenerates are compared by CI. The moved SQL is still classified, so a renumbered `DROP` stays CONTRACT. A move whose SQL differs, a deletion with no paired addition, a side that cannot be read, and the same shape in any PR that is not an integration refresh all stay lineage. The pairing is `pairMovedMigrations`, which the refresh-merge review exemption also uses (workflow-state-kernel §5.9 item 4), so both gates read the same shape the same way. Both gates also judge the refresh on its trunk delta (`trunk...head`) where it can be read.
 - **Both layouts** (these gates serve every workspace's repo, so they stay dual until the legacy layout is gone everywhere). A drizzle v1 `migration.sql` is a generated migration: it is classified, a deletion is `lineage`, and its `snapshot.json` is a generated artifact that is neither classified nor counted as reviewable size. A v1 migration has no slot (`getMigrationNumber` is null), so it can never be "behind" the base, never collides with an open PR, and is never ordered against `inherited` legacy files.
 - **A numbered file over a v1 base fails closed.** A PR adding `drizzle/NNNN_name.sql` where the base's drizzle dir holds v1 migration folders is `kind: 'collision'` (`against: 'base'`), because v1 never reads a numbered file and its DDL would be silently skipped with the deploy green. The repair is to merge the base and regenerate (`bun run migrations:regenerate`).
@@ -121,7 +121,7 @@ Neon PITR is enabled. Recovery path for an EXPAND migration that causes data pro
 | `MigrationSafety` type | `apps/web/src/lib/migration-safety.ts` |
 | `inspectPullRequestMigrations` | `apps/web/src/lib/migration-inspector.ts` |
 | `evaluateAutoMergeSafety` | `apps/web/src/lib/auto-merge.ts` |
-| `findIndexCollisions` / `renumberAgainstBase` | `packages/core/db/migration-index.ts` |
+| `layoutProblems` / `regenerateAgainstBase` / `runDrizzleCheck` | `packages/core/db/migration-layout.ts` |
 | `pairMovedMigrations` | `packages/core/generated-artifacts.ts` |
 
 **Out of scope**

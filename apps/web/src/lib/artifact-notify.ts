@@ -13,6 +13,7 @@ import { eq } from 'drizzle-orm';
 import { isReviewArtifact } from './artifact-prominence';
 import { notifyTeamOf, type NotifyPayload } from './notify';
 import type { Artifact } from '@buildd/core/db/schema';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Determine if an artifact should trigger a notification.
@@ -34,7 +35,7 @@ export async function shouldNotifyOnArtifact(
 
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { context: true, workspaceId: true },
     });
 

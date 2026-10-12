@@ -9,6 +9,7 @@ import { getCodexSecretId, verifyCodexCredential } from '@/lib/codex-credential'
 import { isUuid } from '@/lib/uuid';
 import { verifyCloudflareCredential } from '@/lib/cloudflare-credential';
 import { verifyAgentEndpointSecret } from '@/lib/agent-endpoint-settings';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
   if (!teamIds.length) return NextResponse.json({ error: 'No team found' }, { status: 403 });
 
   const row = await db.query.secrets.findFirst({
-    where: eq(secrets.id, id),
+    where: sqlWhere(eq(secrets.id, id)),
     columns: { id: true, teamId: true, purpose: true },
   });
 

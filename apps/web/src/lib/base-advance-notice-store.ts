@@ -20,6 +20,7 @@ import {
   type BaseAdvanceResult,
   type BaseResolver,
 } from '@/lib/base-advance-notice';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const BASE_ADVANCE_SURFACE = 'POST /api/github/webhook';
 const NOTICE_REASON = 'base branch advanced under a live worker on overlapping files';
@@ -41,12 +42,12 @@ export function createBaseAdvanceStore(resolver: BaseResolver): BaseAdvanceDeps 
       const byId = new Map(ws.map(w => [w.id, w]));
 
       const rows = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(workers.workspaceId, ws.map(w => w.id)),
           not(inArray(workers.status, [...TERMINAL_WORKER_STATUSES])),
           isNull(workers.mergedAt),
           gt(workers.updatedAt, new Date(Date.now() - LIVE_WINDOW_MS)),
-        ),
+        )),
         columns: {
           id: true, taskId: true, workspaceId: true, branch: true,
           prNumber: true, prBaseRef: true, observedTouches: true,

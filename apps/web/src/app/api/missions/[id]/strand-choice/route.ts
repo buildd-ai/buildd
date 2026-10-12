@@ -12,6 +12,7 @@ import { emitDecisionLabel, strandLabelLine, STRAND_CHOICE_CAPABILITY } from '@/
 
 import { labelDecisionOutcome } from '@buildd/core/decision-outcomes';
 import { labelHumanCorrection } from '@buildd/core/decision-outcome-graders';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const LABELS = new Set(['continue-on-runner', 'wait-for-local']);
 const ORDERS = new Set(['runner-first', 'local-first']);
@@ -53,7 +54,7 @@ export async function POST(
   try {
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       columns: { id: true, teamId: true, workspaceId: true },
     });
     const allowed = !!mission && (
@@ -72,12 +73,12 @@ export async function POST(
     // Record the human choice as an outcome on the most recent decision record for this mission
     try {
       const mostRecentDecision = await db.query.decisionRecords.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(decisionRecords.missionId, id),
           eq(decisionRecords.teamId, mission.teamId),
           eq(decisionRecords.capability, STRAND_CHOICE_CAPABILITY),
-        ),
-        orderBy: desc(decisionRecords.createdAt),
+        )),
+        orderBy: sqlOrderBy(desc(decisionRecords.createdAt)),
       });
 
       if (mostRecentDecision?.missionId === id && mostRecentDecision.teamId === mission.teamId

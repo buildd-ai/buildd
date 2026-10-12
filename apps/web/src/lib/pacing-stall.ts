@@ -26,6 +26,7 @@ import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { resolveEffectiveModel, type TaskKind } from '@buildd/core/model-router';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * API-key spend pressure for one team, or null when there is none. Cached per
@@ -38,11 +39,11 @@ async function teamPressurePct(teamId: string): Promise<number | null> {
   // will claim, so it takes the max across the team and words its verdict
   // conditionally rather than asserting causation — see the gate detail line.
   const teamAccounts = await db.query.accounts.findMany({
-    where: eq(accounts.teamId, teamId),
+    where: sqlWhere(eq(accounts.teamId, teamId)),
     columns: { id: true, teamId: true, seatId: true, authType: true, totalCost: true, maxCostPerDay: true },
     // Deterministic: `findFirst` with no ordering meant the reported window
     // could come from a different seat group on each run.
-    orderBy: (a, { asc }) => [asc(a.createdAt)],
+    orderBy: sqlOrderByFn((a, { asc }) => [asc(a.createdAt)]),
   });
   if (teamAccounts.length === 0) return null;
 

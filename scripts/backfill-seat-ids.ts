@@ -16,7 +16,9 @@ import { neon } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-http';
 import { eq, and, isNull, inArray } from 'drizzle-orm';
 import * as schema from '../packages/core/db/schema';
+import { relations } from '../packages/core/db/relations';
 import { decrypt } from '../packages/core/secrets/crypto';
+import { sqlOrderByFn, sqlWhere } from '../packages/core/db/relational-sql';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
@@ -42,17 +44,17 @@ function extractJwtSub(token: string): string | null {
 }
 
 const sql = neon(DATABASE_URL!);
-const db = drizzle({ client: sql, schema });
+const db = drizzle({ client: sql, relations });
 
 async function main() {
   console.log(`[backfill-seat-ids] mode=${DRY_RUN ? 'dry-run' : 'live'}`);
 
   // Find all OAuth accounts with null seatId
   const oauthAccounts = await db.query.accounts.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(schema.accounts.authType, 'oauth'),
       isNull(schema.accounts.seatId),
-    ),
+    )),
     columns: { id: true, name: true, teamId: true },
   });
 
@@ -77,12 +79,12 @@ async function main() {
   for (const [teamId, teamAccounts] of byTeam) {
     // Prefer team-wide credential; fall back to any workspace-scoped one.
     const creds = await db.query.secrets.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(schema.secrets.teamId, teamId),
         eq(schema.secrets.purpose, 'claude_credential'),
-      ),
+      )),
       columns: { encryptedValue: true, workspaceId: true, healthStatus: true },
-      orderBy: (s, { asc }) => [asc(s.workspaceId)], // null (team-wide) sorts first
+      orderBy: sqlOrderByFn((s, { asc }) => [asc(s.workspaceId)]), // null (team-wide) sorts first
     });
 
     if (creds.length === 0) {

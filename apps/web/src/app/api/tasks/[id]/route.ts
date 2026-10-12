@@ -40,6 +40,7 @@ import { TIERS } from '@buildd/core/model-tier-defaults';
 import { appBaseUrl } from '@/lib/app-url';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Label the wake for a task just reset to pending — but only when nothing it
@@ -53,7 +54,7 @@ async function wakeIfDependenciesSatisfied(task: typeof tasks.$inferSelect): Pro
   const deps = (task.dependsOn as string[] | null) ?? [];
   if (deps.length > 0) {
     const depRows = await db.query.tasks.findMany({
-      where: inArray(tasks.id, deps),
+      where: sqlWhere(inArray(tasks.id, deps)),
       columns: { id: true, status: true, loopState: true },
     });
     const byId = new Map(depRows.map((d) => [d.id, d]));
@@ -116,7 +117,7 @@ export async function GET(
     // task is its own task or a child task, which requires fetching the task.
     // We can't know this without a DB query, so we fetch first then check.
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
+      where: sqlWhere(eq(tasks.id, id)),
       with: {
         workspace: true,
         mission: { columns: { id: true, title: true, status: true } },
@@ -147,8 +148,8 @@ export async function GET(
 
     if (include.has('workers') || include.has('artifacts') || include.has('milestones')) {
       taskWorkers = await db.query.workers.findMany({
-        where: eq(workers.taskId, id),
-        orderBy: [desc(workers.createdAt), desc(workers.id)],
+        where: sqlWhere(eq(workers.taskId, id)),
+        orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
         columns: {
           id: true,
           status: true,
@@ -196,8 +197,8 @@ export async function GET(
     if (include.has('artifacts') && taskWorkers && taskWorkers.length > 0) {
       const workerIds = taskWorkers.map(w => w.id);
       const rows = await db.query.artifacts.findMany({
-        where: inArray(artifacts.workerId, workerIds),
-        orderBy: [desc(artifacts.updatedAt)],
+        where: sqlWhere(inArray(artifacts.workerId, workerIds)),
+        orderBy: sqlOrderBy([desc(artifacts.updatedAt)]),
       });
       const baseUrl = appBaseUrl();
       taskArtifacts = rows.map(a => ({
@@ -278,7 +279,7 @@ export async function PATCH(
 
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
+      where: sqlWhere(eq(tasks.id, id)),
       with: { workspace: true },
     });
 
@@ -353,7 +354,7 @@ export async function PATCH(
         return NextResponse.json({ error: 'pause is sent on its own, with no other fields' }, { status: 400 });
       }
       const liveWorker = await db.query.workers.findFirst({
-        where: and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+        where: sqlWhere(and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
         columns: { id: true, status: true, runner: true, waitingFor: true },
       });
       if (!liveWorker) {
@@ -498,7 +499,7 @@ export async function PATCH(
       }
       if (dependsOn.length > 0) {
         const found = await db.query.tasks.findMany({
-          where: and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, task.workspaceId)),
+          where: sqlWhere(and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, task.workspaceId))),
           columns: { id: true },
         });
         const foundIds = new Set(found.map(t => t.id));
@@ -652,10 +653,10 @@ export async function PATCH(
       // can kill duplicate or stuck tasks regardless of worker state.
       if (status === 'completed' || status === 'failed') {
         const activeWorker = await db.query.workers.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workers.taskId, id),
             inArray(workers.status, ['running', 'waiting_input']),
-          ),
+          )),
         });
         if (activeWorker) {
           return NextResponse.json(
@@ -673,7 +674,7 @@ export async function PATCH(
         }
         if (abort !== true) {
           const liveWorker = await db.query.workers.findFirst({
-            where: and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+            where: sqlWhere(and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
             columns: { id: true, status: true },
           });
           if (liveWorker) {
@@ -824,7 +825,7 @@ export async function DELETE(
 
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
+      where: sqlWhere(eq(tasks.id, id)),
       with: { workspace: true },
     });
 

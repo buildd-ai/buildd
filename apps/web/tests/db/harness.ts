@@ -12,6 +12,12 @@
 import { db } from '@buildd/core/db';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { LEGACY_MIGRATIONS_PATH, loadLegacyMap } from '@buildd/core/db/legacy-migrations';
+import { readMigrationTree } from '@buildd/core/db/migrate-tree';
 
 export function assertDbConfigured(): void {
   const url = process.env.DATABASE_URL;
@@ -142,3 +148,84 @@ export async function withDb<T>(url: string, fn: (c: pg.Client) => Promise<T>): 
 export const fingerprint = (url: string) =>
   withDb(url, async (c) => (await c.query<{ k: string; v: string }>(FINGERPRINT)).rows.map((r) => `${r.k} ${r.v}`));
 
+
+const DRIZZLE_DIR = join(import.meta.dir, '../../../../packages/core/drizzle');
+
+/**
+ * The SQL of a migration that predates the drizzle v1 cutover, by its old
+ * journal tag (`0282_legacy_repair_overlap_edges`). The tree now holds
+ * `<YYYYMMDDHHMMSS>_<slug>/migration.sql`; the committed legacy map says which
+ * folder each tag became.
+ */
+export function legacyMigrationSql(tag: string): string {
+  const entry = loadLegacyMap(LEGACY_MIGRATIONS_PATH).find((e) => e.tag === tag);
+  if (!entry) throw new Error(`no legacy migration ${tag} in the legacy map`);
+  return readFileSync(join(DRIZZLE_DIR, entry.name, 'migration.sql'), 'utf8');
+}
+
+/** Every migration's SQL, oldest first (legacy history, then post-cutover folders). */
+export function allMigrationSql(): Array<{ name: string; sql: string }> {
+  return readMigrationTree(DRIZZLE_DIR).map((m) => ({ name: m.name, sql: m.sql.join('\n--> statement-breakpoint\n') }));
+}
+
+/**
+ * The legacy (journal) form of this checkout's pre-cutover history, rebuilt from
+ * the committed tree: each legacy-map entry's `<tag>.sql` is its folder's
+ * `migration.sql` (`drizzle-kit up` is lossless), and the journal is the map's
+ * tag, exact-ms `when` and baseline flag. Post-cutover folders have no legacy
+ * form and are not included. This is what the previous release's migrator, and
+ * this migrator's retained legacy path, read; the suites that prove the squash
+ * and the rollback build their history databases from it.
+ */
+export function synthesizeLegacyTree(label = 'legacy'): string {
+  const dir = mkdtempSync(join(tmpdir(), `${label}-`));
+  mkdirSync(join(dir, 'meta'), { recursive: true });
+  const entries = loadLegacyMap(LEGACY_MIGRATIONS_PATH).map((e) => {
+    writeFileSync(join(dir, `${e.tag}.sql`), readFileSync(join(DRIZZLE_DIR, e.name, 'migration.sql'), 'utf8'));
+    return { idx: Number(e.tag.slice(0, 4)), version: '7', when: e.when, tag: e.tag, breakpoints: true, ...(e.baseline ? { baseline: true } : {}) };
+  });
+  writeFileSync(join(dir, 'meta', '_journal.json'), JSON.stringify({ version: '7', dialect: 'postgresql', entries }, null, 2));
+  return dir;
+}
+
+/** The newest folder's v8 snapshot `ddl[]`: the real tree's own, for fixtures that need one. */
+export function realTipSnapshotDdl(): unknown[] {
+  const tip = readMigrationTree(DRIZZLE_DIR).at(-1)!.name;
+  return (JSON.parse(readFileSync(join(DRIZZLE_DIR, tip, 'snapshot.json'), 'utf8')) as { ddl: unknown[] }).ddl;
+}
+
+/**
+ * The previous release's migrator, out of git, with the drizzle it was written
+ * against. It reads a legacy journal tree through drizzle-orm 0.45's
+ * `readMigrationFiles`, which the installed rc refuses ("old drizzle-kit
+ * migration folders"), so it gets its own node_modules with 0.45 in a scratch
+ * directory. Returns the `packages/core` dir to run `bun db/migrate.ts` in.
+ * Every "history" database is built with it, so its tracking table has exactly
+ * the shape production's has today (`id, hash, created_at`).
+ */
+export function prepareRollbackMigrator(work: string, ref: string, repoRoot: string): string {
+  const rb = join(work, 'rollback');
+  mkdirSync(rb, { recursive: true });
+  const archive = spawnSync(
+    'sh',
+    ['-c', `git -C "$ROOT" archive --format=tar "$REF" -- packages/core/db packages/core/config.ts | tar -x -C "$OUT"`],
+    { env: { ...process.env, ROOT: repoRoot, REF: ref, OUT: rb }, encoding: 'utf8' }
+  );
+  if (archive.status !== 0) {
+    throw new Error(
+      `cannot read the migrator at ${ref} (fetch it: git fetch --no-tags --depth=1 origin ` +
+        `+refs/tags/${ref}:refs/tags/${ref}):\n${archive.stderr}`
+    );
+  }
+  writeFileSync(
+    join(rb, 'package.json'),
+    JSON.stringify({
+      name: 'rollback-migrator',
+      private: true,
+      dependencies: { 'drizzle-orm': '0.45.4', '@neondatabase/serverless': '^1.0.0', dotenv: "^18.0.0", ws: '^8.19.0' },
+    })
+  );
+  const install = spawnSync('bun', ['install'], { cwd: rb, encoding: 'utf8', timeout: 5 * 60_000 });
+  if (install.status !== 0) throw new Error(`bun install for the rollback migrator failed:\n${install.stdout}${install.stderr}`);
+  return join(rb, 'packages', 'core');
+}

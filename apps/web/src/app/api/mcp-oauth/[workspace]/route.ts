@@ -60,6 +60,7 @@ import { LEGACY_ENDPOINT_NOTICE, deprecationHeaders } from '@/lib/mcp-grant-sess
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
 import { isUuid } from '@/lib/uuid';
 import { resolveLinkedDocsWorkspaces } from '@/lib/linked-knowledge';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 function extractBearer(req: Request): string | null {
   const auth = req.headers.get('authorization');
@@ -324,7 +325,7 @@ async function handle(req: Request, workspace: string): Promise<Response> {
 
   // Verify workspace exists and grab its team for memory routing.
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspace),
+    where: sqlWhere(eq(workspaces.id, workspace)),
     columns: { id: true, teamId: true, dataClass: true, repo: true, name: true },
   });
   if (!ws) return new Response('Workspace not found', { status: 404 });
