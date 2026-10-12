@@ -10,7 +10,7 @@ const ALL: DeferralReason[] = [
   'provider_unavailable', 'budget_paused', 'routing_paused', 'duplicate_worker',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'role_env_unsatisfied',
   'managed_concurrency', 'managed_runner_hours', 'hosted_runner_hours', 'no_personal_credential',
-  'tier_policy',
+  'tier_policy', 'delegation_unmet',
 ];
 
 describe('describeExplicitDeferral', () => {
@@ -72,7 +72,7 @@ describe('describeExplicitDeferral', () => {
       expect(describeExplicitDeferral(reason).detail).toContain('force: true');
     }
     // Cost, scope serialization, capacity walls and routing are not overridable.
-    for (const reason of ['mission_budget', 'advisory_manifest', 'budget_paused', 'codex_single_flight', 'runner_capability', 'provider_unavailable', 'role_env_unsatisfied'] as const) {
+    for (const reason of ['mission_budget', 'advisory_manifest', 'budget_paused', 'codex_single_flight', 'runner_capability', 'provider_unavailable', 'role_env_unsatisfied', 'delegation_unmet'] as const) {
       expect(describeExplicitDeferral(reason).detail).not.toContain('force: true');
     }
   });

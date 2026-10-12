@@ -97,6 +97,8 @@ mock.module('@/lib/account-workspace-cache', () => ({
 mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: async () => [WS],
   verifyAccountWorkspaceAccess: async () => true,
+  // A person's task delegation (lib/task-delegation-checks.ts); unused here.
+  verifyWorkspaceAccess: async () => null,
 }));
 // Workspace reach is covered by lib/workspace-access.test.ts and route.test.ts.
 mock.module('@/lib/workspace-access', () => ({
