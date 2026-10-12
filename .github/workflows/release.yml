@@ -39,6 +39,14 @@ on:
         description: 'Type the amend version again to confirm'
         required: false
         default: ''
+      exclude:
+        description: 'Candidate flow only: dev commits (PR merge or squash SHAs, space-separated) to leave out of the candidate. Each is reverted on the candidate branch only, which gives it a new SHA and voids its checks and approvals.'
+        required: false
+        default: ''
+      exclude_confirm:
+        description: 'Type "revert" to confirm leaving the exclude commits out'
+        required: false
+        default: ''
   schedule:
     - cron: '0 9 * * *'
 
@@ -63,12 +71,17 @@ jobs:
           SWITCH: ${{ vars.RELEASE_CANDIDATE_CUT }}
           DRY_RUN: ${{ inputs.dry_run }}
           AMEND: ${{ inputs.amend }}
+          EXCLUDE: ${{ inputs.exclude }}
         run: |
+          if [ -n "$AMEND" ] && [ -n "$EXCLUDE" ]; then
+            echo "::error::amend and exclude are separate amendments; run them one at a time. Nothing was changed."
+            exit 1
+          fi
           if [ "$SWITCH" = "enabled" ] || [ "$DRY_RUN" = "true" ]; then
             echo "flow=candidate" >> "$GITHUB_OUTPUT"
             echo "Release flow: frozen candidate (RELEASE_CANDIDATE_CUT=${SWITCH:-unset}, dry_run=${DRY_RUN:-false})"
-          elif [ -n "$AMEND" ]; then
-            echo "::error::amend is a frozen-candidate operation, and RELEASE_CANDIDATE_CUT is not enabled. Nothing was changed."
+          elif [ -n "$AMEND" ] || [ -n "$EXCLUDE" ]; then
+            echo "::error::amend and exclude are frozen-candidate operations, and RELEASE_CANDIDATE_CUT is not enabled. Nothing was changed."
             exit 1
           else
             echo "flow=legacy" >> "$GITHUB_OUTPUT"
@@ -158,6 +171,30 @@ jobs:
           fi
           if [ "$FORCE" = "true" ]; then args+=(--force); fi
           bun scripts/release-candidate.ts cut "${args[@]}"
+
+      # The owner's composition (dashboard Compose step): changes already on dev
+      # that this release leaves out. Applied to the candidate the cut step just
+      # opened or found, as an explicit amendment: new SHA, checks and approvals
+      # void. A revert that does not apply cleanly changes nothing and comments
+      # the conflicting files on the PR.
+      - name: Leave changes out of the candidate
+        if: steps.guard.outputs.skip != 'true' && inputs.exclude != '' && (steps.cut.outputs.status == 'created' || steps.cut.outputs.status == 'existing')
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          VERSION: ${{ steps.cut.outputs.version }}
+          EXCLUDE: ${{ inputs.exclude }}
+          EXCLUDE_CONFIRM: ${{ inputs.exclude_confirm }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PACKAGE_FILES: 'apps/runner/package.json apps/web/package.json packages/core/package.json packages/shared/package.json'
+        run: |
+          set -euo pipefail
+          if [ "$EXCLUDE_CONFIRM" != "revert" ]; then
+            echo "::error::exclude_confirm must be \"revert\". Leaving changes out voids the candidate's checks and approvals. Nothing was changed."
+            exit 1
+          fi
+          args=(--candidate "v$VERSION" --confirm "v$VERSION" --revert "$EXCLUDE" --package-files "$PACKAGE_FILES")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          bun scripts/release-candidate.ts exclude "${args[@]}"
 
   # ── Legacy dev → main ──────────────────────────────────────────────────────
   prepare-changelog:

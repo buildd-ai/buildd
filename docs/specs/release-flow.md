@@ -8,7 +8,7 @@ domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
 keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult, release candidate, release/v]
-verified_by: [packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/release-executor.test.ts]
+verified_by: [packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/release-executor.test.ts]
 assertions:
   - id: trigger-release-route
     type: route
@@ -32,6 +32,15 @@ assertions:
     type: symbol
     name: classifyReleasePr
     path: packages/core/release-candidate.ts
+  - id: release-compose-route
+    type: route
+    method: POST
+    path: /api/releases/compose
+    file: apps/web/src/app/api/releases/compose/route.ts
+  - id: plan-composition
+    type: symbol
+    name: planComposition
+    path: packages/core/release-compose.ts
 supersedes: []
 ---
 # Release Flow
@@ -199,6 +208,62 @@ path escalation or the migration inspector.
   `apps/web/src/app/api/cron/release-health-check/route.ts`
 - Config: `apps/web/src/app/api/workspaces/[id]/config/route.ts`,
   workspace settings `ReleaseSection.tsx`
+
+---
+
+## Owner release flow: Compose → Cut → Review → Release
+
+**Capability statement**: A team owner or admin of a candidate workspace MUST
+be able to choose what a release ships, cut the frozen candidate, review its
+checks on the exact candidate SHA, and release it, each step an explicit
+button recorded with who pressed it and when (`release_flow_steps`). A release
+MUST NOT read as done on PR open or merge: only when production reports a
+deployed SHA that is, or descends from, the candidate's merge commit.
+
+**Invariants**:
+- Compose groups the source branch's first-parent PRs since `prodBranch` by
+  mission (through the worker that owns each PR): "on dev" missions, open
+  mission PRs into `sourceBranch` that are approved on their head with every
+  check passing ("ready"), and PRs with no mission ("other changes"). Default:
+  everything on dev in, ready missions out.
+- Including a ready mission merges its mission PR through the dashboard's gated
+  merge route, never a raw merge. Its refusal is the answer.
+- Leaving out a change already on dev is a candidate amendment: the release
+  engine (`scripts/release-candidate.ts exclude`) reverts that change's commit
+  on the candidate branch only, which makes a new candidate SHA, dismisses
+  approvals and voids checks. The owner reads that before confirming. A revert
+  that does not apply cleanly changes nothing and names the conflicting files.
+  A later `amend` keeps what was left out; sync-dev re-lands each left-out
+  change on dev (reverting the revert, trailer `Release-Excluded`) after main
+  merges back.
+- A cut is refused when the source branch moved since the page was read.
+- Review counts checks and approvals on the candidate SHA only; anything on an
+  earlier SHA counts for nothing. Nothing in the flow approves a candidate.
+- Release merges the candidate pinned to its SHA, only when every required
+  check passed and an approval stands on that SHA; branch protection still
+  applies.
+
+**Acceptance criteria**:
+- AC-F1: GIVEN PRs on dev from two missions and one with no mission THEN
+  Compose shows two "on dev" missions and one "other change", all selected,
+  and an approved green mission PR as "ready", unselected.
+- AC-F2: GIVEN a ready mission WHEN the owner presses Include THEN the mission
+  PR goes through `POST /api/prs/[n]/merge` and no other merge is attempted.
+- AC-F3: GIVEN an open candidate WHEN the owner leaves a mission out THEN the
+  candidate branch gets a new SHA without that mission's changes, `dev` is
+  unchanged, approvals on the old SHA are dismissed, and an approval or check
+  on the old SHA no longer enables Release.
+- AC-F4: GIVEN a merged candidate WHEN production reports a SHA that does not
+  contain the merge commit (or none) THEN "Mark released" is refused and
+  recorded as refused.
+
+**Code surface**:
+- Decisions: `packages/core/release-compose.ts`
+- Engine: `scripts/release-candidate.ts` (`exclude`), `.github/workflows/release.yml`,
+  `.github/workflows/sync-dev.yml`
+- Reads and buttons: `apps/web/src/lib/release/compose-source.ts`,
+  `apps/web/src/lib/release/compose-actions.ts`, `POST /api/releases/compose`
+- Page: `apps/web/src/app/app/(protected)/releases/compose/`
 
 ---
 

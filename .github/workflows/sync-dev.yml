@@ -137,6 +137,33 @@ jobs:
               echo "Merged main into dev (CHANGELOG [Unreleased] reconciled)"
             fi
 
+            # A change the owner left out of a release was reverted on the
+            # candidate only (commit trailer Release-Excluded, written by
+            # scripts/release-candidate.ts exclude). main now carries that
+            # revert and so does dev after the merge above; revert the revert so
+            # the change stays on dev for the next release. Newest first, as
+            # they were applied. CHANGELOG.md is the one file resolved
+            # automatically (dev's copy is kept); any other conflict is a human's.
+            for REVERT in $(git log --format=%H --grep='^Release-Excluded: ' origin/dev..origin/main); do
+              if [ -n "$(git log -n1 --format=%H --grep="^Release-Relanded: $REVERT\$" origin/dev)" ]; then continue; fi
+              SUBJECT=$(git log -1 --format=%s "$REVERT")
+              if ! git revert --no-commit "$REVERT"; then
+                CONFLICTS=$(git diff --name-only --diff-filter=U)
+                if [ "$CONFLICTS" = "CHANGELOG.md" ]; then
+                  git checkout --ours CHANGELOG.md
+                  git add CHANGELOG.md
+                  echo "::warning title=CHANGELOG.md entry not restored::Re-landing \"$SUBJECT\" on dev kept dev's CHANGELOG.md; re-add its [Unreleased] entry by hand if it had one."
+                else
+                  git revert --abort || git reset -q --merge
+                  echo "::error title=Re-landing a left-out change needs a human::\"$SUBJECT\" was left out of the release and must come back to dev, but reverting its revert conflicts in: ${CONFLICTS//$'\n'/, }. dev was not pushed."
+                  report_divergence
+                  exit 1
+                fi
+              fi
+              git commit -q --no-verify -m "Re-land on dev: ${SUBJECT#Revert }" -m "Left out of the release by an explicit amendment; the revert reached dev when main merged back. This undoes it on dev so the change ships next time." -m "Release-Relanded: $REVERT"
+              echo "Re-landed on dev: $SUBJECT"
+            done
+
             # Never --force: a rejection means dev moved, and the loop retries.
             if git push origin HEAD:refs/heads/dev; then
               exit 0

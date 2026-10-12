@@ -69,6 +69,25 @@ describe('release.yml: the flow switch', () => {
     expect(r.outputs.flow).toBeUndefined();
   });
 
+  test('exclude is a candidate-flow amendment, never combined with amend', () => {
+    expect(runScript(mode(), process.cwd(), { SWITCH: '', EXCLUDE: 'abc' }).status).not.toBe(0);
+    const both = runScript(mode(), process.cwd(), { SWITCH: 'enabled', AMEND: 'v1.2.3', EXCLUDE: 'abc' });
+    expect(both.status).not.toBe(0);
+    expect(both.log).toContain('one at a time');
+  });
+
+  test('leaving changes out needs "revert" typed, runs only on a candidate the cut opened or found, and calls the engine', () => {
+    const s = step(RELEASE, 'cut', (x) => x.name === 'Leave changes out of the candidate');
+    expect(s.if).toContain("inputs.exclude != ''");
+    expect(s.if).toContain("steps.cut.outputs.status == 'created'");
+    expect(s.if).toContain("steps.cut.outputs.status == 'existing'");
+    expect(s.env.VERSION).toBe('${{ steps.cut.outputs.version }}');
+    const refused = runScript(s.run, process.cwd(), { EXCLUDE_CONFIRM: 'yes', VERSION: '1.2.3', EXCLUDE: 'abc' });
+    expect(refused.status).not.toBe(0);
+    expect(refused.log).toContain('Nothing was changed');
+    expect(s.run).toContain('bun scripts/release-candidate.ts exclude');
+  });
+
   test('legacy jobs run only in the legacy flow; the cut job only in the candidate flow', () => {
     expect(wf.jobs['prepare-changelog'].if).toBe("needs.mode.outputs.flow == 'legacy'");
     expect(wf.jobs.release.if).toBe("needs.mode.outputs.flow == 'legacy'");
@@ -293,6 +312,38 @@ describe('sync-dev.yml merges main into dev and never rewrites it', () => {
     const r = sync(f);
     expect(r.status, r.log).toBe(0);
     expect(originSha(f, 'refs/heads/dev')).toBe(originSha(f, 'refs/heads/main'));
+  });
+
+  test('a change left out of the release comes back to dev after main merges back', () => {
+    const f = fixture();
+    git(f.work, 'fetch', '-q', 'origin');
+    git(f.work, 'checkout', '-q', '-B', 'dev', 'origin/dev');
+    commit(f.work, { 'billing.txt': 'billing\n' }, 'feat: billing (#11)');
+    const left = git(f.work, 'rev-parse', 'HEAD');
+    commit(f.work, { 'kept.txt': 'kept\n' }, 'fix: kept (#12)');
+    git(f.work, 'push', '-q', 'origin', 'dev');
+    // The candidate, as the engine builds it: source − billing + the release commit.
+    git(f.work, 'checkout', '-q', '-B', 'release/v1.2.4', 'origin/dev');
+    git(f.work, 'revert', '--no-commit', left);
+    git(f.work, 'commit', '-qm', `Revert "feat: billing (#11)" from v1.2.4\n\nRelease-Excluded: ${left}`);
+    commit(f.work, { 'version.txt': '1.2.4\n' }, 'chore: bump version to v1.2.4');
+    git(f.work, 'checkout', '-q', 'main');
+    git(f.work, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #9 from o/release/v1.2.4', 'release/v1.2.4');
+    git(f.work, 'push', '-q', 'origin', 'main');
+    expect(sh(f.origin, 'git', ['cat-file', '-e', 'refs/heads/main:billing.txt']).status).not.toBe(0);
+
+    const r = sync(f);
+    expect(r.status, r.log).toBe(0);
+    const devAfter = originSha(f, 'refs/heads/dev');
+    expect(sh(f.origin, 'git', ['merge-base', '--is-ancestor', 'refs/heads/main', devAfter]).status).toBe(0);
+    expect(git(f.origin, 'show', `${devAfter}:billing.txt`)).toBe('billing');
+    expect(git(f.origin, 'show', `${devAfter}:version.txt`)).toBe('1.2.4');
+    expect(git(f.origin, 'log', '-1', '--format=%B', devAfter)).toContain('Release-Relanded: ');
+
+    // A second run has nothing to do and does not re-land twice.
+    const again = sync(f);
+    expect(again.status, again.log).toBe(0);
+    expect(originSha(f, 'refs/heads/dev')).toBe(devAfter);
   });
 
   test('the workflow pushes dev without force', () => {
