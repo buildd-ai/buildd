@@ -106,7 +106,7 @@ Do NOT commit directly to `main` unless it's an emergency hotfix.
 
 ### Hotfix vs Normal Release
 
-- **Normal** (`bun run release`): Feature/fix goes to `dev` first, then release PR merges dev→main. Use this when there's no urgency.
+- **Normal** (`bun run release`): Feature/fix goes to `dev` first, then a frozen release candidate (`release/vX.Y.Z` → main, on since 2026-10-12: `RELEASE_CANDIDATE_CUT=enabled`, `releaseConfig.candidate` set, `release candidate verified` required on main) merges with a merge commit. Use this when there's no urgency.
 - **Hotfix** (`bun run release:hotfix`): Run from a feature branch. Creates PR directly to `main` with a patch bump. Use only for urgent production fixes that can't wait for the normal dev→main cycle. After merging, backport to dev: `git checkout dev && git merge origin/main && git push origin dev`.
 
 ## Missions
