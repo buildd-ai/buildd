@@ -259,6 +259,7 @@ export async function categorizeTask(
     const prompt = promptedQuestions(TASK_CATEGORY_PROMPT_ID, TASK_CATEGORY_QUESTIONS, TASK_CATEGORY_PROMPT_VERSION);
     const res: DecisionResult<typeof TASK_CATEGORY_QUESTIONS> = await decide({
       capability: 'task_category',
+      kind: TASK_CATEGORY_MEASUREMENT_KIND,
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       accountId: input.accountId ?? null,

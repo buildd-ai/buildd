@@ -56,6 +56,8 @@ export const TASK_ROLE_CAPABILITY = 'task_role_shadow' as const;
 /** The separate opt-in that lets the answer be written (§6(c), task-role-apply.ts). */
 export const TASK_ROLE_APPLY_CAPABILITY = 'task_role_apply' as const;
 export type TaskRoleCapability = typeof TASK_ROLE_CAPABILITY | typeof TASK_ROLE_APPLY_CAPABILITY;
+/** This decision's name for a team's model override (decision-model.ts `byKind`). */
+export const TASK_ROLE_MODEL_KIND = 'task_role' as const;
 /** One in this many tasks that STATED a role is shadowed too, for free labels (§6(a)). */
 export const STATED_ROLE_SAMPLE_EVERY = 5;
 
@@ -411,7 +413,7 @@ export interface TaskRoleShadowInput extends TaskRoleStateInput, CandidateTask {
 }
 
 type DecideFn = typeof decisionCall<TaskRoleQuestions>;
-type ResolveAccess = (opts: { capability: TaskRoleCapability; teamId: string; workspaceId: string; accountId: string | null }) => Promise<DecisionAccess>;
+type ResolveAccess = (opts: { capability: TaskRoleCapability; teamId: string; workspaceId: string; accountId: string | null; kind?: string }) => Promise<DecisionAccess>;
 export type ReadClaimedAt = (taskId: string) => Promise<Date | null>;
 
 async function dbReadClaimedAt(taskId: string): Promise<Date | null> {
@@ -496,9 +498,9 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
     const resolveAccess = deps.resolveAccess ?? (client!.resolveDecisionAccess as ResolveAccess);
     const scope = { teamId: input.teamId, workspaceId: input.workspaceId, accountId: input.accountId ?? null };
     let capability: TaskRoleCapability = TASK_ROLE_CAPABILITY;
-    let access = input.statedRoleSlug ? null : await resolveAccess({ capability: TASK_ROLE_APPLY_CAPABILITY, ...scope });
+    let access = input.statedRoleSlug ? null : await resolveAccess({ capability: TASK_ROLE_APPLY_CAPABILITY, ...scope, kind: TASK_ROLE_MODEL_KIND });
     if (access?.ok) capability = TASK_ROLE_APPLY_CAPABILITY;
-    else access = await resolveAccess({ capability: TASK_ROLE_CAPABILITY, ...scope });
+    else access = await resolveAccess({ capability: TASK_ROLE_CAPABILITY, ...scope, kind: TASK_ROLE_MODEL_KIND });
     if (!access.ok) {
       // Opted in but no key: a row, so it reads differently from a capability that is off.
       return access.error.kind === 'missing_key'
