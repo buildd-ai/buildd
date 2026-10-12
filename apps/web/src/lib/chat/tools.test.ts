@@ -276,7 +276,7 @@ describe('PR reads', () => {
     const { tools } = setup({ allowWrites: false });
     const schema = (tools.list_prs as any).inputSchema;
     expect(schema.safeParse({}).success).toBe(true);
-    expect(schema.safeParse({ state: 'attention', workspaceId: 'dispatch-family' }).success).toBe(true);
+    expect(schema.safeParse({ state: 'attention', workspaceId: 'acme-app' }).success).toBe(true);
     expect(schema.safeParse({ state: 'closed' }).success).toBe(false);
   });
 

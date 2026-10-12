@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { handleBuilddAction, type ApiFn, type ActionContext } from '../mcp-tools';
 
-// Regression for dispatch-family mission 0934666a (Jul 2026): an organizer task
+// Regression (Jul 2026): an organizer task
 // was cancelled via update_task status:cancelled while its worker was mid-evaluation
 // (~6 min of reads, no update_progress syncs). The worker never saw the abort —
 // termination is only propagated via the response.abort flag on updateWorker sync —
