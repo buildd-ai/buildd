@@ -142,6 +142,11 @@ describe('SpecPage', () => {
     const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
     act(() => root.render(<SpecPage view={{ ...base, review }} />));
     expect(q('spec-page-review-panel')!.querySelector('h2')!.textContent).toBe('Revision 2 (nothing approved yet)');
+    // Approve sits right under the heading, before the text: no scrolling to find it.
+    const panel = q('spec-page-review-panel')!;
+    const kids = [...panel.children];
+    const approveAt = kids.findIndex((k) => k.querySelector('[data-testid="spec-page-approve"]'));
+    expect(approveAt).toBe(1);
     await act(async () => { q('spec-page-approve')!.click(); });
     expect(q('spec-page-approve-result')!.textContent).toBe('Approved. Revision 2 is in force.');
     expect(q('spec-page-approve')).toBeNull();
