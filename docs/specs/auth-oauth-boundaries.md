@@ -2,13 +2,13 @@
 title: Auth & OAuth Boundaries
 status: active
 owner: max
-last_verified: 2026-10-09
+last_verified: 2026-10-12
 summary: The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 domain: auth
 surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
 related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
 keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
-verified_by: [apps/web/src/lib/self-origin.test.ts, apps/web/tests/db/agent-connection-owner.test.ts, apps/web/src/lib/worker-owner.test.ts, apps/web/tests/db/grant-scope-matrix.test.ts, apps/web/src/lib/grant-scope.test.ts, apps/web/tests/db/mcp-grant-management.test.ts, apps/web/src/app/api/mcp-grants/[id]/route.test.ts, apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx, apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
+verified_by: [apps/web/src/lib/self-origin.test.ts, apps/web/tests/db/agent-connection-owner.test.ts, apps/web/src/lib/worker-owner.test.ts, apps/web/tests/db/grant-scope-matrix.test.ts, apps/web/src/lib/grant-scope.test.ts, apps/web/tests/db/mcp-grant-management.test.ts, apps/web/src/app/api/mcp-grants/[id]/route.test.ts, apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx, apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/lib/oauth/resource-binding.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -388,8 +388,11 @@ the server MUST grant exactly what the client asked for and the person chose,
 re-validated on submit.
 
 **Entry point**: `/api/oauth/authorize` with `resource=<issuer>/api/mcp`
-(RFC 8707). Without that resource the per-workspace flow is unchanged
-(`workspace` param or the single-workspace picker, workspace-bound code).
+(RFC 8707), or with no `resource` at all: the account level is the default for
+every new connection. An older per-workspace resource gets single-workspace
+consent instead, and any other resource is refused; see "Resource routing,
+older addresses and sunset" below. There is no multi-workspace picker that
+mints a workspace-bound code any more.
 Protected-resource metadata for the account resource is served at
 `/.well-known/oauth-protected-resource/api/mcp`; the per-workspace metadata,
 the authorization-server metadata and dynamic client registration are
@@ -410,10 +413,33 @@ unchanged apart from the advertised scopes.
 **Invariants**:
 - The page lists every team the user is a member of now, each with its
   workspaces, sorted by name. Each team is a collapsible group paged at 20
-  workspaces; search filters by workspace or team name. Select all (or all
-  matches while searching), Clear all, and per-team select/clear are
+  workspaces; search filters by workspace, team or repository name. Select all
+  (or all matches while searching), Clear all, and per-team select/clear are
   available. Search, page turns and selection actions are form posts that
-  carry the selection, so the page needs no script.
+  carry the selection, so the page needs no script. The selected count is a
+  CSS counter and follows the checkboxes without script.
+- Internal workspaces (`isSystemWorkspace`: a `__` name prefix, e.g. one
+  `__coordination` per team) are not offered (`pickerTeams`), and a team left
+  with none is not listed. The one exception is explicitly scoped admin
+  access: the workspace the client named with `workspace=`, when the person is
+  an owner or admin of its team, is offered (as "Organizer"). The same filter
+  runs on submit, so an internal workspace that was not offered is refused like
+  any unreachable one. Grants that already include one are unaffected.
+- A workspace is labelled by its name with its repository (`owner/repo`)
+  underneath. A full workspace id is never printed as text; a short id is added
+  only when two workspaces of one team share both name and repository.
+- The heading is "Authorize <app>" and the lede "Choose the teams and
+  workspaces <app> can access." The app's name is shown as verified only for
+  a known app whose redirect is its own https host (`clientIdentity`:
+  ChatGPT at `chatgpt.com`, Claude at `claude.ai` / `claude.com`); any other
+  registration shows its self-declared name with the return host. The
+  actions are **Allow access** and **Cancel**; the summary with them stays in
+  view at the bottom on a phone. The kind choice is shown only when the client
+  asked for `buildd:act-as-person`; otherwise the form carries
+  `acts_as=agent`. No copy suggests one connection per workspace.
+- Selecting all workspaces of a team, or all of them, grants exactly the ids
+  ticked on the page. A workspace created later is never part of the grant
+  (see "New workspaces are never added to a grant implicitly").
 - Exactly one workspace is preselected: the `workspace` hint when the user can
   reach it, else the first workspace of the first team.
 - The kind defaults to **Agent working for you**. **Acts as you** is selectable
@@ -471,6 +497,112 @@ registration (`/api/oauth/register`).
 - Tests: `apps/web/tests/db/mcp-oauth-consent.test.ts` (real Postgres),
   `apps/web/src/lib/oauth/account-consent.test.ts`
 
+
+---
+
+## Resource routing, older addresses and sunset
+
+**Capability statement**: The authorize and token endpoints MUST bind every
+code and token to the resource the client asked for: the account level for a
+new connection, the one named workspace for an older per-workspace address,
+and nothing for an unknown resource. A connection made through an older
+address MUST keep working, and refreshing, until the sunset below.
+
+**Why**: hosted clients send `resource` set to the connector address they
+were given (ChatGPT documents that it appends `resource=<connector URL>` to
+both the authorization and the token request). A connector that was created
+with `<issuer>/api/mcp-oauth/<id>` therefore keeps arriving with that
+resource. Before this section the endpoint ignored that resource and showed a
+picker of every workspace, which could mint a token for a workspace other
+than the address and told the person to add one connector per workspace.
+
+**Routing** (`classifyResource` in `apps/web/src/lib/oauth/account-consent.ts`,
+same origin as the issuer only):
+
+| `resource` | Consent | Code / token bound to |
+|---|---|---|
+| none | account consent page | a new grant, audience `<issuer>/api/mcp` |
+| `<issuer>/api/mcp` (trailing slash or `?workspace=` / `?repo=` hint allowed) | account consent page | a new grant, audience `<issuer>/api/mcp` |
+| `<issuer>/api/mcp-oauth/<id>` | that one workspace only, plus the canonical address | workspace `<id>`, audience `<issuer>/api/mcp-oauth/<id>` |
+| anything else (another host, another path, a fragment) | none: `error=invalid_target` to the client | nothing |
+
+**Invariants**:
+- The older-address page offers exactly the workspace in the resource, named
+  by workspace, team and repository, with the person's access there. A
+  `workspace` parameter naming any other workspace is refused (400), and the
+  code's workspace comes from the resource, never from a form field. A
+  workspace outside the person's teams is refused (403) without naming it.
+- The older-address page shows `<issuer>/api/mcp` as the way to choose
+  several workspaces in one connection. Approving it never creates a grant
+  and never upgrades, redirects or re-audiences the connection: migrating is
+  a fresh sign-in at the canonical address, with its own consent, which the
+  client starts when the person changes the connector address.
+- At the token endpoint (`resourceMatchesBinding` in
+  `apps/web/src/lib/oauth/resource-binding.ts`) a `resource` the client sends
+  must match the binding: a grant code or refresh only the account resource; a
+  workspace code only its own older address. A mismatch is
+  `invalid_target`. No resource defers to the binding.
+- A workspace-bound **refresh** is not checked against `resource`, so
+  connections made before the account resource existed (some send
+  `<issuer>/api/mcp` with a workspace token) keep refreshing. Their binding and
+  membership re-check are unchanged.
+- `/api/mcp-oauth/<id>`, its protected-resource metadata and its deprecation
+  headers are unchanged. `buildd install --oauth` keeps writing the older
+  address only against a server that does not offer the account resource.
+  `bldt_` task tokens and `bld_` keys are not OAuth and are unaffected.
+
+**Sunset** (each step needs the evidence named; none is dated in advance):
+1. *Now*: new connections default to the account level; older addresses get
+   single-workspace consent with the canonical address; the endpoint serves
+   with `Deprecation: true`.
+2. *Stop new older-address sign-ins* when, over a trailing 30 days, no
+   workspace-bound code has been issued for a client that has not also
+   completed an account-level sign-in, and the hosted-client smoke test
+   (`docs/mcp-connect-operators.md`) has passed on ChatGPT and Claude at the
+   canonical address. Then the older-address resource answers
+   `invalid_target` with the canonical address in `error_description`, and the
+   endpoint adds a `Sunset` header (RFC 8594) 90 days out.
+3. *Remove the endpoint* no earlier than 90 days after step 2 (the absolute
+   refresh lifetime, so every older refresh family has ended), and only when no
+   live workspace-bound refresh token remains and the endpoint has served no
+   request for 14 days. Then remove `/api/mcp-oauth/[workspace]`, its metadata,
+   the workspace branch of the token endpoint and the installer fallback.
+
+**Acceptance criteria**:
+- AC-63: GIVEN an authorize request with no `resource` WHEN the page renders
+  THEN it is the account consent page.
+- AC-64: GIVEN `resource=<issuer>/api/mcp-oauth/<A>` WHEN the page renders THEN
+  it offers only A, shows the canonical address and no workspace checkbox, and
+  approval issues a code bound to A whose token verifies for A and not for B,
+  with no grant row.
+- AC-65: GIVEN that resource with `workspace=<B>` THEN the response is 400 and
+  names no id; GIVEN a workspace outside the person's teams THEN 403.
+- AC-66: GIVEN a resource on another host or path WHEN authorize runs THEN the
+  client gets `error=invalid_target` with its `state`, and nothing is issued.
+- AC-67: GIVEN a workspace code exchanged with another workspace's address,
+  or a grant code exchanged with an older address, THEN the token endpoint
+  answers `invalid_target`; GIVEN a workspace refresh token sent with
+  `<issuer>/api/mcp` THEN it still refreshes, bound to its workspace.
+- AC-68: GIVEN a team with a `__coordination` workspace WHEN the account page
+  renders THEN it is not offered and a post naming it is refused (403); GIVEN
+  the client named it and the person is a team admin THEN it is offered.
+- AC-69: GIVEN redirect `https://chatgpt.com/...` THEN the page reads
+  "Authorize ChatGPT" marked verified; GIVEN a client naming itself ChatGPT
+  with any other redirect THEN it is unverified and shows the return host.
+
+**Code surface**:
+- `apps/web/src/lib/oauth/account-consent.ts` — `classifyResource()`,
+  `clientIdentity()`, `pickerTeams()`, `workspaceDetail()`,
+  `renderLegacyConsentPage()`
+- `apps/web/src/lib/oauth/resource-binding.ts` — `resourceMatchesBinding()`
+- Authorize and token endpoints: `apps/web/src/app/api/oauth/authorize/route.ts`,
+  `apps/web/src/app/api/oauth/token/route.ts`
+- Tests: `apps/web/src/lib/oauth/account-consent.test.ts`,
+  `apps/web/src/lib/oauth/resource-binding.test.ts`,
+  `apps/web/src/app/api/oauth/authorize/route.test.ts`,
+  `apps/web/tests/db/mcp-oauth-consent.test.ts` (real Postgres),
+  `apps/web/tests/integration/mcp-multi-workspace.test.ts` (live)
+- Fixture: `/app/dev/oauth-consent?view=…` (fake data)
 
 ---
 

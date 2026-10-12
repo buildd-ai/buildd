@@ -523,7 +523,8 @@ the route tree is authoritative.)
 
 - **Auth:** `auth/[...nextauth]`, `auth/cli`, `auth/device/{code,approve,token}`.
 - **OAuth 2.1 (MCP clients):** `oauth/{authorize,register,token}`,
-  `mcp-oauth/[workspace]` (workspace-scoped JWT enforcement).
+  `mcp-oauth/[workspace]` (deprecated per-workspace endpoint, workspace-scoped JWT
+  enforcement). New connections default to the account-level resource `/api/mcp`.
 - **Accounts:** `accounts`, `accounts/me`, `accounts/[id]`, `.../regenerate-key`,
   `.../ai-budget` (an app key's daily AI cap, owner/admin).
 - **Model plans for sibling apps** (`knowledge-base: buildd/design/shared-ai-kit.md` §2): `ai/plan`
@@ -657,7 +658,9 @@ is gated by explicit token scopes (legacy tokens use `trigger | worker | admin`)
 gated by the merge policy tier — see §4a), **`recall`** (read knowledge), **`learn`**
 (write knowledge), and **`buildd_memory`** (deprecated — superseded by
 recall/learn in #1944, still routed for compatibility). claude.ai and other MCP
-clients connect via workspace-scoped OAuth (`mcp-oauth/[workspace]`).
+clients connect with one account-level OAuth connection at `/api/mcp`; the
+per-workspace `mcp-oauth/[workspace]` addresses are deprecated
+(`docs/specs/auth-oauth-boundaries.md`, "Resource routing, older addresses and sunset").
 A session that claimed a task with `claim_task` asks its owner a blocking
 question through `ask_human` / `await_answer` (the interactive ask loop, §2
 Worker).

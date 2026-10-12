@@ -63,14 +63,87 @@ export function grantedScopeString(scopes: McpGrantScope[], actsAs: McpGrantActs
 
 /** True when `resource` names the account-level MCP resource. */
 export function isAccountResource(resource: string | null, accountResourceUrl: string): boolean {
-  if (!resource) return false;
-  const trim = (s: string) => s.replace(/\/+$/, '');
-  return trim(resource) === trim(accountResourceUrl);
+  return classifyResource(resource, accountResourceUrl).kind === 'account';
+}
+
+/**
+ * Which connection an authorize or token request is for (RFC 8707 `resource`).
+ *
+ * - `none`: no resource. New connections default to the account level.
+ * - `account`: `<issuer>/api/mcp`, with or without a trailing slash or a
+ *   `?workspace=` / `?repo=` connection hint (the hint narrows a call, never
+ *   the grant).
+ * - `legacy`: `<issuer>/api/mcp-oauth/<workspace>`, an older per-workspace
+ *   address. Its token stays bound to that one workspace.
+ * - `unknown`: anything else, refused with `invalid_target`.
+ *
+ * Only this issuer's origin counts; another host is `unknown`.
+ */
+export type ResourceKind =
+  | { kind: 'none' }
+  | { kind: 'account' }
+  | { kind: 'legacy'; workspaceId: string }
+  | { kind: 'unknown' };
+
+export function classifyResource(resource: string | null, accountResourceUrl: string): ResourceKind {
+  if (resource === null || resource.trim() === '') return { kind: 'none' };
+  let given: URL;
+  let account: URL;
+  try {
+    given = new URL(resource);
+    account = new URL(accountResourceUrl);
+  } catch {
+    return { kind: 'unknown' };
+  }
+  if (given.origin !== account.origin || given.hash) return { kind: 'unknown' };
+  const path = given.pathname.replace(/\/+$/, '');
+  if (path === account.pathname.replace(/\/+$/, '')) return { kind: 'account' };
+  const legacy = /^\/api\/mcp-oauth\/([^/]+)$/.exec(path);
+  if (legacy && !given.search) {
+    try {
+      return { kind: 'legacy', workspaceId: decodeURIComponent(legacy[1]) };
+    } catch {
+      return { kind: 'unknown' };
+    }
+  }
+  return { kind: 'unknown' };
+}
+
+/**
+ * Apps whose name buildd can vouch for: the name is shown as verified only
+ * when the redirect goes to that app's own host. Any other registration shows
+ * the name it registered with, marked as unverified, next to where it returns.
+ */
+const KNOWN_CLIENTS: Array<{ name: string; hosts: string[] }> = [
+  { name: 'ChatGPT', hosts: ['chatgpt.com'] },
+  { name: 'Claude', hosts: ['claude.ai', 'claude.com'] },
+];
+
+export interface ClientIdentity {
+  name: string;
+  verified: boolean;
+}
+
+export function clientIdentity(registeredName: string, redirectUri: string): ClientIdentity {
+  let host: string | null = null;
+  try {
+    const u = new URL(redirectUri);
+    if (u.protocol === 'https:') host = u.hostname.toLowerCase();
+  } catch {
+    host = null;
+  }
+  const known = host ? KNOWN_CLIENTS.find((c) => c.hosts.includes(host as string)) : undefined;
+  if (known) return { name: known.name, verified: true };
+  return { name: registeredName, verified: false };
 }
 
 export interface ConsentWorkspace {
   id: string;
   name: string;
+  /** `owner/repo`, when the workspace has one. */
+  repo?: string | null;
+  /** An internal workspace (`__` prefix, e.g. `__coordination`). */
+  system?: boolean;
 }
 
 export interface ConsentTeam {
@@ -101,7 +174,42 @@ function allWorkspaceIds(teams: ConsentTeam[]): Set<string> {
 function matches(query: string, team: ConsentTeam, ws: ConsentWorkspace): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return ws.name.toLowerCase().includes(q) || team.name.toLowerCase().includes(q);
+  return ws.name.toLowerCase().includes(q)
+    || team.name.toLowerCase().includes(q)
+    || (ws.repo ?? '').toLowerCase().includes(q);
+}
+
+/**
+ * The teams and workspaces the consent picker offers. Internal workspaces
+ * (`system`) are left out, except the one the client named with `workspace=`
+ * where the person is an owner or admin of its team: that is explicitly scoped
+ * admin access, so it stays choosable. Teams left with nothing are dropped.
+ *
+ * The route applies this on render and again on submit (the hint is part of
+ * the signed authorize parameters), so an internal workspace that was not
+ * offered is refused like any other unreachable one.
+ */
+export function pickerTeams(teams: ConsentTeam[], hintWorkspaceId: string | null): ConsentTeam[] {
+  return teams
+    .map((t) => ({
+      ...t,
+      workspaces: t.workspaces.filter((w) => !w.system
+        || (w.id === hintWorkspaceId && levelForTeamRole(t.role) === 'admin')),
+    }))
+    .filter((t) => t.workspaces.length > 0);
+}
+
+/**
+ * The second line under a workspace: its repo, and a short id only when the
+ * name and repo together still do not tell it apart from a sibling.
+ */
+export function workspaceDetail(team: ConsentTeam, ws: ConsentWorkspace): string | null {
+  const key = (w: ConsentWorkspace) => `${w.name.toLowerCase()}\u0000${(w.repo ?? '').toLowerCase()}`;
+  const clash = team.workspaces.some((w) => w.id !== ws.id && key(w) === key(ws));
+  const parts: string[] = [];
+  if (ws.repo) parts.push(ws.repo);
+  if (clash) parts.push(`id ${ws.id.slice(0, 8)}`);
+  return parts.length > 0 ? parts.join(' · ') : null;
 }
 
 export function filteredWorkspaces(team: ConsentTeam, query: string): ConsentWorkspace[] {
@@ -303,6 +411,17 @@ legend, .eyebrow { font-size: var(--type-eyebrow); font-weight: 600; color: var(
 .option .t { font-size: var(--type-title); font-weight: 600; line-height: 1.35; }
 .option .d, .meta { font-size: var(--type-meta); color: var(--text-muted); line-height: 1.4; margin-top: 2px; }
 .mono { font-family: var(--font-mono); }
+.ident { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 4px; }
+.verified { font-size: var(--type-chip); color: var(--text-muted); }
+.ws-text { display: flex; flex-direction: column; min-width: 0; }
+.ws-sub { font-family: var(--font-mono); font-size: var(--type-meta); color: var(--text-muted); overflow-wrap: anywhere; }
+.facts { margin: 0 0 16px; display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); }
+.facts dt { color: var(--text-muted); font-size: var(--type-meta); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.switch { border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin: 0 0 16px; }
+.switch p { margin: 0 0 6px; }
+.switch .addr { display: block; font-family: var(--font-mono); font-size: 14px; padding: 8px; background: var(--inset); border-radius: 4px; overflow-wrap: anywhere; user-select: all; }
+.decision.sticky { position: sticky; bottom: 0; z-index: 1; box-shadow: 0 -8px 16px var(--surface-1); }
 .search { display: flex; gap: 8px; margin-bottom: 8px; }
 .search input { flex: 1; min-width: 0; height: 44px; padding: 0 12px; font: inherit; font-size: 16px; color: var(--text-primary); background: var(--card); border: 1px solid var(--border-strong); border-radius: 4px; }
 .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-primary); background: transparent; border: 1px solid var(--border-strong); border-radius: 4px; cursor: pointer; }
@@ -346,6 +465,8 @@ form:has(#perm-write:checked) .p-read { display: none; }
 
 export interface ConsentPageArgs {
   clientName: string;
+  /** buildd vouches for the name (clientIdentity). Absent = unverified. */
+  clientVerified?: boolean;
   /** Where the browser returns, as a host (or scheme for a native app). */
   redirectHost: string;
   /** The authorize parameters and the consent token, carried as hidden fields. */
@@ -356,6 +477,20 @@ export interface ConsentPageArgs {
   error?: string | null;
   /** The form's action; the authorize endpoint. */
   action?: string;
+}
+
+/** An internal workspace reads as the app names it elsewhere (displayWorkspaceName). */
+function displayName(ws: ConsentWorkspace): string {
+  return ws.system ? 'Organizer' : ws.name;
+}
+
+/** The app's name, and the one line that says buildd could not vouch for it. */
+export function clientHeader(clientName: string, verified: boolean, redirectHost: string): string {
+  const safe = escapeHtml(clientName);
+  const note = verified
+    ? `<span class="verified" data-client-verified="true">Verified app</span>`
+    : `<p class="meta" data-client-verified="false">Name supplied by the app. It returns you to <span class="mono">${escapeHtml(redirectHost)}</span>.</p>`;
+  return `<div class="ident"><h1>Authorize ${safe}</h1>${verified ? note : ''}</div>${verified ? '' : note}`;
 }
 
 function hiddenInput(name: string, value: string): string {
@@ -382,7 +517,11 @@ function renderTeam(team: ConsentTeam, state: ConsentState, selected: Set<string
 
   const hasSelection = team.workspaces.some((w) => selected.has(w.id));
   const open = hasSelection || state.focusTeam === team.id || state.query.trim() !== '' || page > 1;
-  const rows = visible.map((w) => `<label class="ws"><input type="checkbox" name="ws" value="${escapeHtml(w.id)}"${selected.has(w.id) ? ' checked' : ''}><span>${escapeHtml(w.name)}</span></label>`).join('\n');
+  const rows = visible.map((w) => {
+    const detail = workspaceDetail(team, w);
+    const sub = detail ? `<span class="ws-sub">${escapeHtml(detail)}</span>` : '';
+    return `<label class="ws"><input type="checkbox" name="ws" value="${escapeHtml(w.id)}"${selected.has(w.id) ? ' checked' : ''}><span class="ws-text"><span>${escapeHtml(displayName(w))}</span>${sub}</span></label>`;
+  }).join('\n');
 
   const pager = totalPages > 1
     ? `<div class="pager">${page > 1 ? navButton(`page:${team.id}:${page - 1}`, 'Previous', 'btn', `Previous page of ${team.name}`) : ''}<span class="meta mono">page ${page} of ${totalPages}</span>${page < totalPages ? navButton(`page:${team.id}:${page + 1}`, 'Next', 'btn', `Next page of ${team.name}`) : ''}</div>${hiddenInput('tpage', `${team.id}:${page}`)}`
@@ -396,7 +535,7 @@ function renderTeam(team: ConsentTeam, state: ConsentState, selected: Set<string
 <summary><span class="team-name">${escapeHtml(team.name)}</span><span class="chip">${escapeHtml(count)}</span><span class="chip">${escapeHtml(accessLabel(team.role).toLowerCase())}</span></summary>
 <div class="team-body">
 ${rows}
-<div class="team-actions">${navButton(`team_all:${team.id}`, 'Select all in team', 'btn btn-quiet', `Select all in ${team.name}`)}${navButton(`team_clear:${team.id}`, 'Clear team', 'btn btn-quiet', `Clear ${team.name}`)}</div>
+<div class="team-actions">${navButton(`team_all:${team.id}`, 'Select team', 'btn btn-quiet', `Select all in ${team.name}`)}${navButton(`team_clear:${team.id}`, 'Clear team', 'btn btn-quiet', `Clear ${team.name}`)}</div>
 ${pager}
 </div>
 </details>`;
@@ -404,8 +543,9 @@ ${pager}
 
 /**
  * The consent page. A plain HTML form POSTing back to the authorize endpoint;
- * nothing is granted until the person presses Approve. Every value is escaped;
- * there is no script.
+ * nothing is granted until the person presses Allow access. Every value is
+ * escaped; there is no script. The selection count is a CSS counter, so it
+ * follows the checkboxes live without script too.
  */
 export function renderAccountConsentPage(args: ConsentPageArgs): string {
   const { state, requested, teams } = args;
@@ -421,62 +561,62 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
     .join('\n');
   const carriedInputs = carried.map((id) => hiddenInput('ws', id)).join('\n');
 
-  const personOption = requested.person
-    ? `<label class="option"><input type="radio" id="kind-person" name="acts_as" value="person"${state.actsAs === 'person' ? ' checked' : ''}><span><span class="t">Acts as you</span><span class="d" style="display:block">For your own coding sessions. It can take the actions only a person may: force a review, override a landing, abandon work.</span></span></label>`
-    : `<label class="option off"><input type="radio" id="kind-person" name="acts_as" value="person" disabled><span><span class="t">Acts as you</span><span class="d" style="display:block">This app did not ask to act as you.</span></span></label>`;
+  const kind = requested.person
+    ? `<fieldset>
+<legend>Acts</legend>
+<label class="option"><input type="radio" id="kind-agent" name="acts_as" value="agent"${state.actsAs === 'agent' ? ' checked' : ''}><span><span class="t">As your agent</span><span class="d" style="display:block">Work is attributed to you. Actions only a person may take are refused.</span></span></label>
+<label class="option"><input type="radio" id="kind-person" name="acts_as" value="person"${state.actsAs === 'person' ? ' checked' : ''}><span><span class="t">As you</span><span class="d" style="display:block">For your own coding sessions. It can force a review, override a landing and abandon work.</span></span></label>
+</fieldset>`
+    : `<input type="hidden" name="acts_as" value="agent">`;
 
   const writeOption = requested.write
     ? `<label class="option"><input type="checkbox" id="perm-write" name="perm_write" value="on"${state.write ? ' checked' : ''}><span><span class="t">Write</span><span class="d" style="display:block">Create and update tasks, claim work, open pull requests, record progress and knowledge.</span></span></label>`
-    : `<div class="option off"><input type="checkbox" disabled aria-label="Write, not requested"><span><span class="t">Write</span><span class="d" style="display:block">Not requested by this app.</span></span></div>`;
+    : '';
 
   const searchActive = state.query.trim() !== '';
   const workspaceList = teamBlocks.length > 0
     ? teamBlocks.join('\n')
-    : `<p class="empty">${searchActive ? 'No workspaces match.' : 'No workspaces.'}</p>`;
+    : `<p class="empty" data-empty="${searchActive ? 'search' : 'none'}">${searchActive ? `No workspaces match “${escapeHtml(state.query.trim())}”.` : 'No workspaces.'}</p>`;
 
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Connect ${safeClient} to buildd</title>
+<title>Authorize ${safeClient}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>${CONSENT_CSS}</style>
 </head>
 <body>
 <main class="wrap">
-<h1>Connect ${safeClient} to buildd?</h1>
-<p class="lede">Choose the workspaces it can reach and how it acts in them.</p>
+${clientHeader(args.clientName, args.clientVerified === true, args.redirectHost)}
+<p class="lede">Choose the teams and workspaces ${safeClient} can access.</p>
 ${args.error ? `<div class="notice-err" role="alert">${escapeHtml(args.error)}</div>` : ''}
 <form method="post" action="${escapeHtml(args.action ?? '/api/oauth/authorize')}" style="--carried: ${carried.length}" data-consent="account">
 ${hidden}
 ${carriedInputs}
 <fieldset>
 <legend>Workspaces</legend>
-<div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Search ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}" aria-label="Search workspaces" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
+<div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Search ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}" aria-label="Search workspaces, teams and repositories" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
 <div class="bulk">${navButton('select_all', searchActive ? 'Select all matches' : 'Select all', 'btn btn-quiet')}${navButton('clear_all', 'Clear all', 'btn btn-quiet')}</div>
 ${workspaceList}
-</fieldset>
-<fieldset>
-<legend>Kind of connection</legend>
-<label class="option"><input type="radio" id="kind-agent" name="acts_as" value="agent"${state.actsAs === 'agent' ? ' checked' : ''}><span><span class="t">Agent working for you</span><span class="d" style="display:block">For connectors and shared or remote machines. Its work is attributed to you. Actions only a person may take are refused.</span></span></label>
-${personOption}
+<p class="meta">Access covers the workspaces ticked here. Workspaces created later need adding in Settings.</p>
 </fieldset>
 <fieldset>
 <legend>Permissions</legend>
 <div class="option off"><input type="checkbox" checked disabled aria-label="Read, always included"><span><span class="t">Read</span><span class="d" style="display:block">See tasks, missions, artifacts, pull requests and knowledge.</span></span></div>
 ${writeOption}
-<p class="meta">In each workspace it is also limited to your team role: admin actions only where you are an owner or admin.</p>
+<p class="meta">Admin actions work only where you are a team owner or admin.</p>
 </fieldset>
-<div class="decision">
+${kind}
+<div class="decision sticky" aria-live="polite">
 <dl>
-<dt>Reaches</dt><dd><span class="count mono"></span> of ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}, only while you are on their team</dd>
-<dt>Acts</dt><dd><span class="k-agent">as your agent</span><span class="k-person">as you</span></dd>
-<dt>Can</dt><dd><span class="p-read">read</span><span class="p-write">read and write</span></dd>
+<dt>Selected</dt><dd><span class="count mono"></span> of ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}</dd>
+<dt>Can</dt><dd><span class="p-read">read</span><span class="p-write">read and write</span>, <span class="k-agent">as your agent</span><span class="k-person">as you</span></dd>
 <dt>Returns to</dt><dd class="mono">${escapeHtml(args.redirectHost)}</dd>
 </dl>
 <div class="actions">
 <button class="btn" type="submit" name="decision" value="deny">Cancel</button>
-<button class="btn btn-ink" type="submit" name="decision" value="approve">Approve</button>
+<button class="btn btn-ink" type="submit" name="decision" value="approve">Allow access</button>
 </div>
 </div>
 </form>
@@ -503,6 +643,94 @@ export function renderGrantInterstitial(args: { clientName: string; redirectUrl:
 <main class="wrap">
 <h1>Connected ${safeClient}.</h1>
 <p class="lede">It can reach ${reach}, ${args.actsAs === 'person' ? 'acting as you' : 'as your agent'}.</p>
+<p class="meta">Returning you to the app, or <a href="${safeUrl}" style="color: var(--text-primary)">continue now</a>.</p>
+</main>
+</body>
+</html>`;
+}
+
+// ── Older per-workspace address ──────────────────────────────────────────────
+//
+// A client whose connector still uses `<issuer>/api/mcp-oauth/<workspace>`
+// asks for that resource. Its token can only work at that address, so the page
+// offers exactly that workspace (no picker: choosing another one would mint a
+// token the address refuses) and shows the one address that reaches several.
+// The token stays bound to the workspace in the resource; nothing is
+// redirected and nothing is widened.
+
+export interface LegacyConsentArgs {
+  clientName: string;
+  clientVerified?: boolean;
+  redirectHost: string;
+  hidden: Array<[string, string | null]>;
+  workspace: { name: string; teamName: string; repo: string | null; system?: boolean };
+  /** The person's access there, from their team role. */
+  level: 'admin' | 'worker';
+  /** `<issuer>/api/mcp`. */
+  canonicalUrl: string;
+  action?: string;
+}
+
+export function renderLegacyConsentPage(args: LegacyConsentArgs): string {
+  const safeClient = escapeHtml(args.clientName);
+  const hidden = args.hidden
+    .filter(([, v]) => v !== null)
+    .map(([k, v]) => hiddenInput(k, v as string))
+    .join('\n');
+  const ws = args.workspace;
+  const name = ws.system ? 'Organizer' : ws.name;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Authorize ${safeClient}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>${CONSENT_CSS}</style>
+</head>
+<body>
+<main class="wrap" data-consent="legacy">
+${clientHeader(args.clientName, args.clientVerified === true, args.redirectHost)}
+<p class="lede">${safeClient} is using an older buildd address that reaches one workspace.</p>
+<dl class="facts">
+<dt>Workspace</dt><dd>${escapeHtml(name)}</dd>
+<dt>Team</dt><dd>${escapeHtml(ws.teamName)}</dd>
+${ws.repo ? `<dt>Repository</dt><dd class="mono">${escapeHtml(ws.repo)}</dd>` : ''}
+<dt>Can</dt><dd data-access-level="${args.level}">${args.level === 'admin' ? 'read and write, including admin actions' : 'read and write'}</dd>
+<dt>Returns to</dt><dd class="mono">${escapeHtml(args.redirectHost)}</dd>
+</dl>
+<div class="switch" data-migrate="canonical">
+<p>To choose several workspaces in one connection, connect ${safeClient} to this address instead:</p>
+<span class="addr">${escapeHtml(args.canonicalUrl)}</span>
+</div>
+<form method="post" action="${escapeHtml(args.action ?? '/api/oauth/authorize')}">
+${hidden}
+<div class="actions">
+<button class="btn" type="submit" name="decision" value="deny">Cancel</button>
+<button class="btn btn-ink" type="submit" name="decision" value="approve">Allow access</button>
+</div>
+</form>
+</main>
+</body>
+</html>`;
+}
+
+/** After approving the older address: which workspace, then back to the client. */
+export function renderLegacyInterstitial(args: { clientName: string; redirectUrl: string; workspaceName: string }): string {
+  const safeClient = escapeHtml(args.clientName);
+  const safeUrl = escapeHtml(args.redirectUrl);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Connected ${safeClient}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="1;url=${safeUrl}">
+<style>${CONSENT_CSS}</style>
+</head>
+<body>
+<main class="wrap">
+<h1>Connected ${safeClient}.</h1>
+<p class="lede">It can reach ${escapeHtml(args.workspaceName)}.</p>
 <p class="meta">Returning you to the app, or <a href="${safeUrl}" style="color: var(--text-primary)">continue now</a>.</p>
 </main>
 </body>
