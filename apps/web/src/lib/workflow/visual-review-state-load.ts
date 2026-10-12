@@ -8,6 +8,7 @@
 import 'server-only';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
+import { isTerminalTaskStatus } from '@buildd/shared';
 import { missions, workflowDeliveries, workspaces } from '@buildd/core/db/schema';
 import { visualReviewPolicyOf } from '@buildd/shared';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
@@ -20,7 +21,7 @@ import {
   type VisualReviewStateInput,
 } from './visual-review-state';
 
-const TERMINAL_TASK = new Set(['completed', 'failed', 'cancelled']);
+
 
 export async function getMissionVisualReviewState(missionId: string): Promise<MissionVisualReviewState | null> {
   const mission = await db.query.missions.findFirst({
@@ -78,7 +79,7 @@ export async function getMissionVisualReviewState(missionId: string): Promise<Mi
           screens: model.summary.shots,
           effectiveIssues: model.summary.effectiveIssues,
           awaitingHuman: model.summary.awaitingHuman,
-          openFixes: model.fixTasks.filter(f => !TERMINAL_TASK.has(f.status)).length,
+          openFixes: model.fixTasks.filter(f => !isTerminalTaskStatus(f.status)).length,
           roundCapOpen: model.roundCapOpen,
           needsYouReason: model.needsYou?.reason ?? null,
           captured: model.progress?.captured ?? 0,
@@ -86,6 +87,6 @@ export async function getMissionVisualReviewState(missionId: string): Promise<Mi
         }
       : null,
     waiver,
-    branch: { headSha, base, integrationPr, workLanded: uiBuilders.length > 0 && uiBuilders.every(t => TERMINAL_TASK.has(t.status)) },
+    branch: { headSha, base, integrationPr, workLanded: uiBuilders.length > 0 && uiBuilders.every(t => isTerminalTaskStatus(t.status)) },
   });
 }
