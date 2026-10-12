@@ -13,7 +13,7 @@
 import { createHash } from 'crypto';
 import { isOpenTaskStatus } from '@buildd/shared';
 import { db } from '@buildd/core/db';
-import { capabilityGrants, capabilityPolicies, tasks, workers } from '@buildd/core/db/schema';
+import { capabilityGrants, capabilityPolicies, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, lte } from 'drizzle-orm';
 import { loadDiscoveryInput } from './connector-capabilities-store';
 import { resolveCapability, type CapabilityCandidate } from './connector-capabilities';
@@ -36,6 +36,11 @@ import {
   type UseRefusal,
 } from './capability-grants';
 import { MODEL_INFERENCE_CAPABILITY, type ModelInferenceGrantSource } from './capability-model-inference';
+import { TASK_FILING_CAPABILITY, TASK_FILING_PROVIDER } from './capability-grants';
+import { loadRawTaskGrants } from './task-delegation';
+import { addTaskDelegationGrant, removeTaskDelegationGrant } from './task-delegation-checks';
+import { verifyWorkspaceAccess } from './team-access';
+import { delegationAllows } from '@buildd/core/token-delegation';
 
 type GrantRow = typeof capabilityGrants.$inferSelect;
 
@@ -123,6 +128,7 @@ export async function requestCapability(principal: AgentPrincipal, req: Capabili
   const rp: RequestPrincipal = { teamId: principal.teamId, workspaceId: principal.workspaceId, taskId: principal.taskId, workerId: principal.workerId, roleSlug: run.roleSlug };
 
   await expireLapsed(eq(capabilityGrants.workerId, principal.workerId), now);
+  if (req.capability === TASK_FILING_CAPABILITY) return requestTaskFiling(principal, rp, req, now);
   const [input, rules, rows] = await Promise.all([
     req.modelInference ? Promise.resolve(null) : loadDiscoveryInput(principal.workspaceId, run.roleSlug, now),
     loadPolicyRules(principal.teamId),
@@ -194,6 +200,79 @@ export async function requestCapability(principal: AgentPrincipal, req: Capabili
   return { ok: true, resolution: { ...resolution, kind, grantId: rec.id }, grant: grantView(rec), deduped: !inserted[0] };
 }
 
+// ── Agent: request to file tasks in another workspace ─────────────────────────
+
+const TASK_FILING_TARGET = { provider: TASK_FILING_PROVIDER, connectorId: null, connectorName: null };
+
+/**
+ * A running agent asks to file tasks in another workspace of its team
+ * (`tasks:create`, resource = that workspace's UUID). No connector and no
+ * auto-grant: buildd serves it, and a person decides. Already covered by the
+ * task's delegation (or its schedule's) = existing; another team = forbidden.
+ * A pending request keeps the run alive: the agent keeps working and asks
+ * again (same row) until a person decides.
+ */
+async function requestTaskFiling(principal: AgentPrincipal, rp: RequestPrincipal, req: CapabilityRequest, now: Date): Promise<RequestOutcome> {
+  const target = req.resource!;
+  const resolution = (kind: Resolution['kind'], reasonCode: string, nextSteps: string[], grantId: string | null = null): Resolution => ({
+    kind, reasonCode, target: TASK_FILING_TARGET, policy: null, ttlSeconds: req.ttlSeconds, grantId, nextSteps, alternatives: [],
+  });
+  const audit = (decision: 'allowed' | 'refused', r: Resolution) => void recordCapabilityDecision({
+    capability: 'capability.request', decision,
+    workspaceId: rp.workspaceId, taskId: rp.taskId, workerId: rp.workerId, accountId: principal.accountId, principalVia: principal.via,
+    resource: r.grantId ? `grant:${r.grantId}` : `${TASK_FILING_CAPABILITY}@workspace:${target}`,
+    reasonCode: `${r.kind}:${r.reasonCode}`,
+  });
+  const done = (r: Resolution, grant: GrantRow | null = null, deduped = false): RequestOutcome => {
+    audit(r.kind === 'existing' ? 'allowed' : 'refused', r);
+    return { ok: true, resolution: r, grant: grant ? grantView(toGrantRecord(grant)) : null, deduped };
+  };
+
+  if (target === rp.workspaceId) return done(resolution('existing', 'own_workspace', ['Your task token already files tasks in its own workspace.']));
+  const [targetWs, task] = await Promise.all([
+    db.query.workspaces.findFirst({ where: eq(workspaces.id, target), columns: { id: true, teamId: true } }),
+    db.query.tasks.findFirst({ where: eq(tasks.id, rp.taskId), columns: { id: true, workspaceId: true, scheduleId: true, delegation: true } }),
+  ]);
+  if (!targetWs || targetWs.teamId !== rp.teamId) {
+    return done(resolution('forbidden', 'cross_team', ['That workspace is not one of your team\'s; a task can never file there.']));
+  }
+  if (task && delegationAllows(await loadRawTaskGrants(task), target, 'tasks:create')) {
+    return done(resolution('existing', 'delegation_grants', ['Your task\'s delegation already grants this; file with create_task { workspaceId }.']));
+  }
+
+  const dedupeKey = capabilityDedupeKey(rp, req, TASK_FILING_TARGET);
+  const rows = await db.query.capabilityGrants.findMany({ where: eq(capabilityGrants.dedupeKey, dedupeKey) });
+  if (rows.some(r => r.status === 'denied')) {
+    return done(resolution('denied', 'already_denied', ['A person denied this exact request for this run. Do not ask again; record what you would have filed in an artifact or a note.']));
+  }
+  const pendingSteps = [
+    'A person on your team approves or denies this on Settings → MCP connectors.',
+    'Do not end the run and do not ask_human for the same access: keep working on everything else, then call request_capability again with the same ask (it returns this same request) until the outcome is existing.',
+  ];
+  const pending = rows.find(r => r.status === 'pending');
+  if (pending) return done(resolution('pending_approval', 'already_pending', pendingSteps, pending.id), pending, true);
+  // A granted row the delegation no longer carries (a person cleared it) is
+  // not a grant: close it so this ask opens a fresh request.
+  const stale = rows.find(r => r.status === 'granted');
+  if (stale) {
+    await db.update(capabilityGrants)
+      .set({ status: 'revoked', revokedAt: now, decisionReason: 'delegation_cleared' })
+      .where(and(eq(capabilityGrants.id, stale.id), eq(capabilityGrants.status, 'granted')));
+  }
+  const inserted = await db.insert(capabilityGrants).values({
+    teamId: rp.teamId, workspaceId: rp.workspaceId, taskId: rp.taskId, workerId: rp.workerId,
+    requestedByAccountId: principal.accountId, roleSlug: rp.roleSlug,
+    capability: TASK_FILING_CAPABILITY, provider: TASK_FILING_PROVIDER, connectorId: null,
+    risk: 'write', tool: null, resource: target, environment: null, scope: null,
+    reason: req.reason, status: 'pending', ttlSeconds: req.ttlSeconds, dedupeKey,
+  }).onConflictDoNothing().returning();
+  const row = inserted[0] ?? await db.query.capabilityGrants.findFirst({
+    where: and(eq(capabilityGrants.dedupeKey, dedupeKey), inArray(capabilityGrants.status, ['pending', 'granted'])),
+  });
+  if (!row) return done(resolution('unavailable', 'request_race_lost', ['Ask again.']));
+  return done(resolution('pending_approval', inserted[0] ? 'write_needs_human' : 'already_pending', pendingSteps, row.id), row, !inserted[0]);
+}
+
 // ── Person: approve / deny / revoke ──────────────────────────────────────────
 
 export type Decision = 'approve' | 'deny' | 'revoke';
@@ -248,6 +327,10 @@ export async function decideCapabilityRequest(
       .where(and(eq(capabilityGrants.id, g.id), inArray(capabilityGrants.status, ['pending', 'granted'])))
       .returning();
     if (!r) return settled('revoke');
+    // A tasks:create grant lives on the task's delegation: take it back there too.
+    if (g.capability === TASK_FILING_CAPABILITY && g.resource) {
+      await removeTaskDelegationGrant(g.taskId, { workspaceId: g.resource, capability: 'tasks:create' });
+    }
     audit('capability.revoke', 'refused', 'revoked_by_human');
     return { ok: true, grant: grantView(toGrantRecord(r)), alreadyDecided: false };
   }
@@ -266,6 +349,12 @@ export async function decideCapabilityRequest(
     audit('capability.approve', 'refused', refusal);
     return { ok: false, status: 409, code: refusal, error: APPROVAL_REFUSAL_TEXT[refusal] };
   }
+  // Filing in another workspace: the approver must reach it themselves, the
+  // same rule as granting a task delegation directly (lib/task-delegation.ts).
+  if (g.capability === TASK_FILING_CAPABILITY && !(g.resource && await verifyWorkspaceAccess(actor.userId, g.resource))) {
+    audit('capability.approve', 'refused', 'approver_lacks_reach');
+    return { ok: false, status: 409, code: 'approver_lacks_reach', error: 'You do not reach the workspace this request would file tasks in, so you cannot grant it.' };
+  }
   const policy = effectivePolicy(rules, {
     provider: g.provider, risk: g.risk, workspaceId: g.workspaceId, roleSlug: g.roleSlug, environment: g.environment, resource: g.resource,
   }, (candidate?.roles.withAccess.length ?? 0) > 0);
@@ -276,8 +365,29 @@ export async function decideCapabilityRequest(
     .where(and(eq(capabilityGrants.id, g.id), eq(capabilityGrants.status, 'pending')))
     .returning();
   if (!r) return settled('approve');
+  if (g.capability === TASK_FILING_CAPABILITY) {
+    const landed = await landTaskFilingGrant(g, actor.userId);
+    if (!landed.ok) return landed;
+  }
   audit('capability.approve', 'allowed', 'approved_by_human', expiresAt);
   return { ok: true, grant: grantView(toGrantRecord(r)), alreadyDecided: false };
+}
+
+/**
+ * An approved tasks:create request becomes a grant on the task's own
+ * delegation, which the task token re-reads on every call. If that write
+ * fails the approval is undone (no transactions on neon-http), so the ledger
+ * never shows a grant the token does not carry.
+ */
+async function landTaskFilingGrant(g: GrantRecord, userId: string): Promise<{ ok: true } | { ok: false; status: 409; code: string; error: string }> {
+  const added = g.resource
+    ? await addTaskDelegationGrant(g.taskId, { workspaceId: g.resource, capability: 'tasks:create' }, { userId, capabilityGrantId: g.id })
+    : { ok: false as const, error: 'The request names no workspace.' };
+  if (added.ok) return { ok: true };
+  await db.update(capabilityGrants)
+    .set({ status: 'pending', decidedBy: null, decidedByUserId: null, decidedAt: null, expiresAt: null })
+    .where(and(eq(capabilityGrants.id, g.id), eq(capabilityGrants.status, 'granted')));
+  return { ok: false, status: 409, code: 'delegation_write_failed', error: added.error };
 }
 
 const APPROVAL_REFUSAL_TEXT: Record<string, string> = {

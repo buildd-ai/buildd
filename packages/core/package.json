@@ -180,6 +180,7 @@
     "./decision-dataset": "./decision-dataset.ts",
     "./decision-feature-health": "./decision-feature-health.ts",
     "./decision-outcomes": "./decision-outcomes.ts",
+    "./decision-outcome-graders": "./decision-outcome-graders.ts",
     "./merge-readiness-outcome": "./merge-readiness-outcome.ts",
     "./decision-readout": "./decision-readout.ts",
     "./decision-readout-source": "./decision-readout-source.ts",

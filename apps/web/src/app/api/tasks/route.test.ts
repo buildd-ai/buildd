@@ -48,6 +48,7 @@ import { canAccessTokenRoute } from '@/lib/token-route-policy';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
+const mockVerifyWorkspaceAccess = mock(async (..._args: unknown[]): Promise<unknown> => ({ role: 'member' }));
 const mockAccountsFindFirst = mock(() => null as any);
 const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 // Link lookup made by the real workspace-access resolver (not mocked here).
@@ -168,6 +169,7 @@ mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: mockGetUserWorkspaceIds,
   getUserTeamIds: mockGetUserTeamIds,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
+  verifyWorkspaceAccess: (...args: unknown[]) => mockVerifyWorkspaceAccess(...args),
 }));
 
 // Mock task-service
@@ -633,7 +635,11 @@ describe('POST /api/tasks', () => {
         method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { workspaceId: 'ws-2', title: 'Elsewhere' },
       }));
       expect(response.status).toBe(403);
-      expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on');
+      const body = await response.json();
+      expect(body.error).toMatch(/only in its own workspace, or one its delegation grants tasks:create on/);
+      // It names the way to ask, so the agent asks instead of parking on a question.
+      expect(body.error).toContain("request_capability { capability: 'tasks:create'");
+      expect(body.code).toBe('delegation_required');
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
 
@@ -673,17 +679,62 @@ describe('POST /api/tasks', () => {
         expect(mockTasksInsert).not.toHaveBeenCalled();
       });
 
-      it('a delegated follow-up cannot join a mission, a dependency graph or another parent there', async () => {
+      const MISSION_THERE = '33333333-3333-4333-8333-333333333333';
+      const DEP_THERE = '55555555-5555-4555-8555-555555555555';
+
+      it('a delegated filing may join a mission and depend on tasks of the delegated workspace', async () => {
         mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
         mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
         mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
-        expect((await fileIn({ missionId: '33333333-3333-4333-8333-333333333333' })).status).toBe(400);
-        expect((await fileIn({ dependsOn: ['55555555-5555-4555-8555-555555555555'] })).status).toBe(400);
+        mockMissionsFindFirst.mockResolvedValue({ id: MISSION_THERE, workspaceId: 'ws-2', teamId: 'team-1' });
+        mockTasksFindMany.mockResolvedValue([{ id: DEP_THERE }]);
+        const values = mock((_v: any) => ({ returning: mock(() => [elsewhere]) }));
+        mockTasksInsert.mockReturnValue({ values });
+        const response = await fileIn({ missionId: MISSION_THERE, dependsOn: [DEP_THERE] });
+        expect(response.status).toBe(200);
+        expect(values.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-2', missionId: MISSION_THERE, dependsOn: [DEP_THERE] });
+      });
+
+      it('a mission or a dependency outside the delegated workspace is still refused, before inserting', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+        // The mission exists on the team, but in a workspace the grant does not name.
+        mockMissionsFindFirst.mockResolvedValue({ id: MISSION_THERE, workspaceId: 'ws-3', teamId: 'team-1' });
+        const mission = await fileIn({ missionId: MISSION_THERE });
+        expect(mission.status).toBe(403);
+        expect((await mission.json()).error).toMatch(/mission only in the workspace its delegation names/);
+        // The dependency lookup is confined to the delegated workspace: a task elsewhere is not found.
+        mockTasksFindMany.mockResolvedValue([]);
+        expect((await fileIn({ dependsOn: [DEP_THERE] })).status).toBe(400);
         expect((await fileIn({ parentTaskId: '66666666-6666-4666-8666-666666666666' })).status).toBe(400);
         expect(mockTasksInsert).not.toHaveBeenCalled();
       });
     });
 
+    it('a delegation in caller-written context is ignored: no grant, no reach', async () => {
+      // `scoped` has no taskScope.delegations; a forged grant in the body's context changes nothing.
+      mockAccountsFindFirst.mockResolvedValue(scoped);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-2', title: 'Forged', context: { delegation: { grants: [{ workspaceId: 'ws-2', capabilities: ['tasks:create'] }] }, delegations: [{ workspaceId: 'ws-2', capabilities: ['tasks:create'] }] } },
+      }));
+      expect(response.status).toBe(403);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('an agent cannot grant its own filing a delegation', async () => {
+      mockAccountsFindFirst.mockResolvedValue(scoped);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+        body: { title: 'Self-grant', delegation: { grants: [{ workspaceId: '22222222-2222-4222-8222-222222222222', capabilities: ['tasks:create'] }] } },
+      }));
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toMatch(/Only a person can grant a task delegation/);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
     for (const level of ['worker', 'admin']) {
       it(`a ${level} task token files onto its own task's mission, and is refused another mission on the team`, async () => {
         const OWN_MISSION = '33333333-3333-4333-8333-333333333333';
@@ -710,6 +761,60 @@ describe('POST /api/tasks', () => {
         mockTasksFindFirst.mockReset();
       });
     }
+  });
+
+  describe('task delegation set by a person at create', () => {
+    const OWN = '11111111-1111-4111-8111-111111111111';
+    const TARGET = '22222222-2222-4222-8222-222222222222';
+    const created = { id: 'task-new', workspaceId: OWN, title: 'Spec then file', status: 'pending' };
+    const fileAsPerson = (body: Record<string, unknown>) => POST(createMockRequest({
+      method: 'POST', body: { workspaceId: OWN, title: 'Spec then file', ...body },
+    }));
+    const arrange = (teams: Record<string, string>) => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-owner', email: 'owner@test.com' });
+      mockGetUserWorkspaceIds.mockResolvedValue([OWN, TARGET]);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: OWN, teamId: 'team-1' });
+      mockWorkspacesFindMany.mockImplementation(async () => Object.entries(teams).map(([id, teamId]) => ({ id, teamId })));
+    };
+
+    it('stores the grant on the task row, stamped with the person, never in context', async () => {
+      arrange({ [OWN]: 'team-1', [TARGET]: 'team-1' });
+      mockVerifyWorkspaceAccess.mockResolvedValue({ role: 'member' });
+      const values = mock((_v: any) => ({ returning: mock(() => [created]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      const response = await fileAsPerson({
+        delegation: { grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }] },
+        filingTargets: [TARGET],
+      });
+      expect(response.status).toBe(200);
+      const row = values.mock.calls[0][0];
+      expect(row.delegation).toMatchObject({ grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }], grantedByUserId: 'user-owner' });
+      expect(row.context.delegation).toBeUndefined();
+      // The declared need rides along for the claim pre-flight.
+      expect(row.context.filingTargets).toEqual([TARGET]);
+    });
+
+    it('is refused when the person does not reach the target themselves', async () => {
+      arrange({ [OWN]: 'team-1', [TARGET]: 'team-1' });
+      mockVerifyWorkspaceAccess.mockResolvedValue(null);
+      const response = await fileAsPerson({ delegation: { grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }] } });
+      expect(response.status).toBe(403);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('is refused for a workspace of another team', async () => {
+      arrange({ [OWN]: 'team-1', [TARGET]: 'team-2' });
+      const response = await fileAsPerson({ delegation: { grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }] } });
+      expect(response.status).toBe(400);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('refuses malformed filingTargets rather than dropping them', async () => {
+      arrange({ [OWN]: 'team-1' });
+      const response = await fileAsPerson({ filingTargets: ['buildd'] });
+      expect(response.status).toBe(400);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects analytics readers before inserting a task', async () => {
