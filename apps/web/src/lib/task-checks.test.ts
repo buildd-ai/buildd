@@ -3,7 +3,7 @@
  * facts only, current round first, repairs attached to what caused them.
  */
 import { describe, expect, test } from 'bun:test';
-import { deriveTaskChecks, taskSubjectOf, type ChecksInput } from './task-checks';
+import { deriveTaskChecks, reviewDetailOf, taskSubjectOf, type ChecksInput, type ReviewFindings } from './task-checks';
 import type { DeliveryView } from './workflow/projections';
 
 type RoundSnapshot = DeliveryView['rounds'][number];
@@ -119,5 +119,77 @@ describe('taskSubjectOf', () => {
     expect(taskSubjectOf({ taskId: 'x', view: null, context: { reviewerFor: 'p' }, parentTaskId: 'p' })).toEqual({ kind: 'review', deliverableTaskId: 'p' });
     expect(taskSubjectOf({ taskId: 'x', view: null, context: null, parentTaskId: 'p', retryOf: true })).toEqual({ kind: 'fix', deliverableTaskId: 'p' });
     expect(taskSubjectOf({ taskId: 'x', view: null, context: null, parentTaskId: 'p' })).toEqual({ kind: 'deliverable', deliverableTaskId: 'x' });
+  });
+});
+
+// What an opened Code review row says (task-page spec §Code review detail).
+// A self-reference is never detail on its own; old findings never ride on a
+// newer head; missing output never reads as an approval.
+describe('reviewDetailOf', () => {
+  const reviewRowOf = (v: ChecksInput) => row(deriveTaskChecks(v), 'review')!;
+  const F = (o: Record<string, ReviewFindings> = {}) => new Map(Object.entries(o));
+  const opts = (o: Partial<Parameters<typeof reviewDetailOf>[1]> = {}) => ({ findings: F(), currentTaskId: 'rev1', ...o });
+
+  test('self, queued: says the review is queued with no findings yet, bound to round and head, no self link', () => {
+    const r = reviewRowOf(V({ rounds: [R({ status: 'queued' })] }));
+    const d = reviewDetailOf(r, opts({ findings: F({ rev1: { prose: null, verdict: null, status: 'pending' } }) }));
+    expect(d).toEqual({ kind: 'queued', text: 'Review queued · no findings yet', round: { round: 1, headSha: 'HEADB00', carried: false }, linkTaskId: null });
+  });
+
+  test('self, running: the reviewer task being claimed makes it in progress even while the round is queued', () => {
+    const r = reviewRowOf(V({ rounds: [R({ status: 'queued' })] }));
+    const d = reviewDetailOf(r, opts({ findings: F({ rev1: { prose: null, verdict: null, status: 'in_progress' } }) }));
+    expect(d).toMatchObject({ kind: 'running', text: 'Review in progress · no findings yet', linkTaskId: null });
+    expect(reviewDetailOf(reviewRowOf(V({ rounds: [R({ status: 'reviewing' })] })), opts())).toMatchObject({ kind: 'running' });
+  });
+
+  test('self, completed with findings: the prose, round and head, and no link back to this page', () => {
+    const r = reviewRowOf(V({ state: 'APPROVED', rounds: [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })], approvedCurrentHead: true }));
+    const d = reviewDetailOf(r, opts({ findings: F({ rev1: { prose: 'No blocking findings.', verdict: 'approve', status: 'completed' } }) }));
+    expect(d).toEqual({ kind: 'findings', prose: 'No blocking findings.', round: { round: 1, headSha: 'HEADB00', carried: false }, linkTaskId: null });
+  });
+
+  test('another task\'s review keeps its link', () => {
+    const r = reviewRowOf(V({ rounds: [R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })] }));
+    const d = reviewDetailOf(r, opts({ currentTaskId: 'deliverable', findings: F({ rev1: { prose: 'Fix the label.', verdict: 'request-changes', status: 'completed' } }) }));
+    expect(d).toMatchObject({ kind: 'findings', prose: 'Fix the label.', linkTaskId: 'rev1' });
+  });
+
+  test('a decided round whose reviewer left no output says so, and never reads as approval', () => {
+    const r = reviewRowOf(V({ state: 'APPROVED', rounds: [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })] }));
+    const d = reviewDetailOf(r, opts({ findings: F({ rev1: { prose: null, verdict: null, status: 'completed' } }) }));
+    expect(d).toMatchObject({ kind: 'no-output', text: 'The review finished without written findings' });
+    expect(JSON.stringify(d)).not.toMatch(/approv/i);
+    // No record at all for the reviewer task reads the same, not as loading.
+    expect(reviewDetailOf(r, opts())).toMatchObject({ kind: 'no-output' });
+  });
+
+  test('a failed retrieval is explicit and offers a retry, even when nothing was read', () => {
+    const r = reviewRowOf(V({ rounds: [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })] }));
+    expect(reviewDetailOf(r, opts({ findingsUnavailable: true }))).toMatchObject({ kind: 'unavailable', text: 'Couldn’t load the review’s findings' });
+  });
+
+  test('a failed review run says it failed before a verdict', () => {
+    const r = reviewRowOf(V({ rounds: [R({ status: 'failed' })] }));
+    expect(reviewDetailOf(r, opts())).toMatchObject({ kind: 'run-failed', text: 'The review run ended before giving a verdict' });
+  });
+
+  test('stale round: an approval on an older head is history, so the current row opens to nothing', () => {
+    const old = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', headSha: 'HEADA000' });
+    const r = reviewRowOf(V({ rounds: [old] }));
+    expect(r.result).toBe('Awaiting review');
+    expect(reviewDetailOf(r, opts({ currentTaskId: 'deliverable', findings: F({ rev1: { prose: 'Old findings on head A.', verdict: 'approve', status: 'completed' } }) }))).toBeNull();
+  });
+
+  test('a carried approval says which head its findings were written on', () => {
+    const old = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', headSha: 'HEADA000' });
+    const r = reviewRowOf(V({ state: 'APPROVED', rounds: [old], approvedCurrentHead: true }));
+    const d = reviewDetailOf(r, opts({ currentTaskId: 'deliverable', findings: F({ rev1: { prose: 'Fine.', verdict: 'approve', status: 'completed' } }) }));
+    expect(d).toMatchObject({ kind: 'findings', round: { round: 1, headSha: 'HEADA00', carried: true }, linkTaskId: 'rev1' });
+  });
+
+  test('policy-skipped or never-queued review has nothing to open', () => {
+    expect(reviewDetailOf(reviewRowOf(V({ approvalBasis: 'policy' })), opts())).toBeNull();
+    expect(reviewDetailOf(reviewRowOf(V()), opts())).toBeNull();
   });
 });

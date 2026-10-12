@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Task page: the phone header fits the first screen, and Code review opens only when there is substance to show (#4590)
+- PR review: a fallback lookup covers the race when concurrent reviewer tasks are created (#4585)
+
 ## [0.293.0] - 2026-10-08
 
 ### Added
