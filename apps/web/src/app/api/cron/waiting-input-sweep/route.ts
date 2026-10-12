@@ -31,8 +31,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
-import { and, eq, lt } from 'drizzle-orm';
-import { cleanupStuckWaitingInput } from '@/lib/stale-workers';
+import { and, eq, isNotNull, lt, or } from 'drizzle-orm';
+import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { cleanupStuckWaitingInput, cleanupUnreadInteractiveAnswers, cleanupUnresumedAnswers } from '@/lib/stale-workers';
+import { INTERACTIVE_ANSWER_READ_DEADLINE_MS } from '@/lib/answer-resume';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -80,13 +82,45 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     }
   }
 
+  // Answers nobody has read: one queued for a parked runner session that never
+  // acknowledged it (cleanupUnresumedAnswers), or one sent back to an
+  // interactive session that went quiet (cleanupUnreadInteractiveAnswers).
+  // Both sweeps otherwise run only from a runner's own cleanup timer, which is
+  // exactly what is missing when the account's runners are down. The
+  // pre-filter is loose on purpose; the deadlines live in the sweeps.
+  const answerCandidates = await db.query.workers.findMany({
+    where: or(
+      and(eq(workers.status, 'waiting_input'), isNotNull(workers.pendingInstructions)),
+      and(
+        eq(workers.status, 'running'),
+        eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
+        lt(workers.updatedAt, new Date(Date.now() - INTERACTIVE_ANSWER_READ_DEADLINE_MS)),
+      ),
+    ),
+    columns: { accountId: true },
+  });
+  const answerAccountIds = [
+    ...new Set(answerCandidates.map(w => w.accountId).filter(Boolean)),
+  ] as string[];
+
+  let answersDegraded = 0;
+  for (const accountId of answerAccountIds) {
+    try {
+      answersDegraded += (await cleanupUnresumedAnswers(accountId)).degraded;
+      answersDegraded += (await cleanupUnreadInteractiveAnswers(accountId)).degraded;
+    } catch (err) {
+      errors++;
+      console.error(`[Cron] waiting-input-sweep answer sweep failed for account ${accountId}:`, err);
+    }
+  }
+
   console.log(
-    `[Cron] waiting-input-sweep: accounts=${accountIds.length} failedWorkers=${failedWorkers} retriedTasks=${retriedTasks} errors=${errors}`,
+    `[Cron] waiting-input-sweep: accounts=${accountIds.length} failedWorkers=${failedWorkers} retriedTasks=${retriedTasks} answerAccounts=${answerAccountIds.length} answersDegraded=${answersDegraded} errors=${errors}`,
   );
 
-  const result = { accountsSwept: accountIds.length, failedWorkers, retriedTasks, errors };
+  const result = { accountsSwept: accountIds.length, failedWorkers, retriedTasks, answerAccountsSwept: answerAccountIds.length, answersDegraded, errors };
   // Nothing stuck is the normal, healthy state, so changed=0 with errors=0 is
-  // fine. Reclaiming a worker or retrying a task is the real work.
-  report({ processed: accountIds.length, changed: failedWorkers + retriedTasks, errors, result });
+  // fine. Reclaiming a worker, retrying a task or moving an answer is the real work.
+  report({ processed: accountIds.length + answerAccountIds.length, changed: failedWorkers + retriedTasks + answersDegraded, errors, result });
   return NextResponse.json(result);
 }

@@ -91,7 +91,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### runners (12)
 
-- [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-10-11
+- [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-10-12
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 - [Checkpoint Sweeps and Edit-Claim Enforcement](./checkpoint-sweeps.md) · @max — verified 2026-10-07
   Runners MUST sweep worktree changes against the resolved PR base at checkpoints and offer them for exclusive acquisition; under enforcement a confirmed collision MUST deny or defer.
@@ -142,8 +142,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The task page MUST lead with the deliverable, its track and one outcome, list checks by round from delivery facts, frame attempts by their parent, fit a phone's first screen, and open Code review only to substance.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
   Home, the missions view and the workspaces view MUST all show only the single active team resolved server-side from the buildd-team cookie, via the same resolver the app shell uses.
-- [Team Service Status](./team-service-status.md) · @max — verified 2026-10-11
-  A team MUST see one plain-language service status per root cause, scoped to what each viewer may act on, never the incident machinery, and never as a Needs You count unless a named person has a concrete action.
+- [Team Service Status](./team-service-status.md) · @max — verified 2026-10-12
+  Each viewer MUST see one plain status per root cause, actionable only by whoever controls the broken runner; Home never carries operator machinery, operator included.
 - [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-09-26
   The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
 - [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-30

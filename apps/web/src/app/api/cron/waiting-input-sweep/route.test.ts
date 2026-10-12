@@ -7,7 +7,11 @@ import { NextRequest } from 'next/server';
 // own cleanup tick can only cover accounts whose runner is alive).
 
 let candidateWorkers: any[] = [];
-const mockWorkersFindMany = mock((_args: any) => candidateWorkers);
+let answerCandidateWorkers: any[] = [];
+// The route reads twice: stuck waiting_input workers, then workers holding an
+// answer nobody has read yet.
+let findManyCall = 0;
+const mockWorkersFindMany = mock((_args: any) => (findManyCall++ === 0 ? candidateWorkers : answerCandidateWorkers));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -25,20 +29,26 @@ mock.module('drizzle-orm', () => ({
   eq: (f: any, v: any) => ({ f, v, type: 'eq' }),
   and: (...c: any[]) => ({ c, type: 'and' }),
   lt: (f: any, v: any) => ({ f, v, type: 'lt' }),
+  or: (...c: any[]) => ({ c, type: 'or' }),
+  isNotNull: (f: any) => ({ f, type: 'isNotNull' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   // withCronRun imports this; mock.module replaces the whole module, so a
   // partial stub deletes the export for every other importer in the process.
   cronRuns: { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' },
-  workers: { accountId: 'accountId', status: 'status', updatedAt: 'updatedAt' },
+  workers: { accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', runner: 'runner', pendingInstructions: 'pendingInstructions' },
 }));
 
 const mockCleanupStuckWaitingInput = mock((_accountId: string) =>
   Promise.resolve({ failedWorkers: 0, retriedTasks: 0 }),
 );
+const mockCleanupUnresumedAnswers = mock((_accountId: string) => Promise.resolve({ degraded: 0 }));
+const mockCleanupUnreadInteractiveAnswers = mock((_accountId: string) => Promise.resolve({ degraded: 0 }));
 mock.module('@/lib/stale-workers', () => ({
   cleanupStuckWaitingInput: mockCleanupStuckWaitingInput,
+  cleanupUnresumedAnswers: mockCleanupUnresumedAnswers,
+  cleanupUnreadInteractiveAnswers: mockCleanupUnreadInteractiveAnswers,
 }));
 
 const { POST } = await import('./route');
@@ -57,7 +67,12 @@ const hoursAgo = (n: number) => new Date(Date.now() - n * 3_600_000);
 beforeEach(() => {
   process.env.CRON_SECRET = CRON_SECRET;
   candidateWorkers = [];
+  answerCandidateWorkers = [];
+  findManyCall = 0;
   mockWorkersFindMany.mockClear();
+  mockCleanupUnresumedAnswers.mockClear();
+  mockCleanupUnreadInteractiveAnswers.mockClear();
+  mockCleanupUnreadInteractiveAnswers.mockResolvedValue({ degraded: 0 });
   mockCleanupStuckWaitingInput.mockClear();
   mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
 });
@@ -133,5 +148,43 @@ describe('waiting-input-sweep cron — fan-out', () => {
     expect(data.errors).toBe(1);
     expect(data.failedWorkers).toBe(1);
     expect(mockCleanupStuckWaitingInput).toHaveBeenCalledTimes(2);
+  });
+});
+
+// An answer nobody read must not wait on a runner's own cleanup timer: with
+// every runner of the account down, this cron is the only thing that moves it.
+describe('waiting-input-sweep cron — unread answers', () => {
+  it('runs both answer sweeps for every account holding an unread answer, once each', async () => {
+    answerCandidateWorkers = [
+      { accountId: 'account-1' },
+      { accountId: 'account-1' },
+      { accountId: 'account-2' },
+      { accountId: null },
+    ];
+    mockCleanupUnreadInteractiveAnswers.mockResolvedValue({ degraded: 1 });
+
+    const res = await POST(makeRequest());
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.answersDegraded).toBe(2);
+    expect(mockCleanupUnreadInteractiveAnswers).toHaveBeenCalledTimes(2);
+    expect(mockCleanupUnresumedAnswers).toHaveBeenCalledTimes(2);
+    expect(mockCleanupUnresumedAnswers).toHaveBeenCalledWith('account-2');
+    // The stuck-question sweep is keyed on its own candidates, not these.
+    expect(mockCleanupStuckWaitingInput).not.toHaveBeenCalled();
+  });
+
+  it('keeps sweeping other accounts when one account\'s answer sweep throws', async () => {
+    answerCandidateWorkers = [{ accountId: 'account-bad' }, { accountId: 'account-good' }];
+    mockCleanupUnreadInteractiveAnswers.mockImplementation((accountId: string) =>
+      accountId === 'account-bad' ? Promise.reject(new Error('boom')) : Promise.resolve({ degraded: 1 }),
+    );
+
+    const res = await POST(makeRequest());
+
+    const data = await res.json();
+    expect(data.errors).toBe(1);
+    expect(data.answersDegraded).toBe(1);
   });
 });
