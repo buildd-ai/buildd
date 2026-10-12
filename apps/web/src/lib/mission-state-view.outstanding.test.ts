@@ -248,7 +248,7 @@ describe('genuinely mid-flight with nothing outstanding', () => {
 
     expect(view.kind).toBe('idle');
     expect(view.situation.nextAction).toBeNull();
-    expect(view.situation.headline).toBe('Nothing to do. No source reports outstanding work.');
+    expect(view.situation.headline).toBe('No source reports outstanding work.');
   });
 
   it('reports nothing outstanding for a completed mission', () => {

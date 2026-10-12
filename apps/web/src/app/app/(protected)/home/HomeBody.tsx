@@ -84,7 +84,7 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
     <header className="mb-6">
       <div className="min-w-0">
         {copy.count === 0 && !setup
-          ? <><h1 className="sr-only">Home</h1><p data-testid="home-all-clear" role="status" className="flex flex-wrap items-baseline gap-x-2 border-b border-border-default py-3 font-voice text-lede"><span aria-hidden="true" className="font-bold text-status-success">✓</span>All clear.<span className="font-convo text-meta text-text-muted">Buildd will ask if a decision comes up.</span></p></>
+          ? <><h1 className="sr-only">Home</h1><p data-testid="home-all-clear" role="status" className="flex flex-wrap items-baseline gap-x-2 border-b border-border-default py-3 font-voice text-lede"><span aria-hidden="true" className="font-bold text-status-success">✓</span>All clear.<span className="font-convo text-meta text-text-muted">buildd will ask if a decision comes up.</span></p></>
           : <><h1 data-testid="home-headline" className="font-voice text-display font-medium normal-case tracking-normal">{copy.headline}</h1>
             <p data-testid="home-subline" className="mt-2 font-voice text-lede italic text-text-secondary">{copy.subline}</p></>}
       </div>

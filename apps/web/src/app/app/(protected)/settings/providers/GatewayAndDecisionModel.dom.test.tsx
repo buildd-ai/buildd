@@ -11,7 +11,19 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: GatewayAndDecisionModel } = await import('./GatewayAndDecisionModel');
+const { GatewayCard, DecisionModelPicker } = await import('./GatewayAndDecisionModel');
+const { useState } = await import('react');
+
+/** The gateway and the decision model as Models mounts them: a gateway change reloads the picker. */
+function GatewayAndDecisionModel({ teamId, canManage }: { teamId: string; canManage: boolean }) {
+  const [rev, setRev] = useState(0);
+  return (
+    <>
+      <GatewayCard teamId={teamId} canManage={canManage} onChanged={() => setRev((r) => r + 1)} />
+      <DecisionModelPicker teamId={teamId} canManage={canManage} rev={rev} />
+    </>
+  );
+}
 const { describeControls } = await import('../_lib/form-controls');
 
 let gateway: unknown = null;

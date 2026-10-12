@@ -142,7 +142,7 @@ export function HomeMissions({
               {homeMissionsMoreLabel(selection)}
             </Link>
             <NewWorkLink kind="mission" className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-text-muted hover:text-accent-text shrink-0 pl-2">
-              + New Mission
+              + New mission
             </NewWorkLink>
           </div>
         </div>

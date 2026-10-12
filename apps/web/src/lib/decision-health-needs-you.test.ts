@@ -69,7 +69,10 @@ describe('the Home card', () => {
 });
 
 describe('loadDecisionHealthNeedsYou', () => {
+  const OPERATOR = { id: 'user-1', email: 'op@example.com' };
+  const TEAM_ADMIN = { id: 'user-1', email: 'admin@example.com' };
   const failing: DecisionHealthDeps = {
+    isOperator: (v) => v.email === OPERATOR.email,
     teamsOf: async () => [TEAM],
     canManage: async () => true,
     readCounts: async () => ({ calls: 20, providerErrors: 20, lastError: CF_401 }),
@@ -77,9 +80,9 @@ describe('loadDecisionHealthNeedsYou', () => {
     now: () => 1_000_000_000_000,
   };
 
-  it('raises one item per failing team for a team admin, over the last 30 minutes', async () => {
+  it('raises one item per failing team for a platform operator, over the last 30 minutes', async () => {
     let since: Date | null = null;
-    const items = await loadDecisionHealthNeedsYou('user-1', ['ws-1', 'ws-2'], {
+    const items = await loadDecisionHealthNeedsYou(OPERATOR, ['ws-1', 'ws-2'], {
       ...failing,
       readCounts: async (_t, s) => { since = s; return { calls: 20, providerErrors: 20, lastError: CF_401 }; },
     });
@@ -89,12 +92,30 @@ describe('loadDecisionHealthNeedsYou', () => {
   });
 
   it('shows nothing to a person who cannot change the setting', async () => {
-    expect(await loadDecisionHealthNeedsYou('user-1', ['ws-1'], { ...failing, canManage: async () => false })).toEqual([]);
+    expect(await loadDecisionHealthNeedsYou(OPERATOR, ['ws-1'], { ...failing, canManage: async () => false })).toEqual([]);
+  });
+
+  it('shows nothing to a team owner or admin who is not a platform operator, and reads nothing', async () => {
+    let read = false;
+    expect(await loadDecisionHealthNeedsYou(TEAM_ADMIN, ['ws-1'], {
+      ...failing,
+      readCounts: async () => { read = true; return { calls: 20, providerErrors: 20, lastError: CF_401 }; },
+    })).toEqual([]);
+    expect(read).toBe(false);
+  });
+
+  it('without an injected check, uses the operator allowlist', async () => {
+    const prev = process.env.BUILDD_OPERATOR_USER_EMAILS;
+    process.env.BUILDD_OPERATOR_USER_EMAILS = 'op@example.com';
+    const { isOperator: _drop, ...deps } = failing;
+    expect(await loadDecisionHealthNeedsYou(OPERATOR, ['ws-1'], deps)).toHaveLength(1);
+    expect(await loadDecisionHealthNeedsYou(TEAM_ADMIN, ['ws-1'], deps)).toEqual([]);
+    process.env.BUILDD_OPERATOR_USER_EMAILS = prev;
   });
 
   it('shows nothing with no viewer or no workspaces, and never throws', async () => {
     expect(await loadDecisionHealthNeedsYou(null, ['ws-1'], failing)).toEqual([]);
-    expect(await loadDecisionHealthNeedsYou('user-1', [], failing)).toEqual([]);
-    expect(await loadDecisionHealthNeedsYou('user-1', ['ws-1'], { ...failing, readCounts: async () => { throw new Error('db down'); } })).toEqual([]);
+    expect(await loadDecisionHealthNeedsYou(OPERATOR, [], failing)).toEqual([]);
+    expect(await loadDecisionHealthNeedsYou(OPERATOR, ['ws-1'], { ...failing, readCounts: async () => { throw new Error('db down'); } })).toEqual([]);
   });
 });

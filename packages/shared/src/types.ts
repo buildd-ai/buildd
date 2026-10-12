@@ -1765,6 +1765,13 @@ export interface ClaimDiagnostics {
      */
     role_env_unsatisfied?: number;
     /**
+     * Its cross-workspace needs are not covered by the token this claim would
+     * mint: a declared filing target no delegation grants tasks:create on, or
+     * a grant naming a workspace the claiming account does not reach. Held
+     * before any agent turn; not forceable. See claim/delegation-gate.ts.
+     */
+    delegation_unmet?: number;
+    /**
      * Commercial entitlement, managed-runner claims only (accounts.managedRunner):
      * the team is at its plan's parallel managed-run limit. Not an error; the
      * task stays pending and starts when a managed run ends.

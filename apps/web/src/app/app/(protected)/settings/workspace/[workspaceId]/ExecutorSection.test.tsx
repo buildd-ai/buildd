@@ -36,7 +36,7 @@ describe('ExecutorSection', () => {
 describe('describeExecutorSource', () => {
   it('names each source in plain words', () => {
     expect(describeExecutorSource('explicit')).toBe('Set on this workspace.');
-    expect(describeExecutorSource('dispatch_webhook')).toBe('From the cloud dispatch webhook.');
+    expect(describeExecutorSource('dispatch_webhook')).toBe('Set by the cloud runner.');
     expect(describeExecutorSource('default')).toBe('Default.');
   });
 });

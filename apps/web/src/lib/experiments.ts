@@ -5,10 +5,16 @@
  *
  * Two rules carry the weight:
  *
- * - **Visibility is existence.** An experiment with `visibility: 'admins'` is
- *   not merely read-protected from members, it does not exist for them: every
- *   read and write path answers 404, never 403, so a member cannot probe which
- *   keys or ids are in use. `canViewExperiment` is the one predicate for that.
+ * - **Experiments are platform machinery.** Creating, changing, starting,
+ *   pausing and concluding one is for buildd platform operators
+ *   (admin/platform-operator-caller.ts), never a team role: a team owner is not an
+ *   operator. Team members may read `visibility: 'team'` experiments on their
+ *   own team, nothing more.
+ * - **Visibility is existence.** An experiment with `visibility: 'admins'`
+ *   (the stored value; it means operators only) is not merely read-protected
+ *   from everyone else, it does not exist for them: every read and write path
+ *   answers 404, never 403, so a non-operator cannot probe which keys or ids
+ *   are in use. `canViewExperiment` is the one predicate for that.
  * - **Settings that shape the draw are versioned.** The randomiser salts with
  *   `policyVersion` (packages/core/experiment-randomizer.ts) and the readout
  *   filters on it (packages/core/experiment-readout-source.ts). Changing the
@@ -27,7 +33,6 @@ import type {
   UpdateExperimentInput,
 } from '@buildd/shared';
 import { stripNonDrawConfig, validateDurationCap } from '@buildd/core/experiment-health';
-import { roleHas } from '@/lib/permission-registry';
 
 export type TeamRole = 'owner' | 'admin' | 'member';
 
@@ -55,12 +60,18 @@ export const EXPERIMENT_TRANSITIONS: Record<ExperimentStatus, readonly Experimen
   concluded: [],
 };
 
-export function isExperimentAdmin(role: TeamRole | null | undefined): boolean {
-  return roleHas(role, 'run_experiments');
+/** Who is asking, as far as experiments care: a platform operator or not. */
+export interface ExperimentAudience {
+  operator: boolean;
 }
 
-export function canViewExperiment(visibility: string, role: TeamRole | null | undefined): boolean {
-  return visibility === 'team' || isExperimentAdmin(role);
+/** May create, change, start, pause and conclude experiments, and see operator-only ones. */
+export function isExperimentOperator(viewer: ExperimentAudience | null | undefined): boolean {
+  return viewer?.operator === true;
+}
+
+export function canViewExperiment(visibility: string, viewer: ExperimentAudience | null | undefined): boolean {
+  return visibility === 'team' || isExperimentOperator(viewer);
 }
 
 /**

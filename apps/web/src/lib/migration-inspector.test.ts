@@ -527,3 +527,126 @@ describe('inspectPullRequestMigrations — integration-refresh PR (deltaBase)', 
     expect(await inspectRefresh()).toMatchObject({ safe: false, reason: `deletes generated migration ${DIR}/0000_old_name.sql` });
   });
 });
+
+describe('inspectPullRequestMigrations — a refresh PR that renumbers the mission’s migration', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  const OLD = `${DIR}/0309_mission_side.sql`;
+  const NEW = `${DIR}/0318_regenerated.sql`;
+  const JOURNAL = { filename: `${DIR}/meta/_journal.json`, status: 'modified' };
+
+  /**
+   * The PR's own diff against the mission branch: the merge dropped the
+   * mission's migration and regenerated it at the next free index. `mission`
+   * is SQL at the mission tip, `head` at this PR's head. The trunk delta is
+   * unreadable here, as at verdict time before it was passed (task 87c7e48d).
+   */
+  function renumberGithub(opts: {
+    files: Array<{ filename: string; status: string; previous_filename?: string }>;
+    mission: Record<string, string>;
+    head: Record<string, string>;
+  }) {
+    mockGithubApi.mockImplementation(async (_i, url) => {
+      if (url.includes('/compare/')) throw new Error('GitHub API error: 502');
+      if (url.includes('/pulls/42/files')) return opts.files;
+      if (url.includes('/git/ref/heads/')) return { object: { sha: BASE_SHA } };
+      if (url.includes('/pulls?')) return [{ number: 42 }];
+      const contents = /\/contents\/(.+)\?ref=(.+)$/.exec(url);
+      if (contents) {
+        const path = decodeURIComponent(contents[1]);
+        if (path === DIR && contents[2] === BASE_SHA) return Object.keys(opts.mission).map((p) => ({ name: p.split('/').at(-1), type: 'file' }));
+        const sql = (contents[2] === 'abc123' ? opts.head : contents[2] === BASE_SHA ? opts.mission : {})[path];
+        if (sql === undefined) throw new Error('Not Found');
+        return blob(sql);
+      }
+      throw new Error(`unexpected GitHub call ${url}`);
+    });
+  }
+  const inspectRefresh = (deltaBase: string | null = 'dev') => inspectPullRequestMigrations({
+    installationId: 1, repoFullName: 'acme/app', prNumber: 42, headSha: 'abc123', files: [],
+    baseRef: 'mission/x', ...(deltaBase ? { deltaBase } : {}),
+  });
+
+  it('drop + add of the same blob is a renumber, not lineage', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: NEW, status: 'added' }, JOURNAL],
+      mission: { [OLD]: SAFE },
+      head: { [NEW]: SAFE },
+    });
+    expect(await inspectRefresh()).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('a GitHub "renamed" entry with the same blob is the same renumber', async () => {
+    renumberGithub({
+      files: [{ filename: NEW, status: 'renamed', previous_filename: OLD }, JOURNAL],
+      mission: { [OLD]: SAFE },
+      head: { [NEW]: SAFE },
+    });
+    expect(await inspectRefresh()).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('still classifies the moved SQL: a renumber does not make a drop safe', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: NEW, status: 'added' }],
+      mission: { [OLD]: DROP_CONSTRAINT },
+      head: { [NEW]: DROP_CONSTRAINT },
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, operationClass: 'CONTRACT' });
+    expect((await inspectRefresh()).kind).not.toBe('lineage');
+  });
+
+  it('a renumber whose SQL differs stays lineage', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: NEW, status: 'added' }, JOURNAL],
+      mission: { [OLD]: SAFE },
+      head: { [NEW]: 'CREATE TABLE "other" ("id" uuid);' },
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, kind: 'lineage', reason: `deletes generated migration ${OLD}` });
+  });
+
+  it('a "renamed" entry whose SQL differs stays lineage', async () => {
+    renumberGithub({
+      files: [{ filename: NEW, status: 'renamed', previous_filename: OLD }],
+      mission: { [OLD]: SAFE },
+      head: { [NEW]: 'CREATE TABLE "other" ("id" uuid);' },
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, kind: 'lineage', reason: `modifies existing migration ${NEW}` });
+  });
+
+  it('a pure deletion stays lineage', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, JOURNAL],
+      mission: { [OLD]: SAFE },
+      head: {},
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, kind: 'lineage', reason: `deletes generated migration ${OLD}` });
+  });
+
+  it('pairs one to one: two deletions and one matching addition stays lineage', async () => {
+    const OTHER = `${DIR}/0310_mission_two.sql`;
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: OTHER, status: 'removed' }, { filename: NEW, status: 'added' }],
+      mission: { [OLD]: SAFE, [OTHER]: SAFE },
+      head: { [NEW]: SAFE },
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, kind: 'lineage' });
+  });
+
+  it('fails closed when the deleted migration cannot be read', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: NEW, status: 'added' }],
+      mission: {},
+      head: { [NEW]: SAFE },
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, kind: 'lineage' });
+  });
+
+  it('is not a renumber outside an integration refresh: moving a target migration is lineage', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: NEW, status: 'added' }],
+      mission: { [OLD]: SAFE },
+      head: { [NEW]: SAFE },
+    });
+    expect(await inspectRefresh(null)).toMatchObject({ safe: false, kind: 'lineage' });
+  });
+});

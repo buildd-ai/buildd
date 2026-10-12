@@ -106,7 +106,7 @@ export function groupInFlight<T extends Pick<ActionQueueItem, 'chip' | 'docFixTa
   return entries.sort((a, b) => a.rank - b.rank || a.first - b.first).map(e => e.entry);
 }
 
-export type HomeAudience = 'operator' | 'member';
+export type HomeAudience = 'admin' | 'member';
 
 /**
  * Who Home is laid out for. Owners and admins run the fleet, so the fleet
@@ -115,7 +115,7 @@ export type HomeAudience = 'operator' | 'member';
  * `owner` (getUserTeamRole), which covers a solo user and their own runners.
  */
 export function homeAudience(role: 'owner' | 'admin' | 'member' | null | undefined): HomeAudience {
-  return roleHas(role, 'view_team_usage') ? 'operator' : 'member';
+  return roleHas(role, 'view_team_usage') ? 'admin' : 'member';
 }
 
 export type HomeChatPlacement =
@@ -128,7 +128,7 @@ export type HomeChatPlacement =
 
 /**
  * Where chat sits on Home. Available: the composer is the first thing on the
- * page for everyone; operators get the fleet directly under it. No key: an
+ * page for everyone; owners and admins get the fleet directly under it. No key: an
  * admin gets the provider step of onboarding in its place until a key works;
  * under "everyone brings their own key", anyone without one gets the single
  * connect card. A member of a team with no key sees nothing new on Home; the

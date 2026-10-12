@@ -13,9 +13,11 @@ step. Thumbs keep reverting a shifted cell either way.
 
 ## To turn it off without removing code
 
-- One team: `PATCH /api/teams/<teamId>/chat-retro` with `{ "lessons": false }`.
-  That turns proposals off too and deletes the team's lessons. While an owner
-  of the team has account dogfood on, this is refused (409) instead.
+- One team: `PATCH /api/admin/teams/<teamId>/experiment-flags` with
+  `{ "chatRetro": { "lessons": false } }` (a platform admin key; chat retro is
+  platform machinery, so no team route writes it). That turns proposals off
+  too and deletes the team's lessons. While an owner of the team has account
+  dogfood on, this is refused (409) instead.
 - Account dogfood, one person: set `users.chat_retro_dogfood_at` back to NULL
   for them, and remove any team they own from `CHAT_RETRO_DOGFOOD_TEAM_IDS`
   (the daily pass turns it back on for owners of those teams). Their teams keep
@@ -29,8 +31,7 @@ step. Thumbs keep reverting a shifted cell either way.
   skeleton, lesson, proposals, store, run, deps, policy-signal, their tests,
   and this file)
 - `apps/web/src/app/api/cron/chat-retro/`: the cron route and its test
-- `apps/web/src/app/api/teams/[id]/chat-retro/`: the settings and lessons API
-  and its test
+- `apps/web/src/app/api/admin/chat-retros/`: the cross-team retro list
 - The visible-answer turn signal, whose only reader is the retro:
   `apps/web/src/lib/chat/turn-signal.ts`, `turn-signal-store.ts` (and tests),
   `apps/web/src/app/api/chat/[id]/turn-signal/`,
@@ -41,15 +42,17 @@ step. Thumbs keep reverting a shifted cell either way.
 
 A person with `users.chat_retro_dogfood_at` set keeps lessons + proposals on
 for every team they own, read at query time (`store.ts` `dogfoodOwnerExists`),
-so a team they create later is covered with no write. It is set by:
-
-- the owner themselves, once: `POST /api/teams/<teamId>/chat-retro` with
-  `{ "accountDogfood": true }`, signed in as a team owner; or
-- the daily pass, for every owner of a team in `CHAT_RETRO_DOGFOOD_TEAM_IDS`
-  (`reconcileAccountDogfood`), which also writes lessons + proposals onto every
-  team with such an owner so the stored value matches.
+so a team they create later is covered with no write. It is set only by the
+daily pass, for every owner of a team in `CHAT_RETRO_DOGFOOD_TEAM_IDS`
+(`reconcileAccountDogfood`), which also writes lessons + proposals onto every
+team with such an owner so the stored value matches. There is no route for it:
+which teams dogfood is the platform operator's environment, not a team choice.
 
 ## Touch points (edit them)
+
+- `apps/web/src/app/api/admin/teams/[id]/experiment-flags/route.ts` and
+  `readTeamExperimentFlags` / `writeTeamExperimentFlags` in
+  `apps/web/src/lib/admin/data.ts`: the `chatRetro` field (keep the others).
 
 - `apps/web/src/app/api/cron/tier-pools/route.ts`: the
   `chatRetroQualitySource` import and the `chatQuality` argument to

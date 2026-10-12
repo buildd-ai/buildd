@@ -70,7 +70,7 @@ assertions:
 > |---|---|---|
 > | Storage | `workspace_skills.mcpServers` + `requiredEnvVars` | `connectors` + `connector_workspaces` |
 > | Auth | env-var secrets (`mcp_credential`) | `none`/`header`/`oauth` (`mcp_connector_credential`) |
-> | UI | RoleEditor "Connectors" + "Browse Registry" | Settings → Connected apps (`/app/settings/connections`) |
+> | UI | RoleEditor "Connectors" + "Browse Registry" | Settings → Team → Apps (`/app/settings/apps`) |
 > | Injection | R2 role tarball → `.mcp.json` | claim route → `cw.mcpConnectors` |
 > | Scope | per role | per workspace (role-blind, all workers) |
 >
@@ -108,7 +108,7 @@ assertions:
 >   213, 264) and `RoleConfigInput.mcpConfig`/`.envMapping` are `@deprecated`
 >   (role-config.ts 8–24). The normalizer that folded `workspaceSkills.mcpServers`
 >   into the bundle is deleted; there is no role-tarball MCP path left to read.
-> - `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx`
+> - `apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/RoleConnectorsSection.tsx`
 >   — role "Connectors" + the registry browser, mounted by the one role editor
 >   (`TeamRoleEditor.tsx`, which owns `connectorRefs` via `setConnectorRefs`)
 > - `apps/web/src/app/api/connectors/*` + `apps/web/src/lib/mcp-oauth.ts` — team
@@ -406,7 +406,7 @@ create (or reuse) a team `connectors` row and add its id to the role's
   installed again THEN no duplicate row is created (`409`-free reuse).
 
 **Code surface**:
-- UI: `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx`
+- UI: `apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/RoleConnectorsSection.tsx`
   (the registry browser's Add is wired to `installConnector`, which POSTs
   `/api/connectors` and appends the returned connector id to the role's
   `connectorRefs`; `TeamRoleEditor.tsx` holds that list via `setConnectorRefs`
@@ -421,7 +421,7 @@ the user connects.
 
 ## 5b. Built-in catalog + connector icons
 
-**Capability statement**: Settings → MCP connectors → Add connection MUST open
+**Capability statement**: Settings → Team → Apps → Add connection MUST open
 on a built-in catalog of remote MCP servers; picking one MUST create an
 ordinary team `connectors` row through the same `POST /api/connectors` path a
 custom URL uses. Every http connector SHOULD carry a display icon.
@@ -613,7 +613,7 @@ approved client would be impersonation. Re-run the probe with
   no state cookie.
 - AC-4: WHEN Vercel is added or preinstalled THEN `422 needs_approved_client`
   with no review link or vendor wording, and no connector row is created.
-- AC-5: GIVEN an entry with `clientSupport` WHEN Settings → Connected apps
+- AC-5: GIVEN an entry with `clientSupport` WHEN Settings → Team → Apps
   renders it for an admin THEN the row reads "Not available" with no Connect
   and no details; a member does not see it.
 
@@ -646,6 +646,32 @@ grant work, task `d6b7501a`, consumes `status: 'blocked'` from the mounted
 list); the access-request UI (task `a35d01f0`).
 
 ---
+
+## 5c. Where team apps live in Settings
+
+**Capability statement**: The team's apps MUST live in the Team group of
+Settings, apart from the apps a person connected to buildd themselves.
+
+**Invariants**:
+- Settings → You → Connected apps (`/app/settings/connections`) lists only the
+  signed-in person's own connections to buildd.
+- Settings → Team → Apps (`/app/settings/apps`) holds Team apps (the team's
+  connectors) and Agent access (requests and the team's approval policy). Each
+  control follows `manage_connectors`; a member reads both and can request an
+  app.
+- Every team-app link points at `/app/settings/apps`: the connector OAuth
+  callback (`?connected=` / `?error=`), the reconnect banner (`?reconnect=`),
+  a capability request (`?request=<id>#agent-access`), the Home `RECONNECT`
+  chip and connector pushes. An old `/app/settings/connections` link carrying
+  one of those query keys, and `/app/settings/connectors`, redirect there
+  (`next.config.mjs` `SETTINGS_ROUTE_MOVES`).
+
+**Code surface**: `apps/web/src/app/app/(protected)/settings/apps/page.tsx`,
+`apps/web/src/app/app/(protected)/settings/connections/page.tsx`,
+`apps/web/src/lib/settings-nav.ts`, `apps/web/next.config.mjs`.
+
+**Verified by**: `apps/web/src/lib/settings-nav.test.ts`,
+`apps/web/src/lib/settings-route-moves.test.ts`.
 
 ## 6. API & auth surface (as shipped)
 
@@ -735,9 +761,9 @@ reconnect. Approaching expiry is deliberately silent.
 
 **Surfaces** (all read the same derivation — no second copy of the rule):
 
-1. Settings → MCP connectors — `Connected` / `Expired` badge + `Reconnect`.
+1. Settings → Team → Apps — `Connected` / `Expired` badge + `Reconnect`.
 2. Home action queue — a `RECONNECT` chip per connector where
-   `needsReconnect()`, ranked above `REVIEW`, linking to `/app/settings/connections`.
+   `needsReconnect()`, ranked above `REVIEW`, linking to `/app/settings/apps`.
 3. Push — `/api/cron/connector-block-notify` fires
    `notifyTeam(…, 'connectorBlocked')` once per broken episode, deduped by
    `secrets.expiryNotifiedAt`, cleared by the reconnect and refresh-success paths.

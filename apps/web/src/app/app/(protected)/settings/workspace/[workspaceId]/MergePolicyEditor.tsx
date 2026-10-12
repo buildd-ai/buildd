@@ -273,7 +273,7 @@ export default function MergePolicyEditor({
             ) : (
               <p className="text-xs text-text-muted">
                 No agents in this workspace.{' '}
-                <Link href="/app/settings/roles" className="underline text-text-primary">Create an agent</Link> first.
+                <Link href="/app/settings/agents" className="underline text-text-primary">Create an agent</Link> first.
               </p>
             )}
           </div>

@@ -63,8 +63,8 @@ describe('no surface asserts an unqualified restriction', () => {
 
   const SURFACES = [
     // The one role editor (team, personal and workspace-scoped roles) and the new-role form.
-    'app/app/(protected)/settings/roles/[slug]/edit/TeamRoleEditor.tsx',
-    'app/app/(protected)/settings/roles/new/TeamRoleForm.tsx',
+    'app/app/(protected)/settings/agents/[slug]/edit/TeamRoleEditor.tsx',
+    'app/app/(protected)/settings/agents/new/TeamRoleForm.tsx',
   ];
 
   for (const surface of SURFACES) {
