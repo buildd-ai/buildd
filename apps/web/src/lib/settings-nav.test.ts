@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
-import { copyViolations } from '@buildd/core/copy-rules';
+import { copyViolations, settingsDescriptionProblems } from '@buildd/core/copy-rules';
 import {
   LEGACY_SETTINGS_ANCHORS,
   SETTINGS_ITEMS,
@@ -104,6 +104,10 @@ describe('SETTINGS_NAV', () => {
     const keys = SETTINGS_ITEMS.find((i) => i.id === 'keys')!;
     expect(keys.description).toBe('Manage your personal API keys.');
     for (const item of SETTINGS_ITEMS) expect(copyViolations(item.description)).toEqual([]);
+  });
+
+  it('keeps every index description to one short fragment', () => {
+    for (const item of SETTINGS_ITEMS) expect([item.label, settingsDescriptionProblems(item.description)]).toEqual([item.label, []]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { COPY_RULES, copyViolations } from '../packages/core/copy-rules';
+import { COPY_RULES, copyViolations, settingsDescriptionProblems } from '../packages/core/copy-rules';
 import { extractCopy, findRegressions, inScope, parseBaseline, readSources, scanSources, serializeBaseline, updatedBaseline } from './copy-check';
 
 const OLD = 'apps/web/src/app/app/(protected)/settings/old.tsx';
@@ -55,6 +55,31 @@ describe('copy rules', () => {
     for (const t of ['Keys and subscriptions your agents and chat use.', 'Who pays', 'Team key', "Everyone uses the team's key.", "Mine, then the team's", "Uses your key when you've added one.", 'Mine only', 'You need your own key to start work.', 'Used for chat and Claude agents.', 'Used by Claude agents on your runners.', 'Not set', 'Working', 'Not used by anything']) {
       expect(ids(t)).toEqual([]);
     }
+  });
+
+  it('flags descriptions that condition a setting on team policy', () => {
+    for (const t of ['Your own model keys, used when the team lets personal keys pay.', 'Used if the admins allow it.', 'Applies unless the team requires SSO.', 'The team decides which models run.']) {
+      expect(ids(t)).toContain('conditional-policy');
+    }
+    for (const t of ['Manage your personal API keys.', 'Managed by your team admins.', 'Team members can edit this.', 'Requires a linked GitHub repository.']) {
+      expect(ids(t)).not.toContain('conditional-policy');
+    }
+  });
+
+  it('flags trailing filler and em dashes', () => {
+    for (const t of ['Manage repositories, delivery settings, etc.', 'Manage keys and more.', 'Alerts, tokens and so on.']) expect(ids(t)).toContain('trailing-filler');
+    for (const t of ['Manage runner tokens and the cloud runner.', 'Add more runners.']) expect(ids(t)).not.toContain('trailing-filler');
+    expect(ids('Runners \u2014 tokens and cloud.')).toContain('em-dash');
+    expect(ids('Runners: tokens and cloud.')).not.toContain('em-dash');
+  });
+
+  it('holds a Settings description to one short fact', () => {
+    expect(settingsDescriptionProblems('Manage your personal API keys.')).toEqual([]);
+    expect(settingsDescriptionProblems('Configure team agents, models and tools.')).toEqual([]);
+    expect(settingsDescriptionProblems('Manage keys. They are used for chat.')).toContain('more-than-one-sentence');
+    expect(settingsDescriptionProblems('Manage keys')).toContain('missing-full-stop');
+    expect(settingsDescriptionProblems('Manage the plan, monitor spending, set daily limits, review invoices, export usage and update billing contacts.')).toContain('too-long');
+    expect(settingsDescriptionProblems('Your own model keys, used when the team lets personal keys pay.')).toEqual(expect.arrayContaining(['conditional-policy', 'object-pays']));
   });
 
   it('counts an explanation rendered twice in one file', () => {
