@@ -490,6 +490,11 @@ jobs:
                 export BUILDD_API_KEY=$BUILDD_API_KEY
                 export BUILDD_SERVER=http://localhost:3333
                 export BUILDD_HOME=/tmp/buildd-ci/.buildd-home
+                # The runner under test is the exact commit this job checked out. Its idle
+                # self-updater would move that checkout to a newer commit mid-run (and restart
+                # the process, so the port stops answering): the verdict would be for code the
+                # job never named.
+                export BUILDD_DISABLE_AUTO_UPDATE=1
                 cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
               '
             "
@@ -510,6 +515,15 @@ jobs:
             if [ $i -eq 30 ]; then
               echo "::error::Runner failed to bind/respond on port 8767 after 30s. Capturing diagnostics..."
               echo "Last probe: HTTP ${probe_code:-none (no response)}; body: $(head -c 300 /tmp/runner-probe.body 2>/dev/null | tr '\n' ' ')"
+              # Where does the answer stop? The same request from this job over the tailnet (above),
+              # from inside the machine, and a bare TCP connect to the runner's port and the server's.
+              for port in 8767 3333; do
+                if timeout 4 bash -c "exec 3<>/dev/tcp/$TEST_HOST/$port" 2>/dev/null; then echo "tcp $TEST_HOST:$port from this job: connects"; else echo "tcp $TEST_HOST:$port from this job: no connection"; fi
+              done
+              tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec $TEST_CONTAINER bash -c '
+                echo \"inside the machine, loopback:  HTTP \$(curl -s -m 3 -o /dev/null -w %{http_code} -H \"X-Buildd-Local-Token: $BUILDD_LOCAL_TOKEN\" http://127.0.0.1:8767/api/config)\"
+                echo \"inside the machine, tailnet ip: HTTP \$(curl -s -m 3 -o /dev/null -w %{http_code} -H \"X-Buildd-Local-Token: $BUILDD_LOCAL_TOKEN\" http://$TEST_HOST:8767/api/config)\"
+              '" || true
               tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec $TEST_CONTAINER bash -c '
                 echo \"=== Listening ports ===\"
                 netstat -tulpn 2>/dev/null | grep -E \":(3333|8767)\" || ss -tulpn 2>/dev/null | grep -E \":(3333|8767)\" || echo \"Could not get port listing\"

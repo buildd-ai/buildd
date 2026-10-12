@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -627,7 +627,29 @@ from that package, so a copy is the same rule and not a port of it.
   on a runner. A copier maps the same parts to its own services; the package
   does not name them.
 
+- The Confluence home (`packages/spec-contract/src/confluence.ts`) reads one
+  exact page version through Confluence Cloud REST v2 with an injected fetch,
+  converts its storage format to Markdown (`confluence-markdown.ts`), and
+  hashes it after `normalizeFrozenCopy`. A version written by the configured
+  bot account reads as an agent's. A missing page or version is null, never
+  the latest. A proposal is a child page "Proposed: vN — <title>" under the
+  spec page, with its base version and summary in a content property; it is
+  refused on a stale base, and the spec page itself is never written.
+  `criteriaWarning` says when a converted page has no R-n or AC-n line. A
+  table whose first column holds criterion ids is restated as one list line
+  per row, so those ids parse.
+
 **Acceptance criteria**:
+- AC-40: GIVEN a page with a requirements table, a code macro, a status macro
+  and nested lists WHEN converted THEN every criterion id parses and the code
+  is fenced; GIVEN two saves differing only in whitespace or `&nbsp;` THEN
+  they hash the same; GIVEN a page with no R-n or AC-n line THEN
+  `criteriaWarning` returns a warning
+  (`packages/spec-contract/src/confluence.test.ts`).
+- AC-41: GIVEN a fake Confluence WHEN a proposal names a stale base version
+  THEN it is refused and nothing is written; WHEN it names the current one
+  THEN a child page is created under the spec page and the spec page is never
+  written (`packages/spec-contract/src/confluence.test.ts`).
 - AC-33: GIVEN the package alone WHEN its tests run in their own process THEN
   parsing, scope, the fold and hashing work end to end, and a home can be
   implemented against the interface with no host
@@ -643,10 +665,14 @@ from that package, so a copy is the same rule and not a port of it.
 - `packages/spec-contract/src/hash.ts` — `contentHash`, `normalizeFrozenCopy`, `frozenCopyHash`
 - `packages/spec-contract/src/shapes.ts` — `SpecSource`, `DesignRef`, `ApprovalRecord`, `SpecPin`, `SpecVerdict`
 - `packages/spec-contract/src/source.ts` — `SpecSourceAdapter`
+- `packages/spec-contract/src/confluence.ts` — `confluenceSource`, `criteriaWarning`; `packages/spec-contract/src/confluence-markdown.ts` — `storageToMarkdown`, `markdownToStorage`
 
 **Not yet**:
-- Only buildd's own home exists. A git home reads through `read_ref` (§5)
-  but is not wrapped as an adapter; a wiki home is not built.
+- A Confluence Cloud home exists in the package (`confluenceSource`,
+  `storageToMarkdown`, `criteriaWarning`), but no buildd spec can have a
+  Confluence home yet: that needs a service account credential and a source
+  column on specs and revisions. A git home reads through `read_ref` (§5) but
+  is not wrapped as an adapter.
 - The stored verdict row has no `checker` column: the checker is implied by
   who recorded it.
 
@@ -756,20 +782,20 @@ the visual audit judges the build against that version of the design.
   not a fail; the audit judges layout, content and states.
 
 **Acceptance criteria**:
-- AC-40: GIVEN an artifact design with no version WHEN a draft is created THEN
+- AC-42: GIVEN an artifact design with no version WHEN a draft is created THEN
   the revision pins the artifact's current revision; GIVEN an artifact in
   another workspace, a missing revision, or a URL with no version THEN 400
   and nothing is written (`apps/web/tests/db/spec-design.test.ts`).
-- AC-41: GIVEN a revise that changes only the design THEN it is a new revision
+- AC-43: GIVEN a revise that changes only the design THEN it is a new revision
   on the same body; GIVEN a later revise that omits it THEN the design carries
   forward; GIVEN `design: null` THEN it is cleared
   (`apps/web/tests/db/spec-design.test.ts`).
-- AC-42: GIVEN an approved revision with an artifact design WHEN the artifact
+- AC-44: GIVEN an approved revision with an artifact design WHEN the artifact
   is revised THEN the spec page says the design changed since approval and
   names both versions, and the approved revision still names its own
   (`apps/web/tests/db/spec-design.test.ts`,
   `apps/web/src/components/SpecPage.dom.test.tsx`).
-- AC-43: GIVEN a criterion with a `screen:` line WHEN the audit records a pass
+- AC-45: GIVEN a criterion with a `screen:` line WHEN the audit records a pass
   with no design shot THEN 400; WITH one THEN the verdict cites it and the
   design version (`apps/web/tests/db/spec-visual-verdict.test.ts`).
 
