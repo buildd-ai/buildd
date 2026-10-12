@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, apps/web/src/lib/specs/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, apps/web/src/lib/specs/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -235,7 +235,7 @@ later ones are proposed (D-4).
   a worker has run, a retry attempt, a pin taken at a claim, and a revision
   the filer named explicitly all keep theirs.
 - A task names the criteria it answers for in `context.specSource.criteria`
-  (`apps/web/src/lib/specs/scope.ts`): 1 to 50 `R-n`/`AC-n` ids of the pinned
+  (`packages/spec-contract/src/scope.ts`): 1 to 50 `R-n`/`AC-n` ids of the pinned
   revision, normalized (`AC-03` is `AC-3`) and de-duplicated. An id the
   revision lacks, a decision or invariant, an empty list or a non-list is a
   400 naming the revision's criteria, and nothing is inserted. Left out, the
@@ -298,7 +298,7 @@ later ones are proposed (D-4).
   R-1 is a 400; GIVEN a scope naming an id the revision lacks THEN the filing
   is a 400 naming the revision's criteria
   (`apps/web/tests/db/spec-outcome-verification.test.ts`,
-  `apps/web/src/lib/specs/scope.test.ts`).
+  `packages/spec-contract/src/scope.test.ts`).
 - AC-30: GIVEN a pinned task WHEN its page renders THEN it names and links
   the spec, says when a newer revision is approved, and lists each criterion
   it answers for with its verdict, failures first; a pass on an older commit
@@ -309,7 +309,7 @@ later ones are proposed (D-4).
 - `apps/web/src/lib/specs/approval-request.ts` — `signSpecApprovalRequest`, `verifySpecApprovalRequest`
 - `apps/web/src/lib/specs/pin.ts` — `pinSpecSource`, `readPinnedSpecRevision`
 - `apps/web/src/lib/specs/claim-pin.ts` — `repinSpecAtClaim`
-- `apps/web/src/lib/specs/scope.ts` — `checkCriteriaScope`, `inScope`, `scopeOf`
+- `packages/spec-contract/src/scope.ts` — `checkCriteriaScope`, `inScope`, `scopeOf`
 - `apps/web/src/lib/specs/task-view.ts` — `loadLivingSpecView`; `apps/web/src/components/SpecSourceBlock.tsx` — `SpecSourceBlock`
 - `apps/web/src/lib/reviewer.ts` — `renderSpecConformanceGuidance`
 - `apps/web/src/lib/specs/approval-view.ts` — `approvalRequestView`
@@ -336,7 +336,7 @@ the task completed or its PR merged.
 - The criteria are the revision's requirements and acceptance criteria: lines
   that start with `R-n` or `AC-n` (as a line, list item, heading or bold
   label, outside fenced code; first definition wins;
-  `apps/web/src/lib/specs/requirements.ts` `specCriteria`). Decisions (`D-n`)
+  `packages/spec-contract/src/requirements.ts` `specCriteria`). Decisions (`D-n`)
   and invariants (`I-n`) are context, not criteria. They are read from the
   pinned revision's body, so a later revision never changes what a running
   task is judged against, and narrowed to the task's scope when it has one; a
@@ -348,7 +348,7 @@ the task completed or its PR merged.
   ledger, same workspace only) and who recorded it. Append-only; the newest
   verdict per criterion stands. A criterion the revision lacks, a verdict
   outside the vocabulary or a missing head is a 400 and nothing is written.
-- The outcome (`foldGovernedOutcome`, packages/core/verification-check.ts):
+- The outcome (`foldGovernedOutcome`, packages/spec-contract/src/outcome.ts, re-exported by packages/core/verification-check.ts):
   `fail` when any criterion's newest verdict is fail; `verified` only when
   every criterion's newest verdict is a pass on the head the workflow kernel
   observes for the task's PR delivery; `unverified` otherwise: a missing,
@@ -366,7 +366,7 @@ the task completed or its PR merged.
   record one verdict each at the head it reviews (`manage_specs action=verdict`).
   Its review verdict still alone decides the merge.
 - A criterion with a check line under it (`check: <command>`,
-  `apps/web/src/lib/specs/check-lines.ts`) is verified by running that
+  `packages/spec-contract/src/check-lines.ts`) is verified by running that
   command at the PR head (`apps/web/src/lib/specs/criterion-checks.ts`): one
   run per task, revision, criterion and head, filed as a verification task a
   runner executes. The runner's exit code is the verdict (0 pass, nonzero
@@ -396,10 +396,10 @@ the task completed or its PR merged.
 
 **Code surface**:
 - `apps/web/src/lib/specs/outcome.ts` — `recordSpecVerdict`, `readGovernedOutcome`, `recordSpecConflict`
-- `apps/web/src/lib/specs/criterion-checks.ts` — `dispatchCriterionChecks`, `handleCriterionCheckOutcome`; `apps/web/src/lib/specs/check-lines.ts` — `criterionChecks`
+- `apps/web/src/lib/specs/criterion-checks.ts` — `dispatchCriterionChecks`, `handleCriterionCheckOutcome`; `packages/spec-contract/src/check-lines.ts` — `criterionChecks`
 - `apps/web/src/app/api/specs/outcomes/[taskId]/route.ts` — `GET`, `POST`
 - `apps/web/src/app/api/specs/[specId]/conflicts/route.ts` — `POST`
-- `packages/core/verification-check.ts` — `foldGovernedOutcome`
+- `packages/spec-contract/src/outcome.ts` — `foldGovernedOutcome`
 
 **Not yet**:
 - A criterion with no check line is graded by the reviewer's judgement, with
@@ -580,3 +580,147 @@ same page, without an agent in between.
 - Reading the rendered body is not recorded in the read ledger, matching
   `GET /api/specs/[id]`, which does not record either; diffs are recorded.
 - There is no list across a team's workspaces; each workspace has its own.
+
+## 10. Portable contract
+
+**Capability statement**: The shapes and rules another product needs to keep
+Living Specs, pin work to them and grade work against them MUST live in one
+package that imports nothing of buildd's, and buildd MUST read those rules
+from that package, so a copy is the same rule and not a port of it.
+
+**Invariants**:
+- `@buildd/spec-contract` (`packages/spec-contract`) holds the pure rules:
+  criterion ids (`requirementIds`, `specCriteria`), check lines
+  (`criterionChecks`, `checkVerdict`), scope (`checkCriteriaScope`, `inScope`),
+  the verdict vocabulary (`VERDICTS`: pass, fail, inconclusive, unsupported)
+  and the outcome fold (`foldGovernedOutcome`), and the content hash
+  (`contentHash`, `normalizeFrozenCopy`, `frozenCopyHash`). buildd's spec
+  routes, reviewer, pins and outcome import them from there;
+  `packages/core/verification-check.ts` re-exports the vocabulary and the fold
+  for the other verification flavors.
+- It imports no buildd workspace package, database driver, app alias or path
+  outside itself, and declares no dependency. A test scans every tracked file
+  in it and proves its pattern can fail.
+- The records, each keyed on a spec revision (an approval is a property of a
+  revision, not a separate id):
+  - spec source `{ kind: buildd | confluence | git, ref, version }`: where one
+    version of the text lives. One home per spec; nothing syncs between homes.
+  - design reference `{ kind: artifact | url | figma, ref, version, screens? }`:
+    the design a revision is built to. A design stored as an artifact (an HTML
+    or code prototype, or images) is versioned by its artifact revisions.
+  - approval record `{ specId, revision, source, contentHash, design?,
+    approvedBy, approvedAt }`, written once, by a person (§6).
+  - pin `{ specId, specRevisionId, revision, contentHash, criteria? }`, written
+    by the server when work is filed and re-taken at first claim (§6).
+  - verdict `{ taskId, specRevisionId, criterionId, verdict, headSha,
+    evidence: [{ kind, ref }], checker }`, append-only; the newest per
+    criterion stands, whichever checker wrote it (§7).
+- A spec home implements four operations (`SpecSourceAdapter`): read one
+  version, list versions, propose a change beside the spec (never over
+  approved text), and list versions newer than one it has seen. The frozen
+  copy is Markdown. A home that re-serializes on save is hashed after
+  `normalizeFrozenCopy`, so a save that changed nothing is not a new version;
+  buildd's own home hashes its text as stored.
+- Who plays each part is the host's choice. In buildd: the spec service is
+  `apps/web/src/lib/specs/`, the pin reader is the claim route and the
+  reviewer, the code grader is the PR reviewer's round, and check lines run
+  on a runner. A copier maps the same parts to its own services; the package
+  does not name them.
+
+**Acceptance criteria**:
+- AC-33: GIVEN the package alone WHEN its tests run in their own process THEN
+  parsing, scope, the fold and hashing work end to end, and a home can be
+  implemented against the interface with no host
+  (`packages/spec-contract/src/contract.test.ts`).
+- AC-34: GIVEN a file in the package that imports `@buildd/core`, a database
+  driver, an app alias or a path outside the package WHEN the boundary test
+  runs THEN it fails; the test first proves its pattern matches each of those
+  (`packages/spec-contract/src/no-buildd-imports.test.ts`).
+
+**Code surface**:
+- `packages/spec-contract/src/index.ts` — the entry point
+- `packages/spec-contract/src/outcome.ts` — `VERDICTS`, `foldGovernedOutcome`
+- `packages/spec-contract/src/hash.ts` — `contentHash`, `normalizeFrozenCopy`, `frozenCopyHash`
+- `packages/spec-contract/src/shapes.ts` — `SpecSource`, `DesignRef`, `ApprovalRecord`, `SpecPin`, `SpecVerdict`
+- `packages/spec-contract/src/source.ts` — `SpecSourceAdapter`
+
+**Not yet**:
+- Only buildd's own home exists. A git home reads through `read_ref` (§5)
+  but is not wrapped as an adapter; a wiki home is not built.
+- Revisions do not carry a design reference yet, and an approval records no
+  design version.
+- The stored verdict row has no `checker` column: the checker is implied by
+  who recorded it.
+
+## 11. The visual audit grades spec criteria
+
+**Capability statement**: A mission's visual audit MUST grade the spec
+criteria of the tasks it reviews that a page can show, with its own
+screenshots as evidence, bound to each task's PR head only when the commit it
+captured contains that head; no task MAY grade its own work this way.
+
+**Invariants**:
+- At claim, a `[surface audit]` gets a "Spec criteria to judge" block: for
+  each task it depends on that is pinned to a Living Spec, the task, the spec
+  title and pinned revision, and the criteria that task answers for (its
+  scope, §6) with their text. Computed from the audit's current dependencies,
+  like its required routes. A read that fails attaches nothing.
+- The audit records through `POST /api/specs/outcomes/[taskId]` with
+  `checker: 'visual'` (MCP `manage_specs action=verdict checker=visual`):
+  `{ criterionId, verdict, capturedSha, screenshotIds, observed }`. It lands in
+  the same verdict log as the reviewer's and check runs' (§7), authored
+  `visual:<audit task id>`; the newest verdict per criterion stands.
+- Only the audit's own run records (its per-task token), and only when the
+  audit is a visual-auditor `[surface audit]` that no agent filed (the
+  platform or a person did), in the subject's mission and workspace, with the
+  subject among its dependencies, and is neither the subject nor filed under
+  it. Anything else is a 403 and nothing is written.
+- `pass` and `fail` cite 1 to 4 screenshots that a worker of this audit
+  uploaded through upload-url; `inconclusive` says what could not be seen;
+  `unsupported` is refused, because the audit records only criteria it
+  looked at and its verdict would replace the reviewer's.
+- The audit captures the mission's capture ref, not the PR head. The server
+  reads the subject's PR head from the kernel and checks on GitHub that the
+  captured commit contains it: contained, the verdict binds to the PR head and
+  keeps the captured commit as evidence; not contained, a 409; unreadable, a
+  502; no PR head or no linked repo, a 409. Nothing is written on a refusal.
+- Each cited screenshot is copied out of the audit-shot area, which expires
+  after 30 days, into the artifact area before the verdict is written, and the
+  verdict records the copy and `retainUntil` (400 days on). A copy that fails
+  writes nothing.
+
+**Acceptance criteria**:
+- AC-35: GIVEN a builder task in a mission pinned to a spec scoped to AC-1 and
+  AC-2 WHEN its audit claims THEN the block lists AC-1 and AC-2 with their text
+  and the revision (`apps/web/tests/db/spec-visual-verdict.test.ts`,
+  `apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts`).
+- AC-36: GIVEN the audit's own screenshot and a captured commit containing the
+  builder's PR head WHEN it records a pass on AC-1 THEN the verdict binds to the
+  PR head, cites the screenshot, its retained copy and the captured commit,
+  and the builder's outcome shows it (`apps/web/tests/db/spec-visual-verdict.test.ts`).
+- AC-37: GIVEN the builder, a fix attempt filed under it, an agent-filed
+  audit, an audit in another mission, or a person's session WHEN each records
+  a visual verdict THEN each is refused and nothing is written
+  (`apps/web/tests/db/spec-visual-verdict.test.ts`).
+- AC-38: GIVEN a pass with no screenshot, with another worker's screenshot, an
+  `unsupported`, or an `inconclusive` without `observed` WHEN recorded THEN each
+  is a 400 (`apps/web/tests/db/spec-visual-verdict.test.ts`).
+- AC-39: GIVEN a captured commit that does not contain the PR head WHEN
+  recorded THEN 409 and no row; GIVEN GitHub unreachable THEN 502 and no row
+  (`apps/web/tests/db/spec-visual-verdict.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/visual-verdict.ts` — `recordVisualVerdict`, `auditorRefusal`
+- `apps/web/src/lib/specs/outcome.ts` — `recordAuditedVerdict`
+- `apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.ts` — `attachVisualAuditSpecCriteria`, `renderVisualAuditSpecCriteria`, `loadVisualAuditSpecCriteria`
+
+**Not yet**:
+- Nothing deletes a retained screenshot after `retainUntil`, so verdict
+  evidence is kept indefinitely today; 400 days is the floor, not a ceiling.
+- The task page lists each criterion's standing but does not link a visual
+  verdict's screenshots.
+- The audit compares the build with the criterion text only. Comparing it
+  with a design (an artifact prototype or images) at the pinned design
+  version waits for revisions to carry a design reference (§10, "Not yet").
+- A mission with no `[surface audit]` (no UI change, or opted out) gets no
+  visual verdicts.

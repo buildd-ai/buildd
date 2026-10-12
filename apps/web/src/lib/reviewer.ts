@@ -1259,8 +1259,8 @@ export async function renderSpecConformanceGuidance(params: {
     if (pinned.ok) {
       label = `Living Spec "${pinned.title}" revision ${pinned.revision} (sha256 ${pinned.contentHash.slice(0, 12)}), the revision this task is pinned to`;
       specText = pinned.body;
-      const { specCriteria } = await import('@/lib/specs/requirements');
-      const { inScope } = await import('@/lib/specs/scope');
+      const { specCriteria } = await import('@buildd/spec-contract/requirements');
+      const { inScope } = await import('@buildd/spec-contract/scope');
       criteriaIds = inScope(specSource as Record<string, unknown>, specCriteria(pinned.body)).map((c) => c.id);
     } else {
       label = `Living Spec ${specSource.specId}`;

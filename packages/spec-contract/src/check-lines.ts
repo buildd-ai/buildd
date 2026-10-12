@@ -1,4 +1,4 @@
-import type { VerificationVerdict } from '@buildd/core/verification-check';
+import type { Verdict } from './outcome';
 
 /**
  * Check commands on spec criteria (Living Specs V1, mechanical path). A
@@ -42,7 +42,7 @@ export function criterionChecks(body: string): CriterionCheck[] {
     if (HEADING.test(raw)) { current = null; continue; }
     const m = CHECK.exec(raw);
     if (!m || !current || checked.has(current)) continue;
-    const command = m[1].replace(/^`+|`+$/g, '').trim();
+    const command = m[1]!.replace(/^`+|`+$/g, '').trim();
     if (!command || command.length > MAX_CHECK_COMMAND) continue;
     checked.add(current);
     out.push({ criterionId: current, command });
@@ -73,7 +73,7 @@ export interface CheckRunEvidence { outcome?: unknown; exitCode?: unknown }
  * timeout, a command that never launched, or a checkout of the head that
  * failed asserted nothing about the criterion, so it is inconclusive.
  */
-export function checkVerdict(ev: CheckRunEvidence): VerificationVerdict | null {
+export function checkVerdict(ev: CheckRunEvidence): Verdict | null {
   if (ev.outcome === 'ok') return 'pass';
   if (ev.outcome === 'timeout' || ev.outcome === 'exec_error') return 'inconclusive';
   if (ev.outcome === 'failed') return ev.exitCode === CHECKOUT_FAILED_EXIT ? 'inconclusive' : 'fail';

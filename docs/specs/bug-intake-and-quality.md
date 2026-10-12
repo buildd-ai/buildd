@@ -1119,7 +1119,7 @@ NOT run in parallel. Path claims will serialize them.
 - `packages/core/routing-analytics.ts`: `recordTaskOutcome`
 - `packages/core/experiment-readout.ts`: `computeExperimentReadout`, `classifyRow`
 - `apps/web/src/lib/specs/outcome.ts`: `recordSpecVerdict`, `recordSpecConflict`
-- `apps/web/src/lib/specs/requirements.ts`: `specCriteria`
+- `packages/spec-contract/src/requirements.ts`: `specCriteria`
 - `apps/web/src/lib/specs/pin.ts`: `pinSpecSource`
 - `apps/web/src/app/api/tasks/route.ts`: the `[friction]` dedupe branch
 - `apps/web/src/app/api/health/incidents/route.ts`: the incident list

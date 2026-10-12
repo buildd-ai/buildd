@@ -23,7 +23,7 @@ export function requirementIds(body: string): RequirementRef[] {
     const id = `${m[1]}-${Number(m[2])}`;
     if (seen.has(id)) return;
     seen.add(id);
-    out.push({ id, kind: KIND[m[1]], line: i + 1, text: m[3].replace(/\*\*|__/g, '').trim() });
+    out.push({ id, kind: KIND[m[1]!]!, line: i + 1, text: m[3]!.replace(/\*\*|__/g, '').trim() });
   });
   return out;
 }

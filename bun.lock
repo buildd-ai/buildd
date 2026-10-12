@@ -105,6 +105,7 @@
         "@buildd/core": "workspace:*",
         "@buildd/dispatch-contract": "workspace:*",
         "@buildd/shared": "workspace:*",
+        "@buildd/spec-contract": "workspace:*",
         "@builddai/ai-kit": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.26.0",
         "@neondatabase/serverless": "^1.0.0",
@@ -183,6 +184,7 @@
         "@ast-grep/napi": "^0.50.0",
         "@buildd/dispatch-contract": "workspace:*",
         "@buildd/shared": "workspace:*",
+        "@buildd/spec-contract": "workspace:*",
         "@builddai/ai-kit": "workspace:*",
         "@neondatabase/serverless": "^1.0.0",
         "@openai/codex-sdk": "^0.162.0",
@@ -209,6 +211,13 @@
     "packages/shared": {
       "name": "@buildd/shared",
       "version": "0.329.0",
+      "devDependencies": {
+        "typescript": "^6.0.0",
+      },
+    },
+    "packages/spec-contract": {
+      "name": "@buildd/spec-contract",
+      "version": "0.0.0",
       "devDependencies": {
         "typescript": "^6.0.0",
       },
@@ -383,6 +392,8 @@
     "@buildd/runner": ["@buildd/runner@workspace:apps/runner"],
 
     "@buildd/shared": ["@buildd/shared@workspace:packages/shared"],
+
+    "@buildd/spec-contract": ["@buildd/spec-contract@workspace:packages/spec-contract"],
 
     "@buildd/web": ["@buildd/web@workspace:apps/web"],
 
