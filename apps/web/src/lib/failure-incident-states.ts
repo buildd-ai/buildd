@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * The buildd incidents behind Health → Failures' platform causes, each as the
  * one line its row shows: "buildd is fixing this", "Fixed in v0.319.0 · retry".

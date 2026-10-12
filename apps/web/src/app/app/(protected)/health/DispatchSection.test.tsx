@@ -43,8 +43,8 @@ describe('DispatchSection', () => {
     expect(t).toContain('dispatch 7');
     expect(t).toContain('pusher 2');
     expect(html).toMatch(/data-tone="success" data-testid="dispatch-worker"/);
-    expect(t).toContain('Worker reachable');
-    expect(t).toContain('Last repair run 20m ago, all teams: checked 2, republished 0, projected 0, taken back 0, left 2, Worker errors 0');
+    expect(t).toContain('Dispatch reachable');
+    expect(t).toContain('Last repair run 20m ago, all teams: 2 checked, 0 sent again, 0 updated, 0 taken back, 2 left as they were, 0 errors');
     // Everyone is on dispatch: no kill-switch row.
     expect(html).not.toContain('dispatch-kill-switch');
   });

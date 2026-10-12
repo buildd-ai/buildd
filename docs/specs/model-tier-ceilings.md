@@ -2,13 +2,13 @@
 title: Model Tier Ceilings
 status: active
 owner: max
-last_verified: 2026-10-09
+last_verified: 2026-10-11
 summary: Every chat turn, task claim and server inference call MUST run at or below the most restrictive applicable team, workspace, admin-member and personal tier maximum, refusing explicit requests above it with policy_denied.
 domain: billing
 surfaces: [packages/shared/src/model-tier-ceiling.ts, packages/core/model-tier-ceiling.ts, packages/core/model-tier-ceiling-store.ts, apps/web/src/lib/tier-ceiling-check.ts]
 related: [model-policy, model-routing-and-tiers, usage-and-cost-accounting]
 keywords: [tier cap, tier ceiling, maximum tier, premium-plus, disable premium-plus, policy_denied, tier_policy, overCapAuto, model_tier_ceilings, personal maximum, member cap, spend band, Cap at this tier]
-verified_by: [packages/core/__tests__/model-tier-ceiling.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/tasks/route.test.ts, apps/web/src/app/api/tasks/[id]/route.test.ts, apps/web/src/lib/chat/turn.test.ts, apps/web/src/app/api/chat/route.test.ts, apps/web/src/app/api/chat/[id]/route.test.ts, apps/web/src/app/api/ai/plan/route.test.ts, packages/core/__tests__/inference-client.test.ts, apps/web/src/lib/model-ceilings-api.test.ts]
+verified_by: [packages/core/__tests__/model-tier-ceiling.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/tasks/route.test.ts, apps/web/src/app/api/tasks/[id]/route.test.ts, apps/web/src/lib/chat/turn.test.ts, apps/web/src/app/api/chat/route.test.ts, apps/web/src/app/api/chat/[id]/route.test.ts, apps/web/src/app/api/ai/plan/route.test.ts, packages/core/__tests__/inference-client.test.ts, apps/web/src/lib/model-ceilings-api.test.ts, apps/web/src/app/app/(protected)/settings/models/MyMaximumSection.dom.test.tsx]
 supersedes: []
 assertions:
   - id: resolve-tier-ceiling
@@ -57,15 +57,20 @@ change it afterwards. A ceiling is a limit the person cannot override.
 
 ### Settings UI
 
-Settings > Model tiers > **Maximum allowed** (`TierLimitsSection`) reads
+Settings › Models › **Maximum allowed** (`TierLimitSection`) reads
 `GET /api/teams/[id]/model-ceilings` and refetches after every write. It shows
-the effective Coding and Chat maximum with each layer behind it, a personal
-"My maximum" (options above what the team or admin allows are disabled with the
-reason), and for admins the team maximum, optional Coding/Chat-only maximums,
-workspace and member maximums. The browser never resolves a maximum itself and
-a refused write shows the server's message. The old "Cap at this tier" switch
-has no control: a team that still has it on sees it explained, with "Turn the
-reset off" or "Make <tier> the Chat maximum" (an explicit, admin-made choice).
+the effective Coding and Chat maximum with each layer behind it, and for admins
+the team maximum, optional Coding/Chat-only maximums, workspace and member
+maximums. A member's own **My maximum** is theirs, not the team's, so it lives
+on Settings › You › Keys (`MyMaximumSection`, the model-tiers module's `MY_MAXIMUM_SECTION` slot in `apps/web/src/modules.ts`; same route and `PUT .../me`);
+options above what the team or admin allows are disabled with the reason. The
+browser never resolves a maximum itself and a refused write shows the server's
+message. The old "Cap at this tier" switch has no control and no notice.
+
+`overCapAuto` (what an automatic pick above the maximum does) has no control:
+every team gets `downgrade`. A stored `deny` is still honoured; only a platform
+operator (`isPlatformOperatorCaller`, `apps/web/src/lib/admin/platform-operator-caller.ts`) may write
+the field, and a team admin who sends it gets 403.
 
 ### Tiers and layers
 
@@ -183,7 +188,8 @@ independently:
   key), and `effective.agent` / `effective.chat` with
   `{ max, binding, layers, identified, overCapAuto, explanation }`. Admins also
   get `members` and `audit`.
-- `PUT /api/teams/[id]/model-ceilings` `{ team?, workspaces?, overCapAuto? }`:
+- `PUT /api/teams/[id]/model-ceilings` `{ team?, workspaces?, overCapAuto? }`
+  (`overCapAuto` from a platform operator only, else 403):
   for `manage_model_tiers`.
 - `PUT /api/teams/[id]/model-ceilings/members/[userId]` `{ ceilings }`: for
   `manage_model_tiers`. Sets that member's admin layer.
@@ -236,6 +242,7 @@ returns `{ kind: 'policy_denied', tier, maxTier }` (only under
 - AC-9: GIVEN self cap `budget` for a user AND a task with no resolvable requester THEN only the team and workspace layers apply.
 - AC-10: GIVEN no ceilings anywhere THEN a `premium-plus` task files and claims as before.
 - AC-11: WHEN a member PUTs their admin layer THEN 403. WHEN they PUT `/me` THEN only `self` changes.
+- AC-12: GIVEN a team admin who is not a platform operator WHEN they PUT `overCapAuto` THEN 403 and the policy is unchanged; a platform operator's PUT saves it.
 
 **Code surface**:
 

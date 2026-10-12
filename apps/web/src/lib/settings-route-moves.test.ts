@@ -76,6 +76,19 @@ describe('settings route moves', () => {
     expect(existsSync(pageFile('/app/settings/keys'))).toBe(true);
   });
 
+  it('sends a team-app link on Connected apps to Settings › Team › Apps, query intact', async () => {
+    const redirects = await nextConfig.redirects!();
+    for (const key of ['connected', 'error', 'request', 'reconnect']) {
+      const r = redirects.find((x) => x.source === '/app/settings/connections' && x.has?.some((h) => h.type === 'query' && h.key === key));
+      expect(`${key}: ${r?.destination}`).toBe(`${key}: /app/settings/apps`);
+      expect(r!.permanent).toBe(false);
+    }
+    // A bare link still opens your own connected apps.
+    expect(redirects.find((x) => x.source === '/app/settings/connections' && !x.has)).toBeUndefined();
+    expect(existsSync(pageFile('/app/settings/apps'))).toBe(true);
+    expect(existsSync(pageFile('/app/settings/connections'))).toBe(true);
+  });
+
   it('matches a fixed segment before the param route beside it', () => {
     const order = SETTINGS_ROUTE_MOVES.map((m) => m.source);
     expect(order.indexOf('/app/team/new')).toBeLessThan(order.indexOf('/app/team/:slug'));

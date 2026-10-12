@@ -1,7 +1,7 @@
 /**
  * What sits beside the chat when no object is docked (knowledge-base: buildd/design/agent-chat.md,
  * "Who sees what first"): a member gets what needs them and their missions; an
- * operator gets the fleet. The chat column is the same for both.
+ * owner or admin gets the fleet. The chat column is the same for both.
  *
  * A section shows only when it has something in it. An idle fleet is one quiet
  * line, and a panel with nothing in it renders nothing (the chat takes the width).
@@ -24,7 +24,7 @@ export interface ContextNeedsYou {
 export interface ContextMission { id: string; title: string; state: string; meta?: string | null; tone?: 'live' | 'attention' | 'idle' }
 
 export interface ChatContextPanelProps {
-  audience: 'member' | 'operator';
+  audience: 'member' | 'admin';
   needsYou: readonly ContextNeedsYou[];
   missions: readonly ContextMission[];
   missionTotal?: number;
@@ -86,7 +86,7 @@ export default function ChatContextPanel({ audience, needsYou, missions, mission
 
   return (
     <div data-testid="chat-context-panel" data-audience={audience} className="flex min-w-0 flex-col gap-7">
-      {audience === 'operator' && fleetBlock}
+      {audience === 'admin' && fleetBlock}
       {model.needsYou && (
         <section className="min-w-0">
           <Label right={<span className="shrink-0">{needsYou.length}</span>}>Needs you</Label>

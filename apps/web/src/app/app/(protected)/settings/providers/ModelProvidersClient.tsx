@@ -39,12 +39,17 @@ import UsedForSection from './UsedForSection';
  *
  * The LiteLLM gateway and a custom endpoint are rows like any other; their
  * forms open in the row. A gateway change reloads the rows and the decision
- * model, so all of it lives in one component.
+ * model, so all of it lives in one component. The decision model is a platform
+ * operator control (lib/admin/platform-operator-caller.ts): its Used for row renders for an
+ * operator only, editable when they also hold the `manage_team_settings` its
+ * route checks.
  */
-export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [], signIns, scope = 'team', workspaceId: fixedWorkspaceId = null }: {
+export default function ModelProvidersClient({ teamId, isAdmin, operator = false, workspaces = [], signIns, scope = 'team', workspaceId: fixedWorkspaceId = null }: {
   teamId: string;
   /** Fallback for the Routing section until the list loads. */
   isAdmin: boolean;
+  /** A platform operator: the decision model row renders. */
+  operator?: boolean;
   /** The team's workspaces, for Workspace keys and the agent endpoint. */
   workspaces?: EndpointWorkspace[];
   /** Props for the sign-ins folded into the Claude and OpenAI rows. Omitted: the rows hold keys only. */
@@ -190,7 +195,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
           teamId={teamId}
           data={data}
           canManage={data.caller.can.manage_team_settings}
-          decisions={<DecisionModelPicker teamId={teamId} canManage={canManageRouting} rev={gatewayRev} embedded />}
+          decisions={operator ? <DecisionModelPicker teamId={teamId} canManage={data.caller.can.manage_team_settings} rev={gatewayRev} embedded /> : undefined}
           extra={slots && bothBackends(data) ? <div className="border-y border-border-default">{slots.routing}</div> : null}
         />
       )}

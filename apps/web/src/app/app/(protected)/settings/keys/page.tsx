@@ -1,13 +1,15 @@
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import ModelProvidersClient from '../providers/ModelProvidersClient';
+import { MY_MAXIMUM_SECTION as MyMaximumSection } from '@/modules';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings › You › Keys: your own model keys, in the active team. The team's
- * and its workspaces' keys are on Team › Models; the old `?scope=mine` link to
- * Models redirects here (next.config SETTINGS_ROUTE_MOVES).
+ * Settings › You › Keys: your own model keys and your own maximum tier, in the
+ * active team. The team's and its workspaces' keys and maximums are on Team ›
+ * Models; the old `?scope=mine` link to Models redirects here (next.config
+ * SETTINGS_ROUTE_MOVES).
  */
 export default async function KeysSettingsPage() {
   const { currentTeam, perms } = await loadSettingsContext();
@@ -24,6 +26,7 @@ export default async function KeysSettingsPage() {
   return (
     <SettingsPage title="Keys" description={description}>
       <ModelProvidersClient teamId={currentTeam.id} isAdmin={perms.manage_inference_providers} scope="mine" />
+      <MyMaximumSection teamId={currentTeam.id} />
     </SettingsPage>
   );
 }

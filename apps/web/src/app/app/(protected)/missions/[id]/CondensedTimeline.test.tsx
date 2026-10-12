@@ -234,7 +234,7 @@ describe('CondensedTimeline — §3.6 bookkeeping footer', () => {
         allTasksCount={1}
       />,
     );
-    expect(html).toContain('orchestrator');
+    expect(html).toContain('organizer');
   });
 
   it('shows count of bookkeeping runs in footer', () => {
@@ -250,7 +250,7 @@ describe('CondensedTimeline — §3.6 bookkeeping footer', () => {
         allTasksCount={1}
       />,
     );
-    expect(html).toContain('3 orchestrator runs');
+    expect(html).toContain('3 organizer runs');
   });
 
   it('does NOT render bookkeeping footer when bookkeepingTasks is empty', () => {
@@ -262,7 +262,7 @@ describe('CondensedTimeline — §3.6 bookkeeping footer', () => {
         allTasksCount={1}
       />,
     );
-    expect(html).not.toContain('orchestrator');
+    expect(html).not.toContain('organizer');
   });
 });
 
@@ -418,7 +418,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
       />,
     );
     // Full verdict visible — not collapsed to chip
-    expect(html).toContain('Changes Requested');
+    expect(html).toContain('Changes requested');
     expect(html).toContain('Please fix the handler');
   });
 
@@ -556,7 +556,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
         allTasksCount={1}
       />,
     );
-    expect(html).toContain('Escalated to you');
+    expect(html).toContain('Needs a decision');
     expect(html).toContain('Human review needed');
   });
 });

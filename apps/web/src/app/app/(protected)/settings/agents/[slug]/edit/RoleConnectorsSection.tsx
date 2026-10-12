@@ -64,7 +64,7 @@ export function registryToConnectorInput(entry: RegistryServer['server']): Conne
   return { name, transport: 'http', reuseIfExists: true };
 }
 
-/** Connection state in words, as Settings › Connectors says it. */
+/** Connection state in words, as Settings › Apps says it. */
 function connectionState(c: RoleConnector): { tone: StateTone; label: string } {
   if (c.authMode === 'none') return { tone: 'q', label: 'Public' };
   if (c.status === 'connected') return { tone: 'ok', label: 'Connected' };
@@ -262,7 +262,7 @@ export function RoleConnectorsSection({ teamId, workspaceId, workspaceName, role
       {browsing && !disabled && <RegistryBrowser onAdd={installConnector} addedNames={addedNames} adding={adding} />}
       {loading && <p className="text-sm text-text-muted">Loading connectors…</p>}
       {!loading && connectors.length === 0 && (
-        <p className="text-sm text-text-muted">No team connectors. Browse the registry, or add one in Settings › Connectors.</p>
+        <p className="text-sm text-text-muted">No team connectors. Browse the registry, or add one in Settings › Apps.</p>
       )}
       {connectors.length > 0 && (
         <ul className="divide-y divide-border-default border-y border-border-default">
@@ -300,7 +300,7 @@ export function RoleConnectorsSection({ teamId, workspaceId, workspaceName, role
                 </label>
                 {on && notHere && (
                   <p className="ml-7 text-xs text-text-muted">
-                    Enable it for {workspaceName ?? 'this workspace'} in Settings › Connectors to mount it there.
+                    Enable it for {workspaceName ?? 'this workspace'} in Settings › Apps to mount it there.
                   </p>
                 )}
               </li>

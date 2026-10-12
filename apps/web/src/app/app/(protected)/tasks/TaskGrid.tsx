@@ -695,7 +695,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
         <div className="flex items-center gap-3 px-4 mb-3">
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <h1 className="hidden md:block text-[28px] font-bold text-text-primary shrink-0" style={{ fontFamily: 'var(--font-display, inherit)' }}>
-              {missionFilter ? (missionTitle || 'Mission Tasks') : 'Activity'}
+              {missionFilter ? (missionTitle || 'Mission tasks') : 'Activity'}
             </h1>
             {initiativeFilter && (
               <span className="flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium rounded-full bg-surface-3 text-text-secondary border border-border-default shrink-0 max-w-[180px]">
@@ -932,7 +932,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
             <div className="bg-status-warning/8">
               <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border-default">
                 <span className="w-2 h-2 rounded-full bg-status-warning" />
-                <span className="text-[13px] font-semibold text-text-primary">Needs Input</span>
+                <span className="text-[13px] font-semibold text-text-primary">Needs input</span>
                 <span className="text-[12px] text-text-desc">{needsInputTasks.length}</span>
               </div>
               <div className="px-2">

@@ -413,12 +413,12 @@ export default function TaskActionZone({
               </p>
               <p className="text-eyebrow text-text-secondary">
                 {start.status === 'accepted'
-                  ? 'A worker claimed the task.'
+                  ? 'A runner picked it up.'
                   : start.forced
-                    ? `Skipping: ${start.forced.gates.join(', ')}. A runner claims it on its next poll.`
+                    ? `Skipping: ${start.forced.gates.join(', ')}. Starts next.`
                     : start.status === 'queued'
-                      ? 'No runner has responded. The task is first in the queue and starts on the next claim cycle.'
-                      : 'Waiting for a worker to claim it.'}
+                      ? 'No runner has responded. It’s next in the queue.'
+                      : 'Waiting for a runner.'}
               </p>
             </div>
           </div>
@@ -474,7 +474,7 @@ export default function TaskActionZone({
               </p>
             )}
           </div>
-          {refusal.gateReason === 'workspace_cap_reached' && (
+          {refusal.gateReason === 'workspace_cap_reached' && refusal.canRaiseCap && (
             <div className="flex flex-wrap items-center gap-2 font-mono text-meta">
               <span className="text-text-secondary">Raise the workspace limit to</span>
               <div className="inline-flex shrink-0 items-center gap-2">
@@ -530,7 +530,7 @@ export default function TaskActionZone({
 function ForcePending() {
   return (
     <p data-testid="task-force-pending" className="font-mono text-eyebrow text-text-secondary">
-      Force start requested. The next runner claim skips this wait.
+      Force start requested. Starts next.
     </p>
   );
 }
@@ -609,7 +609,6 @@ export function CoordinationRefusal({ refusal, pending, onForce, onCancel, taskT
           {(offer.redLines ?? []).map(line => (
             <p key={line} data-testid="task-force-red-line" className="text-status-error [overflow-wrap:anywhere]">{line}</p>
           ))}
-          <p className="text-text-muted">This start and how it lands (merged cleanly, conflicted, needed repair) are recorded and used to tune automatic holds.</p>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"

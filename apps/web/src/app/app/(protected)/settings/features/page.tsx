@@ -1,7 +1,6 @@
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { settingsReadOnly } from '@/lib/settings-nav';
-import { defaultOffReason } from '@buildd/core/task-estimate-rollout';
 import { loadTaskEstimatesState } from '@buildd/core/task-estimate-source';
 import TaskEstimatesFeature from './TaskEstimatesFeature';
 
@@ -30,7 +29,6 @@ export default async function FeaturesSettingsPage() {
           teamId={currentTeamId}
           initial={{ enabled: state.enabled, source: state.source, defaultOn: state.defaultOn }}
           canManage={perms.manage_team_settings}
-          defaultOffReason={defaultOffReason()}
         />
       )}
     </SettingsPage>

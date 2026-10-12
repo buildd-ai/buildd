@@ -1,6 +1,8 @@
 import type { RunProgressReaders } from '@/lib/run-progress-read';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import { resolvePolicy } from '@/lib/merge-policy';
+import MyMaximumSection from '@/app/app/(protected)/settings/models/MyMaximumSection';
+import { isPlatformOperatorCaller, operatorOnlyResponse } from '@/lib/admin/platform-operator-caller';
 /**
  * Composition root: the one place optional modules are wired into core.
  *
@@ -217,6 +219,22 @@ export const ANSWER_IN_CHAT = answerInChatHref;
  * action sheet (`?pr=<n>&t=<token>`, a landing alert's link) shows, as data.
  */
 export const PR_ACTION_SHEET = loadPrActionSheet;
+
+/**
+ * The model-tiers module's slot for Settings › You › Keys: a member's own
+ * maximum tier (`member_self`, docs/specs/model-tier-ceilings.md). A client
+ * component; the Keys page renders it.
+ */
+export const MY_MAXIMUM_SECTION = MyMaximumSection;
+
+/**
+ * The platform operator check (lib/admin/platform-operator-caller.ts) for core
+ * team routes that hold an operator-only field: `decisionModel` on PATCH
+ * /api/teams/[id], `overCapAuto` on the model ceilings. One definition; core
+ * reaches it here rather than importing the admin module.
+ */
+export const IS_PLATFORM_OPERATOR_CALLER = isPlatformOperatorCaller;
+export const OPERATOR_ONLY_RESPONSE = operatorOnlyResponse;
 
 /**
  * The visual-qa module's claim slot (app/api/workers/claim/visual-audit-routes.ts):

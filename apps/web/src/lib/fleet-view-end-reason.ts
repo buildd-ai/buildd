@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * How one run (a worker row) stands or ended, as a short sentence for Health ›
  * Runners and Home's Agents rows: "Done · merged as #12", "Stopped: session

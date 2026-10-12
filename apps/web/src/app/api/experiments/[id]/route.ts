@@ -2,9 +2,9 @@
  * /api/experiments/[id]
  *
  * GET    one experiment. 404 when it is not on the caller's team OR is
- *        admins-only and the caller is below admin — never 403, so a member
- *        cannot tell a hidden experiment from a missing one.
- * PATCH  admin|owner. Edits title/hypothesis/visibility/treatmentFraction/
+ *        operator-only and the caller is not a platform operator — never 403,
+ *        so a member cannot tell a hidden experiment from a missing one.
+ * PATCH  platform operators only (no team role). Edits title/hypothesis/visibility/treatmentFraction/
  *        config and moves status: draft→running, running⇄paused,
  *        →concluded (terminal, needs `decision`). Starting stamps startedAt
  *        and, for model_routing, 409s if another one is already running on
@@ -18,7 +18,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { bearerOf, resolveExperimentViewer, taskTokenExperimentViewer, type ViewerResult } from '@/lib/experiment-access';
 import { isTaskToken } from '@/lib/task-token';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
-import { canViewExperiment, isExperimentAdmin, planExperimentPatch, toExperimentDTO } from '@/lib/experiments';
+import { canViewExperiment, isExperimentOperator, planExperimentPatch, toExperimentDTO } from '@/lib/experiments';
 import { applyExperimentUpdate, findOtherRunning, getTeamExperiment } from '@/lib/experiments-store';
 
 
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!UUID_RE.test(id)) return notFound();
 
   const row = await getTeamExperiment(who.viewer.teamId, id);
-  if (!row || !canViewExperiment(row.visibility, who.viewer.role)) return notFound();
+  if (!row || !canViewExperiment(row.visibility, who.viewer)) return notFound();
   return NextResponse.json({ experiment: toExperimentDTO(row) });
 }
 
@@ -59,11 +59,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!UUID_RE.test(id)) return notFound();
 
   const row = await getTeamExperiment(viewer.teamId, id);
-  // Existence before role: a member probing an admins-only id must get the
-  // same 404 as for an id that does not exist.
-  if (!row || !canViewExperiment(row.visibility, viewer.role)) return notFound();
-  if (!isExperimentAdmin(viewer.role)) {
-    return NextResponse.json({ error: 'Changing an experiment requires team admin or owner' }, { status: 403 });
+  // Existence before role: a non-operator probing an operator-only id must
+  // get the same 404 as for an id that does not exist.
+  if (!row || !canViewExperiment(row.visibility, viewer)) return notFound();
+  if (!isExperimentOperator(viewer)) {
+    return NextResponse.json({ error: 'Changing an experiment is for buildd platform operators' }, { status: 403 });
   }
 
   let body: unknown;

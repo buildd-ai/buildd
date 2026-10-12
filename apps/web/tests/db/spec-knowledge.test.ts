@@ -54,8 +54,8 @@ async function approve(specId: string) {
   if (!r.ok || 'pending' in r) throw new Error(JSON.stringify(r));
   return r;
 }
-const chunks = (specId: string) => q<{ source_id: string; content: string; source_path: string | null; metadata: any }>(sql`
-  SELECT source_id, content, source_path, metadata FROM knowledge_chunks
+const chunks = (specId: string) => q<{ source_id: string; content: string; source_path: string | null; source_url: string | null; metadata: any }>(sql`
+  SELECT source_id, content, source_path, source_url, metadata FROM knowledge_chunks
   WHERE namespace = ${ns()} AND starts_with(source_id, ${`living-spec:${specId}#`}) ORDER BY source_id`);
 const edges = (specId: string) => q<{ edge: string }>(sql`
   SELECT f.kind || ':' || f.key || ' -' || e.type || '-> ' || t.kind || ':' || t.key AS edge
@@ -73,6 +73,8 @@ describe('approval indexes the approved text', () => {
     const rows = await chunks(spec.id);
     expect(rows.length).toBe(1);
     expect(rows[0].source_path).toBeNull();
+    // A recall hit opens the spec page (§9), not the approval confirm page.
+    expect(rows[0].source_url).toMatch(new RegExp(`/app/specs/${spec.id}$`));
     expect(rows[0].metadata).toMatchObject({ specId: spec.id, revision: 1, contentHash: r.revision.contentHash, workspaceId: ws });
 
     const hits = await new PgVectorStore(null).query(ns(), { text: 'defect report incident', mode: 'lexical', useGraph: false, trackHits: false });

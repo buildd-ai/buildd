@@ -43,7 +43,7 @@ export interface SpecKnowledgeResult {
 }
 
 export function specDashboardUrl(specId: string): string {
-  return `${appBaseUrl()}/app/specs/${encodeURIComponent(specId)}/approve`;
+  return `${appBaseUrl()}/app/specs/${encodeURIComponent(specId)}`;
 }
 
 export async function indexApprovedSpec(specId: string): Promise<SpecKnowledgeResult> {

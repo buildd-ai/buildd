@@ -1,17 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
-import Segmented from '@/components/ui/Segmented';
-import MarkdownContent from '@/components/MarkdownContent';
-import SpecDiffView from '@/components/SpecDiffView';
+import SpecRevisionPanes from '@/components/SpecRevisionPanes';
 import type { ApprovalRequestView } from '@/lib/specs/approval-view';
-
-type Pane = 'spec' | 'changes';
-const PANES = [{ value: 'spec', label: 'Spec' }, { value: 'changes', label: 'Changes' }] as const;
 
 /** States with nothing to approve: one line each. */
 const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'info' | 'warn' | 'ok' | 'err'; text: string }> = {
@@ -32,7 +26,6 @@ const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'in
  * a later one opens on the changes.
  */
 export default function SpecApprovalRequest({ specId, token, view }: { specId: string; token: string; view: ApprovalRequestView }) {
-  const [pane, setPane] = useState<Pane>(view.state === 'ready' && view.replaces ? 'changes' : 'spec');
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<{ tone: 'ok' | 'err' | 'warn'; text: string } | null>(null);
 
@@ -76,22 +69,15 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
       <Lede>
         {view.replaces ? `Revision ${view.revision} replaces revision ${view.replaces}.` : `Revision ${view.revision} is the first to be approved.`}
       </Lede>
-      <div className="flex flex-wrap items-center gap-3">
-        <Segmented items={PANES} value={pane} onChange={setPane} label="Show" />
-        <span className="font-mono text-meta text-text-muted" data-testid="spec-approval-sections">
-          {view.sections.length} {view.sections.length === 1 ? 'section' : 'sections'}
-          {' · '}
-          <span className="text-status-success">+{view.sections.reduce((n, x) => n + x.linesAdded, 0)}</span>{' '}
-          <span className="text-status-error">−{view.sections.reduce((n, x) => n + x.linesRemoved, 0)}</span>
-        </span>
-      </div>
-      {pane === 'spec' ? (
-        <Card data-testid="spec-approval-rendered">
-          <MarkdownContent content={view.body} images="link" />
-        </Card>
-      ) : (
-        <SpecDiffView hunks={view.hunks} omittedLines={view.omittedLines} />
-      )}
+      <SpecRevisionPanes
+        body={view.body}
+        hunks={view.hunks}
+        omittedLines={view.omittedLines}
+        sectionCount={view.sections.length}
+        linesAdded={view.sections.reduce((n, x) => n + x.linesAdded, 0)}
+        linesRemoved={view.sections.reduce((n, x) => n + x.linesRemoved, 0)}
+        initial={view.replaces ? 'changes' : 'spec'}
+      />
       {result ? (
         <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice>
       ) : (

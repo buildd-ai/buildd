@@ -1,8 +1,10 @@
 /**
  * Who is asking, on which team, with what role — for /api/experiments.
  *
- * Experiments are team-scoped, and the role decides both what a caller may
- * write (admin|owner) and what exists for them (see canViewExperiment).
+ * Experiments are team-scoped, but managing them is platform machinery:
+ * `operator` (admin/platform-operator-caller.ts) decides both what a caller may
+ * write and whether operator-only experiments exist for them (see
+ * canViewExperiment). The team role only says the caller reaches the team.
  *
  * - Session: the team is the workspace's team when `workspaceId` is given
  *   (access verified), else the active team (the `buildd-team` cookie, with
@@ -10,12 +12,14 @@
  * - `bld_` API key (the MCP path): the team is the workspace's when
  *   `workspaceId` is given and the account can reach it, else the account's
  *   own team. Role follows the token level: an admin token acts as `admin`,
- *   anything below as `member` — the same line the MCP action gating draws.
+ *   anything below as `member`. It is an operator only when it is an
+ *   admin-level key of an account in BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS.
  * - OAuth bearer: the human's team_members row on the resolved team, read
  *   directly. authenticateApiKey already sets the session level from that
  *   role on the token's own workspace team, but this path also needs the
  *   exact role on the team a `workspaceId` resolves to and the user id (for
- *   `createdBy`), which the account level does not carry.
+ *   `createdBy`), which the account level does not carry. It is an operator
+ *   when that person is (BUILDD_OPERATOR_USER_EMAILS).
  */
 import type { NextRequest } from 'next/server';
 import { and, eq } from 'drizzle-orm';
@@ -24,6 +28,8 @@ import { teamMembers, workspaces } from '@buildd/core/db/schema';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { looksLikeJwt, verifyAccessTokenAnyAudience } from '@/lib/oauth/tokens';
+import { isPlatformOperator } from '@/lib/platform-operator';
+import { isPlatformOperatorAccount, isPlatformOperatorUserId } from '@/lib/admin/platform-operator-caller';
 import { resolveActiveTeamId, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import type { TeamRole } from './experiments';
 
@@ -33,6 +39,8 @@ export interface ExperimentViewer {
   userId: string | null;
   /** The API account behind a bearer request; null for a session. */
   accountId: string | null;
+  /** A buildd platform operator: may manage experiments and see operator-only ones. */
+  operator: boolean;
 }
 
 export type ViewerResult =
@@ -67,9 +75,12 @@ export async function resolveExperimentViewer(req: NextRequest, workspaceId: str
       const claims = await verifyAccessTokenAnyAudience(bearer);
       const role = claims?.sub ? await memberRole(teamId, claims.sub) : null;
       if (!role) return notFound('Team');
-      return { ok: true, viewer: { teamId, role, userId: claims!.sub, accountId: account.id } };
+      const operator = await isPlatformOperatorUserId(claims!.sub);
+      return { ok: true, viewer: { teamId, role, userId: claims!.sub, accountId: account.id, operator } };
     }
-    return { ok: true, viewer: { teamId, role: account.level === 'admin' ? 'admin' : 'member', userId: null, accountId: account.id } };
+    // A bld_ key: the OAuth person (if any) is handled above, so only the account is read here.
+    const operator = await isPlatformOperatorAccount({ id: account.id, level: account.level });
+    return { ok: true, viewer: { teamId, role: account.level === 'admin' ? 'admin' : 'member', userId: null, accountId: account.id, operator } };
   }
 
   const user = await getCurrentUser();
@@ -81,14 +92,14 @@ export async function resolveExperimentViewer(req: NextRequest, workspaceId: str
     // verifyWorkspaceAccess answers 'member' for an open workspace without
     // looking at membership, which would demote a team admin; read the row.
     const role = (await memberRole(access.teamId, user.id)) ?? 'member';
-    return { ok: true, viewer: { teamId: access.teamId, role, userId: user.id, accountId: null } };
+    return { ok: true, viewer: { teamId: access.teamId, role, userId: user.id, accountId: null, operator: isPlatformOperator(user) } };
   }
 
   const teamId = await resolveActiveTeamId(user.id, req.cookies.get('buildd-team')?.value ?? null);
   if (!teamId) return notFound('Team');
   const role = await memberRole(teamId, user.id);
   if (!role) return notFound('Team');
-  return { ok: true, viewer: { teamId, role, userId: user.id, accountId: null } };
+  return { ok: true, viewer: { teamId, role, userId: user.id, accountId: null, operator: isPlatformOperator(user) } };
 }
 
 /** The raw bearer on a request, or null. */
@@ -98,12 +109,12 @@ export function bearerOf(req: NextRequest): string | null {
 
 /**
  * A per-task token's viewer: the team of its own task's workspace, as a
- * `member` (the token is worker-level), so it sees team-visible experiments
- * only and can change none. The caller has already authenticated the token
+ * `member` (the token is worker-level) and never an operator, so it sees
+ * team-visible experiments only and can change none. The caller has already authenticated the token
  * and confined any requested workspace to its task's.
  */
 export async function taskTokenExperimentViewer(workspaceId: string, accountId: string): Promise<ViewerResult> {
   const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } });
   if (!ws?.teamId) return notFound('Team');
-  return { ok: true, viewer: { teamId: ws.teamId, role: 'member', userId: null, accountId } };
+  return { ok: true, viewer: { teamId: ws.teamId, role: 'member', userId: null, accountId, operator: false } };
 }

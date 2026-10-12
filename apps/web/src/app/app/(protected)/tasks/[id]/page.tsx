@@ -1173,7 +1173,7 @@ export default async function TaskDetailPage({
   const workerHistorySection = workerHistory.length > 0 ? (
           <div data-testid="task-worker-history">
             <div className="section-label pb-2 border-b border-border-default mb-6">
-              Worker History
+              Attempts
             </div>
             <div className="border border-border-default overflow-hidden">
               {workerHistory.map(({ worker, attemptLabel }) => {
@@ -1186,7 +1186,7 @@ export default async function TaskDetailPage({
                       <p>Runner: {runnerLabel(worker) ?? worker.name}{worker.account && ` \u00B7 ${worker.account.name}`}</p>
                       <p className="font-mono">Branch: <span title={worker.branch}>{displayBranchName(worker.branch)}</span></p>
                       {shownError && <p className="font-mono" title={shownError.raw}>{shownError.text}</p>}
-                      <p className="font-mono">Worker {worker.id} · {worker.turns} turns</p>
+                      <p className="font-mono" title={worker.id}>{attemptLabel ?? 'Attempt'} · {worker.turns} turns</p>
                     </BookkeepingAttemptRow>
                   );
                 }
@@ -1691,7 +1691,7 @@ export default async function TaskDetailPage({
               <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
               </svg>
-              Mission budget spent. No worker can claim this task.
+              Mission budget spent. This task can’t start.
             </div>
             <p className="text-[12px] text-text-secondary ml-6">
               Every task in{' '}
@@ -1752,7 +1752,7 @@ export default async function TaskDetailPage({
         ) : hasRelatedTasks && (
           <div className="mb-6">
             <div className="section-label pb-2 border-b border-border-default mb-4">
-              Related Tasks
+              Related tasks
             </div>
             <div className="card p-4 space-y-3">
               {task.parentTask && showParentRow && (
@@ -2037,7 +2037,7 @@ export default async function TaskDetailPage({
                 {result.structuredOutput && (
                   <div className="mt-4">
                     <div className="section-label mb-2">
-                      Structured Output
+                      Output
                     </div>
                     <pre className="p-4 bg-surface-2 border border-border-default overflow-x-auto text-sm font-mono text-text-primary">
                       {JSON.stringify(result.structuredOutput, null, 2)}
@@ -2080,7 +2080,7 @@ export default async function TaskDetailPage({
               <>
                 <p className="text-text-secondary mb-2">Not started</p>
                 <p className="text-sm text-text-muted">
-                  Start it above, or a worker will claim it from the queue.
+                  Start it above, or a runner picks it up next.
                 </p>
               </>
             )}

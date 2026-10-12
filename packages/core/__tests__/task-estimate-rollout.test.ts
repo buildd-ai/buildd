@@ -3,7 +3,7 @@ import type { BlendComparison } from '../estimate-backtest-blend';
 import type { BacktestScore } from '../estimate-backtest';
 import { ESTIMATOR_VERSION } from '../task-estimate';
 import {
-  TASK_ESTIMATES_ROLLOUT, defaultOffReason, evaluateTaskEstimatesGate, resolveTaskEstimatesState, taskEstimatesDefaultOn,
+  TASK_ESTIMATES_ROLLOUT, evaluateTaskEstimatesGate, resolveTaskEstimatesState, taskEstimatesDefaultOn,
   type TaskEstimatesRolloutPin,
 } from '../task-estimate-rollout';
 
@@ -61,17 +61,14 @@ describe('the pinned default', () => {
   it('ships off: the last measurement did not pass', () => {
     expect(TASK_ESTIMATES_ROLLOUT.verdict).toBe('no_go');
     expect(taskEstimatesDefaultOn()).toBe(false);
-    expect(defaultOffReason()).toContain('little history');
   });
 
   it('a go pin turns the default on', () => {
     expect(taskEstimatesDefaultOn(go)).toBe(true);
-    expect(defaultOffReason(go)).toBeNull();
   });
 
   it('a go measured on another estimator version does not count', () => {
     expect(taskEstimatesDefaultOn({ ...go, estimatorVersion: 'blend-v0' })).toBe(false);
-    expect(defaultOffReason({ ...go, estimatorVersion: 'blend-v0' })).toContain('not been checked');
   });
 });
 
