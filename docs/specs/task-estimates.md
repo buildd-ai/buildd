@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [packages/core/task-estimate-rollout.ts, packages/core/task-estimate-source.ts, apps/web/src/app/app/(protected)/settings/features/page.tsx, apps/web/src/app/app/(protected)/health/estimates/page.tsx]
 related: [claim-ordering, bug-intake-and-quality]
 keywords: [task_estimates, taskEstimates, estimates-backtest, blend-v1, p50, p80, new-repo prior, cold start, default on, opt-out, TASK_ESTIMATES_ROLLOUT, estimate accuracy, within upper estimate, insufficient evidence, operator estimation, calibration]
-verified_by: [packages/core/__tests__/task-estimate-rollout.test.ts, packages/core/__tests__/task-estimate-source.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/app/api/teams/[id]/task-estimates/route.test.ts, apps/web/src/app/app/(protected)/settings/features/TaskEstimatesFeature.dom.test.tsx, apps/web/src/app/app/(protected)/health/estimates/EstimatesOff.test.tsx, apps/web/src/lib/task-time-row.test.ts]
+verified_by: [packages/core/__tests__/task-estimate-rollout.test.ts, packages/core/__tests__/task-estimate-source.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/app/api/teams/[id]/task-estimates/route.test.ts, apps/web/src/app/app/(protected)/settings/features/TaskEstimatesFeature.dom.test.tsx, apps/web/src/app/app/(protected)/health/estimates/EstimatesOff.test.tsx, apps/web/src/lib/task-time-row.test.ts, packages/core/__tests__/task-estimate-operator.test.ts, apps/web/src/app/api/admin/platform-owner-routes.test.ts, apps/web/src/app/api/admin/tenant-privacy.test.ts]
 assertions:
   - id: "pinned-rollout"
     type: "symbol"
@@ -192,19 +192,77 @@ apply, the no-fabrication rules do.
   instrumented", never 0. Write duration and failures are log lines only today,
   so they read "not instrumented" until stored.
 
-**Operator API** (GET /api/admin/estimates, NOT IMPLEMENTED):
+**Operator API** (`GET /api/admin/estimates`):
 
 - Gated by `requirePlatformOwner` like every `/api/admin/*` route: an
   admin-level key whose account is on the platform-admin allowlist. Everyone
   else, including a team owner, a team API key, a signed-in session and an
   unset allowlist, gets 404, enforced on the server.
-- Read-only. Bounded: the admin scope window plus a row cap, aggregated in the
-  query or in core, never one row per task across all teams.
+- Read-only. Bounded: the admin scope window plus a row cap
+  (`OPERATOR_ROW_LIMIT`, newest first, `truncated: true` when hit), aggregated
+  in core, never one row per task in the response. Coverage and write counts
+  are aggregated in SQL so the cap does not shrink them.
 - Tenant privacy as the other admin routes (`lib/admin/tenant-privacy.ts`):
   full detail only for teams the owner belongs to. Other teams contribute
   numbers, never strings they wrote (workspace names, task titles, area labels,
   which are repo paths).
 - No team endpoint gains any of this.
+
+Query: `window` (`24h` | `7d` | `30d`, default `7d`, by estimate creation
+time), `teamId?`, `workspaceId?`, `version?` (one estimator version; default
+every version in the window). 400 on a bad window, id or version; 404 for a
+non-owner or an unknown team/workspace; 500 `{ error }` on a failed read, with
+no error text. Response (`OperatorEstimatesReport` in
+`packages/core/task-estimate-operator.ts`, plus the scope echo):
+
+```ts
+{
+  schemaVersion: 1,
+  window, since, teamId, workspaceId, version,   // scope echo
+  runningVersion: string,                         // ESTIMATOR_VERSION
+  minScoredForRate: 10,
+  truncated: boolean, rowLimit: number,
+  detailLimitedToOwnTeams: boolean,
+  live: Array<{                                   // one per version, never pooled; running first
+    estimatorVersion, running: boolean,
+    estimates: number,                            // rows of this version created in the window
+    eligible: number,                             // work task with actuals stored
+    excluded: { open, ended_without_actuals, non_work, no_usable_actual },
+    overall: Score, tokens: Score,
+    repairs: { expected, actual } | null,
+    bySource | byKind | byComplexity | byHistory | byCluster | byDay: Array<{ key, score: Score }>,
+    byTeam | byWorkspace: Array<{ key /* id */, own: boolean, name, score: Score }>,
+  }>,
+  backtest: Array<{                               // running, pinned and observed versions
+    estimatorVersion, running, verdict: 'go' | 'no_go' | 'unknown',
+    measuredOn: string | null, evidenceRef: string | null, failing: GateCheckId[],
+    checks: Array<{ id, run: 'recent' | 'held_out', bar, result: 'passed' | 'failed' | 'unknown', n: null }>,
+    defaultOn: boolean,
+  }>,
+  coverage: { workTasks: number, byVersion: Array<{ estimatorVersion, estimated, share: number | null }> },
+  runtime: { written: number, skipped | failed | writeDurationMs: { status: 'not_instrumented' } },
+}
+Score = { n, scored, sufficient: boolean, withinP80, medianRatio, medianAbsLogError }  // rates null when !sufficient
+```
+
+- **Unknown is not zero.** `sufficient: false` (scored under 10) carries the n
+  and null rates. `share: null` means no work tasks in scope. A gate check's
+  `n` is null because the figures live in the evidence artifact, not this
+  repo. `{ status: 'not_instrumented' }` means nobody records it; it
+  becomes `{ status: 'measured', value }` once stored.
+- **Live and backtest never mix.** `backtest` reads `TASK_ESTIMATES_ROLLOUT`
+  only (the pin covers one version; any other reads `unknown`). No `live`
+  figure carries a pass or fail.
+- `byCluster` holds own teams' rows only. Every other slice counts every team.
+  `byHistory` keys are the backtest bands `0`, `1-9`, `10-49`, `50+`;
+  `byDay` keys are UTC dates. `byCluster`, `byKind` and `byComplexity` use
+  `none` / `unknown` for a missing value.
+- Drilldown to one task's evidence is not in this response: the admin app
+  links an own-team task to its task page.
+- The same small-sample rule and "each group carries n" as the quality
+  metrics in `bug-intake-and-quality.md` §7. That module is not built yet;
+  when it is, estimation stays its own section (it scores forecasts, not
+  defects).
 
 **Not changed by this contract**: the estimator, its version, the gate's bars,
 the current no-go verdict, the default, the team switch, and the claim route,
@@ -230,9 +288,9 @@ implementation tasks add.
 - AC-13: GIVEN scored estimates of which some leaned mostly on the new-repo prior WHEN the page renders THEN one muted limited-history line shows the count and no rate; GIVEN none THEN no such line. Test: estimates-view.test.ts.
 - AC-14: GIVEN a member and an owner of the same enabled team WHEN each opens Health › Estimates THEN both see the same numbers; only the owner may see a link to Settings › Features. Test: EstimatesClient.test.tsx (planned case).
 - AC-15: GIVEN a caller who is not a member of team T and does not hold T's API key WHEN they GET T's task-estimates readout THEN the response is 404; GIVEN a member THEN the body holds T's rows only and no gate verdict or backtest figure. Test: apps/web/src/app/api/teams/[id]/task-estimates/route.test.ts.
-- AC-16: GIVEN no credential, a team API key, a team owner's session or an unset allowlist WHEN they call the operator estimates API THEN 404; GIVEN the platform owner THEN 200. Test: apps/web/src/app/api/admin/platform-owner-routes.test.ts (planned case).
-- AC-17: GIVEN the platform owner belongs to team A and not team B WHEN they read the operator estimates API THEN B's numbers are present and no string B wrote appears in the JSON. Test: apps/web/src/app/api/admin/tenant-privacy.test.ts (planned case).
-- AC-18: GIVEN rows under two estimator versions WHEN the operator readout is built THEN each version is scored separately, and a version absent from `TASK_ESTIMATES_ROLLOUT` reads unknown. GIVEN a held-out (cold-start) run THEN its check shows its own n and result. Live figures never appear under a backtest check. Test: packages/core/__tests__ (planned, beside the accuracy scorer).
+- AC-16: GIVEN no credential, a team API key, a team owner's session or an unset allowlist WHEN they call the operator estimates API THEN 404; GIVEN the platform owner THEN 200. Test: apps/web/src/app/api/admin/platform-owner-routes.test.ts.
+- AC-17: GIVEN the platform owner belongs to team A and not team B WHEN they read the operator estimates API THEN B's numbers are present and no string B wrote appears in the JSON. Test: apps/web/src/app/api/admin/tenant-privacy.test.ts.
+- AC-18: GIVEN rows under two estimator versions WHEN the operator readout is built THEN each version is scored separately, and a version absent from `TASK_ESTIMATES_ROLLOUT` reads unknown. GIVEN a held-out (cold-start) run THEN its check shows its own n and result. Live figures never appear under a backtest check. Test: packages/core/__tests__/task-estimate-operator.test.ts.
 - AC-19: GIVEN a measure with no stored data (write duration, failures) WHEN the operator page renders THEN it reads "not instrumented", not 0. Test: planned, in the admin app.
 
 **Visual acceptance** (team surface, before the implementation PR is called
@@ -271,6 +329,9 @@ Features › Turn off. Rows are kept. Full removal: `packages/core/TASK-ESTIMATE
 - `apps/web/src/app/app/(protected)/health/estimates/`: the team accuracy line, off and error states
 - `packages/core/task-estimate-accuracy.ts`: `computeTaskEstimateReadout`, the one scorer both surfaces read
 - `packages/core/task-estimate-accuracy-source.ts`: `fetchLiveEstimateRows`, `READOUT_ROW_LIMIT`
+- `packages/core/task-estimate-operator.ts`: `buildOperatorEstimatesReport`, `gateForVersion`, the operator projection
+- `packages/core/task-estimate-operator-source.ts`: `fetchOperatorEstimateRows`, `fetchOperatorEstimateCounts`, `OPERATOR_ROW_LIMIT`
+- `apps/web/src/app/api/admin/estimates/route.ts`: the operator API; `viewEstimates` in `apps/web/src/lib/admin/tenant-privacy.ts`
 - `apps/web/src/lib/admin/owner-gate.ts`: `requirePlatformOwner`, the operator API's gate
 - `apps/web/src/lib/task-time-row.ts`: rounding and the "rough" label
 - `apps/web/src/lib/task-estimate-hook.ts`: the after-response write
