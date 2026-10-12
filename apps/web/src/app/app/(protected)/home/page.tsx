@@ -37,6 +37,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { ACCESS_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
@@ -94,7 +95,6 @@ import { firstTaskState, gettingStartedChecklist, type FirstTaskState } from '@/
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 // --- Helpers ---
 
@@ -307,18 +307,17 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, overrides, agentKey, hostedBanner] = await Promise.all([
+        const [role, chatAvail, agentKey, hostedBanner] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
-          getTeamPermissionOverrides(activeTeamId),
           // A failed lookup reads as "has a key": never nag a working team.
           teamHasAgentCredential(activeTeamId).catch(() => true),
           teamHostedRunnerBanner(activeTeamId).catch(() => null),
         ]);
         hasAgentCredential = agentKey;
         hostedRunnerBanner = hostedBanner;
-        if (roleHasPermission(role, 'manage_model_tiers', overrides)) modelUpgradeTeamId = activeTeamId;
-        audience = homeAudience(role, overrides);
+        if (roleHasPermission(role, 'manage_model_tiers')) modelUpgradeTeamId = activeTeamId;
+        audience = homeAudience(role);
         chatPlacement = homeChatPlacement(audience, chatAvail);
         chatTeamId = activeTeamId;
       }
@@ -1832,7 +1831,8 @@ export default async function HomePage({
         // 7. Sentinel incidents the escalation gate gave to the owner: the
         // stored verdict, read here with no model call (lib/failure-incident-escalation.ts
         // through the composition root).
-        if (wsIds.length > 0) {
+        // Operator-only: a team's Home never carries incident cards (lib/service-status.ts is its surface).
+        if (wsIds.length > 0 && isPlatformOperator(user)) {
           waitingOnYou.push(...await INCIDENT_NEEDS_YOU(wsIds));
         }
 

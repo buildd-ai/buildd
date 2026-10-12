@@ -34,7 +34,8 @@
  * Pure: no DB, no env.
  */
 import { decisionFingerprint, type Decision, type DecisionQuestions } from '@builddai/ai-kit/decide';
-import { buildPickDecision } from './manifest-prediction';
+import { buildPickDecision, MANIFEST_CANDIDATE_POLICY_VERSION, MANIFEST_DECISION_ID } from './manifest-prediction';
+import type { StoredFeatureMode } from './owner-feature-switches';
 
 export type ReadoutVerdict = 'insufficient_n' | 'worse_than_baseline' | 'eligible_for_gated';
 
@@ -137,4 +138,37 @@ export function resolveApplyingFraction(input: {
   if (typeof ceiling !== 'number' || !Number.isFinite(ceiling) || ceiling <= 0) return { fraction: 0, refusal: 'no_cohort_ceiling' };
   const want = Math.min(1, requested);
   return want > ceiling ? { fraction: ceiling, refusal: 'capped' } : { fraction: want, refusal: null };
+}
+
+// ── The owner's stored switch (decision_feature_modes) ──────────────────────
+
+/**
+ * True when the platform owner's stored "acting" row for file prediction still
+ * describes the pick template as deployed: same measured identity, a
+ * threshold, a positive fraction. Anything else is recording only.
+ */
+export function storedManifestSwitchMatches(row: StoredFeatureMode | null | undefined): boolean {
+  if (!row || row.feature !== 'orchestration_manifest' || row.mode !== 'acting') return false;
+  if (row.threshold === null || !Number.isFinite(row.threshold)) return false;
+  if (!(row.applyingFraction > 0)) return false;
+  return row.measuredFingerprint === manifestPickIdentity();
+}
+
+/**
+ * The stored acting row as promotion evidence for the manifest pick, so
+ * `resolveApplyingFraction` grants it exactly as it would a committed
+ * `ORCHESTRATION_PROMOTIONS` entry: same fingerprint and threshold checks.
+ * Null unless the row still matches.
+ */
+export function manifestPromotionFromRow(row: StoredFeatureMode | null | undefined): PromotionEvidence | null {
+  if (!storedManifestSwitchMatches(row)) return null;
+  return {
+    decisionId: MANIFEST_DECISION_ID,
+    candidatePolicyVersion: MANIFEST_CANDIDATE_POLICY_VERSION,
+    measuredFingerprint: row!.measuredFingerprint!,
+    verdict: 'eligible_for_gated',
+    threshold: row!.threshold,
+    maxApplyingFraction: row!.applyingFraction,
+    readoutRef: `decision_feature_modes:${row!.feature}`,
+  };
 }

@@ -19,9 +19,53 @@ mock.module('@/lib/admin/audit', () => ({
   recordPlatformAdminAudit: async (event: any) => { audits.push(event); },
 }));
 
+// The owner's decision-feature switch: real planning and views, stubbed storage.
+const realModes = await import('@buildd/core/decision-feature-modes');
+let storedModes = new Map<string, any>();
+const modeWrites: any[] = [];
+mock.module('@buildd/core/decision-feature-modes', () => ({
+  ...realModes,
+  loadDecisionFeatureModes: async () => storedModes,
+  loadDecisionFeatureMode: async (feature: string) => storedModes.get(feature) ?? null,
+  writeDecisionFeatureMode: async (row: any) => {
+    const written = { ...row, setAt: new Date('2026-01-02T00:00:00Z') };
+    modeWrites.push(written);
+    storedModes.set(row.feature, written);
+    return written;
+  },
+}));
+
+// Stored model measurements: real planning and matching, stubbed storage.
+const realMeasurements = await import('@buildd/core/decision-model-measurements');
+let storedMeasurements: any[] = [];
+const measurementWrites: any[] = [];
+mock.module('@buildd/core/decision-model-measurements', () => ({
+  ...realMeasurements,
+  loadDecisionModelMeasurements: async () => storedMeasurements,
+  writeDecisionModelMeasurement: async (row: any) => {
+    const written = { ...row, setAt: new Date('2026-01-03T00:00:00Z') };
+    measurementWrites.push(written);
+    storedMeasurements = [...storedMeasurements.filter(r => !(r.kind === row.kind && r.model === row.model)), written];
+    return written;
+  },
+  retireDecisionModelMeasurement: async (input: any) => {
+    const found = storedMeasurements.find(r => r.kind === input.kind && r.model === input.model);
+    if (!found) return null;
+    const after = { ...found, status: 'retired', setByAccountId: input.setByAccountId, reason: input.reason };
+    measurementWrites.push(after);
+    storedMeasurements = storedMeasurements.map(r => (r === found ? after : r));
+    return after;
+  },
+}));
+
 const TEAM = '11111111-1111-4111-8111-111111111111';
 const WS = '22222222-2222-4222-8222-222222222222';
 const EXP = '33333333-3333-4333-8333-333333333333';
+
+const MEASUREMENT = {
+  kind: 'buildd.orchestration_claim_hold', model: 'clef', threshold: 0.62, precisionLower: 0.95, coverage: 0.41, n: 120,
+  evalRunId: 'run-1', measuredFingerprint: 'p-v3', reason: 'eval run-1',
+};
 
 const experimentRow = () => ({
   id: EXP, teamId: TEAM, key: 'route-a', title: 'Route A', hypothesis: null, status: 'running', kind: 'model_routing',
@@ -73,6 +117,7 @@ const insightCalls: any[] = [];
 const routes = {
   decisionFeatures: await import('./decisions/features/route'),
   decisionStats: await import('./decisions/stats/route'),
+  featureMode: await import('./decisions/features/[id]/mode/route'),
   experiments: await import('./experiments/route'),
   experiment: await import('./experiments/[id]/route'),
   flags: await import('./teams/[id]/experiment-flags/route'),
@@ -88,6 +133,7 @@ const routes = {
   teams: await import('./teams/route'),
   readout: await import('./experiments/[id]/readout/route'),
   growth: await import('./growth/route'),
+  measurements: await import('./decisions/measurements/route'),
 };
 
 const req = (path: string, method = 'GET', body?: unknown) => new NextRequest(`http://localhost:3000/api/admin/${path}`, {
@@ -101,6 +147,7 @@ type Call = { name: string; call: () => Promise<Response> };
 const calls: Call[] = [
   { name: 'GET decisions/features', call: () => routes.decisionFeatures.GET(req('decisions/features')) },
   { name: 'GET decisions/stats', call: () => routes.decisionStats.GET(req('decisions/stats')) },
+  { name: 'POST decisions/features/[id]/mode', call: () => routes.featureMode.POST(req('decisions/features/orchestration_manifest/mode', 'POST', { mode: 'acting' }), idCtx('orchestration_manifest')) },
   { name: 'GET experiments', call: () => routes.experiments.GET(req('experiments')) },
   { name: 'PATCH experiments/[id]', call: () => routes.experiment.PATCH(req(`experiments/${EXP}`, 'PATCH', { status: 'paused' }), idCtx(EXP)) },
   { name: 'GET teams/[id]/experiment-flags', call: () => routes.flags.GET(req(`teams/${TEAM}/experiment-flags`), idCtx(TEAM)) },
@@ -117,6 +164,8 @@ const calls: Call[] = [
   { name: 'GET teams', call: () => routes.teams.GET(req('teams')) },
   { name: 'GET experiments/[id]/readout', call: () => routes.readout.GET(req(`experiments/${EXP}/readout`), idCtx(EXP)) },
   { name: 'GET growth', call: () => routes.growth.GET(req('growth')) },
+  { name: 'GET decisions/measurements', call: () => routes.measurements.GET(req('decisions/measurements')) },
+  { name: 'POST decisions/measurements', call: () => routes.measurements.POST(req('decisions/measurements', 'POST', MEASUREMENT)) },
 ];
 
 beforeEach(() => {
@@ -125,6 +174,10 @@ beforeEach(() => {
   writes.length = 0;
   scopes.length = 0;
   insightCalls.length = 0;
+  storedModes = new Map();
+  modeWrites.length = 0;
+  storedMeasurements = [];
+  measurementWrites.length = 0;
   flags = { enabledDecisionShadows: ['task_role_shadow'], chatRetro: { lessons: false, proposals: false }, chatRetroDogfood: false };
 });
 
@@ -135,6 +188,8 @@ describe('non-owner gets 404 on every route', () => {
       const res = await call();
       expect(res.status).toBe(404);
       expect(writes).toHaveLength(0);
+      expect(modeWrites).toHaveLength(0);
+      expect(measurementWrites).toHaveLength(0);
       expect(audits).toHaveLength(0);
     });
   }
@@ -185,6 +240,97 @@ describe('GET decisions/features', () => {
     expect(body.totals).toMatchObject({ count: 6, costUsd: 0.0012 });
     // Data only: no labels or descriptions.
     expect(JSON.stringify(body)).not.toContain('description');
+  });
+});
+
+describe('decision feature modes', () => {
+  const features = async () => {
+    const body = await (await routes.decisionFeatures.GET(req('decisions/features'))).json();
+    return new Map<string, any>(body.groups.flatMap((g: any) => g.features).map((f: any) => [f.id, f]));
+  };
+  const post = (feature: string, body: unknown) =>
+    routes.featureMode.POST(req(`decisions/features/${feature}/mode`, 'POST', body), idCtx(feature));
+
+  it('GET says what each feature does: file prediction records and can be switched; role routing acts with no switch', async () => {
+    const f = await features();
+    expect(f.get('orchestration_manifest')).toMatchObject({ mode: 'recording', switchable: true, canAct: true });
+    expect(f.get('task_role_shadow')).toMatchObject({ mode: 'acting', switchable: false });
+    expect(f.get('task_role_shadow').cannotActReason).toBeTruthy();
+    expect(f.get('task_role_apply')).toMatchObject({ mode: 'acting', aliasOf: 'task_role_shadow' });
+  });
+
+  it('switching to acting is stored, audited and shows on GET', async () => {
+    const res = await post('orchestration_manifest', { mode: 'acting', threshold: 0.8, reason: 'measured' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ feature: 'orchestration_manifest', mode: 'acting', threshold: 0.8 });
+    expect(modeWrites).toHaveLength(1);
+    expect(modeWrites[0]).toMatchObject({ feature: 'orchestration_manifest', mode: 'acting', threshold: 0.8, setByAccountId: 'acct-owner' });
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      actorAccountId: 'acct-owner', action: 'decision_feature.mode.update', targetType: 'decision_feature',
+      targetId: 'orchestration_manifest', teamId: null, before: { mode: 'recording' }, after: { mode: 'acting', threshold: 0.8, reason: 'measured' },
+    });
+    expect((await features()).get('orchestration_manifest')).toMatchObject({ mode: 'acting', actingSince: '2026-01-02T00:00:00.000Z' });
+  });
+
+  it('back to recording always succeeds', async () => {
+    await post('orchestration_manifest', { mode: 'acting' });
+    const res = await post('orchestration_manifest', { mode: 'recording' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).mode).toBe('recording');
+    expect(audits[1]).toMatchObject({ before: { mode: 'acting' }, after: { mode: 'recording' } });
+  });
+
+  it('a feature with no switch is refused with its reason, and nothing is written', async () => {
+    const res = await post('task_role_shadow', { mode: 'acting' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBeTruthy();
+    expect(modeWrites).toHaveLength(0);
+    expect(audits).toHaveLength(0);
+  });
+
+  it('an unknown feature is 404 and a bad body 400', async () => {
+    expect((await post('nope', { mode: 'acting' })).status).toBe(404);
+    expect((await post('orchestration_manifest', { mode: 'live' })).status).toBe(400);
+    expect((await post('orchestration_manifest', { mode: 'acting', threshold: 3 })).status).toBe(400);
+    expect(modeWrites).toHaveLength(0);
+  });
+});
+
+describe('decision model measurements', () => {
+  const post = (body: unknown) => routes.measurements.POST(req('decisions/measurements', 'POST', body));
+
+  it('storing a measurement writes it, audits it and lists it', async () => {
+    const res = await post({ ...MEASUREMENT, model: '@cf/cloudflare/clef' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).measurement).toMatchObject({ kind: MEASUREMENT.kind, model: 'clef', threshold: 0.62, status: 'active' });
+    expect(measurementWrites[0]).toMatchObject({ model: 'clef', setByAccountId: 'acct-owner', measuredFingerprint: 'p-v3' });
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      actorAccountId: 'acct-owner', action: 'decision_measurement.update', targetType: 'decision_measurement',
+      targetId: `${MEASUREMENT.kind}|clef`, teamId: null,
+      before: { threshold: null, status: null }, after: { threshold: 0.62, status: 'active', n: 120, reason: 'eval run-1' },
+    });
+    const list = await (await routes.measurements.GET(req('decisions/measurements'))).json();
+    expect(list.measurements).toHaveLength(1);
+    expect(list.measurements[0]).toMatchObject({ kind: MEASUREMENT.kind, model: 'clef', status: 'active' });
+  });
+
+  it('retire marks the row retired and audits it; an unknown pair is 404', async () => {
+    await post(MEASUREMENT);
+    const res = await post({ action: 'retire', kind: MEASUREMENT.kind, model: 'clef', reason: 'prompt rewritten' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).measurement).toMatchObject({ status: 'retired' });
+    expect(audits[1]).toMatchObject({ action: 'decision_measurement.retire', before: { status: 'active' }, after: { status: 'retired', reason: 'prompt rewritten' } });
+    expect((await post({ action: 'retire', kind: MEASUREMENT.kind, model: 'clef-flash' })).status).toBe(404);
+    expect(audits).toHaveLength(2);
+  });
+
+  it('a bad body is 400 and nothing is written', async () => {
+    expect((await post({ ...MEASUREMENT, threshold: 2 })).status).toBe(400);
+    expect((await post({ ...MEASUREMENT, measuredFingerprint: '' })).status).toBe(400);
+    expect(measurementWrites).toHaveLength(0);
+    expect(audits).toHaveLength(0);
   });
 });
 

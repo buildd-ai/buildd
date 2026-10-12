@@ -427,6 +427,12 @@ padding, and fill-only panels, wherever the box is a standalone object.
 information. A status line, not a decision; a notice that asks for a person's
 call is an L3 decision card instead.
 
+**Decision cards size to their pane, not the viewport.** `QuestionHero` is
+rendered in the task page, the mission agent drawer and the chat feed, so its
+type, padding and option columns use container queries (`@md:`, `@3xl:`), never
+`md:`/`xl:`, and option columns are `minmax(0,1fr)`. Enforced by
+`QuestionHeroContainer.test.ts`.
+
 **Built:** `components/ui/Notice.tsx`.
 
 **Props:** `tone?: 'ok' | 'warn' | 'err' | 'info'` (default `info`), `title?`,

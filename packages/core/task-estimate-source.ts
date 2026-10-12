@@ -2,8 +2,9 @@
  * The I/O half of the task-estimates experiment (the pure blend is
  * `./task-estimate.ts`; removal steps in `./TASK-ESTIMATES-REMOVAL.md`).
  *
- * Every new work task on an opted-in team (`teams.task_estimates.enabled`)
- * gets ONE frozen row in `task_estimates`, written after the creation response
+ * Every new work task on a team with estimates on (`teams.task_estimates`,
+ * read against the default-on gate in `./task-estimate-rollout.ts`) gets ONE
+ * frozen row in `task_estimates`, written after the creation response
  * (`writeTaskEstimate`, scheduled by apps/web/src/lib/task-estimate-hook.ts).
  * Insert-only: a re-estimate is a new estimator version, never an update.
  *
@@ -49,23 +50,36 @@ import {
   type ClusterEvidence, type EstimateInputs, type NeighbourEvidence, type PriorCell, type PriorTable, type SizeBucket,
   type TaskEstimateResult,
 } from './task-estimate';
+import { resolveTaskEstimatesState, taskEstimatesDefaultOn, type TaskEstimatesState } from './task-estimate-rollout';
 import { defaultStore, neighbourSessionsWhere } from './task-size-estimate';
 
 // ── Team switch ──────────────────────────────────────────────────────────────
 
-/** The stored value, read fail-closed: only a literal `enabled: true` is on. */
-export function readTaskEstimatesSetting(raw: unknown): boolean {
-  return !!raw && typeof raw === 'object' && !Array.isArray(raw) && (raw as Record<string, unknown>).enabled === true;
+/**
+ * The stored value against the platform default (./task-estimate-rollout.ts):
+ * a boolean `enabled` is the team's choice; NULL or anything else follows the
+ * default, which is off until the quality gate passes.
+ */
+export function readTaskEstimatesSetting(raw: unknown, defaultOn: boolean = taskEstimatesDefaultOn()): boolean {
+  return resolveTaskEstimatesState(raw, defaultOn).enabled;
 }
 
-/** Whether a team opted in. A read error is "off". */
-export async function taskEstimatesEnabled(teamId: string): Promise<boolean> {
+/**
+ * A team's switch, with whether it chose or follows the default. `error`: the
+ * row could not be read, so estimates read as off (never written, never shown).
+ */
+export async function loadTaskEstimatesState(teamId: string): Promise<TaskEstimatesState & { error?: true }> {
   try {
     const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { taskEstimates: true } });
-    return readTaskEstimatesSetting(row?.taskEstimates);
+    return resolveTaskEstimatesState(row?.taskEstimates);
   } catch {
-    return false;
+    return { ...resolveTaskEstimatesState(null), enabled: false, error: true };
   }
+}
+
+/** Whether a team gets estimates. A read error is "off". */
+export async function taskEstimatesEnabled(teamId: string): Promise<boolean> {
+  return (await loadTaskEstimatesState(teamId)).enabled;
 }
 
 // ── k0 config ────────────────────────────────────────────────────────────────
@@ -484,6 +498,7 @@ export interface WriteTaskEstimateDeps extends LoadEstimateInputsDeps {
  * (task_id, estimator_version) for a concurrent writer). Never throws.
  */
 export async function writeTaskEstimate(taskId: string, deps: WriteTaskEstimateDeps = {}): Promise<WriteTaskEstimateOutcome> {
+  const startedAt = Date.now();
   try {
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, taskId),
@@ -522,6 +537,8 @@ export async function writeTaskEstimate(taskId: string, deps: WriteTaskEstimateD
       })
       .onConflictDoNothing({ target: [taskEstimates.taskId, taskEstimates.estimatorVersion] })
       .returning({ id: taskEstimates.id });
+    // The runtime cost of one estimate, after the response: the number to watch before and after a default flip.
+    if (inserted.length > 0) console.info(`[task-estimate] written for task ${taskId} in ${Date.now() - startedAt}ms`);
     return inserted.length > 0 ? 'written' : 'exists';
   } catch (err) {
     const e = err as { name?: string; code?: string } | null;

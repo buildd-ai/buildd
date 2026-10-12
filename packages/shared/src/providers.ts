@@ -102,7 +102,14 @@ export interface ListProvidersResponse {
   policy: ProviderPolicySummary;
   /** Personal model keys stored by anyone in the team (a count, never whose). */
   personalKeyCount?: number;
+  /** Workspaces of the team with model keys of their own (ids, sorted). Empty for a task token. */
+  workspacesWithKeys?: string[];
   providers: ProviderListing[];
+}
+
+/** `GET|PATCH /api/providers/assignments`: the team's pick per surface; a missing surface = the resolver's own ranking. */
+export interface ProviderAssignmentsResponse {
+  assignments: Partial<Record<'chat' | 'agent-claude' | 'agent-codex' | 'cloud-egress', string>>;
 }
 
 /** `PUT /api/providers` */

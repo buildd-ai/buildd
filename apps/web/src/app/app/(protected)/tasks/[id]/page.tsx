@@ -82,7 +82,6 @@ import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-loa
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadRunnerReachDiagnosis } from '@/lib/runner-reach';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
@@ -102,7 +101,7 @@ import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { displayTaskTitle } from '@/lib/task-title';
 import { linkQuestionNote } from './question-hero';
-import { buildLineage } from './pr-lineage';
+import { buildLineage, diffStatsRecorded } from './pr-lineage';
 import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
 import type { PrOutcome } from '@/components/task/PrCard';
 import { buildHeroPool, pickHeroShots } from '@/lib/mission-shipped';
@@ -120,7 +119,7 @@ import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
 import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
 import BookkeepingAttemptRow from './BookkeepingAttemptRow';
-import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision } from '@/lib/task-verdict';
+import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
@@ -347,15 +346,12 @@ export default async function TaskDetailPage({
   // fix). Runner work only; a local mission's task is claimed from a session.
   // Shown only when the task can start (filtered below, once deps are known).
   const runnerReachLoad = task.status === 'pending' && missionExecutorOf(missionContextRow) !== 'local' && task.workspace
-    ? Promise.all([
-        loadRunnerReachDiagnosis({
-          id: task.workspace.id,
-          teamId: task.workspace.teamId,
-          accessMode: task.workspace.accessMode,
-        }),
-        getTeamPermissionOverrides(access.teamId),
-      ])
-        .then(([diagnosis, overrides]) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role, overrides) } : null)
+    ? loadRunnerReachDiagnosis({
+        id: task.workspace.id,
+        teamId: task.workspace.teamId,
+        accessMode: task.workspace.accessMode,
+      })
+        .then((diagnosis) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role) } : null)
         .catch(() => null)
     : Promise.resolve(null);
   // Cloud runs only: its time on the hosted runner, all attempts. Started
@@ -850,11 +846,13 @@ export default async function TaskDetailPage({
 
 
   let prOutcome: PrOutcome | null = null;
+  // Claim to merge, for the status row (the one place a merged PR is stated).
+  let lineageClaimToMergeMs: number | null = null;
   if (prWorker) {
     const firstAttempt = {
       runner: runnerLabel(prWorker),
       roleName,
-      commits: prWorker.commitCount ?? 0,
+      commits: prWorker.commitCount ?? null,
       add: prWorker.linesAdded ?? 0,
       rem: prWorker.linesRemoved ?? 0,
       files: prWorker.filesChanged ?? 0,
@@ -870,7 +868,7 @@ export default async function TaskDetailPage({
       return {
         runner: runnerLabel(w),
         roleName,
-        commits: w.commitCount ?? 0,
+        commits: w.commitCount ?? null,
         add: w.linesAdded ?? 0,
         rem: w.linesRemoved ?? 0,
         files: w.filesChanged ?? 0,
@@ -891,11 +889,13 @@ export default async function TaskDetailPage({
       })),
       pr: { lifecycle: prWorker.prLifecycleStatus ?? null, mergedAt: prWorker.mergedAt?.getTime() ?? null },
     });
+    lineageClaimToMergeMs = lineage.totals.claimToMergeMs;
     prOutcome = {
       repoLabel: task.workspace?.repo ? normalizeRepoFullName(task.workspace.repo) : null,
       summary: ((task.result as { summary?: string } | null)?.summary) ?? null,
-      // Nothing reported a commit or a diff yet: the numbers are unknown, not 0.
-      totals: { ...lineage.totals, measured: attempts.some(a => a.headSha != null || a.commits > 0 || a.add > 0 || a.rem > 0 || a.files > 0) },
+      // No attempt recorded its counters: the numbers are unknown, not 0 (a
+      // recorded head SHA alone does not count; see diffStatsRecorded).
+      totals: { ...lineage.totals, measured: diffStatsRecorded(attempts) },
       attempts: attempts.map((a, i) => ({ add: a.add, rem: a.rem, files: a.files, running: i > 0 && a.completedAt == null, actions: a.actions })),
       lineage: lineage.steps,
       // The retry's own summary is what it did about the failure.
@@ -924,8 +924,12 @@ export default async function TaskDetailPage({
     deliveryPrState: deliveryView?.prState ?? null,
   }), review: reviewOutcome,
     // The platform updating the branch or merging: in progress, not "ready to merge".
-    deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null });
+    deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null,
+    // A merged PR is stated once, on the status row, and the time goes with it.
+    claimToMerge: lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : null });
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
+  // The status row names and links the PR: the side panel and the PR card do not say it again.
+  const prStatedAbove = verdictLinksPr(verdict, prWorker?.prUrl);
   // What each agent error means for the outcome. Every trace stays inspectable;
   // only the ones the record says still matter are counted or shown in red.
   const traceWorkers = [...taskWorkers, ...ciAttemptTasks.flatMap(t => t.workers)];
@@ -998,9 +1002,10 @@ export default async function TaskDetailPage({
     p50Minutes: taskEstimate?.p50Minutes ?? null,
     p80Minutes: taskEstimate?.p80Minutes ?? null,
     summary: taskEstimate?.explanation?.summary ?? null,
+    priorWeight: taskEstimate?.explanation?.priorWeight ?? null,
   });
   const factRows: FactRow[] = [
-    ...(prOutcome && prWorker && isTerminal
+    ...(prOutcome && prWorker && isTerminal && !prStatedAbove
       ? [{
           key: 'pr',
           label: 'PR',
@@ -1474,6 +1479,7 @@ export default async function TaskDetailPage({
                 maxLoops={task.loopConfig.maxLoops ?? 5}
                 loopState={task.loopState}
                 startAt={task.startAt?.toISOString() ?? null}
+                exitConditionType={task.loopConfig.exitCondition?.type ?? null}
               />
             )}
             {/* Release controls belong to the deliverable, never to a review or fix run. */}
@@ -1897,6 +1903,7 @@ export default async function TaskDetailPage({
             // The header carries the summary and the one action.
             outcome: prOutcome && shippedView ? { ...prOutcome, summary: null } : prOutcome,
             hideAction: !!shippedView,
+            statedAbove: prStatedAbove,
             openAttempt,
           };
           return (

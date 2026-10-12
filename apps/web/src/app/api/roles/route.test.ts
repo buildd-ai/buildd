@@ -35,7 +35,7 @@ mock.module('@/lib/account-workspace-cache', () => ({
 // The caller's role per team; `can` resolves through the real registry.
 let teamRoles: Record<string, string> = {};
 const mockCan = mock(async (caller: any, permission: any, teamId: string) =>
-  caller.kind === 'user' && roleHas(teamRoles[teamId], permission, {}));
+  caller.kind === 'user' && roleHas(teamRoles[teamId], permission));
 mock.module('@/lib/permissions', () => ({ can: mockCan }));
 
 mock.module('@/lib/mission-context', () => ({

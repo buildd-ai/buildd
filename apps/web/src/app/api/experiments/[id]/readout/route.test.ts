@@ -12,7 +12,7 @@ const mockResolveViewer = mock(async () => viewer);
 const mockGet = mock(async () => stored);
 const mockRun = mock(async (..._a: any[]) => ({ verdict: 'insufficient_n' }) as any);
 
-// The visibility check reads the team's permission overrides; none stored.
+// The personal-team lookup finds nothing.
 mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async () => null } } } }));
 mock.module('@/lib/experiment-access', () => ({
   resolveExperimentViewer: mockResolveViewer,

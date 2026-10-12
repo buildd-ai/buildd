@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireChatCaller, resolveChatTeam } from '@/lib/chat/session';
 import { createChatUpload } from '@/lib/artifact-chat-files';
 import { generateConstrainedUploadUrl, isStorageConfigured } from '@/lib/storage';
+import { uploadStagingKey } from '@/lib/storage-keys';
 
 /**
  * POST /api/chat/uploads { name, mediaType, sizeBytes, teamId? }
@@ -22,6 +23,7 @@ export async function POST(req: NextRequest) {
   if (!teamId) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
   const created = await createChatUpload({ teamId, userId: r.caller.user.id, name: body.name, mediaType: body.mediaType, sizeBytes: body.sizeBytes });
   if (!created.ok) return NextResponse.json({ error: created.error, code: created.code }, { status: created.status });
-  const uploadUrl = await generateConstrainedUploadUrl(created.storageKey, created.mediaType, created.sizeBytes);
+  // Signed for the staging key: finalize copies the verified bytes to storageKey (lib/artifact-upload.ts).
+  const uploadUrl = await generateConstrainedUploadUrl(uploadStagingKey(created.storageKey), created.mediaType, created.sizeBytes);
   return NextResponse.json({ artifactId: created.artifactId, uploadUrl, mediaType: created.mediaType, sizeBytes: created.sizeBytes, name: created.name });
 }

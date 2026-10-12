@@ -3736,6 +3736,29 @@ describe('POST /api/workers/claim', () => {
       });
     });
 
+    /** The claimed_by_cloud flag the latest conditional worker INSERT carried. */
+    const insertedCloud = (): unknown => {
+      const insert = (mockDbExecute.mock.calls as any[]).map(c => c[0]).filter((q: any) =>
+        Array.isArray(q?.strings) && q.strings.join('').includes('INSERT INTO')).pop();
+      expect(insert.strings.join('')).toContain('claimed_by_cloud');
+      // values: workers, task_id, workspace_id, account_id, name, runner, branch, claimed_by_user_id, claimed_by_cloud
+      return insert?.values?.[8];
+    };
+
+    // A cloud container runs its runner on a task token, so the worker records
+    // that a cloud container claimed it: on that worker, task-token
+    // verification evidence is the runner's (lib/verification-provenance.ts).
+    it('a cloud executor claim records the worker as cloud-claimed; a host claim does not', async () => {
+      await withEncryptionKey(async () => {
+        setupTeamWithEveryCredential();
+        await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner', executor: 'cloud' } }));
+        expect(insertedCloud()).toBe(true);
+        setupTeamWithEveryCredential();
+        await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+        expect(insertedCloud()).toBe(false);
+      });
+    });
+
     it("executor 'cloud': no credential field, nothing decrypted, no refresh list", async () => {
       await withEncryptionKey(async () => {
         setupTeamWithEveryCredential();
@@ -3831,23 +3854,26 @@ describe('POST /api/workers/claim', () => {
           i.requesterUserId === ALICE ? personal('sk-ant-alice-personal') : { none: true, reason: 'no_credential', why: [] });
       });
 
-      it('credential_policy NULL: the claim payload is byte-identical to a team with no policy row at all, and no personal lookup runs', async () => {
+      it("credential_policy NULL is personal_first: the requester's own key is the model credential", async () => {
         await withEncryptionKey(async () => {
-          // Baseline: no team row, i.e. the claim as it was before policies existed.
-          setup({ requester: ALICE });
-          const before = await claim();
-          // NULL policy, even with the chat-only legacy column set to "own keys",
-          // a requester who HAS a personal key, and a runner declaring the feature.
-          setup({ policy: null, requester: ALICE, legacyColumn: 'own' });
-          const after = await claim();
-          expect(after.status).toBe(200);
-          expect(JSON.stringify(after.data)).toBe(JSON.stringify(before.data));
-          const w = after.data.workers[0];
+          // NULL policy and the legacy column at its default: the default rule.
+          setup({ policy: null, requester: ALICE, legacyColumn: 'team' });
+          const { status, data } = await claim();
+          expect(status).toBe(200);
+          const w = data.workers[0];
+          expect(w.serverApiKey).toBe('sk-ant-alice-personal');
+          expect(w.serverOauthToken).toBeUndefined();
+          expect(w.credentialDecision).toMatchObject({ surface: 'agent-claude', policy: 'personal_first', scope: 'personal' });
+        });
+      });
+
+      it('credential_policy NULL, no requester: team credentials, never a personal one', async () => {
+        await withEncryptionKey(async () => {
+          setup({ policy: null, requester: null });
+          const { data } = await claim();
+          const w = data.workers[0];
           expect(w.serverApiKey).toBe('decrypted-secret-value');
-          expect(w.serverOauthToken).toBe('decrypted-secret-value');
-          expect('credentialDecision' in w).toBe(false);
-          expect(JSON.stringify(after.data)).not.toContain('sk-ant-alice-personal');
-          expect(mockResolveProviderCredential).not.toHaveBeenCalled();
+          expect(JSON.stringify(data)).not.toContain('sk-ant-alice-personal');
         });
       });
 

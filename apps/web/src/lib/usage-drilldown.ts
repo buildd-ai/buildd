@@ -422,6 +422,7 @@ export function shortToolName(name: string): string {
 /** Compact token counts — per-task input runs into the millions. */
 export function formatTokens(n: number): string {
   if (!Number.isFinite(n)) return '';
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return `${Math.round(n)}`;
