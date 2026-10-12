@@ -16,7 +16,7 @@ export default function NoCandidateWorkspaces({ workspaces }: { workspaces: { id
     <div data-testid="release-flow-not-enabled">
       <h1 className="text-xl font-semibold text-text-primary">Compose a release</h1>
       <p className="mt-2 text-body text-text-secondary">
-        No workspace here cuts frozen release candidates yet. Turn on Release candidates in a workspace&apos;s release settings, under Delivery.
+        No workspace cuts frozen release candidates. Turn on Release candidates under Delivery in a workspace&apos;s release settings.
       </p>
       <div className="mt-4 border-t border-border-default">
         {workspaces.length > 0 ? (
