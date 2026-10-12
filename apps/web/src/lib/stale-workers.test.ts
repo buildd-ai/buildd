@@ -142,6 +142,7 @@ mock.module('@buildd/core/worker-messages', () => ({
 
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers, cleanupUnreadInteractiveAnswers, resolveTasksOfReapedWorkers } from './stale-workers';
 import { INTERACTIVE_ABANDONED_ERROR } from './worker-exit-taxonomy';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 describe('cleanupStuckWaitingInput', () => {
   beforeEach(() => {
@@ -2689,7 +2690,8 @@ describe('cleanupStaleWorkers — never-started / silent-start taxonomy', () => 
       if (Array.isArray(node)) { node.forEach(n => walk(n, depth + 1)); return; }
       if (typeof node === 'object') { Object.values(node).forEach(n => walk(n, depth + 1)); }
     };
-    walk(mockWorkersFindMany.mock.calls[0][0]);
+    const findArgs = mockWorkersFindMany.mock.calls[0][0] as any;
+    walk({ ...findArgs, where: capturedWhere(findArgs.where) });
 
     const agesMin = dates.map(d => Math.round((Date.now() - d.getTime()) / 60000));
     // Derived from the shared constant rather than hardcoded: the generic rule

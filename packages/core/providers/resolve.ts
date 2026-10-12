@@ -83,6 +83,7 @@ import {
   type TeamPolicyColumns,
 } from './policy';
 import { normalizeRequester, personalRowEligible } from './requester';
+import { sqlWhere } from '../db/relational-sql';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -577,7 +578,7 @@ async function loadTeamPolicy(teamId: string): Promise<TeamPolicyColumns | null>
     const { db } = await import('../db');
     const { teams } = await import('../db/schema');
     return (await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       columns: { credentialPolicy: true, inferenceKeyPolicy: true, providerAssignments: true },
     })) ?? null;
   } catch (e) {
@@ -605,7 +606,7 @@ export async function resolveProviderCredential(input: ResolveProviderCredential
     try {
       const { db } = await import('../db');
       rows = (await db.query.secrets.findMany({
-        where: providerCredentialWhere({
+        where: sqlWhere(providerCredentialWhere({
           teamId: input.teamId,
           workspaceId: input.workspaceId,
           accountId: input.accountId,
@@ -613,7 +614,7 @@ export async function resolveProviderCredential(input: ResolveProviderCredential
           purposes,
           personalAllowed: applied !== 'team' && scopeAsked('personal'),
           legacyAccountRows: !isAgentSurface(input.surface) && scopeAsked('account'),
-        }),
+        })),
         columns: {
           id: true, purpose: true, label: true, encryptedValue: true, accountId: true, workspaceId: true,
           userId: true, healthStatus: true, tokenExpiresAt: true, updatedAt: true,

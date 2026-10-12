@@ -103,6 +103,7 @@ import { loadDependencyRows } from '@/lib/dependency-rows';
 import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -127,7 +128,7 @@ export default async function MissionDetailPage({
   // columns arrive as a projected digest, read alongside (mission-page-query.ts).
   const [missionRow, digestRows] = await Promise.all([
     db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       with: MISSION_DETAIL_WITH,
     }),
     db.select(TASK_DIGEST_SELECTION).from(tasks).where(taskDigestWhere(id)),
@@ -151,7 +152,7 @@ export default async function MissionDetailPage({
     });
     if (staleWorkers.length > 0) {
       const wsWithInstall = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
+        where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
         columns: {},
         with: { githubInstallation: { columns: { installationId: true } } },
       });
@@ -196,15 +197,15 @@ export default async function MissionDetailPage({
       }
       const [rolesResult, workspacesResult] = await Promise.all([
         db.query.workspaceSkills.findMany({
-          where: and(
+          where: sqlWhere(and(
             inArray(workspaceSkills.workspaceId, wsIds),
             eq(workspaceSkills.enabled, true),
-          ),
+          )),
           columns: { slug: true, name: true, color: true },
-          orderBy: [desc(workspaceSkills.createdAt)],
+          orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
         }),
         db.query.workspaces.findMany({
-          where: inArray(workspaces.teamId, teamIds),
+          where: sqlWhere(inArray(workspaces.teamId, teamIds)),
           columns: { id: true, name: true },
         }),
       ]);
@@ -227,20 +228,20 @@ export default async function MissionDetailPage({
     // would silently vanish from the rail.
     allMissionTaskIds.length > 0
       ? db.query.missionNotes.findMany({
-          where: and(
+          where: sqlWhere(and(
             or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)),
             eq(missionNotes.authorType, 'user'),
-          ),
+          )),
           columns: { id: true, authorType: true, createdAt: true },
         })
       : db.query.missionNotes.findMany({
-          where: and(eq(missionNotes.missionId, id), eq(missionNotes.authorType, 'user')),
+          where: sqlWhere(and(eq(missionNotes.missionId, id), eq(missionNotes.authorType, 'user'))),
           columns: { id: true, authorType: true, createdAt: true },
         }),
     // BT-21: the workspace row behind the effective merge policy tier.
     mission.workspaceId
       ? db.query.workspaces.findFirst({
-          where: eq(workspaces.id, mission.workspaceId),
+          where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
           columns: { id: true, gitConfig: true },
         })
       : Promise.resolve(null),
@@ -608,19 +609,19 @@ export default async function MissionDetailPage({
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
       ? db.query.initiatives.findFirst({
-          where: eq(initiatives.id, initiativeId),
+          where: sqlWhere(eq(initiatives.id, initiativeId)),
           columns: { title: true },
         }).then(row => row?.title)
       : Promise.resolve(undefined),
     isTerminal
       ? Promise.resolve([] as InitiativeOption[])
       : db.query.initiatives.findMany({
-          where: and(
+          where: sqlWhere(and(
             inArray(initiatives.teamId, teamIds),
             inArray(initiatives.status, ['active', 'paused']),
-          ),
+          )),
           columns: { id: true, title: true, status: true },
-          orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
+          orderBy: sqlOrderBy([desc(initiatives.priority), desc(initiatives.createdAt)]),
           limit: 50,
         }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 }))),
     // The mission reads only its own Shipped fact from this (D6); the
@@ -637,9 +638,9 @@ export default async function MissionDetailPage({
     // never the latest task's summary.
     mission.status === 'completed'
       ? db.query.missionNotes.findFirst({
-          where: and(eq(missionNotes.missionId, id), eq(missionNotes.title, MISSION_COMPLETED_NOTE_TITLE)),
+          where: sqlWhere(and(eq(missionNotes.missionId, id), eq(missionNotes.title, MISSION_COMPLETED_NOTE_TITLE))),
           columns: { body: true, createdAt: true },
-          orderBy: desc(missionNotes.createdAt),
+          orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
         }).then(row => row ?? null)
       : Promise.resolve(null),
     // F6: the Shipped link opens the release carrying THIS mission's work
@@ -648,18 +649,18 @@ export default async function MissionDetailPage({
     // The Feed's escalations and answers: agent questions and human replies,
     // on the mission or on any of its tasks (task-scoped notes carry no missionId).
     db.query.missionNotes.findMany({
-      where: and(
+      where: sqlWhere(and(
         allMissionTaskIds.length > 0 ? or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)) : eq(missionNotes.missionId, id),
         or(eq(missionNotes.type, 'question' as any), eq(missionNotes.authorType, 'user')),
-      ),
+      )),
       columns: { id: true, type: true, authorType: true, title: true, taskId: true, createdAt: true },
-      orderBy: desc(missionNotes.createdAt),
+      orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
       limit: 200,
     }),
     // The stored "What shipped" record. A read failure only costs the header.
     mission.status === 'completed'
       ? db.query.artifacts.findFirst({
-          where: and(eq(artifacts.missionId, id), eq(artifacts.key, shippedArtifactKey(id))),
+          where: sqlWhere(and(eq(artifacts.missionId, id), eq(artifacts.key, shippedArtifactKey(id)))),
           columns: { metadata: true },
         }).then(row => row ?? null, () => null)
       : Promise.resolve(null),

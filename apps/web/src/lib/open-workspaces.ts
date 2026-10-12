@@ -17,6 +17,7 @@
 import { db } from '@buildd/core/db';
 import { workspaces, accountWorkspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * WHERE predicate: open workspaces owned by one of `teamIds`. Callers with no
@@ -39,7 +40,7 @@ export async function listOpenWorkspaces<C extends Record<string, true>>(
   const ids = [...new Set(teamIds.filter(Boolean))];
   if (ids.length === 0) return [];
   const rows = await db.query.workspaces.findMany({
-    where: openInTeams(ids),
+    where: sqlWhere(openInTeams(ids)),
     columns: columns as never,
     ...(opts.limit ? { limit: opts.limit } : {}),
   });
@@ -66,17 +67,17 @@ export async function workspaceOpenToCaller(
 ): Promise<boolean> {
   if (!workspaceId) return false;
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true, accessMode: true },
   });
   if (!ws || ws.accessMode !== 'open') return false;
   if (isOpenWithinTeams(ws, caller.teamIds)) return true;
   if (!caller.accountId) return false;
   const link = await db.query.accountWorkspaces.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(accountWorkspaces.accountId, caller.accountId),
       eq(accountWorkspaces.workspaceId, workspaceId),
-    ),
+    )),
     columns: { workspaceId: true },
   });
   return !!link;

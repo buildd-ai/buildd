@@ -4,6 +4,7 @@ import { inArray } from 'drizzle-orm';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { accountReachesWorkspace } from '@/lib/workspace-reach';
+import { sqlWhere, sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 /**
  * Which other workspaces' docs corpora a workspace may read alongside its own.
@@ -44,7 +45,7 @@ export async function resolveLinkedDocsWorkspaces(input: {
   if (!workspaceId || !account) return [];
   try {
     const source = await db.query.workspaces.findFirst({
-      where: (w, { eq }) => eq(w.id, workspaceId),
+      where: { RAW: sqlWhereFn((w, { eq }) => eq(w.id, workspaceId)) },
       columns: { id: true, teamId: true, gitConfig: true },
     });
     const raw = (source?.gitConfig as { linkedKnowledgeWorkspaces?: unknown } | null | undefined)?.linkedKnowledgeWorkspaces;
@@ -57,7 +58,7 @@ export async function resolveLinkedDocsWorkspaces(input: {
 
     const [rows, links] = await Promise.all([
       db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wanted),
+        where: sqlWhere(inArray(workspaces.id, wanted)),
         columns: { id: true, teamId: true, accessMode: true, dataClass: true },
       }),
       getAccountWorkspacePermissions(account.id),

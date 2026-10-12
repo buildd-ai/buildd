@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
 import { schedulesRedirectTarget } from './schedules-redirect';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,9 +21,9 @@ export default async function SchedulesPage({ searchParams }: { searchParams: Pr
   const { workspace } = await searchParams;
   const wsIds = await getUserWorkspaceIds(user.id);
   const rows = wsIds.length === 0 ? [] : await db.query.workspaces.findMany({
-    where: inArray(workspaces.id, wsIds),
+    where: sqlWhere(inArray(workspaces.id, wsIds)),
     columns: { id: true, name: true },
-    orderBy: [asc(workspaces.name)],
+    orderBy: sqlOrderBy([asc(workspaces.name)]),
   });
   redirect(schedulesRedirectTarget({ requested: workspace ?? null, workspaces: rows.filter(w => !isSystemWorkspace(w.name)) }));
 }

@@ -6,6 +6,7 @@
  */
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { KernelView } from './types';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 let view: KernelView;
 const applied: any[] = [];
@@ -132,7 +133,7 @@ describe('dispatch_fix (T8 then the fix task)', () => {
     workerQueries.length = 0;
     await __handlers.dispatchFix(E('dispatch_fix', { roundId: 'r1', round: 1, headSha: 'H1', attemptNo: 1 }));
     expect(workerQueries.length).toBeGreaterThan(0);
-    expect(literals(workerQueries[0].where).some((v) => typeof v === 'string' && v.includes('acme/w'))).toBe(true);
+    expect(literals(capturedWhere(workerQueries[0].where)).some((v) => typeof v === 'string' && v.includes('acme/w'))).toBe(true);
   });
 
   test('allocates the ledger row first, then files ONE legacy-shaped fix task linked to the delivery and attempt', async () => {

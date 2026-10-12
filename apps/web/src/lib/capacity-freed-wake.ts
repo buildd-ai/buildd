@@ -22,6 +22,7 @@ import { tasks, workspaces } from '@buildd/core/db/schema';
 import { isCloudDispatchWebhook } from '@buildd/shared';
 import { claimablePendingWhere } from '@/app/api/cron/queue-stall/fleet-idle';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function wakeOldestPendingTaskOnCapacityFreed(
   workspaceId: string,
@@ -29,7 +30,7 @@ export async function wakeOldestPendingTaskOnCapacityFreed(
 ): Promise<void> {
   try {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { webhookConfig: true },
     });
     if (!isCloudDispatchWebhook(workspace?.webhookConfig as { enabled?: unknown; events?: unknown } | null | undefined)) {
@@ -37,12 +38,12 @@ export async function wakeOldestPendingTaskOnCapacityFreed(
     }
 
     const candidate = await db.query.tasks.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.workspaceId, workspaceId),
         claimablePendingWhere(new Date()),
         excludeTaskId ? ne(tasks.id, excludeTaskId) : undefined,
-      ),
-      orderBy: (t, { desc, asc }) => [desc(t.priority), asc(t.createdAt)],
+      )),
+      orderBy: sqlOrderByFn((t, { desc, asc }) => [desc(t.priority), asc(t.createdAt)]),
       columns: { id: true },
     });
     if (!candidate) return;

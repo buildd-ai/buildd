@@ -12,26 +12,27 @@ import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { loadTeamCatalog } from './connector-catalog-store';
 import { loadOperatorGrant } from './operator-capability-source';
 import type { DiscoveryCredential, DiscoveryInput, DiscoveryRole } from './connector-capabilities';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function loadDiscoveryInput(
   workspaceId: string,
   roleSlug: string | null,
   now: Date = new Date(),
 ): Promise<DiscoveryInput | null> {
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { teamId: true } });
   if (!ws?.teamId) return null;
   const teamId = ws.teamId;
 
   const [catalog, shareRows, roleRows, operatorGrant] = await Promise.all([
     loadTeamCatalog(teamId),
-    db.query.connectorShares.findMany({ where: eq(connectorShares.sharedWithTeamId, teamId), columns: { connectorId: true } }),
+    db.query.connectorShares.findMany({ where: sqlWhere(eq(connectorShares.sharedWithTeamId, teamId)), columns: { connectorId: true } }),
     db.query.workspaceSkills.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workspaceSkills.teamId, teamId),
         eq(workspaceSkills.isRole, true),
         eq(workspaceSkills.enabled, true),
         or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, workspaceId)),
-      ),
+      )),
       columns: { slug: true, workspaceId: true, connectorRefs: true, allowedTools: true },
     }),
     roleSlug ? loadOperatorGrant(workspaceId, roleSlug) : Promise.resolve(null),
@@ -39,9 +40,9 @@ export async function loadDiscoveryInput(
 
   const sharedIds = shareRows.map(r => r.connectorId);
   const connectorRows = await db.query.connectors.findMany({
-    where: sharedIds.length > 0
+    where: sqlWhere(sharedIds.length > 0
       ? or(eq(connectors.teamId, teamId), inArray(connectors.id, sharedIds))
-      : eq(connectors.teamId, teamId),
+      : eq(connectors.teamId, teamId)),
     columns: { id: true, name: true, url: true, authMode: true, transport: true, command: true, teamId: true },
   });
   const ids = connectorRows.map(c => c.id);
@@ -49,11 +50,11 @@ export async function loadDiscoveryInput(
 
   const [cwRows, secretRows] = ids.length === 0 ? [[], []] : await Promise.all([
     db.query.connectorWorkspaces.findMany({
-      where: and(eq(connectorWorkspaces.workspaceId, workspaceId), inArray(connectorWorkspaces.connectorId, ids)),
+      where: sqlWhere(and(eq(connectorWorkspaces.workspaceId, workspaceId), inArray(connectorWorkspaces.connectorId, ids))),
       columns: { connectorId: true, enabled: true },
     }),
     db.query.secrets.findMany({
-      where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential', label: ids }),
+      where: sqlWhere(teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential', label: ids })),
       columns: { label: true, teamId: true, tokenExpiresAt: true, lastVerificationError: true, healthStatus: true },
     }),
   ]);

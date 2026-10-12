@@ -15,6 +15,7 @@
 import { db } from '@buildd/core/db';
 import { missionNotes, tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, isNotNull, sql, type SQL } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 
@@ -44,7 +45,7 @@ export async function withdrawQuestionAnsweredInTerminal(workerId: string, now: 
   // Best-effort from here: the question is already withdrawn.
   try {
     const task = won.taskId
-      ? await db.query.tasks.findFirst({ where: eq(tasks.id, won.taskId), columns: { id: true, missionId: true } })
+      ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, won.taskId)), columns: { id: true, missionId: true } })
       : null;
     if (task) {
       await db.insert(missionNotes).values({

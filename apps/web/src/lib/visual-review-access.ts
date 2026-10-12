@@ -11,6 +11,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds, verifyWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import type { DecisionMission, DecisionReviewer } from '@/lib/visual-review-decisions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const notFound = () => NextResponse.json({ error: 'Mission not found' }, { status: 404 });
 
@@ -23,7 +24,7 @@ export async function resolveDecisionMission(
 
   const teamIds = await resolveAccountTeamIds(user, null);
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, id),
+    where: sqlWhere(eq(missions.id, id)),
     columns: { id: true, teamId: true, workspaceId: true },
   });
   if (!mission || !teamIds.includes(mission.teamId)) return { ok: false, response: notFound() };

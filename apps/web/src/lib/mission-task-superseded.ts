@@ -20,6 +20,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface SupersededCheckTask {
   id: string;
@@ -73,26 +74,26 @@ export async function computeSupersededFailedTasks(
   const [mergedWorkers, titleSiblings, replacedAudits] = await Promise.all([
     prNumbers.length > 0 && workspaceId != null
       ? db.query.workers.findMany({
-          where: and(
+          where: sqlWhere(and(
             eq(workers.workspaceId, workspaceId),
             inArray(workers.prNumber, prNumbers),
             isNotNull(workers.mergedAt),
-          ),
+          )),
           columns: { prNumber: true },
         })
       : Promise.resolve([]),
     titles.length > 0
       ? db.query.tasks.findMany({
-          where: and(
+          where: sqlWhere(and(
             eq(tasks.missionId, missionId),
             eq(tasks.status, 'completed'),
             inArray(tasks.title, titles),
-          ),
+          )),
           columns: { id: true, title: true, createdAt: true },
           with: {
             workers: {
               columns: { prNumber: true, mergedAt: true },
-              orderBy: (w, { desc }) => [desc(w.startedAt)],
+              orderBy: sqlOrderByFn((w, { desc }) => [desc(w.startedAt)]),
               limit: 1,
             },
           },

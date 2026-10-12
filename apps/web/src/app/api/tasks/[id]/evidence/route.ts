@@ -13,6 +13,7 @@ import {
   EVIDENCE_KINDS, EvidenceReadError, auditEvidenceRead, findTaskEvidenceObject, listTaskEvidenceObjects,
   openEvidenceObject, parseEvidenceReadParams, readEvidenceText, toEvidenceObjectSummary,
 } from '@/lib/evidence-read';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const LIST_LIMIT = 200;
 const READ_QUERY_KEYS = ['tail', 'grep', 'range', 'cursor'] as const;
@@ -63,7 +64,7 @@ export async function GET(
   const id = resolved.id;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, id),
+    where: sqlWhere(eq(tasks.id, id)),
     columns: { id: true, workspaceId: true },
   });
   if (!task || !(await canAccess(task.workspaceId))) {

@@ -8,6 +8,7 @@ import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 export async function GET(
@@ -32,7 +33,7 @@ export async function GET(
     const teamIds = await getUserTeamIds(user.id);
     const account = teamIds.length > 0
       ? await db.query.accounts.findFirst({
-          where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+          where: sqlWhere(and(eq(accounts.id, id), inArray(accounts.teamId, teamIds))),
         })
       : null;
 
@@ -69,7 +70,7 @@ export async function DELETE(
     const teamIds = await getUserTeamIds(user.id);
     const account = teamIds.length > 0
       ? await db.query.accounts.findFirst({
-          where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+          where: sqlWhere(and(eq(accounts.id, id), inArray(accounts.teamId, teamIds))),
         })
       : null;
 
@@ -131,7 +132,7 @@ export async function PATCH(
     const teamIds = await getUserTeamIds(user.id);
     const account = teamIds.length > 0
       ? await db.query.accounts.findFirst({
-          where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+          where: sqlWhere(and(eq(accounts.id, id), inArray(accounts.teamId, teamIds))),
         })
       : null;
 

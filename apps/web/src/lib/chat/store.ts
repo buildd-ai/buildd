@@ -18,6 +18,7 @@ import type {
   ConversationUpdatedReason,
 } from '@buildd/shared';
 import { channels, events, triggerEvent } from '@/lib/pusher';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type ConversationRow = typeof conversations.$inferSelect;
 export type MessageRow = typeof conversationMessages.$inferSelect;
@@ -74,13 +75,13 @@ export async function createConversation(input: {
 export async function listConversations(userId: string, opts: { before?: Date; limit: number; teamIds: string[] }) {
   if (opts.teamIds.length === 0) return { conversations: [], nextCursor: null };
   const rows = await db.query.conversations.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(conversations.createdByUserId, userId),
       inArray(conversations.teamId, opts.teamIds),
       isNull(conversations.archivedAt),
       opts.before ? lt(conversations.lastMessageAt, opts.before) : undefined,
-    ),
-    orderBy: [desc(conversations.lastMessageAt)],
+    )),
+    orderBy: sqlOrderBy([desc(conversations.lastMessageAt)]),
     limit: opts.limit + 1,
   });
   const page = rows.slice(0, opts.limit);
@@ -93,15 +94,15 @@ export async function listConversations(userId: string, opts: { before?: Date; l
 /** The conversation, only if `userId` created it. */
 export async function getOwnConversation(id: string, userId: string): Promise<ConversationRow | null> {
   const row = await db.query.conversations.findFirst({
-    where: and(eq(conversations.id, id), eq(conversations.createdByUserId, userId)),
+    where: sqlWhere(and(eq(conversations.id, id), eq(conversations.createdByUserId, userId))),
   });
   return row ?? null;
 }
 
 export async function loadMessages(conversationId: string, limit = 500): Promise<MessageRow[]> {
   const rows = await db.query.conversationMessages.findMany({
-    where: eq(conversationMessages.conversationId, conversationId),
-    orderBy: [desc(conversationMessages.createdAt)],
+    where: sqlWhere(eq(conversationMessages.conversationId, conversationId)),
+    orderBy: sqlOrderBy([desc(conversationMessages.createdAt)]),
     limit,
   });
   return rows.reverse();
@@ -109,8 +110,8 @@ export async function loadMessages(conversationId: string, limit = 500): Promise
 
 export async function loadApprovals(conversationId: string): Promise<ConversationApprovalDTO[]> {
   const rows = await db.query.conversationApprovals.findMany({
-    where: eq(conversationApprovals.conversationId, conversationId),
-    orderBy: [asc(conversationApprovals.createdAt)],
+    where: sqlWhere(eq(conversationApprovals.conversationId, conversationId)),
+    orderBy: sqlOrderBy([asc(conversationApprovals.createdAt)]),
     columns: { approvalId: true, messageId: true, toolName: true, status: true, decidedAt: true },
   });
   return rows.map(r => ({

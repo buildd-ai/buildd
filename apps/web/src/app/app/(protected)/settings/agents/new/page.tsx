@@ -9,6 +9,7 @@ import { getUserWorkspaceIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/
 import { can } from '@/lib/permissions';
 import { initialRoleKind, newRoleKinds } from '@/lib/personal-roles-shared';
 import { TeamRoleForm } from './TeamRoleForm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,7 +46,7 @@ export default async function NewTeamRolePage({
 
   const workspaceList = manageTeam && wsIds.length > 0
     ? await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
+        where: sqlWhere(inArray(workspaces.id, wsIds)),
         columns: { id: true, name: true },
       })
     : [];

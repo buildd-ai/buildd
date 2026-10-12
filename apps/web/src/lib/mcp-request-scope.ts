@@ -7,6 +7,7 @@ import { accountWorkspaces, workerHeartbeats, workspaces, workers } from '@build
 import { CAPABILITY_MCP_GROUP_TOOLS } from '@buildd/shared';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { getLinkedWorkspaceIds } from '@/lib/workspace-resolver';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type McpAccount = { id: string; teamId: string; workspaceIds?: string[] | null; taskScope?: { taskId: string; workspaceId: string } };
 
@@ -25,16 +26,16 @@ export async function isWorkspaceInCallerScope(workspaceId: string, account: Mcp
   if (account.taskScope) return workspaceId === account.taskScope.workspaceId;
   if (account.workspaceIds != null && !account.workspaceIds.includes(workspaceId)) return false;
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   if (!ws) return false;
   if (ws.teamId === account.teamId) return true;
   const link = await db.query.accountWorkspaces.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(accountWorkspaces.accountId, account.id),
       eq(accountWorkspaces.workspaceId, workspaceId),
-    ),
+    )),
     columns: { workspaceId: true },
   });
   return !!link;
@@ -49,7 +50,7 @@ export async function isWorkspaceInCallerScope(workspaceId: string, account: Mcp
 export async function isWorkerInCallerScope(workerId: string, account: McpAccount): Promise<boolean> {
   if (!UUID_RE.test(workerId)) return false;
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, workerId),
+    where: sqlWhere(eq(workers.id, workerId)),
     columns: { accountId: true, taskId: true, workspaceId: true },
     with: { workspace: { columns: { teamId: true } } },
   });
@@ -77,12 +78,12 @@ export async function workerRunnerSupportsGroupTools(workerId: string): Promise<
   if (!UUID_RE.test(workerId)) return false;
   try {
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
+      where: sqlWhere(eq(workers.id, workerId)),
       columns: { accountId: true, localUiUrl: true },
     });
     if (!worker?.accountId || !worker.localUiUrl) return false;
     const heartbeat = await db.query.workerHeartbeats.findFirst({
-      where: and(eq(workerHeartbeats.accountId, worker.accountId), eq(workerHeartbeats.localUiUrl, worker.localUiUrl)),
+      where: sqlWhere(and(eq(workerHeartbeats.accountId, worker.accountId), eq(workerHeartbeats.localUiUrl, worker.localUiUrl))),
       columns: { environment: true },
     });
     const envKeys = (heartbeat?.environment as { envKeys?: unknown } | null | undefined)?.envKeys;
@@ -127,7 +128,7 @@ export async function resolveRepoParamWorkspaceId(repo: string, account: McpAcco
     : eq(workspaces.teamId, account.teamId);
 
   const exact = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.repo, repo), inScope),
+    where: sqlWhere(and(eq(workspaces.repo, repo), inScope)),
     columns: { id: true },
   });
   if (exact) return exact.id;

@@ -1,11 +1,12 @@
 /**
  * The migration squash, proven on real Postgres.
  *
- * Every migration released up to the cut point was condensed into
- * packages/core/drizzle/0000_baseline.sql (a pg_dump). This file replays the
- * PRE-squash tree — read out of git at LAST_RELEASE_BEFORE_SQUASH, whose last
- * migration is the cut point, plus the untouched post-cut migrations from this
- * tree — through the app's own migrator, and checks:
+ * Every migration released up to the cut point was condensed into the first
+ * migration folder (a pg_dump). This file replays the PRE-squash tree, read out
+ * of git at LAST_RELEASE_BEFORE_SQUASH (whose last migration is the cut point)
+ * plus the untouched post-cut migrations, through the PREVIOUS release's
+ * migrator (the one that wrote every released database), and checks the repo's
+ * real drizzle v1 tree through the app's own migrator against it:
  *
  *   (a) a fresh DB migrated through the new tree has the same schema as a
  *       fresh DB migrated through the old one (the equivalence proof);
@@ -16,7 +17,7 @@
  *       untouched, naming the release to upgrade through.
  *
  * Each case gets its own database on the DATABASE_URL server. CI's
- * db-architecture job fetches the tag (a shallow checkout has no tags).
+ * db-architecture job fetches the tags (a shallow checkout has none).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { spawnSync } from 'node:child_process';
@@ -25,11 +26,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
 import { LAST_RELEASE_BEFORE_SQUASH } from '@buildd/core/db/migrate-plan';
-import { assertDbConfigured } from './harness';
+import { assertDbConfigured, fingerprint, prepareRollbackMigrator, synthesizeLegacyTree, withDb } from './harness';
+import { readMigrationTree } from '@buildd/core/db/migrate-tree';
 
 const ROOT = join(import.meta.dir, '..', '..', '..', '..');
 const CORE = join(ROOT, 'packages', 'core');
-const NEW_TREE = join(CORE, 'drizzle');
+// The repo's tree is drizzle v1 folders; the history the previous release's
+// migrator wrote is the legacy form of the same migrations, rebuilt from it.
+const LEGACY_TREE = synthesizeLegacyTree('baseline-legacy');
+const V1_TREE_ENTRIES = readMigrationTree(join(CORE, 'drizzle')).length;
 
 type JournalEntry = { idx: number; when: number; tag: string; baseline?: boolean };
 type Journal = { version: string; dialect: string; entries: JournalEntry[] };
@@ -81,9 +86,12 @@ function treeFrom(src: string, label: string, keep: (e: JournalEntry) => boolean
   return dir;
 }
 
-function migrate(url: string, tree: string): { status: number; out: string } {
+let rollbackCore = '';
+
+/** The previous release's migrator on a legacy tree: how every released database was built. */
+function migrateOld(url: string, tree: string): { status: number; out: string } {
   const r = spawnSync('bun', ['db/migrate.ts'], {
-    cwd: CORE,
+    cwd: rollbackCore,
     encoding: 'utf8',
     env: { ...process.env, DATABASE_URL: url, BUILDD_MIGRATIONS_DIR: tree },
     timeout: 15 * 60_000,
@@ -91,60 +99,28 @@ function migrate(url: string, tree: string): { status: number; out: string } {
   return { status: r.status ?? -1, out: `${r.stdout ?? ''}\n${r.stderr ?? ''}` };
 }
 
-function migrateOk(url: string, tree: string): string {
-  const r = migrate(url, tree);
-  if (r.status !== 0) throw new Error(`migrate failed (${r.status}):\n${r.out.slice(-3000)}`);
+function migrateOldOk(url: string, tree: string): string {
+  const r = migrateOld(url, tree);
+  if (r.status !== 0) throw new Error(`previous release's migrate failed (${r.status}):\n${r.out.slice(-3000)}`);
   return r.out;
 }
 
-/**
- * Everything a migration can create in `public`, rendered by Postgres itself.
- * Column order is by position among live columns, so a column dropped and the
- * gap it leaves do not count as a difference — the baseline cannot reproduce
- * attnum gaps and nothing observable depends on them.
- */
-const FINGERPRINT = `
-  SELECT 'ext' AS k, extname AS v FROM pg_extension WHERE extname <> 'plpgsql'
-  UNION ALL
-  SELECT 'type', t.typname || ':' || string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
-    FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid JOIN pg_namespace n ON n.oid = t.typnamespace
-   WHERE n.nspname = 'public' GROUP BY t.typname
-  UNION ALL
-  SELECT 'rel', c.relname || ':' || c.relkind::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND c.relkind IN ('r','v','m','S','p','f')
-  UNION ALL
-  SELECT 'col', c.relname || '#' || row_number() OVER (PARTITION BY c.oid ORDER BY a.attnum) || ':' || a.attname || ' '
-       || format_type(a.atttypid, a.atttypmod) || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END
-       || coalesce(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), '') || ' gen=' || a.attgenerated::text || ' id=' || a.attidentity::text
-    FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-    LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-   WHERE n.nspname = 'public' AND c.relkind IN ('r','v','m','p') AND a.attnum > 0 AND NOT a.attisdropped
-  UNION ALL
-  SELECT 'con', conrelid::regclass::text || ':' || conname || ' ' || pg_get_constraintdef(oid)
-    FROM pg_constraint WHERE connamespace = 'public'::regnamespace
-  UNION ALL
-  SELECT 'idx', indexdef FROM pg_indexes WHERE schemaname = 'public'
-  UNION ALL
-  SELECT 'fn', pg_get_functiondef(p.oid) FROM pg_proc p
-   WHERE p.pronamespace = 'public'::regnamespace AND p.prokind = 'f'
-     AND NOT EXISTS (SELECT 1 FROM pg_depend dep WHERE dep.objid = p.oid AND dep.deptype = 'e')
-  UNION ALL
-  SELECT 'trg', pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-   WHERE c.relnamespace = 'public'::regnamespace AND NOT t.tgisinternal
-  ORDER BY 1, 2`;
-
-async function withDb<T>(url: string, fn: (c: pg.Client) => Promise<T>): Promise<T> {
-  const c = new pg.Client({ connectionString: url });
-  await c.connect();
-  try {
-    return await fn(c);
-  } finally {
-    await c.end();
-  }
+/** This checkout's migrator on the repo's own drizzle v1 tree. */
+function migrateNew(url: string): { status: number; out: string } {
+  const r = spawnSync('bun', ['db/migrate.ts'], {
+    cwd: CORE,
+    encoding: 'utf8',
+    env: { ...process.env, DATABASE_URL: url },
+    timeout: 15 * 60_000,
+  });
+  return { status: r.status ?? -1, out: `${r.stdout ?? ''}\n${r.stderr ?? ''}` };
 }
 
-const fingerprint = (url: string) =>
-  withDb(url, async (c) => (await c.query<{ k: string; v: string }>(FINGERPRINT)).rows.map((r) => `${r.k} ${r.v}`));
+function migrateNewOk(url: string): string {
+  const r = migrateNew(url);
+  if (r.status !== 0) throw new Error(`migrate failed (${r.status}):\n${r.out.slice(-3000)}`);
+  return r.out;
+}
 
 const trackingRows = (url: string) =>
   withDb(url, async (c) =>
@@ -162,7 +138,7 @@ const publicRowCount = (url: string) =>
     return n;
   });
 
-const newJournal = readJournal(NEW_TREE);
+const newJournal = readJournal(LEGACY_TREE);
 const baseline = newJournal.entries[0]!;
 const postCut = newJournal.entries.slice(1);
 
@@ -187,14 +163,16 @@ beforeAll(() => {
   const atTag = join(extract, 'packages', 'core', 'drizzle');
   // Pre-squash tree = the tag's history (ending at the cut point) + this tree's
   // post-cut migrations, which the squash did not touch.
-  oldTree = treeFrom(atTag, 'old', () => true, [{ dir: NEW_TREE, entries: postCut }]);
-}, 120_000);
+  oldTree = treeFrom(atTag, 'old', () => true, [{ dir: LEGACY_TREE, entries: postCut }]);
+  rollbackCore = prepareRollbackMigrator(work, 'v0.327.1', ROOT);
+}, 300_000);
 
 afterAll(async () => {
   for (const name of created) {
     await admin((c) => c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)).catch(() => {});
   }
   if (work) rmSync(work, { recursive: true, force: true });
+  rmSync(LEGACY_TREE, { recursive: true, force: true });
 }, 120_000);
 
 describe('squashed baseline', () => {
@@ -210,9 +188,10 @@ describe('squashed baseline', () => {
 
   it('(a) a fresh DB migrated through the new tree matches one migrated through the old tree', async () => {
     const [oldUrl, newUrl] = await Promise.all([freshDb('old'), freshDb('new')]);
-    migrateOk(oldUrl, oldTree);
-    const out = migrateOk(newUrl, NEW_TREE);
-    expect(out).toContain(`(${newJournal.entries.length} applied, 0 backfilled)`);
+    migrateOldOk(oldUrl, oldTree);
+    const out = migrateNewOk(newUrl);
+    // Every legacy folder runs; the cutover's comment-only rebase is recorded, not executed.
+    expect(out).toContain(`(${V1_TREE_ENTRIES - 1} applied, 0 backfilled, 1 recorded without executing)`);
     freshNew = newUrl;
 
     const [a, b] = await Promise.all([fingerprint(oldUrl), fingerprint(newUrl)]);
@@ -225,26 +204,30 @@ describe('squashed baseline', () => {
   it('(b) a DB at the cut point runs only the post-cut migrations, and a rerun is a no-op', async () => {
     const url = await freshDb('cut');
     const cutTree = treeFrom(oldTree, 'cut', (e) => e.when <= baseline.when);
-    migrateOk(url, cutTree);
+    migrateOldOk(url, cutTree);
     const before = await trackingRows(url);
 
-    const out = migrateOk(url, NEW_TREE);
-    expect(out).toContain(`(${postCut.length} applied, 0 backfilled)`);
-    expect(await trackingRows(url)).toEqual([...before, ...postCut.map((e) => e.when)].sort((x, y) => x - y));
+    const out = migrateNewOk(url);
+    expect(out).toContain(`(${postCut.length} applied, 0 backfilled, 1 recorded without executing)`);
+    // Legacy rows keep their exact-ms created_at, so the previous release's reading of them is unchanged.
+    const after = await trackingRows(url);
+    // Released databases hold one row per pre-squash migration, not the baseline's: they gain the post-cut rows and the rebase.
+    expect(after.length).toBe(before.length + postCut.length + 1);
+    for (const when of [...before, ...postCut.map((e) => e.when)]) expect(after).toContain(when);
     expect(await fingerprint(url)).toEqual(await fingerprint(freshNew));
 
-    const again = migrateOk(url, NEW_TREE);
-    expect(again).toContain('(0 applied, 0 backfilled)');
+    const again = migrateNewOk(url);
+    expect(again).toContain('(0 applied, 0 backfilled, 0 recorded without executing)');
   }, 20 * 60_000);
 
   it('(c) a DB partway through the squashed history is refused, untouched, naming the release', async () => {
     const url = await freshDb('partial');
     const old = readJournal(oldTree).entries;
     const stopAt = old[Math.floor(old.length / 3)]!.idx;
-    migrateOk(url, treeFrom(oldTree, 'partial', (e) => e.idx <= stopAt));
+    migrateOldOk(url, treeFrom(oldTree, 'partial', (e) => e.idx <= stopAt));
     const [rows, shape] = [await trackingRows(url), await fingerprint(url)];
 
-    const r = migrate(url, NEW_TREE);
+    const r = migrateNew(url);
     expect(r.status).toBe(1);
     expect(r.out).toContain('stopped partway through the migration history');
     expect(r.out).toContain(LAST_RELEASE_BEFORE_SQUASH);

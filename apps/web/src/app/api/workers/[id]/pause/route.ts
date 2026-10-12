@@ -20,6 +20,7 @@ import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { pauseRefusal, requestWorkerPause } from '@/lib/worker-pause';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -43,7 +44,7 @@ export async function POST(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const worker = await db.query.workers.findFirst({ where: eq(workers.id, id) });
+  const worker = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)) });
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }

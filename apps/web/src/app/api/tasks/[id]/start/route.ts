@@ -30,6 +30,7 @@ import {
   type WaitingReason,
 } from '@buildd/core/waiting-reason';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/tasks/[id]/start
@@ -99,7 +100,7 @@ export async function POST(
 
     // Get the task
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       with: { workspace: true },
     });
 
@@ -151,11 +152,11 @@ export async function POST(
     const dependsOn = ((task.dependsOn as string[] | null) || []).filter(id => !inferredEdges.has(id));
     if (dependsOn.length > 0 && !forceOverride) {
       const openDepWorkers = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(workers.taskId, dependsOn),
           isNotNull(workers.prUrl),
           isNull(workers.mergedAt),
-        ),
+        )),
         with: {
           task: { columns: { id: true, title: true, status: true } },
         },
@@ -302,7 +303,7 @@ export async function POST(
       let missionMaxConcurrent: number | null = null;
       if (missionId) {
         const missionRow = await db.query.missions.findFirst({
-          where: eq(missions.id, missionId),
+          where: sqlWhere(eq(missions.id, missionId)),
           columns: { maxConcurrentTasks: true },
         });
         missionMaxConcurrent = missionRow?.maxConcurrentTasks ?? null;
@@ -315,11 +316,11 @@ export async function POST(
       if (capResult) {
         // Count other pending tasks to surface queue position in the UI.
         const pendingAhead = await db.query.tasks.findMany({
-          where: and(
+          where: sqlWhere(and(
             eq(tasks.workspaceId, task.workspaceId),
             eq(tasks.status, 'pending'),
             ne(tasks.id, taskId),
-          ),
+          )),
           columns: { id: true },
         });
         return NextResponse.json({

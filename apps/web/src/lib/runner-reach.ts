@@ -3,6 +3,7 @@ import { accountWorkspaces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, gt } from 'drizzle-orm';
 import { RUNNER_ONLINE_WINDOW_MS } from './runner-heartbeats-shared';
 import { diagnoseRunnerReach, needsLinkForOwnTeam, type RunnerReachDiagnosis } from './runner-reach-diagnosis';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Server half of ./runner-reach-diagnosis: loads the workspace's links and the
@@ -17,11 +18,11 @@ export async function loadRunnerReachDiagnosis(workspace: {
   const cutoff = new Date(Date.now() - RUNNER_ONLINE_WINDOW_MS);
   const [links, heartbeats] = await Promise.all([
     db.query.accountWorkspaces.findMany({
-      where: eq(accountWorkspaces.workspaceId, workspace.id),
+      where: sqlWhere(eq(accountWorkspaces.workspaceId, workspace.id)),
       columns: { accountId: true, canClaim: true, canCreate: true },
     }),
     db.query.workerHeartbeats.findMany({
-      where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
+      where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
       columns: { accountId: true },
       with: { account: { columns: { teamId: true } } },
     }),

@@ -47,6 +47,7 @@ import type { TaskKind } from '@buildd/core/model-router';
 import type { DecisionReplayCapture } from '@buildd/core/decision-replay';
 import { readRoleRouting, renderRoutingCriterion } from './role-routing';
 import { registerValuePrompt } from '@buildd/core/prompts';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const SHADOW_TIMEOUT_MS = 3_000;
 export const SHADOW_DESCRIPTION_CHARS = 1_500;
@@ -213,11 +214,11 @@ async function dbLoadRoles(teamId: string, workspaceId: string): Promise<RoleRow
   // Disabled rows are read too: a disabled override must not fall back to an
   // enabled team default.
   const rows = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.teamId, teamId),
       eq(workspaceSkills.isRole, true),
       or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, workspaceId)),
-    ),
+    )),
     columns: {
       id: true, slug: true, name: true, workspaceId: true, enabled: true, isRole: true,
       metadata: true, allowedTools: true, connectorRefs: true, defaultBackend: true,
@@ -420,7 +421,7 @@ async function dbReadClaimedAt(taskId: string): Promise<Date | null> {
   const { db } = await import('@buildd/core/db');
   const { tasks } = await import('@buildd/core/db/schema');
   const { eq } = await import('drizzle-orm');
-  const row = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { claimedAt: true } });
+  const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { claimedAt: true } });
   return row?.claimedAt ?? null;
 }
 

@@ -17,6 +17,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { RecentTaskRow, CurrentTaskCard } from './RoleTaskRows';
 import { roleModelLabel } from '@/lib/model-presentation';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,7 +64,7 @@ export default async function RoleProfilePage({
 
   // Get user's account IDs for account-level roles
   const userAccountWs = await db.query.accountWorkspaces.findMany({
-    where: inArray(accountWorkspaces.workspaceId, wsIds),
+    where: sqlWhere(inArray(accountWorkspaces.workspaceId, wsIds)),
     columns: { accountId: true },
   });
   const accountIds = [...new Set(userAccountWs.map(aw => aw.accountId))];
@@ -76,7 +77,7 @@ export default async function RoleProfilePage({
   // Team roles only: a personal row is team-level too, and another member's
   // private one must never resolve here (personal roles open by id instead).
   const role = await db.query.workspaceSkills.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.slug, slug),
       eq(workspaceSkills.isRole, true),
       or(
@@ -84,8 +85,8 @@ export default async function RoleProfilePage({
         teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), isNull(workspaceSkills.ownerUserId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
         accountIds.length > 0 ? inArray(workspaceSkills.accountId, accountIds) : undefined,
       ),
-    ),
-    orderBy: [sql`(${workspaceSkills.workspaceId} IS NOT NULL) DESC`],
+    )),
+    orderBy: sqlOrderBy([sql`(${workspaceSkills.workspaceId} IS NOT NULL) DESC`]),
   });
 
   if (!role) notFound();
@@ -97,7 +98,7 @@ export default async function RoleProfilePage({
   // Resolve workspace name for scope display
   const scopeWorkspaceName = role.workspaceId
     ? (await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, role.workspaceId),
+        where: sqlWhere(eq(workspaces.id, role.workspaceId)),
         columns: { name: true },
       }))?.name ?? null
     : null;
@@ -128,10 +129,10 @@ export default async function RoleProfilePage({
 
   // Current active task
   const activeWorker = await db.query.workers.findFirst({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, wsIds),
       inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-    ),
+    )),
     with: {
       task: {
         columns: { id: true, title: true, workspaceId: true, roleSlug: true },
@@ -141,7 +142,7 @@ export default async function RoleProfilePage({
         },
       },
     },
-    orderBy: [desc(workers.startedAt)],
+    orderBy: sqlOrderBy([desc(workers.startedAt)]),
   });
 
   // Filter to matching role slug
@@ -164,10 +165,10 @@ export default async function RoleProfilePage({
 
   const assignedMissions = missionIds.length > 0
     ? await db.query.missions.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(missions.id, missionIds),
           inArray(missions.status, ['active', 'paused', 'completed']),
-        ),
+        )),
         with: {
           tasks: {
             // taskClass & co. feed isDeliverableTask (hasPendingDeliverableWork);
@@ -175,23 +176,23 @@ export default async function RoleProfilePage({
             columns: { id: true, status: true, taskClass: true, kind: true, title: true, mode: true, category: true },
             // Live agents are workers, not a task status — tasks have no 'running'.
             // Only live rows are loaded; worker history is not needed here.
-            with: { workers: { columns: { status: true }, where: inArray(workers.status, [...LIVE_WORKER_STATUSES]) } },
+            with: { workers: { columns: { status: true }, where: sqlWhere(inArray(workers.status, [...LIVE_WORKER_STATUSES])) } },
           },
           schedule: {
             columns: { lastRunAt: true, nextRunAt: true, cronExpression: true } as any,
           },
         },
-        orderBy: [desc(missions.updatedAt)],
+        orderBy: sqlOrderBy([desc(missions.updatedAt)]),
         limit: 20,
       })
     : [];
 
   // Recent tasks
   const recentTasks = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.roleSlug, slug),
       inArray(tasks.workspaceId, wsIds),
-    ),
+    )),
     columns: {
       id: true,
       title: true,
@@ -201,11 +202,11 @@ export default async function RoleProfilePage({
     with: {
       workers: {
         columns: { id: true, prUrl: true, prNumber: true, costUsd: true, completedAt: true },
-        orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
+        orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt)]),
         limit: 1,
       },
     },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: 10,
   });
 
@@ -214,14 +215,14 @@ export default async function RoleProfilePage({
   let delegateRoles: { slug: string; name: string; color: string }[] = [];
   if (delegateSlugs.length > 0) {
     const allDelegates = await db.query.workspaceSkills.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(workspaceSkills.slug, delegateSlugs),
         eq(workspaceSkills.isRole, true),
         or(
           inArray(workspaceSkills.workspaceId, wsIds),
           accountIds.length > 0 ? inArray(workspaceSkills.accountId, accountIds) : undefined,
         ),
-      ),
+      )),
       columns: { slug: true, name: true, color: true },
     });
     // Dedupe by slug

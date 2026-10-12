@@ -199,6 +199,20 @@ describe('evaluateAssertion', () => {
     expect(result.outcome).toBe('pass');
   });
 
+  test('migration: finds a pre-cutover migration by number in a drizzle v1 tree, through the legacy map', () => {
+    const dir = join(root, 'migration-v1');
+    mkdirSync(join(dir, 'drizzle', '20261001000000_loop'), { recursive: true });
+    mkdirSync(join(dir, 'db'), { recursive: true });
+    writeFileSync(join(dir, 'drizzle', '20261001000000_loop', 'migration.sql'), 'ALTER TABLE tasks ADD COLUMN loop_config jsonb;\n');
+    writeFileSync(join(dir, 'db', 'legacy-migrations.json'), JSON.stringify([{ name: '20261001000000_loop', tag: '0091_loop', when: 1, hash: 'x'.repeat(64) }]));
+    const opts = { repoRoot: dir, migrationsDir: 'drizzle' };
+    expect(evaluateAssertion(typed({ type: 'migration', fields: { number: '91', contains: 'loop_config' } }), opts).outcome).toBe('pass');
+    const missing = evaluateAssertion(typed({ type: 'migration', fields: { number: '91', contains: 'nope' } }), opts);
+    expect(missing.outcome).toBe('fail');
+    expect(missing.detail).toMatch(/does not contain/);
+    expect(evaluateAssertion(typed({ type: 'migration', fields: { number: '92', contains: 'loop_config' } }), opts).outcome).toBe('fail');
+  });
+
   test('migration: fails when no file matches the number', () => {
     const dir = join(root, 'migration-fail');
     mkdirSync(join(dir, 'drizzle'), { recursive: true });

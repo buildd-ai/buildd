@@ -547,7 +547,7 @@ describe('refreshMissionIntegrationBranch', () => {
     expect(insertedTasks[0].description).toContain('bun run conflicts:generated');
     // A migration moves only through the tools, whose byte-identical renumber
     // the merge-safety inspector reads as a renumber, not lineage (task 87c7e48d).
-    expect(insertedTasks[0].description).toContain('bun run migrations:renumber --base=origin/dev');
+    expect(insertedTasks[0].description).toContain('bun run migrations:regenerate --base=origin/dev');
     expect(insertedTasks[0].description).not.toContain('bun db:generate` so this branch');
   });
 

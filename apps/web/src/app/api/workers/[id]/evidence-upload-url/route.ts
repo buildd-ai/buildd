@@ -12,6 +12,7 @@ import {
   type ResolvedEvidenceBackend,
 } from '@/lib/evidence-backend';
 import { buildEvidenceObjectKey } from '@/lib/storage-keys';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/workers/[id]/evidence-upload-url  {kind, seq, sizeBytes}
@@ -64,7 +65,7 @@ async function findRootTaskId(taskId: string): Promise<string> {
   let current = taskId;
   for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
     const t = await db.query.tasks.findFirst({
-      where: eq(tasks.id, current),
+      where: sqlWhere(eq(tasks.id, current)),
       columns: { id: true, parentTaskId: true },
     });
     if (!t?.parentTaskId) break;
@@ -111,7 +112,7 @@ export async function POST(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true },
     with: { workspace: { columns: { teamId: true, dataClass: true } } },
   });

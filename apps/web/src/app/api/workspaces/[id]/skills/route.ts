@@ -15,6 +15,7 @@ import { isStorageConfigured } from '@/lib/storage';
 import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 import { normalizeBackend } from '@/lib/normalize-backend';
 import { roleHas } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
 async function authenticateRequest(req: NextRequest) {
@@ -93,7 +94,7 @@ export async function GET(
 
         // Resolve team for this workspace so we can include team-level rows.
         const ws = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: { teamId: true },
         });
 
@@ -219,7 +220,7 @@ export async function POST(
 
         // Verify workspace exists
         const workspace = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: { id: true, teamId: true },
         });
         if (!workspace) {
@@ -228,7 +229,7 @@ export async function POST(
 
         // Upsert by (workspaceId, slug)
         const existing = await db.query.workspaceSkills.findFirst({
-            where: and(eq(workspaceSkills.workspaceId, id), eq(workspaceSkills.slug, slug)),
+            where: sqlWhere(and(eq(workspaceSkills.workspaceId, id), eq(workspaceSkills.slug, slug))),
         });
         if (!(await sessionMayManageRole(sessionAccess, isRole === true || Boolean(existing?.isRole)))) {
             return NextResponse.json(ROLE_FORBIDDEN, { status: 403 });

@@ -10,6 +10,7 @@ import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { can } from '@/lib/permissions';
 import { parseScheduleDelegationInput, type ScheduleDelegation } from '@buildd/core/token-delegation';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
 
@@ -60,14 +61,14 @@ async function resolveDelegationWrite(
 ): Promise<{ ok: true; value: ScheduleDelegation | null } | { ok: false; status: number; error: string }> {
   const parsed = parseScheduleDelegationInput(input, scheduleWorkspaceId);
   if (!parsed.ok) return { ok: false, status: 400, error: parsed.error };
-  const own = await db.query.workspaces.findFirst({ where: eq(workspaces.id, scheduleWorkspaceId), columns: { teamId: true } });
+  const own = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, scheduleWorkspaceId)), columns: { teamId: true } });
   if (!own?.teamId) return { ok: false, status: 404, error: 'Workspace not found' };
   if (!(await can(auth, 'delegate_schedule_access', own.teamId))) {
     return { ok: false, status: 403, error: 'Setting a schedule delegation requires team admin or owner' };
   }
   if (parsed.grants === null) return { ok: true, value: null };
   const targets = parsed.grants.map(g => g.workspaceId);
-  const rows = await db.query.workspaces.findMany({ where: inArray(workspaces.id, targets), columns: { id: true, teamId: true } });
+  const rows = await db.query.workspaces.findMany({ where: sqlWhere(inArray(workspaces.id, targets)), columns: { id: true, teamId: true } });
   for (const target of targets) {
     const row = rows.find(r => r.id === target);
     if (!row || row.teamId !== own.teamId) {
@@ -98,10 +99,10 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
   }
 
   const schedule = await db.query.taskSchedules.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(taskSchedules.id, scheduleId),
       eq(taskSchedules.workspaceId, id)
-    ),
+    )),
   });
 
   if (!schedule) {
@@ -121,10 +122,10 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
 
   // Verify schedule exists in this workspace
   const existing = await db.query.taskSchedules.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(taskSchedules.id, scheduleId),
       eq(taskSchedules.workspaceId, id)
-    ),
+    )),
   });
 
   if (!existing) {

@@ -13,6 +13,7 @@ import { roleHas } from '@/lib/permissions';
 import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError, parseCopyReviewConfig } from '@buildd/shared';
 import type { CopyReviewConfig } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const VALID_STRATEGIES: ReleaseStrategy[] = ['workflow_dispatch', 'branch_merge', 'script'];
 const VALID_TRIGGERS: ReleaseTrigger[] = ['every_merge', 'on_mission_complete', 'manual', 'scheduled'];
@@ -174,7 +175,7 @@ async function verifyWriteAccess(
     }
     if (apiAccount) {
         const ws = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, workspaceId),
+            where: sqlWhere(eq(workspaces.id, workspaceId)),
             columns: { teamId: true },
         });
         if (!ws || ws.teamId !== apiAccount.teamId) return 'not_found';
@@ -208,7 +209,7 @@ export async function GET(
                 return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
             }
             const ws = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
+                where: sqlWhere(eq(workspaces.id, id)),
                 columns: { teamId: true },
             });
             if (!ws || (ws.teamId !== apiAccount.teamId && !(await verifyAccountWorkspaceAccess(apiAccount, id)))) {
@@ -227,7 +228,7 @@ export async function GET(
         }
 
         const workspace = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: {
                 id: true,
                 name: true,
@@ -367,7 +368,7 @@ export async function POST(
         // (policyConfig, autoMerge* thresholds, conflictSurfaces, sequenceNamespaces,
         // maxCiRetries, sandbox.credentials, ...) on every save.
         const existing = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: { gitConfig: true },
         });
         const previous: Partial<WorkspaceGitConfig> = existing?.gitConfig ?? {};
@@ -593,7 +594,7 @@ export async function PATCH(
                 return NextResponse.json({ error: parsed.error }, { status: 400 });
             }
             const existing = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
+                where: sqlWhere(eq(workspaces.id, id)),
                 columns: { gitConfig: true },
             });
             const gitConfig: WorkspaceGitConfig = {
@@ -616,7 +617,7 @@ export async function PATCH(
                 );
             }
             const existing = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
+                where: sqlWhere(eq(workspaces.id, id)),
                 columns: { gitConfig: true },
             });
             const gitConfig: WorkspaceGitConfig = { ...(existing?.gitConfig ?? {} as WorkspaceGitConfig) };
@@ -641,7 +642,7 @@ export async function PATCH(
                 copyReview = parsed.config;
             }
             const existing = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
+                where: sqlWhere(eq(workspaces.id, id)),
                 columns: { gitConfig: true },
             });
             const gitConfig = { ...(existing?.gitConfig ?? {} as WorkspaceGitConfig), copyReview } as WorkspaceGitConfig;

@@ -53,6 +53,7 @@ import type { CriterionReviewerFinding } from '@buildd/shared';
 import { compareAgainstBase, COMPARE_FILE_LIMIT } from './pr-content-equivalence';
 import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
 import { REVIEW_BLOCKER_KINDS, type ReviewBlocker } from './attention-line';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -245,7 +246,7 @@ export interface SpecSourceRef {
 async function loadTaskSpecSource(originalTaskId: string): Promise<SpecSourceRef | null> {
   try {
     const row = await db.query.tasks.findFirst({
-      where: eq(tasks.id, originalTaskId),
+      where: sqlWhere(eq(tasks.id, originalTaskId)),
       columns: { context: true },
     });
     const specSource = asRecord(asRecord(row?.context).specSource);
@@ -538,15 +539,15 @@ export async function findLiveReviewerTaskForHead(
   headSha: string,
 ): Promise<{ id: string } | null> {
   const existing = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.category, 'review'),
       eq(tasks.subjectPrNumber, prNumber),
       eq(tasks.subjectHeadSha, headSha),
       inArray(tasks.status, [...LIVE_TASK_STATUSES]),
-    ),
+    )),
     columns: { id: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
   return existing ?? null;
 }
@@ -579,7 +580,7 @@ async function loadCopyReviewSection(params: {
 }): Promise<string> {
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, params.workspaceId),
+      where: sqlWhere(eq(workspaces.id, params.workspaceId)),
       columns: { gitConfig: true, teamId: true },
     });
     const config = copyReviewConfigOf(ws?.gitConfig);
@@ -593,7 +594,7 @@ async function loadCopyReviewSection(params: {
     const strings = await changedCopyStrings(files, config);
     if (strings.length === 0) return '';
     const roles = await db.query.workspaceSkills.findMany({
-      where: and(eq(workspaceSkills.slug, 'copy-editor'), eq(workspaceSkills.enabled, true)),
+      where: sqlWhere(and(eq(workspaceSkills.slug, 'copy-editor'), eq(workspaceSkills.enabled, true))),
       columns: { content: true, workspaceId: true, teamId: true },
     });
     const role = roles.find((r) => r.workspaceId === params.workspaceId)
@@ -1434,13 +1435,13 @@ async function buildReviewerContextWithMeta(
   let artifactsSection = '';
   try {
     const taskWorkers = await db.query.workers.findMany({
-      where: eq(workers.taskId, originalTaskId),
+      where: sqlWhere(eq(workers.taskId, originalTaskId)),
       columns: { id: true },
     });
     const workerIds = taskWorkers.map((w) => w.id);
     const taskArtifacts = workerIds.length > 0
       ? await db.query.artifacts.findMany({
-          where: inArray(artifacts.workerId, workerIds),
+          where: sqlWhere(inArray(artifacts.workerId, workerIds)),
           columns: { id: true, title: true, type: true, content: true, storageKey: true },
         })
       : [];
@@ -1933,7 +1934,7 @@ export async function supersedeReviewerTaskOnMerge(
   const { originalTaskId, installationId, repoFullName, prNumber } = params;
   try {
     const original = await db.query.tasks.findFirst({
-      where: eq(tasks.id, originalTaskId),
+      where: sqlWhere(eq(tasks.id, originalTaskId)),
       columns: { workspaceId: true },
     });
     if (!original?.workspaceId) return { superseded: false, reviewerTaskId: null };

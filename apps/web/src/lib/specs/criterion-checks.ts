@@ -6,6 +6,7 @@ import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } fr
 import { isRunnerReported } from '@/lib/verification-provenance';
 import { recordCheckVerdict } from './outcome';
 import { readPinnedSpecRevision } from './pin';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { scopeOf } from './scope';
 
 /**
@@ -58,7 +59,7 @@ export function isCriterionCheckTask(context: unknown): boolean {
 
 async function defaultWake(task: { id: string; title: string; workspaceId: string }): Promise<void> {
   const { announceTaskCreated, wakeTask } = await import('@/lib/dispatch-authority');
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, task.workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, task.workspaceId)) });
   if (!workspace) return;
   await announceTaskCreated({ ...task, description: null, mode: 'execution', priority: 2, missionId: null }, workspace as never)
     .catch((e) => console.error(`[spec-checks] dispatch failed for task ${task.id}:`, e));

@@ -3,6 +3,7 @@ import { workerHeartbeats } from '@buildd/core/db/schema';
 import { reportOps } from '@buildd/core/report-ops';
 import { lt } from 'drizzle-orm';
 import { HEARTBEAT_STALE_MS, failWorkersOfOfflineRunners, notifyStalledVisualAudits } from '@/lib/stale-workers';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Lightweight stale-worker cleanup: find heartbeat rows past the "not dead"
@@ -22,7 +23,7 @@ export async function runStaleWorkerCleanup(now: Date): Promise<number> {
   try {
     const heartbeatCutoff = new Date(now.getTime() - HEARTBEAT_STALE_MS);
     const staleHBs = await db.query.workerHeartbeats.findMany({
-      where: lt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff),
+      where: sqlWhere(lt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff)),
       columns: { id: true, accountId: true },
     });
     if (staleHBs.length > 0) {

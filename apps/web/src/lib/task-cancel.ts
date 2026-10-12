@@ -5,6 +5,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface TaskRef {
   id: string;
@@ -80,10 +81,10 @@ export async function applyTaskCancelSideEffects(task: TaskRef): Promise<void> {
 
   const abort = (async () => {
     const activeWorker = await db.query.workers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(workers.taskId, id),
         inArray(workers.status, ['running', 'waiting_input']),
-      ),
+      )),
       columns: { id: true },
     });
     if (activeWorker) {
@@ -124,14 +125,14 @@ export async function applyTaskCancelSideEffects(task: TaskRef): Promise<void> {
  */
 async function kernelAttemptEnded(taskId: string, workspaceId: string): Promise<void> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, deliveryId: true, deliveryRole: true, context: true },
   });
   if (!task?.deliveryId) return;
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.taskId, taskId),
+    where: sqlWhere(eq(workers.taskId, taskId)),
     columns: { id: true, commitCount: true },
-    orderBy: [desc(workers.createdAt)],
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
   const { attemptEnded } = await import('@/lib/workflow/seam');
   await attemptEnded({

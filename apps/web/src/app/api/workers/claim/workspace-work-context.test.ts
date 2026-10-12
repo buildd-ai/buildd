@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Coverage note — why this file exists.
@@ -60,12 +61,12 @@ function prWorker(id: string, workspaceId: string, taskId: string | null) {
 
 /** Reads one predicate out of the stubbed WHERE tree by node type + field. */
 function predicate(args: any, type: string, field: string) {
-  return (args?.where?.args ?? []).find((n: any) => n?.type === type && n.field === field);
+  return (capturedWhere(args?.where)?.args ?? []).find((n: any) => n?.type === type && n.field === field);
 }
 
 /** Reads a NOT-wrapped predicate (`not(inArray(...))`, `not(isNull(...))`). */
 function negated(args: any, innerType: string, field: string) {
-  return (args?.where?.args ?? [])
+  return (capturedWhere(args?.where)?.args ?? [])
     .find((n: any) => n?.type === 'not' && n.value?.type === innerType && n.value?.field === field)?.value;
 }
 
@@ -240,7 +241,7 @@ describe('attachWorkspaceWorkContext — query scoping', () => {
     await attachWorkspaceWorkContext([worker('t1')], [task('t1', 'ws-1')]);
 
     // This query's WHERE is a bare `inArray`, not an `and(...)` tree.
-    const where = (mockTasksFindMany.mock.calls[0]?.[0] as any)?.where;
+    const where = capturedWhere((mockTasksFindMany.mock.calls[0]?.[0] as any)?.where);
     expect(where).toEqual({ field: 'id', values: ['t-a'], type: 'inArray' });
   });
 });

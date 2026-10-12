@@ -9,6 +9,7 @@ import { getTeamTimezoneSetting } from './team-timezone';
 import { isUuid } from './uuid';
 import { accountReachesWorkspace } from './workspace-reach';
 import { roleHas, type Permission, type TeamScopeCaller } from './permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -42,7 +43,7 @@ export const verifyWorkspaceAccess = cache(async (
   if (!isUuid(workspaceId)) return null;
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true, accessMode: true },
   });
 
@@ -53,10 +54,10 @@ export const verifyWorkspaceAccess = cache(async (
   // governs which of the team's API accounts may act without an explicit
   // accountWorkspaces link (see verifyAccountWorkspaceAccess).
   const membership = await db.query.teamMembers.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(teamMembers.teamId, workspace.teamId),
       eq(teamMembers.userId, userId)
-    ),
+    )),
   });
 
   if (!membership) return null;
@@ -106,12 +107,12 @@ export const verifyAccountWorkspaceAccess = cache(async (
   if (typeof accountRef !== 'string' && !assertGrantedWorkspace(accountRef, workspaceId, 'read')) return false;
   const accountId = typeof accountRef === 'string' ? accountRef : accountRef.id;
 
-  const scopeAccount = await db.query.accounts.findFirst({where: eq(accounts.id, accountId), columns: {workspaceIds:true, teamId:true}});
+  const scopeAccount = await db.query.accounts.findFirst({where: sqlWhere(eq(accounts.id, accountId)), columns: {workspaceIds:true, teamId:true}});
   if (scopeAccount?.workspaceIds != null && !scopeAccount.workspaceIds.includes(workspaceId)) return false;
 
   // Check workspace access mode first
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true, teamId: true, accessMode: true },
   });
 
@@ -125,10 +126,10 @@ export const verifyAccountWorkspaceAccess = cache(async (
   }
 
   const link = await db.query.accountWorkspaces.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(accountWorkspaces.accountId, accountId),
       eq(accountWorkspaces.workspaceId, workspaceId)
-    ),
+    )),
   });
 
   // No team passed: arm 2 was settled above, so only the link can decide here.
@@ -194,7 +195,7 @@ export const getUserWorkspaceIds = cache(async (userId: string): Promise<string[
  */
 export const getTeamWorkspaceIds = cache(async (teamId: string): Promise<string[]> => {
   const ws = await db.query.workspaces.findMany({
-    where: eq(workspaces.teamId, teamId),
+    where: sqlWhere(eq(workspaces.teamId, teamId)),
     columns: { id: true },
   });
   return ws.map((w) => w.id);
@@ -215,12 +216,12 @@ export const getUserTeamIds = cache(async (userId: string): Promise<string[]> =>
   // of every team-scoped surface.
   const [memberships, personalTeam] = await Promise.all([
     db.query.teamMembers.findMany({
-      where: eq(teamMembers.userId, userId),
+      where: sqlWhere(eq(teamMembers.userId, userId)),
       columns: { teamId: true },
     }),
     // Personal-team fallback for accounts missing a teamMembers row
     db.query.teams.findFirst({
-      where: eq(teams.slug, `personal-${userId}`),
+      where: sqlWhere(eq(teams.slug, `personal-${userId}`)),
       columns: { id: true },
     }),
   ]);
@@ -263,13 +264,13 @@ export async function resolveAccountTeamIds(
  */
 export const getUserTeamRole = cache(async (userId: string, teamId: string): Promise<TeamRole | null> => {
   const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)),
+    where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId))),
     columns: { role: true },
   });
   if (membership?.role) return membership.role as TeamRole;
 
   const team = await db.query.teams.findFirst({
-    where: eq(teams.id, teamId),
+    where: sqlWhere(eq(teams.id, teamId)),
     columns: { slug: true },
   });
   if (team?.slug === `personal-${userId}`) return 'owner';
@@ -284,7 +285,7 @@ export const getUserTeamRole = cache(async (userId: string, teamId: string): Pro
  */
 export const getUserDefaultTeamId = cache(async (userId: string): Promise<string | null> => {
   const team = await db.query.teams.findFirst({
-    where: eq(teams.slug, `personal-${userId}`),
+    where: sqlWhere(eq(teams.slug, `personal-${userId}`)),
     columns: { id: true },
   });
 
@@ -337,11 +338,11 @@ const pickDefaultTeam = cache(async (userId: string): Promise<DefaultTeamPick | 
   if (teamIds.length === 0) return null;
   const [teamRows, rows] = await Promise.all([
     db.query.teams.findMany({
-      where: inArray(teams.id, teamIds),
+      where: sqlWhere(inArray(teams.id, teamIds)),
       columns: { id: true, slug: true, timezone: true },
     }),
     db.query.workspaces.findMany({
-      where: inArray(workspaces.teamId, teamIds),
+      where: sqlWhere(inArray(workspaces.teamId, teamIds)),
       columns: { id: true, name: true, teamId: true },
     }),
   ]);
@@ -395,7 +396,7 @@ export const resolveActiveTeamScope = cache(async (
   if (cookieValue && teamIds.includes(cookieValue)) {
     const [ws, timezone] = await Promise.all([
       db.query.workspaces.findMany({
-        where: eq(workspaces.teamId, cookieValue),
+        where: sqlWhere(eq(workspaces.teamId, cookieValue)),
         columns: { id: true, name: true },
       }),
       // Never throws; null on a lookup failure.
@@ -423,7 +424,7 @@ export type UserTeam = {
  */
 export const getUserTeamsWithDetails = cache(async (userId: string): Promise<UserTeam[]> => {
   const memberships = await db.query.teamMembers.findMany({
-    where: eq(teamMembers.userId, userId),
+    where: sqlWhere(eq(teamMembers.userId, userId)),
     // Explicit column list — `team: true` selects every column in schema.ts.
     // This runs in the cached app-layout path, so a schema change reaching it
     // during a deploy takes the whole shell down.
