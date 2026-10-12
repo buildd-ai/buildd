@@ -5,6 +5,9 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { teamIdsWhere } from '@/lib/permissions';
+import { composeHref } from '@/lib/release/compose-href';
+import { releaseCandidatePolicy } from '@buildd/core/release-candidate';
 import Card from '@/components/ui/Card';
 import Eyebrow from '@/components/ui/Eyebrow';
 import { ReleaseRow } from './ReleaseRow';
@@ -17,11 +20,16 @@ export const dynamic = 'force-dynamic';
 const LIST_LIMIT = 100;
 
 /** The page header: the shell's mobile header already says "Releases", so the h1 shows from md up only. */
-function ReleasesHeader({ countLine }: { countLine?: string }) {
+function ReleasesHeader({ countLine, composeLink }: { countLine?: string; composeLink?: string | null }) {
   return (
     <div className="mb-5">
       <h1 data-testid="releases-headline" className="sr-only md:not-sr-only text-xl font-semibold text-text-primary">Releases</h1>
       {countLine && <p data-testid="releases-count" className="font-mono text-meta text-text-muted md:mt-1">{countLine}</p>}
+      {composeLink && (
+        <Link data-testid="releases-compose" href={composeLink} className="mt-2 inline-flex min-h-11 items-center text-body text-text-primary underline-offset-2 hover:underline md:min-h-0">
+          Compose the next release ›
+        </Link>
+      )}
     </div>
   );
 }
@@ -133,6 +141,13 @@ export default async function ReleasesPage({
     : [];
   const supersededReleaseMap = new Map(supersededReleases.map(r => [r.id, r.version]));
 
+  // The owner's release flow, for a workspace that cuts frozen candidates and a
+  // person who may release it (team owner or admin).
+  const canRelease = (await teamIdsWhere({ kind: 'user', userId: user.id }, 'manage_releases')).includes(activeTeamId);
+  const composeWorkspace = canRelease
+    ? releaseEnabledWorkspaces.find(ws => targetWsIds.includes(ws.id) && releaseCandidatePolicy(ws.releaseConfig as any))
+    : undefined;
+
   // The workspace name is the row's context only when the list spans several;
   // with one, the switcher already names it.
   const multiWorkspace = new Set(allReleases.map(r => r.workspaceId)).size > 1;
@@ -162,22 +177,30 @@ export default async function ReleasesPage({
 
   const next = pickNextRelease(allReleases);
   const history = next ? allReleases.filter(r => r.id !== next.id) : allReleases;
+  // The pending release's card carries the flow when its workspace cuts candidates.
+  const nextCompose = next && composeWorkspace && next.workspaceId === composeWorkspace.id ? composeHref(next.workspaceId) : null;
+  const headerCompose = composeWorkspace && !nextCompose ? composeHref(composeWorkspace.id) : null;
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-3xl">
-      <ReleasesHeader countLine={allReleases.length > 0 ? releaseCountLine(allReleases.length, Number(total)) : undefined} />
+      <ReleasesHeader countLine={allReleases.length > 0 ? releaseCountLine(allReleases.length, Number(total)) : undefined} composeLink={headerCompose} />
 
       {allReleases.length === 0 ? (
         <p className="text-body text-text-secondary">No releases.</p>
       ) : (
         <>
           {/* The next release: the one L2 card on the page, everything below is
-              L1 history. This is the future home of the release candidate
-              (choose missions → RC → review CI → release). */}
+              L1 history. Its link opens the release flow (Compose → Cut →
+              Review → Release, ./compose). */}
           {next && (
             <Card data-testid="next-release" className="mb-6 flex flex-col gap-2">
               <Eyebrow tone="muted">Next release</Eyebrow>
               {renderRow(next, true)}
+              {nextCompose && (
+                <Link data-testid="next-release-compose" href={nextCompose} className="inline-flex min-h-11 items-center text-body text-text-primary underline-offset-2 hover:underline md:min-h-0">
+                  Review and release ›
+                </Link>
+              )}
             </Card>
           )}
           <div className="border-t border-border-default">

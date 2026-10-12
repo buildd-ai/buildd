@@ -14,6 +14,7 @@ import {
   reconcileChangelog,
   renderCandidateBody,
   replaceExcluded,
+  REFUSED_MARKER,
   type CandidateMeta,
 } from './release-candidate';
 
@@ -523,6 +524,111 @@ describe('amend: the only way a candidate moves', () => {
     const r = run(f, 'amend', ['--candidate', `v${r0.outputs.version}`, '--confirm', `v${r0.outputs.version}`, '--source', early]);
     expect(r.status).not.toBe(0);
     expect(r.log).toContain('only moves forward');
+  });
+});
+
+describe('exclude: leaving a change out of the open candidate', () => {
+  function withCandidate() {
+    const f = fixture();
+    const left = devCommit(f, 'feat: billing (#11)');
+    const source = devCommit(f, 'fix: kept (#12)');
+    const r = cut(f, source);
+    expect(r.status, r.log).toBe(0);
+    return { f, left, source, version: r.outputs.version, head: r.outputs.candidate_sha };
+  }
+  const exclude = (f: Fixture, version: string, shas: string[], confirm = `v${version}`) =>
+    run(f, 'exclude', ['--candidate', `v${version}`, '--confirm', confirm, '--revert', shas.join(' ')]);
+
+  test('reverts the change on the candidate only: new SHA, same source, dev untouched, verification void', () => {
+    const { f, left, source, version, head } = withCandidate();
+    setPrs(f, prs(f).map((p) => ({ ...p, reviews: [{ id: 1, state: 'APPROVED' }] })), 101);
+    const r = exclude(f, version, [left]);
+    expect(r.status, r.log).toBe(0);
+    expect(r.outputs.status).toBe('amended');
+
+    const newHead = originSha(f, `refs/heads/release/v${version}`)!;
+    expect(newHead).not.toBe(head);
+    expect(r.outputs.candidate_sha).toBe(newHead);
+    // source → revert → release commit
+    const revert = git(f.origin, 'rev-parse', `${newHead}^`);
+    expect(git(f.origin, 'rev-parse', `${revert}^`)).toBe(source);
+    expect(git(f.origin, 'log', '-1', '--format=%B', revert)).toContain(`Release-Excluded: ${left}`);
+    expect(git(f.origin, 'log', '-1', '--format=%s', newHead)).toBe(`chore: bump version to v${version}`);
+    const leftFile = git(f.origin, 'diff-tree', '--no-commit-id', '--name-only', '-r', left);
+    expect(sh(f.origin, 'git', ['cat-file', '-e', `${source}:${leftFile}`]).status).toBe(0);
+    expect(sh(f.origin, 'git', ['cat-file', '-e', `${newHead}:${leftFile}`]).status).not.toBe(0);
+    expect(devHead(f)).toBe(source);
+
+    const [pr] = prs(f);
+    const meta = parseCandidateMeta(pr.body)!;
+    expect(meta).toMatchObject({ sourceSha: source, candidateSha: newHead, amendment: 1, previousCandidateSha: head });
+    expect(meta.reverted).toEqual([{ sha: left, subject: 'feat: billing (#11)' }]);
+    expect(pr.body).toContain('### Left out of this candidate (1)');
+    expect(pr.body).toContain('### Included pull requests (2)\n- #10\n- #12');
+    expect(pr.reviews).toEqual([{ id: 1, state: 'DISMISSED' }]);
+    expect(pr.comments?.at(-1)).toContain('void');
+  });
+
+  test('a revert that does not apply cleanly changes nothing and names the conflicting files', () => {
+    const f = fixture();
+    git(f.work, 'checkout', '-q', 'dev');
+    writeFileSync(join(f.work, 'shared.txt'), 'one\n');
+    git(f.work, 'add', '-A');
+    git(f.work, 'commit', '-qm', 'feat: shared (#11)');
+    const left = git(f.work, 'rev-parse', 'HEAD');
+    writeFileSync(join(f.work, 'shared.txt'), 'two\n');
+    git(f.work, 'commit', '-qam', 'fix: builds on shared (#12)');
+    git(f.work, 'push', '-q', 'origin', 'dev');
+    const r0 = cut(f, devHead(f));
+    expect(r0.status, r0.log).toBe(0);
+    const version = r0.outputs.version;
+
+    const r = exclude(f, version, [left]);
+    expect(r.status).not.toBe(0);
+    expect(r.log).toContain('conflicts in: shared.txt');
+    expect(originSha(f, `refs/heads/release/v${version}`)).toBe(r0.outputs.candidate_sha);
+    const [pr] = prs(f);
+    expect(parseCandidateMeta(pr.body)!.amendment).toBe(0);
+    expect(pr.comments?.at(-1)).toContain(REFUSED_MARKER);
+    expect(pr.comments?.at(-1)).toContain('`shared.txt`');
+  });
+
+  test('reverts a merge commit against its mainline', () => {
+    const f = fixture();
+    git(f.work, 'checkout', '-qb', 'mission/x', 'dev');
+    writeFileSync(join(f.work, 'mission.txt'), 'm\n');
+    git(f.work, 'add', '-A');
+    git(f.work, 'commit', '-qm', 'feat: mission work');
+    git(f.work, 'checkout', '-q', 'dev');
+    git(f.work, 'merge', '--no-ff', '-q', '-m', 'Merge pull request #13 from o/mission/x', 'mission/x');
+    const merge = git(f.work, 'rev-parse', 'HEAD');
+    git(f.work, 'push', '-q', 'origin', 'dev');
+    const r0 = cut(f, merge);
+    expect(r0.status, r0.log).toBe(0);
+    const r = exclude(f, r0.outputs.version, [merge]);
+    expect(r.status, r.log).toBe(0);
+    const head = originSha(f, `refs/heads/release/v${r0.outputs.version}`)!;
+    expect(sh(f.origin, 'git', ['cat-file', '-e', `${head}:mission.txt`]).status).not.toBe(0);
+  });
+
+  test('without the version named twice, nothing happens', () => {
+    const { f, left, version, head } = withCandidate();
+    const r = exclude(f, version, [left], 'v9.9.9');
+    expect(r.status).not.toBe(0);
+    expect(r.log).toContain('does not match');
+    expect(originSha(f, `refs/heads/release/v${version}`)).toBe(head);
+  });
+
+  test('an amendment to a newer dev keeps what was left out', () => {
+    const { f, left, version } = withCandidate();
+    expect(exclude(f, version, [left]).status).toBe(0);
+    const later = devCommit(f, 'fix: later (#14)');
+    const r = run(f, 'amend', ['--candidate', `v${version}`, '--confirm', `v${version}`, '--source', later]);
+    expect(r.status, r.log).toBe(0);
+    const meta = parseCandidateMeta(prs(f)[0].body)!;
+    expect(meta.sourceSha).toBe(later);
+    expect(meta.reverted?.map((x) => x.sha)).toEqual([left]);
+    expect(git(f.origin, 'log', '--format=%B', `${later}..${meta.candidateSha}`)).toContain(`Release-Excluded: ${left}`);
   });
 });
 
