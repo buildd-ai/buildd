@@ -66,6 +66,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/prs/route.ts',
   // Read-only for a task token (list, explain), its own workspace via taskScopeAllowsWorkspace; every write refuses it.
   'apps/web/src/app/api/providers/explain/route.ts',
+  // Refuses a task token on both handlers (.taskScope); only the settings page reads or picks.
+  'apps/web/src/app/api/providers/assignments/route.ts',
   'apps/web/src/app/api/providers/route.ts',
   'apps/web/src/app/api/releases/[id]/route.ts',
   'apps/web/src/app/api/releases/route.ts',
@@ -86,6 +88,10 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/[id]/evidence/[evidenceId]/confirm/route.ts',
   'apps/web/src/app/api/workers/[id]/instruct/route.ts',
   'apps/web/src/app/api/workers/[id]/page-source/route.ts',
+  // await_answer: an interactive session long-polls for the answer to its own question.
+  'apps/web/src/app/api/workers/[id]/answer/route.ts',
+  // ask_human: mint the wait capability for its own parked question (callerOwnsWorker).
+  'apps/web/src/app/api/workers/[id]/answer/capability/route.ts',
   'apps/web/src/app/api/workers/[id]/park/route.ts',
   'apps/web/src/app/api/workers/[id]/prompt-bundles/route.ts',
   'apps/web/src/app/api/workers/[id]/reattach/route.ts',

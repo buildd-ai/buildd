@@ -77,14 +77,24 @@ describe('readDecisionKindReadout', () => {
     expect(r.readout.collection).toEqual({ state: 'disabled', collecting: false, reasons: ['capability_disabled'] });
   });
 
-  it('an unregistered kind id reads rows only: access unknown, nothing scored, default minimum', async () => {
+  it('an unregistered kind id reads rows only: access unknown, scored on agent audit grades, default minimum', async () => {
     const resolveAccess = mock(async () => 'enabled' as const);
     const r = await readDecisionKindReadout('buildd.not_defined_here', { teamId: 't', since, until }, { loadRows: async () => rows(), resolveAccess });
     expect(r.registered).toBe(false);
     expect(resolveAccess).not.toHaveBeenCalled();
     expect(r.readout.eligibleSubjects).toBeNull();
+    // The kind's own label is not an audit grade: counted by source, not scored.
     expect(r.readout.groups[0].scored).toBe(0);
-    expect(r.readout.collection.reasons).toEqual([`labelled 1 < ${DEFAULT_MIN_LABELLED}`]);
+    expect(r.readout.collection.reasons).toEqual([`labelled 0 < ${DEFAULT_MIN_LABELLED}`]);
+
+    const audited = await readDecisionKindReadout('buildd.not_defined_here', { teamId: 't', since, until }, {
+      loadRows: async () => {
+        const base = rows();
+        return { ...base, outcomes: [...base.outcomes, { decisionRecordId: base.records[0].id, source: 'agent_audit', label: 'right', value: null }] };
+      },
+      resolveAccess,
+    });
+    expect(audited.readout.groups[0]).toMatchObject({ scored: 1, correct: 1 });
   });
 
   it('an eligibility adapter that throws reads unknown, not zero', async () => {

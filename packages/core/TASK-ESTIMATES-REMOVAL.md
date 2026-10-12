@@ -1,20 +1,29 @@
 # Removing the task estimates experiment
 
 Task estimates write one frozen p50/p80 estimate (minutes, tokens, expected
-repairs) per new work task on an opted-in team, into its own `task_estimates`
+repairs) per new work task on a team with estimates on, into its own `task_estimates`
 table, and show it in `get_task` with `include: ["scheduling"]`. This is
 everything it adds. Nothing else reads it.
 
 ## To turn it off without removing code
 
-- One team: `PATCH /api/teams/<teamId>` with `{ "taskEstimates": { "enabled": false } }`
-  (owner/admin session). New tasks stop getting a row; existing rows stay and
+- One team: Settings › Features › Turn off, or `PATCH /api/teams/<teamId>` with
+  `{ "taskEstimates": { "enabled": false } }` (owner/admin session). New tasks stop getting a row; existing rows stay and
   still show in `get_task`. Delete them by hand if wanted:
   `DELETE FROM task_estimates WHERE team_id = '<teamId>'`.
-- Everyone: set `teams.task_estimates` to NULL for every team. NULL is off.
+- Teams that never chose: keep `TASK_ESTIMATES_ROLLOUT.verdict` at `'no_go'` in
+  `packages/core/task-estimate-rollout.ts`. NULL follows that default, so it is off.
+- Everyone: set the verdict to `'no_go'` and set `teams.task_estimates` to NULL for
+  every team. (Contract and gate: `docs/specs/task-estimates.md`.)
 
 ## Files (delete them)
 
+- `packages/core/task-estimate-rollout.ts` (default-on gate and the team switch's
+  reading) and `packages/core/__tests__/task-estimate-rollout.test.ts`
+- `apps/web/src/app/app/(protected)/settings/features/` (the team switch; drop the
+  `features` item from `apps/web/src/lib/settings-nav.ts` and its test) and
+  `apps/web/src/app/app/(protected)/health/estimates/` (the Health page)
+- `docs/specs/task-estimates.md` (set `status: superseded`)
 - `packages/core/task-estimate.ts` (the pure blend) and
   `packages/core/__tests__/task-estimate.test.ts`
 - `packages/core/task-estimate-source.ts` (prior, inputs, write, read) and
@@ -31,7 +40,7 @@ everything it adds. Nothing else reads it.
 
 ## Touch points (edit them)
 
-- `packages/core/package.json`: the `./task-estimate`,
+- `packages/core/package.json`: the `./task-estimate`, `./task-estimate-rollout`,
   `./task-estimate-source`, `./task-estimate-actuals(-source)` and
   `./task-estimate-accuracy(-source)` exports.
 - `packages/core/task-size-estimate.ts`: `defaultStore` is exported only for

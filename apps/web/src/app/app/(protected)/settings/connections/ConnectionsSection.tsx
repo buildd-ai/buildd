@@ -15,6 +15,7 @@
  */
 import { useState } from 'react';
 import ConnectionRow, { StatusChip } from '../_components/ConnectionRow';
+import Disclosure from '@/components/ui/Disclosure';
 import Notice from '@/components/ui/Notice';
 import Segmented from '@/components/ui/Segmented';
 import Section from '@/components/ui/Section';
@@ -83,13 +84,11 @@ export default function ConnectionsSection({
   const [revoked, setRevoked] = useState<string | null>(null);
 
   return (
-    <div className="space-y-8">
-      {initial.legacy.length > 0 && <LegacyNotice legacy={initial.legacy} now={now} />}
-
+    <div>
       <Section title="Your apps" count={connections.length}>
         {connections.length === 0 ? (
           <p className="text-body text-text-muted" data-testid="connections-empty">
-            {revoked ? `${revoked} is disconnected. ` : ''}No apps are connected. Connect one with <code className="font-mono">buildd install --oauth</code>, or add buildd as an MCP server in the app.
+            {revoked ? `${revoked} is disconnected. ` : ''}No apps. Add buildd as an MCP server in an app such as Claude or Cursor.
           </p>
         ) : (
           <>
@@ -115,30 +114,31 @@ export default function ConnectionsSection({
             </div>
           </>
         )}
+        {initial.legacy.length > 0 && <LegacyConnections legacy={initial.legacy} now={now} />}
       </Section>
     </div>
   );
 }
 
-function LegacyNotice({ legacy, now }: { legacy: LegacyConnectionSummary[]; now?: Date }) {
-  const n = legacy.length;
+/**
+ * Connections made before one connection could reach several workspaces: each
+ * reaches one. Folded, since there is nothing to do here: connecting the app
+ * again replaces them.
+ */
+function LegacyConnections({ legacy, now }: { legacy: LegacyConnectionSummary[]; now?: Date }) {
   return (
-    <Notice
-      tone="info"
-      data-testid="connections-legacy"
-      title={n === 1 ? 'One older connection reaches a single workspace' : `${n} older connections each reach a single workspace`}
-    >
-      <ul className="mt-1 space-y-0.5">
+    <div data-testid="connections-legacy" className="mt-2">
+    <Disclosure summary="Older connections" count={legacy.length}>
+      <ul className="divide-y divide-[var(--line-soft)] pb-2">
         {legacy.map((l, i) => (
-          <li key={i} className="text-body">
+          <li key={i} className="py-2 text-body text-text-primary">
             {l.clientName} <span className="text-text-muted">· {l.workspaceName} · {lastActive(l.lastActiveAt, now)}</span>
           </li>
         ))}
       </ul>
-      <p className="mt-2 text-body">
-        To move to one connection, run <code className="font-mono">buildd install --oauth</code> again.
-      </p>
-    </Notice>
+      <p className="pb-2 text-meta text-text-muted">Each reaches one workspace. Connecting the app again replaces them.</p>
+    </Disclosure>
+    </div>
   );
 }
 

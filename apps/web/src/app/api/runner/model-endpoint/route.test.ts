@@ -169,19 +169,16 @@ function withPolicy(credentialPolicy: string | null, inferenceKeyPolicy: string 
   mockTeamsFindFirst.mockResolvedValue({ credentialPolicy, inferenceKeyPolicy });
 }
 
-describe('credential_policy NULL: exactly the egress decision this route always made', () => {
+describe('no policy chosen, team work: exactly the egress decision this route always made', () => {
   it('never asks the provider resolver; the legacy ranking and Anthropic lookup run as before', async () => {
     mockResolveRoute.mockResolvedValue({ winner: 'anthropic', endpoint: ENDPOINT, beatenBy: 'workspace' });
     mockResolveAnthropicAuth.mockResolvedValue({ headers: { 'x-api-key': ANTHROPIC_KEY }, purpose: 'anthropic_api_key', secretId: 'secret-2' });
-    mockRequester.mockResolvedValue(REQUESTER);
     const res = await POST(req());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ source: 'anthropic_api_key', key: ANTHROPIC_KEY });
     expect(mockResolveRoute).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'account-1' });
     expect(mockResolveAnthropicAuth).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1' });
     expect(mockResolveProvider).not.toHaveBeenCalled();
-    // A personal key is never in play, so the requester is not even looked up.
-    expect(mockRequester).not.toHaveBeenCalled();
   });
 
   // Provider parity: the team key in canonical storage (`inference_key` /
@@ -206,17 +203,45 @@ describe('credential_policy NULL: exactly the egress decision this route always 
     expect(mockResolveProvider).not.toHaveBeenCalled();
   });
 
-  it('the chat-only inference_key_policy does not opt agent egress in', async () => {
-    withPolicy(null, 'own');
+  it("the legacy column's default 'team' is no choice: team work keeps the legacy path", async () => {
+    withPolicy(null, 'team');
     await POST(req());
     expect(mockResolveProvider).not.toHaveBeenCalled();
     expect(mockResolveRoute).toHaveBeenCalled();
+  });
+
+  it("a legacy 'own' is a choice: the resolver decides", async () => {
+    withPolicy(null, 'own');
+    await POST(req());
+    expect(mockResolveProvider).toHaveBeenCalled();
   });
 
   it('an unreadable team row reads as unset: the legacy path, not a refusal', async () => {
     mockTeamsFindFirst.mockImplementation(() => Promise.reject(new Error('db down')));
     expect((await POST(req())).status).toBe(200);
     expect(mockResolveProvider).not.toHaveBeenCalled();
+  });
+});
+
+describe('no policy chosen, work for a person: their own key goes first', () => {
+  it("the requester's own key wins over the team key", async () => {
+    mockRequester.mockResolvedValue(REQUESTER);
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ source: 'anthropic_api_key', key: 'sk-ant-mine-fixture' });
+    expect(mockResolveRoute).not.toHaveBeenCalled();
+  });
+
+  it("a requester with no key of their own gets the team key, never someone else's", async () => {
+    ROWS = [TEAM_KEY, THEIR_KEY];
+    try {
+      mockRequester.mockResolvedValue(REQUESTER);
+      const res = await POST(req());
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ source: 'anthropic_api_key', key: 'sk-ant-team-fixture' });
+    } finally {
+      ROWS = [TEAM_KEY, MY_KEY, THEIR_KEY];
+    }
   });
 });
 

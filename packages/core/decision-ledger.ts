@@ -19,6 +19,7 @@ import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql } from 'drizzle-orm
 import { db } from './db/client';
 import { decisionChallengerRuns, decisionOutcomes, decisionRecords } from './db/schema';
 import type { ChallengerRun } from '@builddai/ai-kit/decide';
+import { captureDecisionReplay, type DecisionReplayCapture } from './decision-replay';
 
 export interface DecisionLedgerInput {
   teamId: string;
@@ -56,6 +57,11 @@ export interface DecisionLedgerInput {
   experimentId?: string | null;
   experimentArm?: string | null;
   propensity?: number | null;
+  /**
+   * The input the model saw, kept as a replayable copy once the row exists
+   * (decision-replay.ts). Never part of the row.
+   */
+  replay?: DecisionReplayCapture | null;
 }
 
 /** Coerce every optional to an explicit null, so a test can assert on the full row. */
@@ -109,13 +115,32 @@ async function dbInsertDecisionRow(row: ReturnType<typeof rowFromRecord>): Promi
  * row, not the caller. Resolves to the row id (null on failure), which is what
  * a challenger run or an outcome label attaches to.
  */
-export async function recordDecision(input: DecisionLedgerInput, deps: { insert?: InsertDecisionRow } = {}): Promise<string | null> {
+export async function recordDecision(
+  input: DecisionLedgerInput,
+  deps: { insert?: InsertDecisionRow; capture?: typeof captureDecisionReplay } = {},
+): Promise<string | null> {
+  let id: string | null;
   try {
-    return (await (deps.insert ?? dbInsertDecisionRow)(rowFromRecord(input))) ?? null;
+    id = (await (deps.insert ?? dbInsertDecisionRow)(rowFromRecord(input))) ?? null;
   } catch (err) {
     console.warn('[decision-ledger] insert failed (non-fatal):', (err as Error)?.message ?? err);
     return null;
   }
+  // After the row: the copy is keyed by its id, and capture never throws or waits.
+  if (id && input.replay) {
+    (deps.capture ?? captureDecisionReplay)({
+      ...input.replay,
+      decisionId: id,
+      source: 'decision_records',
+      teamId: input.teamId,
+      workspaceId: input.workspaceId ?? null,
+      capability: input.capability,
+      model: input.model ?? null,
+      ruleAnswer: input.ruleAnswer ?? null,
+      askedAt: new Date(),
+    });
+  }
+  return id;
 }
 
 /** A challenger run (ai-kit `runChallenger`) against a recorded decision. */
@@ -254,6 +279,38 @@ export async function readDecisionLedgerPage(f: DecisionLedgerFilters, limit = D
     ))
     : [];
   return { rows: page, outcomes, truncated: rows.length > cap };
+}
+
+/** Newest rows read for a workspace's per-feature health; past it each readout covers the newest rows only. */
+export const DECISION_HEALTH_MAX_ROWS = 5_000;
+
+/**
+ * Every ledger row in a window, trimmed to what the per-feature health readout
+ * reads (decision-feature-health.ts), with the agent audit grades on them.
+ * Unlike a page, this covers every capability, so a quiet feature still shows.
+ */
+export async function readDecisionHealthRows(f: Pick<DecisionLedgerFilters, 'teamId' | 'workspaceId' | 'since' | 'until'>) {
+  const rows = await db.select({
+    id: decisionRecords.id, capability: decisionRecords.capability, status: decisionRecords.status, applied: decisionRecords.applied,
+    verdict: decisionRecords.verdict, reason: decisionRecords.reason, latencyMs: decisionRecords.latencyMs, costUsd: decisionRecords.costUsd,
+    overriddenAt: decisionRecords.overriddenAt,
+  }).from(decisionRecords)
+    .where(decisionLedgerWhere(f))
+    .orderBy(desc(decisionRecords.createdAt))
+    .limit(DECISION_HEALTH_MAX_ROWS + 1);
+  const page = rows.slice(0, DECISION_HEALTH_MAX_ROWS);
+  const outcomes = page.length
+    ? await db.select({ decisionRecordId: decisionOutcomes.decisionRecordId, source: decisionOutcomes.source, label: decisionOutcomes.label })
+      .from(decisionOutcomes)
+      .innerJoin(decisionRecords, eq(decisionRecords.id, decisionOutcomes.decisionRecordId))
+      .where(and(eq(decisionOutcomes.teamId, f.teamId), inArray(decisionOutcomes.source, ['agent_audit', 'agent_audit_rule']), decisionLedgerWhere(f)))
+      .orderBy(decisionOutcomes.recordedAt)
+    : [];
+  return {
+    rows: page.map(({ overriddenAt, ...r }) => ({ ...r, overridden: overriddenAt != null })),
+    outcomes,
+    truncated: rows.length > DECISION_HEALTH_MAX_ROWS,
+  };
 }
 
 type SummaryRow = Pick<typeof decisionRecords.$inferSelect, 'status' | 'verdict' | 'appliedAnswer' | 'reason' | 'humanOverride' | 'confidence'>;

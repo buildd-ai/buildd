@@ -61,7 +61,7 @@ describe('S36 — Needs You renders only canonical human-owned states', () => {
     expect(card.chip).toBe('MERGE');
     expect(isActionableChip(card.chip)).toBe(true);
     expect(card.delivery?.compositionVerified).toBe(true);
-    expect(card.delivery?.headline).toBe('Release composition verified');
+    expect(card.delivery?.headline).toBe('Composition verified');
   });
 
   it('a kernel approval a person merges turns a legacy REVIEW reading (no reviewer-task approve on record) into MERGE', () => {

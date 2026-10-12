@@ -99,11 +99,11 @@ describe('renderDeliveryActivity (S26)', () => {
     expect(header(body)).toContain('Fixing CI');
   });
 
-  test('a verified composition reads "Release composition verified"', () => {
+  test('a verified composition reads "Composition verified"', () => {
     const ts = [T('PrBound', null, 'AWAITING_REVIEW', { live: live('H2') }, 0), T('CompositionAttested', 'AWAITING_REVIEW', 'APPROVED', { novelDelta: { result: 'none' } }, 1)];
     const body = renderDeliveryActivity({ view: view({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H2'] }), transitions: ts });
-    expect(header(body)).toContain('Release composition verified');
-    expect(body).toContain('Release composition verified');
+    expect(header(body)).toContain('Composition verified');
+    expect(body).toContain('Composition verified');
   });
 
   test('S33: a composition delta approve reads as covering only the delta, never plain "Approved"', () => {
@@ -121,9 +121,9 @@ describe('renderDeliveryActivity (S26)', () => {
     const body = renderDeliveryActivity({
       view: { delivery: D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H2'] }), rounds: deltaRounds, attempts: [] }, transitions: ts,
     });
-    expect(header(body)).toContain('Release-only changes approved');
+    expect(header(body)).toContain('New changes approved');
     expect(header(body)).not.toMatch(/✓ Approved\b/);
-    expect(body).toContain('Release-only changes approved');
+    expect(body).toContain('New changes approved');
   });
 
   test('diverted notes: kinds a transition owns are dropped, the rest are kept', () => {

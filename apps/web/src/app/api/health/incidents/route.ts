@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { db } from '@buildd/core/db';
 import { workspaces, failureIncidents } from '@buildd/core/db/schema';
@@ -124,6 +125,11 @@ export async function GET(req: NextRequest) {
     const sessionUser = account ? null : await getCurrentUser();
     if (!account && !sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    // The ledger is operational detail: a signed-in team member or admin sees
+    // service status instead (lib/service-status.ts), never this.
+    if (sessionUser && !isPlatformOperator(sessionUser)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
     const { searchParams } = new URL(req.url);

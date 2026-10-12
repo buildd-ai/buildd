@@ -10,7 +10,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { bodyReadRefused, noteBodyReads } from '@/lib/body-read-monitor';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { normalizeBackend } from '@/lib/normalize-backend';
@@ -52,7 +52,7 @@ async function sessionMayManageRole(
     touchesRole: boolean,
 ): Promise<boolean> {
     if (!access || !touchesRole) return true;
-    return roleHas(access.role, 'manage_agent_roles', await getTeamPermissionOverrides(access.teamId));
+    return roleHas(access.role, 'manage_agent_roles');
 }
 
 const ROLE_FORBIDDEN = { error: 'Managing agent roles requires team admin' };

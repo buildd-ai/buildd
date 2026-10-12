@@ -4,15 +4,14 @@ import { NextRequest } from 'next/server';
 const TEAM = '11111111-1111-4111-8111-111111111111';
 const mockRequireSessionUser = mock(async () => ({ user: { id: 'u-1' } }) as any);
 const mockGetUserTeamIds = mock(async () => [TEAM] as string[]);
-// The caller's team roles and the team's permission overrides, read by the
+// The caller's team roles, read by the
 // real permission check (lib/permissions.ts) through this db mock.
 let roles: Record<string, string> = {};
-let overrides: Record<string, unknown> | null = null;
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       teamMembers: { findMany: async () => Object.entries(roles).map(([teamId, role]) => ({ teamId, role })) },
-      teams: { findFirst: async () => ({ id: 'not-a-personal-team', permissionOverrides: overrides }) },
+      teams: { findFirst: async () => ({ id: 'not-a-personal-team' }) },
     },
   },
 }));
@@ -33,7 +32,7 @@ const req = (method: string, body?: unknown) => new NextRequest(`http://localhos
 
 beforeEach(() => {
   mockGetUserTeamIds.mockResolvedValue([TEAM]);
-  roles = {}; overrides = null;
+  roles = {};
   mockSet.mockClear();
   mockDelete.mockClear();
 });
@@ -72,27 +71,5 @@ describe('/api/teams/[id]/litellm-gateway', () => {
     const res = await PUT(req('PUT', { baseUrl: 'https://litellm.example.test/v1', apiKey: 'bad' }), ctx());
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/rejected/);
-  });
-});
-
-describe('/api/teams/[id]/litellm-gateway honours the team permission overrides', () => {
-  const body = { baseUrl: 'https://litellm.example.test/v1', apiKey: 'sk-lite-123456' };
-
-  it('an admin is refused once manage_inference_providers is owner-only, and nothing is written', async () => {
-    roles = { [TEAM]: 'admin' };
-    overrides = { manage_inference_providers: ['owner'] };
-    expect((await PUT(req('PUT', body), ctx())).status).toBe(403);
-    expect((await DELETE(req('DELETE'), ctx())).status).toBe(403);
-    expect(mockSet).not.toHaveBeenCalled();
-    expect(mockDelete).not.toHaveBeenCalled();
-  });
-
-  it('a member is admitted once manage_inference_providers is granted to members, and the write happens', async () => {
-    roles = { [TEAM]: 'member' };
-    overrides = { manage_inference_providers: ['owner', 'admin', 'member'] };
-    expect((await PUT(req('PUT', body), ctx())).status).toBe(200);
-    expect(mockSet).toHaveBeenCalledWith({ teamId: TEAM, ...body });
-    expect((await DELETE(req('DELETE'), ctx())).status).toBe(200);
-    expect(mockDelete).toHaveBeenCalledWith(TEAM);
   });
 });

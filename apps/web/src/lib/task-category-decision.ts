@@ -31,7 +31,7 @@
 import { promptedQuestions } from '@buildd/core/prompted-decision';
 import { createHash } from 'node:crypto';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
-import { isJevModel } from '@buildd/core/decision-model';
+import { resolveModelMeasurement, type StoredMeasurement } from '@buildd/core/decision-model-measurements';
 // Types only at module scope. The client (and the DB layer behind it) is loaded
 // lazily inside the run, so importing this module from the task route adds
 // nothing to that route's static import graph.
@@ -60,6 +60,8 @@ export const OVERRIDE_MIN_CONFIDENCE = 0.9;
  * A test pins the prompt's hash to this version.
  */
 export const TASK_CATEGORY_PROMPT_VERSION = 'tc1';
+/** The kind a stored model measurement names for this decision (decision-model-measurements.ts). */
+export const TASK_CATEGORY_MEASUREMENT_KIND = 'task_category';
 /** The prompts-table id whose active row may replace `TASK_CATEGORY_QUESTIONS`. */
 export const TASK_CATEGORY_PROMPT_ID = 'buildd.task_category';
 
@@ -161,6 +163,8 @@ export interface GateInput {
   keyword: TaskCategoryValue | null;
   decision: TaskCategoryValue;
   confidence: number;
+  /** A threshold measured for the model that answered: replaces both the fill and the override gate. */
+  minConfidence?: number | null;
 }
 
 /** What the row should say, and who decided it. Pure. */
@@ -168,7 +172,7 @@ export function gateTaskCategory(g: GateInput): { category: TaskCategoryValue | 
   const keep = { category: g.stored, source: g.callerSet ? 'caller' as const : 'keyword' as const };
   if (g.callerSet || g.stored === 'review' || g.decision === 'review') return keep;
   if (g.decision === g.stored) return keep;
-  const min = g.stored === null ? FILL_MIN_CONFIDENCE : OVERRIDE_MIN_CONFIDENCE;
+  const min = g.minConfidence ?? (g.stored === null ? FILL_MIN_CONFIDENCE : OVERRIDE_MIN_CONFIDENCE);
   return g.confidence >= min ? { category: g.decision, source: 'jev' } : keep;
 }
 
@@ -224,7 +228,11 @@ export interface CategorizeResult {
  */
 export async function categorizeTask(
   input: CategorizeInput,
-  deps: { decide?: DecideFn; write?: WriteDecision; classify?: (title: string, description?: string | null) => TaskCategoryValue | null; now?: () => Date; log?: (line: string) => void } = {},
+  deps: {
+    decide?: DecideFn; write?: WriteDecision; classify?: (title: string, description?: string | null) => TaskCategoryValue | null; now?: () => Date; log?: (line: string) => void;
+    /** Stored (kind, model) measurements. Default: the cached table read. */
+    measurements?: () => Promise<readonly StoredMeasurement[]>;
+  } = {},
 ): Promise<CategorizeResult> {
   const log = deps.log ?? ((line: string) => console.log(line));
   const write = deps.write ?? dbWrite;
@@ -251,6 +259,7 @@ export async function categorizeTask(
     const prompt = promptedQuestions(TASK_CATEGORY_PROMPT_ID, TASK_CATEGORY_QUESTIONS, TASK_CATEGORY_PROMPT_VERSION);
     const res: DecisionResult<typeof TASK_CATEGORY_QUESTIONS> = await decide({
       capability: 'task_category',
+      kind: TASK_CATEGORY_MEASUREMENT_KIND,
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       accountId: input.accountId ?? null,
@@ -271,11 +280,17 @@ export async function categorizeTask(
     }
 
     const answer = res.answers.category;
-    // The gates were measured on Jev. A team's own decision model is recorded,
-    // never applied, until it has its own eval (decision-model.ts).
-    const gated = isJevModel(res.model)
+    // The gates were measured on Jev. Any other model is recorded, never
+    // applied, until a measurement for it is stored; then it applies at the
+    // measured threshold (decision-model-measurements.ts).
+    const measurement = await resolveModelMeasurement(
+      { kind: TASK_CATEGORY_MEASUREMENT_KIND, answeringModel: res.model, fingerprint: prompt.promptVersion },
+      deps.measurements ? { load: deps.measurements } : {},
+    );
+    const gated = measurement.measured
       ? gateTaskCategory({
         stored: input.stored, callerSet: input.callerSet, keyword, decision: answer.choice, confidence: answer.confidence,
+        minConfidence: measurement.threshold,
       })
       : { category: input.stored, source: input.callerSet ? 'caller' as const : 'keyword' as const };
     const record: TaskCategoryDecisionRecord = {

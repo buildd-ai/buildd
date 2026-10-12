@@ -28,8 +28,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveDispatchTask } from '@/lib/agent-capabilities/dispatch-principal';
 import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 import { resolveWorkspaceRunnerSize, runnerSizeOfWorker } from '@/lib/runner-size-store';
-
-import { resolveWorkspaceWarmHandover } from '@/lib/warm-handover-store';
+import { resolveWarmHandover } from '@buildd/shared';
 
 /** Mirrors DISPATCH_TOKEN_HEADER in apps/cloud-runner/src/outbound.ts. */
 const DISPATCH_TOKEN_HEADER = 'x-buildd-dispatch-token';
@@ -68,7 +67,8 @@ export async function POST(req: NextRequest) {
     return fail(resolved.status, resolved.error);
   }
   const ws = resolved.workspace;
-  const warmHandover = await resolveWorkspaceWarmHandover(ws);
+  // `repo` unless the workspace opted out; the cloud runner's own switches decide the rest.
+  const warmHandover = resolveWarmHandover((ws.gitConfig as { warmHandover?: unknown } | null)?.warmHandover);
 
   if (typeof workerId === 'string') {
     const pinned = await runnerSizeOfWorker(ws.id, workerId);

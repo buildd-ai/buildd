@@ -11,7 +11,7 @@ const mockSetWorkspacePause = mock(async (_ws: string, _until: Date | null, _by:
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/team-access', () => ({ verifyWorkspaceAccess: mockVerifyWorkspaceAccess }));
-mock.module('@/lib/permissions', () => ({ roleHas, getTeamPermissionOverrides: async () => ({}) }));
+mock.module('@/lib/permissions', () => ({ roleHas }));
 mock.module('@/lib/token-route-policy', () => ({ hasTokenRouteAdminAccess: (a: any) => a?.level === 'admin' }));
 const realPause = await import('@/lib/workspace-pause');
 mock.module('@/lib/workspace-pause', () => ({ ...realPause, setWorkspacePause: mockSetWorkspacePause }));

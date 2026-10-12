@@ -31,7 +31,7 @@ describe('SETTINGS_NAV', () => {
 
   it('lists everything the team shares under Team, Members first', () => {
     expect(ids('Team')).toEqual([
-      'team', 'roles', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations',
+      'team', 'roles', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations', 'features',
     ]);
     expect(SETTINGS_ITEMS.find((i) => i.id === 'team')?.label).toBe('Members');
   });
@@ -97,8 +97,8 @@ describe('settingsNavFor', () => {
 });
 
 describe('settingsReadOnly', () => {
-  const member = settingsPermissions({ role: 'member', slug: 'acme' }, 'u1', {});
-  const admin = settingsPermissions({ role: 'admin', slug: 'acme' }, 'u1', {});
+  const member = settingsPermissions({ role: 'member', slug: 'acme' }, 'u1');
+  const admin = settingsPermissions({ role: 'admin', slug: 'acme' }, 'u1');
   const teamIds = SETTINGS_NAV.find((g) => g.scope === 'team')!.items.map((i) => i.id);
 
   it('shows every team section read-only to a member', () => {
@@ -113,12 +113,6 @@ describe('settingsReadOnly', () => {
     for (const id of ['account', 'keys', 'notifications', 'connections'] as const) {
       expect(settingsReadOnly(id, NO_PERMISSIONS)).toBe(false);
     }
-  });
-
-  it('follows the team\'s overrides: a member granted a section\'s permission can change it', () => {
-    const granted = settingsPermissions({ role: 'member', slug: 'acme' }, 'u1', { manage_team_notifications: ['owner', 'admin', 'member'] });
-    expect(settingsReadOnly('alerts', granted)).toBe(false);
-    expect(settingsReadOnly('integrations', granted)).toBe(true);
   });
 
   it('says who manages it in one plain line', () => {

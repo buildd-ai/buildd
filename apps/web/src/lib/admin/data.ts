@@ -10,7 +10,7 @@
  */
 import { db } from '@buildd/core/db';
 import {
-  chatRetros, decisionRecords, experiments, orchestrationDecisions, tasks, teamMembers, teams, workers, workspaces,
+  chatRetros, decisionOutcomes, decisionRecords, experiments, orchestrationDecisions, tasks, teamMembers, teams, workers, workspaces,
 } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import { runExperimentHealth } from '@buildd/core/experiment-health-source';
@@ -20,6 +20,7 @@ import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout
 import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 import type { ExperimentHealthFinding } from '@buildd/core/experiment-health';
 import { normalizeDecisionShadows } from '@buildd/core/inference-policy';
+import { AGENT_AUDIT_RULE_SOURCE, AGENT_AUDIT_SOURCE, type HealthOutcome } from '@buildd/core/decision-feature-health';
 import { applyExperimentUpdate, findOtherRunning, type ExperimentRow } from '@/lib/experiments-store';
 import { fetchOrchestrationDecisionStats } from '@/lib/orchestration-decision-stats-query';
 import { computeUsageStats, describeScan, type GroupDimension } from '@/lib/usage-stats';
@@ -43,7 +44,7 @@ import { loadFlowSeries, loadFlowUsage } from '@/lib/insights-flow-query';
 import type { FlowWindow } from '@/lib/insights-flow';
 import { BAND_LABEL, tasksInBand, type BandKey } from '@/components/insights/flow-chart-model';
 import { loadAgentAccessReport } from '@/lib/agent-capabilities/access-log';
-import type { DecisionFeatureCount } from './decision-features';
+import type { DecisionFeatureCount, DecisionHealthRow } from './decision-features';
 import type { AdminScope, AdminWindow } from './scope';
 
 export { applyExperimentUpdate, findOtherRunning };
@@ -106,6 +107,48 @@ export async function loadDecisionFeatureCounts(opts: { since: Date; workspaceId
     fromLedger(orchestrationDecisions, sql`0`),
   ]);
   return [...ledger, ...orchestration];
+}
+
+/** Newest rows read per ledger for the health readout; past it the readout covers the newest rows only. */
+export const DECISION_HEALTH_ROW_LIMIT = 20_000;
+
+/**
+ * The rows the per-feature health readout reads (lib/admin/decision-features.ts
+ * `featureHealthById`): both ledgers, newest first, plus the agent audit
+ * grades on decision_records rows. orchestration_decisions has no outcome
+ * table, so its features read calls, fallbacks, latency and cost only.
+ */
+export async function loadDecisionHealthRows(opts: { since: Date; workspaceIds: string[] }): Promise<{
+  rows: DecisionHealthRow[];
+  outcomes: HealthOutcome[];
+  truncated: boolean;
+}> {
+  if (opts.workspaceIds.length === 0) return { rows: [], outcomes: [], truncated: false };
+  const inScope = <T extends typeof decisionRecords | typeof orchestrationDecisions>(t: T) =>
+    and(inArray(t.workspaceId, opts.workspaceIds), gte(t.createdAt, opts.since));
+  const [ledger, orchestration, outcomes] = await Promise.all([
+    db.select({
+      id: decisionRecords.id, capability: decisionRecords.capability, status: decisionRecords.status, applied: decisionRecords.applied,
+      verdict: decisionRecords.verdict, reason: decisionRecords.reason, latencyMs: decisionRecords.latencyMs, costUsd: decisionRecords.costUsd,
+      overriddenAt: decisionRecords.overriddenAt,
+    }).from(decisionRecords).where(inScope(decisionRecords)).orderBy(desc(decisionRecords.createdAt)).limit(DECISION_HEALTH_ROW_LIMIT + 1),
+    db.select({
+      id: orchestrationDecisions.id, capability: orchestrationDecisions.capability, status: orchestrationDecisions.status,
+      applied: orchestrationDecisions.applied, verdict: orchestrationDecisions.suggested, reason: orchestrationDecisions.reason,
+      latencyMs: orchestrationDecisions.latencyMs, costUsd: orchestrationDecisions.costUsd,
+    }).from(orchestrationDecisions).where(inScope(orchestrationDecisions)).orderBy(desc(orchestrationDecisions.createdAt)).limit(DECISION_HEALTH_ROW_LIMIT + 1),
+    db.select({ decisionRecordId: decisionOutcomes.decisionRecordId, source: decisionOutcomes.source, label: decisionOutcomes.label })
+      .from(decisionOutcomes)
+      .innerJoin(decisionRecords, eq(decisionRecords.id, decisionOutcomes.decisionRecordId))
+      .where(and(inArray(decisionOutcomes.source, [AGENT_AUDIT_SOURCE, AGENT_AUDIT_RULE_SOURCE]), inScope(decisionRecords)))
+      .orderBy(decisionOutcomes.recordedAt),
+  ]);
+  const truncated = ledger.length > DECISION_HEALTH_ROW_LIMIT || orchestration.length > DECISION_HEALTH_ROW_LIMIT;
+  const rows: DecisionHealthRow[] = [
+    ...ledger.slice(0, DECISION_HEALTH_ROW_LIMIT).map(({ overriddenAt, ...r }) => ({ ...r, overridden: overriddenAt != null })),
+    ...orchestration.slice(0, DECISION_HEALTH_ROW_LIMIT).map(r => ({ ...r, overridden: false })),
+  ];
+  return { rows, outcomes, truncated };
 }
 
 /** The get_decision_stats backend (orchestration decisions + manifest predictions), any scope. */

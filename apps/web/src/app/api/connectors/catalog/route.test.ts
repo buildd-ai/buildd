@@ -12,7 +12,8 @@ mock.module('@/lib/connector-team-auth', () => ({
 }));
 mock.module('@/lib/connector-catalog-store', () => ({
   loadTeamCatalog: async () => [
-    { slug: 'vercel', policy: 'available' }, { slug: 'neon', policy: 'blocked' }, { slug: 'axiom', policy: 'preinstalled' },
+    { slug: 'vercel', policy: 'available', clientSupport: { status: 'needs_approved_client', detail: 'vendor wording', actionLabel: 'Client review', actionUrl: 'https://vendor.example/review' } },
+    { slug: 'neon', policy: 'blocked' }, { slug: 'axiom', policy: 'preinstalled' }, { slug: 'sentry', policy: 'available' },
   ],
 }));
 // Real parser/verifier; only the network edges are stubbed.
@@ -34,13 +35,23 @@ describe('GET /api/connectors/catalog', () => {
   it('admins see every entry including blocked', async () => {
     const data = await (await GET(req('GET'))).json();
     expect(data.canManage).toBe(true);
-    expect(data.entries.map((e: any) => e.slug)).toEqual(['vercel', 'neon', 'axiom']);
+    expect(data.entries.map((e: any) => e.slug)).toEqual(['vercel', 'neon', 'axiom', 'sentry']);
   });
 
-  it('members never see blocked entries', async () => {
+  it('members see neither blocked nor unavailable entries', async () => {
     caller = { ...caller, canManage: false };
     const data = await (await GET(req('GET'))).json();
-    expect(data.entries.map((e: any) => e.slug)).toEqual(['vercel', 'axiom']);
+    expect(data.entries.map((e: any) => e.slug)).toEqual(['axiom', 'sentry']);
+  });
+
+  it('an unavailable provider reads only as unavailable: no vendor wording, review status or link', async () => {
+    const res = await GET(req('GET'));
+    const text = await res.text();
+    const vercel = JSON.parse(text).entries.find((e: any) => e.slug === 'vercel');
+    expect(vercel.unavailable).toBe(true);
+    expect(vercel.clientSupport).toBeUndefined();
+    expect(text).not.toContain('vendor.example');
+    expect(text).not.toContain('needs_approved_client');
   });
 });
 

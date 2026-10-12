@@ -66,14 +66,20 @@
  *  - **A daily backstop** (`sweepMissionBranchRefresh`): a mission still in
  *    use whose last confirmed refresh (`branchRefreshedAt`) is older than
  *    `BRANCH_REFRESH_BACKSTOP_MS`, so an idle stretch never grows one huge
- *    conflict.
+ *    conflict. It also reconciles what a request left unfinished: an
+ *    abandoned lease, or a conflict pointer to settle.
+ *
+ * Every other writer to the branch (task PR landings, the repair's landing,
+ * the kernel's own refresh and landing of the mission PR) and how each is
+ * fenced is the spec's "Lifecycle and concurrency" section. The lease here
+ * serializes refresh callers for one mission, and nothing else.
  */
 
 import { randomUUID } from 'node:crypto';
 import { db } from '@buildd/core/db';
 import { missions, missionNotes, tasks, workers, workspaces, githubRepos } from '@buildd/core/db/schema';
-import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
-import { and, desc, eq, inArray, isNotNull, lt, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { TERMINAL_TASK_STATUSES, type MissionStatusValue } from '@buildd/shared';
+import { and, desc, eq, inArray, isNotNull, lt, isNull, notInArray, or, type SQL } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -100,12 +106,42 @@ function githubErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Who asked. `start` is a task being claimed: an authorized start, so it may
+ * refresh a paused or held mission (that start is the resume). `backstop` is
+ * unsolicited upkeep, which a paused, held or budget-exhausted mission never
+ * gets (docs/specs/mission-branch-refresh.md, "Eligibility").
+ */
+export type RefreshTrigger = 'start' | 'backstop';
+
+const TERMINAL_MISSION_STATUSES = ['completed', 'archived'] as const satisfies readonly MissionStatusValue[];
+const PAUSED_MISSION_STATUSES = ['paused', 'budget_exhausted'] as const satisfies readonly MissionStatusValue[];
+
+function refusedStatuses(trigger: RefreshTrigger): MissionStatusValue[] {
+  return trigger === 'start'
+    ? [...TERMINAL_MISSION_STATUSES]
+    : [...TERMINAL_MISSION_STATUSES, ...PAUSED_MISSION_STATUSES];
+}
+
+/** Why this mission may not be refreshed by this trigger right now, or null. */
+function ineligibility(
+  m: { status: string; isHeld?: boolean | null },
+  trigger: RefreshTrigger,
+): 'mission_terminal' | 'mission_paused' | null {
+  if ((TERMINAL_MISSION_STATUSES as readonly string[]).includes(m.status)) return 'mission_terminal';
+  if (trigger === 'backstop' && ((PAUSED_MISSION_STATUSES as readonly string[]).includes(m.status) || m.isHeld === true)) {
+    return 'mission_paused';
+  }
+  return null;
+}
+
 export type MissionBranchRefreshOutcome =
   | {
       kind: 'skipped';
       reason:
         | 'not_opted_in'
         | 'mission_terminal'
+        | 'mission_paused'
         | 'mission_pr_merged'
         | 'conflict_task_open'
         | 'refresh_unverified'
@@ -124,17 +160,24 @@ export type MissionBranchRefreshOutcome =
  * Refresh one mission's integration branch against its workspace's trunk.
  *
  * Idempotent and safe under concurrency — see the module doc for the two
- * debounce mechanisms. Never throws: every failure mode is a typed outcome.
+ * debounce mechanisms. Mission state is checked on entry and again, as a
+ * WHERE fence, at each commit boundary (the lease renewal just before the
+ * merges API, and the conflict-task reservation), so a mission completed,
+ * archived or paused while this runs gets no write. Never throws for a GitHub
+ * or eligibility outcome: each is typed.
  */
 export async function refreshMissionIntegrationBranch(
   missionId: string,
+  opts: { trigger?: RefreshTrigger } = {},
 ): Promise<MissionBranchRefreshOutcome> {
+  const trigger = opts.trigger ?? 'backstop';
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
     columns: {
       id: true,
       title: true,
       status: true,
+      isHeld: true,
       workspaceId: true,
       workingBranch: true,
       integrationBranchEnabled: true,
@@ -147,9 +190,8 @@ export async function refreshMissionIntegrationBranch(
 
   const branch = missionIntegrationBase(mission);
   if (!branch) return { kind: 'skipped', reason: 'not_opted_in' };
-  if (mission.status === 'completed' || mission.status === 'archived') {
-    return { kind: 'skipped', reason: 'mission_terminal', detail: mission.status };
-  }
+  const refused = ineligibility(mission, trigger);
+  if (refused) return { kind: 'skipped', reason: refused, detail: mission.status };
 
   // The mission's own PR into trunk already merged — the mission's one shot at
   // trunk has been taken, and refreshing a branch nothing will ever merge again
@@ -201,11 +243,24 @@ export async function refreshMissionIntegrationBranch(
   }
   const releaseLease = () =>
     db.update(missions).set({ branchRefreshLeaseUntil: null, branchRefreshLeaseToken: null }).where(ownsLease);
+  // The mission may still take a write from this trigger: the fence every
+  // commit-boundary UPDATE carries, so a state change mid-refresh wins.
+  const stillEligible = trigger === 'start'
+    ? notInArray(missions.status, refusedStatuses(trigger))
+    : and(notInArray(missions.status, refusedStatuses(trigger)), eq(missions.isHeld, false));
+  /** Why a fenced write matched nothing: the mission changed state, or ownership moved on. */
+  const whyFenced = async (): Promise<MissionBranchRefreshOutcome> => {
+    const now = await db.query.missions.findFirst({ where: eq(missions.id, missionId) });
+    const changed = now ? ineligibility(now, trigger) : null;
+    return changed ? { kind: 'skipped', reason: changed, detail: now?.status } : { kind: 'skipped', reason: 'in_flight' };
+  };
 
   try {
     // The pre-lease snapshot may be stale after another caller finishes.
     const current = await db.query.missions.findFirst({ where: eq(missions.id, missionId) });
     if (!current || current.branchRefreshLeaseToken !== leaseToken) return { kind: 'skipped', reason: 'in_flight' };
+    const changed = ineligibility(current, trigger);
+    if (changed) return { kind: 'skipped', reason: changed, detail: current.status };
     // A conflict task is in flight: stop retrying until it is settled — its PR
     // merged AND the branch provably caught up, or it ended without a merge.
     // Every later trunk advance coalesces into it rather than opening another.
@@ -219,6 +274,25 @@ export async function refreshMissionIntegrationBranch(
         installationId,
         repoFullName: repo.fullName,
       });
+      if (settled.kind === 'reserved') {
+        // The pointer names a task row that was never written: the caller that
+        // reserved it died (or is still inserting). Finish its dispatch under
+        // the SAME id. The insert is idempotent on that id, so a slow original
+        // and this caller produce one task between them, and a crash between
+        // reservation and insert can no longer stop refreshing for good.
+        let trunkSha: string | null = null;
+        try {
+          const trunkRef = await githubApi(installationId, `/repos/${repo.fullName}/git/ref/heads/${trunk}`);
+          trunkSha = typeof trunkRef?.object?.sha === 'string' ? trunkRef.object.sha : null;
+        } catch { /* reported below */ }
+        if (!trunkSha) return { kind: 'error', detail: `could not resolve ${trunk} head sha` };
+        const done = await dispatchBranchRefreshConflictTask({
+          mission, branch, trunk, trunkSha, installationId, workspaceId: workspace.id, repoFullName: repo.fullName,
+          leaseToken, stillEligible, reservedTaskId: current.branchRefreshConflictTaskId,
+        });
+        if (done.kind === 'fenced') return whyFenced();
+        return { kind: 'conflict', conflictTaskId: done.taskId, dispatched: done.dispatched };
+      }
       if (settled.kind === 'open') {
         return { kind: 'skipped', reason: 'conflict_task_open', conflictTaskId: current.branchRefreshConflictTaskId, ...(settled.detail ? { detail: settled.detail } : {}) };
       }
@@ -258,13 +332,18 @@ export async function refreshMissionIntegrationBranch(
       return { kind: 'skipped', reason: 'already_current' };
     }
 
+    // The mission PR may have merged while this ran: re-read it at the boundary.
+    if ((await findMissionPrOwner(missionId))?.state === 'merged') {
+      return { kind: 'skipped', reason: 'mission_pr_merged' };
+    }
     // Slow repo/ref work can outlive the lease. Fence the API call against a
-    // successor that already acquired ownership or reserved a conflict task.
+    // successor that already acquired ownership or reserved a conflict task,
+    // and against the mission leaving the state this trigger may write to.
     const [renewed] = await db.update(missions)
       .set({ branchRefreshLeaseUntil: new Date(Date.now() + BRANCH_REFRESH_LEASE_MS) })
-      .where(and(ownsLease, isNull(missions.branchRefreshConflictTaskId)))
+      .where(and(ownsLease, isNull(missions.branchRefreshConflictTaskId), stillEligible))
       .returning({ id: missions.id });
-    if (!renewed) return { kind: 'skipped', reason: 'in_flight' };
+    if (!renewed) return whyFenced();
 
     let merged: { sha?: string } | null;
     try {
@@ -289,8 +368,9 @@ export async function refreshMissionIntegrationBranch(
           workspaceId: workspace.id,
           repoFullName: repo.fullName,
           leaseToken,
+          stillEligible,
         });
-        if (!conflict) return { kind: 'skipped', reason: 'in_flight' };
+        if (conflict.kind === 'fenced') return whyFenced();
         fireGateEvent({
           gate: GATE_SLUGS.MISSION_BRANCH_REFRESH,
           surface: 'mission-branch-refresh',
@@ -347,6 +427,7 @@ async function postRefreshNote(missionId: string, body: string, title = 'Integra
 
 type ConflictTaskSettlement =
   | { kind: 'open'; detail?: string }
+  | { kind: 'reserved' }
   | { kind: 'cleared' }
   | { kind: 'unverified'; detail: string };
 
@@ -357,8 +438,12 @@ type ConflictTaskSettlement =
  * PR is open, and clearing the pointer then let every later trunk merge 409 into
  * a fresh task and a fresh PR for the same conflict. So the task's PR decides:
  *
- *  - task still running, or its PR still open → `open` (later trunk advances
- *    coalesce into it; it merges trunk again before landing);
+ *  - no task row behind the pointer → `reserved`: a dispatch reserved the id
+ *    and has not inserted it (or died first). The caller finishes it under the
+ *    same id;
+ *  - task still running, or a retry it spawned (`parentTaskId`) still running,
+ *    or its PR still open → `open` (later trunk advances coalesce into it; it
+ *    merges trunk again before landing);
  *  - PR closed unmerged, or the task ended with no PR → `cleared` (a person
  *    judged it; the next refresh may try again);
  *  - PR merged → the branch must provably contain the trunk sha the refresh was
@@ -381,10 +466,16 @@ async function settleConflictTask(args: {
     where: eq(tasks.id, taskId),
     columns: { id: true, status: true, context: true },
   });
-  // A missing row is an in-progress reservation (see dispatch), never a release.
-  if (!conflictTask || !(TERMINAL_TASK_STATUSES as readonly string[]).includes(conflictTask.status)) {
-    return { kind: 'open' };
-  }
+  // A missing row is a reservation (see dispatch), never a release.
+  if (!conflictTask) return { kind: 'reserved' };
+  if (!(TERMINAL_TASK_STATUSES as readonly string[]).includes(conflictTask.status)) return { kind: 'open' };
+  // A failed attempt's retry carries the repair on under a new task id: the
+  // repair is not over while it runs, so no second conflict task is opened.
+  const liveRetry = await db.query.tasks.findFirst({
+    where: and(eq(tasks.parentTaskId, taskId), notInArray(tasks.status, [...TERMINAL_TASK_STATUSES])),
+    columns: { id: true },
+  });
+  if (liveRetry) return { kind: 'open', detail: `retry ${liveRetry.id} is still running` };
 
   const prWorker = await db.query.workers.findFirst({
     where: and(eq(workers.taskId, taskId), isNotNull(workers.prNumber)),
@@ -450,6 +541,11 @@ async function settleConflictTask(args: {
  * Dispatch the one conflict-resolution task this mission is allowed to have in
  * flight. Atomically reserves the pointer under the lease owner's token before
  * insertion, so an expired caller cannot dispatch alongside its successor.
+ *
+ * With `reservedTaskId`, it finishes a reservation whose row was never written
+ * instead: it re-asserts the pointer under this caller's lease and inserts
+ * under that id. Either way the insert is idempotent on the id, so the one
+ * reservation yields at most one task however many callers finish it.
  */
 async function dispatchBranchRefreshConflictTask(args: {
   mission: { id: string; title: string };
@@ -460,20 +556,28 @@ async function dispatchBranchRefreshConflictTask(args: {
   workspaceId: string;
   repoFullName: string;
   leaseToken: string;
-}): Promise<{ taskId: string; dispatched: boolean } | null> {
-  const { mission, branch, trunk, trunkSha, installationId, workspaceId, repoFullName, leaseToken } = args;
+  /** The mission-state fence (`stillEligible` in the caller). */
+  stillEligible: SQL | undefined;
+  reservedTaskId?: string;
+}): Promise<{ kind: 'task'; taskId: string; dispatched: boolean } | { kind: 'fenced' }> {
+  const { mission, branch, trunk, trunkSha, installationId, workspaceId, repoFullName, leaseToken, stillEligible, reservedTaskId } = args;
 
   // Reserve the pointer before insertion. A missing task behind this pointer
-  // is an in-progress reservation, never permission to dispatch another task.
-  const taskId = randomUUID();
+  // is a reservation, never permission to dispatch a second task.
+  const taskId = reservedTaskId ?? randomUUID();
   const [reserved] = await db.update(missions)
     .set({ branchRefreshConflictTaskId: taskId })
-    .where(and(eq(missions.id, mission.id), eq(missions.branchRefreshLeaseToken, leaseToken), isNull(missions.branchRefreshConflictTaskId)))
+    .where(and(
+      eq(missions.id, mission.id),
+      eq(missions.branchRefreshLeaseToken, leaseToken),
+      reservedTaskId ? eq(missions.branchRefreshConflictTaskId, reservedTaskId) : isNull(missions.branchRefreshConflictTaskId),
+      stillEligible,
+    ))
     .returning({ id: missions.id });
   if (!reserved) {
     const current = await db.query.missions.findFirst({ where: eq(missions.id, mission.id) });
-    return current?.branchRefreshConflictTaskId
-      ? { taskId: current.branchRefreshConflictTaskId, dispatched: false } : null;
+    return current?.branchRefreshConflictTaskId && current.branchRefreshConflictTaskId !== reservedTaskId
+      ? { kind: 'task', taskId: current.branchRefreshConflictTaskId, dispatched: false } : { kind: 'fenced' };
   }
 
   // The mission work the refresh must keep: proven present after it lands.
@@ -533,12 +637,17 @@ async function dispatchBranchRefreshConflictTask(args: {
       })
       .onConflictDoNothing()
       .returning();
-    if (!newTask) throw new Error('Conflict task insertion returned no task');
   } catch (error) {
-    await db.update(missions).set({ branchRefreshConflictTaskId: null })
-      .where(and(eq(missions.id, mission.id), eq(missions.branchRefreshConflictTaskId, taskId)));
+    // Only the caller that reserved the id releases it. One finishing another's
+    // reservation leaves it for the next attempt: the original may yet insert.
+    if (!reservedTaskId) {
+      await db.update(missions).set({ branchRefreshConflictTaskId: null })
+        .where(and(eq(missions.id, mission.id), eq(missions.branchRefreshConflictTaskId, taskId)));
+    }
     throw error;
   }
+  // The id already has its row: the other party to this reservation wrote it.
+  if (!newTask) return { kind: 'task', taskId, dispatched: false };
 
   const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
   if (workspace) {
@@ -551,7 +660,7 @@ async function dispatchBranchRefreshConflictTask(args: {
       `No further refresh attempts until it finishes.`,
   );
   console.log(`[mission-branch-refresh] dispatched conflict task ${newTask.id} for mission ${mission.id} (${repoFullName})`);
-  return { taskId: newTask.id, dispatched: true };
+  return { kind: 'task', taskId: newTask.id, dispatched: true };
 }
 
 export interface MissionBranchRefreshSweepResult {
@@ -580,27 +689,45 @@ async function missionInUse(missionId: string): Promise<boolean> {
  * refresh is older than `BRANCH_REFRESH_BACKSTOP_MS`; an idle mission is left
  * alone, since nothing will cut from its branch. Runs from the hourly
  * pr-reconcile cron; a mission inside the window costs one DB read.
+ *
+ * It is also the reconciler for work a request left unfinished, so two more
+ * conditions make a mission due before its day is up:
+ *  - an abandoned lease: `branchRefreshLeaseUntil` set and past. Every exit
+ *    path clears it, so a set, expired lease means its holder died mid-refresh
+ *    (a start refresh past its budget whose request was torn down);
+ *  - a conflict pointer: the next refresh settles it (or finishes a
+ *    reservation whose row was never written), so a merged repair is
+ *    recognised within the hour rather than at the next task start.
+ *
+ * A paused, held or budget-exhausted mission is never swept: the backstop is
+ * unsolicited work, and a start (the resume) refreshes it instead.
  */
 export async function sweepMissionBranchRefresh(): Promise<MissionBranchRefreshSweepResult> {
   const candidates = await db.query.missions.findMany({
     where: and(
       eq(missions.integrationBranchEnabled, true),
-      sql`${missions.status} NOT IN ('completed', 'archived')`,
+      notInArray(missions.status, refusedStatuses('backstop')),
+      eq(missions.isHeld, false),
     ),
-    columns: { id: true, branchRefreshedAt: true },
+    columns: { id: true, branchRefreshedAt: true, branchRefreshLeaseUntil: true, branchRefreshConflictTaskId: true },
   });
 
   const result: MissionBranchRefreshSweepResult = { scanned: 0, merged: 0, conflicts: 0, skipped: 0, errors: 0 };
-  const staleBefore = Date.now() - BRANCH_REFRESH_BACKSTOP_MS;
+  const now = Date.now();
+  const staleBefore = now - BRANCH_REFRESH_BACKSTOP_MS;
   for (const m of candidates) {
     result.scanned++;
     try {
       const refreshedAt = m.branchRefreshedAt ? new Date(m.branchRefreshedAt).getTime() : null;
-      if ((refreshedAt != null && refreshedAt > staleBefore) || !(await missionInUse(m.id))) {
+      const leaseUntil = m.branchRefreshLeaseUntil ? new Date(m.branchRefreshLeaseUntil).getTime() : null;
+      const due = refreshedAt == null || refreshedAt <= staleBefore
+        || (leaseUntil != null && leaseUntil < now)
+        || m.branchRefreshConflictTaskId != null;
+      if (!due || !(await missionInUse(m.id))) {
         result.skipped++;
         continue;
       }
-      const outcome = await refreshMissionIntegrationBranch(m.id);
+      const outcome = await refreshMissionIntegrationBranch(m.id, { trigger: 'backstop' });
       if (outcome.kind === 'merged') result.merged++;
       else if (outcome.kind === 'conflict') result.conflicts++;
       else if (outcome.kind === 'error') result.errors++;
@@ -630,13 +757,18 @@ export interface StartingTask {
  * refreshed once however many of its tasks start in this claim.
  *
  * Bounded and fail-open: the caller waits at most `budgetMs` and is never
- * failed by it. A refresh still running at the budget keeps going on its own
- * (it holds the single-flight lease, so a concurrent start coalesces into it).
+ * failed by it, and the task starts on the branch as it is, fresh or not. A
+ * refresh still running at the budget is handed to `keepAlive` (the claim's
+ * subscriber passes `after()`, so the platform keeps the request alive for
+ * it). It holds the single-flight lease, so a concurrent start coalesces into
+ * it. Nothing depends on that promise surviving: if the request is torn down
+ * first, the lease is left set and expires, and the backstop treats an
+ * expired lease as due (`sweepMissionBranchRefresh`).
  * Returns each mission's outcome, or `timed_out`, for the caller's log.
  */
 export async function refreshMissionBranchesBeforeStart(
   starting: StartingTask[],
-  opts: { budgetMs?: number } = {},
+  opts: { budgetMs?: number; keepAlive?: (pending: Promise<unknown>) => void } = {},
 ): Promise<Record<string, MissionBranchRefreshOutcome | 'timed_out'>> {
   const out: Record<string, MissionBranchRefreshOutcome | 'timed_out'> = {};
   try {
@@ -663,12 +795,15 @@ export async function refreshMissionBranchesBeforeStart(
     const budgetMs = opts.budgetMs ?? START_REFRESH_BUDGET_MS;
     await Promise.all(due.map(async (m) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const refresh = refreshMissionIntegrationBranch(m.id).catch((err): MissionBranchRefreshOutcome => ({
+      const refresh = refreshMissionIntegrationBranch(m.id, { trigger: 'start' }).catch((err): MissionBranchRefreshOutcome => ({
         kind: 'error', detail: githubErrorMessage(err),
       }));
       const timeout = new Promise<'timed_out'>((resolve) => { timer = setTimeout(() => resolve('timed_out'), budgetMs); });
       out[m.id] = await Promise.race([refresh, timeout]);
       clearTimeout(timer);
+      if (out[m.id] === 'timed_out') {
+        try { opts.keepAlive?.(refresh); } catch { /* best effort: the backstop owns recovery */ }
+      }
     }));
   } catch (err) {
     console.error('[mission-branch-refresh] start refresh failed; the claim proceeds on the branch as it is:', err);

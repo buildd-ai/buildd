@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { failureIncidents } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
@@ -29,6 +30,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const apiAccount = await authenticateApiKey(apiKey, req);
     const user = apiAccount ? null : await getCurrentUser();
     if (!user && !apiAccount) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (user && !isPlatformOperator(user)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
       return NextResponse.json({ error: 'Changing an incident requires an admin-level token' }, { status: 403 });
     }

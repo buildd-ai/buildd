@@ -48,6 +48,7 @@
 import {
   canonicalJson,
   decide,
+  decisionReceiptError,
   describeDecideError,
   isRetryableStatus,
   resolveDecisionEndpoint,
@@ -113,6 +114,8 @@ export interface DecisionFailure {
   retryable: boolean;
   /** HTTP status, for `provider_error`. */
   status?: number;
+  /** The provider's own words, for `provider_error`: the start of its body, key redacted (`decisionReceiptError`). */
+  body?: string;
 }
 
 /** A decision a rule or fallback produced. */
@@ -216,6 +219,12 @@ export interface DecisionRoute {
   timeoutMs?: number;
   /** Was the kind's threshold measured on the model that answered? Default yes. */
   isMeasured?: (answeringModel: string) => boolean;
+  /**
+   * A threshold measured for the model that answered, replacing the kind's (or
+   * the escalation's) for this attempt. Null, or a value outside [0, 1], keeps
+   * the kind's own.
+   */
+  thresholdFor?: (answeringModel: string) => number | null;
 }
 
 /** The routes and rollout for one call, resolved by the platform (never by the caller). */
@@ -333,8 +342,10 @@ export function normalizeDecisionFailure(error: DecideError | { kind: string; [k
       return { kind: 'timeout', detail: describeDecideError(e), retryable: true };
     case 'rate_limited':
       return { kind: 'rate_limited', detail: describeDecideError(e), retryable: true };
-    case 'provider_error':
-      return { kind: 'provider_error', detail: describeDecideError(e), retryable: isRetryableStatus(e.status), status: e.status };
+    case 'provider_error': {
+      const body = decisionReceiptError(e).body;
+      return { kind: 'provider_error', detail: describeDecideError(e), retryable: isRetryableStatus(e.status), status: e.status, ...(body ? { body } : {}) };
+    }
     case 'transport':
       return { kind: 'transport', detail: e.message, retryable: true };
     case 'invalid_request':
@@ -511,10 +522,13 @@ export async function runDecisionAttempt<K extends string, F, D extends string, 
   }
 
   const measured = route.isMeasured ? route.isMeasured(result.model) : true;
-  const outcome: DecisionAttempt['outcome'] = verdict.confidence < threshold ? 'below_threshold' : measured ? 'decided' : 'unmeasured';
+  const routeThreshold = route.thresholdFor ? route.thresholdFor(result.model) : null;
+  const effective = isUnit(routeThreshold) ? routeThreshold : threshold;
+  const outcome: DecisionAttempt['outcome'] = verdict.confidence < effective ? 'below_threshold' : measured ? 'decided' : 'unmeasured';
   return {
     ...base,
     ...answered,
+    threshold: effective,
     outcome,
     decision: verdict.decision,
     confidence: verdict.confidence,

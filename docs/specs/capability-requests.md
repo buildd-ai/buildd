@@ -215,11 +215,16 @@ for, what they hold and the policy, without being able to change any of it.
   and approves for the asked lease or denies in place; Settings → Connected apps
   → Agent access (`?request=<id>`) offers a shorter lease.
 - A new pending request pages the team once; a repeat ask (same row) does not.
-- Settings → Connected apps shows each catalog provider's real state from the
-  team's connector on the same host (installed, connected, expired, client
-  approval needed) and offers only the step the server can take. A provider
-  that has not approved buildd as a client offers no Connect. Members see
-  non-blocked entries, requests, grants and policy read-only.
+- Settings → Connected apps → Team apps shows each app's real state from the
+  team's connector on the same host (Connected, Sign-in expired, Not
+  connected, Not set up, Not available, Blocked by your team) and offers only
+  the step the server can take. A provider that won't let buildd connect reads
+  "Not available" with no Connect and no reason. Members see offered entries,
+  requests, grants and policy read-only, and can request an app the team has
+  not set up (`POST /api/connectors/catalog/request`, which pages the team).
+- Agent access is compact: a one-line summary and the requests waiting for a
+  decision, never folded; what agents hold, history and policy open below it,
+  and open by themselves when `?request=<id>` points there.
 - The UI never decides: every control posts to the routes above and shows
   what they answered. A repeat decision reads as already done; one someone
   else made first reads as it stands; a refused approval shows the server's
@@ -330,4 +335,4 @@ both, and visibility never depends on `tools/list_changed`.
 - Tables: `capabilityPolicies`, `capabilityGrants` in `packages/core/db/schema.ts`
 - MCP: `request_capability` in `packages/core/mcp-tools.ts`
 - Gate and Home: `apps/web/src/lib/capability-grants-needs-you.ts` (`accessEscalationRule`, `loadAccessNeedsYou`, `notifyAccessRequest`), wired through `apps/web/src/modules.ts`
-- UI: `apps/web/src/lib/capability-grants-view.ts`, `apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.tsx`, `CatalogSection.tsx`
+- UI: `apps/web/src/lib/capability-grants-view.ts`, `apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.tsx`, `TeamAppsSection.tsx`
