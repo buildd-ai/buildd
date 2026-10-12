@@ -38,6 +38,10 @@ mock.module('@buildd/core/db', () => ({
 mock.module('@buildd/core/decision-outcomes', () => ({
   labelDecisionOutcome: async (row: any) => { outcomes.push(row); return outcomeFails ? { ok: false, error: 'store_failed' } : { ok: true, results: [] }; },
 }));
+const corrections: any[] = [];
+mock.module('@buildd/core/decision-outcome-graders', () => ({
+  labelHumanCorrection: async (c: any) => { corrections.push(c); return 'labelled'; },
+}));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: () => Promise.resolve(currentUser) }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: () => Promise.resolve(apiAccountRow) }));
 mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: () => Promise.resolve(['team-1']) }));
@@ -63,7 +67,7 @@ beforeEach(() => {
   currentUser = { id: 'u-1' };
   apiAccountRow = null;
   logged.length = 0;
-  decisionRow = null; outcomeFails = false; outcomes.length = 0; query = null;
+  decisionRow = null; outcomeFails = false; outcomes.length = 0; query = null; corrections.length = 0;
 });
 
 describe('POST /api/missions/[id]/strand-choice', () => {
@@ -112,6 +116,23 @@ describe("POST /api/missions/[id]/strand-choice - gated mode", () => {
     expect(query.where._op).toBe('and');
     expect(query.orderBy._op).toBe('desc');
   });
+  it('a tap on the other button than an applied pick put first is a correction of that pick', async () => {
+    decisionRow = { id: 'decision-1', missionId: ID, teamId: 'team-1', capability: 'mission_strand_choice', applied: true, appliedAnswer: 'wait-for-local' };
+    await call({ label: 'continue-on-runner', order: 'local-first' });
+    expect(corrections).toEqual([{
+      teamId: 'team-1', capability: 'mission_strand_choice', decisionRecordId: 'decision-1',
+      from: 'wait-for-local', to: 'continue-on-runner', by: 'u-1',
+    }]);
+  });
+
+  it('agreeing with the applied pick, or a pick that was never applied, corrects nothing', async () => {
+    decisionRow = { id: 'decision-1', missionId: ID, teamId: 'team-1', capability: 'mission_strand_choice', applied: true, appliedAnswer: 'wait-for-local' };
+    await call({ label: 'wait-for-local', order: 'local-first' });
+    decisionRow = { ...decisionRow, applied: false, appliedAnswer: 'runner-first' };
+    await call({ label: 'continue-on-runner', order: 'runner-first' });
+    expect(corrections).toEqual([]);
+  });
+
   for (const mismatch of [null, { capability: 'other' }, { missionId: 'other' }, { teamId: 'other' }]) {
     it('does not label missing or mismatched records', async () => {
       decisionRow = mismatch && { id: 'decision-1', missionId: ID, teamId: 'team-1', capability: 'mission_strand_choice', ...mismatch };

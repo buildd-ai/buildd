@@ -148,15 +148,26 @@ describe('the consent page', () => {
     const checked = formOf(html).filter(([k]) => k === 'ws');
     expect(checked.length).toBe(1);
     expect(formOf(html)).toContainEqual(['acts_as', 'agent']);
-    expect(html).toMatch(/value="person" disabled/);
+    expect(html).not.toContain('id="kind-person"');
     expect(await grantRows(userId)).toEqual([]);
   });
 
-  test('without resource the per-workspace flow is unchanged', async () => {
+  test('without a resource the account consent page is the default', async () => {
     const { clientId } = await setup();
-    const { resource: _r, ...legacy } = authorizeQuery(clientId);
-    const html = await (await getPage(legacy)).text();
-    expect(html).not.toContain('data-consent="account"');
+    const { resource: _r, ...noResource } = authorizeQuery(clientId);
+    const html = await (await getPage(noResource)).text();
+    expect(html).toContain('data-consent="account"');
+  });
+
+  test('internal workspaces are not offered; an admin can still be offered one the app named', async () => {
+    const { a, clientId } = await setup();
+    const [coord] = await q<{ id: string }>(sql`INSERT INTO workspaces (name, team_id) VALUES ('__coordination', ${a.teamId}::uuid) RETURNING id`);
+    const plain = await (await getPage(authorizeQuery(clientId))).text();
+    expect(plain).not.toContain(coord.id);
+    expect(plain).not.toContain('__coordination');
+    const named = await (await getPage(authorizeQuery(clientId, { workspace: coord.id }))).text();
+    expect(named).toContain(coord.id);
+    expect(formOf(named).filter(([k]) => k === 'ws')).toEqual([['ws', coord.id]]);
   });
 
   test('PKCE is S256 only: plain or a missing challenge redirects with invalid_request', async () => {
@@ -358,5 +369,74 @@ describe('pagination and selection across pages', () => {
     expect(html).toContain(`<input type="checkbox" name="ws" value="${extra[2]}"`);
     expect(html).not.toContain(`<input type="checkbox" name="ws" value="${extra[1]}"`);
     expect(await grantRows(userId)).toEqual([]);
+  });
+});
+
+describe('older per-workspace address', () => {
+  const legacyResource = (id: string) => `${ORIGIN}/api/mcp-oauth/${id}`;
+
+  test('consent for exactly that workspace; the code exchanges for a token bound to it', async () => {
+    const { userId, a, b, clientId } = await setup();
+    const html = await (await getPage(authorizeQuery(clientId, { resource: legacyResource(a.workspaceId) }))).text();
+    expect(html).toContain('data-consent="legacy"');
+    expect(html).not.toContain(b.workspaceId);
+    const res = await post([...formOf(html), ['decision', 'approve']]);
+    expect(res.status).toBe(200);
+    const { code } = codeFrom(await res.text());
+    const tok = await tokenRoute.POST(new NextRequest(`${ORIGIN}/api/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', code, client_id: clientId, redirect_uri: REDIRECT, code_verifier: VERIFIER, resource: legacyResource(a.workspaceId) }).toString(),
+    }));
+    expect(tok.status).toBe(200);
+    const body = await tok.json() as { access_token: string; refresh_token: string };
+    const claims = await tokens.verifyAccessToken(body.access_token, a.workspaceId);
+    expect(claims?.workspace_id).toBe(a.workspaceId);
+    expect(await tokens.verifyAccessToken(body.access_token, b.workspaceId)).toBeNull();
+    // no grant was created: nothing widened
+    expect(await grantRows(userId)).toEqual([]);
+
+    // an older connection that sends the account resource on refresh keeps refreshing, still bound to the one workspace
+    const refreshed = await tokenRoute.POST(new NextRequest(`${ORIGIN}/api/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: body.refresh_token, client_id: clientId, resource: RESOURCE }).toString(),
+    }));
+    expect(refreshed.status).toBe(200);
+    const again = await refreshed.json() as { access_token: string };
+    expect((await tokens.verifyAccessToken(again.access_token, a.workspaceId))?.workspace_id).toBe(a.workspaceId);
+  });
+
+  test('a workspace outside the user\'s teams is refused and names nothing', async () => {
+    const { outside, clientId } = await setup();
+    const res = await getPage(authorizeQuery(clientId, { resource: legacyResource(outside.workspaceId) }));
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain(outside.workspaceId);
+  });
+
+  test('a code is refused for a resource other than the one it was issued for', async () => {
+    const { a, b, clientId } = await setup();
+    const html = await (await getPage(authorizeQuery(clientId, { resource: legacyResource(a.workspaceId) }))).text();
+    const { code } = codeFrom(await (await post([...formOf(html), ['decision', 'approve']])).text());
+    const res = await tokenRoute.POST(new NextRequest(`${ORIGIN}/api/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', code, client_id: clientId, redirect_uri: REDIRECT, code_verifier: VERIFIER, resource: legacyResource(b.workspaceId) }).toString(),
+    }));
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe('invalid_target');
+  });
+
+  test('a grant code is refused for an older per-workspace resource', async () => {
+    const { a, clientId } = await setup();
+    const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
+    const { code } = codeFrom(await (await post([...setField(page, 'ws', [a.workspaceId]), ['decision', 'approve']])).text());
+    const res = await tokenRoute.POST(new NextRequest(`${ORIGIN}/api/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', code, client_id: clientId, redirect_uri: REDIRECT, code_verifier: VERIFIER, resource: legacyResource(a.workspaceId) }).toString(),
+    }));
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe('invalid_target');
   });
 });

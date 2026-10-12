@@ -367,6 +367,14 @@ describe('scrub-pii.sql covers the schema', () => {
     expect(re.test('Task 12: lorem ipsum')).toBe(true);
   });
 
+  // ': ' starts at position(': '); the kept prefix ends AFTER the space (+1) and the
+  // rewritten remainder starts one past it (+2). Off by one leaks the first real character.
+  test('surface-audit round prefix keeps exactly "round N: " and rewrites the rest', () => {
+    const titleExpr = cov.assignments.find(a => a.table === 'tasks' && a.column === 'title')?.expr ?? '';
+    expect(titleExpr).toContain("substring(t.title, 1, position(': ' in t.title) + 1)");
+    expect(titleExpr).toContain("substr(t.title, position(': ' in t.title) + 2)");
+  });
+
   test('one transaction, fail on first error, quiet, no DETAIL in public logs', () => {
     expect(sqlSrc).toContain('\\set ON_ERROR_STOP on');
     expect(sqlSrc).toContain('\\set QUIET on');
