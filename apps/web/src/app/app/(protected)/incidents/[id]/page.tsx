@@ -3,6 +3,7 @@ import { failureIncidents, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { getViewerTimezone } from '@/lib/team-timezone';
 import { displayTaskTitle } from '@/lib/task-title';
@@ -24,6 +25,9 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
   const { id } = await params;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
+  // Operational detail: the platform operator's. A team member or admin lands on
+  // Health, where the team's service status lives (lib/service-status.ts).
+  if (!isPlatformOperator(user)) redirect('/app/health');
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
 
   const incident = await db.query.failureIncidents.findFirst({ where: eq(failureIncidents.id, id) });

@@ -17,7 +17,8 @@ mock.module('@/lib/api-auth', () => ({
 }));
 mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: teams }));
 mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany: workspaces } } } }));
-mock.module('@buildd/core/decision-ledger', () => ({ readDecisionLedgerPage: ledger, summarizeDecisionLedger: (rows: unknown[]) => ({ total: rows.length }) }));
+const healthRows = mock(async (..._args: any[]) => ({ rows: [] as any[], outcomes: [] as any[], truncated: false }));
+mock.module('@buildd/core/decision-ledger', () => ({ readDecisionLedgerPage: ledger, readDecisionHealthRows: healthRows, summarizeDecisionLedger: (rows: unknown[]) => ({ total: rows.length }) }));
 
 const orchRead = mock(async (..._args: any[]) => ({ rows: [{ id: 'o1', capability: 'orchestration_claim', appliedAnswer: 'START', createdAt: new Date('2026-01-01T00:00:00Z') }] as any[], truncated: false }));
 mock.module('@buildd/core/orchestration-decision-ledger', () => ({
@@ -155,4 +156,57 @@ it('routes orchestration_* capabilities to orchestration_decisions, not decision
   expect(body.status).toBe('OK');
   expect(body.source).toBe('orchestration_decisions');
   expect(body.summary.byAppliedAnswer).toEqual({ START: 1 });
+});
+
+it('carries the feature health readout for one capability: not deciding, and why in plain words', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  ledger.mockImplementation(async () => ({
+    rows: [1, 2, 3].map(i => ({
+      id: `d${i}`, capability: 'task_role_shadow', status: 'fallback', applied: false, verdict: null,
+      reason: 'insufficient_candidates', latencyMs: null, costUsd: null, overriddenAt: null, createdAt: new Date('2026-01-01T00:00:00Z'),
+    })),
+    outcomes: [],
+    truncated: false,
+  }));
+  const body = await (await GET(req('?workspaceId=ws&capability=task_role_shadow'))).json();
+  expect(body.health.collection).toMatchObject({ state: 'not_collecting', reason: 'insufficient_candidates' });
+  expect(body.health.collection.sentence).toStartWith('Not deciding: fewer than two roles say when to use them.');
+  expect(body.health.fallback.pct).toBe(100);
+});
+
+it('carries no health readout across capabilities: one readout per feature', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  const body = await (await GET(req('?workspaceId=ws'))).json();
+  expect(body.health).toBeNull();
+});
+
+it('carries a health readout for an orchestration capability too', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  orchRead.mockImplementationOnce(async () => ({
+    rows: [{ id: 'o1', capability: 'orchestration_claim', status: 'applied', applied: true, verdict: 'START', reason: null, latencyMs: 40, costUsd: 0.001, createdAt: new Date('2026-01-01T00:00:00Z') }],
+    truncated: false,
+  }));
+  const body = await (await GET(req('?workspaceId=ws&capability=orchestration_claim'))).json();
+  expect(body.health).toMatchObject({ calls: 1, acted: { n: 1, pct: 100 } });
+});
+
+it('features=1 gives one readout per capability over the window, quiet features included', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  healthRows.mockImplementationOnce(async () => ({
+    rows: [
+      { id: 'a', capability: 'task_role_shadow', status: 'fallback', applied: false, verdict: null, reason: 'insufficient_candidates', latencyMs: null, costUsd: null, overridden: false },
+      { id: 'b', capability: 'buildd.post_session_triage', status: 'applied', applied: true, verdict: 'skip', reason: null, latencyMs: 30, costUsd: 0.001, overridden: false },
+    ],
+    outcomes: [{ decisionRecordId: 'b', source: 'agent_audit', label: 'right' }],
+    truncated: false,
+  }));
+  const body = await (await GET(req('?workspaceId=ws&features=1&window=7d'))).json();
+  expect(healthRows.mock.calls[0][0]).toMatchObject({ teamId: 'team-1', workspaceId: 'ws' });
+  expect(ledger).not.toHaveBeenCalled();
+  expect(body.status).toBe('OK');
+  expect(body.features.map((f: any) => [f.capability, f.health.collection.state])).toEqual([
+    ['buildd.post_session_triage', 'insufficient_sample'],
+    ['task_role_shadow', 'not_collecting'],
+  ]);
+  expect(body.features[0].health.graded).toMatchObject({ n: 1, right: 1 });
 });

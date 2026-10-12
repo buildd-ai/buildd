@@ -72,7 +72,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (a: any, b: any) => ({ a, b, op: 'inArray' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   connectors: { teamId: 'teamId', id: 'id', name: 'name' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },
@@ -354,7 +354,7 @@ describe('POST /api/connectors', () => {
     const data = await res.json();
     expect(data.error).toBe('needs_approved_client');
     expect(data.message).toMatch(/Vercel/);
-    expect(data.actionUrl).toMatch(/^https:\/\/vercel\.com\//);
+    expect(data.actionUrl).toBeUndefined();
     expect(mockConnectorsInsert).not.toHaveBeenCalled();
   });
 

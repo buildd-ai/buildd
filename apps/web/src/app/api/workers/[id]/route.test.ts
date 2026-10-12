@@ -814,6 +814,11 @@ mock.module('@/lib/mission-completion', () => ({
     if (missionCompletionError) throw missionCompletionError;
   }),
 }));
+/** Calls the route made to the late runner evidence path (lib/late-runner-evidence.ts). */
+const lateRunnerEvidenceCalls: unknown[] = [];
+mock.module('@/lib/late-runner-evidence', () => ({
+  recordLateRunnerEvidence: mock(async (input: unknown) => { lateRunnerEvidenceCalls.push(input); return { handled: true }; }),
+}));
 mock.module('@/lib/mission-criteria-verify', () => ({
   ...realCriteriaVerify,
   isCriteriaVerificationTask: () => criteriaKinds.verification,
@@ -3155,6 +3160,60 @@ describe('PATCH /api/workers/[id]', () => {
       const sets = captureSets();
       await patchFailed({ type: 'question', prompt: 'Which auth?' });
       expect(sets.some(s => 'waitingFor' in s)).toBe(false);
+    });
+  });
+
+  describe('terminal status replaces the last tool call as the current action', () => {
+    function captureSets(status: string) {
+      const sets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          sets.push(updates);
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status, accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+      return sets;
+    }
+
+    async function patchTerminal(body: Record<string, unknown>) {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        currentAction: 'Running: echo final-marker',
+        pendingInstructions: null,
+      });
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body,
+      });
+      return PATCH(req, { params: mockParams });
+    }
+
+    it('a completed worker reads Completed', async () => {
+      const sets = captureSets('completed');
+      await patchTerminal({ status: 'completed' });
+      expect(sets.some(s => s.currentAction === 'Completed')).toBe(true);
+    });
+
+    it('a failed worker reads Failed', async () => {
+      const sets = captureSets('failed');
+      await patchTerminal({ status: 'failed', error: 'boom' });
+      expect(sets.some(s => s.currentAction === 'Failed')).toBe(true);
+    });
+
+    it('an explicit currentAction on the terminal write is kept', async () => {
+      const sets = captureSets('completed');
+      await patchTerminal({ status: 'completed', currentAction: 'Done: opened PR' });
+      expect(sets.some(s => s.currentAction === 'Done: opened PR')).toBe(true);
+      expect(sets.some(s => s.currentAction === 'Completed')).toBe(false);
     });
   });
 
@@ -13452,6 +13511,33 @@ describe('PATCH /api/workers/[id]', () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     });
 
+    it('a loop hold still reports the completed owner attempt to the kernel (approved PR must not stick in WORKING)', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) })),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ commitCount: 1, prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42 }));
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask({ deliveryId: 'delivery-1', deliveryRole: 'owner' }));
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' },
+        },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'task-1', deliveryId: 'delivery-1', deliveryRole: 'owner' }, status: 'completed',
+      });
+    });
+
     it('requeues task to pending when condition is unmet (command exit code != 0)', async () => {
       const taskSetCalls: any[] = [];
       const workerSetCalls: any[] = [];
@@ -13492,6 +13578,38 @@ describe('PATCH /api/workers/[id]', () => {
       expect(ctx.loopHistory[0].iteration).toBe(0);
       expect(ctx.loopHistory[0].satisfied).toBe(false);
       expect(ctx.resumeBranch).toBe('buildd/loop-branch');
+    });
+
+    it('pr_checks_green with CI still running waits for the webhook and leaves loopIteration unchanged', async () => {
+      const taskSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) })),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ prNumber: 42, prUrl: 'https://github.com/org/repo/pull/42', prLifecycleStatus: 'ci_running' }));
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask({
+        loopConfig: { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3, backoffMinutes: 0 },
+        loopIteration: 0,
+      }));
+
+      const before = Date.now();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const taskPendingSet = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(taskPendingSet).toBeDefined();
+      expect(taskPendingSet.loopIteration).toBe(0);
+      // Still reachable by evaluateAndAdvanceLoopOnCiGreen's guard.
+      expect(taskPendingSet.loopState).toBe('condition_unmet');
+      expect(taskPendingSet.context.loopHistory ?? []).toEqual([]);
+      expect(taskPendingSet.context.loopWebhookWait).toMatchObject({ prNumber: 42 });
+      expect(new Date(taskPendingSet.startAt).getTime()).toBeGreaterThanOrEqual(before + 240 * 60_000);
     });
 
     it('sets task to failed with loopState=exhausted when maxLoops reached', async () => {
@@ -13666,7 +13784,136 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(workerSetCalls.some((u: any) => JSON.stringify(u.verificationEvidence) === JSON.stringify(evidence))).toBe(true);
+      expect(workerSetCalls.some((u: any) => JSON.stringify(u.verificationEvidence) === JSON.stringify({ ...evidence, reportedVia: 'runner' }))).toBe(true);
+    });
+
+    // The agent session holds a per-task token and may PATCH its own worker.
+    // Its evidence is stamped as such, whatever it claims, and never replaces
+    // the runner's (lib/verification-provenance.ts).
+    describe('who reported the evidence', () => {
+      const asTaskToken = () => mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', level: 'worker', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+      });
+      const ok = { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' };
+      const failed = { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' };
+
+      it('stamps a task-token copy as the agent on a host-claimed worker, even when it claims to be the runner', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker()]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ claimedByCloud: false }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { verificationEvidence: { ...ok, reportedVia: 'runner' } },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'task_token' });
+      });
+
+      it('never lets a task-token copy replace the evidence the runner recorded', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker()]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ verificationEvidence: { ...failed, reportedVia: 'runner' } }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls.some((u: any) => 'verificationEvidence' in u)).toBe(false);
+      });
+
+      it('decides a task-token completion on the runner copy, not the agent one in the body', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ verificationEvidence: { ...failed, reportedVia: 'runner' } }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls[workerSetCalls.length - 1].exitCause).toBe('condition_unmet');
+      });
+
+      it('hands the runner report on an already-terminal worker to the late evidence path, and still refuses the write', async () => {
+        lateRunnerEvidenceCalls.length = 0;
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed' }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: failed },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(409);
+        expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
+      });
+
+      // A cloud container runs its whole runner on a task token, so on a worker
+      // the claim route recorded as cloud-claimed that token is the runner.
+      it('counts a task-token copy as the runner on a worker a cloud container claimed', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ claimedByCloud: true })]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ claimedByCloud: true }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'runner' });
+      });
+
+      it('hands a cloud runner late report on its task token to the late evidence path', async () => {
+        asTaskToken();
+        lateRunnerEvidenceCalls.length = 0;
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed', claimedByCloud: true }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: failed },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(409);
+        expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
+      });
+
+      it('ignores a late task-token report on a terminal worker', async () => {
+        asTaskToken();
+        lateRunnerEvidenceCalls.length = 0;
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed' }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(409);
+        expect(lateRunnerEvidenceCalls).toEqual([]);
+      });
     });
 
     it('does not set loop fields when task has no loopConfig', async () => {
@@ -16855,6 +17102,33 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     expect(sets.every(v => v.turns === undefined)).toBe(true);
   });
 
+  // /respond's interactive path queues a human answer as an `answer` worker
+  // message and records it in instructionHistory under the same id. The
+  // session acks it as a worker message; that ack is also the read receipt.
+  it('a worker-message ack settles the instruction-history entry sharing its id', async () => {
+    setup({
+      ...idWorker,
+      runner: 'mcp',
+      pendingInstructions: null,
+      instructionHistory: [
+        { id: 'i-1', type: 'instruction', message: 'other', timestamp: 1, deliveryState: 'pending' },
+        { id: 'msg-answer', type: 'instruction', message: 'Use JWT', timestamp: 2, deliveryState: 'pending' },
+      ],
+    });
+    const res = await patch({ workerMessagesDelivered: ['msg-answer'] });
+    expect(res.status).toBe(200);
+    const marked = sets.find(v => v.instructionHistory).instructionHistory;
+    expect(marked[0].deliveryState).toBe('pending');
+    expect(marked[1].deliveryState).toBe('acknowledged');
+    expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('a worker-message ack naming no history entry leaves instructionHistory unwritten', async () => {
+    setup({ ...idWorker, runner: 'mcp', pendingInstructions: null });
+    await patch({ workerMessagesDelivered: ['msg-from-another-agent'] });
+    expect(sets.some(v => 'instructionHistory' in v)).toBe(false);
+  });
+
   it('delivered and acknowledged in one PATCH (an MCP consumer reads the text in the same turn)', async () => {
     setup({ ...idWorker, runner: 'mcp' });
     await patch({ instructionsDelivered: 'Switch to the other auth flow', instructionIdsDelivered: ['i-1'], instructionsAcknowledged: ['i-1'] });
@@ -17054,7 +17328,7 @@ describe('PATCH /api/workers/[id] — completion fan-out (characterization)', ()
       'scheduleMemoryUseLabels',
     ]);
     expect(call('persistTaskEvidence')).toEqual(['persistTaskEvidence', 'task-1', WORKER_ID, { isSensitive: false }]);
-    expect(call('handleCriteriaVerificationOutcome')).toEqual(['handleCriteriaVerificationOutcome', 'task-1', VERIFICATION]);
+    expect(call('handleCriteriaVerificationOutcome')).toEqual(['handleCriteriaVerificationOutcome', 'task-1', { ...VERIFICATION, reportedVia: 'runner' }]);
     expect(call('handleProseEvalOutcome')).toEqual(['handleProseEvalOutcome', 'task-1', STRUCTURED]);
     expect(call('handleCriteriaWorkerEvalOutcome')).toEqual(['handleCriteriaWorkerEvalOutcome', 'task-1', STRUCTURED]);
     expect(call('completeMissionIfVerified')).toEqual(['completeMissionIfVerified', 'mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]);
@@ -17586,5 +17860,107 @@ describe('PATCH /api/workers/[id] — OAuth session owner check', () => {
   it('the bld_ key path is unchanged: the claiming account gets 200', async () => {
     setup({ id: 'account-1', authType: 'api', level: 'worker' }, { ...sessionWorker, runner: 'runner-1', claimedByUserId: null });
     expect((await patch()).status).toBe(200);
+  });
+});
+
+// ask_human (packages/core/mcp-tools.ts) parks an interactive session's own
+// worker through this route, exactly as a runner's AskUserQuestion does. Its
+// expiry is the waiting_input sweep's, keyed on updated_at, so the session's
+// receive_messages polls while it waits must not push that clock forward.
+describe('PATCH /api/workers/[id] — interactive worker parked on a question', () => {
+  let capturedSet: any = null;
+  const interactive = {
+    id: 'worker-1', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1',
+    runner: 'mcp', status: 'running', claimedByUserId: null, pendingInstructions: null,
+    milestones: [], instructionHistory: [],
+  };
+
+  function setup(worker: any) {
+    capturedSet = null;
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', level: 'worker' });
+    mockWorkersFindFirst.mockResolvedValue(worker);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return { where: mock(() => ({ returning: mock(() => [{ ...worker, ...updates }]) })) };
+      }),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockMissionNotesFindMany.mockResolvedValue([]);
+  }
+
+  const patch = (body: Record<string, unknown>) => PATCH(
+    createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }),
+    { params: mockParams },
+  );
+
+  it('asking parks the worker and reaches the owner, the same as a runner question', async () => {
+    setup(interactive);
+    mockNotify.mockClear();
+    mockNotifySubject.mockClear();
+    const res = await patch({ status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Flag or straight on?', options: ['flag', 'straight'] } });
+    expect(res.status).toBe(200);
+    expect(capturedSet.status).toBe('waiting_input');
+    expect(capturedSet.waitingFor).toMatchObject({ type: 'question', prompt: 'Flag or straight on?' });
+    expect(capturedSet.updatedAt).toBeInstanceOf(Date);
+    expect(mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention')).toBe(true);
+  });
+
+  it('a receive_messages poll while parked leaves updated_at where the park set it', async () => {
+    const parkedAt = new Date('2026-10-01T09:00:00.000Z');
+    setup({ ...interactive, status: 'waiting_input', updatedAt: parkedAt, waitingFor: { type: 'question', prompt: 'Flag or straight on?' } });
+    const res = await patch({ consumer: 'agent' });
+    expect(res.status).toBe(200);
+    expect(capturedSet).not.toBeNull();
+    expect(capturedSet.updatedAt).toEqual(parkedAt);
+  });
+
+  // The poll heartbeat: a session that stopped polling is gone, and /respond
+  // sends its answer cold. Recorded in waitingFor, by its own write that
+  // never touches updated_at (the park clock) and never resurrects a
+  // question an answer has just cleared.
+  it('a receive_messages poll while parked stamps waitingFor.sessionSeenAt without moving the park clock', async () => {
+    const parkedAt = new Date('2026-10-01T09:00:00.000Z');
+    const sets: any[] = [];
+    setup({ ...interactive, status: 'waiting_input', updatedAt: parkedAt, waitingFor: { type: 'question', prompt: 'Q?' } });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        sets.push(updates);
+        capturedSet = updates;
+        return { where: mock(() => Object.assign(Promise.resolve([]), { returning: mock(() => [{ ...interactive, ...updates }]) })) };
+      }),
+    });
+    const res = await patch({ consumer: 'agent' });
+    expect(res.status).toBe(200);
+    const beat = sets.find(u => u.waitingFor && u.waitingFor.type === 'sql');
+    expect(beat).toBeTruthy();
+    expect(JSON.stringify(beat.waitingFor.strings)).toContain('sessionSeenAt');
+    expect(beat.updatedAt).toBeUndefined();
+  });
+
+  it('a runner worker is never stamped', async () => {
+    const sets: any[] = [];
+    setup({ ...interactive, runner: 'runner-1', status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        sets.push(updates);
+        return { where: mock(() => Object.assign(Promise.resolve([]), { returning: mock(() => [{ ...interactive, ...updates }]) })) };
+      }),
+    });
+    await patch({ consumer: 'runner' });
+    expect(sets.some(u => u.waitingFor && u.waitingFor.type === 'sql')).toBe(false);
+  });
+
+  it('a runner worker parked on a question is unchanged: every PATCH bumps updated_at', async () => {
+    setup({ ...interactive, runner: 'runner-1', status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
+    await patch({ consumer: 'runner' });
+    expect(capturedSet.updatedAt).toBeInstanceOf(Date);
+  });
+
+  it('resuming (status running) restarts the clock', async () => {
+    setup({ ...interactive, status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
+    await patch({ status: 'running', consumer: 'agent' });
+    expect(capturedSet.updatedAt).toBeInstanceOf(Date);
   });
 });

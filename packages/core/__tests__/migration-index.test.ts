@@ -236,4 +236,28 @@ describe('parallel branches against a real drizzle repo', () => {
     expect(checkAgainstBase(paths, 'dev')).toEqual([]);
     expect(generate().stdout).toContain('No schema changes');
   }, 120_000);
+
+  it('a dev refresh of a mission branch is clean against the mission branch once its own migration moves past dev', () => {
+    // dev is at 0003_add_o. A mission branch mints 0004; dev mints its own 0004.
+    sh('git', ['checkout', '-q', '-b', 'mission', 'dev']);
+    writeFileSync(join(pkg(), 'schema', 'm.ts'), `import { pgTable, text } from 'drizzle-orm/pg-core';\nexport const m = pgTable('m', { id: text('id').primaryKey() });\n`);
+    generate('--name=add_m');
+    commitAll('mission');
+    sh('git', ['checkout', '-q', 'dev']);
+    writeFileSync(join(pkg(), 'schema', 'd.ts'), `import { pgTable, text } from 'drizzle-orm/pg-core';\nexport const d = pgTable('d', { id: text('id').primaryKey() });\n`);
+    generate('--name=add_d');
+    commitAll('dev');
+
+    // The refresh PR (base: mission) takes dev's 0004 as-is and moves the mission's own past it.
+    sh('git', ['checkout', '-q', '-b', 'refresh', 'mission']);
+    sh('git', ['merge', '-q', 'dev'], dir, true);
+    const r = renumberAgainstBase(paths, 'dev');
+    expect(r.removed).toEqual(['0004_add_m.sql']);
+    expect(r.generated).toEqual(['0005_add_m.sql']);
+    sh('git', ['commit', '-q', '--no-edit']);
+
+    // The PR removes the base's 0004_add_m, so dev's 0004_add_d takes a slot it frees.
+    expect(checkAgainstBase(paths, 'mission')).toEqual([]);
+    expect(checkAgainstBase(paths, 'dev')).toEqual([]);
+  }, 120_000);
 });

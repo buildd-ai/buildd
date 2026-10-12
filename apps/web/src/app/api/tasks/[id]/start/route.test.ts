@@ -126,8 +126,42 @@ mock.module('@/lib/hosted-runner-usage-store', () => ({
   checkHostedRunnerAllowance: mockCheckHosted,
 }));
 
+// The coordination probe is stubbed per test with the claim route's REAL
+// predicates (evaluateCoordinationGates) over a fixture snapshot, so these
+// tests exercise the same gate logic the next claim applies.
+const mockProbe = mock(async (_task: any, _now?: Date) => [] as any[] | null);
+mock.module('@/lib/coordination-probe', () => ({ probeCoordination: mockProbe }));
+
+const mockFireGateEvent = mock((_input: any) => 'sig');
+mock.module('@/lib/gate-ledger', () => ({
+  fireGateEvent: mockFireGateEvent,
+  GATE_SLUGS: { CLAIM_LOOP_DEFERRAL: 'claim_loop_deferral' },
+}));
+const mockRecordDecision = mock(async (_row: any) => {});
+mock.module('@buildd/core/orchestration-ledger-source', () => ({ recordOrchestrationDecision: mockRecordDecision }));
+
 // Import handler AFTER mocks
 import { POST } from './route';
+import { evaluateCoordinationGates, type CoordinationSnapshot } from '../../../workers/claim/coordination-gates';
+import { makeWaitingReason, type WaitingReason } from '@buildd/core/waiting-reason';
+
+/** The shapes the probe produces for a local mission and for dependency edges (lib/coordination-probe.ts). */
+const localReason = (): WaitingReason => makeWaitingReason('mission_local', {
+  because: "its mission runs in a person's own session, so runners do not pick up its tasks",
+  blocker: { type: 'mission', id: 'mission-1', label: 'a local-session mission' },
+  provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
+});
+const migrationEdge = (id: string): WaitingReason => makeWaitingReason('dep_inferred', {
+  because: 'both change migrations in core/db',
+  blocker: { type: 'task', id, label: `task ${id}`, live: true },
+  overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
+  provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
+});
+const declaredEdge = (id: string): WaitingReason => makeWaitingReason('dep_declared', {
+  because: 'it was declared as a dependency',
+  blocker: { type: 'task', id, label: `task ${id}` },
+  provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
+});
 
 // Helper to create mock NextRequest
 function createMockRequest(options: {
@@ -169,6 +203,9 @@ describe('POST /api/tasks/[id]/start', () => {
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockDbUpdate.set.mockClear();
+    mockProbe.mockReset();
+    mockProbe.mockResolvedValue([]);
+    mockFireGateEvent.mockClear();
 
     // Default: grant access, no blocking dep workers, no connectors, no held mission, no active workers
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -743,8 +780,9 @@ describe('POST /api/tasks/[id]/start', () => {
   });
 
   // executor='local' (task 09ed6675): Start would broadcast to runners that
-  // never claim it, so it names the local session and offers force start.
-  it('returns 422 mission_local when the task\'s mission runs in a local session', async () => {
+  // never claim it. The probe reports it as a `mission_local` reason, so the
+  // refusal is the shared coordination_hold and one Force start hands it over.
+  it('refuses a local-mission task with a forceable mission_local reason', async () => {
     const mockTask = {
       id: 'task-123', title: 'Local Task', status: 'pending', workspaceId: 'ws-1', missionId: 'mission-1',
       dependsOn: null, roleSlug: null, context: null,
@@ -752,17 +790,15 @@ describe('POST /api/tasks/[id]/start', () => {
     };
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue(mockTask);
-    // Not held; executor = 'local'. The two probes differ only in their WHERE.
-    // drizzle-orm is mocked here, so eq() keeps its field/value.
-    mockMissionsFindFirst.mockImplementation((opts: any) =>
-      Promise.resolve((opts?.where?.args ?? []).some((a: any) => a.field === 'executor' && a.value === 'local') ? { id: 'mission-1' } : null),
-    );
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockProbe.mockResolvedValue([localReason()]);
 
     const response = await callHandler(createMockRequest(), 'task-123');
     expect(response.status).toBe(422);
     const data = await response.json();
-    expect(data.gateReason).toBe('mission_local');
-    expect(data.error).toContain('local session');
+    expect(data.gateReason).toBe('coordination_hold');
+    expect(data.waitingReasons[0].kind).toBe('mission_local');
+    expect(data.error).toContain('session');
     expect(data.canForce).toBe(true);
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
@@ -1386,5 +1422,260 @@ describe('POST /api/tasks/[id]/start — mission budget gate', () => {
     expect(response.status).toBe(200);
     const written = (mockDbUpdate.set.mock.calls.at(-1) as any[])[0] as any;
     expect(written.context.bypassMissionBudget).toBeUndefined();
+  });
+});
+
+// ── Coordination holds (task 1fd75933) ──────────────────────────────────────
+// Production regression: an idle runner, a pending task whose manifest
+// overlaps an open PR on packages/core/db/schema.ts. /start returned 200, the
+// page said "Queued at front · No runner has responded", and every claim
+// deferred the task on path_overlap. Force start then had no way past it short
+// of an admin MCP claim_task force — which made the caller's session the
+// worker (runner 'mcp') and no background agent ever ran it.
+describe('POST /api/tasks/[id]/start — coordination holds', () => {
+  const overlapTask = {
+    id: 'task-123',
+    title: 'PR scope verification',
+    status: 'pending',
+    workspaceId: 'ws-1',
+    missionId: null,
+    pathManifest: ['packages/core/db/schema.ts', 'apps/web/src/lib/foo.ts'],
+    context: {},
+    workspace: { id: 'ws-1', teamId: 'team-1', repo: 'test/repo', maxConcurrentTasks: 10 },
+  };
+  const snapshot = (over: Partial<CoordinationSnapshot> = {}): CoordinationSnapshot => ({
+    openPrTasks: [{
+      taskId: 'task-pr', pathManifest: ['packages/core/db/schema.ts'], prNumber: 1234,
+      prUrl: 'https://github.com/o/r/pull/1234', workerStatus: 'completed', prLifecycle: 'open', branch: 'b', prBaseRef: 'dev',
+    }],
+    activeClaims: null,
+    mission: null,
+    missionActiveCount: 0,
+    missionAdvisoryInFlight: null,
+    orderedBehind: null,
+    liveTaskIds: new Set(),
+    now: new Date(),
+    ...over,
+  });
+  const probeWith = (snap: CoordinationSnapshot) =>
+    mockProbe.mockImplementation(async (task: any) => evaluateCoordinationGates(task, snap));
+
+  beforeEach(() => {
+    mockWakeTask.mockClear();
+    mockDbUpdate.set.mockClear();
+    mockFireGateEvent.mockClear();
+    mockRecordDecision.mockClear();
+    mockProbe.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(overlapTask);
+    // Idle workspace: the cap gate finds nothing running.
+    mockWorkersFindMany.mockResolvedValue([]);
+  });
+
+  it('refuses with the open-PR blocker instead of accepting a start the next claim defers', async () => {
+    probeWith(snapshot());
+    const res = await callHandler(createMockRequest(), 'task-123');
+
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.gateReason).toBe('coordination_hold');
+    expect(body.waitingReasons[0].kind).toBe('pr_overlap_ended');
+    expect(body.waitingReasons[0].blocker).toMatchObject({ type: 'pr', label: 'PR #1234' });
+    expect(body.waitingReasons[0].because).toBe('both edit packages/core/db/schema.ts');
+    expect(body.waitingReasons[0].overlap.areas).toEqual([{ area: 'core/db', count: 1 }]);
+    expect(body.error).toContain('Waiting on PR #1234');
+    expect(body.error).not.toMatch(/runner/i);
+    expect(body.canForce).toBe(true);
+    expect(body.force.gates).toEqual(['Open-PR file overlap']);
+    expect(body.force.railsRemaining.join(' ')).toContain('Files another agent is editing stay locked');
+    expect(typeof body.reasonsDigest).toBe('string');
+    // Nothing stamped, nothing woken: no false "Queued at front".
+    expect(mockDbUpdate.set).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('a plain forceOverride does not silently lift a coordination hold the person never saw', async () => {
+    probeWith(snapshot());
+    const res = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-123');
+    expect(res.status).toBe(422);
+    expect((await res.json()).gateReason).toBe('coordination_hold');
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('Force start persists an audited intent and wakes a runner; it never claims or creates a worker', async () => {
+    probeWith(snapshot());
+    const first = await (await callHandler(createMockRequest(), 'task-123')).json();
+
+    const res = await callHandler(createMockRequest({
+      body: { force: { kinds: first.force?.kinds ?? [], reasonsDigest: first.reasonsDigest } },
+    }), 'task-123');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.forced.gates).toEqual(['Open-PR file overlap']);
+    expect(body.forced.railsRemaining.length).toBeGreaterThan(0);
+
+    const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
+    expect(ctx.forceStart).toMatchObject({
+      userId: 'user-123',
+      kinds: ['pr_overlap_ended'],
+      loopKeys: ['path_overlap'],
+      reasonsDigest: first.reasonsDigest,
+    });
+    expect(ctx.forceStart.blockers[0]).toMatchObject({ kind: 'pr_overlap_ended', type: 'pr', id: '1234' });
+    expect(Date.parse(ctx.forceStart.expiresAt)).toBeGreaterThan(Date.now());
+    // Not the MCP claim path: no forceClaim audit, no worker row, no claim.
+    expect(ctx.forceClaim).toBeUndefined();
+    expect(mockWakeTask).toHaveBeenCalledWith('task-123', 'manual.start', { targetLocalUiUrl: null });
+
+    // Request-time evidence on the gate ledger.
+    const ev = mockFireGateEvent.mock.calls.map(c => c[0]).find(e => e.reason === 'force_start');
+    expect(ev).toMatchObject({ outcome: 'bypassed', gate: 'claim_loop_deferral', taskId: 'task-123', callerOrigin: 'dashboard' });
+    expect(ev.detail).toMatchObject({ phase: 'requested', kinds: ['pr_overlap_ended'] });
+  });
+
+  it('409 when the blocker changed between the refusal and the confirmation', async () => {
+    probeWith(snapshot());
+    const first = await (await callHandler(createMockRequest(), 'task-123')).json();
+    // PR #1234 merged; a live claim now holds the schema file instead.
+    probeWith(snapshot({ openPrTasks: [], activeClaims: new Map([['task-holder', ['packages/core/db/schema.ts']]]), liveTaskIds: new Set(['task-holder']) }));
+
+    const res = await callHandler(createMockRequest({
+      body: { force: { kinds: first.force?.kinds ?? [], reasonsDigest: first.reasonsDigest } },
+    }), 'task-123');
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reasonsChanged).toBe(true);
+    expect(body.gateReason).toBe('reasons_changed');
+    expect(body.waitingReasons[0].kind).toBe('lease_overlap');
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('a human Force start lifts one scope-undeclared task per mission (human force only)', async () => {
+    const task = { ...overlapTask, missionId: 'm-1', pathManifest: ['**'] };
+    mockTasksFindFirst.mockResolvedValue(task);
+    probeWith(snapshot({
+      openPrTasks: [],
+      mission: { status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null },
+      missionAdvisoryInFlight: new Set(['task-peer']),
+    }));
+    const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
+    expect(refused.waitingReasons[0].kind).toBe('scope_undeclared_mutex');
+    expect(refused.canForce).toBe(true);
+    const res = await callHandler(createMockRequest({
+      body: { force: { kinds: ['scope_undeclared_mutex'], reasonsDigest: refused.reasonsDigest } },
+    }), 'task-123');
+    expect(res.status).toBe(200);
+    const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
+    expect(ctx.forceStart.loopKeys).toEqual(['advisory_manifest']);
+  });
+
+  it('a non-forceable reason (declared dependency) offers no Force start and refuses one', async () => {
+    mockProbe.mockResolvedValue([migrationEdge('a'), declaredEdge('z')]);
+    const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
+    expect(refused.canForce).toBe(false);
+    expect(refused.force).toBeNull();
+    expect(refused.notForceable).toEqual(['Declared dependency']);
+
+    const res = await callHandler(createMockRequest({
+      body: { force: { kinds: ['dep_inferred', 'dep_declared'], reasonsDigest: refused.reasonsDigest } },
+    }), 'task-123');
+    expect(res.status).toBe(422);
+    expect(mockDbUpdate.set).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('a kind the refusal did not list is rejected, not silently lifted', async () => {
+    probeWith(snapshot());
+    const first = await (await callHandler(createMockRequest(), 'task-123')).json();
+    const res = await callHandler(createMockRequest({
+      body: { force: { kinds: ['pr_overlap_ended', 'mission_concurrent'], reasonsDigest: first.reasonsDigest } },
+    }), 'task-123');
+    expect(res.status).toBe(422);
+    expect((await res.json()).rejectedKinds).toEqual(['mission_concurrent']);
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('local mission + only inferred migration edges: ONE Force start lifts them all', async () => {
+    // The shape of a schema task queued behind unrelated tasks in other
+    // missions: every edge creation-time inferred, none declared, executor=local.
+    const reasons = [localReason(), ...['h1', 'h2', 'h3', 'h4', 'h5'].map(migrationEdge)];
+    mockProbe.mockResolvedValue(reasons);
+    const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
+    expect(refused.canForce).toBe(true);
+    // The local mission leads; the five overlap edges are ordering, never "dependencies".
+    expect(refused.error).toContain('Waiting on a local-session mission');
+    expect(refused.error).not.toMatch(/dependenc/);
+    expect(refused.force.kinds.sort()).toEqual(['dep_inferred', 'mission_local']);
+    expect(refused.force.checklist).toHaveLength(6);
+    // The edit-time anchor still serializes migration numbering: the red line.
+    expect(refused.force.redLines[0]).toContain('Migration numbering stays serialized');
+
+    const res = await callHandler(createMockRequest({
+      body: { force: { kinds: refused.force.kinds, reasonsDigest: refused.reasonsDigest } },
+    }), 'task-123');
+    expect(res.status).toBe(200);
+    const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
+    expect(ctx.forceStart.liftDependsOn.sort()).toEqual(['h1', 'h2', 'h3', 'h4', 'h5']);
+    expect(ctx.forceStart.prefilterLifts.sort()).toEqual(['inferred_deps', 'local_mission']);
+    // The local-mission hand-over uses the claim's existing bypass.
+    expect(ctx.bypassHeldGate).toBe(true);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
+    // Exactly one request-time gate event; the decision row is the claim's.
+    expect(mockFireGateEvent.mock.calls.filter(c => c[0].reason === 'force_start')).toHaveLength(1);
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+  });
+
+  it('the earlier forceCoordination name still forces every forceable kind', async () => {
+    probeWith(snapshot());
+    const first = await (await callHandler(createMockRequest(), 'task-123')).json();
+    const res = await callHandler(createMockRequest({ body: { forceCoordination: { reasonsDigest: first.reasonsDigest } } }), 'task-123');
+    expect(res.status).toBe(200);
+  });
+
+  it('mission concurrency and pacing holds are forceable and named', async () => {
+    const task = { ...overlapTask, missionId: 'm-1', pathManifest: ['apps/runner/src/x.ts'] };
+    mockTasksFindFirst.mockResolvedValue(task);
+    probeWith(snapshot({
+      openPrTasks: [],
+      mission: { status: 'active', maxConcurrentTasks: 1, pacingMode: 'paced', pacingMaxPerHour: 2, lastTaskStartedAt: new Date(Date.now() - 60_000) },
+      missionActiveCount: 1,
+    }));
+    const body = await (await callHandler(createMockRequest(), 'task-123')).json();
+    expect(body.waitingReasons.map((r: any) => r.kind)).toEqual(['mission_concurrent', 'mission_paced']);
+    expect(body.canForce).toBe(true);
+    const res = await callHandler(createMockRequest({ body: { force: { kinds: body.force.kinds, reasonsDigest: body.reasonsDigest } } }), 'task-123');
+    expect(res.status).toBe(200);
+    const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
+    expect(ctx.forceStart.loopKeys.sort()).toEqual(['mission_concurrent', 'mission_paced']);
+  });
+
+  it('starts normally once the blocker clears', async () => {
+    probeWith(snapshot({ openPrTasks: [] }));
+    const res = await callHandler(createMockRequest(), 'task-123');
+    expect(res.status).toBe(200);
+    const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
+    expect(ctx.forceStart).toBeUndefined();
+    expect(mockWakeTask).toHaveBeenCalledWith('task-123', 'manual.start', { targetLocalUiUrl: null });
+    // A blocker that cleared by itself leaves no force record at all.
+    expect(mockFireGateEvent.mock.calls.filter(c => c[0].reason === 'force_start')).toHaveLength(0);
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+  });
+
+  it('planner order is soft: reported, never refused', async () => {
+    probeWith(snapshot({ openPrTasks: [], orderedBehind: { blockedBy: 'task-ahead', edge: 'path_overlap', since: null }, liveTaskIds: new Set(['task-ahead']) }));
+    const res = await callHandler(createMockRequest(), 'task-123');
+    expect(res.status).toBe(200);
+    expect((await res.json()).waitingReasons[0].kind).toBe('ordered_behind');
+  });
+
+  it('a probe failure falls back to the old start rather than blocking', async () => {
+    mockProbe.mockResolvedValue(null);
+    const res = await callHandler(createMockRequest(), 'task-123');
+    expect(res.status).toBe(200);
   });
 });

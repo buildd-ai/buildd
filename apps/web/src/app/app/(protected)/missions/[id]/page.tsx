@@ -958,7 +958,7 @@ export default async function MissionDetailPage({
         <div>
           <h3 className="mb-2 text-body font-semibold text-text-primary">Agent backend</h3>
           <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
-          <p className="text-[11px] text-text-muted mt-1.5">Default engine for this mission&apos;s tasks. Auto uses the role or workspace default.</p>
+          <p className="text-[11px] text-text-muted mt-1.5">Default engine for this mission&apos;s tasks. Auto uses the agent or workspace default.</p>
         </div>
       )}
 

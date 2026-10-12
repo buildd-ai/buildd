@@ -257,7 +257,7 @@ export function RoleConnectorsSection({ teamId, workspaceId, workspaceName, role
         </span>
       )}
     >
-      <p className="mb-2 text-sm text-text-muted">Team MCP servers this role mounts when it runs.</p>
+      <p className="mb-2 text-sm text-text-muted">Team MCP servers this agent mounts when it runs.</p>
       {error && <p role="alert" className="mb-2 text-sm text-status-error">{error}</p>}
       {browsing && !disabled && <RegistryBrowser onAdd={installConnector} addedNames={addedNames} adding={adding} />}
       {loading && <p className="text-sm text-text-muted">Loading connectors…</p>}

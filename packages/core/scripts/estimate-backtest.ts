@@ -24,6 +24,7 @@ import { findNeighbourTasks, type TaskAreaQuerier } from '../task-area-predictio
 import { TASK_SIZE_NEIGHBOURS_K } from '../task-size-estimate';
 import { compareBlend, formatBlendComparison, type PairedRow } from '../estimate-backtest-blend';
 import { estimateTask } from '../task-estimate';
+import { evaluateTaskEstimatesGate, formatGate } from '../task-estimate-rollout';
 import { loadEstimateInputs } from '../task-estimate-source';
 
 const flag = (n: string) => { const i = process.argv.indexOf(`--${n}`); return i === -1 ? undefined : process.argv[i + 1]; };
@@ -97,12 +98,16 @@ async function main() {
     }
     blend = compareBlend(paired);
   }
-  if (json) { process.stdout.write(JSON.stringify({ report, comparison, blend, medianActualTokens: tokens, lookupFailures, storeError }) + '\n'); return; }
+  // The default-on gate (task-estimate-rollout.ts) needs both runs: a recent run scores
+  // neighbours, prior-only and blend-better; a --held-out run scores cold start.
+  const gate = blend ? evaluateTaskEstimatesGate(heldOut ? { recent: null, heldOut: blend } : { recent: blend, heldOut: null }) : null;
+  if (json) { process.stdout.write(JSON.stringify({ report, comparison, blend, gate, medianActualTokens: tokens, lookupFailures, storeError }) + '\n'); return; }
   console.log(formatBacktestReport(report, heldOut ? 'Estimate backtest (held-out workspace, cold start)' : 'Estimate backtest'));
   console.log(`Actual tokens (input+output) per task, median: ${tokens === null ? '–' : Math.round(tokens)}. The estimator does not predict tokens yet.`);
   console.log('Bucket rows use the rule verdict (M), not the Jev bucket model. p80 is not produced by the estimator, so coverage is blank.');
   if (comparison) console.log(formatClusterComparison(comparison));
   if (blend) console.log(formatBlendComparison(blend));
+  if (gate) console.log(`${formatGate(gate)}\n  (this run scores ${heldOut ? 'cold_start only; run without --held-out for the rest' : 'everything but cold_start; add --held-out <workspaceId> for it'})`);
   if (storeError) console.log(`Neighbour store unavailable: ${storeError}`);
   if (lookupFailures) console.log(`Neighbour lookups failed: ${lookupFailures}`);
 }

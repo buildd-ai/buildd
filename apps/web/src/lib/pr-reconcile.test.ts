@@ -20,6 +20,8 @@ const missionsSchema = {
   workingBranch: 'workingBranch',
   integrationBranchEnabled: 'integrationBranchEnabled',
   prSweepLastCheckedAt: 'prSweepLastCheckedAt',
+  orchestrationMode: 'orchestrationMode',
+  goalCriteriaState: 'goalCriteriaState',
 };
 const mockMissionsUpdate = mock(() => ({
   set: mock(() => ({ where: mock(() => Promise.resolve()) })),
@@ -175,6 +177,8 @@ import {
   reconcileStalePrWorkers,
   refreshWorkerMergeStateIfStale,
   sweepMissionIntegrationPrs,
+  sweepManualMissionCompletions,
+  MANUAL_COMPLETION_SWEEP_CAP,
   RECONCILE_BATCH_CAP,
   MISSION_PR_SWEEP_CAP,
   MISSION_PR_SWEEP_WINDOW_MS,
@@ -1600,5 +1604,62 @@ describe('reconcileStalePrWorkers — subject-anchor reconciliation', () => {
 
     expect(mockCheckDependsOnResolved).toHaveBeenCalled();
     expect(mockSweepSubjectAnchoredTasks).toHaveBeenCalled();
+  });
+});
+
+
+describe('sweepManualMissionCompletions', () => {
+  beforeEach(() => {
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue([]);
+    mockMissionsUpdate.mockReset();
+    mockMissionsUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockCompleteMissionIfVerified.mockReset();
+    mockCompleteMissionIfVerified.mockResolvedValue({ completed: true, decision: {} });
+  });
+
+  it('asks the completion writer to complete a selected manual mission', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+
+    const result = await sweepManualMissionCompletions();
+
+    expect(result).toEqual({ total: 1, attempted: 1, errors: 0 });
+    expect(mockCompleteMissionIfVerified).toHaveBeenCalledTimes(1);
+    const [id, opts] = mockCompleteMissionIfVerified.mock.calls[0] as any[];
+    expect(id).toBe('m1');
+    expect(opts.path).toBe('criteria_eval');
+  });
+
+  it('selects only active manual direct missions with no open tasks and criteria older than the newest merge', async () => {
+    await sweepManualMissionCompletions();
+
+    const query = mockMissionsFindMany.mock.calls[0] as any[];
+    const where = describePredicate(query[0].where);
+    expect(where).toContain('orchestrationMode');
+    expect(where).toContain('manual');
+    expect(where).toContain('active');
+    expect(where).toContain('integrationBranchEnabled');
+    expect(where).toContain('prSweepLastCheckedAt');
+    // open-task exclusion and the merged-after-last-eval comparison
+    expect(where).toContain('NOT EXISTS');
+    expect(where).toContain('merged_at');
+    expect(where).toContain('goalCriteriaState');
+    expect(query[0].limit).toBe(MANUAL_COMPLETION_SWEEP_CAP);
+  });
+
+  it('does nothing when no mission qualifies', async () => {
+    const result = await sweepManualMissionCompletions();
+    expect(result.total).toBe(0);
+    expect(mockCompleteMissionIfVerified).not.toHaveBeenCalled();
+  });
+
+  it('advances the attempt clock and counts a thrown completion as an error without stopping', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }, { id: 'm2' }]);
+    mockCompleteMissionIfVerified.mockRejectedValueOnce(new Error('boom'));
+    const result = await sweepManualMissionCompletions();
+    expect(result.errors).toBe(1);
+    expect(result.attempted).toBe(1);
+    expect(mockCompleteMissionIfVerified).toHaveBeenCalledTimes(2);
+    expect(mockMissionsUpdate).toHaveBeenCalledTimes(2);
   });
 });

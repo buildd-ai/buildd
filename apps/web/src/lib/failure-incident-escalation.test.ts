@@ -153,12 +153,34 @@ describe('gated incident sender', () => {
 
   it('asks the judge only for a concern and lets it hand the incident to Buildd', async () => {
     let asked = 0;
-    const h = harness({ judge: async () => { asked++; return { owner: 'buildd', by: 'jev', action: 'hold', reason: 'noise' }; } });
+    const h = harness({ judge: async () => { asked++; return { verdict: { owner: 'buildd', by: 'jev', action: 'hold', reason: 'noise' } }; } });
     const send = createGatedIncidentSender(h.deps);
     expect(await send(alert())).toBe(false);
     expect(asked).toBe(1);
     await send(alert({ severity: 'critical' }, incident({ severity: 'critical' })));
     expect(asked).toBe(1); // critical is a rule
+  });
+});
+
+describe('gated incident sender: replayable inputs', () => {
+  const REPLAY = { state: { incident: 'i1' }, questionIds: ['disposition'], candidates: null, promptRef: { id: 'buildd.escalation_gate', version: 'eg1', contentHash: null } };
+
+  it('a judged row records the judge\'s answer and keeps what it was asked', async () => {
+    const h = harness({ judge: async () => ({ verdict: { owner: 'buildd', by: 'jev', action: 'hold', reason: 'noise' }, replay: REPLAY }) });
+    await createGatedIncidentSender(h.deps)(alert());
+    expect(h.records).toHaveLength(1);
+    expect(h.records[0]).toMatchObject({ verdict: 'buildd:jev:hold:', appliedAnswer: 'buildd:jev:hold:', replay: REPLAY });
+    expect(h.records[0].ruleAnswer).toBe('person:rule:no_next_step');
+  });
+
+  it('a rule row, and a judge that declined, keep none', async () => {
+    const rule = harness();
+    await createGatedIncidentSender(rule.deps)(alert({ severity: 'critical' }, incident({ severity: 'critical' })));
+    expect(rule.records[0].replay ?? null).toBeNull();
+    expect(rule.records[0].verdict ?? null).toBeNull();
+    const declined = harness({ judge: async () => null });
+    await createGatedIncidentSender(declined.deps)(alert());
+    expect(declined.records[0].replay ?? null).toBeNull();
   });
 });
 

@@ -111,16 +111,28 @@ function baseMigrationFiles(paths: RepoPaths, base: string): string[] {
   return lines(git(paths.root, ['ls-tree', '--name-only', base, `${paths.drizzleDir}/`])).filter((f) => parseMigrationFile(f));
 }
 
-/** Migrations the branch adds: present at HEAD, absent at the merge-base with `base`. */
-function addedMigrationFiles(paths: RepoPaths, base: string): string[] {
+/**
+ * Migrations the branch adds (`A`) or removes (`D`) relative to the merge-base with `base`.
+ * No rename detection: a renumbered migration is a removal at one index and an addition at another.
+ */
+function changedMigrationFiles(paths: RepoPaths, base: string, filter: 'A' | 'D'): string[] {
   const mergeBase = git(paths.root, ['merge-base', base, 'HEAD']).trim();
   return lines(
-    git(paths.root, ['diff', '--name-only', '--diff-filter=A', mergeBase, 'HEAD', '--', `${paths.drizzleDir}/`]),
+    git(paths.root, ['diff', '--name-only', '--no-renames', `--diff-filter=${filter}`, mergeBase, 'HEAD', '--', `${paths.drizzleDir}/`]),
   ).filter((f) => parseMigrationFile(f));
 }
 
+/**
+ * A base migration the branch removes frees its slot once the branch lands: a
+ * dev refresh of a mission branch takes dev's migration at an index the
+ * mission had used, and moves the mission's own past it.
+ */
 export function checkAgainstBase(paths: RepoPaths, base: string): IndexCollision[] {
-  return findIndexCollisions(addedMigrationFiles(paths, base), baseMigrationFiles(paths, base));
+  const removed = new Set(changedMigrationFiles(paths, base, 'D'));
+  return findIndexCollisions(
+    changedMigrationFiles(paths, base, 'A'),
+    baseMigrationFiles(paths, base).filter((f) => !removed.has(f)),
+  );
 }
 
 // ── renumber ─────────────────────────────────────────────────────────────────

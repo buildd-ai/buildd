@@ -23,7 +23,12 @@ describe('composition root', () => {
       'missions:criteria-worker-eval-outcome',
       'missions:mission-completion-attempt',
       'missions:subject-anchor-sweep',
+      'reviews:spec-check-outcome',
     ]);
+  });
+
+  it('worker.late_verification_reported: the late runner report becomes the verification verdict', () => {
+    expect(byEvent('worker.late_verification_reported')).toEqual(['reviews:late-runner-evidence']);
   });
 
   it('task.completed: a resolved release\'s mission attempt, chat, the ledger, the team push, then its analytics row', () => {
@@ -57,14 +62,17 @@ describe('composition root', () => {
     expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence', 'health-quality:failure-pattern-sentinel', 'jev-decisions:verdict-on-terminal']);
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
+    // A trunk merge refreshes no mission branch; a mission task starting does.
+    expect(byEvent('tasks.claimed')).toEqual(['missions:refresh-mission-branches-before-start']);
     expect(byEvent('pr.merged')).toEqual([
-      'missions:refresh-mission-branches-on-trunk-merge', 'releases:release-record-prod-merge', 'notifications:ledger-pr-merged',
+      'releases:release-record-prod-merge', 'notifications:ledger-pr-merged',
     ]);
     expect(byEvent('task.pr_merge_delivered')).toEqual([
       'missions:loop-advance-on-merge', 'missions:open-mission-integration-pr', 'releases:early-release-undraft-stacked',
     ]);
-    expect(byEvent('pr.review_ready')).toEqual(['releases:early-release-dispatch']);
+    expect(byEvent('pr.review_ready')).toEqual(['releases:early-release-dispatch', 'reviews:spec-checks-on-open']);
     expect(byEvent('task.left_mission')).toEqual(['visual-qa:surface-audit-detach']);
+    expect(byEvent('task.override_started')).toEqual(['jev-decisions:override-start-decision']);
     // The mission wakes and dependents unblock before the release trigger.
     expect(byEvent('task.pr_merged')).toEqual([
       'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'releases:release-path-b-trigger',
@@ -90,9 +98,9 @@ describe('composition root', () => {
     expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);
     // The ledger records the red head before the CI-fix retry is asked.
     expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed', 'reviews:ci-failure-retry', 'jev-decisions:verdict-on-ci-failed']);
-    expect(byEvent('pr.ci_passed')).toEqual(['jev-decisions:verdict-on-ci-passed']);
+    expect(byEvent('pr.ci_passed')).toEqual(['missions:loop-advance-on-ci-green', 'jev-decisions:verdict-on-ci-passed']);
     // The push is noted on the PR before a reviewer is re-dispatched.
-    expect(byEvent('pr.synchronized')).toEqual(['reviews:pr-activity-changes-pushed', 'reviews:reviewer-redispatch-on-push', 'jev-decisions:verdict-on-push']);
+    expect(byEvent('pr.synchronized')).toEqual(['reviews:pr-activity-changes-pushed', 'reviews:reviewer-redispatch-on-push', 'reviews:spec-checks-on-push', 'jev-decisions:verdict-on-push']);
   });
 
   it('completion policies: exactly one per core-declared slot, in core\'s order', () => {

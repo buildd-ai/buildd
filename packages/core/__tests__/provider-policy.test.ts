@@ -19,12 +19,8 @@ const AGENT_SURFACES: Surface[] = ['agent-claude', 'agent-codex', 'cloud-egress'
 const SHARED: PolicyScope[] = ['workspace', 'account', 'team', 'env'];
 
 describe('surfacePolicy', () => {
-  it('agent surfaces follow credentialPolicy only when it is set', () => {
-    for (const surface of AGENT_SURFACES) {
-      expect(surfacePolicy(null, surface)).toEqual({ policy: 'team', enforced: false, source: 'default' });
-      expect(surfacePolicy({ credentialPolicy: null, inferenceKeyPolicy: 'own' }, surface))
-        .toEqual({ policy: 'team', enforced: false, source: 'default' });
-      expect(surfacePolicy({ credentialPolicy: 'bogus', inferenceKeyPolicy: 'team_or_own' }, surface).enforced).toBe(false);
+  it('every surface follows credentialPolicy when it is set', () => {
+    for (const surface of SURFACES) {
       for (const policy of CREDENTIAL_POLICIES) {
         expect(surfacePolicy({ credentialPolicy: policy, inferenceKeyPolicy: 'team' }, surface))
           .toEqual({ policy, enforced: true, source: 'credential_policy' });
@@ -32,15 +28,27 @@ describe('surfacePolicy', () => {
     }
   });
 
-  it('chat keeps effectiveKeyPolicy semantics: credentialPolicy, else inferenceKeyPolicy, else personal_first', () => {
-    expect(surfacePolicy({ credentialPolicy: 'personal_only', inferenceKeyPolicy: 'team' }, 'chat'))
-      .toEqual({ policy: 'personal_only', enforced: true, source: 'credential_policy' });
-    expect(surfacePolicy({ credentialPolicy: null, inferenceKeyPolicy: 'team' }, 'chat'))
-      .toEqual({ policy: 'team', enforced: true, source: 'inference_key_policy' });
-    expect(surfacePolicy({ credentialPolicy: null, inferenceKeyPolicy: 'team_or_own' }, 'chat').policy).toBe('personal_first');
-    expect(surfacePolicy({ credentialPolicy: null, inferenceKeyPolicy: 'own' }, 'chat').policy).toBe('personal_only');
-    expect(surfacePolicy(null, 'chat')).toEqual({ policy: 'personal_first', enforced: true, source: 'default' });
-    expect(surfacePolicy({}, 'chat').policy).toBe('personal_first');
+  it("unset means a person's own key first and the team's as fallback, on agent surfaces too", () => {
+    for (const surface of SURFACES) {
+      expect(surfacePolicy(null, surface)).toEqual({ policy: 'personal_first', enforced: true, source: 'default' });
+      expect(surfacePolicy({}, surface).policy).toBe('personal_first');
+      expect(surfacePolicy({ credentialPolicy: 'bogus', inferenceKeyPolicy: 'x' }, surface).policy).toBe('personal_first');
+    }
+  });
+
+  it("the legacy column's default value 'team' reads as unset; its other values still count", () => {
+    for (const surface of SURFACES) {
+      expect(surfacePolicy({ credentialPolicy: null, inferenceKeyPolicy: 'team' }, surface))
+        .toEqual({ policy: 'personal_first', enforced: true, source: 'default' });
+      expect(surfacePolicy({ credentialPolicy: null, inferenceKeyPolicy: 'team_or_own' }, surface))
+        .toEqual({ policy: 'personal_first', enforced: true, source: 'inference_key_policy' });
+      expect(surfacePolicy({ credentialPolicy: null, inferenceKeyPolicy: 'own' }, surface))
+        .toEqual({ policy: 'personal_only', enforced: true, source: 'inference_key_policy' });
+    }
+  });
+
+  it('agent surfaces are never left unenforced', () => {
+    for (const surface of AGENT_SURFACES) expect(surfacePolicy(null, surface).enforced).toBe(true);
   });
 });
 

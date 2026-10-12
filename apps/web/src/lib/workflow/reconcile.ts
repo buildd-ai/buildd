@@ -7,7 +7,21 @@
  * facts and re-enqueues owed effects; the reducer decides what they mean.
  */
 import { sql, type SQL } from 'drizzle-orm';
-import { TERMINAL_STATES } from './types';
+import { TERMINAL_STATES, type KernelView } from './types';
+
+/**
+ * A REPAIRING delivery bound to a queued mechanical row whose pinned head the
+ * delivery has already moved off (75c04d5d). The pinned write can never land
+ * and no worker ends a mechanical row, while a re-read of the held head is a
+ * duplicate: the floor ends the row (RepairNotNeeded) instead. Returns its id.
+ */
+export function strandedMechanicalRepair(view: KernelView): string | null {
+  const d = view.delivery;
+  if (!d || d.state !== 'REPAIRING' || !d.boundAttemptId || !d.currentHeadSha) return null;
+  const a = view.attempts.find((x) => x.id === d.boundAttemptId);
+  if (!a || a.mode !== 'mechanical' || a.status !== 'queued' || !a.boundHeadSha) return null;
+  return a.boundHeadSha !== d.currentHeadSha ? a.id : null;
+}
 
 export interface FloorCandidate {
   id: string;

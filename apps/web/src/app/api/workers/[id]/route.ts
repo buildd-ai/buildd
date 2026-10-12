@@ -9,9 +9,11 @@ import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accou
 import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { agentCredential, evidenceForCompletion, keepStoredEvidence, stampEvidence } from '@/lib/verification-provenance';
 import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
@@ -125,6 +127,7 @@ import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
 import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -784,6 +787,18 @@ export async function PATCH(
   // the lost-update tolerance below must not apply to a resurrection.
   let reactivatingTerminalWorker = false;
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
+    // The runner's own verification report for a verification run still counts
+    // when the agent made the terminal write first (lib/late-runner-evidence.ts).
+    // A task token on a host worker is the agent, so its late copy is ignored.
+    if (body.verificationEvidence && worker.taskId && !agentCredential(account, worker)) {
+      await emit({
+        type: 'worker.late_verification_reported',
+        taskId: worker.taskId,
+        workerId: worker.id,
+        workspaceId: worker.workspaceId,
+        verificationEvidence: body.verificationEvidence,
+      });
+    }
     // Reactivation must be requested EXPLICITLY. The runner's deliberate resume
     // (sendMessage follow-up) sets `reactivate: true`; its periodic 10s keepalive
     // sync does not, and the two payloads are otherwise identical.
@@ -915,7 +930,7 @@ export async function PATCH(
     prUrl: selfReportedPrUrl,
     prNumber: selfReportedPrNumber,
     // Loop verification evidence (spec §2). Included when loopConfig.exitCondition.type='command'.
-    verificationEvidence,
+    verificationEvidence: rawVerificationEvidence,
     // Subagent spans — persisted at terminal status only (completed/failed/error).
     // Runners only send these on terminal transitions; the server writes them through
     // unconditionally (no guard needed — hot-path updates never include them).
@@ -955,6 +970,11 @@ export async function PATCH(
     siblingProbeResults,
     siblingProbe: supportsSiblingProbe,
   } = body;
+  // Stamped by the server with how it arrived (lib/verification-provenance.ts):
+  // on a host runner a task token is the agent's credential, not the runner's.
+  const verificationEvidence = stampEvidence(rawVerificationEvidence, {
+    viaTaskToken: agentCredential(account, worker),
+  }) ?? undefined;
   let status = reportedStatus;
   let error = reportedError;
 
@@ -1022,6 +1042,18 @@ export async function PATCH(
   const updates: Partial<typeof workers.$inferInsert> = {
     updatedAt: new Date(),
   };
+  // An interactive worker parked on a question (ask_human) expires on the
+  // waiting_input sweep's clock, measured from updated_at. The session's
+  // receive_messages polls while it waits must not keep pushing it forward.
+  // Rewriting the stored value (rather than dropping the key) keeps the SET
+  // non-empty for a PATCH that carries nothing else.
+  if (keepsParkClock(worker, { status, waitingFor })) {
+    updates.updatedAt = worker.updatedAt;
+    // The same poll is the session's heartbeat: /respond sends the answer
+    // cold once it goes stale (the terminal closed mid-wait). Its own write,
+    // so neither the park clock nor a just-cleared question is touched.
+    if (declaredConsumer === 'agent') await recordInteractiveSessionSeen(id);
+  }
 
   // Record the runner's protocol capability so /instruct and /cmd know whether a
   // delivery can ever be confirmed for this worker.
@@ -1222,9 +1254,10 @@ export async function PATCH(
   // Loop verification evidence: persisted from any PATCH that carries it. The
   // one that matters is the runner's pre-complete_task write (a non-terminal
   // PATCH) — the agent's complete_task that follows carries none, and the
-  // loop dispatch below falls back to what is stored here.
-  if (verificationEvidence && typeof verificationEvidence === 'object' && !Array.isArray(verificationEvidence)) {
-    updates.verificationEvidence = verificationEvidence as Record<string, unknown>;
+  // loop dispatch below falls back to what is stored here. An agent's
+  // task-token copy never replaces the runner's.
+  if (verificationEvidence && !keepStoredEvidence(verificationEvidence, worker.verificationEvidence)) {
+    updates.verificationEvidence = verificationEvidence;
   }
   // Set when the incoming question carries a `hold` tag; null = an ordinary ask.
   let hold: HoldResolution | null = null;
@@ -1410,6 +1443,12 @@ export async function PATCH(
           source: 'api',
         };
     updates.milestones = [...existingMilestones, transition];
+    // A finished worker's current action is its outcome, not the last tool
+    // call it happened to make (a runner's completion payload carries no
+    // currentAction, so the row kept e.g. "Running: echo ..." forever).
+    if (currentAction === undefined) {
+      updates.currentAction = status === 'completed' ? 'Completed' : 'Failed';
+    }
   }
 
   // Handle status transitions
@@ -3365,7 +3404,7 @@ export async function PATCH(
           // The runner's own completion carries evidence in the body; the
           // agent's complete_task does not, so use what the runner recorded
           // on the row before that call (see the verificationEvidence column).
-          verificationEvidence: verificationEvidence ?? worker.verificationEvidence ?? undefined,
+          verificationEvidence: evidenceForCompletion(verificationEvidence, worker.verificationEvidence as Record<string, unknown> | null) ?? undefined,
           structuredOutput: body.structuredOutput,
         });
 
@@ -4254,7 +4293,9 @@ export async function PATCH(
         finalStatus: shouldAutoRetry || releaseHeld ? null : effectiveOutcome === 'completed' ? 'completed' : 'failed',
         releaseHeld,
         structuredOutput: body.structuredOutput,
-        verificationEvidence,
+        verificationEvidence: verificationEvidence
+          ? evidenceForCompletion(verificationEvidence, worker.verificationEvidence as Record<string, unknown> | null) ?? undefined
+          : undefined,
       }, { isolate: runStep });
 
       // Dead-PR shutdown on retry completion: if this worker's PR was merged,
@@ -4383,13 +4424,20 @@ export async function PATCH(
           fallbackLocalHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
           fallbackCommitCount: worker.commitCount ?? 0,
         });
-        if (!row?.deliveryId || taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null) || loop?.kind === 'hold' || releaseHeld) return;
+        // A loop hold sets shouldAutoRetry to requeue the TASK, not the delivery:
+        // a completed owner worker still ended its kernel attempt, or a verdict
+        // recorded while the delivery was WORKING is never re-entered. A
+        // non-completed end under a hold stays the loop's to retry.
+        const loopHold = loop?.kind === 'hold';
+        if (loopHold && end.status !== 'completed') return;
+        const retryCovers = !loopHold && taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null);
+        if (!row?.deliveryId || retryCovers || releaseHeld) return;
         await workflowAttemptEnded({
           task: { id: taskId, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
           workerId: id,
           ...end,
           source: 'runner',
-          taskRetryBudgetLeft: shouldAutoRetry,
+          taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
           ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
         });
       });
@@ -4471,6 +4519,16 @@ export async function PATCH(
   // History-entry ids of the served queue (+ note ids, appended below), for a
   // consumer that confirms by id.
   const instructionIds: string[] = [];
+
+  // A human answer /respond queued for an interactive session travels as an
+  // `answer` worker message whose id is also its instruction-history entry's
+  // id: the session's worker-message ack is that entry's read receipt.
+  const answerIdsAcknowledged = deliveredMessageIds.filter(msgId =>
+    Array.isArray(worker.instructionHistory)
+    && (worker.instructionHistory as Array<{ id?: string; type?: string }>).some(e => e?.type === 'instruction' && e.id === msgId));
+  if (answerIdsAcknowledged.length > 0) {
+    instructionIdsAcknowledged.push(...answerIdsAcknowledged.filter(i => !instructionIdsAcknowledged.includes(i)));
+  }
 
   if (instructionAckText || instructionIdsDelivered.length > 0 || instructionIdsAcknowledged.length > 0) {
     // A consumer confirmed delivery: this is the ONLY place 'delivered' is
@@ -4910,7 +4968,7 @@ export async function PATCH(
           runner: true,
         },
         with: {
-          task: { columns: { pathManifest: true } },
+          task: { columns: { pathManifest: true, kind: true, roleSlug: true } },
         },
       });
 
@@ -4932,6 +4990,10 @@ export async function PATCH(
         // Wildcard guard: skip siblings with advisory pathManifest (**).
         const siblingManifest = (sibling.task as any)?.pathManifest as string[] | null | undefined;
         if (isAdvisoryManifest(siblingManifest)) continue;
+
+        // No path claim, or an observation / visual-auditor task: it edits
+        // nothing, so a conflict notice only costs it a turn.
+        if (!holdsPathClaim({ ...(sibling.task as any), pathManifest: siblingManifest })) continue;
 
         if (!pathsOverlap(accumulatedTouches, siblingTouches)) continue;
 

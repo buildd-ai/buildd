@@ -116,12 +116,12 @@ async function resolveStaleTask(
     }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${taskId}:`, err));
   };
 
-  // Reaper exemption: a task in condition_unmet with a pr_merged exit condition
-  // is waiting for a webhook event — no in-flight worker to kill. Leave as pending
-  // until the wait expires or the webhook fires and advances the loop.
+  // Reaper exemption: a task in condition_unmet with a pr_merged or pr_checks_green
+  // exit condition is waiting for a webhook event — no in-flight worker to kill. Leave
+  // as pending until the wait expires or the webhook fires and advances the loop.
   if (currentTask?.loopState === 'condition_unmet') {
     const loopCfg = currentTask.loopConfig as LoopConfig | null;
-    if (loopCfg?.exitCondition?.type === 'pr_merged') {
+    if (loopCfg?.exitCondition?.type === 'pr_merged' || loopCfg?.exitCondition?.type === 'pr_checks_green') {
       const waitExpiryMinutes = loopCfg.waitExpiryMinutes ?? 240;
       const waitExpiryMs = waitExpiryMinutes * 60 * 1000;
       const elapsed = Date.now() - (currentTask.updatedAt?.getTime() ?? 0);
@@ -131,11 +131,15 @@ async function resolveStaleTask(
         return;
       }
       // Wait expired — fail the task so the mission can move forward.
+      const conditionType = loopCfg.exitCondition.type;
+      const waitReason = conditionType === 'pr_merged'
+        ? `PR merge wait expired after ${waitExpiryMinutes} minutes`
+        : `PR checks green wait expired after ${waitExpiryMinutes} minutes`;
       await db
         .update(tasks)
         .set({
           status: 'failed',
-          result: { error: `PR merge wait expired after ${waitExpiryMinutes} minutes` } as any,
+          result: { error: waitReason } as any,
           updatedAt: new Date(),
         })
         .where(eq(tasks.id, taskId));
@@ -1095,8 +1099,8 @@ export async function cleanupStuckWaitingInput(
       // A superseded question is closed now, whatever its age; only the named workers.
       superseded ? inArray(workers.id, opts.workerIds?.length ? opts.workerIds : ['']) : lt(workers.updatedAt, missionCutoff),
     ),
-    columns: { id: true, taskId: true, accountId: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
-    with: { task: { columns: { missionId: true } } },
+    columns: { id: true, taskId: true, accountId: true, runner: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
+    with: { task: { columns: { missionId: true }, with: { mission: { columns: { executor: true } } } } },
   });
 
   // Mission tasks use 4h timeout, standalone tasks use 24h timeout
@@ -1115,6 +1119,16 @@ export async function cleanupStuckWaitingInput(
   let retriedTasks = 0;
 
   for (const worker of stuckWorkers) {
+    const hours = (worker as any).task?.missionId ? '4' : '24';
+    // An interactive session (claim_task from a person's own session) chose to
+    // run this work itself. A retry cloned onto a runner mission would hand it
+    // to a background runner nobody asked for — the duplicate a person then
+    // finds rebuilt behind their back. So it is not retried, unless its
+    // mission is executor = 'local': only a person's session can claim that
+    // retry, which is the same arrangement the original claim had.
+    const interactive = (worker as { runner?: string | null }).runner === INTERACTIVE_WORKER_RUNNER;
+    const localMission = (worker as any).task?.mission?.executor === 'local';
+    const fileRetry = !interactive || localMission;
     // Fail the worker
     await db
       .update(workers)
@@ -1122,7 +1136,9 @@ export async function cleanupStuckWaitingInput(
         status: 'failed',
         error: superseded
           ? `${SUPERSEDED_BY_RECOVERY}: the failure this question was about is owned by an incident's recovery; the question is kept as history`
-          : `Worker timed out waiting for user input (${(worker as any).task?.missionId ? '4' : '24'}+ hours)`,
+          : interactive && !fileRetry
+            ? `Question from an interactive session went unanswered for ${hours}+ hours; the task was not retried on a runner. Claim it again from your session, or retry it from the task page.`
+            : `Worker timed out waiting for user input (${hours}+ hours)`,
         // Not a code defect — an unanswered question timing out is the
         // correct terminal outcome for a hard-blocked worker. Must carry its
         // own exit cause so it stays out of the failure rate and
@@ -1185,6 +1201,11 @@ export async function cleanupStuckWaitingInput(
         commitCount: worker.commitCount ?? 0,
         source: 'sweep:waiting-input',
       }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${originalTask.id}:`, err));
+      continue;
+    }
+
+    if (!fileRetry) {
+      await resolveCompletedTask(originalTask.id, originalTask.workspaceId);
       continue;
     }
 

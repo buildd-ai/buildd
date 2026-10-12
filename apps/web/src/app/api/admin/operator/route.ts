@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { RECOVERY_FILTERS, type RecoveryFilter } from '@buildd/shared';
 import { beginAdminRead } from '@/lib/admin/scope';
-import { loadOperatorData, loadRecoveryCause, loadRecoveryQueue } from '@/lib/admin/data';
+import { loadRecoveryCause, loadRecoveryQueue } from '@/lib/admin/data';
+import { viewOperator } from '@/lib/admin/tenant-privacy';
 
 const CAUSE_KEY_RE = /^c1:[0-9a-f]{20}$/;
 
@@ -42,7 +43,7 @@ export async function GET(req: NextRequest) {
     return null;
   };
   const [data, recovery, recoveryCause] = await Promise.all([
-    loadOperatorData({ workspaceIds: read.workspaceIds, since: scope.since }),
+    viewOperator(read.viewer, scope.since),
     wantsRecovery || include || filter
       ? loadRecoveryQueue({ ...recoveryOpts, includeRecovered: include === 'recovered', filter: (filter ?? undefined) as RecoveryFilter | undefined }).catch(logged('recovery'))
       : Promise.resolve(undefined),

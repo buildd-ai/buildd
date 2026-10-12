@@ -29,8 +29,9 @@ import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { after } from 'next/server';
+import { refreshMissionBranchesBeforeStart } from '@/lib/mission-branch-refresh';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
-import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
+import { evaluateAndAdvanceLoopOnMerge, evaluateAndAdvanceLoopOnCiGreen } from '@/lib/loop-webhook';
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
@@ -39,7 +40,6 @@ import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
 import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
 import { handleCriteriaWorkerEvalOutcome, isCriteriaWorkerEvalTask } from '@/lib/mission-criteria-worker-eval';
-import { refreshMissionBranchesForTrunkMerge } from '@/lib/mission-branch-refresh';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 
 async function taskContext(taskId: string): Promise<unknown> {
@@ -52,25 +52,16 @@ async function taskContext(taskId: string): Promise<unknown> {
 }
 
 export const missionSubscribers: readonly AnySubscriber[] = [
-  // Keep every active mission's integration branch current with dev
-  // (docs/design/mission-delivery-arc.md P5, superseded): any PR merging into
-  // this workspace's trunk is the trigger. Scoped to trunk inside the helper,
-  // so a merge into some other branch of the same repo is a no-op. Best-effort,
-  // after the response: the hourly sweep (sweepMissionBranchRefresh) is the
-  // backstop for a lost delivery.
-  subscriber('missions', 'pr.merged', 'refresh-mission-branches-on-trunk-merge', async e => {
-    const baseRef = e.delivery?.baseRef;
-    if (!e.delivery?.installationId || !baseRef) return;
-    const repoFullName = e.repoFullName;
-    const refresh = () =>
-      refreshMissionBranchesForTrunkMerge({ repoFullName, baseRef }).catch(err =>
-        console.error(`[webhook] mission branch refresh failed for ${repoFullName}@${baseRef}:`, err),
-      );
-    try {
-      after(refresh);
-    } catch {
-      await refresh();
-    }
+  // A mission task is starting: bring its integration branch up to date with
+  // trunk first, so the work cuts from current trunk
+  // (docs/specs/mission-branch-refresh.md). Awaited by the claim, bounded by
+  // START_REFRESH_BUDGET_MS, and never throws. A trunk merge alone no longer
+  // refreshes anything. A refresh past its budget is kept alive with after();
+  // if the request dies anyway, its expired lease makes the backstop retry it.
+  subscriber('missions', 'tasks.claimed', 'refresh-mission-branches-before-start', async e => {
+    await refreshMissionBranchesBeforeStart(e.tasks, {
+      keepAlive: pending => after(() => pending.then(() => {})),
+    });
   }),
   subscriber('missions', 'task.created', 'task-created-mission-feed', e => {
     if (!e.missionId) return;
@@ -100,12 +91,25 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   }),
 
   // ── GitHub facts ───────────────────────────────────────────────────────────
-  // mergedAt is stamped; the helper reads it and completes the task if its
-  // pr_merged loop condition now holds. Fire-and-forget.
+  // mergedAt is stamped; the helpers read it and complete the task if its
+  // pr_merged loop condition now holds, or its pr_checks_green one (a merge
+  // satisfies that too, should no green delivery have reached us first).
+  // Fire-and-forget.
   subscriber('missions', 'task.pr_merge_delivered', 'loop-advance-on-merge', e => {
     if (!e.taskId || !e.workspaceId) return;
     evaluateAndAdvanceLoopOnMerge(e.workerId, e.taskId, e.workspaceId).catch((err) =>
       console.error(`[webhook] evaluateAndAdvanceLoopOnMerge failed for task ${e.taskId}:`, err),
+    );
+    evaluateAndAdvanceLoopOnCiGreen(e.workerId, e.taskId, e.workspaceId, 'merged').catch((err) =>
+      console.error(`[webhook] evaluateAndAdvanceLoopOnCiGreen(merged) failed for task ${e.taskId}:`, err),
+    );
+  }),
+  // The pr_checks_green counterpart: a task the loop parked on its PR's CI
+  // (lib/loop-dispatcher-policy.ts) completes when the checks go green.
+  subscriber('missions', 'pr.ci_passed', 'loop-advance-on-ci-green', e => {
+    if (!e.taskId) return;
+    evaluateAndAdvanceLoopOnCiGreen(e.workerId, e.taskId, e.workspaceId, 'ci_green').catch((err) =>
+      console.error(`[webhook] evaluateAndAdvanceLoopOnCiGreen failed for task ${e.taskId}:`, err),
     );
   }),
   // Option A′: a task PR landing on the mission's integration branch is the

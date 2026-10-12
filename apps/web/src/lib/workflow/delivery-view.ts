@@ -13,6 +13,7 @@ import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { toAttemptSnapshot, toDeliverySnapshot, toRoundSnapshot, type Exec } from './kernel';
 import { workspaceKernelOnSql } from './authority';
+import { LANE_PARKED_OUTCOME } from './landing-lane';
 import { ownerDeliveryDisplays, replacedFailedTaskIds, type DeliveryDisplay } from './delivery-display';
 import { deriveDeliveryView, type AttemptTaskRef, type DeliveryView, type RemediationRef, type TransitionRef } from './projections';
 
@@ -43,6 +44,9 @@ SELECT to_jsonb(d.*) AS delivery,
      WHERE t.workspace_id = d.workspace_id AND d.pr_number IS NOT NULL AND t.conflict_retry_pr_number = d.pr_number
        AND t.status IN ('pending', 'assigned', 'in_progress')
      ORDER BY t.created_at DESC LIMIT 1) AS remediation,
+  (SELECT e.outcome FROM workflow_effects e
+     WHERE e.delivery_id = d.id AND e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE ${LANE_PARKED_OUTCOME + '%'}::text
+     ORDER BY e.created_at DESC LIMIT 1) AS lane_wait,
   (SELECT jsonb_build_object('git_config', w.git_config) FROM workspaces w WHERE w.id = d.workspace_id) AS workspace,
   (SELECT jsonb_build_object('requires_review', ot.requires_review, 'landing', ot.context->'landing', 'landing_handoff', ot.context->'landingHandoff',
             'mission', (SELECT jsonb_build_object('merge_policy', m.merge_policy, 'requires_review', m.requires_review,
@@ -92,6 +96,13 @@ async function approvedMergeRule(): Promise<ApprovedMergeRule> {
   }
 }
 
+/** Pure: a parked refresh's outcome (`parked:lane_busy:#N`) as the PR it waits behind. */
+export function laneWaitFrom(outcome: unknown): { behindPr: number | null } | null {
+  if (typeof outcome !== 'string' || !outcome.startsWith(LANE_PARKED_OUTCOME)) return null;
+  const m = /#(\d+)$/.exec(outcome);
+  return { behindPr: m ? Number(m[1]) : null };
+}
+
 export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson: ApprovedMergeRule = PERSON_MERGES): DeliveryView | null {
   if (!row.delivery) return null;
   const rounds = ((row.rounds as J[]) ?? []).map(toRoundSnapshot);
@@ -110,6 +121,7 @@ export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson:
     attemptTasks,
     remediation: remediationFrom(row.remediation as J | null, now),
     approvedNeedsPerson: (row.delivery as J).state === 'APPROVED' ? approvedNeedsPerson(row) : false,
+    laneWait: laneWaitFrom(row.lane_wait),
   });
 }
 

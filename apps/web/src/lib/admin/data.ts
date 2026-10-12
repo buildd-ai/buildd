@@ -2,15 +2,16 @@
  * Reads and writes behind the platform-owner API (/api/admin/*). Every
  * function here is cross-tenant by design: the gate is in front of the route
  * (lib/admin/owner-gate.ts), and the scope is whatever the owner asked for —
- * one workspace, one team, or every workspace.
+ * one workspace, one team, or every workspace. Routes read through the views
+ * in lib/admin/tenant-privacy.ts, which keep other teams aggregate-only.
  *
  * Nothing new is computed here: each loader is the same lib the team-scoped
  * route or the Health → Operator page already uses, given a wider scope.
  */
 import { db } from '@buildd/core/db';
 import {
-  chatRetros, decisionRecords, experiments, failureIncidents, gateEvents, missions, notificationDeliveries,
-  orchestrationDecisions, platformAdminAuditEvents, systemCache, tasks, teams, workers, workspaces,
+  chatRetros, decisionOutcomes, decisionRecords, experiments, failureIncidents, gateEvents, missions, notificationDeliveries,
+  orchestrationDecisions, platformAdminAuditEvents, systemCache, tasks, teamMembers, teams, workers, workspaces,
 } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, like, ne, or, sql, type SQL } from 'drizzle-orm';
 import { ESCALATION_GATE_CAPABILITY, verdictFromCode } from '@buildd/core/escalation-gate';
@@ -27,6 +28,7 @@ import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout
 import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 import type { ExperimentHealthFinding } from '@buildd/core/experiment-health';
 import { normalizeDecisionShadows } from '@buildd/core/inference-policy';
+import { AGENT_AUDIT_RULE_SOURCE, AGENT_AUDIT_SOURCE, type HealthOutcome } from '@buildd/core/decision-feature-health';
 import { applyExperimentUpdate, findOtherRunning, type ExperimentRow } from '@/lib/experiments-store';
 import { fetchOrchestrationDecisionStats } from '@/lib/orchestration-decision-stats-query';
 import { computeUsageStats, describeScan, type GroupDimension } from '@/lib/usage-stats';
@@ -50,28 +52,39 @@ import { loadFlowSeries, loadFlowUsage } from '@/lib/insights-flow-query';
 import type { FlowWindow } from '@/lib/insights-flow';
 import { BAND_LABEL, tasksInBand, type BandKey } from '@/components/insights/flow-chart-model';
 import { loadAgentAccessReport } from '@/lib/agent-capabilities/access-log';
-import type { DecisionFeatureCount } from './decision-features';
+import type { DecisionFeatureCount, DecisionHealthRow } from './decision-features';
 import type { AdminScope, AdminWindow } from './scope';
 
 export { applyExperimentUpdate, findOtherRunning };
 
 // ── Scope ─────────────────────────────────────────────────────────────────────
 
-/** The workspaces a scope covers, or null when its team/workspace does not exist. */
-export async function resolveScopeWorkspaces(scope: AdminScope): Promise<{ workspaceIds: string[] } | null> {
+/** The workspaces a scope covers with their teams, or null when its team/workspace does not exist. */
+export async function resolveScopeWorkspaces(scope: AdminScope): Promise<{ workspaces: { id: string; teamId: string }[] } | null> {
+  const columns = { id: workspaces.id, teamId: workspaces.teamId };
   if (scope.workspaceId) {
     const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, scope.workspaceId), columns: { id: true, teamId: true } });
     if (!ws || (scope.teamId && ws.teamId !== scope.teamId)) return null;
-    return { workspaceIds: [ws.id] };
+    return { workspaces: [ws] };
   }
   if (scope.teamId) {
     const team = await db.query.teams.findFirst({ where: eq(teams.id, scope.teamId), columns: { id: true } });
     if (!team) return null;
-    const rows = await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.teamId, scope.teamId));
-    return { workspaceIds: rows.map(r => r.id) };
+    return { workspaces: await db.select(columns).from(workspaces).where(eq(workspaces.teamId, scope.teamId)) };
   }
-  const rows = await db.select({ id: workspaces.id }).from(workspaces);
-  return { workspaceIds: rows.map(r => r.id) };
+  return { workspaces: await db.select(columns).from(workspaces) };
+}
+
+/**
+ * The teams the platform owner sees in full (lib/admin/tenant-privacy.ts):
+ * those the key's creator is a member of, and the key's own team.
+ */
+export async function loadOwnTeams(account: { teamId: string; createdByUserId: string | null }): Promise<{ id: string; name: string }[]> {
+  const memberOf = account.createdByUserId
+    ? db.select({ teamId: teamMembers.teamId }).from(teamMembers).where(eq(teamMembers.userId, account.createdByUserId))
+    : null;
+  return db.select({ id: teams.id, name: teams.name }).from(teams)
+    .where(memberOf ? or(eq(teams.id, account.teamId), inArray(teams.id, memberOf)) : eq(teams.id, account.teamId));
 }
 
 // ── Decisions ─────────────────────────────────────────────────────────────────
@@ -102,6 +115,48 @@ export async function loadDecisionFeatureCounts(opts: { since: Date; workspaceId
     fromLedger(orchestrationDecisions, sql`0`),
   ]);
   return [...ledger, ...orchestration];
+}
+
+/** Newest rows read per ledger for the health readout; past it the readout covers the newest rows only. */
+export const DECISION_HEALTH_ROW_LIMIT = 20_000;
+
+/**
+ * The rows the per-feature health readout reads (lib/admin/decision-features.ts
+ * `featureHealthById`): both ledgers, newest first, plus the agent audit
+ * grades on decision_records rows. orchestration_decisions has no outcome
+ * table, so its features read calls, fallbacks, latency and cost only.
+ */
+export async function loadDecisionHealthRows(opts: { since: Date; workspaceIds: string[] }): Promise<{
+  rows: DecisionHealthRow[];
+  outcomes: HealthOutcome[];
+  truncated: boolean;
+}> {
+  if (opts.workspaceIds.length === 0) return { rows: [], outcomes: [], truncated: false };
+  const inScope = <T extends typeof decisionRecords | typeof orchestrationDecisions>(t: T) =>
+    and(inArray(t.workspaceId, opts.workspaceIds), gte(t.createdAt, opts.since));
+  const [ledger, orchestration, outcomes] = await Promise.all([
+    db.select({
+      id: decisionRecords.id, capability: decisionRecords.capability, status: decisionRecords.status, applied: decisionRecords.applied,
+      verdict: decisionRecords.verdict, reason: decisionRecords.reason, latencyMs: decisionRecords.latencyMs, costUsd: decisionRecords.costUsd,
+      overriddenAt: decisionRecords.overriddenAt,
+    }).from(decisionRecords).where(inScope(decisionRecords)).orderBy(desc(decisionRecords.createdAt)).limit(DECISION_HEALTH_ROW_LIMIT + 1),
+    db.select({
+      id: orchestrationDecisions.id, capability: orchestrationDecisions.capability, status: orchestrationDecisions.status,
+      applied: orchestrationDecisions.applied, verdict: orchestrationDecisions.suggested, reason: orchestrationDecisions.reason,
+      latencyMs: orchestrationDecisions.latencyMs, costUsd: orchestrationDecisions.costUsd,
+    }).from(orchestrationDecisions).where(inScope(orchestrationDecisions)).orderBy(desc(orchestrationDecisions.createdAt)).limit(DECISION_HEALTH_ROW_LIMIT + 1),
+    db.select({ decisionRecordId: decisionOutcomes.decisionRecordId, source: decisionOutcomes.source, label: decisionOutcomes.label })
+      .from(decisionOutcomes)
+      .innerJoin(decisionRecords, eq(decisionRecords.id, decisionOutcomes.decisionRecordId))
+      .where(and(inArray(decisionOutcomes.source, [AGENT_AUDIT_SOURCE, AGENT_AUDIT_RULE_SOURCE]), inScope(decisionRecords)))
+      .orderBy(decisionOutcomes.recordedAt),
+  ]);
+  const truncated = ledger.length > DECISION_HEALTH_ROW_LIMIT || orchestration.length > DECISION_HEALTH_ROW_LIMIT;
+  const rows: DecisionHealthRow[] = [
+    ...ledger.slice(0, DECISION_HEALTH_ROW_LIMIT).map(({ overriddenAt, ...r }) => ({ ...r, overridden: overriddenAt != null })),
+    ...orchestration.slice(0, DECISION_HEALTH_ROW_LIMIT).map(r => ({ ...r, overridden: false })),
+  ];
+  return { rows, outcomes, truncated };
 }
 
 /** The get_decision_stats backend (orchestration decisions + manifest predictions), any scope. */
@@ -206,9 +261,9 @@ export async function listChatRetros(opts: { teamId: string | null; since: Date;
  * The get_usage_stats backend over any set of workspaces, plus what the admin
  * app's Usage page needs beside it: the same-length window before this one
  * (totals and groups, so "this week vs last" needs no second call) and the five
- * most expensive tasks with their titles.
+ * most expensive tasks in topTaskWorkspaceIds, with their titles.
  */
-export async function loadUsage(opts: { workspaceIds: string[]; since: Date; groupBy: GroupDimension; now?: Date }) {
+export async function loadUsage(opts: { workspaceIds: string[]; topTaskWorkspaceIds: string[]; since: Date; groupBy: GroupDimension; now?: Date }) {
   const now = opts.now ?? new Date();
   const span = now.getTime() - opts.since.getTime();
   const previousStart = new Date(opts.since.getTime() - span);
@@ -219,7 +274,8 @@ export async function loadUsage(opts: { workspaceIds: string[]; since: Date; gro
       ])
     : [[], []];
   const previous = computeUsageStats(previousRows, opts.groupBy);
-  const ranked = rankTopTasks(rows, 5);
+  const topTaskScope = new Set(opts.topTaskWorkspaceIds);
+  const ranked = rankTopTasks(rows.filter(r => topTaskScope.has(r.workspaceId)), 5);
   const titles = ranked.length
     ? await db.select({ id: tasks.id, title: tasks.title }).from(tasks).where(inArray(tasks.id, ranked.map(t => t.taskId)))
     : [];

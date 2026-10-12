@@ -832,3 +832,87 @@ async function settleSurfaceIntents(workspaceId: string, prNumber: number): Prom
     console.warn(`[pr-reconcile] surface settle failed for PR #${prNumber}:`, err);
   }
 }
+
+// ─── Manual mission completion sweep ──────────────────────────────────────────
+
+/** Manual missions considered per run. */
+export const MANUAL_COMPLETION_SWEEP_CAP = 20;
+
+/** Retry bound: a mission the writer keeps refusing is re-asked at most daily. */
+export const MANUAL_COMPLETION_SWEEP_WINDOW_MS = DAY_MS;
+
+export interface ManualCompletionSweepResult {
+  total: number;
+  attempted: number;
+  errors: number;
+}
+
+/**
+ * Re-ask the completion writer about an active manual mission whose newest
+ * merged PR postdates its last criteria evaluation.
+ *
+ * `task.pr_merged` wakes a manual mission, but a lost webhook leaves the merge
+ * to be stamped by the read-through refresh or the hourly heal, neither of which
+ * emits it — and nothing else periodic covers a manual mission without an
+ * integration branch (`sweepMissionIntegrationPrs` selects only opted-in ones;
+ * dormancy and heartbeat completion only run for auto missions).
+ *
+ * The candidate query does the filtering in SQL (indexed `tasks_mission_idx` /
+ * `workers_task_idx`), orders by the shared `prSweepLastCheckedAt` attempt
+ * clock and caps the batch. Whether the mission may actually complete is the
+ * writer's predicate, not this sweep's.
+ */
+export async function sweepManualMissionCompletions(): Promise<ManualCompletionSweepResult> {
+  const result: ManualCompletionSweepResult = { total: 0, attempted: 0, errors: 0 };
+
+  const secs = sql.raw(String(Math.round(MANUAL_COMPLETION_SWEEP_WINDOW_MS / 1000)));
+  const candidates = await db.query.missions.findMany({
+    where: and(
+      eq(missions.status, 'active'),
+      eq(missions.orchestrationMode, 'manual'),
+      eq(missions.integrationBranchEnabled, false),
+      sql`(
+        ${missions.prSweepLastCheckedAt} IS NULL
+        OR ${missions.prSweepLastCheckedAt} < now() - (${secs} * interval '1 second')
+      )`,
+      // No open deliverable work: completion is waiting on a merge, not a task.
+      sql`NOT EXISTS (
+        SELECT 1 FROM tasks t
+        WHERE t.mission_id = ${missions.id}
+          AND t.status NOT IN ('completed', 'failed', 'cancelled')
+      )`,
+      // Newest merge is later than the last criteria evaluation (or there has
+      // been none).
+      sql`(
+        SELECT max(w.merged_at) FROM workers w
+        JOIN tasks t2 ON t2.id = w.task_id
+        WHERE t2.mission_id = ${missions.id}
+      ) > coalesce((${missions.goalCriteriaState}->>'evaluatedAt')::timestamptz, '-infinity'::timestamptz)`,
+    ),
+    columns: { id: true },
+    orderBy: sql`${missions.prSweepLastCheckedAt} ASC NULLS FIRST`,
+    limit: MANUAL_COMPLETION_SWEEP_CAP,
+  });
+
+  result.total = candidates.length;
+  if (candidates.length === 0) return result;
+
+  const { completeMissionIfVerified } = await import('@/lib/mission-completion');
+  for (const mission of candidates) {
+    try {
+      await completeMissionIfVerified(mission.id, {
+        path: 'criteria_eval',
+        predicate: 'manual mission merged after last criteria evaluation',
+      });
+      result.attempted++;
+    } catch (err) {
+      result.errors++;
+      console.error(`[pr-reconcile] manual mission completion ${mission.id} failed:`, err);
+    }
+    await db.update(missions)
+      .set({ prSweepLastCheckedAt: new Date() })
+      .where(eq(missions.id, mission.id))
+      .catch(() => {});
+  }
+  return result;
+}

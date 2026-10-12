@@ -190,7 +190,7 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
       // choice reads as a decision; a critical incident the owner is told about stays an incident.
       return i.incidentDecision
         ? make({ label: 'decision', tone: 'warning', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'Choose…', href: text(i.fixHref) ?? '' } })
-        : make({ label: 'incident', tone: 'error', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'Open incident', href: text(i.fixHref) ?? '' } });
+        : make({ label: 'incident', tone: 'error', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'View details', href: text(i.fixHref) ?? '' } });
     case 'ACCESS':
       // A pending capability request (lib/capability-grants-needs-you.ts): what was asked is the title,
       // who asked and why is the sentence. The card approves or denies in place; the link is the fallback.

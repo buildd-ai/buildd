@@ -211,6 +211,6 @@ describe('TeamRoleEditor for a personal role', () => {
     expect(q('[data-testid="personal-role-sharing"] [role="radio"]')).toBeNull();
     expect(q('[data-testid="personal-share-fixed"]')!.textContent).toBe('Whole team');
     expect(q('[data-testid="role-read-only"]')!.textContent).toContain('owner or a team admin');
-    expect(container.textContent).not.toContain('Delete this role');
+    expect(container.textContent).not.toContain('Delete this agent');
   });
 });

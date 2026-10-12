@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks, missions, missionNotes, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray, isNull, like } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, like, notLike } from 'drizzle-orm';
 import {
   MAX_SURFACE_AUDIT_ROUNDS,
   SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE,
@@ -8,6 +8,7 @@ import {
   buildSurfaceAuditDescription,
   isSurfaceAuditTask,
   isSurfaceFixTask,
+  isTrunkRefreshTask,
   planSurfaceFixFollowUp,
   surfaceAuditRound,
   surfaceAuditTitle,
@@ -32,6 +33,8 @@ export interface EnsureSurfaceAuditParams {
     title: string;
     taskClass: string | null;
     pathManifest: string[] | null;
+    /** Read for the trunk-refresh marks (`isTrunkRefreshTask`). */
+    context?: unknown;
   };
   targetWorkspace: {
     id?: string;
@@ -79,6 +82,9 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   // tasks, friction reports, etc.) as "builder work".
   if (createdTask.taskClass !== 'work') return;
   if (isSurfaceAuditTask(createdTask.title)) return;
+  // Merging trunk in is upkeep, not mission work: its manifest widens to
+  // trunk's whole diff, which would make the audit demand every route.
+  if (isTrunkRefreshTask(createdTask)) return;
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
@@ -124,14 +130,32 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     // The rewrite also drops a dependency that has left the mission since it
     // was added (an unlink that predates detachTaskFromMissionSurfaceAudits),
     // so the stored list is current membership, not a filing-time record.
-    const currentDeps = Array.isArray(existingAudit.dependsOn) ? existingAudit.dependsOn : [];
+    //
+    // Only a round-1 audit reviews builder work. A re-check round depends on
+    // its fixes alone: the evidence check derives required routes from every
+    // dependency's manifest, so a builder edge there demands that builder's
+    // whole route set while the round's description names only the fixed
+    // routes, and its retry clone inherits the edge.
+    const roundOne = surfaceAuditRound(existingAudit) > 1
+      ? await db.query.tasks.findFirst({
+          where: and(
+            eq(tasks.missionId, missionId),
+            like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`),
+            notLike(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}round %`),
+          ),
+          columns: { id: true, title: true, status: true, dependsOn: true, context: true },
+          orderBy: [desc(tasks.createdAt)],
+        })
+      : existingAudit;
+    if (!roundOne) return;
+    const currentDeps = Array.isArray(roundOne.dependsOn) ? roundOne.dependsOn : [];
     const members = await missionMemberIds(missionId, currentDeps);
     const nextDeps = members.includes(createdTask.id) ? members : [...members, createdTask.id];
     const changed = nextDeps.length !== currentDeps.length || nextDeps.some((d, i) => d !== currentDeps[i]);
     if (changed) {
       await db.update(tasks)
         .set({ dependsOn: nextDeps, updatedAt: new Date() })
-        .where(eq(tasks.id, existingAudit.id));
+        .where(eq(tasks.id, roundOne.id));
     }
     return;
   }
@@ -146,9 +170,9 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
       eq(tasks.missionId, missionId),
       eq(tasks.taskClass, 'work'),
     ),
-    columns: { id: true, title: true, pathManifest: true },
+    columns: { id: true, title: true, pathManifest: true, context: true },
   });
-  const nonAuditBuilderTasks = builderTasks.filter(t => !isSurfaceAuditTask(t.title));
+  const nonAuditBuilderTasks = builderTasks.filter(t => !isSurfaceAuditTask(t.title) && !isTrunkRefreshTask(t));
   const dependsOn = nonAuditBuilderTasks.map(t => t.id);
   const scopedPaths = Array.from(new Set(
     nonAuditBuilderTasks
@@ -251,7 +275,7 @@ export async function planMissionSurfaceAudit(missionId: string): Promise<Surfac
   if (!targetWorkspace) return { ok: false, reason: 'no_workspace' };
 
   const builders = missionTasks.filter(t =>
-    t.taskClass === 'work' && !isSurfaceAuditTask(t.title ?? '') && !finishedWithoutLooking(t.status));
+    t.taskClass === 'work' && !isSurfaceAuditTask(t.title ?? '') && !isTrunkRefreshTask(t) && !finishedWithoutLooking(t.status));
   const gate = await evaluateSurfaceAuditGate(mission, missionTasks).catch(() => null);
   const scopedPaths = Array.from(new Set([
     ...(gate?.required ? gate.uiPaths : []),
