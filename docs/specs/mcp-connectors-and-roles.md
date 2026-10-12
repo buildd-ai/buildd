@@ -108,7 +108,7 @@ assertions:
 >   213, 264) and `RoleConfigInput.mcpConfig`/`.envMapping` are `@deprecated`
 >   (role-config.ts 8–24). The normalizer that folded `workspaceSkills.mcpServers`
 >   into the bundle is deleted; there is no role-tarball MCP path left to read.
-> - `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx`
+> - `apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/RoleConnectorsSection.tsx`
 >   — role "Connectors" + the registry browser, mounted by the one role editor
 >   (`TeamRoleEditor.tsx`, which owns `connectorRefs` via `setConnectorRefs`)
 > - `apps/web/src/app/api/connectors/*` + `apps/web/src/lib/mcp-oauth.ts` — team
@@ -406,7 +406,7 @@ create (or reuse) a team `connectors` row and add its id to the role's
   installed again THEN no duplicate row is created (`409`-free reuse).
 
 **Code surface**:
-- UI: `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx`
+- UI: `apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/RoleConnectorsSection.tsx`
   (the registry browser's Add is wired to `installConnector`, which POSTs
   `/api/connectors` and appends the returned connector id to the role's
   `connectorRefs`; `TeamRoleEditor.tsx` holds that list via `setConnectorRefs`

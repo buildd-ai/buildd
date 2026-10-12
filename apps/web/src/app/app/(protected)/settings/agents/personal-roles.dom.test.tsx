@@ -9,7 +9,7 @@
  * module mocks stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/roles/new' });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/agents/new' });
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const pushes: string[] = [];
 mock.module('next/navigation', () => ({
   useRouter: () => ({ refresh: () => {}, push: (href: string) => { pushes.push(href); }, replace: () => {} }),
-  usePathname: () => '/app/settings/roles/new',
+  usePathname: () => '/app/settings/agents/new',
   useSearchParams: () => new URLSearchParams(''),
 }));
 
@@ -105,7 +105,7 @@ describe('TeamRoleForm "Just for me"', () => {
     expect(body.personal).toBe(true);
     expect(body.teamId).toBe('team-1');
     expect(body.name).toBe('My Reviewer');
-    expect(pushes).toContain('/app/settings/roles');
+    expect(pushes).toContain('/app/settings/agents');
   });
 
   it('a team role from the same form does not carry personal', async () => {
