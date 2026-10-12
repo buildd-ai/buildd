@@ -296,6 +296,12 @@ describe('task header — full-width title on a phone, actions on the title row 
     expect(cls('task-header-actions')).toContain('row-start-2 md:row-start-1');
     expect(cls('task-header-status')).toContain('row-start-2 self-center md:col-start-2 md:row-start-1');
   });
+  it('with no status pill the sub-line shares the actions\' row on a phone, and its PR link is a 44px target', () => {
+    const sub = pageSource.slice(pageSource.indexOf('data-testid="task-subline"'), pageSource.indexOf('{/* An attempt says what it is an attempt of'));
+    expect(sub).toContain("'col-span-2 row-start-3' : 'col-start-1 row-start-2 self-center'");
+    expect(sub).toContain('md:col-span-full md:col-start-1 md:row-start-2');
+    expect(sub).toContain('inline-flex min-h-11 items-center gap-1 text-accent-text');
+  });
   it('the actions are right-aligned, never spread', () => {
     const actions = header.slice(header.indexOf('data-testid="task-header-actions"') - 200, header.indexOf('data-testid="task-header-actions"'));
     expect(actions).not.toContain('justify-between');

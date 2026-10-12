@@ -49,10 +49,10 @@ export function TaskPageFixture() {
               <a href="#" aria-label="Ask about this task" className={ASK_ABOUT_CLASS}><span aria-hidden="true" className="text-accent-text">↳</span><span aria-hidden="true">Ask</span></a>
               <button type="button" aria-label="More actions" className="-mr-2.5 flex h-11 w-11 shrink-0 items-center justify-center text-text-secondary">⋯</button>
             </div>
-          </div>
-          <div data-testid="task-subline" className="mt-2 flex flex-wrap items-center gap-x-2 text-[12px] font-mono text-text-muted">
-            <span>{f.subjectLink ? 'Reviewer' : 'fix · Builder'} · example</span>
-            <a href="#" className="font-medium text-accent-text hover:underline">PR #1234 ↗</a>
+            <div data-testid="task-subline" className={`${!f.shipped && !f.verdict ? 'col-span-2 row-start-3' : 'col-start-1 row-start-2 self-center'} md:col-span-full md:col-start-1 md:row-start-2 min-w-0 flex flex-wrap items-center gap-x-2 text-[12px] font-mono text-text-muted`}>
+              <span>{f.subjectLink ? 'Reviewer' : 'fix · Builder'} · example</span>
+              <a href="#" className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline md:min-h-0">PR #1234 ↗</a>
+            </div>
           </div>
           {f.subjectLink && <TaskSubjectLink kind="review" href="#" prNumber={f.view.prNumber} title={f.subjectLink} />}
           {f.track && <Lifecycle state={f.track.state} phrase={f.track.phrase} className="mt-3" />}

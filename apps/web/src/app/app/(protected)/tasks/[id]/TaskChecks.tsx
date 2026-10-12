@@ -117,11 +117,11 @@ export default function TaskChecks({
   if (checks.current.length === 0 && checks.history.length === 0) return null;
   return (
     <section aria-label="Checks" data-testid="task-checks" className="mb-6">
-      <div className="section-label flex flex-wrap items-baseline gap-x-2 border-b border-border-default pb-2">
+      <div className="section-label flex flex-wrap items-center gap-x-2 border-b border-border-default pb-1 md:items-baseline md:pb-2">
         <span>Checks</span>
         {prNumber != null && (
           <span className="font-mono normal-case tracking-normal text-text-muted">
-            {prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">PR #{prNumber} ↗</a> : `PR #${prNumber}`}
+            {prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center hover:underline md:min-h-0">PR #{prNumber} ↗</a> : `PR #${prNumber}`}
             {headSha ? ` · ${headSha.slice(0, 7)}` : ''}
           </span>
         )}

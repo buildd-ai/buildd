@@ -1467,11 +1467,11 @@ export default async function TaskDetailPage({
                 <DeleteTaskButton taskId={task.id} taskStatus={task.status} />
               </TaskOverflowMenu>
             </div>
-          </div>
           {/* One mono sub-line: type · scope · role, the workspace, loop and ship
               state, the PR. Created, category, project and the error count live
-              in Details and the evidence below, not here. */}
-          <div data-testid="task-subline" className="mt-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono">
+              in Details and the evidence below, not here. On a phone with no
+              status pill it shares the actions' row instead of leaving them alone. */}
+          <div data-testid="task-subline" className={`${!shippedView && !verdict ? 'col-span-2 row-start-3' : 'col-start-1 row-start-2 self-center'} md:col-span-full md:col-start-1 md:row-start-2 min-w-0 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono`}>
             <span>
               {heading.eyebrow.length > 0 && <span data-testid="task-eyebrow">{heading.eyebrow.join(' · ')} · </span>}
               {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'}
@@ -1492,11 +1492,12 @@ export default async function TaskDetailPage({
                 href={workerWithPr.prUrl!}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-accent-text hover:underline font-medium"
+                className="inline-flex min-h-11 items-center gap-1 text-accent-text hover:underline font-medium md:min-h-0"
               >
                 PR #{workerWithPr.prNumber} ↗
               </a>
             )}
+          </div>
           </div>
           {/* An attempt says what it is an attempt of, and links the deliverable. */}
           {deliverableLink && subject.kind !== 'deliverable' && (

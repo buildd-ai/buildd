@@ -268,7 +268,10 @@ checks below the first screen.
 - **Actions.** Below `md` the status pill (only without a verdict) and Ask / ⋯
   share one row under the title, actions right-aligned, each ≥44px. They never
   sit beside the title on a phone, never stack above it. From `md` they return
-  to the title row.
+  to the title row. With no status pill (a verdict carries the state) the
+  mono sub-line shares that row on a phone instead of leaving the actions
+  alone on it. Every link on these rows (the sub-line's and the Checks
+  heading's "PR #N ↗") is a 44px target below `md`.
 - **Attempt link.** "Review of PR #N ›" / "Fix for PR #N ›", naming the
   deliverable by its PR; the deliverable's full title is the link's
   accessible name (visually hidden) and tooltip. Without a PR the title is the
