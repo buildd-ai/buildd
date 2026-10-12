@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import * as rules from '@buildd/core/mission-helpers';
+import { ACTIVITY_FIXTURE_NOW, ACTIVITY_SCALE_ROOTS, activityScaleFixture } from '@/app/app/dev/fixtures/activity-delivery-fixtures';
 import { projectMissionDelivery, type MissionTaskRow } from './delivery-projection';
 import {
-  NOT_LANDED_NOW_WINDOW_MS, WAITING_ROWS_PER_GROUP,
+  HISTORY_PAGE_SIZE, WAITING_ROWS_PER_GROUP, pageEpisodes,
   buildActivityHistory, buildActivityNow, filterEpisodes, repairReasonOf, reviewOf,
-  type ActivityTaskInput,
+  filterNow, type ActivityTaskInput, type Episode,
 } from './activity-delivery';
 
 const NOW = Date.parse('2026-10-08T12:00:00.000Z');
@@ -53,12 +54,17 @@ describe('Activity Now: grouped by mission, standalone last', () => {
     expect([g.kind, g.landed, g.total, g.next]).toEqual([m.kind, 1, 2, m.next]);
   });
 
-  it('landed work leaves Now; a not-landed delivery stays 48 h, then lives only in History', () => {
-    const fresh = task({ status: 'failed', updatedAt: ago(60) });
-    const stale = task({ status: 'failed', updatedAt: new Date(NOW - NOT_LANDED_NOW_WINDOW_MS - 60_000).toISOString() });
-    const n = now([merged(), fresh, stale]);
-    expect(n.groups.flatMap(g => g.rows.map(r => r.id))).toEqual([fresh.id]);
-    expect(buildActivityHistory({ tasks: [merged(), fresh, stale], missions: [], rules }).map(e => e.id)).toContain(stale.id);
+  it('Now excludes terminal deliveries (landed and not landed); History holds them and nothing in flight', () => {
+    const failed = task({ status: 'failed', updatedAt: ago(60) });
+    const live = running();
+    const audit = inAudit();
+    const rows = [merged(), failed, live, audit];
+    expect(now(rows).groups.flatMap(g => g.rows.map(r => r.id)).sort()).toEqual([live.id, audit.id].sort());
+    const h = buildActivityHistory({ tasks: rows, missions: [], rules });
+    expect(h.map(e => e.kind).every(k => k === 'landed' || k === 'notlanded')).toBe(true);
+    expect(h.map(e => e.id)).toContain(failed.id);
+    expect(h.map(e => e.id)).not.toContain(live.id);
+    expect(h.map(e => e.id)).not.toContain(audit.id);
   });
 
   it('cancelled work is not in Now', () => {
@@ -167,7 +173,7 @@ describe('repairReasonOf', () => {
 describe('Activity History', () => {
   it('newest episode first, tiebreak id; steps stay chronological', () => {
     const a = merged();
-    const b = inAudit();
+    const b = task({ status: 'failed', updatedAt: ago(5), workers: [{ status: 'failed', startedAt: ago(8), updatedAt: ago(5) }] });
     const eps = buildActivityHistory({ tasks: [a, b], missions: [], rules });
     expect(eps.map(e => e.id)).toEqual([b.id, a.id]);
     for (const e of eps) expect(e.steps.map(s => s.at)).toEqual([...e.steps.map(s => s.at)].sort((x, y) => x - y));
@@ -180,18 +186,20 @@ describe('Activity History', () => {
 
   it('filters by missions vs standalone tasks, retries, landed and exceptions', () => {
     const inMission = merged({ missionId: 'm', missionTitle: 'M' });
-    const standalone = inAudit();
+    const standalone = merged();
     const retry = task({ title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: standalone.id, status: 'completed', workers: [{ status: 'completed' }] });
     const failed = task({ status: 'failed', updatedAt: ago(3) });
     const asking = task({ status: 'in_progress', workers: [{ status: 'waiting_input' }] });
     const eps = buildActivityHistory({ tasks: [inMission, standalone, retry, failed, asking], missions: [], rules });
     const ids = (f: Parameters<typeof filterEpisodes>[1]) => filterEpisodes(eps, f).map(e => e.id).sort();
     expect(ids({ scope: 'missions', outcome: 'any' })).toEqual([inMission.id]);
-    expect(ids({ scope: 'tasks', outcome: 'any' })).toEqual([standalone.id, failed.id, asking.id].sort());
+    expect(ids({ scope: 'tasks', outcome: 'any' })).toEqual([standalone.id, failed.id].sort());
     expect(ids({ scope: 'all', outcome: 'retries' })).toEqual([standalone.id]);
-    expect(ids({ scope: 'all', outcome: 'landed' })).toEqual([inMission.id]);
-    expect(ids({ scope: 'all', outcome: 'exceptions' })).toEqual([failed.id, asking.id].sort());
-    expect(ids({ scope: 'all', outcome: 'you' })).toEqual([asking.id]);
+    expect(ids({ scope: 'all', outcome: 'landed' })).toEqual([inMission.id, standalone.id].sort());
+    expect(ids({ scope: 'all', outcome: 'exceptions' })).toEqual([failed.id].sort());
+    expect(ids({ scope: 'all', outcome: 'you' })).toEqual([]);
+    // Decisions still in flight belong to Now.
+    expect(now([asking]).groups.flatMap(g => g.rows.map(r => r.id))).toContain(asking.id);
     expect(ids({ scope: 'all', outcome: 'any', missionId: 'm' })).toEqual([inMission.id]);
   });
 });
@@ -213,5 +221,99 @@ describe('reviewOf: a reviewer run read like derivePrReviewStatus reads it', () 
   it('anything else is no verdict', () => {
     expect(reviewOf({ structuredOutput: { verdict: 'lgtm' } }, null)).toEqual({ verdict: null, headSha: null });
     expect(reviewOf(null, { headSha: '' })).toEqual({ verdict: null, headSha: null });
+  });
+});
+
+// Regression: one cancelled root anywhere in the window threw a TypeError out
+// of History (the mission projection drops cancelled roots, and the standalone
+// projection read its row with `!`). The page caught it and rendered an empty
+// Now and History with "0 deliveries in motion · 0 agents working".
+describe('cancelled work does not take Activity down', () => {
+  it('a cancelled standalone root is a not-landed episode in History', () => {
+    const c = task({ status: 'cancelled', updatedAt: ago(30) });
+    const h = buildActivityHistory({ tasks: [c, merged()], missions: [], rules });
+    expect(h.map(e => e.id)).toContain(c.id);
+    expect(h.find(e => e.id === c.id)!.kind).toBe('notlanded');
+    expect(h.find(e => e.id === c.id)!.steps.at(-1)!.text).toBe('Cancelled');
+  });
+
+  it('a cancelled mission task (absent from the mission projection) still projects', () => {
+    const rows = [task({ status: 'cancelled', missionId: 'm', missionTitle: 'M' }), running({ missionId: 'm', missionTitle: 'M' })];
+    const ms = [missionOf('m', 'M', rows)];
+    expect(() => buildActivityHistory({ tasks: rows, missions: ms, rules })).not.toThrow();
+    // The running sibling is in flight: Now's, not History's.
+    expect(buildActivityHistory({ tasks: rows, missions: ms, rules }).map(e => e.id)).toEqual([rows[0].id]);
+  });
+
+  it('a cancelled root with a failed retry keeps its repair count', () => {
+    const c = task({ status: 'cancelled' });
+    const r = task({ title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: c.id, status: 'failed' });
+    const [e] = buildActivityHistory({ tasks: [c, r], missions: [], rules });
+    expect(e.repairRounds).toBe(1);
+    expect(filterEpisodes([e], { scope: 'all', outcome: 'retries' })).toHaveLength(1);
+  });
+});
+
+describe('a busy workspace, shaped like real data', () => {
+  const d = activityScaleFixture();
+
+  it('projects every root: one episode per delivery, attempts folded', () => {
+    const roots = d.tasks.filter(t => !t.parentTaskId);
+    expect(roots.length).toBeGreaterThan(ACTIVITY_SCALE_ROOTS);
+    const inNow = d.now.groups.flatMap(g => g.rows).length + d.now.groups.reduce((n, g) => n + g.moreWaiting, 0);
+    expect(d.history.length + inNow).toBe(roots.length);
+  });
+
+  it('the live old root is in Now with its agent counted, and leads History by its latest step', () => {
+    const rows = d.now.groups.flatMap(g => g.rows);
+    expect(rows.map(r => r.id)).toContain('sc-live-old');
+    expect(rows.find(r => r.id === 'sc-live-old')!.delivery.kind).toBe('repair');
+    expect(d.now.liveAgents).toBe(3);
+    expect(d.now.inMotion).toBeGreaterThan(0);
+  });
+
+  it('Had retries, Landed and Exceptions all find episodes; retries include landed and failed ones', () => {
+    const f = (outcome: 'retries' | 'landed' | 'exceptions') => filterEpisodes(d.history, { scope: 'all', outcome });
+    const retried = f('retries');
+    expect(retried.length).toBeGreaterThan(0);
+    expect(retried.some(e => e.kind === 'landed')).toBe(true);
+    expect(retried.some(e => e.kind === 'notlanded')).toBe(true);
+    expect(f('landed').length).toBeGreaterThan(0);
+    expect(f('exceptions').length).toBeGreaterThan(0);
+  });
+
+  it('Had retries in Now and in History are disjoint slices', () => {
+    const inNow = filterNow(d.now, { scope: 'all', outcome: 'retries' }).flatMap(g => g.rows.map(r => r.id));
+    const inHistory = filterEpisodes(d.history, { scope: 'all', outcome: 'retries' }).map(e => e.id);
+    expect(inNow).toContain('sc-live-old');
+    expect(inHistory.length).toBeGreaterThan(0);
+    // Each delivery is on exactly one of the two.
+    expect(inNow.some(id => inHistory.includes(id))).toBe(false);
+  });
+
+  it('newest first, and the latest task is fresh work, not the window edge', () => {
+    expect(d.history.every((e, i) => i === 0 || d.history[i - 1].at >= e.at)).toBe(true);
+    expect(ACTIVITY_FIXTURE_NOW - d.latest!.at).toBeLessThan(60 * 60_000);
+  });
+});
+
+describe('History paging', () => {
+  const eps = Array.from({ length: 45 }, (_, i) => ({ id: `e${i}`, title: '', href: '', missionId: i % 9 === 0 ? 'm' : null, missionTitle: null, kind: i === 44 ? 'notlanded' : 'landed', repairRounds: 0, at: 1000 - i, steps: [] }) as Episode);
+
+  it('a page is HISTORY_PAGE_SIZE episodes, newest first, and the next page continues it', () => {
+    const p1 = pageEpisodes(eps, 1);
+    expect(p1.shown).toHaveLength(HISTORY_PAGE_SIZE);
+    expect(p1.remaining).toBe(45 - HISTORY_PAGE_SIZE);
+    const p2 = pageEpisodes(eps, 2);
+    expect(p2.shown.slice(0, HISTORY_PAGE_SIZE)).toEqual(p1.shown);
+    expect(pageEpisodes(eps, 3)).toEqual({ shown: eps, remaining: 0 });
+  });
+
+  it('filters apply before the page, so a match past the first page is still shown', () => {
+    const matches = filterEpisodes(eps, { scope: 'all', outcome: 'exceptions' });
+    expect(matches.map(e => e.id)).toEqual(['e44']);
+    expect(pageEpisodes(matches, 1).shown.map(e => e.id)).toEqual(['e44']);
+    const missions = filterEpisodes(eps, { scope: 'missions', outcome: 'any' });
+    expect(pageEpisodes(missions, 1).shown).toHaveLength(5);
   });
 });

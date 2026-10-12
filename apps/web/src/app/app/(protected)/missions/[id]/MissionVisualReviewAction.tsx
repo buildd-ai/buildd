@@ -34,8 +34,8 @@ import {
   type VisualReviewRequestOutcome,
 } from '@/lib/mission-visual-review-request';
 import { MissionVisualTray, useMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
+import { MISSION_HEADER_ACTION } from './MissionLayoutShell';
 
-const TRIGGER = 'inline-flex min-h-11 md:min-h-9 items-center gap-1.5 border-2 border-border-strong bg-surface-2 px-3 font-mono text-[12.5px] font-semibold text-text-primary hover:bg-surface-3';
 const PRIMARY = 'inline-flex min-h-11 md:min-h-9 items-center justify-center bg-text-primary px-4 font-mono text-body font-semibold text-surface-1 hover:opacity-90 disabled:opacity-50';
 const FACT_LABEL = 'w-20 shrink-0 text-text-muted';
 
@@ -53,7 +53,7 @@ export default function MissionVisualReviewAction({ missionId, initialOpen = fal
         aria-haspopup="dialog"
         aria-label="Visual review"
         data-testid="mission-visual-review-action"
-        className={TRIGGER}
+        className={MISSION_HEADER_ACTION}
       >
         <span aria-hidden="true" className="text-accent-text">◫</span>
         {/* A phone header has room for one short word beside Ask. */}

@@ -75,7 +75,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-28
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-10-01
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-10-12
   The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 
 ### releases (4)
@@ -101,7 +101,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Live Sibling Conflict Probe](./live-sibling-conflict-probe.md) · @max — verified 2026-10-08
   Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.
-- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-07
+- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-09
   A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-10-04
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.

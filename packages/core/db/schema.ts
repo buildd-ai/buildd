@@ -675,6 +675,10 @@ export interface WorkspaceGitConfig {
   // Can be overridden per-task at creation time
   defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
 
+  // Visual review policy override (strict | automatic | ask | off). Absent = inherit the team
+  // default. Read only through visualReviewPolicyOf() / resolveVisualReviewPolicy().
+  visualReview?: { policy?: import('@buildd/shared').VisualReviewPolicyMode } | null;
+
   // Merge policy — supersedes autoMerge* fields when set.
   // null / absent → fall back to legacy autoMerge* fields (backward compat).
   mergePolicy?: MergePolicy;
@@ -2329,6 +2333,13 @@ export const localSessions = pgTable('local_sessions', {
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
   endedAt: timestamp('ended_at', { withTimezone: true }),
   endReason: text('end_reason'),
+  /**
+   * Set when the plugin says a turn is in progress (prompt or tool call
+   * started), cleared at the turn's end. A long silent command sends nothing
+   * until it returns; while this is set the interactive reaper keeps the
+   * presence's claims, up to INTERACTIVE_WORKER_BUSY_MAX_MS after last_seen_at.
+   */
+  busySince: timestamp('busy_since', { withTimezone: true }),
   /**
    * Legacy: the single worker a session could hold before multi-claim. Read
    * (never written) so a session bound before localSessionWorkers existed still

@@ -308,6 +308,16 @@ describe('buildMissionBoard — goal criteria with live counts', () => {
     }
   });
 
+  it('a stored pass never stands beside open tasks', () => {
+    const done = task('a', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(3), prNumber: 1, mergedAt: min(4) })] });
+    const open1 = task('b');
+    const open2 = task('c');
+    const m = board([done, open1, open2], { criteria: [{ type: 'no_open_tasks' }], criteriaState: [{ index: 0, verdict: 'pass' }] });
+    expect(m.criteria[0].value).toBe('2 open');
+    expect(m.criteria[0].state).not.toBe('pass');
+    expect(m.criteriaPassed).toBe(0);
+  });
+
   it('a recorded fail on a full count stays a fail, and a partial count stays partial', () => {
     const a = task('a', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(3), prNumber: 1, mergedAt: min(4) })] });
     const failed = board([a], { criteria: [{ type: 'all_prs_merged' }], criteriaState: [{ index: 0, verdict: 'fail' }] });

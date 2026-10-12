@@ -236,4 +236,22 @@ describe('parallel branches against a real drizzle repo', () => {
     expect(checkAgainstBase(paths, 'dev')).toEqual([]);
     expect(generate().stdout).toContain('No schema changes');
   }, 120_000);
+
+  it('a dev migration merged in below the mission base newest is not a collision; a branch-minted one still is', () => {
+    sh('git', ['update-ref', 'refs/remotes/origin/dev', 'dev']);
+    // The mission branch forked from an older dev and minted a high index of its own.
+    sh('git', ['checkout', '-q', '-b', 'mission', 'dev~1']);
+    writeFileSync(join(pkg(), 'drizzle', '0090_mission_own.sql'), 'select 1;\n');
+    commitAll('mission own');
+    // Refreshing it brings dev's newer, lower-numbered migrations in.
+    sh('git', ['checkout', '-q', '-b', 'refresh']);
+    sh('git', ['merge', '-q', '--no-edit', 'dev']);
+    expect(sqlFiles().length).toBeGreaterThan(1);
+    expect(checkAgainstBase(paths, 'mission')).toEqual([]);
+
+    // A migration the refresh itself mints below the base's newest is still caught.
+    writeFileSync(join(pkg(), 'drizzle', '0050_branch_minted.sql'), 'select 2;\n');
+    commitAll('branch minted');
+    expect(checkAgainstBase(paths, 'mission').map((c) => c.file)).toEqual(['0050_branch_minted.sql']);
+  }, 60_000);
 });
