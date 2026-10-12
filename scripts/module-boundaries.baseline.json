@@ -366,7 +366,8 @@
       "apps/web/src/lib/strand-choice-decision.ts": "jev-decisions",
       "apps/web/src/lib/surface-audit-advice.ts": "visual-qa",
       "apps/web/src/lib/task-category-decision.ts": "jev-decisions",
-      "apps/web/src/lib/task-role-decision.ts": "jev-decisions"
+      "apps/web/src/lib/task-role-decision.ts": "jev-decisions",
+      "packages/core/decision-kind-visual-impact.ts": "jev-decisions"
     },
     "apps/web/src/lib/prompt-fallback-alert.ts": {
       "apps/web/src/lib/pushover.ts": "notifications"
