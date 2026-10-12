@@ -7,7 +7,8 @@ summary: The release system MUST resolve a workspace's declared release strategy
 domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
-keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult]
+keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult, release candidate, release/v]
+verified_by: [packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/release-executor.test.ts]
 assertions:
   - id: trigger-release-route
     type: route
