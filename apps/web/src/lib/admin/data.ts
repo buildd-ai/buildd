@@ -410,7 +410,7 @@ export async function loadAgentAccess(opts: { workspaceIds: string[]; windowHour
 
 // ── Names and readouts ────────────────────────────────────────────────────────
 
-/** Every team and its workspaces, by name: the admin app shows names, never ids. */
+/** Every team and its workspaces, by name: operator clients show names, never ids. */
 export async function listTeamsWithWorkspaces(): Promise<{ id: string; name: string; workspaces: { id: string; name: string }[] }[]> {
   const [teamRows, workspaceRows] = await Promise.all([
     db.select({ id: teams.id, name: teams.name }).from(teams).orderBy(teams.name),

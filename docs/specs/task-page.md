@@ -143,7 +143,7 @@ CHECKS · PR #4413 · head e49b25b
 ```
 
 Removed from the default flow: the "Why this?" disclosure and its prose,
-the decision-ledger rows (they live in the admin app), a second "Done" heading,
+the decision-ledger rows (operator-only, served by the platform-owner API), a second "Done" heading,
 the release badge on an attempt, raw JSON anywhere outside Raw output.
 
 ## State mapping
