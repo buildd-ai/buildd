@@ -2,6 +2,7 @@ import { sql, eq, and, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, missions } from '@buildd/core/db/schema';
 import { BYPASS_HELD_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Context key set by /api/tasks/[id]/start when forceOverride=true and the task
@@ -85,7 +86,7 @@ export function missionNotLocal(): SQL {
  */
 export async function checkMissionLocal(missionId: string): Promise<boolean> {
   const mission = await db.query.missions.findFirst({
-    where: and(eq(missions.id, missionId), eq(missions.executor, 'local')),
+    where: sqlWhere(and(eq(missions.id, missionId), eq(missions.executor, 'local'))),
     columns: { id: true },
   });
   return !!mission;
@@ -100,7 +101,7 @@ export async function checkMissionLocal(missionId: string): Promise<boolean> {
  */
 export async function checkTaskMissionLocal(taskId: string): Promise<boolean> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { missionId: true },
   });
   if (!task?.missionId) return false;
@@ -209,7 +210,7 @@ export async function isTaskNotHeldOrLocal(taskId: string): Promise<boolean> {
  */
 export async function checkMissionHeld(missionId: string): Promise<boolean> {
   const mission = await db.query.missions.findFirst({
-    where: and(eq(missions.id, missionId), eq(missions.isHeld, true)),
+    where: sqlWhere(and(eq(missions.id, missionId), eq(missions.isHeld, true))),
     columns: { id: true },
   });
   return !!mission;

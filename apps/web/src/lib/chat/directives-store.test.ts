@@ -167,11 +167,13 @@ describe('directives store: the per-person cap holds under concurrent saves', ()
     const dir = join(import.meta.dir, '../../../../../packages/core/drizzle');
     // Newest migration defining the trigger: since the squash that is the
     // pg_dump baseline, which schema-qualifies names (`public.chat_directives`).
-    const file = readdirSync(dir)
-      .filter(f => f.endsWith('.sql'))
+    // drizzle v1 keeps each migration in its own folder.
+    const folder = readdirSync(dir)
+      .filter(f => /^\d{14}_/.test(f))
       .sort()
       .reverse()
-      .find(f => readFileSync(join(dir, f), 'utf8').includes('chat_directives_enforce_cap'));
+      .find(f => readFileSync(join(dir, f, 'migration.sql'), 'utf8').includes('chat_directives_enforce_cap'));
+    const file = folder && join(folder, 'migration.sql');
     expect(file).toBeDefined();
     const text = norm(readFileSync(join(dir, file!), 'utf8').replace(/--[^\n]*/g, ''))
       .toLowerCase()

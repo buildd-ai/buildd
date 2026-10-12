@@ -18,6 +18,7 @@ import { tasks, workers } from '@buildd/core/db/schema';
 import { desc, eq } from 'drizzle-orm';
 import { emit } from '@/lib/core-emit';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 function heldAnalyticsOf(context: unknown): HeldOutcomeAnalytics | null {
   const kept = (context as { heldReleaseOutcome?: unknown } | null)?.heldReleaseOutcome;
@@ -28,7 +29,7 @@ function heldAnalyticsOf(context: unknown): HeldOutcomeAnalytics | null {
 export async function emitHeldReleaseOutcome(taskId: string, failure: SlotFailure | null): Promise<void> {
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { id: true, title: true, workspaceId: true, missionId: true, context: true },
       with: { workspace: { columns: { name: true, teamId: true, dataClass: true } } },
     });

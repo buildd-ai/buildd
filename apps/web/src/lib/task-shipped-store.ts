@@ -11,6 +11,7 @@ import { and, desc, eq, isNotNull, sql } from 'drizzle-orm';
 import { changeTypeFromManifests, classifyChangedPaths, type ShippedChangeType } from '@/lib/mission-shipped';
 import { fetchPrFilePaths } from '@/lib/mission-shipped-report';
 import { authorShippedOf, buildTaskShippedRecord, type TaskShippedRecord } from '@/lib/task-shipped';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface StoreTaskShippedInput {
   taskId: string;
@@ -28,7 +29,7 @@ async function computeTaskChangeType(
   if (workspace?.githubRepoId && prNumber != null) {
     try {
       const repo = await db.query.githubRepos.findFirst({
-        where: eq(githubRepos.id, workspace.githubRepoId),
+        where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
         columns: { fullName: true },
         with: { installation: { columns: { installationId: true } } },
       });
@@ -50,14 +51,14 @@ async function computeTaskChangeType(
  */
 export async function storeTaskShippedRecord(input: StoreTaskShippedInput): Promise<TaskShippedRecord | null> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, input.taskId),
+    where: sqlWhere(eq(tasks.id, input.taskId)),
     columns: { id: true, workspaceId: true, pathManifest: true, mode: true },
   });
   if (!task || task.mode === 'planning') return null;
 
   const prWorker = await db.query.workers.findFirst({
-    where: and(eq(workers.taskId, input.taskId), isNotNull(workers.prNumber)),
-    orderBy: desc(workers.createdAt),
+    where: sqlWhere(and(eq(workers.taskId, input.taskId), isNotNull(workers.prNumber))),
+    orderBy: sqlOrderBy(desc(workers.createdAt)),
     columns: { prNumber: true },
   });
   const prNumber = prWorker?.prNumber ?? null;
@@ -66,7 +67,7 @@ export async function storeTaskShippedRecord(input: StoreTaskShippedInput): Prom
 
   const workspace = task.workspaceId
     ? await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, task.workspaceId),
+        where: sqlWhere(eq(workspaces.id, task.workspaceId)),
         columns: { dataClass: true, githubRepoId: true },
       })
     : null;

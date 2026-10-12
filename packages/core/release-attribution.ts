@@ -1,6 +1,7 @@
 import { eq, inArray, isNotNull, and } from 'drizzle-orm';
 import { workers, releaseTasks, githubInstallations } from './db/schema';
 import type { ReleaseArchetype } from './release-archetype';
+import { sqlWhere } from './db/relational-sql';
 
 // Structural type for the Drizzle db instance — only what this module uses.
 export type DrizzleDb = {
@@ -37,7 +38,7 @@ export interface AttributeReleaseInput {
 
 async function defaultGithubFetch(db: DrizzleDb, installationId: number, path: string): Promise<any> {
   const installation = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.installationId, installationId),
+    where: sqlWhere(eq(githubInstallations.installationId, installationId)),
   });
   const token = installation?.accessToken;
   if (!token) {

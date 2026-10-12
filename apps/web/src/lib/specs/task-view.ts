@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import type { LivingSpecView } from '@/components/SpecSourceBlock';
 import { isUuid } from '@/lib/uuid';
 import { readGovernedOutcome, type OutcomeView } from './outcome';
-import { scopeOf } from './scope';
+import { scopeOf } from '@buildd/spec-contract/scope';
 
 /**
  * The Living Spec a task is pinned to, for the task page: its title, the

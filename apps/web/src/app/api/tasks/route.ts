@@ -70,6 +70,7 @@ import { checkStatedRole } from '@/lib/stated-role';
 import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
 import { loadRequestCeiling, previewUnderCeiling, rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { terminalAuditFields } from './audit-fields';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { TASK_RESERVATION_KEY, buildReservation } from '../workers/claim/held-gate';
 import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
 
@@ -272,7 +273,7 @@ export async function GET(req: NextRequest) {
     // callers that need budget-reset info alongside the task list.
     const allTasks = workspaceIds.length > 0
       ? await db.query.tasks.findMany({
-          where: and(
+          where: sqlWhere(and(
             inArray(tasks.workspaceId, workspaceIds),
             missionScope,
             activeOnly
@@ -287,8 +288,8 @@ export async function GET(req: NextRequest) {
                     gte(tasks.updatedAt, oneDayAgo),
                   ),
                 ),
-          ),
-          orderBy: desc(tasks.createdAt),
+          )),
+          orderBy: sqlOrderBy(desc(tasks.createdAt)),
           limit: 200,
           columns: {
             id: true,
@@ -629,7 +630,7 @@ export async function POST(req: NextRequest) {
       if (missionId && await taskScopeAllowsMission(apiAccount, missionId)) missionId = undefined;
       if (missionId) {
         const mission = isUuid(missionId)
-          ? await db.query.missions.findFirst({ where: eq(missions.id, missionId), columns: { id: true, workspaceId: true } })
+          ? await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { id: true, workspaceId: true } })
           : null;
         if (!mission || mission.workspaceId !== workspaceId) {
           return NextResponse.json({ error: 'A delegated task may join a mission only in the workspace its delegation names' }, { status: 403 });
@@ -659,7 +660,7 @@ export async function POST(req: NextRequest) {
 
     // Validate workspace exists and fetch webhook config in one query
     const targetWorkspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
     });
     if (!targetWorkspace) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
@@ -742,12 +743,12 @@ export async function POST(req: NextRequest) {
 
     if (subjectPolicy.mode === 'observe' && title.startsWith('[friction] ') && frictionSignature) {
       const existing = await db.query.tasks.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(tasks.workspaceId, workspaceId),
           like(tasks.title, '[friction] %'),
           sql`${tasks.context}->>'frictionSignature' = ${frictionSignature}`,
           notInArray(tasks.status, ['completed', 'failed', 'cancelled']),
-        ),
+        )),
         columns: { id: true, title: true, description: true, creationSource: true },
       });
 
@@ -842,7 +843,7 @@ export async function POST(req: NextRequest) {
       }
 
       const depTasks = await db.query.tasks.findMany({
-        where: and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, workspaceId)),
+        where: sqlWhere(and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, workspaceId))),
         columns: { id: true },
       });
       const foundIds = new Set(depTasks.map(t => t.id));
@@ -891,11 +892,11 @@ export async function POST(req: NextRequest) {
     if (pathManifest && pathManifest.length > 0 && !isAdvisoryManifest(pathManifest)) {
       const existingDepsSet = new Set(resolvedDependsOn);
       const inFlightTasks = await db.query.tasks.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(tasks.workspaceId, workspaceId),
           inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
           isNotNull(tasks.pathManifest),
-        ),
+        )),
         columns: { id: true, pathManifest: true },
       });
       const overlapGitConfig = targetWorkspace.gitConfig ?? null;
@@ -935,7 +936,7 @@ export async function POST(req: NextRequest) {
       prReachFiler = { kind: 'task', taskId: apiAccount.taskScope.taskId };
     } else if (apiAccount && creatorContext.createdByWorkerId) {
       const filerWorker = await db.query.workers.findFirst({
-        where: eq(workers.id, creatorContext.createdByWorkerId),
+        where: sqlWhere(eq(workers.id, creatorContext.createdByWorkerId)),
         columns: { taskId: true },
       });
       if (filerWorker?.taskId) prReachFiler = { kind: 'task', taskId: filerWorker.taskId };
@@ -961,12 +962,12 @@ export async function POST(req: NextRequest) {
     // planning task started.
     if (missionId && !parentTaskId && createdByWorkerId) {
       const callingWorker = await db.query.workers.findFirst({
-        where: eq(workers.id, createdByWorkerId),
+        where: sqlWhere(eq(workers.id, createdByWorkerId)),
         columns: { taskId: true },
       });
       const callingTask = callingWorker?.taskId
         ? await db.query.tasks.findFirst({
-            where: eq(tasks.id, callingWorker.taskId),
+            where: sqlWhere(eq(tasks.id, callingWorker.taskId)),
             columns: { id: true, missionId: true, mode: true, creationSource: true, createdAt: true },
           })
         : null;
@@ -977,7 +978,7 @@ export async function POST(req: NextRequest) {
         && callingTask.creationSource === 'orchestrator'
       ) {
         const missionRow = await db.query.missions.findFirst({
-          where: eq(missions.id, missionId),
+          where: sqlWhere(eq(missions.id, missionId)),
           columns: { decompositionSkipped: true, orchestrationMode: true },
         });
         // `orchestrationMode === 'manual'` is the one exemption, matching
@@ -990,7 +991,7 @@ export async function POST(req: NextRequest) {
         // persist-and-note below is a no-op repeat.
         if (missionRow && missionRow.orchestrationMode !== 'manual') {
           const preFiled = await db.query.tasks.findMany({
-            where: and(
+            where: sqlWhere(and(
               eq(tasks.missionId, missionId),
               not(eq(tasks.creationSource, 'orchestrator')),
               not(eq(tasks.mode, 'planning')),
@@ -1001,7 +1002,7 @@ export async function POST(req: NextRequest) {
               // this the organizer's 2nd/3rd create_task call would see its
               // own 1st call's task and wrongly refuse itself.
               not(eq(tasks.createdByWorkerId, createdByWorkerId)),
-            ),
+            )),
             columns: { id: true },
             limit: 20,
           });
@@ -1166,11 +1167,11 @@ export async function POST(req: NextRequest) {
       for (const slug of skillSlugs) {
         // Look up workspace-level skills (enabled only)
         const wsSkill = await db.query.workspaceSkills.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workspaceSkills.workspaceId, workspaceId),
             eq(workspaceSkills.slug, slug),
             eq(workspaceSkills.enabled, true),
-          ),
+          )),
         });
 
         if (!wsSkill) {
@@ -1274,7 +1275,7 @@ export async function POST(req: NextRequest) {
     let missionIntegrationBaseBranch: string | null = null;
     if (missionId) {
       const mission = await db.query.missions.findFirst({
-        where: eq(missions.id, missionId),
+        where: sqlWhere(eq(missions.id, missionId)),
         columns: {
           defaultOutputRequirement: true,
           defaultBackend: true,
@@ -1442,7 +1443,7 @@ export async function POST(req: NextRequest) {
     }
     if (!resolvedBackend) {
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, workspaceId),
+        where: sqlWhere(eq(workspaces.id, workspaceId)),
         columns: { gitConfig: true },
       });
       const wsDefault = ws?.gitConfig?.defaultBackend;
@@ -1514,13 +1515,13 @@ export async function POST(req: NextRequest) {
     if (targetWorkspace.teamId) {
       try {
         const roleRows = await db.query.workspaceSkills.findMany({
-          where: and(
+          where: sqlWhere(and(
             eq(workspaceSkills.teamId, targetWorkspace.teamId),
             eq(workspaceSkills.isRole, true),
             eq(workspaceSkills.enabled, true),
             or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, workspaceId)),
             ...(previewRoleSlug ? [eq(workspaceSkills.slug, previewRoleSlug)] : []),
-          ),
+          )),
           columns: {
             ...ROLE_VISIBILITY_COLUMNS, name: true, model: true, metadata: true,
             enabled: true, isRole: true, allowedTools: true, connectorRefs: true, defaultBackend: true,

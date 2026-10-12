@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // GET /api/discrepancies/[id] — §13 get_discrepancy backing route. Returns the
 // row including `evidence`, the exact read that produced the current verdict
@@ -26,7 +27,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const row = await db.query.specDiscrepancies.findFirst({ where: eq(specDiscrepancies.id, id) });
+  const row = await db.query.specDiscrepancies.findFirst({ where: sqlWhere(eq(specDiscrepancies.id, id)) });
   if (!row) return NextResponse.json({ error: 'Discrepancy not found' }, { status: 404 });
 
   if (user && !apiAccount) {

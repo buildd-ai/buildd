@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { assertPromotable } from '@buildd/core/spec-discrepancy-ledger';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/discrepancies/[id]/promote — §13 promote_discrepancy backing route.
 //
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
-  const row = await db.query.specDiscrepancies.findFirst({ where: eq(specDiscrepancies.id, id) });
+  const row = await db.query.specDiscrepancies.findFirst({ where: sqlWhere(eq(specDiscrepancies.id, id)) });
   if (!row) return NextResponse.json({ error: 'Discrepancy not found' }, { status: 404 });
 
   if (user && !apiAccount) {
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, body.missionId),
+    where: sqlWhere(eq(missions.id, body.missionId)),
     columns: { id: true, workspaceId: true },
   });
   if (!mission) return NextResponse.json({ error: `Mission not found: ${body.missionId}` }, { status: 404 });
@@ -91,7 +92,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .returning();
 
   if (!updated) {
-    const fresh = await db.query.specDiscrepancies.findFirst({ where: eq(specDiscrepancies.id, id) });
+    const fresh = await db.query.specDiscrepancies.findFirst({ where: sqlWhere(eq(specDiscrepancies.id, id)) });
     if (fresh?.promotedMissionId) {
       return NextResponse.json({ discrepancy: fresh, missionId: fresh.promotedMissionId, alreadyPromoted: true });
     }

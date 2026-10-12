@@ -83,7 +83,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'create_draft': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId, title: need(params.title, 'title'), body: need(params.body, 'body (the spec text, Markdown)') };
-      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design'] as const) if (params[k] !== undefined) payload[k] = params[k];
       let spec;
       try {
         ({ spec } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
@@ -113,6 +113,9 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         `Showing revision ${view.revision.revision} (sha256 ${view.revision.contentHash}). Revise with expectedVersion ${s.version}.`,
         reqs.length ? `Requirement ids: ${reqs.join(', ')}` : 'Requirement ids: none',
         `Revisions:\n${history}`,
+        ...(view.revision.design
+          ? [`Design: ${view.revision.design.kind} ${view.revision.design.ref} at version ${view.revision.design.version}${view.revision.design.screens?.length ? ` (screens: ${view.revision.design.screens.map((x: { id: string }) => x.id).join(', ')})` : ''}${view.revision.design.kind === 'artifact' ? `; read it with get_artifact { artifactId: "${view.revision.design.ref}", revision: ${view.revision.design.version} }` : ''}`]
+          : []),
         ...(view.revision.repoRefs?.length
           ? [`Repo specs cited (read one with manage_specs action=read_ref { specId, path }):\n${(view.revision.repoRefs as Array<{ path: string; commitSha: string }>).map((r) => `  ${r.path} @ ${r.commitSha}`).join('\n')}`]
           : []),
@@ -130,6 +133,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       const payload: Record<string, unknown> = { expectedVersion: params.expectedVersion, ...target, body: target ? params.body : need(params.body, 'body') };
       if (params.changeSummary !== undefined) payload.changeSummary = params.changeSummary;
       if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
+      if (params.design !== undefined) payload.design = params.design;
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
@@ -176,6 +180,13 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       try {
         const r = op === 'outcome'
           ? await api(path)
+          : params.checker === 'visual'
+          ? await api(path, { method: 'POST', body: JSON.stringify({
+            checker: 'visual', criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), capturedSha: need(params.capturedSha, 'capturedSha'),
+            ...(params.screenshotIds !== undefined ? { screenshotIds: params.screenshotIds } : {}),
+            ...(params.designShotIds !== undefined ? { designShotIds: params.designShotIds } : {}),
+            ...(params.observed !== undefined ? { observed: params.observed } : {}),
+          }) })
           : await api(path, { method: 'POST', body: JSON.stringify({
             criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), headSha: need(params.headSha, 'headSha'),
             ...(params.evidenceRefs !== undefined ? { evidenceRefs: params.evidenceRefs } : {}),

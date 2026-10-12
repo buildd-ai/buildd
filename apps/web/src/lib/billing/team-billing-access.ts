@@ -8,6 +8,7 @@ import { billingPricesFromEnv, type BillingPrices } from '@buildd/core/billing';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { roleHas } from '@/lib/permission-registry';
 import { getStripe } from './stripe';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The team columns the billing routes and page read. */
 export const BILLING_TEAM_COLUMNS = {
@@ -57,7 +58,7 @@ export async function requireBillingManager(req: NextRequest, teamId: string): P
   if (session.response) return { response: session.response };
 
   const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, session.user.id)),
+    where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, session.user.id))),
   });
   if (!membership) return { response: Response.json({ error: 'Team not found' }, { status: 404 }) };
   if (!roleHas(membership.role, 'manage_billing')) {
@@ -70,7 +71,7 @@ export async function requireBillingManager(req: NextRequest, teamId: string): P
     return { response: Response.json({ error: 'Billing is not configured on this deployment' }, { status: 503 }) };
   }
 
-  const team = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: BILLING_TEAM_COLUMNS });
+  const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: BILLING_TEAM_COLUMNS });
   if (!team) return { response: Response.json({ error: 'Team not found' }, { status: 404 }) };
 
   return { team: team as BillingTeam, user: session.user, stripe, prices };

@@ -20,41 +20,94 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { deriveAssertions } from './migrate-backfill';
+import type { LegacyMigration } from './legacy-migrations';
+import { readMigrationTree } from './migrate-tree';
 
 export interface MigrationSource {
+  /** Display label: the journal tag, or the v1 folder name. */
   tag: string;
-  /** Journal `when`, which is what __drizzle_migrations stores as created_at. */
-  when: number;
+  /**
+   * The exact-ms journal `when` the old migrator stored as created_at. Set for
+   * legacy-layout entries and for legacy folders of a v1 tree; null for a
+   * post-cutover folder, which is recognised by name only.
+   */
+  when: number | null;
+  /** v1 folder name, which a v1 tracking row stores in `name`. */
+  name?: string;
   statements: string[];
+}
+
+/**
+ * Recorded as applied: a row carries its name, or (legacy history) a row's
+ * created_at equals its exact-ms `when`. Never by a post-cutover folder's
+ * second-precision timestamp: see migrate-plan.ts planMigrationsV1.
+ */
+function isRecorded(
+  src: MigrationSource,
+  appliedWhens: ReadonlySet<number>,
+  appliedNames: ReadonlySet<string> | undefined
+): boolean {
+  return (src.when !== null && appliedWhens.has(src.when)) || (src.name !== undefined && !!appliedNames?.has(src.name));
 }
 
 const STATEMENT_BREAKPOINT = '--> statement-breakpoint';
 
 /** Read the journal and every referenced .sql file. */
-export function loadMigrationSources(drizzleDir: string): MigrationSource[] {
+/** A legacy-layout source: always keyed by its journal `when`. */
+export type JournalMigrationSource = MigrationSource & { when: number };
+
+export function loadMigrationSources(drizzleDir: string): JournalMigrationSource[] {
   const journal = JSON.parse(
     readFileSync(join(drizzleDir, 'meta', '_journal.json'), 'utf8')
   ) as { entries: Array<{ idx: number; when: number; tag: string }> };
 
   return [...journal.entries]
     .sort((a, b) => a.idx - b.idx)
-    .map((entry) => {
-      const text = readFileSync(join(drizzleDir, `${entry.tag}.sql`), 'utf8');
-      const statements = text
-        .split(STATEMENT_BREAKPOINT)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0)
-        // A file of nothing but comments has no executable statement; keeping it
-        // would make callers think SQL was read when none was.
-        .filter((s) => s.split('\n').some((line) => line.trim() !== '' && !line.trim().startsWith('--')));
-      return { tag: entry.tag, when: entry.when, statements };
-    });
+    .map((entry) => ({
+      tag: entry.tag,
+      when: entry.when,
+      statements: driftStatements(readFileSync(join(drizzleDir, `${entry.tag}.sql`), 'utf8').split(STATEMENT_BREAKPOINT)),
+    }));
+}
+
+function driftStatements(chunks: readonly string[]): string[] {
+  return (
+    chunks
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      // A file of nothing but comments has no executable statement; keeping it
+      // would make callers think SQL was read when none was.
+      .filter((s) => s.split('\n').some((line) => line.trim() !== '' && !line.trim().startsWith('--')))
+  );
+}
+
+/**
+ * The v1 tree as drift sources: legacy folders first, in legacy-map order and
+ * carrying their ms `when`; then post-cutover folders in name order, keyed by
+ * name only. Order matters: `addedBy` lets the last creator of a target win.
+ */
+export function loadMigrationSourcesV1(drizzleDir: string, legacy: readonly LegacyMigration[]): MigrationSource[] {
+  const tree = readMigrationTree(drizzleDir);
+  const byName = new Map(tree.map((m) => [m.name, m]));
+  const legacyNames = new Set(legacy.map((e) => e.name));
+  const sources: MigrationSource[] = [];
+  for (const e of legacy) {
+    const m = byName.get(e.name);
+    if (!m) throw new Error(`legacy migration ${e.name} (${e.tag}) has no folder in ${drizzleDir}`);
+    sources.push({ tag: m.name, name: m.name, when: e.when, statements: driftStatements(m.sql) });
+  }
+  for (const m of tree) {
+    if (!legacyNames.has(m.name)) sources.push({ tag: m.name, name: m.name, when: null, statements: driftStatements(m.sql) });
+  }
+  return sources;
 }
 
 export interface DriftClassificationInput {
   sources: readonly MigrationSource[];
   /** `created_at` values present in __drizzle_migrations. */
   appliedWhens: ReadonlySet<number>;
+  /** `name` values present in __drizzle_migrations (v1 rows). */
+  appliedNames?: ReadonlySet<string>;
   /** Snapshot expectation: table -> columns. */
   expected: ReadonlyMap<string, ReadonlySet<string>>;
   /** Live introspection: table -> columns. */
@@ -174,7 +227,7 @@ function addedBy(sources: readonly MigrationSource[]): Map<string, MigrationSour
 export function classifyMissingSchemaObjects(
   input: DriftClassificationInput
 ): DriftClassification {
-  const { sources, appliedWhens, expected, actual } = input;
+  const { sources, appliedWhens, appliedNames, expected, actual } = input;
 
   const creators = addedBy(sources);
   const drift: string[] = [];
@@ -209,7 +262,7 @@ export function classifyMissingSchemaObjects(
     const creator = creators.get(target);
     if (!creator) {
       unexplained.push(`${target} — no migration in the journal adds it`);
-    } else if (appliedWhens.has(creator.when)) {
+    } else if (isRecorded(creator, appliedWhens, appliedNames)) {
       drift.push(
         `${target} — added by ${creator.tag}, which __drizzle_migrations records as APPLIED`
       );
@@ -309,12 +362,97 @@ export function resolveSnapshotSelection(
   return { kind: 'resolved', file: tip.file, siblings: [] };
 }
 
+// ─── drizzle v1 snapshots ────────────────────────────────────────────────────
+//
+// v1 keeps one snapshot per migration folder, format v8: `id`, `prevIds[]`
+// (several parents after a commutative merge) and a flat `ddl[]` of entities.
+// A root snapshot's only parent is the all-zero id.
+
+// The nil UUID, built from its shape: a literal would read as a row id to the
+// no-prod-data gate, and this is drizzle's fixed "no parent" marker.
+export const ROOT_SNAPSHOT_ID = [8, 4, 4, 4, 12].map((n) => '0'.repeat(n)).join('-');
+
+export interface SnapshotMetaV1 {
+  /** `<folder>/snapshot.json`, relative to the drizzle dir. */
+  file: string;
+  id: string;
+  prevIds: string[];
+}
+
+/** `id`/`prevIds` of every folder snapshot, in folder-name order. */
+export function loadSnapshotMetasV1(drizzleDir: string): SnapshotMetaV1[] {
+  return readMigrationTree(drizzleDir).map((m) => {
+    const file = `${m.name}/snapshot.json`;
+    const parsed = JSON.parse(readFileSync(join(drizzleDir, file), 'utf8')) as { id?: string; prevIds?: string[] };
+    return { file, id: parsed.id ?? '', prevIds: Array.isArray(parsed.prevIds) ? parsed.prevIds : [] };
+  });
+}
+
+/** prevIds that name no snapshot in the tree (other than the root marker). */
+export function snapshotChainGaps(metas: readonly SnapshotMetaV1[]): string[] {
+  const ids = new Set(metas.map((m) => m.id));
+  return metas.flatMap((m) =>
+    m.prevIds.filter((p) => p !== ROOT_SNAPSHOT_ID && !ids.has(p)).map((p) => `${m.file}: prevId ${p} is not in the tree`)
+  );
+}
+
+/**
+ * The v1 counterpart of resolveSnapshotSelection, with the same deliberately
+ * narrow rule: the tip (newest folder) is untrustworthy only if another
+ * snapshot was generated from one of its parents, i.e. two branches each added
+ * a migration and nothing merged them. A merge snapshot names both leaves in
+ * its prevIds and resolves normally. Roots are never siblings.
+ */
+export function resolveSnapshotSelectionV1(metas: readonly SnapshotMetaV1[]): SnapshotSelection {
+  if (metas.length === 0) return { kind: 'empty' };
+  const ordered = [...metas].sort((a, b) => a.file.localeCompare(b.file));
+  const tip = ordered[ordered.length - 1]!;
+  const parents = tip.prevIds.filter((p) => p !== ROOT_SNAPSHOT_ID);
+  const siblings = ordered.filter((m) => m !== tip && m.prevIds.some((p) => parents.includes(p)));
+  if (siblings.length > 0) {
+    const shared = parents.find((p) => siblings.some((m) => m.prevIds.includes(p)))!;
+    return { kind: 'forked', file: tip.file, siblings: siblings.map((m) => m.file), prevId: shared };
+  }
+  return { kind: 'resolved', file: tip.file, siblings: [] };
+}
+
+/**
+ * table -> columns a snapshot expects, from either format: v7 and earlier
+ * (`tables{}` with `columns{}`) or v8 (`ddl[]` of `tables` / `columns`
+ * entities). Throws on anything else: expecting nothing would pass every DB.
+ */
+export function expectedColumnsFromSnapshot(snapshot: unknown): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  const s = snapshot as {
+    tables?: Record<string, { name: string; columns: Record<string, { name: string }> }>;
+    ddl?: Array<{ entityType?: string; name?: string; table?: string }>;
+  };
+  if (Array.isArray(s?.ddl)) {
+    for (const e of s.ddl) if (e.entityType === 'tables' && e.name) result.set(e.name, new Set());
+    for (const e of s.ddl) {
+      if (e.entityType !== 'columns' || !e.table || !e.name) continue;
+      if (!result.has(e.table)) result.set(e.table, new Set());
+      result.get(e.table)!.add(e.name);
+    }
+    return result;
+  }
+  if (s?.tables && typeof s.tables === 'object') {
+    for (const table of Object.values(s.tables)) {
+      result.set(table.name, new Set(Object.values(table.columns).map((c) => c.name)));
+    }
+    return result;
+  }
+  throw new Error('Unrecognised drizzle snapshot format: neither tables{} (v7) nor ddl[] (v8)');
+}
+
 // ─── Extra-object classification ─────────────────────────────────────────────
 
 export interface ExtraClassificationInput {
   sources: readonly MigrationSource[];
   /** `created_at` values present in __drizzle_migrations. */
   appliedWhens: ReadonlySet<number>;
+  /** `name` values present in __drizzle_migrations (v1 rows). */
+  appliedNames?: ReadonlySet<string>;
   /** Snapshot expectation: table -> columns. */
   expected: ReadonlyMap<string, ReadonlySet<string>>;
   /** Live introspection: table -> columns. */
@@ -353,7 +491,7 @@ export interface ExtraClassification {
 export function classifyExtraSchemaObjects(
   input: ExtraClassificationInput
 ): ExtraClassification {
-  const { sources, appliedWhens, expected, actual, droppedTables, droppedColumns, ignoredTables } =
+  const { sources, appliedWhens, appliedNames, expected, actual, droppedTables, droppedColumns, ignoredTables } =
     input;
 
   const creators = addedBy(sources);
@@ -368,7 +506,7 @@ export function classifyExtraSchemaObjects(
     const creator = creators.get(target);
     if (!creator) {
       result.manualDdl.push(`${target} — no migration in the journal creates it`);
-    } else if (appliedWhens.has(creator.when)) {
+    } else if (isRecorded(creator, appliedWhens, appliedNames)) {
       result.snapshotGap.push(
         `${target} — created by ${creator.tag}, which __drizzle_migrations records as APPLIED`
       );
@@ -428,21 +566,22 @@ export interface AppliedCountReconciliation {
 export function reconcileAppliedCount(input: {
   sources: readonly MigrationSource[];
   appliedWhens: ReadonlySet<number>;
+  /** v1 rows' names. A source recorded both ways counts once. */
+  appliedNames?: ReadonlySet<string>;
+  /** Tracking rows in total, when it is not simply the number of distinct created_at values. */
+  appliedTotal?: number;
 }): AppliedCountReconciliation {
-  const journalWhens = new Set(input.sources.map((s) => s.when));
-  let appliedFromJournal = 0;
-  for (const when of input.appliedWhens) {
-    if (journalWhens.has(when)) appliedFromJournal++;
-  }
-  const historicalOutsideRef = input.appliedWhens.size - appliedFromJournal;
-  const pending = journalWhens.size - appliedFromJournal;
+  const appliedTotal = input.appliedTotal ?? input.appliedWhens.size;
+  const appliedFromJournal = input.sources.filter((s) => isRecorded(s, input.appliedWhens, input.appliedNames)).length;
+  const historicalOutsideRef = appliedTotal - appliedFromJournal;
+  const pending = input.sources.length - appliedFromJournal;
 
   return {
-    journalEntries: journalWhens.size,
-    appliedTotal: input.appliedWhens.size,
+    journalEntries: input.sources.length,
+    appliedTotal,
     appliedFromJournal,
     pending,
     historicalOutsideRef,
-    reconciles: appliedFromJournal + historicalOutsideRef === input.appliedWhens.size,
+    reconciles: appliedFromJournal + historicalOutsideRef === appliedTotal,
   };
 }

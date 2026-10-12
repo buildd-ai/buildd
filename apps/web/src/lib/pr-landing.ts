@@ -77,6 +77,7 @@ import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { isFailingCheckRun } from '@/lib/ci-verdict';
 import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/pr-landing-fix-dispatch';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -428,11 +429,11 @@ function filenames(list: unknown): string[] | null {
 
 async function findLiveReviewerRetryTask(workspaceId: string, prNumber: number): Promise<string | null> {
   const row = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.reviewerRetryPrNumber, prNumber),
       inArray(tasks.status, [...OPEN_TASK_STATUSES]),
-    ),
+    )),
     columns: { id: true },
   });
   return row?.id ?? null;
@@ -1033,7 +1034,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     try {
       mergingTask =
         (await db.query.tasks.findFirst({
-          where: eq(tasks.id, owner.taskId),
+          where: sqlWhere(eq(tasks.id, owner.taskId)),
           columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
         })) ?? null;
     } catch (err) {

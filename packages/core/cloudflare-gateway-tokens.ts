@@ -1,3 +1,4 @@
+import { sqlOrderBy, sqlWhere } from './db/relational-sql';
 /**
  * Cloudflare AI Gateway Run tokens, minted from the team's Cloudflare
  * credential: one per person, and one team-wide token for agents.
@@ -221,14 +222,14 @@ export async function resolveGatewayRunToken(opts: { teamId: string; userId?: st
     const { and, desc, eq, isNull, or } = await import('drizzle-orm');
     const { decrypt } = await import('./secrets');
     const rows = await db.query.secrets.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(secrets.teamId, opts.teamId),
         eq(secrets.purpose, CLOUDFLARE_GATEWAY_TOKEN_PURPOSE),
         isNull(secrets.accountId),
         isNull(secrets.workspaceId),
         opts.userId ? or(isNull(secrets.userId), eq(secrets.userId, opts.userId)) : isNull(secrets.userId),
-      ),
-      orderBy: desc(secrets.updatedAt),
+      )),
+      orderBy: sqlOrderBy(desc(secrets.updatedAt)),
       columns: { userId: true, encryptedValue: true, healthStatus: true },
       limit: 4,
     });

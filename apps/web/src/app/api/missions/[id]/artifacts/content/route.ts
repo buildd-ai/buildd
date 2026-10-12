@@ -8,6 +8,7 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { parseContentIds } from '@/lib/mission-records-content';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * GET /api/missions/[id]/artifacts/content?ids=a,b — artifact bodies for the
@@ -37,7 +38,7 @@ export async function GET(
 
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, id),
+    where: sqlWhere(eq(missions.id, id)),
     columns: { id: true, teamId: true, workspaceId: true },
   });
   if (!mission) {

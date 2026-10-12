@@ -15,6 +15,7 @@ import { settingsReadOnly } from '@/lib/settings-nav';
 import { NO_PERMISSIONS, settingsPermissions } from '../_lib/settings-permissions';
 import UrlSheet from '@/components/UrlSheet';
 import NewTeamForm from './NewTeamForm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,11 +57,11 @@ export default async function TeamSettingsPage({
 
   const [team, members] = await Promise.all([
     db.query.teams.findFirst({
-      where: eq(teams.id, shown.id),
+      where: sqlWhere(eq(teams.id, shown.id)),
       columns: { id: true, name: true, slug: true, createdAt: true },
     }).catch(() => null),
     db.query.teamMembers.findMany({
-      where: eq(teamMembers.teamId, shown.id),
+      where: sqlWhere(eq(teamMembers.teamId, shown.id)),
       with: { user: true },
     }).catch(() => []),
   ]);

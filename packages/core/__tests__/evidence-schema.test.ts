@@ -9,7 +9,8 @@
 
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { createTableColumns, loadMigrationSources } from '../db/migrate-drift';
+import { createTableColumns, loadMigrationSourcesV1 } from '../db/migrate-drift';
+import { loadLegacyMap, LEGACY_MIGRATIONS_PATH } from '../db/legacy-migrations';
 import { join } from 'node:path';
 import {
   evidenceBackends,
@@ -35,12 +36,12 @@ describe('evidence storage schema', () => {
     expect(schemaSrc).toContain("'evidence_storage_credential'");
   });
 
-  // The creating migration (0226) was squashed into drizzle/0000_baseline.sql,
+  // The creating migration (0226) was squashed into the baseline folder's migration.sql,
   // a pg_dump; read columns through the drift gate's own CREATE TABLE parser so
   // the assertion holds whichever migration creates them.
   const createdColumns = () =>
     new Set(
-      loadMigrationSources(join(REPO_ROOT, 'packages/core/drizzle')).flatMap((src) =>
+      loadMigrationSourcesV1(join(REPO_ROOT, 'packages/core/drizzle'), loadLegacyMap(LEGACY_MIGRATIONS_PATH)).flatMap((src) =>
         src.statements.flatMap((stmt) => createTableColumns(stmt))
       )
     );

@@ -13,6 +13,7 @@ import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { githubApi } from '@/lib/github';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const LINEAR_API = 'https://api.linear.app/graphql';
 
@@ -91,7 +92,7 @@ export async function getConnectorAccessToken(
 
   const querySecret = () =>
     database.query.secrets.findFirst({
-      where: teamCredentialWhere({ teamId: teamId, purpose: 'mcp_connector_credential', label: connectorId }),
+      where: sqlWhere(teamCredentialWhere({ teamId: teamId, purpose: 'mcp_connector_credential', label: connectorId })),
       columns: { id: true, tokenExpiresAt: true, encryptedValue: true },
     });
 
@@ -331,7 +332,7 @@ export async function postGitHubCompletionUpdate(opts: {
   }
 
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { githubInstallationId: true },
   });
   if (!ws?.githubInstallationId) {
@@ -340,7 +341,7 @@ export async function postGitHubCompletionUpdate(opts: {
   }
 
   const installation = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.id, ws.githubInstallationId),
+    where: sqlWhere(eq(githubInstallations.id, ws.githubInstallationId)),
     columns: { installationId: true },
   });
   if (!installation) return;
@@ -402,7 +403,7 @@ export async function maybePostWorkTrackerNote(
 ): Promise<void> {
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { workTrackerConfig: true },
     });
     if (!ws?.workTrackerConfig) return;

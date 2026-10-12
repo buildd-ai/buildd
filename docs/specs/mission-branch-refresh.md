@@ -453,10 +453,11 @@ conflict retry both tell the agent to run it first.
   Then `design:check --update` lowers it to today's counts. While a file under
   `apps/web/src/` is conflicted, it waits, because conflict markers would make
   each count include both sides.
-- `packages/core/drizzle/` is repaired by `renumberAgainstBase` against
-  `MERGE_HEAD`. That is trunk's journal, snapshots and migrations, plus this
-  branch's schema change regenerated at the next free index. It runs last, and
-  waits while any other conflict remains.
+- `packages/core/drizzle/` is repaired by `regenerateAgainstBase` against
+  `MERGE_HEAD`. That is trunk's migration folders as they are, plus this
+  branch's schema change regenerated on top of them (a conflict here is a branch
+  cut before the drizzle v1 cutover: its journal was modified, trunk deleted it).
+  It runs last, and waits while any other conflict remains.
 - A regenerated migration whose SQL differs from the one it replaced is left for
   a person.
 - Exit 0: no conflicts remain. Exit 2: some remain, and each is listed. Exit 1:
@@ -493,7 +494,7 @@ conflict retry both tell the agent to run it first.
   `mergeBaselineCounts`.
 - `packages/core/generated-artifacts.ts`: `isGeneratedArtifactPath`,
   `isCiVerifiedGeneratedPath`, `isMigrationSqlPath`.
-- `packages/core/db/migration-index.ts`: `renumberAgainstBase`.
+- `packages/core/db/migration-layout.ts`: `regenerateAgainstBase`.
 - `packages/core/db/schema.ts`: `missions.branchRefreshHeadSha`,
   `branchRefreshedAt`, `branchRefreshLeaseUntil`, `branchRefreshLeaseToken`,
   `branchRefreshConflictTaskId`.

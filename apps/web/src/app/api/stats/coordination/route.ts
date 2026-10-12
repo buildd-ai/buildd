@@ -8,6 +8,7 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { fetchCoordinationStats } from '@/lib/coordination-stats-query';
 import { fetchOrchestrationDecisionStats } from '@/lib/orchestration-decision-stats-query';
 import { fetchEarlyReleaseStats } from '@/lib/early-release-metrics';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Read-only aggregate coordination metrics, scoped to the caller's teams. */
 export async function GET(req: NextRequest) {
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest) {
   if (metric && !['manifest', 'pathClaims', 'orchestrationDecisions', 'earlyRelease'].includes(metric)) return NextResponse.json({ error: 'Invalid metric' }, { status: 400 });
   const teamIds = await resolveAccountTeamIds(user, account);
   const teamWorkspaces = teamIds.length ? await db.query.workspaces.findMany({
-    where: inArray(workspaces.teamId, teamIds), columns: { id: true },
+    where: sqlWhere(inArray(workspaces.teamId, teamIds)), columns: { id: true },
   }) : [];
   const allowed = account ? teamWorkspaces.filter(w => taskScopeAllowsDelegated(account, w.id, 'analytics:read')) : teamWorkspaces;
   const workspace = params.get('workspaceId') ?? params.get('workspace');

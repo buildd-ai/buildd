@@ -21,6 +21,7 @@ import {
   writeClearHandoff,
   takeClearHandoff,
   CLEAR_HANDOFF_MS,
+  askRedirectReason,
 } from '../../plugin/scripts/buildd-hook.mjs';
 import {
   claudeLikeHookEntries,
@@ -1290,6 +1291,163 @@ describe('installer', () => {
     expect(down.code).toBe(1);
     expect(down.lines[0]).toContain('Nothing was changed');
     expect(readFileSync(join(home, '.claude.json'), 'utf8')).toBe('{"mcpServers":{}}');
+  });
+});
+
+// docs/specs/terminal-question-redirect.md
+describe('terminal question redirect', () => {
+  const base = { session_id: 'cc-1', cwd: '/repo' };
+  const W = '11111111-2222-4333-8444-0000000000a5';
+
+  describe('a person typing at the terminal (prompted)', () => {
+    it('a typed prompt is prompted, and never throttled', () => {
+      const n = normalizeHookEvent('claude', { ...base, hook_event_name: 'UserPromptSubmit', prompt: 'Tabs, please' }, {});
+      expect(n).toMatchObject({ event: 'touch', busy: true, prompted: true, force: true });
+      // The prompt itself never rides on the body.
+      expect(buildBody('claude', n, null)).toEqual({ event: 'touch', client: 'claude', clientSessionId: 'cc-1', busy: true, interactive: true, prompted: true });
+    });
+
+    // AC-TQR-13: verified live, a finished background command wakes the model
+    // through UserPromptSubmit with a synthetic <task-notification> prompt.
+    it('a background task waking the model is not a person typing', () => {
+      const n = normalizeHookEvent('claude', { ...base, hook_event_name: 'UserPromptSubmit', prompt: '<task-notification>\n<task-id>b1</task-id>' }, {});
+      expect(n).not.toHaveProperty('prompted');
+      expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'UserPromptSubmit', prompt: '' }, {})).not.toHaveProperty('prompted');
+      expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'UserPromptSubmit' }, {})).not.toHaveProperty('prompted');
+    });
+
+    it('only Claude Code sets it', () => {
+      expect(normalizeHookEvent('codex', { ...base, hook_event_name: 'UserPromptSubmit', prompt: 'Tabs' }, {})).not.toHaveProperty('prompted');
+    });
+  });
+
+  describe('the deny', () => {
+    it('names ask_human, waitCommand and the short worker id, and asks for the question in the reply', () => {
+      const reason = askRedirectReason(W);
+      expect(reason).toContain('ask_human');
+      expect(reason).toContain('waitCommand');
+      expect(reason).toContain(W.slice(0, 8));
+      expect(reason).toContain(W);
+      const out = JSON.parse(hookOutput('claude', 'PreToolUse', { askVia: { workerId: W } }, null, 'ask'));
+      expect(out.hookSpecificOutput).toEqual({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason });
+    });
+
+    it('prints nothing without askVia, outside ask mode, or for another client', () => {
+      expect(hookOutput('claude', 'PreToolUse', { askVia: null }, null, 'ask')).toBe('');
+      expect(hookOutput('claude', 'PreToolUse', null, null, 'ask')).toBe('');
+      expect(hookOutput('claude', 'PreToolUse', { askVia: { workerId: W } })).toBe('');
+      expect(hookOutput('codex', 'PreToolUse', { askVia: { workerId: W } }, null, 'ask')).toBe('');
+    });
+  });
+
+  describe('run() in ask mode', () => {
+    let dir: string;
+    let bodies: any[];
+    let answer: (() => Response) | null;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'buildd-ask-'));
+      workspaceCheckout(dir);
+      bodies = [];
+      answer = () => Response.json({ ok: true, askVia: { workerId: W } });
+    });
+    afterEach(() => rmSync(dir, { recursive: true, force: true }));
+    const env = (extra: object = {}) => ({ BUILDD_API_KEY: 'bld_test', BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_HOME: dir, ...extra });
+    const fetchImpl = (async (url: string, init: any) => {
+      if (url.endsWith('/local-sessions')) {
+        bodies.push(JSON.parse(init.body));
+        if (!answer) throw new Error('ECONNREFUSED');
+        return answer();
+      }
+      return Response.json({ ok: true });
+    }) as any;
+    const hook = (hook_event_name: string, now: number, extra: object = {}, mode?: string, envExtra: object = {}, client = 'claude') => run({
+      client, env: env(envExtra), fetchImpl, now, ...(mode ? { mode } : {}),
+      stdin: JSON.stringify({ session_id: 'ask-1', cwd: dir, hook_event_name, ...extra }),
+    });
+    const claim = (now: number) => hook('PostToolUse', now, {
+      tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} },
+      tool_response: [{ type: 'text', text: `Claimed 1 task(s):\n\n**Worker ID:** ${W}\n**Task:** x` }],
+    });
+    const ask = (now: number, envExtra: object = {}, client = 'claude') =>
+      hook('PreToolUse', now, { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Tabs or spaces?' }] } }, 'ask', envExtra, client);
+
+    // AC-TQR-1
+    it('a session holding a claim gets the deny, even inside the touch window', async () => {
+      await hook('SessionStart', 1_000);
+      await claim(2_000);
+      const r = await ask(3_000);
+      expect(JSON.parse(r.output).hookSpecificOutput.permissionDecision).toBe('deny');
+      // Nothing from the question travels: the body is a plain touch.
+      expect(JSON.stringify(bodies.at(-1))).not.toContain('Tabs or spaces');
+    });
+
+    // AC-TQR-2
+    it('a session holding no claim prints nothing and makes no request', async () => {
+      await hook('SessionStart', 1_000);
+      const before = bodies.length;
+      const r = await ask(70_000);
+      expect(r.output).toBe('');
+      expect(bodies.length).toBe(before);
+    });
+
+    // AC-TQR-3
+    it('fails open when buildd is down or errors', async () => {
+      await hook('SessionStart', 1_000);
+      await claim(2_000);
+      answer = null;
+      expect((await ask(3_000)).output).toBe('');
+      answer = () => new Response('boom', { status: 500 });
+      expect((await ask(4_000)).output).toBe('');
+    });
+
+    it('no askVia from buildd (the worker ended) means no deny', async () => {
+      await hook('SessionStart', 1_000);
+      await claim(2_000);
+      answer = () => Response.json({ ok: true, askVia: null });
+      expect((await ask(3_000)).output).toBe('');
+    });
+
+    // AC-TQR-5
+    it('BUILDD_ASK_IN_TERMINAL=1 keeps the terminal prompt and sends nothing', async () => {
+      await hook('SessionStart', 1_000);
+      await claim(2_000);
+      const before = bodies.length;
+      expect((await ask(3_000, { BUILDD_ASK_IN_TERMINAL: '1' })).output).toBe('');
+      expect(bodies.length).toBe(before);
+    });
+
+    // AC-TQR-7
+    it('never redirects for another client', async () => {
+      expect((await ask(3_000, {}, 'codex')).output).toBe('');
+    });
+
+    it('the regular PreToolUse entry stays a light busy touch with no deny', async () => {
+      await hook('SessionStart', 1_000);
+      await claim(2_000);
+      const r = await hook('PreToolUse', 3_000, { tool_name: 'AskUserQuestion' });
+      expect(r.output).toBe('');
+    });
+
+    it('ask mode ignores any other hook', async () => {
+      await hook('SessionStart', 1_000);
+      await claim(2_000);
+      expect((await hook('PreToolUse', 3_000, { tool_name: 'Bash' }, 'ask')).output).toBe('');
+      expect((await hook('Stop', 3_000, {}, 'ask')).output).toBe('');
+    });
+  });
+
+  it('the installer and the shipped Claude hooks add one synchronous AskUserQuestion entry; Codex gets none', () => {
+    const claude = claudeLikeHookEntries('node /x/buildd-hook.mjs claude', { async: true });
+    const askGroup = claude.PreToolUse.find((g: any) => g.matcher === 'AskUserQuestion');
+    expect(askGroup.hooks).toEqual([{ type: 'command', command: 'node /x/buildd-hook.mjs claude ask', timeout: 5 }]);
+    const codex = claudeLikeHookEntries('node /x/buildd-hook.mjs codex', { async: false });
+    expect(codex.PreToolUse.some((g: any) => g.matcher)).toBe(false);
+    const shipped = JSON.parse(readFileSync(join(PLUGIN_DIR, 'hooks', 'hooks.json'), 'utf8')).hooks.PreToolUse;
+    const shippedAsk = shipped.find((g: any) => g.matcher === 'AskUserQuestion');
+    expect(shippedAsk.hooks[0].command).toMatch(/buildd-hook\.mjs\" claude ask$/);
+    expect(shippedAsk.hooks[0].async).toBeUndefined();
+    const codexShipped = JSON.parse(readFileSync(join(PLUGIN_DIR, 'com.openai.codex', 'hooks.json'), 'utf8')).hooks.PreToolUse;
+    expect(codexShipped.some((g: any) => g.matcher)).toBe(false);
   });
 });
 

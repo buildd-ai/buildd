@@ -7,7 +7,7 @@ import { eq, and, lt, inArray, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
-import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from '@/lib/stale-workers';
+import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnreadInteractiveAnswers, cleanupUnresumedAnswers } from '@/lib/stale-workers';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { kernelDeliveryById } from '@/lib/workflow/authority';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -17,6 +17,7 @@ import { FORCE_CLAIM_CONTEXT_KEY } from '@/lib/force-claim';
 import { runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Cap consecutive cleanup-driven retries. Without this, a task that keeps
 // erroring (stuck-detector aborts, heartbeat expiries, etc.) bounces back to
@@ -32,17 +33,17 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
   // by this rail while stale-workers.ts exempted them).
   // Workers predating exitCause (null) default to code_failure for safety.
   const prior = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.taskId, taskId),
       inArray(workers.status, ['error', 'failed']),
-    ),
+    )),
     columns: { id: true, exitCause: true },
   });
   const failureCount = prior.filter(w => consumesRetryAttempt(w.exitCause)).length;
 
   if (failureCount >= MAX_TASK_FAILURES) {
     const existing = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { context: true, workspaceId: true },
     });
     const existingCtx = (existing?.context || {}) as Record<string, unknown>;
@@ -118,13 +119,13 @@ async function resolveCleanupScope(
 
   const [teamWorkspaces, teamAccounts] = await Promise.all([
     db.query.workspaces.findMany({
-      where: inArray(workspaces.teamId, teamIds),
+      where: sqlWhere(inArray(workspaces.teamId, teamIds)),
       columns: { id: true },
     }),
     apiAccount
       ? Promise.resolve([{ id: apiAccount.id }])
       : db.query.accounts.findMany({
-          where: inArray(accounts.teamId, teamIds),
+          where: sqlWhere(inArray(accounts.teamId, teamIds)),
           columns: { id: true },
         }),
   ]);
@@ -182,12 +183,12 @@ export async function POST(req: NextRequest) {
   // cleanupStaleWorkers (step 3). One hour of a person's local agent working
   // without an MCP call is normal (friction 92866723).
   const stalledRunning = !hasAccounts ? [] : await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.accountId, scope.accountIds),
       inArray(workers.status, ['running', 'starting']),
       lt(workers.updatedAt, oneHourAgo),
       runnerWorkerOnly(),
-    ),
+    )),
     columns: { id: true, taskId: true },
   });
 
@@ -219,11 +220,11 @@ export async function POST(req: NextRequest) {
     // one of the caller's workspaces (a worker can hold a task elsewhere).
     if (stalledTaskIds.length > 0 && hasWorkspaces) {
       const stillAssigned = await db.query.tasks.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(tasks.id, stalledTaskIds),
           inArray(tasks.workspaceId, scope.workspaceIds),
           eq(tasks.status, 'assigned'),
-        ),
+        )),
         columns: { id: true },
       });
       for (const t of stillAssigned) {
@@ -236,15 +237,15 @@ export async function POST(req: NextRequest) {
 
   // 2. Tasks stuck in 'assigned' with no active workers — reconcile with worker status
   const assignedTasks = !hasWorkspaces ? [] : await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(tasks.workspaceId, scope.workspaceIds),
       eq(tasks.status, 'assigned'),
-    ),
+    )),
   });
 
   for (const task of assignedTasks) {
     const taskWorkers = await db.query.workers.findMany({
-      where: eq(workers.taskId, task.id),
+      where: sqlWhere(eq(workers.taskId, task.id)),
       columns: { id: true, status: true, prUrl: true, prNumber: true, commitCount: true, filesChanged: true, linesAdded: true, linesRemoved: true, lastCommitSha: true, branch: true },
     });
 
@@ -306,10 +307,10 @@ export async function POST(req: NextRequest) {
 
   // 3. Per-account stale worker cleanup (15-min threshold + heartbeat check)
   const activeAccountIds = !hasAccounts ? [] : await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.accountId, scope.accountIds),
       inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
-    ),
+    )),
     columns: { accountId: true },
   });
   const uniqueAccountIds = [...new Set(activeAccountIds.map(w => w.accountId).filter(Boolean))] as string[];
@@ -325,6 +326,9 @@ export async function POST(req: NextRequest) {
   //     between receiving it and its next sync. See
   //     docs/specs/answered-question-resume.md.
   let unresumedAnswersDegraded = 0;
+  // 4c. Same for an answer sent back to an interactive session that went quiet
+  //     without reading it: it goes to a follow-up task.
+  let unreadInteractiveAnswersDegraded = 0;
 
   // 5. The offline-runner rule (fail workers whose runner went offline) runs
   //    inside cleanupStaleWorkers via failWorkersOfOfflineRunners — the one
@@ -351,6 +355,11 @@ export async function POST(req: NextRequest) {
     } catch {
       // Non-fatal — same reasoning as the sweep above
     }
+    try {
+      unreadInteractiveAnswersDegraded += (await cleanupUnreadInteractiveAnswers(accountId)).degraded;
+    } catch {
+      // Non-fatal — same reasoning as the sweep above
+    }
   }
 
   // 7. Delete heartbeat rows of runners presumed dead. Same "not dead" window
@@ -372,6 +381,7 @@ export async function POST(req: NextRequest) {
       stuckWaitingInput: waitingInputFailedWorkers,
       retriedTasks: waitingInputRetriedTasks,
       unresumedAnswers: unresumedAnswersDegraded,
+      unreadInteractiveAnswers: unreadInteractiveAnswersDegraded,
       heartbeatOrphans,
       staleHeartbeats: deletedHeartbeats.length,
     },

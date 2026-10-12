@@ -63,6 +63,8 @@ import { answerInChatHref } from '@/lib/chat/answer-link';
 import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
 import type { ClaimContextInjection } from '@/app/api/workers/claim/context-injection';
 import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-routes';
+import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-audit-spec-criteria';
+import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -239,9 +241,20 @@ export const OPERATOR_ONLY_RESPONSE = operatorOnlyResponse;
 /**
  * The visual-qa module's claim slot (app/api/workers/claim/visual-audit-routes.ts):
  * a surface audit's prompt states the required routes completion will check,
- * computed at claim from its current dependencies.
+ * computed at claim from its current dependencies, and the Living Spec
+ * criteria of the tasks it depends on (visual-audit-spec-criteria.ts).
  */
-export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = attachVisualAuditRoutes;
+export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers, claimedTasks) => {
+  await attachVisualAuditRoutes(claimedWorkers, claimedTasks);
+  await attachVisualAuditSpecCriteria(claimedWorkers, claimedTasks);
+};
+
+/**
+ * The visual-qa module's spec verdict slot (lib/visual-audit-spec-verdict.ts):
+ * POST /api/specs/outcomes/[taskId] with `checker: 'visual'` records what a
+ * mission's [surface audit] saw on a spec criterion.
+ */
+export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
 
 /**
  * The decisions module's boot slot (instrumentation.ts): installs the evidence

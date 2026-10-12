@@ -45,6 +45,7 @@ import {
   buildDocFixFollowUpDescription,
 } from '@buildd/core/spec-doc-fix';
 import { isDocFixInFlight, isDocFixClaimStale } from '@/lib/action-queue';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Statuses that release a claim: nothing is coming, so the CTA comes back. */
 const DEAD_DOC_FIX_STATUSES = new Set(['failed', 'cancelled']);
@@ -135,16 +136,16 @@ export async function dispatchDocFix(
   const claimedTaskIds = [...new Set(groupRows.map((r) => r.docFixTaskId).filter(Boolean) as string[])];
   const claimedTasks = claimedTaskIds.length
     ? await db.query.tasks.findMany({
-        where: inArray(tasks.id, claimedTaskIds),
+        where: sqlWhere(inArray(tasks.id, claimedTaskIds)),
         columns: { id: true, status: true },
       })
     : [];
   const statusByTask = new Map(claimedTasks.map((t) => [t.id, t.status]));
   const claimedWorkers = claimedTaskIds.length
     ? await db.query.workers.findMany({
-        where: inArray(workers.taskId, claimedTaskIds),
+        where: sqlWhere(inArray(workers.taskId, claimedTaskIds)),
         columns: { taskId: true, prLifecycleStatus: true, mergedAt: true, prUrl: true },
-        orderBy: (w, { desc: descOrder }) => [descOrder(w.startedAt)],
+        orderBy: sqlOrderByFn((w, { desc: descOrder }) => [descOrder(w.startedAt)]),
       })
     : [];
   const workerByTask = new Map<string, { prLifecycleStatus: string | null; mergedAt: Date | null; prUrl: string | null }>();
@@ -328,13 +329,13 @@ export async function dispatchDocFix(
     // been dispatched, so nothing has started on it — and report the winner.
     await db.delete(tasks).where(eq(tasks.id, docFixTask.id));
     const fresh = await db.query.specDiscrepancies.findFirst({
-      where: eq(specDiscrepancies.id, row.id),
+      where: sqlWhere(eq(specDiscrepancies.id, row.id)),
       columns: { docFixTaskId: true },
     });
     return { ok: true, dispatched: false, taskId: fresh?.docFixTaskId ?? null };
   }
 
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, row.workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, row.workspaceId)) });
   if (workspace) {
     await announceTaskCreated(docFixTask, workspace);
     await wakeTask(docFixTask.id, 'task.created');

@@ -2,13 +2,13 @@
 title: DB Migration Execution
 status: active
 owner: max
-last_verified: 2026-10-06
-summary: Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
+last_verified: 2026-10-12
+summary: Every committed migration MUST execute exactly once, recognised by its folder name (legacy history by its exact-ms journal time) and never by a high-water mark for post-cutover files; a missing tracking row for legacy history MUST be backfilled on evidence, never replayed.
 domain: releases
 surfaces: [packages/core/db/migrate.ts, packages/core/db/migrate-plan.ts, packages/core/db/migrate-drift.ts, scripts/check-schema-drift.ts]
 related: [db-migration-gates, release-flow]
-verified_by: [packages/core/__tests__/migrate-plan.test.ts, apps/web/tests/db/migration-baseline.test.ts, packages/core/__tests__/migration-journal.test.ts, packages/core/__tests__/migration-journal-ordering.test.ts, packages/core/__tests__/migrate-drift.test.ts, packages/core/__tests__/drizzle-kit-patch.test.ts]
-keywords: [__drizzle_migrations, planMigrations, high-water mark, _journal.json, last_migration_number, schema drift, 42703, backfill, toRun, toBackfill, forked snapshot chain, prevId, snapshot gap, resolveSnapshotSelection]
+verified_by: [packages/core/__tests__/migrate-plan.test.ts, apps/web/tests/db/migration-baseline.test.ts, packages/core/__tests__/migrate-drift.test.ts, packages/core/__tests__/migrate-tree.test.ts, packages/core/__tests__/migrate-apply.test.ts, packages/core/__tests__/legacy-migrations.test.ts, packages/core/__tests__/migration-layout.test.ts, apps/web/tests/db/migration-layout-v1.test.ts]
+keywords: [__drizzle_migrations, planMigrations, planMigrationsV1, drizzle v1, folder per migration, legacy map, snapshot rebase, high-water mark, last_migration_number, schema drift, 42703, backfill, toRun, toBackfill, forked snapshot chain, prevId, snapshot gap, resolveSnapshotSelection]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -18,9 +18,13 @@ assertions:
     path: "packages/core/db/migrate-plan.ts"
   - id: "migrator-uses-plan"
     type: "symbol_reachable"
-    symbol: "planMigrations"
+    symbol: "planMigrationsV1"
     entry: "packages/core/db/migrate.ts"
-    as: "read"
+    as: "call"
+  - id: "migration-plan-v1"
+    type: "symbol"
+    name: "planMigrationsV1"
+    path: "packages/core/db/migrate-plan.ts"
   - id: "migration-plan-tests"
     type: "test_file"
     path: "packages/core/__tests__/migrate-plan.test.ts"
@@ -39,99 +43,112 @@ is `db-migration-gates`. Nothing here re-litigates whether a migration is
 *allowed* to land; this spec governs what happens once it has.
 
 Execution is **not** Drizzle's stock migrator. `packages/core/db/migrate.ts`
-replaces it with `readMigrationFiles` + an explicit plan (`planMigrations`),
-because the stock behaviour — "run everything whose `when` beats the last
-recorded `created_at`" — is silently wrong in both directions, and both
-directions reached production:
+replaces it with our own tree reader (`migrate-tree.ts`) and an explicit plan
+(`planMigrationsV1`), because the stock behaviour is silently wrong in both
+directions, and both directions reached production while the repo used the
+journal layout:
 
 | Failure | What happened | Fix |
 |---|---|---|
-| Silent skip | `0067_tasks_path_manifest` carried `when` = 2025-07-11 against a DB already at 0065's 2026-07 mark. `db:migrate` exited 0, the deploy went green, and prod inserts threw `column "path_manifest" does not exist` (42703) for ~7h. Later read-only introspection found 0021 (`DROP TABLE secret_refs`) and 0022 had been skipped the same way, leaving prod *behind* instead of missing a column — reconciled by `0074_reconcile_missions_secret_refs_drift.sql`. | Journal-ordering tests; the newest entry must out-rank every prior `when`. |
-| Blind replay | A custom runner (#1288) read "no tracking row" as "never applied" and replayed 0000's raw SQL, which recreates a unique index on `source_id` — a column 0002 had dropped for good. `db:migrate` crashed outright. | `planMigrations` backfills rather than re-executes anything at or below the high-water mark. |
+| Silent skip | A migration carried a journal `when` below the applied mark. `db:migrate` exited 0, the deploy went green, and prod inserts threw `column ... does not exist` (42703) for hours. Two earlier migrations had been skipped the same way. | Post-cutover migrations have no mark at all: applied-ness is the row's `name`. |
+| Blind replay | A custom runner read "no tracking row" as "never applied" and replayed the baseline's raw SQL, which recreated an index on a column a later migration had dropped. | A missing row is never replayed: legacy history is backfilled on evidence; a post-cutover file whose DDL is already present is recorded, not run. |
 
 ## Invariants
 
+### Layout
+
+- A migration is a folder `<YYYYMMDDHHMMSS>_<slug>/` holding `migration.sql` and
+  `snapshot.json` (drizzle v1). There is no journal and no index. `readMigrationTree`
+  is ours, not drizzle's, and fails closed: every entry in the directory MUST be a
+  recognisable migration folder, because drizzle silently skips a folder with no
+  `migration.sql` and never reads a stray root `.sql`, and either is a migration
+  whose DDL would never run with the deploy still green.
+- A migration's identity is its folder `name`, and its content hash is checked
+  against the legacy map for legacy history. Editing an applied file's content is
+  a CONTRACT violation under `db-migration-gates`.
+- `drizzle-kit` and `drizzle-orm` are pinned to an exact rc version; CI asserts
+  the *properties* we rely on (`up` is lossless, `generate` converges, `check`
+  exits non-zero on a non-commuting pair), not the version string.
+
 ### Plan
 
-- The applied set is read **once per run** as every `created_at` in
-  `drizzle.__drizzle_migrations` (not just the last row), and the high-water mark
-  is `max(created_at)`, or `0` when the table is empty.
-- A migration whose `folderMillis` is already in the applied set is neither run
-  nor recorded again.
-- A migration with no tracking row and `folderMillis` **strictly greater** than
-  the high-water mark goes to `toRun` — its DDL executes.
-- A migration with no tracking row and `folderMillis` **at or below** the
-  high-water mark goes to `toBackfill` — it receives a tracking row and its DDL
-  **MUST NOT** execute. Its DDL predates the newest migration known to have
-  applied, so a later migration can already have moved the schema out from
-  under it.
-- `created_at` MUST compare numerically whether the driver returns it as a
-  string or a number (`Number(r.created_at)`); a string/number mismatch would
-  make every row look unapplied and put the entire history into `toRun`.
+- A migration is **applied** iff a tracking row carries its `name`, or (legacy
+  history only) a row without a name has `created_at` equal to the migration's
+  exact-ms `when` in the committed legacy map
+  (`packages/core/db/legacy-migrations.json`, generated at cutover by
+  `scripts/migrations-cutover.ts`). Keying legacy history on `created_at` alone
+  after `drizzle-kit up` would plan the whole history as backfill (the folder
+  timestamp is truncated to the second); keying on `name` alone would replay it.
+- The tracking table gains `name` and `applied_at` through an additive,
+  idempotent upgrade run under the migration lock; rows matched by exact-ms
+  `when` are named. A named row whose `created_at` disagrees with the map, or an
+  unnamed one at a legacy `when` naming something else, MUST abort the run.
+- **Legacy history** keeps the frozen high-water mark and evidence-gated
+  backfill: a legacy migration with no row at or below the legacy mark is
+  recorded when the live schema shows its DDL, refused as
+  `BackfillContradictedError` when it contradicts it, and never executed.
+- **Post-cutover migrations have no high-water mark.** A file with no named row
+  is executed. Before executing it, its replay-sensitive statements are checked
+  against the live schema with the same evidence rules: DDL present -> record
+  only; partly present -> refuse; absent or uncheckable -> execute.
+- A comment-only migration (the cutover's snapshot rebase) is recorded without
+  execution.
+- `MIGRATE_EXPECT_NOOP=1` (the prod-clone dry run) MUST fail before executing
+  anything if the plan is not empty.
 
 ### Baseline (squashed history)
 
 - Every migration released up to and including `0250_shallow_bushwacker`
-  (release `v0.284.0`) is squashed into `packages/core/drizzle/0000_baseline.sql`:
-  a schema-only `pg_dump` of a fresh database migrated through that history,
-  one statement per `--> statement-breakpoint`. The individual files live in git
-  history before the squash.
-- The baseline's journal entry carries `"baseline": true` and the `when` of the
-  last migration it absorbed. A database that applied that migration already
-  holds the tracking row, so the baseline is skipped like any applied migration.
-- At most one entry may be flagged baseline, and it MUST be the first entry
-  (`findBaselineMillis`).
-- The baseline runs **only on an empty tracking table**. A database at or past
-  its `when` skips it even if its own row is missing. The baseline is **never**
-  a backfill candidate: introspecting a whole-schema dump proves nothing.
-- A database with tracking rows whose high-water mark is **below** the
-  baseline's `when` stopped partway through the squashed history. Planning
-  MUST throw `PreBaselineDatabaseError`, naming `LAST_RELEASE_BEFORE_SQUASH`, and
-  nothing runs. Running the dump there would fail on the first object that
-  already exists, after creating everything before it. The operator upgrades
-  through that release first, then runs this one. **Self-hosted deployments
-  must reach `v0.284.0` (or any later release before the squash) before
-  upgrading past the squash.**
-- The drift gate attributes every object the baseline creates to the baseline,
-  which a migrated database records as applied. `createTableColumns` and
-  `deriveAssertions` read pg_dump's spelling (`public.` qualifiers, unquoted
-  identifiers, `ALTER TABLE ONLY`) as well as drizzle-kit's.
+  (release `v0.284.0`) is squashed into the first folder
+  (`packages/core/drizzle/20261006230118_baseline/migration.sql`): a schema-only
+  `pg_dump` of a fresh database migrated through that history, one statement per
+  `--> statement-breakpoint`. The individual files live in git history.
+- The baseline is the legacy map's first entry (`baseline: true`) and carries the
+  `when` of the last migration it absorbed. It runs **only on an empty tracking
+  table**; a database at or past its `when` skips it even if its own row is
+  missing. It is **never** a backfill candidate: introspecting a whole-schema
+  dump proves nothing.
+- A database with tracking rows whose legacy mark is **below** the baseline's
+  `when` stopped partway through the squashed history. Planning MUST throw
+  `PreBaselineDatabaseError`, naming `LAST_RELEASE_BEFORE_SQUASH`, **before any
+  DDL, including the tracking-table upgrade**. **Self-hosted deployments must
+  reach `v0.284.0` (or any later release before the squash) before upgrading
+  past it.**
+- The drift gate attributes every object the baseline creates to the baseline.
+  `createTableColumns` and `deriveAssertions` read pg_dump's spelling (`public.`
+  qualifiers, unquoted identifiers, `ALTER TABLE ONLY`) as well as drizzle-kit's.
 
-### Journal
+### Cutover (one-time, reproducible)
 
-- The newest journal entry MUST have a `when` greater than every prior entry.
-  A trailing entry at or below the mark is not merely delayed — the backfill
-  path writes it a tracking row, so it is marked applied forever and its DDL
-  never runs, with `db:migrate` still exiting 0. Enforced on the **tail only**;
-  four mid-list inversions (0020/21, 0032/33, 0043/44, 0116/17) are
-  grandfathered, and "harmless" is confirmed only for 0116/17 (both landed in
-  the same deploy, release v0.178.0) and disproven for 0020/21.
-- Every journal entry MUST have its `.sql` file on disk. `readMigrationFiles`
-  loops the whole journal and `readFileSync`s each tag *before* filtering by
-  what is applied, so one missing file throws and **nothing** runs — a missing
-  file is a total failure, not a partial one.
-- Every `.sql` file in `packages/core/drizzle/` MUST be referenced by a journal
-  entry, with no exceptions. An
-  orphan is DDL that exists but is never applied — the same divergence, other
-  half.
-- `idx` and `tag` MUST be unique across entries.
-- A migration file's identity is its content hash, not its name. Renaming a
-  generated file to a reserved slot number (the flow
-  `apps/web/src/lib/default-roles.ts` instructs agents to use) is therefore
-  safe; editing an already-applied file's *content* is not, and is a CONTRACT
-  violation under `db-migration-gates`.
+- `scripts/migrations-cutover.ts` converts the legacy tree: it emits the legacy
+  map, runs `drizzle-kit up` and asserts every legacy folder exists under its
+  predicted name with identical bytes, roots the baseline snapshot (its parent was
+  squashed away), then runs `generate` once. The kit renders partial-index
+  predicates and CHECK constraints differently from 0.31, so that migration is
+  representation churn: its `snapshot.json` is kept and its SQL becomes a comment
+  (the **snapshot rebase**). A second `generate` MUST report nothing to migrate and
+  `drizzle-kit check` MUST pass.
+- On a database that already holds the history the result is zero DDL in
+  `public`: only the rebase is recorded. The previous release's migrator, run
+  against the upgraded tracking table, applies nothing and backfills nothing
+  (it reads only `created_at`, and legacy rows keep their ms values), so a
+  rollback after deploy is safe until the first real post-cutover migration.
+- Removing the new columns is never automatic.
 
 ### Execution
 
-- Statements execute one at a time via `sql.raw` on the neon-http driver. There
-  is **no** enclosing transaction: neon-http has no interactive transaction
-  support, so a migration cannot be rolled back as a unit. A migration that
-  fails partway leaves its earlier statements applied and no tracking row, and
-  because its `when` still exceeds the mark it is **replayed from statement 1**
-  on the next attempt.
-- The tracking row for a migration is inserted immediately after that
-  migration's statements, before the next migration starts, so a failure in
-  migration N+1 never forces a re-run of N.
+- Each post-cutover file and its tracking insert run as **one** `db.batch` (a
+  neon non-interactive transaction), so a dropped connection cannot leave DDL
+  applied with no row. Two things a batch cannot carry run statement by statement
+  instead and MUST then be idempotent (`IF NOT EXISTS`): statements Postgres
+  refuses inside a transaction block (`CREATE INDEX CONCURRENTLY`), and `ALTER
+  TYPE ... ADD VALUE` followed by a use of the new value in the same file.
+- Legacy-layout statements (a fresh database running the baseline) execute one at
+  a time with the tracking row inserted after the file, as before. The legacy code
+  path is retained for databases and trees that predate the cutover, and is dead
+  once none remain.
+- Two migrators at once MUST serialise: the migrator takes `__buildd_migrate_lock`
+  and the second waits, then plans against what the first recorded.
 - `CREATE SCHEMA IF NOT EXISTS drizzle` and `CREATE TABLE IF NOT EXISTS
   drizzle.__drizzle_migrations` run before the plan, so a fresh database
   bootstraps without manual setup.
@@ -139,14 +156,29 @@ directions reached production:
   fresh connection each time): `endpoint is disabled`,
   `connect ECONNREFUSED`, `ENOTFOUND`, `password authentication failed`. Every
   other failure exits 1 immediately.
-- A failing run MUST surface the Postgres detail. neon-http hangs the real cause
-  off nested properties, so `cause.message`, `detail`, `hint` and `position` are
-  printed alongside `message` — a bare query with no cause is a regression.
+- A failing run MUST surface the Postgres detail: `cause.message`, `detail`,
+  `hint` and `position` are printed alongside `message`.
 - The process MUST exit explicitly on every path (0 on success, 1 on terminal
   failure). Production ordering comes from `apps/web/package.json`'s
   `"build": "bun run db:migrate && next build"`: a non-zero migrate exit means
   `next build` never runs, so no deploy can serve code against an un-migrated
   schema.
+
+### Parallel branches
+
+- Folder names are timestamps and slugs, so two branches cannot collide on a
+  name and git merges their migrations cleanly. What git cannot see is that both
+  snapshots name the same parent. `drizzle-kit check` (`bun run
+  migrations:commute`, in CI on every PR and push) exits non-zero on a pair whose
+  changes touch each other and passes on one whose changes do not.
+- A leftover from before the cutover (a numbered `NNNN_x.sql`, a `meta/`
+  directory) is refused by `bun run migrations:layout-check`, fail closed.
+- `bun run migrations:regenerate` resets the drizzle dir to the base's exact
+  state and re-runs `generate`, so the branch's schema change is re-diffed against
+  the base's newest snapshot. It also moves a branch cut before the cutover onto
+  the folder layout. A hand-written (`--custom`) migration is carried over
+  verbatim; if the regenerated SQL differs from what it replaced the command exits
+  3 and a person reads both.
 
 ### Slot (serialising migration numbers across concurrent branches)
 
@@ -168,11 +200,13 @@ directions reached production:
 ### Drift gate (pre-promote, release PRs only)
 
 - The gate compares production's `information_schema.columns` against the
-  **chain tip** of `packages/core/drizzle/meta/*_snapshot.json`. It is read-only.
-- The snapshot MUST be resolved through the `prevId` chain, never by filename
-  sort alone. Snapshots form a linked list; two concurrent `db:generate` runs
-  fork it into siblings that each hold only part of the schema, and git conflicts
-  on neither the `.sql` nor the `.json`.
+  **chain tip** of the folder snapshots (`packages/core/drizzle/<name>/snapshot.json`,
+  v8 `ddl[]` entities). It is read-only.
+- The snapshot MUST be resolved through the `prevIds` chain, never by folder name
+  sort alone. Snapshots form a graph; two concurrent `generate` runs fork it into
+  siblings that each hold only part of the schema, and git conflicts on neither
+  the `.sql` nor the `.json`. The baseline's snapshot is rooted (its parent was
+  squashed away), so the chain has no gap at its start.
 - A fork **at the chain tip** MUST produce NO drift verdict. The gate MUST exit
   with a code distinct from the drift code (`2` = cannot verify, `1` = drift),
   name the siblings and their shared parent, and state that production is not
@@ -202,18 +236,11 @@ directions reached production:
   journal is only what the ref carries, so the two legitimately differ by the
   migrations that were renumbered or that predate a rebuilt journal. Side by side
   the two numbers read as production running migrations we do not know about.
-- `drizzle-kit` MUST be patched so that aborting on a forked or malformed
-  snapshot chain exits non-zero (`patches/drizzle-kit@<version>.patch`).
-  Upstream calls `process.exit(0)` after refusing to generate, and a generate
-  that aborts writes nothing — indistinguishable from "no changes needed" to
-  `git status --porcelain drizzle/`. Because `patchedDependencies` is keyed by
-  exact version, a drizzle-kit bump silently orphans the patch, so the pinned
-  version MUST be asserted against the lockfile's resolved version.
-- The CI migration check MUST additionally assert on `bun db:generate`'s OUTPUT,
-  not only its exit code. The patch covers the collision/malformed branch; the
-  "snapshot is not of the latest version" branch still exits 0 and reports via
-  `console.log` rather than as an error. The check MUST echo the captured output
-  before asserting, so a failure is diagnosable from the log.
+- The CI migration check MUST assert on `bun db:generate`'s OUTPUT, not only its
+  exit code. The 0.31 kit exited 0 after refusing to generate (a patch fixed the
+  collision branch, and is gone with that kit); the rc kit exits non-zero, and the
+  output check stays as a floor so a kit that goes quiet again cannot read as
+  green. The check MUST echo the captured output before asserting.
 - The applied-migration count MUST be read from `drizzle.__drizzle_migrations`
   with a fallback to `public.__drizzle_migrations`. Querying only `public`
   throws and reports 0, which is indistinguishable from "no migration ever ran"
@@ -223,44 +250,49 @@ directions reached production:
   satisfied. The gate is therefore a *step*-level condition: the job always
   runs, exits 0 immediately when `base_ref != main`, and performs the real check
   only for dev→main.
-- A PR that adds a migration (`packages/core/drizzle/NNNN_*.sql` +
-  `meta/_journal.json`) selects the journal tests: `scripts/affected-tests.ts`
-  selects every test that names `_journal.json` or lists the `drizzle`
-  directory, and pushes to `dev` and PRs into `main` run the full suite anyway.
+- A PR that touches `packages/core/drizzle/` runs the **full** unit suite
+  (`scripts/affected-tests.ts`): the tests that read the migrations tree whole name
+  no migration folder, so no per-file selection can find them. Pushes to `dev` and
+  PRs into `main` run the full suite anyway.
 
 ## Acceptance criteria
 
-- AC-1: GIVEN tracking rows `[200]` and journal entries at `folderMillis`
-  `[100, 200, 300]` WHEN `planMigrations` runs THEN `toRun` is `[300]` and
-  `toBackfill` is `[100]` — the missing row for 100 is recorded, not replayed.
-- AC-2: GIVEN a database with no tracking rows WHEN `planMigrations` runs THEN
-  every journal entry is in `toRun` and `toBackfill` is empty.
-- AC-3: GIVEN a tracking row whose `created_at` is the string `'100'` and a
-  migration with `folderMillis` `100` WHEN `planMigrations` runs THEN both
-  `toRun` and `toBackfill` are empty.
+- AC-1: GIVEN a v1 tree of three folders and a legacy map naming the first two,
+  tracking rows for the first only (by exact-ms `created_at`, unnamed) and a
+  legacy mark at that `when` WHEN `planMigrationsV1` runs THEN the row is named,
+  the second legacy folder is evidence-checked (recorded, not replayed) and the
+  post-cutover folder is in `toRun`.
+- AC-2: GIVEN a database with no tracking rows WHEN `planMigrationsV1` runs THEN
+  the baseline and every later folder are in `toRun` and nothing is backfilled.
+- AC-3: GIVEN a tracking row whose `created_at` is the string `'100'` and a legacy
+  migration whose `when` is `100` WHEN `planMigrationsV1` runs THEN it is applied
+  and neither run nor backfilled: `created_at` compares numerically whether the
+  driver returns a string or a number.
 - AC-B1: GIVEN a tree whose first entry is the baseline and an empty tracking
-  table WHEN `planMigrations` runs THEN the baseline and every later entry are
-  in `toRun`.
-- AC-B2: GIVEN tracking rows whose maximum equals the baseline's `when` WHEN
-  `planMigrations` runs THEN the baseline is neither run nor backfilled and only
-  later entries run.
-- AC-B3 (failure path): GIVEN tracking rows whose maximum is below the
-  baseline's `when` WHEN `planMigrations` runs THEN it throws
-  `PreBaselineDatabaseError` naming `LAST_RELEASE_BEFORE_SQUASH`, and nothing runs.
+  table WHEN the plan runs THEN the baseline and every later entry are in `toRun`.
+- AC-B2: GIVEN tracking rows whose legacy mark equals the baseline's `when` WHEN
+  the plan runs THEN the baseline is neither run nor backfilled and only later
+  entries run.
+- AC-B3 (failure path): GIVEN tracking rows whose legacy mark is below the
+  baseline's `when` WHEN the plan runs THEN it throws `PreBaselineDatabaseError`
+  naming `LAST_RELEASE_BEFORE_SQUASH`, and nothing runs, including the tracking
+  upgrade.
 - AC-B4: GIVEN a fresh database migrated through the pre-squash tree and another
   migrated through the squashed tree WHEN both schemas are fingerprinted THEN
   they are identical.
-- AC-4 (failure path): GIVEN a new migration appended to `_journal.json` whose
-  `when` is not greater than the max `when` of all prior entries WHEN the core
-  journal tests run THEN they fail with a message naming the offending tag and
-  the prior max — because in production that migration would be backfilled and
-  its DDL would never run.
-- AC-5 (failure path): GIVEN a journal entry whose `.sql` file is missing from
-  `packages/core/drizzle/` WHEN `readMigrationFiles` is invoked THEN it throws
-  and zero migrations are applied, including ones that would have succeeded.
-- AC-6 (failure path): GIVEN a `.sql` file in `packages/core/drizzle/` that no
-  journal entry references WHEN the
-  journal tests run THEN they fail listing that orphan.
+- AC-4 (failure path): GIVEN a migrations directory holding a legacy `NNNN_x.sql`
+  or a `meta/` directory next to v1 folders WHEN the tree is read or
+  `migrations:layout-check` runs THEN it fails, naming the file: v1 would never
+  read it.
+- AC-5 (failure path): GIVEN a folder with no `migration.sql` WHEN the tree is
+  read THEN it throws (drizzle would skip it silently) and zero migrations run.
+- AC-6 (failure path): GIVEN two branches that each generated a migration from one
+  base and whose changes touch each other WHEN they are merged THEN
+  `migrations:commute` exits non-zero; GIVEN changes that do not touch each other
+  THEN it exits 0 with no repair needed.
+- AC-6b: GIVEN the cutover on a database that already holds the full history WHEN
+  the migrator runs THEN no DDL runs in `public`, only the rebase is recorded, a
+  rerun plans nothing, and the previous release's migrator then applies nothing.
 - AC-7 (failure path): GIVEN a migration statement fails with an error not in
   the transient list WHEN `db:migrate` runs THEN it prints the message plus any
   `cause.message` / `detail` / `hint` / `position`, exits 1, and `next build`
@@ -311,9 +343,13 @@ directions reached production:
 | backfill loop (records, does not execute) | `packages/core/db/migrate.ts:56-62` |
 | run loop + per-migration tracking insert | `packages/core/db/migrate.ts:64-76` |
 | transient-error list / terminal exit | `packages/core/db/migrate.ts:88-100` |
-| `planMigrations`, `MigrationPlan` | `packages/core/db/migrate-plan.ts:38-56` |
-| high-water-mark computation | `packages/core/db/migrate-plan.ts:41` |
-| journal (source of order) | `packages/core/drizzle/meta/_journal.json` |
+| `planMigrationsV1`, `MigrationPlanV1` (name-keyed plan) | `packages/core/db/migrate-plan.ts` |
+| `planMigrations` (legacy layout, retained until none remain) | `packages/core/db/migrate-plan.ts` |
+| tree reader (fail closed), layout detection | `packages/core/db/migrate-tree.ts` |
+| legacy map and its tree check | `packages/core/db/legacy-migrations.ts`, `packages/core/db/legacy-migrations.json` |
+| per-file atomic apply (`db.batch`) | `packages/core/db/migrate-apply.ts` |
+| cutover script | `scripts/migrations-cutover.ts` |
+| layout check, commute check, regenerate | `packages/core/db/migration-layout.ts` |
 | `workspaces.lastMigrationNumber` | `packages/core/db/schema.ts:630` |
 | slot reservation (atomic UPDATE+RETURNING) | `apps/web/src/app/api/workspaces/[id]/migration-slot/route.ts:54-61` |
 | slot auth / 404 / zero-pad | `apps/web/src/app/api/workspaces/[id]/migration-slot/route.ts:35-38,63-68` |
@@ -326,12 +362,11 @@ directions reached production:
 | `reconcileAppliedCount` | `packages/core/db/migrate-drift.ts:419-445` |
 | `Schema Drift / check-prod` job (step-level gate) | `.github/workflows/build.yml:313-345` |
 | "migrations are up to date" PR check (asserts on exit code AND output) | `.github/workflows/build.yml:84-120` |
-| drizzle-kit abort-exits-0 patch | `patches/drizzle-kit@0.31.10.patch` |
 | preview-branch migrate | `.github/workflows/build.yml:409-411` |
 | deploy ordering (`db:migrate && next build`) | `apps/web/package.json:7` |
-| `migrations:lint` | `package.json:42` |
-| migration change → journal tests selected | `scripts/affected-tests.ts` (`referenceNeedles`) |
-| squashed baseline (released history up to the cut) | `packages/core/drizzle/0000_baseline.sql` |
+| `migrations:lint` (prod build runs migrations), `migrations:layout-check`, `migrations:commute`, `migrations:regenerate` | `package.json` |
+| migration change → full unit suite | `scripts/affected-tests.ts` |
+| squashed baseline (released history up to the cut) | `packages/core/drizzle/20261006230118_baseline/migration.sql` |
 | `findBaselineMillis`, `PreBaselineDatabaseError`, `LAST_RELEASE_BEFORE_SQUASH` | `packages/core/db/migrate-plan.ts` |
 | squash equivalence proof (old tree vs new tree, real Postgres) | `apps/web/tests/db/migration-baseline.test.ts` |
 
@@ -381,15 +416,7 @@ code; do not read any of them as enforced.
    and then executed with no advisory lock (`pg_advisory_lock` appears nowhere
    in the repo), so two overlapping deploys can both put the same pending
    migration in `toRun` and execute it twice.
-6. **The journal ordering check is tail-only and has a merge-race blind spot.**
-   Two migrations authored on separate branches each pass individually; the
-   inversion becomes invisible as soon as a third migration lands with a higher
-   `when`. 0116/0117 is a live example that reached `main` unnoticed (0117's
-   `when` is 7.1s below 0116's) and is absent from the grandfathered list in
-   both test headers. It is harmless only because both shipped in one deploy —
-   had 0116 deployed first, 0117 (`workers.pr_opened_base_sha`) would have been
-   backfilled and never applied. No test asserts anything about the newest N
-   entries.
+6. **(closed)** The journal ordering check and its merge-race blind spot are gone with the journal: post-cutover files have no mark to out-rank.
 7. **Backfill trusts an inference it never checks.** "No row and below the mark"
    is treated as "applied", with no introspection confirming the objects exist.
    On a restored or branched database where the DDL genuinely never ran, the
@@ -411,7 +438,4 @@ code; do not read any of them as enforced.
     `apps/web/package.json`'s `build` keeps `db:migrate &&` ahead of
     `next build`. CI builds with `build:only`, so dropping the migrate step
     would go green and ship code against an un-migrated database.
-12. **`migrations:lint` is not wired into CI.** No workflow references it;
-    journal coverage on a PR depends on `affected-tests.ts` selecting the
-    journal tests for a migration change. It also runs only the ordering test, not
-    the broader `migration-journal.test.ts`.
+12. **`migrations:lint` guards one thing now** (the prod build runs migrations); the journal tests it used to run are gone. `migrations:layout-check` and `migrations:commute` are wired into `build.yml` and are the parallel-branch guards.

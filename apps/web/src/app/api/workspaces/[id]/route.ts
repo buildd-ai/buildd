@@ -16,6 +16,7 @@ import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
 import { validateEarlyReleaseConfig } from '@/lib/early-release-mode';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const RUNNER_PREFERENCES = new Set(['any', 'user', 'service', 'action']);
 const WEBHOOK_EVENTS = new Set(['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled']);
@@ -117,7 +118,7 @@ export async function GET(
     }
 
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: sqlWhere(eq(workspaces.id, id)),
       with: {
         tasks: true,
         workers: true,
@@ -176,7 +177,7 @@ export async function PATCH(
     // For API key auth, the workspace must belong to the API key's own team.
     if (apiAccount) {
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, id),
+        where: sqlWhere(eq(workspaces.id, id)),
         columns: { teamId: true },
       });
       if (!ws || ws.teamId !== apiAccount.teamId) {
@@ -231,7 +232,7 @@ export async function PATCH(
 
     if (webhookConfig !== undefined) {
       const stored = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, id),
+        where: sqlWhere(eq(workspaces.id, id)),
         columns: { webhookConfig: true },
       });
       const parsed = parseWebhookConfigInput(webhookConfig, stored?.webhookConfig ?? null);
@@ -255,7 +256,7 @@ export async function PATCH(
           // Normalized equality, not `ilike`: repo names may contain `_`,
           // which LIKE treats as a single-character wildcard, so `owner/my_app`
           // would also match `owner/myXapp`.
-          where: sql`${normalizedRepoSql(githubRepos.fullName)} = ${fullName.toLowerCase()}`,
+          where: sqlWhere(sql`${normalizedRepoSql(githubRepos.fullName)} = ${fullName.toLowerCase()}`),
         });
         // Link only through an installation that belongs to the workspace's
         // team (see lib/github-installation-access.ts). Otherwise the declared
@@ -437,7 +438,7 @@ export async function PATCH(
         }
         if (mode === 'require_read') {
           const linked = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: { githubRepoId: true },
           });
           if (!linked?.githubRepoId) {
@@ -504,7 +505,7 @@ export async function PATCH(
         }
       }
       const current = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, id),
+        where: sqlWhere(eq(workspaces.id, id)),
         columns: { gitConfig: true },
       });
       updates.gitConfig = { ...(current?.gitConfig ?? {}), ...gitConfig };
@@ -514,7 +515,7 @@ export async function PATCH(
     let previousRepo: string | null = null;
     if (repoValue !== undefined) {
       const current = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, id),
+        where: sqlWhere(eq(workspaces.id, id)),
         columns: { repo: true },
       });
       previousRepo = current?.repo ?? null;

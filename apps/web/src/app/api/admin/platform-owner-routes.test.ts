@@ -463,7 +463,7 @@ describe('GET agent-access', () => {
   });
 });
 
-describe('names and readouts for the admin app', () => {
+describe('names and readouts for platform-owner API clients', () => {
   it('lists every team with its workspaces by name', async () => {
     const res = await routes.teams.GET(req('teams'));
     expect(res.status).toBe(200);

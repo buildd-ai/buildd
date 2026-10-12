@@ -3,6 +3,7 @@ import { githubInstallations, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray, or } from 'drizzle-orm';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { getInstallationAccessForUser } from '@/lib/github-installation-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The installations, of the ones Settings → GitHub lists, that this person
@@ -19,15 +20,15 @@ export async function loadDisconnectableInstallationIds(userId: string): Promise
     const wsIds = await getUserWorkspaceIds(userId);
     const linked = wsIds.length
       ? await db.query.workspaces.findMany({
-          where: inArray(workspaces.id, wsIds),
+          where: sqlWhere(inArray(workspaces.id, wsIds)),
           columns: { githubInstallationId: true },
         })
       : [];
     const ids = [...new Set(linked.map((w) => w.githubInstallationId).filter((id): id is string => !!id))];
     const rows = await db.query.githubInstallations.findMany({
-      where: ids.length
+      where: sqlWhere(ids.length
         ? or(inArray(githubInstallations.id, ids), eq(githubInstallations.installedByUserId, userId))
-        : eq(githubInstallations.installedByUserId, userId),
+        : eq(githubInstallations.installedByUserId, userId)),
       columns: { id: true, installedByUserId: true },
     });
     const access = await Promise.all(rows.map((row) => getInstallationAccessForUser(userId, row)));

@@ -22,6 +22,7 @@ import {
   type DecisionModelRoute,
   type DecisionModelSetting,
 } from './decision-model';
+import { sqlWhere } from './db/relational-sql';
 
 export interface DecisionModelAuditEvent {
   actorAccountId: string | null;
@@ -91,7 +92,7 @@ async function dbRead(teamId: string): Promise<{ found: boolean; value: unknown 
   const { db } = await import('./db');
   const { teams } = await import('./db/schema');
   const { eq } = await import('drizzle-orm');
-  const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { decisionModel: true } });
+  const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { decisionModel: true } });
   return row ? { found: true, value: row.decisionModel ?? null } : { found: false, value: null };
 }
 

@@ -20,6 +20,7 @@ import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { retrieveMemory } from '@buildd/core/memory-retrieval';
 import { MEMORY_STATES, type MemoryState } from '@buildd/core/memory-candidates';
 import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -62,7 +63,7 @@ async function getWorkspaceProject(id: string): Promise<string | null> {
 
 /** The team id the memory ledger rows are filed under. */
 async function getWorkspaceTeamId(id: string): Promise<string | null> {
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, id), columns: { teamId: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, id)), columns: { teamId: true } });
   return ws?.teamId ?? null;
 }
 

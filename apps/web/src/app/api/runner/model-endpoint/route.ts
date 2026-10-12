@@ -76,6 +76,7 @@ import { isAnthropicApiKeyAuth, resolveAnthropicAuth } from '@/lib/claude-creden
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveDispatchPrincipal } from '@/lib/agent-capabilities/dispatch-principal';
 import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Mirrors DISPATCH_TOKEN_HEADER in apps/cloud-runner/src/outbound.ts. */
 const DISPATCH_TOKEN_HEADER = 'x-buildd-dispatch-token';
@@ -180,7 +181,7 @@ export async function POST(req: NextRequest) {
 async function loadTeamPolicy(teamId: string): Promise<TeamPolicyColumns | null> {
   try {
     return (await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       columns: { credentialPolicy: true, inferenceKeyPolicy: true },
     })) ?? null;
   } catch {
@@ -193,7 +194,7 @@ async function loadTeamPolicy(teamId: string): Promise<TeamPolicyColumns | null>
 async function loadRequester(taskId: string): Promise<string | null> {
   try {
     const row = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { createdByUserId: true, parentTaskId: true, missionId: true, scheduleId: true },
     });
     return row ? await resolveTaskRequesterUserId(row) : null;

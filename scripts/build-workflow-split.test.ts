@@ -71,7 +71,7 @@ describe('build job split', () => {
       'Verify env contract (buildd env verify)',
       'Check migrations are up to date',
       'Notify on migration check failure',
-      'Lint migration journal ordering',
+      'Lint migration build wiring',
       'Lint hardcoded model IDs',
       'Lint hand-built SQL',
       'Type check',

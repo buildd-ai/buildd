@@ -37,6 +37,7 @@ import { ingestFact } from './facts';
 import { collectComposition, compositionConstituentBase } from './review-composition';
 import { githubReader, workspaceRepo } from './github-facts';
 import type { KernelView, RoundSnapshot } from './types';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -45,7 +46,7 @@ type Output = { verdict?: string; confidence?: number; summary?: string; feedbac
 /** The reviewer's structured output for a round (the raw fact the verdict came from). */
 async function roundOutput(round: RoundSnapshot | undefined): Promise<Output> {
   if (!round?.reviewerTaskId) return {};
-  const t = await db.query.tasks.findFirst({ where: eq(tasks.id, round.reviewerTaskId), columns: { result: true } });
+  const t = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, round.reviewerTaskId)), columns: { result: true } });
   const result = (t?.result ?? {}) as Record<string, unknown>;
   const out = result.structuredOutput;
   return out && typeof out === 'object' ? (out as Output) : {};
@@ -53,9 +54,9 @@ async function roundOutput(round: RoundSnapshot | undefined): Promise<Output> {
 
 async function prWorker(workspaceId: string, repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: prWorkerWhere(workspaceId, repoFullName, prNumber),
+    where: sqlWhere(prWorkerWhere(workspaceId, repoFullName, prNumber)),
     columns: { id: true, branch: true, prUrl: true, prBaseRef: true, lastCommitSha: true },
-    orderBy: [desc(workers.createdAt)],
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
 }
 
@@ -177,9 +178,9 @@ const dispatchReview: EffectHandler = async (e) => {
   if (round.reviewerTaskId) return { outcome: 'skipped:already_dispatched' };
   if (!d.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
 
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, d.workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, d.workspaceId)) });
   const owner = await db.query.tasks.findFirst({
-    where: eq(tasks.id, d.ownerTaskId),
+    where: sqlWhere(eq(tasks.id, d.ownerTaskId)),
     columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
   });
   const repo = await workspaceRepo(d.workspaceId);
@@ -187,7 +188,7 @@ const dispatchReview: EffectHandler = async (e) => {
   if (!workspace || !owner || !repo) return { outcome: 'skipped:missing_context' };
 
   const mission = owner.missionId
-    ? await db.query.missions.findFirst({ where: eq(missions.id, owner.missionId), columns: RESOLVE_POLICY_MISSION_COLUMNS })
+    ? await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, owner.missionId)), columns: RESOLVE_POLICY_MISSION_COLUMNS })
     : null;
   // §5.9: a composed PR (mission integration PR, release PR) whose commits are
   // all already-reviewed changes needs no second full review. Runs once per
@@ -331,11 +332,11 @@ const dispatchFix: EffectHandler = async (e) => {
   }
   const taskId = attempt.taskId;
   if (!taskId) return { outcome: 'skipped:attempt_has_no_task' };
-  const existing = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { id: true } });
+  const existing = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true } });
   if (existing) return { outcome: 'ok:task_exists' };
 
   const owner = await db.query.tasks.findFirst({
-    where: eq(tasks.id, d.ownerTaskId),
+    where: sqlWhere(eq(tasks.id, d.ownerTaskId)),
     columns: {
       id: true, title: true, description: true, missionId: true, pathManifest: true, backend: true, roleSlug: true,
       kind: true, complexity: true, missionPhaseIndex: true, missionPhaseLabel: true, context: true,
@@ -395,7 +396,7 @@ const dispatchFix: EffectHandler = async (e) => {
   } as never).onConflictDoNothing().returning();
   if (!fixTask) return { outcome: 'ok:task_exists' };
 
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, d.workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, d.workspaceId)) });
   if (workspace) await announceTaskCreated(fixTask as never, workspace as never);
   await wakeTask(fixTask.id, 'review.fix_requested');
   schedulePrScopeReconcile({ workspaceId: d.workspaceId, installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, expectedHeadSha: attempt.boundHeadSha ?? undefined } as never);
@@ -450,7 +451,7 @@ const postReview: EffectHandler = async (e) => {
     body: postReviewBody(event, out, e.payload.scope),
   }).catch((err) => ({ posted: false as const, reason: err instanceof Error ? err.message : 'unknown error' }));
   if (!res.posted && res.reason !== 'a matching review already exists for this commit') {
-    const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId), columns: { missionId: true } });
+    const owner = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, d.ownerTaskId)), columns: { missionId: true } });
     if (owner?.missionId) {
       await db.insert(missionNotes).values({
         missionId: owner.missionId, taskId: d.ownerTaskId, authorType: 'system', type: 'warning',
@@ -495,7 +496,7 @@ const missionNote: EffectHandler = async (e) => {
   const round = view.rounds.find((r) => r.id === e.payload.roundId);
   const out = await roundOutput(round);
   const reviewer = round?.reviewerTaskId
-    ? await db.query.tasks.findFirst({ where: eq(tasks.id, round.reviewerTaskId), columns: { result: true } })
+    ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, round.reviewerTaskId)), columns: { result: true } })
     : null;
   const overrideReason = ((reviewer?.result ?? {}) as { effectiveVerdictReason?: string }).effectiveVerdictReason ?? null;
   const message = overrideReason ?? out.escalationReason ?? out.summary ?? 'see the review';

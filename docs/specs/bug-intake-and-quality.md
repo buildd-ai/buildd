@@ -717,7 +717,7 @@ days.
 
 ### 7.2 Where each is read
 
-| Metric | MCP | Health (workspace) | buildd-admin (platform owner) |
+| Metric | MCP | Health (workspace) | Platform-owner API |
 |---|---|---|---|
 | Defect rate by role, tier, mission, kind × complexity | `buildd_analytics` action quality_stats (new, NOT IMPLEMENTED) | "Quality" section on `/app/health/insights` | Cross-team rollup by role and tier |
 | Escape rate | quality_stats | Quality section | rollup |
@@ -922,7 +922,7 @@ trace: {
 - R-7: Before filing a fix task, the filer MUST run the §5.2 collision check and record which branch of it decided.
 - R-8: Each Sentinel rule and `reported` MUST have a resolve check from §5.5, and no check MAY pass on the absence of occurrences without counted opportunities.
 - R-9: Each attributed incident MUST record method and confidence, and an incident with no clear introducing change MUST say `infrastructure`, `pre_existing` or `unknown`.
-- R-10: Quality metrics MUST be computed in one module, read by MCP, Health and buildd-admin, and stratified by kind × complexity before any tier comparison.
+- R-10: Quality metrics MUST be computed in one module, read by MCP, Health and the platform-owner API, and stratified by kind × complexity before any tier comparison.
 - R-11: An incident attributed to a task pinned to an approved Living Spec, with a named criterion, MUST produce a `fail` verdict on that task.
 - R-12: Owner reports from Home and chat MUST go through the same intake and reconciliation, and MUST NOT produce a Needs You item.
 - R-13: Only `needs_owner` and the recovery spec's `needs_decision` MAY reach Needs You from this capability.
@@ -1119,7 +1119,7 @@ NOT run in parallel. Path claims will serialize them.
 - `packages/core/routing-analytics.ts`: `recordTaskOutcome`
 - `packages/core/experiment-readout.ts`: `computeExperimentReadout`, `classifyRow`
 - `apps/web/src/lib/specs/outcome.ts`: `recordSpecVerdict`, `recordSpecConflict`
-- `apps/web/src/lib/specs/requirements.ts`: `specCriteria`
+- `packages/spec-contract/src/requirements.ts`: `specCriteria`
 - `apps/web/src/lib/specs/pin.ts`: `pinSpecSource`
 - `apps/web/src/app/api/tasks/route.ts`: the `[friction]` dedupe branch
 - `apps/web/src/app/api/health/incidents/route.ts`: the incident list

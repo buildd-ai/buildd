@@ -60,6 +60,7 @@ import {
 } from '@buildd/core/providers';
 import type { ProviderCredentialResult, ResolveProviderCredentialInput } from '@buildd/core/providers/resolve';
 import type { RequesterTaskFields } from '@buildd/core/task-requester';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export { PERSONAL_CREDENTIAL_RUNNER_FEATURE };
 
@@ -118,7 +119,7 @@ const defaultDeps: PersonalCredentialDeps = {
       import('drizzle-orm'),
     ]);
     const row = await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       columns: { credentialPolicy: true, inferenceKeyPolicy: true },
     });
     return row ?? null;

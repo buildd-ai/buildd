@@ -3,6 +3,7 @@ import {
   classifyPullRequestMigrations,
   getMigrationNumber,
   isGeneratedMigrationPath,
+  isLegacyMigrationPath,
   type MigrationCollision,
   type MigrationSafety,
   type OpenPullRequestMigration,
@@ -126,20 +127,28 @@ export async function inspectPullRequestMigrations(params: InspectParams): Promi
   return inspectOnce(params);
 }
 
-/** Numbered migration filenames in `dir` at `ref`; null when the listing can't be read. */
+/**
+ * What the drizzle dir holds at `ref`: legacy numbered files and drizzle v1
+ * migration folders. Null when the listing can't be read.
+ */
 async function migrationNamesAt(
   installationId: number,
   repoFullName: string,
   dir: string,
   ref: string,
-): Promise<string[] | null> {
+): Promise<{ legacy: string[]; v1Folders: string[] } | null> {
   try {
     const encodedDir = dir.split('/').map(encodeURIComponent).join('/');
     const data = await githubApi(installationId, `/repos/${repoFullName}/contents/${encodedDir}?ref=${encodeURIComponent(ref)}`);
     if (!Array.isArray(data)) return null;
-    return data
-      .map((entry: { name?: unknown }) => (typeof entry?.name === 'string' ? entry.name : ''))
-      .filter((name) => /^\d{4}_[^/]+\.sql$/.test(name));
+    const entries = data.map((entry: { name?: unknown; type?: unknown }) => ({
+      name: typeof entry?.name === 'string' ? entry.name : '',
+      type: typeof entry?.type === 'string' ? entry.type : '',
+    }));
+    return {
+      legacy: entries.map((e) => e.name).filter((name) => /^\d{4}_[^/]+\.sql$/.test(name)),
+      v1Folders: entries.filter((e) => e.type === 'dir' && /^\d{14}_[^/]+$/.test(e.name)).map((e) => e.name),
+    };
   } catch {
     return null;
   }
@@ -256,7 +265,7 @@ async function inspectOnce(params: {
       : Promise.resolve(undefined);
 
   // An integration refresh whose merge moved the mission's own migration to a
-  // free index past trunk's (`bun run migrations:renumber`) shows a deletion
+  // free index past trunk's (`bun run migrations:regenerate`, legacy layout only) shows a deletion
   // paired one to one with an addition holding the same bytes. That is a
   // renumber, the shape the review exemption skips (`renumberedMigrations`);
   // the moved SQL is still classified below. Spec db-migration-gates.md
@@ -287,9 +296,13 @@ async function inspectOnce(params: {
   // branch never saw). Either one is a renumber, not a decision; destructive
   // SQL in the same PR still wins (see the end of this function).
   const novel = allMigrationFiles.filter((file) => !removed.has(file.filename) && !inherited.has(file.filename));
-  const highestInherited = Math.max(-1, ...[...inherited].map(numberOf));
+  // Slots only exist in the legacy layout. A v1 migration is a timestamped
+  // folder two branches cannot both take, so it is never ordered against a
+  // slot; it goes through the SQL classifier alone.
+  const novelLegacy = novel.filter((file) => isLegacyMigrationPath(file.filename));
+  const highestInherited = Math.max(-1, ...[...inherited].filter(isLegacyMigrationPath).map(numberOf));
   let baseCollision: MigrationSafety | null = null;
-  const outOfOrder = novel.find((file) => numberOf(file.filename) <= highestInherited);
+  const outOfOrder = novelLegacy.find((file) => numberOf(file.filename) <= highestInherited);
   if (outOfOrder) {
     const highest = [...inherited].find((path) => numberOf(path) === highestInherited)!;
     baseCollision = behindBase(
@@ -297,14 +310,25 @@ async function inspectOnce(params: {
       basenameOf(highest),
       `migration ${outOfOrder.filename} is ordered before migrations already on the base`,
     );
-  } else if (baseSha && novel.length > 0) {
+  } else if (baseSha && novelLegacy.length > 0) {
     // An unreadable listing skips this check, as before it existed; the
     // journal conflict on merge stays the backstop.
-    const dir = novel[0].filename.split('/').slice(0, -1).join('/');
-    const names = await migrationNamesAt(params.installationId, params.repoFullName, dir, baseSha);
+    const dir = novelLegacy[0].filename.split('/').slice(0, -1).join('/');
+    const listing = await migrationNamesAt(params.installationId, params.repoFullName, dir, baseSha);
+    const names = listing?.legacy ?? null;
     const highestOnBase = Math.max(-1, ...(names ?? []).map(numberOf));
-    const behind = novel.find((file) => numberOf(file.filename) <= highestOnBase);
-    if (names && behind) {
+    const behind = novelLegacy.find((file) => numberOf(file.filename) <= highestOnBase);
+    if (listing && listing.v1Folders.length > 0) {
+      // A numbered file over a v1 base is never read there: its DDL would be
+      // silently skipped with the deploy green (the 0067 class). Fail closed;
+      // the repair is to regenerate with the base's own drizzle-kit.
+      const own = novelLegacy[0];
+      baseCollision = behindBase(
+        own.filename,
+        listing.v1Folders[listing.v1Folders.length - 1]!,
+        `legacy migration ${basenameOf(own.filename)} is in a repo whose base uses drizzle v1 migration folders, where a numbered file is never read: merge the base and run bun run migrations:regenerate`,
+      );
+    } else if (names && behind) {
       const taken = names.find((name) => numberOf(name) === numberOf(behind.filename))
         ?? names.find((name) => numberOf(name) === highestOnBase)!;
       baseCollision = behindBase(

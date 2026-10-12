@@ -11,6 +11,7 @@ import { supersededById } from './release-display';
 import { ReleasesHeader, ReleasesList } from './ReleasesList';
 import { releasesFixture, resolveReleasesFixtureState } from './releases-fixtures';
 import Link from 'next/link';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,8 +76,8 @@ export default async function ReleasesPage({
   // and the real total under the same scope (the list is capped; the count is not).
   const [allReleases, [{ total }]] = await Promise.all([
     db.query.releases.findMany({
-      where: inArray(releases.workspaceId, targetWsIds),
-      orderBy: [desc(releases.createdAt)],
+      where: sqlWhere(inArray(releases.workspaceId, targetWsIds)),
+      orderBy: sqlOrderBy([desc(releases.createdAt)]),
       limit: LIST_LIMIT,
       with: { releaseTasks: { columns: { taskId: true } } },
     }),

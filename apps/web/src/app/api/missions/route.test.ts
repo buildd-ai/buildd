@@ -155,6 +155,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 import { GET, POST } from './route';
+import { capturedOrderBy, capturedWhere } from '@buildd/core/db/relational-sql';
 
 describe('POST /api/missions', () => {
   beforeEach(() => {
@@ -981,7 +982,7 @@ describe('GET /api/missions', () => {
     expect(body.missions).toHaveLength(1);
     // The query ran scoped to the requested team
     expect(mockMissionsFindMany).toHaveBeenCalled();
-    const whereArg = mockMissionsFindMany.mock.calls[0][0].where;
+    const whereArg = capturedWhere(mockMissionsFindMany.mock.calls[0][0].where);
     expect(whereArg.values).toEqual(['team-2']);
   });
 
@@ -1001,7 +1002,7 @@ describe('GET /api/missions', () => {
     await GET(new NextRequest('http://localhost/api/missions?status=open&limit=15'));
     const args = mockMissionsFindMany.mock.calls[0][0];
     // drizzle-orm is mocked in this file: `and` returns its predicates as an array.
-    expect(args.where).toContainEqual({ field: undefined, values: ['completed', 'archived'], type: 'notInArray' });
+    expect(capturedWhere(args.where)).toContainEqual({ field: undefined, values: ['completed', 'archived'], type: 'notInArray' });
     expect(args.limit).toBe(15);
   });
 
@@ -1009,29 +1010,31 @@ describe('GET /api/missions', () => {
     await GET(new NextRequest('http://localhost/api/missions'));
     const args = mockMissionsFindMany.mock.calls[0][0];
     expect(args.limit).toBeUndefined();
-    expect(args.where.type).toBe('inArray');
+    expect(capturedWhere(args.where).type).toBe('inArray');
   });
 
   it('q filters by title substring, ranks the exact title first, then sort=recent orders by latest activity', async () => {
     await GET(new NextRequest('http://localhost/api/missions?q=Memory&sort=recent&limit=5'));
     const args = mockMissionsFindMany.mock.calls[0][0];
-    expect(args.where).toContainEqual({ field: undefined, value: '%Memory%', type: 'ilike' });
-    expect(args.orderBy[0].field.type).toBe('sql');
-    expect(args.orderBy[0].field.strings[0]).toBe('lower(');
-    expect(args.orderBy[1].field.strings[0]).toBe('coalesce(greatest(');
+    expect(capturedWhere(args.where)).toContainEqual({ field: undefined, value: '%Memory%', type: 'ilike' });
+    const orderBy = capturedOrderBy(args.orderBy, {});
+    expect(orderBy[0].field.type).toBe('sql');
+    expect(orderBy[0].field.strings[0]).toBe('lower(');
+    expect(orderBy[1].field.strings[0]).toBe('coalesce(greatest(');
   });
 
   it('sort=recent without q has no exact-title ranking', async () => {
     await GET(new NextRequest('http://localhost/api/missions?sort=recent'));
     const args = mockMissionsFindMany.mock.calls[0][0];
-    expect(args.orderBy[0].field.strings[0]).toBe('coalesce(greatest(');
+    expect(capturedOrderBy(args.orderBy, {})[0].field.strings[0]).toBe('coalesce(greatest(');
   });
 
   it('default order is still priority first (the dashboard relies on it)', async () => {
     await GET(new NextRequest('http://localhost/api/missions'));
     const args = mockMissionsFindMany.mock.calls[0][0];
-    expect(args.orderBy[0]).toEqual({ field: undefined, type: 'desc' });
-    expect(args.orderBy[0].field?.type).not.toBe('sql');
+    const [first] = capturedOrderBy(args.orderBy, {});
+    expect(first).toEqual({ field: undefined, type: 'desc' });
+    expect(first.field?.type).not.toBe('sql');
   });
 
   it('a capped list reports total so callers can say "showing N of M"', async () => {
@@ -1045,7 +1048,7 @@ describe('GET /api/missions', () => {
     expect(body.total).toBe(42);
     // Counted over the same predicate as the page.
     const [, countWhere] = mockMissionsCount.mock.calls[0] as any[];
-    expect(countWhere).toEqual(mockMissionsFindMany.mock.calls[0][0].where);
+    expect(countWhere).toEqual(capturedWhere(mockMissionsFindMany.mock.calls[0][0].where));
   });
 
   it('an uncapped list skips the count query', async () => {
@@ -1403,11 +1406,11 @@ describe('POST /api/missions — workspace reach (shared rule)', () => {
     mockAuthenticateApiKey.mockReset();
     mockAuthenticateApiKey.mockReturnValue({ id: 'acct-a', name: 'runner', level: 'admin', teamId: 'team-a' } as any);
     mockWorkspacesFindFirst.mockReset();
-    mockWorkspacesFindFirst.mockImplementation((async (opts: any) => FIXTURE.find((r) => matches(opts?.where, r))) as any);
+    mockWorkspacesFindFirst.mockImplementation((async (opts: any) => FIXTURE.find((r) => matches(capturedWhere(opts?.where), r))) as any);
     mockAccountWorkspacesFindMany.mockReset();
-    mockAccountWorkspacesFindMany.mockImplementation((async (opts: any) => LINKS.filter((r) => matches(opts?.where, r))) as any);
+    mockAccountWorkspacesFindMany.mockImplementation((async (opts: any) => LINKS.filter((r) => matches(capturedWhere(opts?.where), r))) as any);
     mockAccountWorkspacesFindFirst.mockReset();
-    mockAccountWorkspacesFindFirst.mockImplementation((async (opts: any) => LINKS.find((r) => matches(opts?.where, r))) as any);
+    mockAccountWorkspacesFindFirst.mockImplementation((async (opts: any) => LINKS.find((r) => matches(capturedWhere(opts?.where), r))) as any);
     mockRunMission.mockResolvedValue({ task: { id: 'organizer-task-1' } });
     mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/x-00000000', created: true } as any);
     mockResolveFeedActor.mockResolvedValue({ kind: 'system', id: null, label: 'system' } as any);

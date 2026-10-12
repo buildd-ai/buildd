@@ -563,6 +563,7 @@ import { POST } from './route';
 import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -966,7 +967,7 @@ describe('POST /api/workers/claim', () => {
       return Object.values(node).some((v) => (Array.isArray(v) ? v.some((x) => hasEq(x, field, value)) : hasEq(v, field, value)));
     };
     const openQueries = mockWorkspacesFindMany.mock.calls
-      .map((c: any[]) => c[0]?.where)
+      .map((c: any[]) => capturedWhere(c[0]?.where))
       .filter((w: any) => hasEq(w, 'accessMode', 'open'));
     expect(openQueries.length).toBeGreaterThan(0);
     for (const w of openQueries) expect(hasEq(w, 'teamId', 'team-runner')).toBe(true);
@@ -4982,7 +4983,7 @@ describe('POST /api/workers/claim', () => {
   });
 
   // Regression: on 2026-05-25, a task pinned to project "sibling-app" was created
-  // against a workspace whose projects[] only contained "dispatch-family". The
+  // against a workspace whose projects[] only contained "acme-app". The
   // task got claimed, the agent flailed on a non-existent path, stuck-detector
   // killed it, cleanup re-queued, and the loop ran 4 times before being killed
   // manually. The claim route now refuses such tasks up-front and marks them
@@ -5009,7 +5010,7 @@ describe('POST /api/workers/claim', () => {
         workspace: {
           id: 'ws-1',
           gitConfig: { claimPlanner: 'record' },
-          projects: [{ name: 'dispatch-family' }],
+          projects: [{ name: 'acme-app' }],
         },
       },
     ]);
@@ -5055,13 +5056,13 @@ describe('POST /api/workers/claim', () => {
         id: 'good-task',
         workspaceId: 'ws-1',
         title: 'Test task',
-        project: 'dispatch-family',
+        project: 'acme-app',
         requiredCapabilities: [],
         context: {},
         workspace: {
           id: 'ws-1',
           gitConfig: { claimPlanner: 'record' },
-          projects: [{ name: 'dispatch-family' }, { name: 'other-project' }],
+          projects: [{ name: 'acme-app' }, { name: 'other-project' }],
         },
       },
     ]);
@@ -8009,7 +8010,7 @@ describe('claim gate overrides', () => {
 
       await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
 
-      const whereArg = (mockTasksFindMany.mock.calls[0] as any)[0]?.where;
+      const whereArg = capturedWhere((mockTasksFindMany.mock.calls[0] as any)[0]?.where);
       expect(conditionLiterals(whereArg)).toContain('capExempt');
     });
 
@@ -8318,7 +8319,7 @@ describe('claim gate overrides', () => {
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValue([]);
       await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', ...body } }));
-      return (mockTasksFindMany.mock.calls[0] as any)[0]?.where;
+      return capturedWhere((mockTasksFindMany.mock.calls[0] as any)[0]?.where);
     }
 
     // Mocked db returns rows regardless of WHERE, so assert the predicate.

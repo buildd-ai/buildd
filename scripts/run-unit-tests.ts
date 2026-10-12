@@ -26,6 +26,7 @@ const UNIT_TEST_ROOTS = [
   'packages/core/',
   'packages/ai-kit/',
   'packages/dispatch-contract/',
+  'packages/spec-contract/',
   'scripts/',
 ] as const;
 

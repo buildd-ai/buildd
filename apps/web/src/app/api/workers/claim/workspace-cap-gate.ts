@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { eq, and, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { CAP_EXEMPT_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const DEFAULT_MAX_CONCURRENT_TASKS = 3;
 
@@ -72,11 +73,11 @@ export async function checkWorkspaceCap(
   const cap = Math.max(workspaceCap, missionCap);
 
   const activeWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.workspaceId, workspaceId),
       inArray(workers.status, ['running', 'starting', 'idle']),
       sql`EXISTS (SELECT 1 FROM ${tasks} t_open WHERE t_open.id = ${workers.taskId} AND t_open.status ${TASK_STILL_OPEN})`,
-    ),
+    )),
     columns: { id: true },
   });
   const active = activeWorkers.length;

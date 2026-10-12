@@ -8,6 +8,7 @@ import { accountReachesWorkspace, type WorkspacePermission } from '@/lib/workspa
 import { isUuid } from '@/lib/uuid';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { assertGrantedWorkspace, isGrantSession, type GrantScopedAccount } from '@/lib/grant-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Workspace reach, shared by every surface that lists workspaces or acts on one
@@ -51,7 +52,7 @@ export async function listReachableWorkspaceIds(
   const [links, ownOpen] = await Promise.all([
     getAccountWorkspacePermissions(account.id),
     db.query.workspaces.findMany({
-      where: and(eq(workspaces.teamId, account.teamId), eq(workspaces.accessMode, 'open')),
+      where: sqlWhere(and(eq(workspaces.teamId, account.teamId), eq(workspaces.accessMode, 'open'))),
       columns: { id: true, teamId: true, accessMode: true },
     }),
   ]);
@@ -124,10 +125,10 @@ export async function resolveWorkspaceAccess(
       return assertGrantedWorkspace(caller.account, found.id, permission ? 'write' : 'read') ? { ok: true, workspace: found } : noAccess();
     }
     const link = await db.query.accountWorkspaces.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(accountWorkspaces.accountId, caller.account.id),
         eq(accountWorkspaces.workspaceId, found.id),
-      ),
+      )),
       columns: { canClaim: true, canCreate: true },
     });
     return accountReachesWorkspace(caller.account, found, link, permission)
@@ -141,10 +142,10 @@ export async function resolveWorkspaceAccess(
 
 async function existsByExactRef(ref: string): Promise<boolean> {
   if (isUuid(ref)) {
-    return !!(await db.query.workspaces.findFirst({ where: eq(workspaces.id, ref), columns: { id: true } }));
+    return !!(await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, ref)), columns: { id: true } }));
   }
   if (/^[\w.-]+\/[\w.-]+$/.test(ref)) {
-    return !!(await db.query.workspaces.findFirst({ where: eq(workspaces.repo, ref), columns: { id: true } }));
+    return !!(await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.repo, ref)), columns: { id: true } }));
   }
   return false;
 }

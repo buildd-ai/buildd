@@ -17,6 +17,7 @@ import {
   type FlowWindow,
   type FlowWorkerRow,
 } from './insights-flow';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Cap on worker rows per request; newest first, so a cut drops the oldest work. */
 export const FLOW_ROW_LIMIT = 5000;
@@ -38,11 +39,11 @@ export async function teamWorkspaceIds(teamId: string): Promise<string[]> {
 export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): Promise<FlowWorkerRow[]> {
   if (workspaceIds.length === 0) return [];
   const rows = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, workspaceIds),
       isNotNull(workers.startedAt),
       or(isNull(workers.completedAt), gte(workers.completedAt, since), gte(workers.mergedAt, since)),
-    ),
+    )),
     columns: {
       inputTokens: true, outputTokens: true, costUsd: true,
       id: true,
@@ -72,19 +73,19 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
         // across a 30-day window the full blobs overflow Neon's 64 MB response cap.
         // The callback form: a nested relation is aliased, so the column must
         // come from the aliased table, not the imported one.
-        extras: (t, { sql }) => ({
-          routingContext: sql<Record<string, unknown>>`jsonb_build_object(
+        extras: {
+  routingContext: (t, { sql }) => sql<Record<string, unknown>>`jsonb_build_object(
             'model', ${t.context} -> 'model',
             'resolvedTier', ${t.context} -> 'resolvedTier',
             'routingReason', ${t.context} -> 'routingReason',
             'routingInferred', ${t.context} -> 'routingInferred',
             'routingInferredReason', ${t.context} -> 'routingInferredReason'
           )`.as('routing_context'),
-          dependencyCount: sql<number>`coalesce(jsonb_array_length(${t.dependsOn}), 0)`.as('dependency_count'),
-        }),
+  dependencyCount: (t, { sql }) => sql<number>`coalesce(jsonb_array_length(${t.dependsOn}), 0)`.as('dependency_count'),
+},
       },
     },
-    orderBy: [desc(workers.startedAt), desc(workers.id)],
+    orderBy: sqlOrderBy([desc(workers.startedAt), desc(workers.id)]),
     limit: FLOW_ROW_LIMIT,
   });
   return (rows as any[]).map(w => ({
@@ -124,7 +125,7 @@ export async function fetchFlowReleases(workspaceIds: string[], since: Date): Pr
   if (workspaceIds.length === 0) return { releases: [], releaseTasks: [], releaseWorkspaceIds: [] };
   const [recent, everReleased] = await Promise.all([
     db.query.releases.findMany({
-      where: and(inArray(releases.workspaceId, workspaceIds), gte(releases.createdAt, since)),
+      where: sqlWhere(and(inArray(releases.workspaceId, workspaceIds), gte(releases.createdAt, since))),
       columns: { id: true, workspaceId: true, version: true, state: true, healthyAt: true, deployedAt: true, dispatchedAt: true, createdAt: true },
     }),
     db.selectDistinct({ workspaceId: releases.workspaceId })

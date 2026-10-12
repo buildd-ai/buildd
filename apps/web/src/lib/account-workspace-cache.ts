@@ -7,6 +7,7 @@ import {
   setCachedAccountWorkspaces,
   invalidateCachedAccountWorkspaces,
 } from './redis';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Cached account workspace permission entry.
@@ -50,7 +51,7 @@ export async function getAccountWorkspacePermissions(
 
   // L3: DB
   const rows = await db.query.accountWorkspaces.findMany({
-    where: eq(accountWorkspaces.accountId, accountId),
+    where: sqlWhere(eq(accountWorkspaces.accountId, accountId)),
   });
 
   const permissions: AccountWorkspacePermission[] = rows.map((r) => ({

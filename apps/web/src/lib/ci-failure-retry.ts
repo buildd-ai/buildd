@@ -49,6 +49,7 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { CI_RED_ESCALATED_KEY, scheduleCiRedLook } from '@/lib/ci-red-queue';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Which door asked. Recorded as the gate row's `surface`. */
 export type CiRetrySurface = 'webhook:check_suite' | 'cron:ci-red' | 'landing';
@@ -236,9 +237,9 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   // context, not an earlier (possibly iteration-less) one — see the openWorker
   // fix in PR #2574, which this mirrors for the CI-retry path.
   let worker = await db.query.workers.findFirst({
-    where: workerOwnsPr(repoFullName, prNumber),
+    where: sqlWhere(workerOwnsPr(repoFullName, prNumber)),
     with: { task: true },
-    orderBy: [desc(workers.createdAt)],
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
 
   if (!worker?.task) {
@@ -249,7 +250,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     // repos this workspace actually manages, and skipped for forks — a
     // fork's CI failure is not buildd's to fix.
     const adoptingWorkspace = await db.query.workspaces.findFirst({
-      where: workspaceRepoMatches(repoFullName),
+      where: sqlWhere(workspaceRepoMatches(repoFullName)),
     });
     if (!adoptingWorkspace) return { kind: 'not_ours' };
 
@@ -297,7 +298,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     });
 
     worker = await db.query.workers.findFirst({
-      where: eq(workers.id, ownerWorker.id),
+      where: sqlWhere(eq(workers.id, ownerWorker.id)),
       with: { task: true },
     });
     if (!worker?.task) return { kind: 'not_ours' };
@@ -367,7 +368,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, task.workspaceId),
+    where: sqlWhere(eq(workspaces.id, task.workspaceId)),
   });
   if (!workspace) {
     console.log(`No workspace found for task ${task.id}, skipping CI retry`);
@@ -711,7 +712,7 @@ type KernelCiOutcome =
  * kernel does not own this PR (no delivery, released, or switched off).
  */
 async function observeKernelCiFailure(input: CiFailureInput, workspaceId: string): Promise<KernelCiOutcome | null> {
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { gitConfig: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { gitConfig: true } });
   const configured = (ws?.gitConfig as { maxCiRetries?: number } | null)?.maxCiRetries;
   const seen = await observeCiFailure({
     workspaceId,

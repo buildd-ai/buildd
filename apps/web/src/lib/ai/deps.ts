@@ -21,6 +21,7 @@ import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { startOfLocalDay } from '@/lib/chat/limits';
 import type { AiApiAccount, AiAuthDeps, PlanDeps, UsageDeps } from './handlers';
 import type { PlanProvider } from './plan';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticate(bearer: string | null): Promise<AiApiAccount | null> {
   const account = await authenticateApiKey(bearer);
@@ -86,8 +87,8 @@ export const planDeps: PlanDeps = {
 
   async loadBudget(account, now) {
     const [acct, team] = await Promise.all([
-      db.query.accounts.findFirst({ where: eq(accounts.id, account.id), columns: { aiDailyBudgetUsd: true } }),
-      db.query.teams.findFirst({ where: eq(teams.id, account.teamId), columns: { timezone: true } }),
+      db.query.accounts.findFirst({ where: sqlWhere(eq(accounts.id, account.id)), columns: { aiDailyBudgetUsd: true } }),
+      db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, account.teamId)), columns: { timezone: true } }),
     ]);
     const dayStart = startOfLocalDay(now, team?.timezone || 'UTC');
     const [spent] = await db

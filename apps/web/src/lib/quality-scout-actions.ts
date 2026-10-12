@@ -60,6 +60,7 @@ import { dismissScoutFindingRow, scoutDismissal, type ScoutDismissal } from '@bu
 import { isTerminalTaskStatus, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Policy config ───────────────────────────────────────────────────────────
 
@@ -443,7 +444,7 @@ export const dbScoutActionStore: ScoutActionStore = {
     return rows.length > 0;
   },
   async taskStatus(taskId) {
-    const row = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true } });
+    const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true } });
     return row?.status ?? null;
   },
   async cancelledByScout(taskId) {
@@ -525,9 +526,9 @@ export const dbScoutActionStore: ScoutActionStore = {
     return rows.length > 0;
   },
   async announce(taskId) {
-    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)) });
     if (!task) return;
-    const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, task.workspaceId) });
+    const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, task.workspaceId)) });
     if (!workspace) return;
     await announceTaskCreated(task, workspace);
     await wakeTask(task.id, 'task.created');

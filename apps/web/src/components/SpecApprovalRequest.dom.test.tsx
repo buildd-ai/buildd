@@ -85,6 +85,18 @@ describe('SpecApprovalRequest', () => {
     expect(approveButton()).toBeNull();
   });
 
+  it('reads as approved on the press, and a failure rolls back to the action', async () => {
+    let answer!: (r: Response) => void;
+    globalThis.fetch = mock(() => new Promise<Response>(r => { answer = r; })) as unknown as typeof fetch;
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={ready} />));
+    await act(async () => { approveButton()!.click(); });
+    expect(q('spec-approval-result')!.textContent).toBe('Approved. Revision 3 is in force.');
+    expect(approveButton()).toBeNull();
+    await act(async () => { answer(new Response(JSON.stringify({}), { status: 500 })); });
+    expect(q('spec-approval-result')!.textContent).toBe('Approval failed. Try again.');
+    expect(approveButton()).not.toBeNull();
+  });
+
   it('a first approval opens on the spec itself, rendered as Markdown', () => {
     act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={first} />));
     const rendered = q('spec-approval-rendered');

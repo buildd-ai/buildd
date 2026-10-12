@@ -32,6 +32,7 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 import { GET } from './route';
+import { capturedOrderBy } from '@buildd/core/db/relational-sql';
 
 function makeRequest(params: Record<string, string> = {}, apiKey?: string) {
   const url = new URL('http://localhost/api/stats/usage');
@@ -342,8 +343,7 @@ describe('GET /api/stats/usage — aggregation', () => {
     mockWorkersFindMany.mockResolvedValue([worker()]);
     await GET(makeRequest());
     const args = mockWorkersFindMany.mock.calls[0][0] as any;
-    expect(Array.isArray(args.orderBy)).toBe(true);
-    expect(args.orderBy.length).toBeGreaterThan(0);
+    expect(capturedOrderBy(args.orderBy, {}).length).toBeGreaterThan(0);
     expect(args.limit).toBe(5000);
   });
 

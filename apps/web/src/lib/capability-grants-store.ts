@@ -41,6 +41,7 @@ import { loadRawTaskGrants } from './task-delegation';
 import { addTaskDelegationGrant, removeTaskDelegationGrant } from './task-delegation-checks';
 import { verifyWorkspaceAccess } from './team-access';
 import { delegationAllows } from '@buildd/core/token-delegation';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 type GrantRow = typeof capabilityGrants.$inferSelect;
 
@@ -81,7 +82,7 @@ export function capabilityDedupeKey(p: Pick<RequestPrincipal, 'workerId'>, req: 
 }
 
 export async function loadPolicyRules(teamId: string): Promise<PolicyRule[]> {
-  const rows = await db.query.capabilityPolicies.findMany({ where: eq(capabilityPolicies.teamId, teamId) });
+  const rows = await db.query.capabilityPolicies.findMany({ where: sqlWhere(eq(capabilityPolicies.teamId, teamId)) });
   return rows.map(r => ({
     id: r.id, provider: r.provider, risk: r.risk, workspaceId: r.workspaceId, roleSlug: r.roleSlug,
     environment: r.environment, resource: r.resource, effect: r.effect, maxTtlSeconds: r.maxTtlSeconds,
@@ -97,8 +98,8 @@ async function expireLapsed(where: ReturnType<typeof eq>, now: Date) {
 
 async function loadRunState(taskId: string, workerId: string) {
   const [task, worker] = await Promise.all([
-    db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true, roleSlug: true } }),
-    db.query.workers.findFirst({ where: eq(workers.id, workerId), columns: { status: true } }),
+    db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true, roleSlug: true } }),
+    db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, workerId)), columns: { status: true } }),
   ]);
   return { taskStatus: task?.status ?? 'missing', roleSlug: task?.roleSlug ?? null, workerStatus: worker?.status ?? 'missing' };
 }
@@ -132,7 +133,7 @@ export async function requestCapability(principal: AgentPrincipal, req: Capabili
   const [input, rules, rows] = await Promise.all([
     req.modelInference ? Promise.resolve(null) : loadDiscoveryInput(principal.workspaceId, run.roleSlug, now),
     loadPolicyRules(principal.teamId),
-    db.query.capabilityGrants.findMany({ where: eq(capabilityGrants.workerId, principal.workerId) }),
+    db.query.capabilityGrants.findMany({ where: sqlWhere(eq(capabilityGrants.workerId, principal.workerId)) }),
   ]);
   if (!req.modelInference && !input) return { ok: false, status: 409, code: 'workspace_not_found', error: 'Workspace not found.' };
   const discovery = input ? resolveCapability(input, req.capability) : null;
@@ -188,7 +189,7 @@ export async function requestCapability(principal: AgentPrincipal, req: Capabili
 
   // Lost a race to an identical ask: return the row that won.
   const row = inserted[0] ?? await db.query.capabilityGrants.findFirst({
-    where: and(eq(capabilityGrants.dedupeKey, dedupeKey), inArray(capabilityGrants.status, ['pending', 'granted'])),
+    where: sqlWhere(and(eq(capabilityGrants.dedupeKey, dedupeKey), inArray(capabilityGrants.status, ['pending', 'granted']))),
   });
   if (!row) {
     audit('refused', null);
@@ -230,8 +231,8 @@ async function requestTaskFiling(principal: AgentPrincipal, rp: RequestPrincipal
 
   if (target === rp.workspaceId) return done(resolution('existing', 'own_workspace', ['Your task token already files tasks in its own workspace.']));
   const [targetWs, task] = await Promise.all([
-    db.query.workspaces.findFirst({ where: eq(workspaces.id, target), columns: { id: true, teamId: true } }),
-    db.query.tasks.findFirst({ where: eq(tasks.id, rp.taskId), columns: { id: true, workspaceId: true, scheduleId: true, delegation: true } }),
+    db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, target)), columns: { id: true, teamId: true } }),
+    db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, rp.taskId)), columns: { id: true, workspaceId: true, scheduleId: true, delegation: true } }),
   ]);
   if (!targetWs || targetWs.teamId !== rp.teamId) {
     return done(resolution('forbidden', 'cross_team', ['That workspace is not one of your team\'s; a task can never file there.']));
@@ -241,7 +242,7 @@ async function requestTaskFiling(principal: AgentPrincipal, rp: RequestPrincipal
   }
 
   const dedupeKey = capabilityDedupeKey(rp, req, TASK_FILING_TARGET);
-  const rows = await db.query.capabilityGrants.findMany({ where: eq(capabilityGrants.dedupeKey, dedupeKey) });
+  const rows = await db.query.capabilityGrants.findMany({ where: sqlWhere(eq(capabilityGrants.dedupeKey, dedupeKey)) });
   if (rows.some(r => r.status === 'denied')) {
     return done(resolution('denied', 'already_denied', ['A person denied this exact request for this run. Do not ask again; record what you would have filed in an artifact or a note.']));
   }
@@ -267,7 +268,7 @@ async function requestTaskFiling(principal: AgentPrincipal, rp: RequestPrincipal
     reason: req.reason, status: 'pending', ttlSeconds: req.ttlSeconds, dedupeKey,
   }).onConflictDoNothing().returning();
   const row = inserted[0] ?? await db.query.capabilityGrants.findFirst({
-    where: and(eq(capabilityGrants.dedupeKey, dedupeKey), inArray(capabilityGrants.status, ['pending', 'granted'])),
+    where: sqlWhere(and(eq(capabilityGrants.dedupeKey, dedupeKey), inArray(capabilityGrants.status, ['pending', 'granted']))),
   });
   if (!row) return done(resolution('unavailable', 'request_race_lost', ['Ask again.']));
   return done(resolution('pending_approval', inserted[0] ? 'write_needs_human' : 'already_pending', pendingSteps, row.id), row, !inserted[0]);
@@ -282,7 +283,7 @@ export type DecideOutcome =
   | { ok: false; status: 404 | 409; code: string; error: string; grant?: ReturnType<typeof grantView> };
 
 export async function loadGrant(id: string): Promise<GrantRow | null> {
-  return (await db.query.capabilityGrants.findFirst({ where: eq(capabilityGrants.id, id) })) ?? null;
+  return (await db.query.capabilityGrants.findFirst({ where: sqlWhere(eq(capabilityGrants.id, id)) })) ?? null;
 }
 
 /**
@@ -415,7 +416,7 @@ export type UseOutcome =
  */
 export async function authorizeCapabilityUse(principal: AgentPrincipal, use: CapabilityUse, now: Date = new Date()): Promise<UseOutcome> {
   const rows = await db.query.capabilityGrants.findMany({
-    where: and(eq(capabilityGrants.workerId, principal.workerId), eq(capabilityGrants.status, 'granted'), eq(capabilityGrants.capability, use.capability)),
+    where: sqlWhere(and(eq(capabilityGrants.workerId, principal.workerId), eq(capabilityGrants.status, 'granted'), eq(capabilityGrants.capability, use.capability))),
   });
   const outcome = await checkUse(principal, rows.map(toGrantRecord), use, now);
   void recordCapabilityDecision({
@@ -457,11 +458,11 @@ export async function authorizeConnectorToolUse(
   now: Date = new Date(),
 ): Promise<UseOutcome> {
   const rows = await db.query.capabilityGrants.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(capabilityGrants.workerId, principal.workerId),
       eq(capabilityGrants.status, 'granted'),
       eq(capabilityGrants.connectorId, use.connectorId),
-    ),
+    )),
   });
   if (rows.length === 0 || !principal.teamId) return { allowed: false, reasonCode: 'no_grant' };
   const run = await loadRunState(principal.taskId, principal.workerId);
@@ -486,8 +487,8 @@ export const capabilityGrantSource: ModelInferenceGrantSource = {
   async findLiveGrant({ principal }) {
     const now = new Date();
     const rows = await db.query.capabilityGrants.findMany({
-      where: and(eq(capabilityGrants.workerId, principal.workerId), eq(capabilityGrants.status, 'granted'), eq(capabilityGrants.capability, MODEL_INFERENCE_CAPABILITY)),
-      orderBy: [desc(capabilityGrants.decidedAt)],
+      where: sqlWhere(and(eq(capabilityGrants.workerId, principal.workerId), eq(capabilityGrants.status, 'granted'), eq(capabilityGrants.capability, MODEL_INFERENCE_CAPABILITY))),
+      orderBy: sqlOrderBy([desc(capabilityGrants.decidedAt)]),
     });
     if (rows.length === 0 || !principal.teamId) return null;
     const run = await loadRunState(principal.taskId, principal.workerId);
@@ -513,8 +514,8 @@ export async function listTeamRequests(teamId: string, opts: { status?: string[]
   if (opts.status?.length) conds.push(inArray(capabilityGrants.status, opts.status as GrantRow['status'][]));
   if (opts.workspaceId) conds.push(eq(capabilityGrants.workspaceId, opts.workspaceId));
   const rows = await db.query.capabilityGrants.findMany({
-    where: and(...conds),
-    orderBy: [desc(capabilityGrants.requestedAt)],
+    where: sqlWhere(and(...conds)),
+    orderBy: sqlOrderBy([desc(capabilityGrants.requestedAt)]),
     limit: Math.min(Math.max(opts.limit ?? 50, 1), 200),
   });
   return rows.map(r => grantView({ ...toGrantRecord(r), reason: r.reason, decisionReason: r.decisionReason, requestedAt: r.requestedAt, decidedAt: r.decidedAt }));

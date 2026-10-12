@@ -16,6 +16,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { staleWorkerScope } from '@/lib/stale-workers';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const NOW = new Date();
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
@@ -72,7 +73,7 @@ async function presence(opts: {
 
 /** What the reaper's section 1 selects for this account, through the same builder it uses. */
 async function reaped(accountId: string): Promise<string[]> {
-  const rows = await db.query.workers.findMany({ where: staleWorkerScope(accountId, NOW), columns: { id: true } });
+  const rows = await db.query.workers.findMany({ where: sqlWhere(staleWorkerScope(accountId, NOW)), columns: { id: true } });
   return rows.map(r => r.id);
 }
 

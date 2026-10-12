@@ -23,6 +23,7 @@ import {
   decodeCompletedCursor,
   paginateCompletedMissions,
 } from '@/lib/missions-query';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -83,7 +84,7 @@ export default async function MissionsPage({
     // needs the account ids, so it genuinely follows the accounts read.
     (async () => {
       const teamAccounts = await db.query.accounts.findMany({
-        where: inArray(accounts.teamId, scopedTeamIds),
+        where: sqlWhere(inArray(accounts.teamId, scopedTeamIds)),
         columns: { id: true, maxConcurrentWorkers: true },
       });
       const max = teamAccounts.reduce((sum, a) => sum + a.maxConcurrentWorkers, 0);

@@ -87,6 +87,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 import { POST, GET } from './route';
+import { capturedExtras, capturedOrderBy } from '@buildd/core/db/relational-sql';
 
 const mockParams = Promise.resolve({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
 
@@ -495,7 +496,7 @@ describe('GET /api/missions/[id]/artifacts', () => {
       await get('types=report&limit=100');
       let args = (mockArtifactsFindMany.mock.calls[0] as any[])[0];
       expect(args.limit).toBe(100);
-      expect(JSON.stringify(args.orderBy)).toContain('desc');
+      expect(JSON.stringify(capturedOrderBy(args.orderBy, {}))).toContain('desc');
       await get('types=report&limit=100000');
       args = (mockArtifactsFindMany.mock.calls[1] as any[])[0];
       expect(args.limit).toBe(200);
@@ -513,7 +514,7 @@ describe('GET /api/missions/[id]/artifacts', () => {
       const data = await res.json();
       const args = (mockArtifactsFindMany.mock.calls[0] as any[])[0];
       expect(args.columns).toEqual({ content: false });
-      expect(JSON.stringify(args.extras)).toContain('2048');
+      expect(JSON.stringify(capturedExtras(args.extras, {}))).toContain('2048');
       expect(data.artifacts[0].content).toHaveLength(2048);
       expect(data.artifacts[0].contentPreview).toBeUndefined();
       expect(data.artifacts[1].content).toBeNull();

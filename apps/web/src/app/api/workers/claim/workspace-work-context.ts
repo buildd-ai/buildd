@@ -12,6 +12,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, inArray, isNotNull, isNull, not } from 'drizzle-orm';
 import type { ClaimTasksResponse } from '@buildd/shared';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The claim-candidate rows this block looks tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -37,14 +38,14 @@ export async function attachWorkspaceWorkContext(
 
   if (workspaceIds.length > 0) {
     const openPRWorkers = await db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(workers.workspaceId, workspaceIds),
         not(isNull(workers.prUrl)),
         inArray(workers.status, ['running', 'idle', 'starting', 'waiting_input', 'completed']),
         not(inArray(workers.id, claimedWorkerIds)),
-      ),
+      )),
       columns: { id: true, branch: true, prUrl: true, prNumber: true, taskId: true, workspaceId: true },
-      orderBy: (workers, { desc }) => [desc(workers.createdAt)],
+      orderBy: sqlOrderByFn((workers, { desc }) => [desc(workers.createdAt)]),
       limit: 10,
     });
 
@@ -53,7 +54,7 @@ export async function attachWorkspaceWorkContext(
       const prTaskIds = openPRWorkers.map(w => w.taskId).filter(Boolean) as string[];
       const prTasks = prTaskIds.length > 0
         ? (await db.query.tasks.findMany({
-            where: inArray(tasks.id, prTaskIds),
+            where: sqlWhere(inArray(tasks.id, prTaskIds)),
             columns: { id: true, title: true, pathManifest: true },
           })) ?? []
         : [];
@@ -82,12 +83,12 @@ export async function attachWorkspaceWorkContext(
     // to create is already owned by a pending/active sibling task.
     // (Agent doctrine: never re-implement another task's declared deliverable.)
     const siblingManifestTasks = (await db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(tasks.workspaceId, workspaceIds),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
         isNotNull(tasks.pathManifest),
         not(inArray(tasks.id, claimedWorkers.map(cw => cw.taskId))),
-      ),
+      )),
       columns: { id: true, title: true, pathManifest: true, workspaceId: true },
     })) ?? [];
 

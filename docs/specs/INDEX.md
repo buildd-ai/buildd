@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (73)
+## Active (74)
 
 ### auth (9)
 
@@ -82,16 +82,16 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [DB Migration Operation-Class Gate](./db-migration-gates.md) · @builder — verified 2026-10-12
   Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
-- [DB Migration Execution](./migration-execution.md) · @max — verified 2026-10-06
-  Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
+- [DB Migration Execution](./migration-execution.md) · @max — verified 2026-10-12
+  Every committed migration MUST execute exactly once, recognised by its folder name (legacy history by its exact-ms journal time) and never by a high-water mark for post-cutover files; a missing tracking row for legacy history MUST be backfilled on evidence, never replayed.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-09-15
   For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
 - [Release Flow](./release-flow.md) · @max — verified 2026-10-12
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
-### runners (11)
+### runners (12)
 
-- [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-10-11
+- [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-10-12
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 - [Checkpoint Sweeps and Edit-Claim Enforcement](./checkpoint-sweeps.md) · @max — verified 2026-10-07
   Runners MUST sweep worktree changes against the resolved PR base at checkpoints and offer them for exclusive acquisition; under enforcement a confirmed collision MUST deny or defer.
@@ -109,6 +109,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 - [Runner Pre-Merge, Derived Files and Mergiraf](./runner-pre-merge.md) · @max — verified 2026-10-10
   Before a conflict agent starts, the runner MUST merge the right base with derived-file and mergiraf drivers, MUST record every file mergiraf resolved, and MUST NOT push mergiraf's work without an agent.
+- [Terminal Question Redirect](./terminal-question-redirect.md) · @max — verified 2026-10-12
+  A Claude Code session holding a live buildd claim MUST ask its questions through buildd, not the terminal-only prompt, and a reply typed at the terminal MUST withdraw the open buildd question.
 - [Provider-Backed Browser for Visual Review](./visual-qa-browser-providers.md) · @max — verified 2026-10-07
   The visual-auditor role is eligible only after a selected browser provider proves usable; a cloud browser reaches registered container-local services through a task-scoped CDP relay.
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-07
@@ -140,8 +142,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The task page MUST lead with the deliverable, its track and one outcome, list checks by round from delivery facts, frame attempts by their parent, fit a phone's first screen, and open Code review only to substance.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
   Home, the missions view and the workspaces view MUST all show only the single active team resolved server-side from the buildd-team cookie, via the same resolver the app shell uses.
-- [Team Service Status](./team-service-status.md) · @max — verified 2026-10-11
-  A team MUST see one plain-language service status per root cause, scoped to what each viewer may act on, never the incident machinery, and never as a Needs You count unless a named person has a concrete action.
+- [Team Service Status](./team-service-status.md) · @max — verified 2026-10-12
+  Each viewer MUST see one plain status per root cause, actionable only by whoever controls the broken runner; Home never carries operator machinery, operator included.
 - [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-09-26
   The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
 - [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-30

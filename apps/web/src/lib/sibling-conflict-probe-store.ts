@@ -22,6 +22,7 @@ import {
   type SiblingProbeDeps,
 } from '@/lib/sibling-conflict-probe';
 import type { SiblingProbeRequest } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const SIBLING_PROBE_SURFACE = 'sibling-conflict-probe';
 /** A worker silent this long is not going to run a probe or read a notice. */
@@ -118,7 +119,7 @@ export function createSiblingProbeStore(): SiblingProbeDeps {
   return {
     async loadLiveWorkers() {
       const rows = await db.query.workers.findMany({
-        where: and(liveWhere(), isNotNull(workers.observedTouches)),
+        where: sqlWhere(and(liveWhere(), isNotNull(workers.observedTouches))),
         columns: workerColumns,
         with: withTaskAndWorkspace,
       });
@@ -155,7 +156,7 @@ export function createSiblingProbeStore(): SiblingProbeDeps {
       if (taken.length === 0) return [];
       const otherIds = taken.map(r => (r.workerAId === workerId ? r.workerBId : r.workerAId));
       const others = await db.query.workers.findMany({
-        where: inArray(workers.id, [...new Set([...otherIds, workerId])]),
+        where: sqlWhere(inArray(workers.id, [...new Set([...otherIds, workerId])])),
         columns: { id: true, branch: true },
         with: { workspace: { columns: { gitConfig: true } } },
       });
@@ -176,7 +177,7 @@ export function createSiblingProbeStore(): SiblingProbeDeps {
 
     async loadWorkers(ids) {
       const rows = await db.query.workers.findMany({
-        where: inArray(workers.id, ids),
+        where: sqlWhere(inArray(workers.id, ids)),
         columns: workerColumns,
         with: withTaskAndWorkspace,
       });

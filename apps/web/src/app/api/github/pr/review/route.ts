@@ -45,6 +45,7 @@ import {
   type PrReviewWaitFor,
 } from '@/lib/pr-review-status';
 import { requestingPerson } from '@/lib/request-person';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
 
@@ -125,16 +126,16 @@ async function resolveTarget(
   if (wsIds.length === 0) return { error: 'No workspaces found for account', status: 403 };
 
   const owning = await db.query.workers.findFirst({
-    where: and(eq(workers.prNumber, prNumber), inArray(workers.workspaceId, wsIds)),
+    where: sqlWhere(and(eq(workers.prNumber, prNumber), inArray(workers.workspaceId, wsIds))),
     columns: { workspaceId: true },
   });
   if (owning?.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, owning.workspaceId) });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, owning.workspaceId)) });
     if (ws) return { workspace: ws as ResolvedTarget['workspace'] };
   }
 
   const linked = await db.query.workspaces.findMany({
-    where: and(inArray(workspaces.id, wsIds), isNotNull(workspaces.githubRepoId)),
+    where: sqlWhere(and(inArray(workspaces.id, wsIds), isNotNull(workspaces.githubRepoId))),
   });
   if (linked.length === 1) return { workspace: linked[0] as ResolvedTarget['workspace'] };
   return {
@@ -151,7 +152,7 @@ async function resolveTarget(
 async function resolveRepo(workspace: ResolvedTarget['workspace']) {
   if (!workspace.githubRepoId || !workspace.githubInstallationId) return null;
   const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.id, workspace.githubRepoId),
+    where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
     with: { installation: true },
   });
   if (!repo?.installation) return null;
@@ -175,7 +176,7 @@ async function resolveEffectivePolicy(
   missionId: string | null,
 ) {
   const mission = missionId
-    ? await db.query.missions.findFirst({ where: eq(missions.id, missionId), columns: { mergePolicy: true } })
+    ? await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { mergePolicy: true } })
     : null;
   return resolvePolicy(workspace as never, mission as never);
 }
@@ -256,7 +257,7 @@ export async function POST(req: NextRequest) {
   // queue one rather than report "already under review" with no status.
   const kernelReviewTask = kernel?.handled && kernel.reviewTaskId
     ? (await db.query.tasks.findFirst({
-        where: eq(tasks.id, kernel.reviewTaskId),
+        where: sqlWhere(eq(tasks.id, kernel.reviewTaskId)),
         columns: { id: true, status: true, result: true, context: true },
       })) ?? null
     : null;
@@ -605,7 +606,7 @@ export async function GET(req: NextRequest) {
 
   const owningWorker = await findPrOwningWorker(workspace.id, prNumber);
   const task = owningWorker?.taskId
-    ? await db.query.tasks.findFirst({ where: eq(tasks.id, owningWorker.taskId), columns: { missionId: true } })
+    ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, owningWorker.taskId)), columns: { missionId: true } })
     : null;
   const policy = await resolveEffectivePolicy(workspace, task?.missionId ?? null);
   const autoMergeExpected = autoMergeExpectedFor(policy);
