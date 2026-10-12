@@ -119,6 +119,7 @@ const mockIsMissionLinkable = mock(() => Promise.resolve(true));
 const mockEmit = mock(async (_event: any) => {});
 mock.module('@/lib/core-emit', () => ({ emit: mockEmit }));
 const leftMission = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.left_mission');
+const roleChanged = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.role_changed');
 mock.module('@/lib/mission-link-scope', () => ({
   isMissionLinkable: mockIsMissionLinkable,
 }));
@@ -896,6 +897,50 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(res.status).toBe(200);
       expect(mockWorkspaceSkillsFindMany).not.toHaveBeenCalled();
       expect(setCalls[0].roleSlug).toBeNull();
+    });
+
+    // Changing a role a role pick filled is an implicit correction of that
+    // decision; the decisions module labels it off task.role_changed
+    // (lib/decision-subscribers.ts).
+    describe('role change event', () => {
+      beforeEach(() => {
+        mockEmit.mockReset();
+        mockEmit.mockImplementation(async () => {});
+      });
+
+      it('emits on a change from the current role', async () => {
+        setup([role({ slug: 'researcher' })]);
+        mockTasksFindFirst.mockResolvedValue({ ...task, roleSlug: 'builder' });
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'researcher' } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(roleChanged()).toEqual([{
+          type: 'task.role_changed', taskId: TASK_ID, teamId: 'team-1',
+          from: 'builder', to: 'researcher', by: 'user-123',
+        }]);
+      });
+
+      it('does not emit when the role is cleared', async () => {
+        setup([]);
+        mockTasksFindFirst.mockResolvedValue({ ...task, roleSlug: 'builder' });
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: null } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(roleChanged()).toEqual([]);
+      });
+
+      it('does not emit for an unchanged role', async () => {
+        setup([role({ slug: 'builder' })]);
+        mockTasksFindFirst.mockResolvedValue({ ...task, roleSlug: 'builder' });
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'builder' } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(roleChanged()).toEqual([]);
+      });
+
+      it('does not emit for a first role on a task that had none', async () => {
+        setup([role({ slug: 'builder' })]);
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'builder' } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(roleChanged()).toEqual([]);
+      });
     });
   });
 
