@@ -4,7 +4,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { resolveWorkspaceAccess, type WorkspaceAccessCaller } from '@/lib/workspace-access';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
-import { requirementIds, type RequirementRef } from './requirements';
+import { requirementIds, type RequirementRef } from '@buildd/spec-contract/requirements';
 import { newRepoRefs, normalizeRepoPath, parseRepoRefs, sameRepoRefs, type RepoRef } from './repo-refs';
 import { ArtifactReadError, AUTO_FULL_MAX_CHARS, readArtifactBody, type ArtifactReadResult, type ArtifactReadSelector } from '@buildd/core/artifact-read';
 import { readRepoFileAtCommit } from './repo-source';

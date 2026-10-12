@@ -8,8 +8,8 @@ import {
 import { isUuid } from '@/lib/uuid';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { readPinnedSpecRevision } from './pin';
-import { specCriteria, type RequirementRef } from './requirements';
-import { inScope } from './scope';
+import { specCriteria, type RequirementRef } from '@buildd/spec-contract/requirements';
+import { inScope } from '@buildd/spec-contract/scope';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
 /**
@@ -202,6 +202,34 @@ export async function recordCheckVerdict(taskId: string, input: {
     evidence: { ...input.evidence, verificationTaskId: input.verificationTaskId, recordedBy: `check:${input.verificationTaskId}` },
   }).returning({ id: specOutcomeVerdicts.id });
   return { ok: true, verdictId: row.id };
+}
+
+/**
+ * Record a verdict the mission's visual audit made (lib/visual-audit-spec-verdict.ts),
+ * after that module has checked who the auditor is, what it captured and
+ * which screenshots it cites. Server-side, no caller, like a check run's;
+ * authored as `visual:<audit task id>`.
+ */
+export async function recordAuditedVerdict(taskId: string, input: {
+  criterionId: string; verdict: VerificationVerdict; headSha: string; auditTaskId: string; evidence: Record<string, unknown>;
+}): Promise<{ ok: true; verdictId: string; outcome: OutcomeView } | SpecError> {
+  const l = await loadGoverned(null, taskId, 'record');
+  if ('ok' in l) return l;
+  if (!l.criteria.some((c) => c.id === input.criterionId)) {
+    const ids = l.criteria.map((c) => c.id);
+    return fail(400, `criterionId must be a criterion this task answers for in pinned revision ${l.revision}: ${ids.length ? ids.join(', ') : 'it has none (no R-n or AC-n lines)'}`);
+  }
+  if (!SHA.test(input.headSha)) return fail(400, 'headSha must be a commit SHA');
+  const [row] = await db.insert(specOutcomeVerdicts).values({
+    workspaceId: l.task.workspaceId,
+    taskId: l.task.id,
+    specRevisionId: l.specRevisionId,
+    criterionId: input.criterionId,
+    verdict: input.verdict,
+    headSha: input.headSha.toLowerCase(),
+    evidence: { ...input.evidence, auditTaskId: input.auditTaskId, recordedBy: `visual:${input.auditTaskId}` },
+  }).returning({ id: specOutcomeVerdicts.id });
+  return { ok: true, verdictId: row.id, outcome: await fold(l) };
 }
 
 /**

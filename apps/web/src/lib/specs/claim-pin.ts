@@ -3,8 +3,8 @@ import { specRevisions, specs, workers } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { readPinnedSpecRevision } from './pin';
-import { specCriteria } from './requirements';
-import { scopeOf } from './scope';
+import { specCriteria } from '@buildd/spec-contract/requirements';
+import { scopeOf } from '@buildd/spec-contract/scope';
 
 /**
  * Pinning at claim (task 5c0a3f4c). Filing pins the approved revision

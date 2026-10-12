@@ -2,12 +2,12 @@ import { db } from '@buildd/core/db';
 import { specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
-import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from './check-lines';
+import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from '@buildd/spec-contract/check-lines';
 import { isRunnerReported } from '@/lib/verification-provenance';
 import { recordCheckVerdict } from './outcome';
 import { readPinnedSpecRevision } from './pin';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { scopeOf } from './scope';
+import { scopeOf } from '@buildd/spec-contract/scope';
 
 /**
  * Mechanical criterion checks (Living Specs V1). A criterion of a task's

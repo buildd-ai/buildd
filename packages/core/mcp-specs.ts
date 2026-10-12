@@ -176,6 +176,12 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       try {
         const r = op === 'outcome'
           ? await api(path)
+          : params.checker === 'visual'
+          ? await api(path, { method: 'POST', body: JSON.stringify({
+            checker: 'visual', criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), capturedSha: need(params.capturedSha, 'capturedSha'),
+            ...(params.screenshotIds !== undefined ? { screenshotIds: params.screenshotIds } : {}),
+            ...(params.observed !== undefined ? { observed: params.observed } : {}),
+          }) })
           : await api(path, { method: 'POST', body: JSON.stringify({
             criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), headSha: need(params.headSha, 'headSha'),
             ...(params.evidenceRefs !== undefined ? { evidenceRefs: params.evidenceRefs } : {}),

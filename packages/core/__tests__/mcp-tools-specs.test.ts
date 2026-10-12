@@ -184,6 +184,13 @@ describe('manage_specs', () => {
     expect(rec).toContain('Governed outcome: FAIL');
   });
 
+  it('a visual verdict sends what the audit captured instead of a head', async () => {
+    api.mockResolvedValueOnce(outcome('unverified', 'AC-1 has no verdict'));
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', taskId: TASK, checker: 'visual', criterionId: 'AC-1', verdict: 'pass', capturedSha: HEAD, screenshotIds: ['s-1'], headSha: 'ignored' }, ctx());
+    const [endpoint, opts] = api.mock.calls[0];
+    expect([endpoint, JSON.parse(opts.body)]).toEqual([`/api/specs/outcomes/${TASK}`, { checker: 'visual', criterionId: 'AC-1', verdict: 'pass', capturedSha: HEAD, screenshotIds: ['s-1'] }]);
+  });
+
   it('a refused verdict (a task grading itself) comes back as the route\'s error', async () => {
     api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"a task never grades its own outcome"}'));
     const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', taskId: TASK, criterionId: 'R-1', verdict: 'pass', headSha: HEAD }, ctx());

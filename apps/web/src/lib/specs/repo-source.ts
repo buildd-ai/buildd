@@ -55,7 +55,7 @@ export async function fetchFileAtCommit(
 }
 
 /** The workspace's linked repo, or null when it has none (or no installation). */
-async function linkedRepo(workspaceId: string): Promise<{ fullName: string; installationId: number } | null> {
+export async function linkedRepo(workspaceId: string): Promise<{ fullName: string; installationId: number } | null> {
   const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), with: WORKSPACE_INSTALLATION_WITH });
   const id = pickWorkspaceRepoIdentity(ws);
   if (id.source !== 'github_repo' || !id.fullName || !id.installationId) return null;

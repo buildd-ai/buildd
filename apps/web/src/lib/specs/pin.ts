@@ -3,8 +3,8 @@ import { specRevisions, specs } from '@buildd/core/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
-import { specCriteria } from './requirements';
-import { checkCriteriaScope } from './scope';
+import { specCriteria } from '@buildd/spec-contract/requirements';
+import { checkCriteriaScope } from '@buildd/spec-contract/scope';
 
 /**
  * Pinning work to a Living Spec revision (G2, decision D-4).
