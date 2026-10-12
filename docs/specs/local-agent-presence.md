@@ -114,8 +114,11 @@ reserve it, so a runner cannot take it the moment it frees.
 - `update_task { taskId, reserve: true }` writes `context.reservedBy`
   (`{ accountId, at, expiresAt }`, 20 minutes). Reserving again by the same
   account renews it; `reserve: false` releases it. Another account's live
-  reservation is refused (409), a lapsed one is taken over. Only an account
-  identity can hold one, never a dashboard user or a task token.
+  reservation is refused (409), a lapsed one is taken over. Only a **verified
+  interactive session** can hold one (the signed marker the MCP route adds, the same
+  check the claim route's pass-through uses): a request without it, a dashboard user
+  or a task token is refused 403, and `POST /api/tasks` with `reserve: true` is refused
+  before anything is filed, so a non-interactive caller cannot park a task from every claimer.
 - While live, runners and every other account skip the task; only the reserving
   account's explicit `claim_task {taskId}` passes. Dependencies, holds and the
   other claim gates still apply to that claim.
@@ -136,7 +139,7 @@ Acceptance criteria:
 - AC-RV1: GIVEN a live reservation by account A WHEN a runner or account B claims the task THEN it is refused as `task_reserved`; WHEN A claims it THEN the claim proceeds.
 - AC-RV2: GIVEN a reservation whose `expiresAt` has passed THEN any claimant passes the gate.
 - AC-RV3: WHEN a reserved task is claimed THEN `reservedBy` is absent from the claimed task's context.
-- AC-RV4: WHEN `create_task` carries `claim: true` THEN the insert already carries the caller's reservation, and the claim follows by id.
+- AC-RV4: WHEN `create_task` carries `claim: true` from a verified interactive session THEN the insert already carries the caller's reservation, and the claim follows by id; from any other caller it is refused 403 and nothing is filed.
 - AC-RV5: WHEN `claim_task` carries `waitSeconds` and the task is blocked only by dependencies THEN the call retries until it frees or the wait ends, and gives up at once on any other exclusion.
 
 ## Session end
