@@ -14,6 +14,8 @@ import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { lazyRequester } from '@buildd/core/role-visibility';
 import { checkStatedRole } from '@/lib/stated-role';
+import { labelHumanCorrection } from '@buildd/core/decision-outcome-graders';
+import { TASK_ROLE_CAPABILITY } from '@/lib/task-role-decision';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -772,6 +774,22 @@ export async function PATCH(
           await reopenCompletedMission(updated.missionId, feedActor);
         }
       }).catch((err) => console.error('[task-patch] mission-feed/reopen failed:', err));
+    }
+
+    // Replacing a role a role pick applied is an implicit correction of that
+    // decision. Clearing it is not (there is no corrected answer), and a role
+    // the task never had cannot have been picked. Labelling never blocks the edit.
+    const nextRoleSlug = updated?.roleSlug ?? null;
+    const teamId = task.workspace?.teamId;
+    if (roleSlug !== undefined && teamId && task.roleSlug && nextRoleSlug && nextRoleSlug !== task.roleSlug) {
+      await labelHumanCorrection({
+        teamId,
+        capability: TASK_ROLE_CAPABILITY,
+        taskId: id,
+        from: task.roleSlug,
+        to: nextRoleSlug,
+        by: apiAccount?.id ?? user?.id ?? null,
+      }).catch((err) => console.error('[task-patch] role correction label failed:', err));
     }
 
     return NextResponse.json(updated);

@@ -201,6 +201,9 @@ const mockResolveTaskDelegationWrite = mock(async (input: unknown, _ws: string, 
     : { ok: false, status: 403, error: 'Only a person can grant a task delegation' });
 mock.module('@/lib/task-delegation-checks', () => ({ resolveTaskDelegationWrite: mockResolveTaskDelegationWrite }));
 
+const mockLabelHumanCorrection = mock(async (_input: any): Promise<string> => 'labelled');
+mock.module('@buildd/core/decision-outcome-graders', () => ({ labelHumanCorrection: mockLabelHumanCorrection }));
+
 import { GET, PATCH, DELETE } from './route';
 
 // Helper to create mock NextRequest
@@ -896,6 +899,59 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(res.status).toBe(200);
       expect(mockWorkspaceSkillsFindMany).not.toHaveBeenCalled();
       expect(setCalls[0].roleSlug).toBeNull();
+    });
+
+    // Changing a role a role pick filled is an implicit correction of that
+    // decision (decision-outcome-graders.ts).
+    describe('human correction label', () => {
+      beforeEach(() => {
+        mockLabelHumanCorrection.mockReset();
+        mockLabelHumanCorrection.mockImplementation(async () => 'labelled');
+      });
+
+      it('labels a change from the current role', async () => {
+        setup([role({ slug: 'researcher' })]);
+        mockTasksFindFirst.mockResolvedValue({ ...task, roleSlug: 'builder' });
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'researcher' } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(mockLabelHumanCorrection).toHaveBeenCalledTimes(1);
+        expect(mockLabelHumanCorrection.mock.calls[0][0]).toEqual({
+          teamId: 'team-1', capability: 'task_role_shadow', taskId: TASK_ID,
+          from: 'builder', to: 'researcher', by: 'user-123',
+        });
+      });
+
+      it('does not label when the role is cleared', async () => {
+        setup([]);
+        mockTasksFindFirst.mockResolvedValue({ ...task, roleSlug: 'builder' });
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: null } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(mockLabelHumanCorrection).not.toHaveBeenCalled();
+      });
+
+      it('does not label an unchanged role', async () => {
+        setup([role({ slug: 'builder' })]);
+        mockTasksFindFirst.mockResolvedValue({ ...task, roleSlug: 'builder' });
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'builder' } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(mockLabelHumanCorrection).not.toHaveBeenCalled();
+      });
+
+      it('does not label a first role on a task that had none', async () => {
+        setup([role({ slug: 'builder' })]);
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'builder' } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(mockLabelHumanCorrection).not.toHaveBeenCalled();
+      });
+
+      it('still returns 200 when labelling throws', async () => {
+        setup([role({ slug: 'researcher' })]);
+        mockTasksFindFirst.mockResolvedValue({ ...task, roleSlug: 'builder' });
+        mockLabelHumanCorrection.mockImplementation(async () => { throw new Error('boom'); });
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'researcher' } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(setCalls[0].roleSlug).toBe('researcher');
+      });
     });
   });
 
