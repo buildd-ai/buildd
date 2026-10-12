@@ -173,20 +173,3 @@ export function resolveTaskEstimatesState(raw: unknown, defaultOn: boolean = tas
   if (typeof chosen === 'boolean') return { enabled: chosen, source: 'team', defaultOn };
   return { enabled: defaultOn, source: 'default', defaultOn };
 }
-
-const FAILING_LINE: Record<GateCheckId, string> = {
-  blend_better: 'the blended estimate has not beaten the simpler one',
-  neighbours: 'estimates from similar past tasks are not yet within the bar',
-  prior_only: 'repos with little history ran well past their estimates',
-  cold_start: 'a brand-new repo has not been measured yet',
-};
-
-/** One plain sentence on why estimates are not on by default, or null when they are. */
-export function defaultOffReason(pin: TaskEstimatesRolloutPin = TASK_ESTIMATES_ROLLOUT, runningVersion: string = ESTIMATOR_VERSION): string | null {
-  if (taskEstimatesDefaultOn(pin, runningVersion)) return null;
-  if (pin.estimatorVersion !== runningVersion) return 'The current estimator has not been checked against finished work yet.';
-  const lines = pin.failing.map(id => FAILING_LINE[id]);
-  if (lines.length === 0) return 'The accuracy check has not passed yet.';
-  const joined = lines.length === 1 ? lines[0] : `${lines.slice(0, -1).join(', ')} and ${lines[lines.length - 1]}`;
-  return `Not on by default yet: ${joined}.`;
-}

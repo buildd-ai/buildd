@@ -6,6 +6,8 @@ import { wakeTask } from '@/lib/dispatch-authority';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { roleHas } from '@/lib/permissions';
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { checkConnectorRouting, findAlternativeRole, type ConnectorFailure } from '../../../workers/claim/connector-gate';
 import { checkMissionHeld } from '../../../workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '../../../workers/claim/mission-budget-gate';
@@ -105,13 +107,18 @@ export async function POST(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Authorization check
+    // Authorization check. canRaiseCap: the same bar PATCH /api/workspaces/[id]
+    // sets for maxConcurrentTasks, so a cap refusal only offers "raise the
+    // limit" to someone whose raise would be accepted.
+    let canRaiseCap = false;
     if (authType === 'session') {
       const access = await verifyWorkspaceAccess(userId!, task.workspaceId);
       if (!access) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       }
+      canRaiseCap = roleHas(access.role, 'manage_workspace_settings');
     } else {
+      canRaiseCap = hasTokenRouteAdminAccess(sessionAccount, req);
       const hasAccess = await verifyAccountWorkspaceAccess(sessionAccount ?? accountId!, task.workspaceId);
       if (!hasAccess) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
@@ -323,6 +330,7 @@ export async function POST(
           cap: capResult.cap,
           queuePosition: pendingAhead.length,
           canExempt: true,
+          canRaiseCap,
         }, { status: 422 });
       }
     }

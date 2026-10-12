@@ -117,7 +117,11 @@ belongs to one team and carries a level — `trigger`, `worker` or `admin`
 - Removing someone else needs `manage_team_members`; removing an owner also
   needs `assign_team_owner`.
 - Any member MAY leave (remove themselves) without `manage_team_members`,
-  except from their personal team and except the team's last owner.
+  except from their personal team and except the team's last owner. Leave is
+  offered on the member's own Profile (Settings › You › Profile › Your teams,
+  one per team row) as well as Members › Danger zone, through the same
+  `DELETE /api/teams/[id]/members/[userId]`; neither offers it for a personal
+  team, and both disable it for the last owner.
 - No change MAY demote or remove the team's last owner, whoever asks; the
   check counts current owners, not whether the caller is the target.
 - An owner MAY transfer ownership to an existing non-owner member
@@ -506,12 +510,14 @@ session-only or rejects keys. Line numbers are as of this spec's
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
 | `apps/web/src/app/api/workspaces/[id]/config/route.ts:148` | write workspace config | owner, admin | admin | `manage_workspace_settings` |
-| `apps/web/src/app/api/workspaces/[id]/route.ts:221` | PATCH git config (incl. merge policy, member repo access), access mode, data class, connector gate, webhook | owner, admin | admin (route policy) | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/[id]/route.ts:221` | PATCH git config (incl. merge policy, member repo access), access mode, data class, connector gate, webhook, concurrency cap | owner, admin | admin (route policy) | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/[id]/settings/route.ts:53` | PATCH work tracker config | owner, admin | admin | `manage_workspace_settings` |
+| `apps/web/src/app/api/tasks/[id]/start/route.ts:119` | `canRaiseCap` on a `workspace_cap_reached` refusal: whether the task's "raise the workspace limit" control shows | owner, admin | admin (route policy) | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/[id]/pause-starts/route.ts:35` | pause or resume new starts (the control is on the workspace's settings page, Where work runs; Health › Runners only shows a pause) | owner, admin | admin (route policy) | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/[id]/github-access/route.ts:48` | POST re-check the GitHub App's repo access and link the repo (GET open to members) | owner, admin | admin (route policy) | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/route.ts:217` | POST create a workspace in the target team (a member is refused, not moved to their personal team) | owner, admin, personal team | admin | `create_workspace` |
 | `apps/web/src/app/api/workspaces/[id]/route.ts:560` | DELETE workspace | owner | — | `delete_workspace` |
-| `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx:93` | UI: workspace settings (readiness, git config, merge policy, delivery) | owner, admin | — | `manage_workspace_settings` |
+| `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx:97` | UI: workspace settings (readiness, git config, merge policy, delivery, repeat work, concurrency cap, pause new starts) | owner, admin | — | `manage_workspace_settings` |
 | `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx:334` | UI: delete workspace | owner | — | `delete_workspace` |
 | `apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx:157` | UI: connect a repo | owner, admin | — | `manage_workspace_settings` |
 | `apps/web/src/app/app/(protected)/settings/workspaces/page.tsx:23` | UI: New workspace | owner, admin, personal team | — | `create_workspace` |
@@ -550,6 +556,7 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/connectors/[id]/shares/route.ts:65` | manage connector shares (owner team; target team `:153`) | owner, admin | admin (route policy) | `manage_connectors` |
 | `apps/web/src/app/api/connectors/[id]/transfer/route.ts:73` | transfer a connector (source; target `:96`) | owner, admin | admin (route policy) | `manage_connectors` |
 | `apps/web/src/app/api/workspaces/[id]/connectors/route.ts:136` | enable or disable a connector in a workspace | owner, admin | admin (in-route) | `manage_connectors` |
+| `apps/web/src/lib/settings-nav.ts` | UI: Settings › Team › Apps (team apps and agent access; a member reads both and can request an app) | owner, admin, personal team | — | `manage_connectors` |
 | `apps/web/src/app/api/roles/route.ts:185` | create a team-level role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
 | `apps/web/src/app/api/roles/[id]/route.ts:55` | edit or delete a team role (incl. its operator grant), or make a skill one | owner, admin, personal team | — (session only) | `manage_agent_roles` |
 | `apps/web/src/app/api/roles/[id]/overrides/route.ts:94` | write a role's workspace override | owner, admin, personal team | — (session only) | `manage_agent_roles` |
@@ -558,8 +565,8 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/roles/route.ts:177` | create a personal role (`personal: true`) | owner, admin, member | — (session only) | `create_personal_roles` |
 | `apps/web/src/lib/personal-roles.ts:66` | edit, delete or re-share another member's **shared** personal role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
 | `apps/web/src/app/api/roles/[id]/promote/route.ts:34` | promote a shared personal role to a team role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
-| `apps/web/src/app/app/(protected)/settings/roles/page.tsx:95` | UI: New role (personal; team role `:96`) | per permission | — | `create_personal_roles` |
-| `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/page.tsx:162` | UI: team role editor and Operator access | owner, admin | — | `manage_agent_roles` |
+| `apps/web/src/app/app/(protected)/settings/agents/page.tsx:95` | UI: New role (personal; team role `:96`) | per permission | — | `create_personal_roles` |
+| `apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/page.tsx:162` | UI: team role editor and Deploy access (anyone else sees one line naming where the agent can deploy) | owner, admin | — | `manage_agent_roles` |
 | `apps/web/src/app/api/evidence-backends/route.ts:51` | create a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/app/api/evidence-backends/[id]/route.ts:56` | edit a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/app/api/evidence-backends/[id]/route.ts:99` | delete a backend | owner, admin | admin | `manage_evidence_backends` |
@@ -598,7 +605,7 @@ path. See Platform operator.
    team the API key's team owner belongs to. That is reach, not a permission,
    so it is not in the registry; noted because it reads `role = 'owner'`.
 5. **Writes with no role gate.** For a session, these need only membership:
-   deleting a memory, a workspace's name/repo/branch/concurrency cap, plain
+   deleting a memory, a workspace's name/repo/branch, plain
    skill CRUD (`isRole` false), and the mission, task and schedule admin routes
    (those hold API keys to admin, but not sessions). They are not permission
    decisions, so they are not in the registry.

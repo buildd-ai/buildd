@@ -5,16 +5,16 @@ import { isEstimatesFixtureState } from './estimates-fixtures';
 
 describe('EstimatesOff', () => {
   test('an admin gets the way to turn it on, not a dead end', () => {
-    const html = renderToStaticMarkup(<EstimatesOff canManage defaultOffReason="Not on by default yet." />);
+    const html = renderToStaticMarkup(<EstimatesOff canManage />);
     expect(html).toContain('Task estimates are off for this team.');
     expect(html).toContain('data-testid="estimates-turn-on"');
     expect(html).toContain('href="/app/settings/features"');
-    expect(html).toContain('Not on by default yet.');
+    expect(html).not.toMatch(/not on by default|other teams/i);
     expect(html).not.toContain('estimates-ask-admin');
   });
 
   test('a member learns who can turn it on, with no action of their own', () => {
-    const html = renderToStaticMarkup(<EstimatesOff canManage={false} defaultOffReason={null} />);
+    const html = renderToStaticMarkup(<EstimatesOff canManage={false} />);
     expect(html).toContain('data-testid="estimates-ask-admin"');
     expect(html).toContain('owner or admin');
     expect(html).not.toContain('estimates-turn-on');

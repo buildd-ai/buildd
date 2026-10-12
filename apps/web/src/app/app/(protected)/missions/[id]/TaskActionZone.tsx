@@ -474,7 +474,7 @@ export default function TaskActionZone({
               </p>
             )}
           </div>
-          {refusal.gateReason === 'workspace_cap_reached' && (
+          {refusal.gateReason === 'workspace_cap_reached' && refusal.canRaiseCap && (
             <div className="flex flex-wrap items-center gap-2 font-mono text-meta">
               <span className="text-text-secondary">Raise the workspace limit to</span>
               <div className="inline-flex shrink-0 items-center gap-2">

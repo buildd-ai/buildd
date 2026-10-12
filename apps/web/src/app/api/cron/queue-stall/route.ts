@@ -400,7 +400,7 @@ async function resolveStallGate(
         gate: 'backend_credential_missing',
         detail:
           `routed to ${stranded.label}, which has no credential for this team — ` +
-          `no runner can claim it. Add one in Settings → Agent backends, or ` +
+          `no runner can claim it. Add one in Settings → Models, or ` +
           `disable ${stranded.label} team-wide to reroute this work`,
       };
     }

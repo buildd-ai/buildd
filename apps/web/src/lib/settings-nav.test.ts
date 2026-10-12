@@ -31,9 +31,31 @@ describe('SETTINGS_NAV', () => {
 
   it('lists everything the team shares under Team, Members first', () => {
     expect(ids('Team')).toEqual([
-      'team', 'agents', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations', 'features',
+      'team', 'agents', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations', 'apps', 'features',
     ]);
     expect(SETTINGS_ITEMS.find((i) => i.id === 'team')?.label).toBe('Members');
+  });
+
+  it('splits connected apps: yours under You, the team\'s apps and agent access under Team', () => {
+    const yours = SETTINGS_ITEMS.find((i) => i.id === 'connections')!;
+    const team = SETTINGS_ITEMS.find((i) => i.id === 'apps')!;
+    expect(ids('You')).toContain('connections');
+    expect(ids('Team')).toContain('apps');
+    expect(team.href).toBe('/app/settings/apps');
+    expect(team.manage).toEqual(['manage_connectors']);
+    // Your page describes only your own connections.
+    expect(yours.description).not.toMatch(/agent|team/i);
+    const yoursPage = readFileSync(pageFor(yours.href), 'utf8');
+    expect(yoursPage).not.toContain('TeamAppsSection');
+    expect(yoursPage).not.toContain('AgentAccessSection');
+    const teamPage = readFileSync(pageFor(team.href), 'utf8');
+    expect(teamPage).toContain('TeamAppsSection');
+    expect(teamPage).toContain('AgentAccessSection');
+  });
+
+  it('describes Members by what is on the page', () => {
+    const members = SETTINGS_ITEMS.find((i) => i.id === 'team')!;
+    expect(members.description).not.toMatch(/what each person can change/);
   });
 
   it('keeps sub-pages inside their section', () => {
@@ -153,7 +175,7 @@ describe('legacy settings links', () => {
     expect(legacySettingsTarget('#agent-backends')).toBe('/app/settings/models');
     expect(legacySettingsTarget('agent-backends')).toBe('/app/settings/models');
     expect(legacySettingsTarget('#inference-spending')).toBe('/app/settings/models');
-    expect(legacySettingsTarget('#connectors')).toBe('/app/settings/connections');
+    expect(legacySettingsTarget('#connectors')).toBe('/app/settings/apps');
     expect(legacySettingsTarget('#github')).toBe('/app/settings/integrations');
     expect(legacySettingsTarget('#vercel')).toBe('/app/settings/integrations');
     expect(legacySettingsTarget('#provider-keys')).toBe('/app/settings/models');

@@ -212,8 +212,9 @@ export async function PATCH(
     // sessions), plus an admin-level API key. Checked before any write so a
     // mixed body is all-or-nothing.
     // webhookConfig decides where the workspace's tasks are sent (and carries
-    // the bearer token for it), so it is an admin setting too.
-    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, webhookConfig]
+    // the bearer token for it), so it is an admin setting too. So is the
+    // concurrency cap: it bounds how much the workspace runs at once.
+    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, webhookConfig, maxConcurrentTasks]
       .some(v => v !== undefined);
     if (touchesAdminSettings) {
       const isAdmin = apiAccount

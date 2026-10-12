@@ -6,7 +6,6 @@ import { resolveActiveTeamId } from '@/lib/team-access';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { teamMembers } from '@buildd/core/db/schema';
-import { defaultOffReason } from '@buildd/core/task-estimate-rollout';
 import { loadTaskEstimatesState } from '@buildd/core/task-estimate-source';
 import { roleHas } from '@/lib/permission-registry';
 import { EstimatesOff } from './EstimatesOff';
@@ -55,7 +54,7 @@ export default async function HealthEstimatesPage({ searchParams }: { searchPara
   if (isEstimatesFixtureState(fixture)) {
     if (fixture === 'error') return <Shell><LoadError /></Shell>;
     if (fixture === 'off-admin' || fixture === 'off-member') {
-      return <Shell><EstimatesOff canManage={fixture === 'off-admin'} defaultOffReason={defaultOffReason()} /></Shell>;
+      return <Shell><EstimatesOff canManage={fixture === 'off-admin'} /></Shell>;
     }
     return fixture === 'enabled-empty'
       ? <EstimatesClient readout={FIXTURE_EMPTY_READOUT} points={[]} />
@@ -79,7 +78,7 @@ export default async function HealthEstimatesPage({ searchParams }: { searchPara
   if (!state.enabled) {
     return (
       <Shell>
-        <EstimatesOff canManage={await canManageTeam(user.id, teamId)} defaultOffReason={defaultOffReason()} />
+        <EstimatesOff canManage={await canManageTeam(user.id, teamId)} />
       </Shell>
     );
   }

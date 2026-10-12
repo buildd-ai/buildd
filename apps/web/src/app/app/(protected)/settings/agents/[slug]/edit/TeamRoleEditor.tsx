@@ -927,7 +927,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         />
       </fieldset>
 
-      {/* Platform Operator access: a distinct admin surface, not a content/tools/mcp override. */}
+      {/* Deploy access: the agent's deploy grants, not a content/tools/mcp override. */}
       {!personal && !isWorkspaceRole && role.slug === OPERATOR_ROLE_SLUG && (
         <OperatorAccessSection
           roleId={role.id}
@@ -1001,25 +1001,6 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 })}
               </div>
             )}
-          </div>
-        </Section>
-      )}
-
-      {/* Resolution summary */}
-      {!personal && !isWorkspaceRole && role.slug !== OPERATOR_ROLE_SLUG && userWorkspaces.length > 0 && (
-        <Section title="Effective agent per workspace">
-          <div className="divide-y divide-border-default border-y border-border-default">
-            {userWorkspaces.map(ws => {
-              const override = overrideList.find(o => o.workspaceId === ws.id);
-              return (
-                <div key={ws.id} className="flex min-h-11 items-center justify-between gap-3 py-2">
-                  <span className="truncate text-sm text-text-primary">{ws.name}</span>
-                  {override
-                    ? <TonePill tone="run">Workspace override</TonePill>
-                    : <TonePill tone="q">Team default</TonePill>}
-                </div>
-              );
-            })}
           </div>
         </Section>
       )}

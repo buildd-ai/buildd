@@ -14,7 +14,7 @@ const GROUPS: Array<[string, string[]]> = [
   ['Readiness', ['<WorkspaceHealthCard', '<ReadinessCard', '<RepoAccessCard']],
   ['Repository', ['<GitConfigForm', '<MemberRepoAccessSection']],
   ['Delivery', ['<MergePolicyEditor', '<BranchStrategySection', '<CiRetrySection', '<ReleaseSection', '<SubjectPolicySection']],
-  ['Where work runs', ['<ExecutorSection', '<RunnerSizeSection', '<ConcurrencySection']],
+  ['Where work runs', ['<ExecutorSection', '<RunnerSizeSection', '<ConcurrencySection', '<PauseStartsSection']],
   ['Integrations', ['<WorkTrackerSection']],
   ['Danger zone', ['<MoveToTeamButton', '<DeleteWorkspaceButton']],
 ];
