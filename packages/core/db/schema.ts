@@ -3953,7 +3953,7 @@ export const memoryDecisions = pgTable('memory_decisions', {
 export const knowledgeEntities = pgTable('knowledge_entities', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: text('workspace_id').notNull(),
-  kind: text('kind').notNull().$type<'file' | 'symbol' | 'heading' | 'pr' | 'task' | 'mission' | 'initiative' | 'wikilink' | 'concept' | 'feature' | 'component'>(),
+  kind: text('kind').notNull().$type<'file' | 'symbol' | 'heading' | 'pr' | 'task' | 'mission' | 'initiative' | 'wikilink' | 'concept' | 'feature' | 'component' | 'spec' | 'spec_revision'>(),
   key: text('key').notNull(),
   canonicalName: text('canonical_name').notNull(),
   attributes: jsonb('attributes').default({}).$type<Record<string, unknown>>().notNull(),
