@@ -43,17 +43,6 @@ async function errorText(res: Response): Promise<string> {
   return typeof body.error === 'string' ? body.error : "That didn’t go through. Try again.";
 }
 
-/** Both parts together; the decision model reloads when the gateway changes. */
-export default function GatewayAndDecisionModel({ teamId, canManage }: { teamId: string; canManage: boolean }) {
-  const [rev, setRev] = useState(0);
-  return (
-    <>
-      <GatewayCard teamId={teamId} canManage={canManage} onChanged={() => setRev((r) => r + 1)} />
-      <DecisionModelPicker teamId={teamId} canManage={canManage} rev={rev} />
-    </>
-  );
-}
-
 function useGateway(teamId: string, rev = 0) {
   const [gateway, setGateway] = useState<MaskedGateway | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);

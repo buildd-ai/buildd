@@ -6,11 +6,17 @@ import { Select } from '@/components/ui/Select';
 import { getModelDisplayName } from '@buildd/core/model-display';
 import type { ModelUpgradeMode, ModelUpgradePolicy, PolicySource, TierAdoption } from '@buildd/core/model-upgrade-policy';
 
+/**
+ * What a team chooses: Automatic or Manual. `soak` is a platform operator's
+ * tuning (API and MCP only, lib/admin/platform-operator-caller.ts); a stored soak still shows
+ * as the current value, with no way to pick it.
+ */
 const MODE_OPTIONS: Array<{ value: ModelUpgradeMode; label: string; description: string }> = [
-  { value: 'latest-compatible', label: 'Latest compatible', description: 'Move to each new model as soon as Buildd certifies it' },
-  { value: 'soak', label: 'Soak first', description: 'Move once a model has run cleanly for a while' },
+  { value: 'latest-compatible', label: 'Automatic', description: 'Move to each new model as soon as Buildd certifies it' },
   { value: 'manual', label: 'Manual', description: 'Never move on its own; you adopt new models' },
 ];
+
+const soakLabel = (hours: number | null | undefined) => `Soak first for ${hours ?? 72} hours`;
 
 const SOURCE_TEXT: Record<PolicySource, string> = {
   team: 'Set for this team.',
@@ -63,16 +69,13 @@ export function upgradeNote(t: TierAdoption): string | null {
  */
 export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId: string; isAdmin: boolean }) {
   const [data, setData] = useState<PolicyResponse | null>(null);
-  const [soakHours, setSoakHours] = useState('72');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
 
   const load = useCallback(async () => {
     const r = await fetch(`/api/model-tiers/policy?teamId=${teamId}`).catch(() => null);
     if (!r?.ok) return;
-    const d = (await r.json()) as PolicyResponse;
-    setData(d);
-    if (d.policy.mode === 'soak' && d.policy.soakHours) setSoakHours(String(d.policy.soakHours));
+    setData((await r.json()) as PolicyResponse);
   }, [teamId]);
 
   useEffect(() => { void load(); }, [load]);
@@ -100,14 +103,14 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
     }
   }
 
-  const setMode = (mode: ModelUpgradeMode, hours = soakHours) =>
-    send('/api/model-tiers/policy', {
-      method: 'PUT',
-      body: JSON.stringify({ teamId, mode, ...(mode === 'soak' ? { soakHours: Number(hours) || 72 } : {}) }),
-    }, 'Saved');
+  const setMode = (mode: ModelUpgradeMode) =>
+    send('/api/model-tiers/policy', { method: 'PUT', body: JSON.stringify({ teamId, mode }) }, 'Saved');
 
   const disabled = busy || !data;
   const mode = data?.policy.mode ?? 'latest-compatible';
+  const options = mode === 'soak'
+    ? [...MODE_OPTIONS, { value: 'soak' as const, label: soakLabel(data?.policy.soakHours), description: '', disabled: true }]
+    : MODE_OPTIONS;
   const withheld = data?.tiers.filter((t) => t.newer && t.withheld && t.withheld.reason === 'manual') ?? [];
 
   return (
@@ -123,34 +126,18 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
         {!isAdmin ? (
           // Read-only: the value, no control (the page says who manages it).
           <span className="text-sm text-text-primary sm:text-right" data-testid="model-upgrade-mode-value">
-            {!data ? '…' : `${MODE_OPTIONS.find((o) => o.value === mode)?.label ?? mode}${mode === 'soak' ? ` for ${soakHours} hours` : ''}`}
+            {!data ? '…' : options.find((o) => o.value === mode)?.label ?? mode}
           </span>
         ) : (<>
         <Select
           aria-labelledby="model-upgrade-mode-label"
           testId="model-upgrade-mode"
           className="w-full sm:w-56"
-          options={MODE_OPTIONS}
+          options={options}
           value={mode}
           disabled={disabled}
           onChange={(v: string) => void setMode(v as ModelUpgradeMode)}
         />
-        {mode === 'soak' && (
-          <label className="flex items-center gap-2 text-meta text-text-secondary">
-            for
-            <input
-              type="number"
-              min={1}
-              className="input w-20"
-              value={soakHours}
-              disabled={disabled}
-              onChange={(e) => setSoakHours(e.target.value)}
-              onBlur={() => { if (Number(soakHours) !== data?.policy.soakHours) void setMode('soak', soakHours); }}
-              data-testid="model-upgrade-soak-hours"
-            />
-            hours
-          </label>
-        )}
         </>)}
       </div>
 

@@ -505,8 +505,8 @@ UPDATE tasks t SET
   -- losing it makes them appear as regular tasks needing a decision on the clone.
   title = CASE
     WHEN t.title ~ '^\[surface audit\] round [0-9]+: '
-    THEN substring(t.title, 1, position(': ' in t.title) + 2) ||
-      pg_temp.qa_title('Task', s.n, substr(t.title, position(': ' in t.title) + 3))
+    THEN substring(t.title, 1, position(': ' in t.title) + 1) ||
+      pg_temp.qa_title('Task', s.n, substr(t.title, position(': ' in t.title) + 2))
     WHEN t.title LIKE '[surface audit] %'
     THEN '[surface audit] ' || pg_temp.qa_title('Task', s.n, substr(t.title, 17))
     WHEN t.task_class = 'bookkeeping' AND t.title LIKE 'Ship mission: %'

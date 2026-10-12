@@ -1,4 +1,5 @@
 import { isSilentCompletion } from '@/lib/silent-completion';
+import { inheritTaskDelegation } from '@buildd/core/token-delegation';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, asc, sql } from 'drizzle-orm';
@@ -1225,6 +1226,8 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         outputRequirement: originalTask.outputRequirement,
         outputSchema: originalTask.outputSchema,
         parentTaskId: originalTask.parentTaskId,
+        // A person's cross-workspace grant is part of the work, not the attempt.
+        ...(() => { const delegation = inheritTaskDelegation(originalTask); return delegation ? { delegation } : {}; })(),
         // Routing survives the retry: without it a visual-auditor audit would
         // be claimable by any runner and skip its evidence check.
         roleSlug: originalTask.roleSlug,
