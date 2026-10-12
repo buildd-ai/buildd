@@ -31,13 +31,13 @@ describe('SETTINGS_NAV', () => {
 
   it('lists everything the team shares under Team, Members first', () => {
     expect(ids('Team')).toEqual([
-      'team', 'roles', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations', 'features',
+      'team', 'agents', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations', 'features',
     ]);
     expect(SETTINGS_ITEMS.find((i) => i.id === 'team')?.label).toBe('Members');
   });
 
   it('keeps sub-pages inside their section', () => {
-    expect(settingsItemFor('/app/settings/roles/builder/edit')?.id).toBe('roles');
+    expect(settingsItemFor('/app/settings/agents/builder/edit')?.id).toBe('agents');
     expect(settingsItemFor('/app/settings/team/new')?.id).toBe('team');
     expect(settingsItemFor('/app/settings/runners/tokens/new')?.id).toBe('runners');
     expect(settingsItemFor('/app/settings/keys')?.id).toBe('keys');
@@ -137,7 +137,7 @@ describe('settingsItemFor', () => {
 describe('settingsBackHref', () => {
   it('goes from a section back to the index, and from a sub-page back to its section', () => {
     expect(settingsBackHref('/app/settings/models')).toBe('/app/settings');
-    expect(settingsBackHref('/app/settings/roles/builder')).toBe('/app/settings/roles');
+    expect(settingsBackHref('/app/settings/agents/builder')).toBe('/app/settings/agents');
     expect(settingsBackHref('/app/settings/workspace/ws-1')).toBe('/app/settings/workspaces');
     expect(settingsBackHref('/app/settings')).toBeNull();
   });

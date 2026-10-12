@@ -72,7 +72,7 @@ export default async function TeamRoleSettingsPage({
       delegateRows(),
     ]);
     // Read-only is the role's own page: its values, with no controls.
-    if (!canEdit) redirect(`/app/settings/roles/${encodeURIComponent(slug)}`);
+    if (!canEdit) redirect(`/app/settings/agents/${encodeURIComponent(slug)}`);
     return (
       <TeamRoleEditor
         role={JSON.parse(JSON.stringify(wsRole))}
@@ -92,7 +92,7 @@ export default async function TeamRoleSettingsPage({
       if (wsRole && wsRole.slug === slug) return renderWorkspaceRole(wsRole);
     }
     if (!personal || personal.slug !== slug) notFound();
-    if (!isPersonalRole(personal)) redirect(`/app/settings/roles/${encodeURIComponent(personal.slug)}/edit`);
+    if (!isPersonalRole(personal)) redirect(`/app/settings/agents/${encodeURIComponent(personal.slug)}/edit`);
 
     const isOwner = personal.ownerUserId === user.id;
     const canManageRoles = await can({ kind: 'user', userId: user.id }, 'manage_agent_roles', personal.teamId).catch(() => false);
@@ -161,7 +161,7 @@ export default async function TeamRoleSettingsPage({
   const viewerRole = await getUserTeamRole(user.id, teamRole.teamId).catch(() => null);
   const canEdit = roleHas(viewerRole, 'manage_agent_roles');
   // Read-only is the role's own page: its values, with no controls.
-  if (!canEdit) redirect(`/app/settings/roles/${encodeURIComponent(slug)}`);
+  if (!canEdit) redirect(`/app/settings/agents/${encodeURIComponent(slug)}`);
 
   // Get all workspace overrides for this role
   const overrides = wsIds.length > 0
