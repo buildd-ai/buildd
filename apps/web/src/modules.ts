@@ -17,6 +17,7 @@ import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { startDecisionReplayStore } from '@/lib/decision-replay-store';
 import { loadIncidentNeedsYou, loadIncidentVerdicts } from '@/lib/failure-incident-escalation';
+import { loadDecisionCollectionNeedsYou } from '@/lib/decision-collection-needs-you';
 import { loadAccessNeedsYou } from '@/lib/capability-grants-needs-you';
 import { loadDecisionHealthNeedsYou } from '@/lib/decision-health-needs-you';
 import { probeDecisionModel } from '@buildd/core/decision-probe';
@@ -175,6 +176,13 @@ export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
  */
 export const INCIDENT_NEEDS_YOU = loadIncidentNeedsYou;
 export const INCIDENT_VERDICTS = loadIncidentVerdicts;
+
+/**
+ * The decision ledger's slot for Home (lib/decision-collection-needs-you.ts):
+ * decision features asked all day that never got a model answer, for the
+ * platform operator. Reads the ledger; no model call.
+ */
+export const DECISION_COLLECTION_NEEDS_YOU = loadDecisionCollectionNeedsYou;
 
 /**
  * The connectors module's slot for Home (lib/capability-grants-needs-you.ts):

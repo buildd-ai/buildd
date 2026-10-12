@@ -959,6 +959,10 @@ export interface TaskScheduleTemplate {
   // workspace (knowledge-base: buildd/design/role-routing.md §3.1); otherwise the task files
   // role-less.
   roleSlug?: string;
+  // The model tier every spawned task asks for, stated once: a hard override
+  // of the kind x complexity matrix, as `tier` on create_task. Unset: routed
+  // by kind and complexity as before.
+  tier?: 'premium-plus' | 'premium' | 'standard' | 'budget';
 }
 
 // Task result/deliverable snapshot - populated when worker completes
@@ -6341,6 +6345,11 @@ export const promptEvalRuns = pgTable('prompt_eval_runs', {
   costUsd: real('cost_usd'),
   // Why the run failed or was skipped: fixed phrases naming ids and counts, never text.
   problems: jsonb('problems').$type<string[]>(),
+  // A model comparison (several models over a case set): the models asked, and
+  // which case sources it read ('labelled' | 'collected' | 'both'). Null on a
+  // single-model prompt eval.
+  models: jsonb('models').$type<string[]>(),
+  caseSource: text('case_source'),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (t) => ({
@@ -6372,6 +6381,14 @@ export const promptEvalResults = pgTable('prompt_eval_results', {
   errors: integer('errors').notNull().default(0),
   notRun: integer('not_run').notNull().default(0),
   costUsd: real('cost_usd'),
+  // Model comparison rows only (null on a single-model eval row): where the
+  // cases came from ('labelled' | 'collected', never pooled), the origin
+  // ('prompts-repo', 'dataset:<name>/<version>', 'replay'), and the content-free
+  // scores (calibration per confidence source, threshold sweep, derived
+  // threshold, agreement, latency, cost per 1k). Ids, counts and rates only.
+  caseSource: text('case_source'),
+  caseOrigin: text('case_origin'),
+  metrics: jsonb('metrics').$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   runIdx: index('prompt_eval_results_run_idx').on(t.runId),

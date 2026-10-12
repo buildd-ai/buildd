@@ -25,7 +25,8 @@ export type SettingsSectionId =
   | 'workspaces'
   | 'runners'
   | 'alerts'
-  | 'integrations';
+  | 'integrations'
+  | 'features';
 
 export interface SettingsNavItem {
   id: SettingsSectionId;
@@ -152,6 +153,13 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         href: '/app/settings/integrations',
         description: 'GitHub, Vercel, and the bucket where run evidence is kept.',
         manage: ['manage_github_installation', 'manage_team_credentials', 'manage_evidence_backends'],
+      },
+      {
+        id: 'features',
+        label: 'Features',
+        href: '/app/settings/features',
+        description: 'Optional features for the whole team, such as task time estimates.',
+        manage: ['manage_team_settings'],
       },
     ],
   },

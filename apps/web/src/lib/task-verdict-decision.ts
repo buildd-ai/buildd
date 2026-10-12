@@ -28,12 +28,14 @@
  * (capability `task_verdict`, decisionId `task_verdict.<kind>`), applied or
  * not, so `get_decision_stats` shows the whole history; a failed or disabled
  * call writes its rows as `fallback`. The stored record carries those ids,
- * and the page's "Why this?" names them.
+ * and the page's "Why this?" names them. A row whose call went out also keeps
+ * the state it was asked with as a replayable copy (`keepReplays`).
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type { ChoiceQuestion, DecisionResult, decisionCall } from '@buildd/core/decision-client';
 import { parseBashTraceExcerpt } from '@buildd/core/bash-failure-trace';
 import { decisionReceiptError, type DecisionReceiptError } from '@builddai/ai-kit/decide';
+import { captureDecisionReplay, ORCHESTRATION_PRE_STATE_REASONS } from '@buildd/core/decision-replay';
 import type { TaskMismatch } from '@buildd/shared';
 import type { MismatchDiagnosis, StoredVerdictDecision, TaskVerdict, VerdictWording } from './task-verdict';
 import type { ConsequenceTrace, TraceConsequence } from './trace-consequence';
@@ -271,6 +273,34 @@ async function dbInsertRows(rows: VerdictLedgerRow[]): Promise<void> {
   await db.insert(orchestrationDecisions).values(rows);
 }
 
+/**
+ * Once the rows exist: each row whose call was made keeps the state the model
+ * was asked with, under its own id (`@buildd/core/decision-replay`, deferred,
+ * never throws). Not for a sensitive workspace or a call refused before it
+ * went out, the same rows `listReplayableDecisions` skips.
+ */
+function keepReplays(
+  record: VerdictRecord,
+  questions: Record<string, ChoiceQuestion<string>>,
+  rows: VerdictLedgerRow[],
+  capture: typeof captureDecisionReplay,
+): void {
+  if (record.sensitive) return;
+  const preState: readonly string[] = ORCHESTRATION_PRE_STATE_REASONS;
+  const state = buildVerdictState(record);
+  const askedAt = new Date();
+  for (const row of rows) {
+    if (row.reason !== null && preState.includes(row.reason)) continue;
+    capture({
+      decisionId: row.id, source: 'orchestration_decisions',
+      teamId: row.teamId, workspaceId: row.workspaceId, capability: row.capability,
+      model: row.model, ruleAnswer: row.ruleVerdict, askedAt,
+      state, questionIds: Object.keys(questions), candidates: null,
+      promptRef: { id: row.decisionId, version: row.decisionVersion, contentHash: null },
+    });
+  }
+}
+
 /** decisionCall's failure kinds, in the ledger's fallback vocabulary. */
 function fallbackReason(kind: string): string {
   switch (kind) {
@@ -289,6 +319,7 @@ export interface DecideVerdictDeps {
   insertRows?: InsertVerdictRows;
   now?: () => Date;
   newId?: () => string;
+  capture?: typeof captureDecisionReplay;
 }
 
 interface Asked { kind: VerdictDecisionKind; key: string; step: number; ruleVerdict: string | null; choices: number }
@@ -425,6 +456,7 @@ export async function decideTaskVerdict(record: VerdictRecord, deps: DecideVerdi
 
   try {
     await (deps.insertRows ?? dbInsertRows)(rows);
+    keepReplays(record, questions, rows, deps.capture ?? captureDecisionReplay);
   } catch (err) {
     console.warn(`${VERDICT_LOG_PREFIX} ledger insert failed (non-fatal):`, err instanceof Error ? err.message : err);
   }

@@ -433,7 +433,8 @@ custom URL uses. Every http connector SHOULD carry a display icon.
   or serves anonymously; servers that fail discovery stay out. Exception: an
   official server whose vendor admits only reviewed MCP clients stays listed
   with `clientSupport: { status: 'needs_approved_client', … }` (Vercel today,
-  §5a), so the UI says why instead of omitting it.
+  §5a). A team admin sees it as "Not available" with no Connect; a member
+  does not see it. Why it is unavailable is operator detail, not team copy.
 - Creation stays team-admin only (`manage_connectors`, §6); the catalog does
   not widen who can add a connector.
 - `connectors.iconUrl` is resolved best-effort — catalog icon, then MCP
@@ -477,7 +478,7 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 - Icon resolver: `apps/web/src/lib/connector-icon.ts`, `apps/web/src/lib/connector-icon-refresh.ts`,
   `apps/web/src/lib/public-endpoint.ts`, `apps/web/src/lib/mcp-server-info.ts`
 - UI: `apps/web/src/app/app/(protected)/settings/connections/connectors/AddConnectionModal.tsx`,
-  `apps/web/src/app/app/(protected)/settings/connections/connectors/CatalogSection.tsx`,
+  `apps/web/src/app/app/(protected)/settings/connections/connectors/TeamAppsSection.tsx`, `apps/web/src/lib/team-apps-view.ts`,
   `apps/web/src/components/ConnectorIcon.tsx`
 - Route: `apps/web/src/app/api/connectors/route.ts`, `apps/web/src/app/api/connectors/catalog/route.ts`,
   `apps/web/src/app/api/connectors/catalog/policy/route.ts`, `apps/web/src/app/api/admin/connector-catalog/route.ts`
@@ -492,7 +493,8 @@ custom URL uses. Every http connector SHOULD carry a display icon.
   `apps/web/src/lib/connector-catalog-input.test.ts`
 - `apps/web/src/app/api/connectors/catalog/route.test.ts`, `apps/web/src/app/api/connectors/catalog/policy/route.test.ts`,
   `apps/web/src/app/api/admin/connector-catalog/route.test.ts`
-- `apps/web/src/app/app/(protected)/settings/connections/connectors/CatalogSection.dom.test.tsx`
+- `apps/web/src/app/app/(protected)/settings/connections/connectors/TeamAppsSection.dom.test.tsx`, `apps/web/src/lib/team-apps-view.test.ts`,
+  `apps/web/src/app/api/connectors/catalog/request/route.test.ts`
 - `apps/web/tests/db/connector-catalog.test.ts` (partial unique indexes, real Postgres)
 
 **Catalog layers (DB, team policy, preinstall)**:
@@ -522,7 +524,8 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/connectors/catalog` | Team member | merged catalog + policy (+`canManage`) |
+| `GET` | `/api/connectors/catalog` | Team member | merged catalog + policy (+`canManage`); an entry with `clientSupport` reads only `unavailable: true`, and members get neither blocked nor unavailable entries |
+| `POST` | `/api/connectors/catalog/request` | Team member (session) | ask the team's admins for an offered entry; pages the team, installs nothing |
 | `POST` | `/api/connectors/catalog` | Team admin | add a team-private entry |
 | `PATCH`/`DELETE` | `/api/connectors/catalog/[id]` | Team admin | edit/remove own team's entry |
 | `PUT` | `/api/connectors/catalog/policy` | Team admin | set blocked/available/preinstalled |
@@ -579,7 +582,11 @@ never as a generic failure and never worked around.
 - A DCR refusal that means "client not approved" (`invalid_redirect_uri`,
   `invalid_client_metadata`, software-statement errors, 401/403) is
   `ClientRegistrationRejectedError.needsApprovedClient`; create and preinstall
-  answer `422 needs_approved_client` with the catalog's `detail`/`actionUrl`.
+  answer `422 needs_approved_client` with a customer message ("Vercel isn't
+  available to connect.") and no link. The vendor's refusal, the catalog's
+  `clientSupport` detail and review link go to the structured log line
+  `connector.registration_refused` and the platform catalog
+  (`/api/admin/connector-catalog`), never to a team.
   buildd MUST NOT reuse another client's id, a global admin token, or a copied
   credential to get past it.
 
@@ -605,7 +612,10 @@ approved client would be impersonation. Re-run the probe with
 - AC-3: WHEN a member without `manage_connectors` calls connect THEN 403 and
   no state cookie.
 - AC-4: WHEN Vercel is added or preinstalled THEN `422 needs_approved_client`
-  with Vercel's review link, and no connector row is created.
+  with no review link or vendor wording, and no connector row is created.
+- AC-5: GIVEN an entry with `clientSupport` WHEN Settings → Connected apps
+  renders it for an admin THEN the row reads "Not available" with no Connect
+  and no details; a member does not see it.
 
 **Code surface**:
 - Policy: `apps/web/src/lib/connector-access-policy.ts`, `apps/web/src/lib/connector-team-auth.ts`

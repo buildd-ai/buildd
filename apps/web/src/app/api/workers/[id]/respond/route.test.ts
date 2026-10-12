@@ -1534,6 +1534,17 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(notesInserted.at(-1)?.body).toContain('session that asked');
     });
 
+    // The wait capability ask_human minted names this ask; the record carries
+    // it so the shell waiter can tell its own answer from a later one's.
+    it('carries the open ask id into the delivery record', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker({
+        waitingFor: { type: 'question', prompt: 'Which authentication method should we use?', waitCapId: 'ask-abc' },
+      }));
+      await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+      expect(mergedAnswerDelivery(tasksUpdated.at(-1))).toMatchObject({ path: 'interactive', waitCapId: 'ask-abc' });
+    });
+
     // Regression: the record used to be written as { ...context read before
     // the enqueue, answerDelivery }, which overwrote the pendingWorkerMessages
     // the enqueue had just appended — deleting the answer from the queue.

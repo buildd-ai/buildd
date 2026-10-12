@@ -111,6 +111,8 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   manage_evidence_backends: 'admin',
   manage_secrets: 'admin',
   manage_providers: 'admin',
+  get_decision: 'admin',
+  label_decision: 'admin',
   // a worker's own lifecycle: never a chat tool
   claim_task: 'work',
   update_progress: 'work',
@@ -256,6 +258,8 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   list_releases: 'more',
   release_status: 'more',
   manage_experiments: 'more',
+  get_decision: 'more',
+  label_decision: 'more',
   manage_initiatives: 'more',
   link_tracker: 'more',
   list_discrepancies: 'more',
@@ -389,6 +393,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'secrets', actions: ['manage_secrets'] },
       { text: 'model providers', actions: ['manage_providers'] },
       { text: 'experiments', actions: ['manage_experiments'] },
+      { text: 'decision audit', actions: ['get_decision', 'label_decision'] },
       { text: 'model tiers, evidence', actions: ['manage_model_tiers', 'manage_evidence_backends'] },
       { text: 'watched projects', actions: ['manage_watched_projects'] },
       { text: 'releases', actions: ['trigger_release'] },
@@ -476,6 +481,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   update_skill: 'edit a skill or role',
   delete_skill: 'delete a skill',
   manage_experiments: 'experiments and their readouts',
+  get_decision: 'one decision and the evidence to judge it',
+  label_decision: 'grade a decision right, wrong or unsure',
   manage_model_tiers: 'model per tier',
   manage_evidence_backends: 'evidence buckets',
   manage_secrets: 'encrypted MCP credential secrets',
@@ -729,6 +736,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('name', str, [{ text: 'Schedule name', actions: ['create_schedule'] }]),
     param('cronExpression', str, [{ text: 'Cron expression', actions: ['create_schedule', 'update_schedule'] }]),
     param('title', str, [{ text: 'Title of the tasks it files', actions: ['create_schedule'] }]),
+    param('tier', { type: 'string', enum: ['premium-plus', 'premium', 'standard', 'budget'] }, [{ text: 'Model tier of the tasks it files', actions: ['create_schedule'] }]),
   ],
   work: [
     param('taskId', str, [{ text: 'Task to pick up', actions: ['claim_task'] }]),
@@ -772,6 +780,10 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('content', str, [{ text: 'Skill body (markdown)', actions: ['register_skill', 'update_skill'] }]),
     param('op', { type: 'string', enum: ['find_duplicates', 'find_decayed', 'archive'] }, [{ text: 'Consolidation step', actions: ['consolidate_knowledge'] }]),
     param('id', str, [{ text: 'Memory ID', actions: ['memory_delete'] }]),
+    param('decisionId', str, [{ text: 'Decision id', actions: ['get_decision', 'label_decision'] }]),
+    param('label', { type: 'string', enum: ['right', 'wrong', 'unsure'] }, [{ text: 'Grade of the answer', actions: ['label_decision'] }]),
+    param('rationale', str, [{ text: 'Evidence, at most 280 chars', actions: ['label_decision'] }]),
+    param('ruleLabel', { type: 'string', enum: ['right', 'wrong', 'unsure'] }, [{ text: "Grade of the rule's answer", actions: ['label_decision'] }]),
   ],
 };
 

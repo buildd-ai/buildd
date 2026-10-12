@@ -513,6 +513,12 @@ describe('PATCH /api/teams/[id] — task estimates experiment switch', () => {
     expect(capturedUpdates).toHaveLength(0);
   });
 
+  it('an admin of another team cannot change this team\'s switch', async () => {
+    membership = null;
+    expect((await PATCH(patchReq({ taskEstimates: { enabled: false } }), ctx)).status).toBe(403);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
   it('an API key (no session) cannot change it', async () => {
     mockRequireSessionUser.mockResolvedValue({ response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) });
     expect((await PATCH(patchReq({ taskEstimates: { enabled: true } }), ctx)).status).toBe(401);

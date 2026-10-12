@@ -1,17 +1,19 @@
 import type { TaskEstimateReadout, GroupScore } from '@buildd/core/task-estimate-accuracy';
 type BacktestScore = TaskEstimateReadout['overall'];
-import { estimatesHeadline, logPos, medianBandRatio, pct, scatterBounds, sourceLabel, typicalLine } from './estimates-view';
+import { coldStartNote, estimatesHeadline, logPos, medianBandRatio, pct, scatterBounds, sourceLabel, typicalLine } from './estimates-view';
 
 export interface EstimatePoint { estimate: number; actual: number; p80: number }
 
 export function EstimatesClient({ readout, points }: { readout: TaskEstimateReadout; points: EstimatePoint[] }) {
   const head = estimatesHeadline(readout.overall);
+  const coldStart = coldStartNote(readout);
   return (
     <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6" data-testid="estimates-page">
       <h1 className="hidden md:block text-heading font-bold">Estimates</h1>
       <div className="py-3">
         <p className="text-title font-semibold text-text-primary" data-testid="estimates-lead">{head.lead}</p>
         {head.basis && <p className="mt-1 text-body text-text-muted">{head.basis}</p>}
+        {coldStart && <p className="mt-1 text-meta text-text-muted" data-testid="estimates-cold-start">{coldStart}</p>}
       </div>
 
       {!readout.indeterminate && (

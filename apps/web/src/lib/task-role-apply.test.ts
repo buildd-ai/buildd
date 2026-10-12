@@ -330,3 +330,45 @@ describe('runTaskRoleRouting', () => {
     expect(write).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('applyTaskRoleDecision: replayable inputs', () => {
+  const REPLAY = {
+    state: { task: { title: 't' } }, questionIds: ['role'], candidates: ['builder', 'researcher'],
+    promptRef: { id: 'buildd.task_role', version: 'tr1', contentHash: 'fp-abc123' },
+  };
+  const rowsOf = async (input: typeof INPUT & { statedRoleSlug?: string | null }, shadow: Parameters<typeof applyTaskRoleDecision>[1], extra: Record<string, unknown> = {}) => {
+    const rows: any[] = [];
+    await applyTaskRoleDecision(input, shadow, { recordDecision: async (r) => { rows.push(r); }, write: async () => true, skipRowExists: async () => false, log: () => {}, minConfidence: 0.9, isMeasuredModel: () => true, ...extra });
+    return rows;
+  };
+
+  it('every row that carries the model\'s answer keeps the input it was asked with', async () => {
+    // applied, lost race, below threshold, not a candidate, unmeasured model
+    const cases: Array<[Parameters<typeof applyTaskRoleDecision>[1], Record<string, unknown>]> = [
+      [{ outcome: 'logged', record: record(), applyEnabled: true, replay: REPLAY }, {}],
+      [{ outcome: 'logged', record: record(), applyEnabled: true, replay: REPLAY }, { write: async () => false }],
+      [{ outcome: 'logged', record: record({ confidence: 0.5 }), applyEnabled: true, replay: REPLAY }, {}],
+      [{ outcome: 'logged', record: record({ decision: 'writer' }), applyEnabled: true, replay: REPLAY }, {}],
+      [{ outcome: 'logged', record: record(), applyEnabled: true, replay: REPLAY }, { isMeasuredModel: () => false }],
+    ];
+    for (const [shadow, extra] of cases) {
+      const rows = await rowsOf(INPUT, shadow, extra);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].replay).toEqual(REPLAY);
+    }
+  });
+
+  it('the stated-role sample and the kind sub-answer keep it too', async () => {
+    const stated = await rowsOf({ ...INPUT, statedRoleSlug: 'researcher' }, { outcome: 'logged', record: record({ stated: 'researcher', kindDecision: 'engineering', kindConfidence: 0.8 }), applyEnabled: true, replay: REPLAY });
+    expect(stated.map(r => r.reason)).toEqual(['stated_role_sample', 'kind_observed']);
+    for (const r of stated) expect(r.replay).toEqual(REPLAY);
+  });
+
+  it('skip and fallback rows keep none: nothing was answered', async () => {
+    for (const outcome of ['too_few_candidates', 'sensitive', 'no_key', 'error'] as const) {
+      const rows = await rowsOf(INPUT, { outcome, applyEnabled: true, fingerprint: 'fp-x' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].replay ?? null).toBeNull();
+    }
+  });
+});

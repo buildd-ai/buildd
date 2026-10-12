@@ -46,6 +46,7 @@ mock.module('@/lib/admin/data', () => ({
   resolveScopeWorkspaces: async () => ({ workspaces: [{ id: OWN_WS, teamId: OWN_TEAM }, { id: OTHER_WS, teamId: OTHER_TEAM }] }),
   loadOwnTeams: async () => [{ id: OWN_TEAM, name: 'Mine team' }],
   loadDecisionFeatureCounts: async () => [],
+  loadDecisionHealthRows: async () => ({ rows: [], outcomes: [], truncated: false }),
   loadDecisionStats: async () => ({ decisions: { total: 2 } }),
   listExperiments: async () => [experimentRow(OWN_EXP, OWN_TEAM), experimentRow(OTHER_EXP, OTHER_TEAM)],
   loadExperimentHealth: async () => ({}),

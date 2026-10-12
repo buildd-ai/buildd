@@ -40,18 +40,24 @@ export async function discoverAndRegister(url: string, origin: string, existingC
 /**
  * The 422 body for a provider that refused to register buildd as a client
  * because it only admits clients it has approved; null for any other failure
- * (callers keep their generic discovery error). Names the vendor step, and
- * never suggests pasting a token from another client.
+ * (callers keep their generic discovery error). The person sees only that the
+ * provider is not available: the vendor's refusal, its client-review status
+ * and link stay internal, in the structured log line below and the platform
+ * catalog (`/api/admin/connector-catalog`). Never suggests pasting a token
+ * from another client.
  */
-export function registrationRefusalBody(err: unknown, url: string): { error: 'needs_approved_client'; message: string; actionUrl?: string } | null {
+export function registrationRefusalBody(err: unknown, url: string): { error: 'needs_approved_client'; message: string } | null {
   if (!(err instanceof ClientRegistrationRejectedError) || !err.needsApprovedClient) return null;
-  const support = catalogEntryForUrl(url)?.clientSupport;
-  if (support) return { error: 'needs_approved_client', message: support.detail, actionUrl: support.actionUrl };
+  const entry = catalogEntryForUrl(url);
   const host = (() => { try { return new URL(url).host; } catch { return url; } })();
-  return {
-    error: 'needs_approved_client',
-    message: `${host} only lets MCP clients it has approved sign in, and it refused buildd${err.description ? ` (${err.description})` : ''}. Ask the provider to approve buildd as an MCP client.`,
-  };
+  console.warn(JSON.stringify({
+    event: 'connector.registration_refused',
+    host,
+    catalogSlug: entry?.slug ?? null,
+    providerError: err.description ?? null,
+    clientReviewUrl: entry?.clientSupport?.actionUrl ?? null,
+  }));
+  return { error: 'needs_approved_client', message: `${entry?.name ?? host} isn't available to connect.` };
 }
 
 type ConnectorRow = typeof connectors.$inferSelect;

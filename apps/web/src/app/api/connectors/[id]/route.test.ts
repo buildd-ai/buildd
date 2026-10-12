@@ -20,7 +20,7 @@ const mockEncrypt = mock((v: string) => `enc:${v}`);
 class FakeRegistrationRejected extends Error {}
 const mockRegistrationRefusalBody = mock((err: unknown) =>
   err instanceof FakeRegistrationRejected
-    ? { error: 'needs_approved_client' as const, message: 'Vercel only lets MCP clients it has reviewed sign in.', actionUrl: 'https://vercel.com/docs' }
+    ? { error: 'needs_approved_client' as const, message: "Vercel isn't available to connect." }
     : null);
 
 import { fakeCan } from '@/lib/connector-team-auth.fixtures';
@@ -218,7 +218,7 @@ describe('PATCH /api/connectors/[id]', () => {
     expect(res.status).toBe(422);
     const data = await res.json();
     expect(data.error).toBe('needs_approved_client');
-    expect(data.actionUrl).toMatch(/^https:\/\/vercel\.com\//);
+    expect(data.actionUrl).toBeUndefined();
     expect(mockConnectorsUpdate).not.toHaveBeenCalled();
   });
 
