@@ -144,6 +144,60 @@ production model, use the admin trigger.
   checked against every loaded body and every public default, and a match
   writes no results and marks the run `refused`.
 
+### Comparing decision models
+
+`POST /api/admin/prompt-evals` with `models` runs a model comparison instead
+(`apps/web/src/lib/prompt-evals/compare-run.ts`): several decision models over
+the same cases and questions, to decide which model a decision should use and
+at what threshold.
+
+```json
+{ "models": ["typesafe/jev-1.13", "clef", "clef-flash", { "model": "qwen3-8b", "via": "litellm" }],
+  "source": "both", "kinds": ["claim_hold"], "costCapUsd": 2, "concurrency": 4, "dryRun": false }
+```
+
+- **Models** (1 to 6): each is reached the way production reaches it for the
+  caller's team (`resolveDecisionRoute`): Jev on OpenRouter, Clef and Clef
+  Flash on the team's Cloudflare credential, a chat model through OpenRouter,
+  or the team's LiteLLM gateway with `via: "litellm"`. The team's production
+  decision model is always asked as well, so every other model's agreement with
+  it is measured on the same cases.
+- **Cases** (`source`: `labelled`, `collected` or `both`, default `both`):
+  - `labelled`: the prompts repo's `evals/*.jsonl` (when `PROMPTS_REPO` is set),
+    and the published datasets in `BUILDD_DATASETS_BUCKET`
+    (`task-category`, `role-pick`, `claim-hold`: `<name>/v1/manifest.json` with a
+    sha256 per file; a file that does not match its manifest is not used). The
+    bucket must be one the deployment's storage credentials can read. A row
+    labelled `either` is asked but not scored.
+  - `collected`: decisions production made, replayed from their stored input
+    (`@buildd/core/decision-replay`), with gold from `decision_outcomes`
+    through the kind's objective adapter. Only decisions with an outcome are
+    asked; orchestration decisions have no outcome rows yet and are listed as
+    unscored.
+
+  Sources are never pooled: every result row names its `case_source` and
+  `case_origin` (`prompts-repo`, `dataset:<name>/<version>`, `replay`).
+- **Scores**, per (kind, source, model), in the row's `metrics`: n, labelled,
+  accuracy (an error counts as wrong), the rule's accuracy on the same cases,
+  agreement with the production model, calibration (ten reliability bins and
+  ECE) and a precision/coverage sweep for **each confidence source**: the
+  answer's `confidence` field and `top_p`, the probability of the chosen label.
+  They differ by model: Clef's `confidence` is compressed, its top p is usable.
+  Also latency p50/p95 and cost per 1,000 priced calls (Workers AI returns no
+  price; those calls are counted as unpriced).
+- **Derived threshold**: per source, the lowest threshold whose 95% Wilson
+  lower bound on precision is at least max(rule accuracy, the kind's target),
+  once the kind has its minimum of labelled cases (defaults: target 0.9, 50
+  labelled; per kind in `KIND_TARGETS`, `compare.ts`). `derived` names the
+  source used (the qualifying one covering more cases); null with a reason
+  (`too_few_labelled`, `no_signal`, `no_threshold_meets_bar`) otherwise.
+- **Bounded**: `concurrency` calls per model (default 4), a cost cap (default
+  $2, at most $25) and the 240s budget. Once either runs out no call starts;
+  the rest are counted as not run and the run fails naming it.
+- Comparison rows never count as "last evaluated" for the push trigger, and
+  carry the same guarantees as above: ids, counts and rates only, checked
+  against every prompt body before anything is written.
+
 ### From a checkout
 
 `scripts/private-prompt-eval.ts` runs the same core over a local directory (a
