@@ -282,7 +282,7 @@ export default async function HomePage({
   let idleStretches: IdleStretch[] = [];
   let teamTz: string | null = null;
   // Owners/admins run the fleet; members see their asks and missions first.
-  let audience: HomeAudience = 'operator';
+  let audience: HomeAudience = 'admin';
   // Agent chat on Home (knowledge-base: buildd/design/agent-chat.md, "Who sees what first").
   let chatPlacement: HomeChatPlacement = { kind: 'none' };
   let chatTeamId: string | null = null;

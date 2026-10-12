@@ -40,6 +40,12 @@ const EVERY_ROLE = ['owner', 'admin', 'member'] as const satisfies readonly Team
  * Each entry reproduces the rule its call sites apply today — see the
  * inventory in docs/specs/team-permissions.md for file:line per entry. Odd
  * rules are reproduced, not fixed; the spec flags them.
+ *
+ * Only team-scoped decisions belong here. buildd's own platform machinery
+ * (experiments, the raw decision ledger, decision shadows, per-feature
+ * inference modes, chat retro) is gated on the platform operator
+ * (platform-operator.ts, platform-admin.ts), never on a team role: a team
+ * owner is not an operator.
  */
 export const PERMISSIONS = {
   // ── Team membership ──────────────────────────────────────────────────────
@@ -60,7 +66,7 @@ export const PERMISSIONS = {
   },
   // ── Team settings ────────────────────────────────────────────────────────
   manage_team_settings: {
-    description: 'Edit team name, slug, AI features, chat budgets, key policy and timezone.',
+    description: 'Edit team name, slug, provider routing, coding policy, chat budgets and default tier, credential policy, task estimates and timezone.',
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: null,
   },
@@ -74,18 +80,8 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ONLY,
     minKeyLevel: null,
   },
-  manage_chat_retro: {
-    description: 'See and change chat retro settings.',
-    defaultRoles: OWNER_ADMIN,
-    minKeyLevel: 'admin',
-  },
-  activate_chat_retro_dogfood: {
-    description: 'Keep chat retros on for every team you own (account dogfood).',
-    defaultRoles: OWNER_ONLY,
-    minKeyLevel: null,
-  },
   view_team_usage: {
-    description: "See every member's spend and the operator view of Home.",
+    description: "See every member's spend, team insights and the team admin layout of Home.",
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: null,
   },
@@ -201,11 +197,6 @@ export const PERMISSIONS = {
   },
   manage_evidence_backends: {
     description: 'Create, edit, verify and delete evidence storage backends.',
-    defaultRoles: OWNER_ADMIN,
-    minKeyLevel: 'admin',
-  },
-  run_experiments: {
-    description: 'Create, start, pause and conclude experiments; see admin-only ones.',
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
   },
