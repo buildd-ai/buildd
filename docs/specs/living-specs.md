@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, apps/web/src/lib/specs/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, apps/web/src/lib/specs/check-lines.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, apps/web/src/lib/specs/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, apps/web/src/lib/specs/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -438,8 +438,11 @@ without an approval ever depending on either.
   agent-supplied edge is written for a spec. Each approval deletes this spec's
   `living_spec:` edges and chunk links and writes them again, so the graph can
   be rebuilt at any time.
-- Fail-open. Indexing runs after the approval has committed; a failure is
-  logged and never fails or rolls back the approval. Re-running the backfill
+- Fail-open, and off the response. Indexing runs after the approval has
+  committed and after the approve response is sent (`after()`), so a person
+  never waits on chunking, embedding or graph writes; recall picks the text up
+  a moment later. A failure is logged and never fails or rolls back the
+  approval. Re-running the backfill
   (`bun run --cwd apps/web specs:backfill-knowledge --apply`) repairs it and is
   idempotent.
 
@@ -457,9 +460,14 @@ without an approval ever depending on either.
   `packages/core/__tests__/living-spec-knowledge.test.ts`).
 - AC-20: GIVEN the store and the graph writer both throw WHEN a person approves
   THEN the spec is approved (`apps/web/tests/db/spec-knowledge.test.ts`).
+- AC-31: GIVEN a person approves WHEN the approve response returns THEN the
+  approval has committed and the index is scheduled for after the response,
+  not run; the access and approver checks go out together, and so do the two
+  reads after the approval (`apps/web/src/lib/specs/approval.test.ts`,
+  `apps/web/tests/db/spec-knowledge.test.ts`).
 
 **Code surface**:
-- `apps/web/src/lib/specs/approval.ts` — emits `spec.approved` after the approval commits
+- `apps/web/src/lib/specs/approval.ts` — emits `spec.approved` after the approval commits, after the response (`specApprovalDeps`)
 - `apps/web/src/lib/knowledge-subscribers.ts` — `living-spec-index` subscriber
 - `apps/web/src/lib/specs/knowledge.ts` — `indexApprovedSpec`, `specKnowledgeDeps`
 - `packages/core/knowledge-store/living-spec.ts` — `buildLivingSpecChunks`, `buildLivingSpecGraph`
@@ -551,6 +559,12 @@ same page, without an agent in between.
   the version the page was rendered at; GIVEN a reader who may not approve
   THEN no approve action renders (`apps/web/src/components/SpecPage.dom.test.tsx`,
   `apps/web/tests/db/spec-pages.test.ts`).
+- AC-32: GIVEN an approver presses Approve WHEN the request is still out THEN
+  the page already reads "Approved. Revision M is in force." with no action;
+  WHEN it fails THEN the action returns with the error beside it; WHEN the spec
+  moved (409) THEN the notice stays and no action is offered
+  (`apps/web/src/components/SpecPage.dom.test.tsx`,
+  `apps/web/src/components/SpecApprovalRequest.dom.test.tsx`).
 
 **Code surface**:
 - `apps/web/src/lib/specs/page-view.ts` — `specListView`, `specPageView`, `specTree`, `specStanding`, `repoRefHref`
@@ -558,6 +572,7 @@ same page, without an agent in between.
 - `apps/web/src/app/app/(protected)/specs/[specId]/page.tsx` — the spec page
 - `apps/web/src/components/SpecList.tsx` — `SpecList`
 - `apps/web/src/components/SpecPage.tsx` — `SpecPage`, `readingLine`
+- `apps/web/src/components/useOptimisticApprove.ts` — `useOptimisticApprove`
 - `apps/web/src/components/SpecRevisionPanes.tsx` — `SpecRevisionPanes` (the Spec / Changes switch, shared with the confirm page)
 - `apps/web/src/lib/specs/repo-source.ts` — `linkedRepoFullName`
 

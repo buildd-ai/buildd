@@ -121,6 +121,42 @@ describe('SpecPage', () => {
     expect(refreshes).toBe(1);
   });
 
+  it('reads as approved on the press, before the server answers', async () => {
+    let answer!: (r: Response) => void;
+    globalThis.fetch = (() => new Promise<Response>(r => { answer = r; })) as unknown as typeof fetch;
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    await act(async () => { q('spec-page-approve')!.click(); });
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approved. Revision 2 is in force.');
+    expect(q('spec-page-approve')).toBeNull();
+    expect(refreshes).toBe(0);
+    await act(async () => { answer(new Response(JSON.stringify({ spec: {}, revision: {} }), { status: 200 })); });
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approved. Revision 2 is in force.');
+    expect(refreshes).toBe(1);
+  });
+
+  it('a failed approval rolls back to the action with the error beside it', async () => {
+    let answer!: (r: Response) => void;
+    globalThis.fetch = (() => new Promise<Response>(r => { answer = r; })) as unknown as typeof fetch;
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    await act(async () => { q('spec-page-approve')!.click(); });
+    expect(q('spec-page-approve-result')!.textContent).toContain('Approved');
+    await act(async () => { answer(new Response(JSON.stringify({}), { status: 500 })); });
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approval failed. Try again.');
+    expect(q('spec-page-approve')).not.toBeNull();
+    expect(refreshes).toBe(0);
+  });
+
+  it('a network failure rolls back the same way', async () => {
+    globalThis.fetch = (async () => { throw new TypeError('offline'); }) as unknown as typeof fetch;
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    await act(async () => { q('spec-page-approve')!.click(); });
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approval failed. Try again.');
+    expect(q('spec-page-approve')).not.toBeNull();
+  });
+
   it('a moved spec says so and approves nothing more', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({ error: 'The spec changed while you were deciding: it is now at version 5. Re-read it before deciding.' }), { status: 409 })) as unknown as typeof fetch;
     const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };

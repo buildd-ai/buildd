@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useOptimisticApprove } from '@/components/useOptimisticApprove';
 import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
@@ -26,8 +26,17 @@ const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'in
  * a later one opens on the changes.
  */
 export default function SpecApprovalRequest({ specId, token, view }: { specId: string; token: string; view: ApprovalRequestView }) {
-  const [pending, setPending] = useState(false);
-  const [result, setResult] = useState<{ tone: 'ok' | 'err' | 'warn'; text: string } | null>(null);
+  const approvedText = `Approved. Revision ${view.state === 'ready' ? view.revision : ''} is in force.`;
+  const { shown: result, retry, approve } = useOptimisticApprove(async () => {
+    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request: token }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+    if (res.ok) return { tone: 'ok', text: approvedText };
+    return { tone: body.code === 'request_stale' || body.code === 'request_expired' ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
+  }, approvedText);
 
   const heading = 'title' in view ? (
     <h1 className="font-voice text-2xl text-text-primary" data-testid="spec-approval-title">{view.title}</h1>
@@ -45,24 +54,6 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
     );
   }
 
-  async function approve() {
-    setPending(true);
-    try {
-      const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ request: token }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
-      if (res.ok) setResult({ tone: 'ok', text: `Approved. Revision ${view.state === 'ready' ? view.revision : ''} is in force.` });
-      else setResult({ tone: body.code === 'request_stale' || body.code === 'request_expired' ? 'warn' : 'err', text: body.error ?? 'Approval failed.' });
-    } catch {
-      setResult({ tone: 'err', text: 'Approval failed. Try again.' });
-    } finally {
-      setPending(false);
-    }
-  }
-
   return (
     <div className="flex flex-col gap-4">
       {heading}
@@ -78,15 +69,14 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
         linesRemoved={view.sections.reduce((n, x) => n + x.linesRemoved, 0)}
         initial={view.replaces ? 'changes' : 'spec'}
       />
-      {result ? (
-        <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice>
-      ) : (
+      {result ? <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice> : null}
+      {!result || retry ? (
         <div>
-          <PrimaryAction onClick={approve} pending={pending} fullWidthOnMobile data-testid="spec-approval-approve">
+          <PrimaryAction onClick={approve} fullWidthOnMobile data-testid="spec-approval-approve">
             Approve revision {view.revision}
           </PrimaryAction>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
