@@ -138,6 +138,11 @@ export const TASK_RESERVATION_KEY = 'reservedBy' as const;
  */
 export const TASK_RESERVATION_TTL_MS = 20 * 60 * 1000;
 
+// JSON field names inside context.reservedBy, held as constants so the raw-SQL
+// lint (folded-identifier) does not read them as column names.
+const RESERVATION_OWNER_FIELD = 'accountId' as const;
+const RESERVATION_EXPIRY_FIELD = 'expiresAt' as const;
+
 export function buildReservation(accountId: string, now: Date = new Date()) {
   return {
     accountId,
@@ -156,11 +161,11 @@ export function buildReservation(accountId: string, now: Date = new Date()) {
  */
 export function taskNotReserved(exceptAccountId?: string): SQL {
   const owner = exceptAccountId
-    ? sql` OR (${tasks.context}->'${sql.raw(TASK_RESERVATION_KEY)}'->>'accountId') = ${exceptAccountId}`
+    ? sql` OR (${tasks.context}->'${sql.raw(TASK_RESERVATION_KEY)}'->>'${sql.raw(RESERVATION_OWNER_FIELD)}') = ${exceptAccountId}`
     : sql``;
   return sql`(
     (${tasks.context}->'${sql.raw(TASK_RESERVATION_KEY)}') IS NULL
-    OR COALESCE((${tasks.context}->'${sql.raw(TASK_RESERVATION_KEY)}'->>'expiresAt')::timestamptz, '-infinity'::timestamptz) <= now()${owner}
+    OR COALESCE((${tasks.context}->'${sql.raw(TASK_RESERVATION_KEY)}'->>'${sql.raw(RESERVATION_EXPIRY_FIELD)}')::timestamptz, '-infinity'::timestamptz) <= now()${owner}
   )`;
 }
 
