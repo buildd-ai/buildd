@@ -60,7 +60,7 @@ const OAUTH_ERROR_TEXT: Record<string, string> = {
 };
 
 const POLICY_FACT: Partial<Record<CatalogPolicy, string>> = {
-  preinstalled: 'Added to every workspace. Agents use it only when their role does.',
+  preinstalled: 'Added to every workspace. Used only when the agent does.',
   blocked: 'Agents can’t use it. Its sign-in is kept.',
 };
 

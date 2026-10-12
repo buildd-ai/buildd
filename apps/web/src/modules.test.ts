@@ -61,6 +61,7 @@ describe('composition root', () => {
     // The evidence record is written before the verdict that reads it.
     expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence', 'health-quality:failure-pattern-sentinel', 'jev-decisions:verdict-on-terminal']);
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
+    expect(byEvent('spec.approved')).toEqual(['knowledge:living-spec-index']);
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
     // A trunk merge refreshes no mission branch; a mission task starting does.
     expect(byEvent('tasks.claimed')).toEqual(['missions:refresh-mission-branches-before-start']);

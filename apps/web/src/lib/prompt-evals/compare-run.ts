@@ -23,7 +23,7 @@
  * Content-free: before anything is stored, the rows and problems are checked
  * against every loaded prompt body and public default (`findPromptLeaks`).
  */
-import { PromptSeedError, githubPromptReader, loadPromptSeed, type PromptSeedEntry } from '@buildd/core/prompt-seed';
+import { PromptSeedError, githubPromptReader, loadPromptSeedPerPrompt, type PromptSeedEntry } from '@buildd/core/prompt-seed';
 import { withPromptOverlay } from '@buildd/core/prompt-overlay';
 import { DEFAULT_DECISION_MODEL } from '@buildd/core/decision-client';
 import type { DecisionModelConfig } from '@buildd/core/decision-model';
@@ -187,13 +187,17 @@ export async function runModelComparison(input: ModelComparisonInput, deps: Prom
   // Private prompt text for the repo's labelled sets, read and checked as a deploy seed would.
   const catalog = deps.catalog();
   let entries: PromptSeedEntry[] = [];
+  const retiredIds: string[] = [];
   let readCases: ((file: string) => Promise<string | null>) | null = null;
   if (repoCfg && repoRef) {
     try {
       const token = await deps.repoToken(repoCfg.repo);
       if (!token) throw new Error('no token reads the prompts repo');
       const reader = (deps.reader ?? githubPromptReader)({ repo: repoCfg.repo, ref: repoRef, token });
-      entries = await loadPromptSeed(reader, catalog);
+      const loadedSeed = await loadPromptSeedPerPrompt(reader, catalog);
+      entries = loadedSeed.entries;
+      retiredIds.push(...loadedSeed.retired);
+      problems.push(...loadedSeed.problems);
       readCases = casesFrom(reader);
     } catch (err) {
       const why = err instanceof PromptSeedError ? err.problems.join('; ') : err instanceof Error ? err.message : String(err);
@@ -284,6 +288,7 @@ export async function runModelComparison(input: ModelComparisonInput, deps: Prom
   const rows: PromptEvalResultRow[] = [
     ...(dryRun ? groups.flatMap(g => dryRunRows(runId, g, models)) : (done?.results ?? []).map(r => resultRow(runId, r))),
     ...unscored.map(u => unscoredRow(runId, u)),
+    ...retiredIds.map(id => unscoredRow(runId, { kind: id, source: 'labelled', origin: 'prompts-repo', reason: 'retired_prompt' })),
   ];
   if (groups.length === 0) problems.push('no source had cases to score');
   problems.push(...(done?.problems ?? []));

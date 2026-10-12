@@ -273,7 +273,7 @@ export default function StorageSection({ workspaces, fixture }: {
           <p className="text-sm text-status-error">{loadError}</p>
         ) : sorted.length === 0 ? (
           <div className="py-3 border-y border-border-default" data-testid="storage-empty">
-            <div className="text-sm font-medium text-text-primary">Buildd managed</div>
+            <div className="text-sm font-medium text-text-primary">buildd managed</div>
             <p className="mt-0.5 text-xs text-text-secondary">
               Evidence goes to buildd&apos;s own bucket and is kept 30 days.
             </p>

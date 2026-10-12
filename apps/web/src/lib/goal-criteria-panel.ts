@@ -98,7 +98,7 @@ export function verificationReadiness(args: {
     headline: 'Can’t verify automatically yet.',
     reason: suggestion
       ? 'Nothing here can be checked without AI, but this mission’s PRs can be.'
-      : 'This mission doesn’t have a check Buildd can run on its own.',
+      : 'This mission doesn’t have a check buildd can run on its own.',
     actionLabel: suggestion ? 'Check that every PR merged' : 'Add check',
     suggestion,
   };
@@ -111,7 +111,7 @@ export interface PlainError {
 }
 
 const NEEDS_AUTOMATIC_CHECK =
-  'Add at least one check Buildd can run on its own, like every PR merged or a script that passes.';
+  'Add at least one check buildd can run on its own, like every PR merged or a script that passes.';
 
 /** Say a criteria refusal in product words; keep the raw text as an optional detail. */
 export function plainCriteriaError(message: string): PlainError {

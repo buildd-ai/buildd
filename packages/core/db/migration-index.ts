@@ -123,14 +123,28 @@ function changedMigrationFiles(paths: RepoPaths, base: string, filter: 'A' | 'D'
 }
 
 /**
+ * A migration byte-identical to the one `origin/dev` already carries was minted
+ * there, not by this branch. A mission-branch refresh that merges dev brings
+ * dev's indices in below the mission's own newest, which is not a collision the
+ * branch can fix by renumbering (that would diverge from dev and conflict on
+ * the merge back).
+ */
+function landedOnDev(paths: RepoPaths, file: string): boolean {
+  const path = `${paths.drizzleDir}/${file}`;
+  const onDev = git(paths.root, ['rev-parse', '-q', '--verify', `origin/dev:${path}`], true).trim();
+  return onDev !== '' && onDev === git(paths.root, ['rev-parse', '-q', '--verify', `HEAD:${path}`], true).trim();
+}
+
+/**
  * A base migration the branch removes frees its slot once the branch lands: a
  * dev refresh of a mission branch takes dev's migration at an index the
  * mission had used, and moves the mission's own past it.
  */
 export function checkAgainstBase(paths: RepoPaths, base: string): IndexCollision[] {
   const removed = new Set(changedMigrationFiles(paths, base, 'D'));
+  const added = changedMigrationFiles(paths, base, 'A').filter((f) => !landedOnDev(paths, basename(f)));
   return findIndexCollisions(
-    changedMigrationFiles(paths, base, 'A'),
+    added,
     baseMigrationFiles(paths, base).filter((f) => !removed.has(f)),
   );
 }

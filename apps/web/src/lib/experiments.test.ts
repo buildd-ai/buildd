@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   canViewExperiment,
-  isExperimentAdmin,
+  isExperimentOperator,
   parseCreateExperiment,
   planExperimentPatch,
   toExperimentDTO,
@@ -27,19 +27,21 @@ function plan(current: ExperimentState, body: unknown) {
 }
 
 describe('visibility', () => {
-  it('team experiments are visible to every role', () => {
-    for (const role of ['member', 'admin', 'owner'] as const) expect(canViewExperiment('team', role)).toBe(true);
+  const operator = { operator: true };
+  const notOperator = { operator: false };
+  it('team experiments are visible to every team member', () => {
+    expect(canViewExperiment('team', notOperator)).toBe(true);
+    expect(canViewExperiment('team', operator)).toBe(true);
   });
-  it('admins experiments are visible to admin and owner only', () => {
-    expect(canViewExperiment('admins', 'member')).toBe(false);
-    expect(canViewExperiment('admins', 'admin')).toBe(true);
-    expect(canViewExperiment('admins', 'owner')).toBe(true);
+  it('operator-only experiments (stored as "admins") exist for platform operators only', () => {
+    expect(canViewExperiment('admins', notOperator)).toBe(false);
     expect(canViewExperiment('admins', null)).toBe(false);
+    expect(canViewExperiment('admins', operator)).toBe(true);
   });
-  it('isExperimentAdmin', () => {
-    expect(isExperimentAdmin('member')).toBe(false);
-    expect(isExperimentAdmin('admin')).toBe(true);
-    expect(isExperimentAdmin('owner')).toBe(true);
+  it('only a platform operator manages experiments; no team role does', () => {
+    expect(isExperimentOperator(notOperator)).toBe(false);
+    expect(isExperimentOperator(null)).toBe(false);
+    expect(isExperimentOperator(operator)).toBe(true);
   });
 });
 

@@ -136,7 +136,7 @@ function ActionQueueCardBody({ item }: { item: ActionQueueItem }) {
       return (
         <Link
           key={item.subjectKey}
-          href="/app/settings/connections"
+          href="/app/settings/apps"
           className="block border-l-2 border-status-error bg-status-error/5 px-4 py-3 hover:bg-status-error/10 transition-colors"
         >
           <div className="flex items-center gap-2 mb-0.5">
@@ -189,7 +189,7 @@ function ActionQueueCardBody({ item }: { item: ActionQueueItem }) {
         >
           <div className="flex items-center gap-2 mb-0.5">
             <span className="text-meta font-mono font-medium text-accent-text tracking-wide uppercase">
-              Approve Plan
+              Approve plan
             </span>
             {arc && arc.kind !== 'workspace' && (
               <span className="text-meta text-text-muted">{arc.label}</span>
@@ -233,7 +233,7 @@ function ActionQueueCardBody({ item }: { item: ActionQueueItem }) {
               <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                 <span className="inline-flex items-center gap-1 text-meta font-mono font-medium text-text-muted tracking-wide uppercase">
                   <Spinner size="xs" aria-label="Resolving conflicts" />
-                  Resolving Conflicts
+                  Resolving conflicts
                   {item.conflictRetryIteration != null && ` · attempt ${item.conflictRetryIteration}`}
                 </span>
               </div>

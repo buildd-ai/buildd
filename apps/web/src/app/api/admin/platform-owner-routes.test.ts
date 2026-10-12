@@ -202,7 +202,7 @@ beforeEach(() => {
   modeWrites.length = 0;
   storedMeasurements = [];
   measurementWrites.length = 0;
-  flags = { enabledDecisionShadows: ['task_role_shadow'], chatRetro: { lessons: false, proposals: false }, chatRetroDogfood: false };
+  flags = { enabledDecisionShadows: ['task_role_shadow'], inferenceFeatureModes: null, chatRetro: { lessons: false, proposals: false }, chatRetroDogfood: false };
 });
 
 describe('non-owner gets 404 on every route', () => {
@@ -407,6 +407,25 @@ describe('PATCH teams/[id]/experiment-flags', () => {
       before: { enabledDecisionShadows: ['task_role_shadow'], chatRetro: { lessons: false, proposals: false } },
       after: { enabledDecisionShadows: ['task_role_shadow', 'mission_goal_quality'], chatRetro: { lessons: true, proposals: false } },
     });
+  });
+
+  // The only write path for inferenceFeatureModes: team settings refuse it.
+  it('writes per-feature inference modes, dropping unknown features and "default"', async () => {
+    const res = await routes.flags.PATCH(
+      req(`teams/${TEAM}/experiment-flags`, 'PATCH', { inferenceFeatureModes: { criteria_grading: 'runner', visual_qa: 'default', chat: 'runner' } }),
+      idCtx(TEAM),
+    );
+    expect(res.status).toBe(200);
+    expect(writes).toEqual([{ teamId: TEAM, next: { inferenceFeatureModes: { criteria_grading: 'runner' }, deleteLessons: false } }]);
+    expect(audits[0]).toMatchObject({ after: { inferenceFeatureModes: { criteria_grading: 'runner' } } });
+  });
+
+  it('clears inference modes with null and rejects a non-object', async () => {
+    expect((await routes.flags.PATCH(req(`teams/${TEAM}/experiment-flags`, 'PATCH', { inferenceFeatureModes: null }), idCtx(TEAM))).status).toBe(200);
+    expect(writes[0]).toEqual({ teamId: TEAM, next: { inferenceFeatureModes: null, deleteLessons: false } });
+    writes.length = 0;
+    expect((await routes.flags.PATCH(req(`teams/${TEAM}/experiment-flags`, 'PATCH', { inferenceFeatureModes: ['runner'] }), idCtx(TEAM))).status).toBe(400);
+    expect(writes).toHaveLength(0);
   });
 
   it('rejects an unknown capability and writes nothing', async () => {

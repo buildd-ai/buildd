@@ -48,7 +48,7 @@ export function buildAgentsModel(fleet: FleetSnapshot, now: number, missionTitle
         // ("open_pr_outp pull_request 4191"): use its title in words instead.
         ...(/_/.test(`${w.label} ${w.rest}`)
           ? { name: readableRunName({ label: null, title: w.title ?? `${w.label} ${w.rest}` }), rest: '' }
-          : { name: w.label, rest: w.rest }),
+          : { name: w.name ?? w.label, rest: w.name ? '' : w.rest }),
         missionId: w.missionId,
         mission: w.missionId ? missionTitles.get(w.missionId) ?? null : null,
         href: w.taskId ? taskHref({ missionId: w.missionId ?? null, taskId: w.taskId }) : null,

@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * Plain words for a failure incident, and the one projection every surface
  * draws it from (docs/specs/failure-incident-recovery.md §9, §17).

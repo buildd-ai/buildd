@@ -1,6 +1,6 @@
 {
   "name": "@buildd/web",
-  "version": "0.323.0",
+  "version": "0.325.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
@@ -15,6 +15,7 @@
     "doctor": "bun run scripts/doctor.ts",
     "doctor:vercel": "bun run scripts/doctor.ts --vercel",
     "reconcile:pr-state": "bun run scripts/reconcile-pr-merge-state.ts",
+    "specs:backfill-knowledge": "bun --preload ../../scripts/stub-server-only.ts scripts/backfill-living-spec-knowledge.ts",
     "chat-retro:visible-fixture": "bun --preload ../../scripts/stub-server-only.ts scripts/chat-retro-visible-fixture.ts"
   },
   "dependencies": {

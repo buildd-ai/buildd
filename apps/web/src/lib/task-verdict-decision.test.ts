@@ -77,6 +77,21 @@ describe('decideTaskVerdict', () => {
     expect(rows.map(r => [r.status, r.reason])).toEqual([['fallback', 'missing_key'], ['fallback', 'missing_key']]);
   });
 
+  it("a provider rejection records the provider's status and words on each row's receipt", async () => {
+    const rows: VerdictLedgerRow[] = [];
+    const body = JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] });
+    await decideTaskVerdict(record(), {
+      decide: mock(async () => ({ ok: false as const, error: { kind: 'provider_error' as const, status: 401, body }, latencyMs: 60, attempts: 1 })) as never,
+      insertRows: async r => { rows.push(...r); }, newId: ids,
+    });
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r).toMatchObject({ status: 'fallback', errorKind: 'provider_error' });
+      expect(r.receipt?.error).toMatchObject({ kind: 'provider_error', status: 401 });
+      expect(r.receipt?.error?.body).toContain('Authentication error');
+    }
+  });
+
   it('a thrown call and a failed insert are both contained', async () => {
     const out = await decideTaskVerdict(record(), {
       decide: mock(async () => { throw new Error('boom'); }) as never,

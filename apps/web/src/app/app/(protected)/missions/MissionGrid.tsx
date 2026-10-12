@@ -4,7 +4,7 @@
  * The Missions portfolio: compact rows read from the shared delivery
  * projection (lib/delivery-projection.ts), several per phone screen.
  * Filtering and counting live in lib/mission-portfolio.ts, the sections
- * (Needs you / In motion / Waiting / On dev, criteria pending) and their
+ * (Needs you / In motion / Waiting / Landed, checks pending) and their
  * orderings in lib/mission-sections.ts; this file only renders. Each row is
  * the shared MissionRow: title, small task strip, one state line, Next. L1
  * rows on hairlines, no boxes; one column on phones, two from md. Workspace
@@ -17,7 +17,7 @@ import Disclosure from '@/components/ui/Disclosure';
 import MissionRow from '@/components/ui/MissionRow';
 import Segmented from '@/components/ui/Segmented';
 import { DELIVERY_KIND } from '@/lib/delivery-projection';
-import { STATE_OF_KIND, buildMissionSections, type MissionSection } from '@/lib/mission-sections';
+import { stateOfDelivery, buildMissionSections, type MissionSection } from '@/lib/mission-sections';
 import {
   COUNTER_DEFINITIONS,
   PORTFOLIO_STATUS_FILTERS,
@@ -144,7 +144,7 @@ export function MissionGrid({
                 <span className="flex flex-wrap items-baseline gap-x-2">
                   <span className="text-title font-semibold text-text-primary">{onDev.label}</span>
                   <span data-testid="mission-section-count" className="font-mono text-meta text-text-secondary">{onDev.rows.length}</span>
-                  <span className="text-meta text-text-muted">Landed on dev, but a goal criterion hasn&rsquo;t passed yet.</span>
+                  <span className="text-meta text-text-muted">A goal criterion hasn&rsquo;t passed.</span>
                 </span>
               }
             >
@@ -192,11 +192,6 @@ export function MissionGrid({
         </section>
       )}
 
-      <p data-testid="portfolio-definitions" className="text-meta leading-relaxed text-text-muted">
-        <span className="text-text-secondary">Open:</span> {COUNTER_DEFINITIONS.open}{' '}
-        <span className="text-text-secondary">Agent slots:</span> {COUNTER_DEFINITIONS.slots}{' '}
-        <span className="text-text-secondary">On dev:</span> every task landed on dev; the mission completes when its goal criteria pass. Only complete missions leave this list.
-      </p>
     </div>
   );
 }
@@ -216,13 +211,13 @@ function SectionView({ sec, now, showWorkspace }: { sec: MissionSection; now: nu
   );
 }
 
-/** "14 open" and one line: what needs you, what's moving, what's waiting, what's on dev, and the agent slots. */
+/** "14 open" and one line: what needs you, what's moving, what's waiting, what's landed, and the agent slots. */
 function Headline({ open, counts, slots }: { open: number; counts: Record<PortfolioStatusFilter, number>; slots: { live: number; max: number } }) {
   const parts = [
     counts.needs > 0 ? `${counts.needs} need${counts.needs === 1 ? 's' : ''} you` : null,
     `${counts.motion} in motion`,
     `${counts.waiting} waiting`,
-    counts.landed > 0 ? `${counts.landed} on dev, criteria pending` : null,
+    counts.landed > 0 ? `${counts.landed} landed, checks pending` : null,
     slots.max > 0 ? `${slots.live} of ${slots.max} agent slots` : null,
   ].filter(Boolean);
   return (
@@ -250,7 +245,7 @@ function nextLine(r: PortfolioRow): string {
 function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now: number; showWorkspace: boolean }) {
   const d = row.delivery;
   const k = DELIVERY_KIND[d.kind];
-  const state = STATE_OF_KIND[d.kind] ?? undefined;
+  const state = stateOfDelivery(d) ?? undefined;
   const age = ago(row.lastAdvancedAt, now);
   const aside = [
     row.liveAgents > 0 ? `${row.liveAgents} agent${row.liveAgents === 1 ? '' : 's'}` : null,

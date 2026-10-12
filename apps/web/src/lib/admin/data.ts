@@ -27,7 +27,7 @@ import { MODEL_ROUTING_EXPERIMENT_KIND, parseModelRoutingConfig } from '@buildd/
 import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout-source';
 import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 import type { ExperimentHealthFinding } from '@buildd/core/experiment-health';
-import { normalizeDecisionShadows } from '@buildd/core/inference-policy';
+import { normalizeDecisionShadows, normalizeFeatureModes, type FeatureModes } from '@buildd/core/inference-policy';
 import { AGENT_AUDIT_RULE_SOURCE, AGENT_AUDIT_SOURCE, type HealthOutcome } from '@buildd/core/decision-feature-health';
 import { applyExperimentUpdate, findOtherRunning, type ExperimentRow } from '@/lib/experiments-store';
 import { fetchOrchestrationDecisionStats } from '@/lib/orchestration-decision-stats-query';
@@ -195,6 +195,8 @@ export async function getExperiment(id: string): Promise<ExperimentRow | null> {
 export interface TeamExperimentFlags {
   /** The opt-in decision capabilities the team has on (teams.enabledDecisionShadows). */
   enabledDecisionShadows: string[] | null;
+  /** Per-feature server/runner overrides (teams.inferenceFeatureModes); null = every feature follows billing. */
+  inferenceFeatureModes: FeatureModes | null;
   /** Chat retro, as stored and as in effect. */
   chatRetro: ChatRetroSettings;
   /** An owner's account dogfood holds chat retro on whatever is stored. */
@@ -205,6 +207,7 @@ export async function readTeamExperimentFlags(teamId: string): Promise<TeamExper
   const [row] = await db
     .select({
       enabledDecisionShadows: teams.enabledDecisionShadows,
+      inferenceFeatureModes: teams.inferenceFeatureModes,
       chatRetro: teams.chatRetro,
       dogfood: sql<boolean>`${dogfoodOwnerExists()}`,
     })
@@ -215,6 +218,7 @@ export async function readTeamExperimentFlags(teamId: string): Promise<TeamExper
   const dogfood = row.dogfood === true;
   return {
     enabledDecisionShadows: shadows.ok ? shadows.value : (row.enabledDecisionShadows ?? null),
+    inferenceFeatureModes: normalizeFeatureModes(row.inferenceFeatureModes),
     chatRetro: effectiveChatRetroSettings(readChatRetroSettings(row.chatRetro), dogfood),
     chatRetroDogfood: dogfood,
   };
@@ -222,12 +226,14 @@ export async function readTeamExperimentFlags(teamId: string): Promise<TeamExper
 
 export async function writeTeamExperimentFlags(
   teamId: string,
-  next: { enabledDecisionShadows?: string[] | null; chatRetro?: ChatRetroSettings; deleteLessons: boolean },
+  next: { enabledDecisionShadows?: string[] | null; inferenceFeatureModes?: FeatureModes | null; chatRetro?: ChatRetroSettings; deleteLessons: boolean },
 ): Promise<{ deletedLessons: number }> {
-  if (next.enabledDecisionShadows !== undefined) {
-    await db.update(teams)
-      .set({ enabledDecisionShadows: next.enabledDecisionShadows, updatedAt: new Date() })
-      .where(eq(teams.id, teamId));
+  const columns = {
+    ...(next.enabledDecisionShadows !== undefined ? { enabledDecisionShadows: next.enabledDecisionShadows } : {}),
+    ...(next.inferenceFeatureModes !== undefined ? { inferenceFeatureModes: next.inferenceFeatureModes } : {}),
+  };
+  if (Object.keys(columns).length) {
+    await db.update(teams).set({ ...columns, updatedAt: new Date() }).where(eq(teams.id, teamId));
   }
   if (next.chatRetro) await writeTeamSettings(teamId, next.chatRetro);
   const deletedLessons = next.deleteLessons ? await deleteTeamLessons(teamId) : 0;

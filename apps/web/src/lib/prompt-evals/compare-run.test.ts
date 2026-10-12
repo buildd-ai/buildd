@@ -3,6 +3,7 @@ import { listRegisteredPrompts, resetPrompts } from '@buildd/core/prompts';
 import { resetPromptedQuestionsCache } from '@buildd/core/prompted-decision';
 import { DEFAULT_DECISION_MODEL, type decisionCall } from '@buildd/core/decision-client';
 import type { DecisionReplayInput } from '@buildd/core/decision-replay';
+import '@buildd/core/prompt-catalog';
 import { sha256Hex, type CollectedDeps } from './cases';
 import { parseComparisonModel, runModelComparison } from './compare-run';
 import type { PromptEvalDeps, PromptEvalResultRow, PromptEvalRunPatch, PromptEvalRunRow } from './run';
@@ -65,15 +66,16 @@ const decide = (async (p: { model?: string; state: { gold: string; hard?: boolea
 
 interface Rec { runs: PromptEvalRunRow[]; finished: PromptEvalRunPatch[]; results: PromptEvalResultRow[]; routes: unknown[]; asked: Array<string | undefined>; reads: string[]; collectedCalls: string[] }
 
-function deps(opts: { datasets?: Map<string, Buffer>; collectedN?: number; prod?: PromptEvalDeps['teamDecisionModel'] } = {}): { deps: PromptEvalDeps; rec: Rec } {
+function deps(opts: { repoFiles?: Record<string, string>; datasets?: Map<string, Buffer>; collectedN?: number; prod?: PromptEvalDeps['teamDecisionModel'] } = {}): { deps: PromptEvalDeps; rec: Rec } {
   const rec: Rec = { runs: [], finished: [], results: [], routes: [], asked: [], reads: [], collectedCalls: [] };
   const objects = opts.datasets ?? datasetObjects(60);
   return {
     rec,
     deps: {
-      env: {},
+      env: opts.repoFiles ? { PROMPTS_REPO: 'acme/acme-prompts' } : {},
       catalog: listRegisteredPrompts,
-      repoToken: async () => null,
+      repoToken: async () => (opts.repoFiles ? 'tok' : null),
+      ...(opts.repoFiles ? { reader: () => ({ async read(path: string) { const f = opts.repoFiles![path]; if (f === undefined) throw new Error('GitHub 404'); return f; } }) } : {}),
       operatorTeamId: async () => 'team-op',
       teamDecisionModel: opts.prod ?? (async () => null),
       chatModel: async () => null,
@@ -125,6 +127,25 @@ describe('runModelComparison', () => {
     expect(rec.runs[0]).toMatchObject({ models: [DEFAULT_DECISION_MODEL, 'clef'], caseSource: 'labelled', prodModel: DEFAULT_DECISION_MODEL, promptsRef: null });
     const scored = rec.results.filter(r => r.status === 'scored');
     expect(scored.map(r => [r.model, (r.metrics as { isProduction: boolean }).isProduction])).toEqual([[DEFAULT_DECISION_MODEL, true], ['clef', false]]);
+  });
+
+  it('a retired or broken prompt in the prompts repo drops only itself; the datasets are still scored', async () => {
+    const bad = JSON.stringify({ wrong: { type: 'noul', instructions: 'x' } });
+    const files: Record<string, string> = {
+      'retired.txt': 'x',
+      'gate.json': bad,
+      'manifest.json': JSON.stringify({ prompts: [
+        { id: 'buildd.cbm_search_injection', version: 1, file: 'retired.txt', sha256: sha256Hex('x') },
+        { id: 'buildd.question_gate', version: 1, file: 'gate.json', sha256: sha256Hex(bad) },
+      ] }),
+    };
+    const { deps: d, rec } = deps({ repoFiles: files });
+    const out = await runModelComparison({ teamId: 't', models: [clef], source: 'labelled' }, d);
+    expect(out.problems.some(p => p.includes('were not read'))).toBe(false);
+    expect(out.problems.filter(p => p.includes('buildd.question_gate'))).toHaveLength(1);
+    expect(out.problems.some(p => p.includes('cbm_search_injection'))).toBe(false);
+    expect(rec.results.some(r => r.status === 'scored' && r.caseOrigin.startsWith('dataset:'))).toBe(true);
+    expect(rec.results.find(r => r.benchmarkSet === 'buildd.cbm_search_injection')).toMatchObject({ status: 'no_eval_set', metrics: { reason: 'retired_prompt' } });
   });
 
   it('labelled only: reads datasets, never the replay corpus', async () => {

@@ -19,7 +19,10 @@ function task(id: string, over: Partial<MissionTaskRow> = {}): MissionTaskRow {
 const landed = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, mergedAt: '2026-10-01', prLifecycleStatus: 'merged' }] });
 const building = (id: string) => task(id, { status: 'in_progress', workers: [{ status: 'running' }] });
 const inAudit = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'ci_pending' }] });
-const closed = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
+// Closed unmerged, and the supersession scan already ran: a person decides.
+const closed = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', supersessionScan: { scannedAt: '2026-10-08T10:00:00Z', suggestion: null } }] });
+// Closed unmerged, scan still owed: Buildd is reconciling it.
+const reconciling = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
 
 function row(id: string, title: string, tasks: MissionTaskRow[], over: Partial<PortfolioRow> & { isHeld?: boolean } = {}): PortfolioRow {
   const { isHeld = false, ...rest } = over;
@@ -96,11 +99,11 @@ describe('MissionGrid portfolio', () => {
     expect(ids('waiting').indexOf('m04')).toBeLessThan(ids('waiting').indexOf('m05')); // waiting before held
   });
 
-  it('folds missions whose every task landed into one collapsed On dev, criteria pending group', () => {
+  it('folds missions whose every task landed into one collapsed Landed, checks pending group', () => {
     const group = html.match(/<section[^>]*data-section="landed"[\s\S]*?<\/section>/)![0];
-    expect(group).toContain('On dev, criteria pending');
+    expect(group).toContain('Landed, checks pending');
     expect(group).toContain('aria-expanded="false"');
-    expect(group).toContain('a goal criterion');
+    expect(group).toContain('A goal criterion');
     // Collapsed: its rows mount only when opened.
     expect(group).not.toContain('data-mission-id="m12"');
   });
@@ -117,13 +120,13 @@ describe('MissionGrid portfolio', () => {
     expect(line).toContain('1 needs you');
     expect(line).toContain('in motion');
     expect(line).toContain('waiting');
-    expect(line).toContain('1 on dev, criteria pending');
+    expect(line).toContain('1 landed, checks pending');
     expect(line).toContain('1 of 4 agent slots');
   });
 
-  it('explains its words once, in a quiet footnote at the end', () => {
-    expect(html).toContain('data-testid="portfolio-definitions"');
-    expect(html.indexOf('portfolio-definitions')).toBeGreaterThan(html.indexOf('data-group="completed"'));
+  it('has no glossary footer, and never names a branch the reader may not have', () => {
+    expect(html).not.toContain('data-testid="portfolio-definitions"');
+    expect(html).not.toMatch(/\bon dev\b/i);
   });
 
   it('shows the truthful status: live agent only on the executing mission', () => {
@@ -145,6 +148,13 @@ describe('MissionGrid portfolio', () => {
     expect(rowHtml('m03')).toContain('Not landed');
   });
 
+  it('a closed PR still being reconciled is In motion and reads Recovering, never Needs you', () => {
+    const out = renderToStaticMarkup(<MissionGrid rows={[row('m13', 'Reconciled mission', [landed('a'), reconciling('b')])]} slots={{ live: 0, max: 4 }} now={NOW} />);
+    expect(out).not.toContain('data-section="needs"');
+    expect(out).toMatch(/data-section="motion"[\s\S]*data-mission-id="m13"/);
+    expect(out).toContain('Recovering');
+  });
+
   it('says a needs-you mission\'s problem once: no second exception note under the row', () => {
     const r = rowHtml('m03');
     expect(r.match(/did not land|closed without merging/g)?.length ?? 0).toBeLessThanOrEqual(1);
@@ -159,7 +169,7 @@ describe('MissionGrid portfolio', () => {
     const filters = html.match(/<div[^>]*data-testid="portfolio-filters"[\s\S]*?<\/div>/)![0];
     expect(filters).toContain('data-testid="segmented"');
     expect(filters).toContain('role="radiogroup"');
-    for (const label of ['All', 'Needs you', 'In motion', 'Waiting', 'On dev']) expect(filters).toContain(label);
+    for (const label of ['All', 'Needs you', 'In motion', 'Waiting', 'Landed']) expect(filters).toContain(label);
     expect(filters).not.toContain('Executing');
   });
 

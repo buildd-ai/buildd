@@ -442,9 +442,9 @@ function TaskRow({
               <div className="bg-[#D97706]/5 border border-[#D97706]/20 rounded px-2.5 py-1.5">
                 <div className="flex items-center gap-1.5 mb-0.5">
                   {reviewerTaskHref ? (
-                    <Link href={reviewerTaskHref} className="text-[#D97706] text-[11px] font-semibold hover:underline">🤖 Changes Requested</Link>
+                    <Link href={reviewerTaskHref} className="text-[#D97706] text-[11px] font-semibold hover:underline">Changes requested</Link>
                   ) : (
-                    <span className="text-[#D97706] text-[11px] font-semibold">🤖 Changes Requested</span>
+                    <span className="text-[#D97706] text-[11px] font-semibold">Changes requested</span>
                   )}
                   {iteration && <span className="text-[11px] md:text-[10px] text-[#D97706]/70">(iteration {iteration})</span>}
                 </div>
@@ -465,9 +465,9 @@ function TaskRow({
               <div className="bg-status-error/5 border border-status-error/20 rounded px-2.5 py-2">
                 <div className="flex items-center gap-1.5 mb-1">
                   {reviewerTaskHref ? (
-                    <Link href={reviewerTaskHref} className="text-status-error text-[11px] font-semibold hover:underline">🤖 Escalated to you</Link>
+                    <Link href={reviewerTaskHref} className="text-status-error text-[11px] font-semibold hover:underline">Needs a decision</Link>
                   ) : (
-                    <span className="text-status-error text-[11px] font-semibold">🤖 Escalated to you</span>
+                    <span className="text-status-error text-[11px] font-semibold">Needs a decision</span>
                   )}
                 </div>
                 <p className="text-[11px] text-text-secondary leading-relaxed mb-2 line-clamp-2" title={note.body ?? note.title}>{note.body ?? note.title}</p>
@@ -590,7 +590,7 @@ function BookkeepingFooter({ tasks }: { tasks: BookkeepingTask[] }) {
           >
             ▶
           </span>
-          {tasks.length} orchestrator {tasks.length === 1 ? 'run' : 'runs'} · last {lastAgo}
+          {tasks.length} organizer {tasks.length === 1 ? 'run' : 'runs'} · last {lastAgo}
         </button>
         <span className="flex-1 h-px bg-border-default opacity-50" />
       </div>

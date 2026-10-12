@@ -27,7 +27,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
   return (
     <div className="mb-8">
       <div className="flex items-center justify-between mb-4">
-        <div className="section-label">Release Queue</div>
+        <div className="section-label">Release queue</div>
       </div>
       <div className="space-y-2">
         {visible.map((item) => {
@@ -48,7 +48,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                       </span>
                     )}
                     <span className="text-[13px] text-text-secondary">
-                      Queue depth doesn&apos;t match the last dispatch. The release baseline may be broken.
+                      The release count looks wrong. Check Releases.
                     </span>
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
