@@ -30,6 +30,7 @@ const WORKSPACES = [{ id: 'ws-a', name: 'Workspace A' }, { id: 'ws-b', name: 'Wo
 
 let opts: FixtureOpts = {};
 let assigned: Record<string, unknown> = {};
+let withKeys: string[] = [];
 const calls: { url: string; method: string; body: Record<string, unknown> | null }[] = [];
 
 beforeEach(() => {
@@ -37,6 +38,7 @@ beforeEach(() => {
   opts = {};
   calls.length = 0;
   assigned = {};
+  withKeys = [];
   globalThis.fetch = mock(async (input: string, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost');
     const method = init?.method ?? 'GET';
@@ -69,7 +71,7 @@ beforeEach(() => {
         opts = { ...opts, rows: (opts.rows ?? []).filter((r) => !(r.provider === p && r.scope === s)) };
         return Response.json({ provider: p, scope: s, workspaceId: null, credentials: [], deleted: 1 });
       }
-      return Response.json(fixtureResponse({ ...opts, workspaceId: url.searchParams.get('workspaceId') }));
+      return Response.json({ ...fixtureResponse({ ...opts, workspaceId: url.searchParams.get('workspaceId') }), workspacesWithKeys: withKeys });
     }
     return new Response('{}', { status: 200 });
   }) as unknown as typeof fetch;
@@ -80,12 +82,12 @@ let root: ReturnType<typeof createRoot>;
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 async function flush() { await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); }
-async function mount(o: FixtureOpts = {}, withSignIns = false, workspaces = WORKSPACES, scope: 'team' | 'mine' = 'team') {
+async function mount(o: FixtureOpts = {}, withSignIns = false, workspaces = WORKSPACES, scope: 'team' | 'workspace' | 'mine' = 'team') {
   opts = o;
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<ModelProvidersClient teamId="t" isAdmin={o.admin !== false} workspaces={workspaces} signIns={withSignIns ? { workspaces: workspaces.map((w) => ({ ...w, teamId: 't' })), currentTeamId: 't' } : undefined} scope={scope} />); });
+  await act(async () => { root.render(<ModelProvidersClient teamId="t" isAdmin={o.admin !== false} workspaces={workspaces} signIns={withSignIns ? { workspaces: workspaces.map((w) => ({ ...w, teamId: 't' })), currentTeamId: 't' } : undefined} scope={scope} workspaceId={scope === 'workspace' ? workspaces[0]?.id ?? null : null} />); });
   await flush();
   await flush();
 }
@@ -228,33 +230,43 @@ describe('connect: one input, the format decides', () => {
 });
 
 describe('one scope per page', () => {
-  it('Models has no scope tabs: team keys, then workspace keys under their own heading', async () => {
+  it('Models holds only the team keys: no workspace picker, no Workspace keys section', async () => {
     await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] });
     expect(host.querySelector('[role="tablist"]')).toBeNull();
-    expect(host.querySelector('[data-testid^="scope-tab-"]')).toBeNull();
     const team = [...host.querySelectorAll('[data-testid="provider-list-team"] [data-scope]')].map((e) => e.getAttribute('data-scope'));
-    const ws = [...host.querySelectorAll('[data-testid="provider-list-workspace"] [data-scope]')].map((e) => e.getAttribute('data-scope'));
     expect(new Set(team)).toEqual(new Set(['team']));
-    expect(new Set(ws)).toEqual(new Set(['workspace']));
-    expect(host.querySelector('[data-scope="mine"]')).toBeNull();
-    expect(host.textContent).toContain('Workspace keys');
+    expect(host.querySelector('[data-testid="provider-list-workspace"]')).toBeNull();
+    expect($('[data-testid="scope-workspace"]')).toBeNull();
+    expect(host.textContent).not.toContain('Workspace keys');
+    expect($('[data-testid="workspaces-with-keys"]')).toBeNull();
   });
 
-  it('a workspace shows the team key it uses, and pastes go to that workspace', async () => {
+  it('names the workspaces that use their own keys, each linked to its settings', async () => {
+    withKeys = [WORKSPACES[0].id];
     await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] });
+    const line = $('[data-testid="workspaces-with-keys"]')!;
+    expect(line.textContent).toBe(`1 workspace uses its own keys: ${WORKSPACES[0].name}`);
+    expect($('a', line)!.getAttribute('href')).toBe(`/app/settings/workspace/${WORKSPACES[0].id}#models`);
+  });
+
+  it('a workspace page: uses team settings until an admin overrides, then pastes go to that workspace', async () => {
+    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] }, false, WORKSPACES, 'workspace');
+    expect($('[data-testid="workspace-uses-team"]')!.textContent).toContain('Uses team settings.');
+    expect(host.querySelector('[data-testid="provider-list-workspace"]')).toBeNull();
+    expect(host.querySelector('[data-testid="provider-list-team"]')).toBeNull();
+    await click(button(host, 'Override')!);
     const c = cardOf('claude', 'workspace');
     expect($('[data-testid="provider-card-state"]', c)!.textContent).toBe('Team key');
     await click(button(c, 'Connect Claude'));
-    expect($('[data-testid="provider-inherits"]', c)!.textContent).toContain('…a1b2');
     await type($('input[type="password"]', c) as HTMLInputElement, PASTED);
     await click(button(c, 'Save'));
-    expect(calls.find((x) => x.method === 'PUT')!.body).toMatchObject({ provider: 'anthropic', scope: 'workspace', workspaceId: 'ws-a', shape: 'api_key' });
+    expect(calls.find((x) => x.method === 'PUT')!.body).toMatchObject({ provider: 'anthropic', scope: 'workspace', workspaceId: WORKSPACES[0].id, shape: 'api_key' });
   });
 
-  it('with no workspaces there is no Workspace keys section', async () => {
-    await mount({}, false, []);
-    expect(host.querySelector('[data-testid="provider-list-workspace"]')).toBeNull();
-    expect(host.textContent).not.toContain('Workspace keys');
+  it('a workspace page with its own key lists it straight away', async () => {
+    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }] }, false, WORKSPACES, 'workspace');
+    expect($('[data-testid="workspace-uses-team"]')).toBeNull();
+    expect(host.querySelector('[data-testid="provider-list-workspace"]')).toBeTruthy();
   });
 
   it('Keys holds only your keys: no team rows, no routing, the policy as a line', async () => {
@@ -330,7 +342,6 @@ for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
     it('renders every row and the policy without an em dash', async () => {
       await mount({ rows: [{ provider: 'anthropic', scope: 'team' }], credentialPolicy: 'team' });
       expect(host.querySelectorAll('[data-testid="provider-list-team"] [data-testid^="provider-card-"][data-scope]').length).toBe(5);
-      expect(host.querySelectorAll('[data-testid="provider-list-workspace"] [data-testid^="provider-card-"][data-scope]').length).toBe(5);
       expect($('[data-testid="credential-policy"]')!.textContent).not.toContain('—');
       for (const c of host.querySelectorAll('[data-testid^="provider-card-"][data-scope]')) expect(c.textContent).not.toContain('—');
     });
