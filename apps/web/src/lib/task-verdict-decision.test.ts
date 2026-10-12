@@ -1,6 +1,7 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { deriveTaskVerdict, type TaskVerdict } from './task-verdict';
 import {
+  buildVerdictState,
   decideTaskVerdict,
   unclearTraceFacts,
   verdictFingerprint,
@@ -76,6 +77,21 @@ describe('decideTaskVerdict', () => {
     expect(rows.map(r => [r.status, r.reason])).toEqual([['fallback', 'missing_key'], ['fallback', 'missing_key']]);
   });
 
+  it("a provider rejection records the provider's status and words on each row's receipt", async () => {
+    const rows: VerdictLedgerRow[] = [];
+    const body = JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] });
+    await decideTaskVerdict(record(), {
+      decide: mock(async () => ({ ok: false as const, error: { kind: 'provider_error' as const, status: 401, body }, latencyMs: 60, attempts: 1 })) as never,
+      insertRows: async r => { rows.push(...r); }, newId: ids,
+    });
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r).toMatchObject({ status: 'fallback', errorKind: 'provider_error' });
+      expect(r.receipt?.error).toMatchObject({ kind: 'provider_error', status: 401 });
+      expect(r.receipt?.error?.body).toContain('Authentication error');
+    }
+  });
+
   it('a thrown call and a failed insert are both contained', async () => {
     const out = await decideTaskVerdict(record(), {
       decide: mock(async () => { throw new Error('boom'); }) as never,
@@ -117,6 +133,50 @@ describe('decideTaskVerdict', () => {
     });
     expect(out.traceClasses).toEqual({ u1: 'real' });
     expect(rows.filter(r => r.decisionId === 'task_verdict.error_class')).toHaveLength(1);
+  });
+});
+
+describe('decideTaskVerdict: replayable inputs', () => {
+  it('every row of a call that was made keeps the state, keyed by its own ledger id, after the insert', async () => {
+    const order: string[] = [];
+    const capture = mock((_c: any) => { order.push('capture'); return 'scheduled' as const; });
+    const rows: VerdictLedgerRow[] = [];
+    const r = record();
+    await decideTaskVerdict(r, {
+      decide: ok({ headline: { choice: 'fix_pr_metadata', confidence: 0.95 }, mismatch_diagnosis: { choice: 'wrong_check', confidence: 0.4 } }) as never,
+      insertRows: async x => { order.push('insert'); rows.push(...x); }, newId: ids, capture,
+    });
+    expect(order).toEqual(['insert', 'capture', 'capture']);
+    expect(capture.mock.calls.map(c => c[0].decisionId)).toEqual(rows.map(x => x.id));
+    expect(capture.mock.calls[0][0]).toMatchObject({
+      source: 'orchestration_decisions', teamId: 'team', workspaceId: 'ws', capability: 'task_verdict',
+      model: 'jev-test', ruleAnswer: 'rules', state: buildVerdictState(r),
+      questionIds: ['headline', 'mismatch_diagnosis'], candidates: null,
+      promptRef: { id: 'task_verdict.headline', version: rows[0].decisionVersion, contentHash: null },
+    });
+  });
+
+  it('a timed-out call keeps it too: the model was asked', async () => {
+    const capture = mock((_c: any) => 'scheduled' as const);
+    await decideTaskVerdict(record(), {
+      decide: mock(async () => ({ ok: false as const, error: { kind: 'timeout' as const }, latencyMs: 4000, attempts: 1 })) as never,
+      insertRows: async () => {}, newId: ids, capture,
+    });
+    expect(capture).toHaveBeenCalledTimes(2);
+  });
+
+  it('none for a sensitive workspace, a call never made, or a failed insert', async () => {
+    const capture = mock((_c: any) => 'scheduled' as const);
+    await decideTaskVerdict(record({ sensitive: true }), { decide: ok({}) as never, insertRows: async () => {}, newId: ids, capture });
+    await decideTaskVerdict(record(), {
+      decide: mock(async () => ({ ok: false as const, error: { kind: 'missing_key' as const }, latencyMs: 1, attempts: 0 })) as never,
+      insertRows: async () => {}, newId: ids, capture,
+    });
+    await decideTaskVerdict(record(), {
+      decide: ok({ headline: { choice: 'fix_code', confidence: 0.99 } }) as never,
+      insertRows: async () => { throw new Error('db down'); }, newId: ids, capture,
+    });
+    expect(capture).not.toHaveBeenCalled();
   });
 });
 

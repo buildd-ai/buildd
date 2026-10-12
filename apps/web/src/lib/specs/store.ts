@@ -40,7 +40,7 @@ const author = (c: SpecCaller) => (c.kind === 'user'
   ? { authorKind: 'user' as const, authorId: c.userId, label: `user:${c.userId}` }
   : { authorKind: 'agent' as const, authorId: c.account.id, label: `account:${c.account.id}` });
 
-export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number };
+export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number; code?: string };
 export const fail = (status: SpecError['status'], error: string, extra: Partial<SpecError> = {}): SpecError => ({ ok: false, status, error, ...extra });
 
 /** Read (or, with `write`, create and revise) access to a workspace's specs. */
@@ -179,6 +179,14 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
     RETURNING id`);
   if (((rows as { rows?: unknown[] }).rows ?? []).length === 0) {
     const [now] = await db.select({ version: specs.version }).from(specs).where(eq(specs.id, specId)).limit(1);
+    if (now?.version === spec.version && hash !== head.contentHash) {
+      const [art] = await db.select({ currentRevision: artifacts.currentRevision }).from(artifacts).where(eq(artifacts.id, spec.bodyArtifactId)).limit(1);
+      if (art && art.currentRevision !== head.artifactRevision) {
+        // The body moved outside a spec revise (an operator redaction): the
+        // version did not, so "re-read and revise on top" would loop. Say so.
+        return fail(409, `The spec body was changed outside a spec revise (it is at artifact revision ${art.currentRevision}, the spec head pins ${head.artifactRevision}), for example by a redaction. This spec cannot be revised on top of it; start a new spec from its current text.`, { code: 'spec_body_moved' });
+      }
+    }
     return fail(409, `The spec changed while you were revising it: it is now at version ${now?.version ?? spec.version}. Re-read it, merge, then revise on top.`, { currentVersion: now?.version ?? spec.version });
   }
   const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);

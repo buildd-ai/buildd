@@ -99,7 +99,7 @@ export function transitionsToActivityEntries(
         const url = reviewUrl(round);
         const delta = ev.compositionDelta as { paths?: unknown } | undefined;
         if (t.toState === 'APPROVED' && delta) {
-          // §5.9 / S33: the delta round covers only the novel paths, never the whole release.
+          // §5.9 / S33: the delta round covers only the novel paths, never the whole PR.
           const paths = Array.isArray(delta.paths) ? delta.paths.map(String) : [];
           push({ kind: 'composition_delta_approved', note: paths.length ? paths.join('\n') : null, ...(url ? { taskUrl: url } : {}) });
         } else if (t.toState === 'APPROVED') push({ kind: 'review_approved', ...(url ? { taskUrl: url } : {}) });

@@ -38,6 +38,8 @@ import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { resolveEffectiveRoleSlugs } from '@/lib/effective-roles';
 import { assertScheduleSkillsAvailable, fileMissingSkillFriction, MissingScheduleSkillError } from '@/lib/schedule-skill-preflight';
 
+const SCHEDULE_TIERS: ReadonlySet<string> = new Set(['premium-plus', 'premium', 'standard', 'budget']);
+
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
 
@@ -905,6 +907,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             complexity: cadence.complexity,
             classifiedBy: cadence.classifiedBy === 'user' ? 'user' : 'default',
             ...(templateRole ? { roleSlug: templateRole } : {}),
+            // A stated tier skips the kind x complexity matrix, as on create_task.
+            ...(template.tier && SCHEDULE_TIERS.has(template.tier) ? { tier: template.tier } : {}),
             ...(externalId ? { externalId } : {}),
             ...(linkedMission ? { missionId: linkedMission.id } : {}),
             ...(linkedMission?.defaultBackend ? { backend: linkedMission.defaultBackend } : {}),

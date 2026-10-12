@@ -76,10 +76,10 @@ describe('owner of the next move (§4)', () => {
 });
 
 describe('release composition', () => {
-  test('APPROVED on a composition basis reads "Release composition verified"', () => {
+  test('APPROVED on a composition basis reads "Composition verified"', () => {
     const v = view({ view: V(D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'] })) });
     expect(v.compositionVerified).toBe(true);
-    expect(v.headline).toBe('Release composition verified');
+    expect(v.headline).toBe('Composition verified');
     expect(v.owner).toBe('landing');
     expect(v.needsYou).toBe(false);
   });
@@ -88,7 +88,7 @@ describe('release composition', () => {
     const delta = R({ id: 'r2', round: 2, kind: 'delta', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', scope: { composition: true, novelDeltaPaths: ['a.sql', 'b.ts'] } });
     const v = view({ view: V(D({ state: 'APPROVED', currentRound: 2, approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }), [R({ status: 'superseded' }), delta]) });
     expect(v.compositionVerified).toBe(true);
-    expect(v.headline).toBe('Release-only changes approved');
+    expect(v.headline).toBe('New changes approved');
     expect(v.headline).not.toBe('Approved');
     expect(v.detail).toBe('every other change was reviewed at its own head; this review covered only 2 new paths');
   });

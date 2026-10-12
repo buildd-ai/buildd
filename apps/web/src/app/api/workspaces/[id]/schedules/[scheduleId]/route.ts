@@ -49,8 +49,7 @@ type ScheduleAuth = NonNullable<Awaited<ReturnType<typeof resolveAuth>>>;
 /**
  * Validate and stamp a `delegation` write (packages/core/token-delegation.ts).
  * Granting reach needs `delegate_schedule_access` in the schedule's team (by
- * default an owner/admin session, or an admin key of that team; the team's
- * permission overrides apply to sessions), every target must be a workspace of
+ * default an owner/admin session, or an admin key of that team), every target must be a workspace of
  * that same team, and the granter must itself reach each target. Clearing it
  * (null) needs the same authority. The stored row records who and when.
  */

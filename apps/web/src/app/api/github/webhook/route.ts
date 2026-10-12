@@ -493,7 +493,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         // Model policy: every check suite passed on the run's PR (once per transition to green).
         if (greened.length > 0) {
           await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
-          await emit({ type: 'pr.ci_passed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id });
+          await emit({
+            type: 'pr.ci_passed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id,
+            workspaceId: workspace.id, workerId: worker.id, taskId: worker.taskId,
+          });
         }
 
         // Resolve merge policy via the single precedence chain:
@@ -907,7 +910,7 @@ async function handlePullRequestEvent(event: {
         type: 'pr.review_ready',
         installationId: event.installation.id,
         repoFullName: repository.full_name,
-        pr: { number: pr.number, headRef: pr.head.ref, additions: pr.additions ?? null, deletions: pr.deletions ?? null },
+        pr: { number: pr.number, headRef: pr.head.ref, headSha: pr.head.sha, additions: pr.additions ?? null, deletions: pr.deletions ?? null },
         worker: { id: openWorker.id, workspaceId: openWorker.workspaceId, taskId: openWorker.taskId },
       });
     }

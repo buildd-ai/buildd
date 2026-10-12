@@ -33,6 +33,7 @@
 import {
   normalizeDecisionFailure,
   resolveDecisionEndpoint,
+  providerErrorExcerpt,
   runChallenger,
   runDecisionKind,
   type DecisionQuestions,
@@ -50,8 +51,10 @@ import {
   type TeamDecisionRow,
 } from './decision-client';
 import { isMeasuredForKind, type BuilddDecisionKind, type BuilddDecisionKindBinding } from './decision-kinds';
+import { loadMeasurementsSafe, measurementFor, type StoredMeasurement } from './decision-model-measurements';
 import type { ChallengerRunInput, DecisionLedgerInput } from './decision-ledger';
 import { assignExperimentArm, type ExperimentAssignment } from './experiment-randomizer';
+import type { DecisionReplayCapture } from './decision-replay';
 
 export interface BuilddDecisionScope {
   teamId: string;
@@ -87,6 +90,25 @@ export interface BuilddDecisionDeps {
    */
   defer?: (job: () => Promise<void>) => void;
   now?: () => number;
+  /** Stored (kind, model) measurements. Default: `loadMeasurementsSafe` (cached, never throws). */
+  measurements?: () => Promise<readonly StoredMeasurement[]>;
+}
+
+/**
+ * Is this model measured for the kind, and at what threshold? A stored
+ * measurement (decision-model-measurements.ts) first, matched against the
+ * kind's current prompt fingerprint; the kind's code-listed `measuredModels`
+ * still count, at the kind's own threshold. Jev with no row keeps today.
+ */
+function measuredRoute(
+  kind: { kind: string; promptFingerprint: string; binding: Pick<BuilddDecisionKindBinding, 'measuredModels'> },
+  rows: readonly StoredMeasurement[],
+): { isMeasured: (model: string) => boolean; thresholdFor: (model: string) => number | null } {
+  const lookup = (model: string) => measurementFor(rows, { kind: kind.kind, answeringModel: model, fingerprint: kind.promptFingerprint });
+  return {
+    isMeasured: model => lookup(model).measured || isMeasuredForKind(kind.binding, model),
+    thresholdFor: model => lookup(model).threshold,
+  };
 }
 
 function providerOf(endpoint: Parameters<typeof resolveDecisionEndpoint>[0]): string {
@@ -102,13 +124,16 @@ export async function resolveBuilddDecisionRuntime<K extends string, F, D extend
 ): Promise<DecisionRuntime> {
   const { binding } = kind;
   const call = deps.call ?? decisionCall;
-  const isMeasured = (model: string) => isMeasuredForKind(binding, model);
+  const rows = await (deps.measurements ?? (() => loadMeasurementsSafe()))().catch(() => [] as readonly StoredMeasurement[]);
+  const { isMeasured, thresholdFor } = measuredRoute(kind, rows);
   const base = {
     capability: binding.capability,
     teamId: scope.teamId,
     workspaceId: scope.workspaceId,
     accountId: scope.accountId,
     userId: scope.userId,
+    // The team's model override for this kind, if any, answers the cheap route.
+    kind: kind.kind,
     ...(scope.onUsage ? { onUsage: scope.onUsage } : {}),
   };
 
@@ -130,6 +155,7 @@ export async function resolveBuilddDecisionRuntime<K extends string, F, D extend
     provider: providerOf(access.endpoint),
     model: access.model,
     isMeasured,
+    thresholdFor,
     invoke: req => call({ ...base, state: req.state, questions: req.questions, timeoutMs: req.timeoutMs, decisionId: req.decisionId, access }),
   };
 
@@ -145,6 +171,7 @@ export async function resolveBuilddDecisionRuntime<K extends string, F, D extend
           provider: providerOf(route.endpoint),
           model: route.model,
           isMeasured,
+          thresholdFor,
           // The capability was checked for the cheap route; `apiKey` skips the re-check.
           invoke: req => call({
             ...base, state: req.state, questions: req.questions, timeoutMs: req.timeoutMs, decisionId: req.decisionId,
@@ -170,12 +197,16 @@ export function toDecisionLedgerInput(response: DecisionResponse, scope: BuilddD
   const applied = response.attempts.find(a => a.applied) ?? null;
   const answered = applied ?? [...response.attempts].reverse().find(a => a.decision !== null) ?? null;
   const deterministic = response.source !== 'model';
+  // The last rejection's own words (status + body excerpt, key redacted), so
+  // the ledger says why a provider_error happened, not only that it did.
+  const rejection = [...response.attempts].reverse().find(a => a.failure?.kind === 'provider_error')?.failure ?? null;
   const reason = [
     `${response.source}:${response.reasonCode}`,
     response.fallbackCause ? `cause=${response.fallbackCause}` : null,
     response.attempts.length ? `chain=${response.escalationChain.join('>')}` : null,
     response.escalationSkipped ? `escalation=${response.escalationSkipped}` : null,
     response.unavailable ? `unavailable=${response.unavailable.detail}` : null,
+    rejection?.status ? `provider_error=${providerErrorExcerpt(rejection.status, rejection.body ?? '')}` : null,
   ].filter(Boolean).join('; ');
   const inputTokens = response.attempts.reduce((s, a) => s + a.usage.inputTokens, 0);
   const failureClass = response.source !== 'fallback' ? null
@@ -304,6 +335,27 @@ export async function runBuilddChallenger<K extends string, F, D extends string,
   }
 }
 
+/**
+ * What a replay needs to ask another model the same thing (decision-replay.ts):
+ * the parsed features and the schema they were built against, not the derived
+ * state, so an eval rebuilds the question exactly as the kind does. Null when
+ * the features did not parse (nothing was asked).
+ */
+export function replayOf(
+  kind: { kind: string; questions?: Record<string, unknown> },
+  request: DecisionRequest<unknown>,
+  response: Pick<DecisionResponse, 'featureDigest' | 'featureSchemaVersion' | 'policyVersion' | 'promptFingerprint'>,
+): DecisionReplayCapture | null {
+  if (response.featureDigest === null || request.features === undefined) return null;
+  return {
+    state: request.features,
+    featureSchemaVersion: response.featureSchemaVersion ?? null,
+    questionIds: Object.keys(kind.questions ?? {}),
+    candidates: null,
+    promptRef: { id: kind.kind, version: response.policyVersion ?? null, contentHash: response.promptFingerprint ?? null },
+  };
+}
+
 /** Ask a kind for a team. The caller names the kind and its features, nothing else. */
 export async function runBuilddDecision<K extends string, F, D extends string, Q extends DecisionQuestions>(
   kind: BuilddDecisionKind<K, F, D, Q>,
@@ -320,7 +372,7 @@ export async function runBuilddDecision<K extends string, F, D extends string, Q
       if (!record) return;
       if (response.mode === 'disabled' && response.source !== 'rule') return;
       try {
-        recordId = (await record(toDecisionLedgerInput(response, scope))) ?? null;
+        recordId = (await record({ ...toDecisionLedgerInput(response, scope), replay: replayOf(kind, request, response) })) ?? null;
       } catch (e) {
         console.warn(`[decision-policy] ledger write failed for ${kind.kind} (non-fatal):`, (e as Error)?.message ?? e);
       }

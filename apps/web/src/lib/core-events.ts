@@ -145,6 +145,18 @@ export type CoreEvent =
       verificationEvidence: unknown;
     }
   | WorkerOutcomeEvent
+  /**
+   * The runner reported verification evidence on a worker that was already
+   * terminal: the agent made the terminal write first (lib/late-runner-evidence.ts).
+   * Never a task-token report on a host-claimed worker; the route drops those.
+   */
+  | {
+      type: 'worker.late_verification_reported';
+      taskId: string;
+      workerId: string;
+      workspaceId: string | null;
+      verificationEvidence: unknown;
+    }
   /** A merged PR completed the task (GitHub webhook). */
   | { type: 'task.completed'; via: 'merge'; taskId: string; workerId: string; workspaceId: string | null }
   | { type: 'task.needs_input'; taskId: string; workerId: string; prompt: string | null | undefined }
@@ -316,8 +328,21 @@ export type CoreEvent =
   | { type: 'workflow_run.completed'; run: WorkflowRunFact; installationId: number | null }
   /** A check suite completed red on a PR. Every delivery, once per PR in the suite. */
   | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string; installationId: number }
-  /** Every check suite on a worker PR's head passed (the PR's lifecycle is now ci_green). Every delivery. */
-  | { type: 'pr.ci_passed'; repoFullName: string; prNumber: number; headSha: string; installationId: number }
+  /**
+   * Every check suite on a worker PR's head passed (the PR's lifecycle is now
+   * ci_green). Once per transition to green, per workspace linked to the repo;
+   * `workerId` / `taskId` are the worker row that owns the PR there.
+   */
+  | {
+      type: 'pr.ci_passed';
+      repoFullName: string;
+      prNumber: number;
+      headSha: string;
+      installationId: number;
+      workspaceId: string;
+      workerId: string;
+      taskId: string | null;
+    }
   /**
    * A push (`synchronize`) to an open PR a buildd worker owns: every delivery,
    * redeliveries included. `worker` is the newest row owning the PR (a retry
@@ -339,7 +364,7 @@ export type CoreEvent =
       type: 'pr.review_ready';
       installationId: number;
       repoFullName: string;
-      pr: { number: number; headRef: string; additions: number | null; deletions: number | null };
+      pr: { number: number; headRef: string; headSha?: string; additions: number | null; deletions: number | null };
       worker: { id: string; workspaceId: string; taskId: string };
     }
   /**

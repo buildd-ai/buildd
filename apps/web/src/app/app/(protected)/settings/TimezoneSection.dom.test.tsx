@@ -22,7 +22,7 @@ afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 async function mount(role: string) {
   globalThis.fetch = mock(async () => new Response(JSON.stringify({
-    team: { timezone: 'Europe/Lisbon', permissionOverrides: null },
+    team: { timezone: 'Europe/Lisbon' },
     currentUserRole: role,
   }), { status: 200 })) as unknown as typeof fetch;
   host = document.createElement('div');

@@ -157,6 +157,7 @@ describe('worker MCP actions under a per-task token', () => {
  * route refuses these before any handler runs.
  */
 const REFUSED_ADMIN_ACTIONS: Record<string, string> = {
+  answer_question: 'a person\'s answer to a parked question; the route refuses every per-task token, so an organizer cannot answer its workers',
   create_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',
   update_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',
   delete_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',
@@ -182,6 +183,8 @@ const REFUSED_ADMIN_ACTIONS: Record<string, string> = {
   update_incident: 'acknowledges or resolves a team-wide sentinel incident, not one mission',
   consolidate_knowledge: "maintains the team's knowledge store; archives entries",
   memory_delete: "permanently deletes from the team's memory",
+  get_decision: "reads any decision in the team's ledger, not one mission's",
+  label_decision: "grades decisions across the team's ledger, not one mission's",
 };
 
 /** Calls inside an allowed admin action that a task token is refused, and why. */

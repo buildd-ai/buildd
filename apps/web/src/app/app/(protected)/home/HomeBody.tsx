@@ -79,6 +79,7 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
   const layout: keyof typeof BODY_GRID = milestones.length > 0
     ? (agents || landed ? 'split' : 'single')
     : agents && landed ? 'side' : 'single';
+  const needsOwner = open.length > 0;
   return <div data-testid="home" className="text-text-primary">
     <header className="mb-6">
       <div className="min-w-0">
@@ -89,7 +90,8 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
       </div>
     </header>
     {ask}
-    {setup}
+    {/* Setup steps wait their turn: when something needs the owner, that comes first. */}
+    {!needsOwner && setup}
     {(items.length > 0 || lead) && <section data-testid="home-waiting-on-you" aria-labelledby="home-needs-you-h" className="mb-8">
       {/* The headline is this section's visible header and count. */}
       <h2 id="home-needs-you-h" className="sr-only">Needs you</h2>
@@ -99,6 +101,7 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
       {rows.length > 0 && <NeedsYouRows rows={rows} />}
       {foot}
     </section>}
+    {needsOwner && setup}
     {/* What is not listed, and where it is: one line, the only Activity link on Home. */}
     <p data-testid="home-also" className="mb-8 text-meta text-text-muted">
       {inProgress > 0 && <>{inProgressLine(inProgress)}{' '}</>}
