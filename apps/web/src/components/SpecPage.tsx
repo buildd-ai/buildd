@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { useOptimisticApprove } from '@/components/useOptimisticApprove';
 import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
@@ -28,35 +29,27 @@ export function readingLine(v: Pick<Ok, 'reading' | 'waiting' | 'spec'>): string
 
 function Approve({ specId, revision, expectedVersion }: { specId: string; revision: number; expectedVersion: number }) {
   const router = useRouter();
-  const [pending, setPending] = useState(false);
-  const [result, setResult] = useState<{ tone: 'ok' | 'err' | 'warn'; text: string } | null>(null);
-  async function approve() {
-    setPending(true);
-    try {
-      const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ revision, expectedVersion }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      if (res.ok) {
-        setResult({ tone: 'ok', text: `Approved. Revision ${revision} is in force.` });
-        router.refresh();
-      } else {
-        setResult({ tone: res.status === 409 ? 'warn' : 'err', text: body.error ?? 'Approval failed.' });
-      }
-    } catch {
-      setResult({ tone: 'err', text: 'Approval failed. Try again.' });
-    } finally {
-      setPending(false);
-    }
-  }
-  if (result) return <Notice tone={result.tone} data-testid="spec-page-approve-result">{result.text}</Notice>;
+  const approvedText = `Approved. Revision ${revision} is in force.`;
+  const { shown, retry, approve } = useOptimisticApprove(async () => {
+    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ revision, expectedVersion }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    if (res.ok) return { tone: 'ok', text: approvedText };
+    return { tone: res.status === 409 ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
+  }, approvedText, () => router.refresh());
   return (
-    <div>
-      <PrimaryAction onClick={approve} pending={pending} fullWidthOnMobile data-testid="spec-page-approve">
-        Approve revision {revision}
-      </PrimaryAction>
+    <div className="flex flex-col gap-3">
+      {shown ? <Notice tone={shown.tone} data-testid="spec-page-approve-result">{shown.text}</Notice> : null}
+      {!shown || retry ? (
+        <div>
+          <PrimaryAction onClick={approve} fullWidthOnMobile data-testid="spec-page-approve">
+            Approve revision {revision}
+          </PrimaryAction>
+        </div>
+      ) : null}
     </div>
   );
 }
