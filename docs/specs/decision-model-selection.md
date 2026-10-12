@@ -3,9 +3,9 @@ title: Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal
 status: draft
 owner: max
 last_verified: 2026-10-12
-summary: Each decision kind MUST act only through a model and threshold measured for that kind on graded cases, MAY switch model by itself when a challenger measurably wins, and MUST collect every grading signal it can; the team sees a switch, never the scores.
+summary: A decision kind MUST act only at a threshold measured for its model on graded cases, MAY switch model when a challenger measurably wins, and MUST collect every grading signal it can.
 domain: tasks
-surfaces: [packages/core/decision-model.ts, packages/core/decision-kinds.ts, packages/core/decision-client.ts, packages/core/orchestration-outcomes.ts, apps/web/src/lib/prompt-evals/calibration.ts, apps/web/src/lib/prompt-evals/compare-run.ts]
+surfaces: [packages/core/decision-model.ts, packages/core/decision-client.ts, packages/core/orchestration-outcomes.ts, apps/web/src/lib/prompt-evals/compare-run.ts]
 related: [decision-kinds, orchestration-decisions-shadow, settings-models]
 keywords: [decision model, jev, clef, clef flash, threshold, calibration, top p, margin, wilson, comparison, replay, outcome, override, champion, challenger, optimizer, undo, signal collection]
 verified_by: []
