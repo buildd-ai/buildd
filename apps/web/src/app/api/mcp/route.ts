@@ -26,7 +26,7 @@ import { hasTokenScope, requiredScopeForAction, tokenWorkspaceAllowed } from "@b
 import { resolveLinkedDocsWorkspaces } from "@/lib/linked-knowledge";
 import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateTaskScopedCaller, isOrchestrationTaskToken } from "@/lib/task-token-auth";
-import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
+import { scheduleInteractiveTouch, isInitializeOnlyRequest } from "@/lib/interactive-worker-liveness";
 import { scheduleActiveDay } from "@/lib/active-days";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
 import { ensureTeamSessionAccount } from "@/lib/oauth/ensure-session-account";
@@ -1042,6 +1042,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     userId: (account as { sessionUserId?: string }).sessionUserId ?? null,
     sessionKey,
     level: account.level,
+    initializeOnly: !sessionKey && (await isInitializeOnlyRequest(req)),
   });
   // A person's OAuth session (an API key or task token has no session user)
   // counts toward DAU; see lib/active-days.ts.

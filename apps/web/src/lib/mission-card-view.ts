@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * The mission card — one model for the Home card and the missions-list card
  * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, W1, S5, addendum D7/D8).

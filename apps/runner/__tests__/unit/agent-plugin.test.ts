@@ -17,6 +17,10 @@ import {
   WORKSPACE_REFRESH_MS,
   resolveAuth,
   readSessionState,
+  busyFlips,
+  writeClearHandoff,
+  takeClearHandoff,
+  CLEAR_HANDOFF_MS,
 } from '../../plugin/scripts/buildd-hook.mjs';
 import {
   claudeLikeHookEntries,
@@ -135,8 +139,9 @@ describe('privacy', () => {
     expect(s).not.toContain('TOP SECRET');
     expect(s).not.toContain('t.jsonl');
     expect(s).not.toContain('REPLY');
-    // `interactive` is a boolean the client derives from its own env, not payload content.
-    expect(Object.keys(body).sort()).toEqual(['client', 'clientSessionId', 'event', 'interactive']);
+    // `interactive` is a boolean the client derives from its own env, `busy` from
+    // the hook's own event name; neither is payload content.
+    expect(Object.keys(body).sort()).toEqual(['busy', 'client', 'clientSessionId', 'event', 'interactive']);
   });
 
   it('repo slugs drop credentials, and match the server normalizer', () => {
@@ -231,6 +236,101 @@ describe('throttle and output', () => {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    });
+  });
+});
+
+// Owner evidence: a session's long silent command (no hook fires until it
+// returns) read as abandoned, and a /clear left the claim held by no presence.
+describe('turn state and /clear', () => {
+  const base = { session_id: 'cc-1', cwd: '/repo' };
+
+  it('a prompt and a tool starting mark the turn busy; the turn ending clears it; PostToolUse leaves it', () => {
+    expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'UserPromptSubmit' }, {})).toMatchObject({ event: 'touch', busy: true });
+    expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'sleep 9999' } }, {}))
+      .toEqual({ clientSessionId: 'cc-1', cwd: '/repo', event: 'touch', busy: true, light: true });
+    expect(normalizeHookEvent('codex', { ...base, hook_event_name: 'PreToolUse', tool_name: 'shell' }, {})).toMatchObject({ event: 'touch', busy: true });
+    expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'Stop' }, {})).toMatchObject({ event: 'touch', busy: false, force: true });
+    expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Bash' }, {})).not.toHaveProperty('busy');
+  });
+
+  it('busy rides on the body as a boolean; a PreToolUse body carries nothing from the tool', () => {
+    const n = normalizeHookEvent('claude', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'cat secrets' } }, {});
+    const body = buildBody('claude', n, null);
+    expect(body).toEqual({ event: 'touch', client: 'claude', clientSessionId: 'cc-1', busy: true });
+  });
+
+  it('a flip of the turn state is never throttled; an unchanged one is', () => {
+    expect(busyFlips({ busy: true }, {})).toBe(true);
+    expect(busyFlips({ busy: true }, { busy: true })).toBe(false);
+    expect(busyFlips({ busy: false }, { busy: true })).toBe(true);
+    expect(busyFlips({}, { busy: true })).toBe(false);
+  });
+
+  describe('run()', () => {
+    let dir: string;
+    let bodies: any[];
+    beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'buildd-turn-')); workspaceCheckout(dir); bodies = []; });
+    afterEach(() => rmSync(dir, { recursive: true, force: true }));
+    const env = () => ({ BUILDD_API_KEY: 'bld_test', BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_HOME: dir });
+    const fetchImpl = (async (url: string, init: any) => {
+      if (url.endsWith('/local-sessions')) bodies.push(JSON.parse(init.body));
+      return Response.json({ ok: true });
+    }) as any;
+    const hook = (session: string, hook_event_name: string, now: number, extra: object = {}) => run({
+      client: 'claude', env: env(), fetchImpl, now,
+      stdin: JSON.stringify({ session_id: session, cwd: dir, hook_event_name, ...extra }),
+    });
+    const W = '11111111-2222-4333-8444-0000000000c1';
+    const claim = (session: string, now: number) => hook(session, 'PostToolUse', now, {
+      tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} },
+      tool_response: [{ type: 'text', text: `Claimed 1 task(s):\n\n**Worker ID:** ${W}\n**Task:** x` }],
+    });
+
+    it('a long command right after a touch still says busy first; a second tool in the same minute sends nothing', async () => {
+      await hook('t-1', 'SessionStart', 1_000);
+      await hook('t-1', 'Stop', 2_000);
+      expect((await hook('t-1', 'PreToolUse', 3_000, { tool_name: 'Bash' })).body).toMatchObject({ event: 'touch', busy: true });
+      expect((await hook('t-1', 'PreToolUse', 4_000, { tool_name: 'Bash' })).why).toBe('throttled');
+      // A minute on, the same mark is refreshed (last_seen_at) like any touch.
+      expect((await hook('t-1', 'PreToolUse', 70_000, { tool_name: 'Bash' })).body).toMatchObject({ busy: true });
+      expect((await hook('t-1', 'Stop', 71_000)).body).toMatchObject({ busy: false });
+    });
+
+    it('a PreToolUse never reads the transcript for usage', async () => {
+      await hook('t-1', 'SessionStart', 1_000);
+      await claim('t-1', 2_000);
+      const r = await hook('t-1', 'PreToolUse', 200_000, { tool_name: 'Bash', transcript_path: join(dir, 'nope.jsonl') });
+      expect(r.body).not.toHaveProperty('usage');
+    });
+
+    it('/clear: the continuing session names the cleared one and takes over its claims', async () => {
+      await hook('old', 'SessionStart', 1_000);
+      await claim('old', 2_000);
+      await hook('old', 'SessionEnd', 3_000, { reason: 'clear' });
+      const start = await hook('new', 'SessionStart', 3_500, { source: 'clear' });
+      expect(start.body).toMatchObject({ event: 'start', continuesSessionId: 'old' });
+      expect(readSessionState({ BUILDD_HOME: dir }, 'claude', 'new').claims).toEqual({ [W]: null });
+      // Taken once: another session starting here later gets nothing.
+      expect((await hook('other', 'SessionStart', 4_000, { source: 'clear' })).body).not.toHaveProperty('continuesSessionId');
+    });
+
+    it('/clear: only a clear start continues, only soon after, and only from a session that held claims', async () => {
+      await hook('old', 'SessionStart', 1_000);
+      await claim('old', 2_000);
+      await hook('old', 'SessionEnd', 3_000, { reason: 'clear' });
+      expect((await hook('fresh', 'SessionStart', 3_500, { source: 'startup' })).body).not.toHaveProperty('continuesSessionId');
+      expect((await hook('late', 'SessionStart', 3_000 + CLEAR_HANDOFF_MS + 1, { source: 'clear' })).body).not.toHaveProperty('continuesSessionId');
+      await hook('empty', 'SessionStart', 10_000);
+      await hook('empty', 'SessionEnd', 11_000, { reason: 'clear' });
+      expect((await hook('next', 'SessionStart', 11_500, { source: 'clear' })).body).not.toHaveProperty('continuesSessionId');
+    });
+
+    it('a handoff note is per folder and per client', () => {
+      writeClearHandoff({ BUILDD_HOME: dir }, 'claude', '/a', 'old', 1_000);
+      expect(takeClearHandoff({ BUILDD_HOME: dir }, 'claude', '/b', 1_500)).toBeNull();
+      expect(takeClearHandoff({ BUILDD_HOME: dir }, 'codex', '/a', 1_500)).toBeNull();
+      expect(takeClearHandoff({ BUILDD_HOME: dir }, 'claude', '/a', 1_500)).toBe('old');
     });
   });
 });
@@ -685,7 +785,7 @@ describe('installer', () => {
     expect(merged.hooks.PostToolUse).toHaveLength(2);
     expect(merged.hooks.SessionStart[0].hooks[0].command).toBe('~/bin/greet.sh');
     expect(merged.hooks.Notification).toEqual(original.hooks.Notification);
-    expect(installedEvents('claude', merged).sort()).toEqual(['PostToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']);
+    expect(installedEvents('claude', merged).sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']);
     expect(removeClaudeLikeHooks(merged)).toEqual(original);
   });
 

@@ -58,7 +58,7 @@ describe('dependency-blocked mission, its blocking PRs in the review flow', () =
   it('names what it waits on, and does not say "Dispatch a worker"', () => {
     const { summary } = card(row);
     expect(summary.state.kind).toBe('waiting');
-    expect(summary.state.nextAction).toBe('Nothing to do yet. Unblocks when #3319 and #3317 merge.');
+    expect(summary.state.nextAction).toBe('Unblocks when #3319 and #3317 merge.');
     expect(summary.state.situation.headline).toBe('1 task is waiting on #3319 and #3317 to merge.');
   });
 

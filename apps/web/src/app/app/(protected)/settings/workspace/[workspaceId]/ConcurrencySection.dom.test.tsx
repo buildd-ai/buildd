@@ -48,7 +48,7 @@ const value = () => container.querySelector('[data-testid="workspace-concurrency
 
 async function mount(initialMaxConcurrentTasks = 3) {
   await act(async () => {
-    root.render(<ConcurrencySection workspaceId="ws1" initialMaxConcurrentTasks={initialMaxConcurrentTasks} />);
+    root.render(<ConcurrencySection workspaceId="ws1" initialMaxConcurrentTasks={initialMaxConcurrentTasks} canEdit />);
   });
 }
 

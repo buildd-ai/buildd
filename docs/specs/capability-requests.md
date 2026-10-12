@@ -212,10 +212,10 @@ for, what they hold and the policy, without being able to change any of it.
 - Home lists a pending request only for teams where the viewer holds
   `manage_connectors`: one card per request (the store already keeps one open
   row per exact ask). The card names what, who, workspace, why and the lease,
-  and approves for the asked lease or denies in place; Settings → Connected apps
-  → Agent access (`?request=<id>`) offers a shorter lease.
+  and approves for the asked lease or denies in place; Settings → Team → Apps
+  → Agent access (`/app/settings/apps?request=<id>`) offers a shorter lease.
 - A new pending request pages the team once; a repeat ask (same row) does not.
-- Settings → Connected apps → Team apps shows each app's real state from the
+- Settings → Team → Apps → Team apps shows each app's real state from the
   team's connector on the same host (Connected, Sign-in expired, Not
   connected, Not set up, Not available, Blocked by your team) and offers only
   the step the server can take. A provider that won't let buildd connect reads

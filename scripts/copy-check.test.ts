@@ -98,6 +98,24 @@ describe('extractCopy', () => {
     expect(inScope('apps/web/src/app/app/(protected)/settings/Foo.dom.test.tsx')).toBe(false);
     expect(inScope('apps/web/src/app/app/dev/chat/chat-fixtures.ts')).toBe(false);
   });
+
+  it('scans a lib/ module only when it carries the @ui-copy marker', () => {
+    const lib = 'apps/web/src/lib/mission-portfolio.ts';
+    expect(inScope(lib)).toBe(false);
+    expect(inScope(lib, "export const prompt = 'You are an agent. Nothing to configure.';")).toBe(false);
+    expect(inScope(lib, "// @ui-copy: rendered on the Missions page\nexport const x = 1;")).toBe(true);
+    expect(inScope(lib, "/**\n * @ui-copy\n */\nexport const x = 1;")).toBe(true);
+    expect(inScope('apps/web/src/lib/mission-portfolio.test.ts', '// @ui-copy')).toBe(false);
+    const marked = "// @ui-copy\nexport const hint = 'Nothing to configure here.';";
+    expect(scanSources([{ path: lib, content: marked }]).counts.reassurance[lib]).toBe(1);
+    expect(scanSources([{ path: lib, content: marked.replace('// @ui-copy\n', '') }]).counts.reassurance[lib]).toBeUndefined();
+  });
+
+  it('the tree has tagged lib/ copy modules, and readSources picks them up', () => {
+    const libs = readSources().filter((s) => s.path.startsWith('apps/web/src/lib/'));
+    expect(libs.map((s) => s.path)).toContain('apps/web/src/lib/mission-portfolio.ts');
+    expect(libs.every((s) => s.content.includes('@ui-copy'))).toBe(true);
+  });
 });
 
 describe('ratchet', () => {

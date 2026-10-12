@@ -23,9 +23,9 @@ describe('MissionLayoutShell', () => {
 
   it('the tabs mark the current layout', () => {
     const html = renderToStaticMarkup(<MissionLayoutShell initial="board" {...slots} />);
-    expect(html).toMatch(/aria-selected="true" data-layout="board"/);
-    expect(html).toMatch(/aria-selected="false" data-layout="flow"/);
-    expect(html).toMatch(/aria-selected="false" data-layout="feed"/);
+    expect(html).toMatch(/aria-selected="true"[^>]*data-layout="board"/);
+    expect(html).toMatch(/aria-selected="false"[^>]*data-layout="flow"/);
+    expect(html).toMatch(/aria-selected="false"[^>]*data-layout="feed"/);
     expect(html).toContain('>Overview<');
     expect(html).toContain('>Flow<');
     expect(html).toContain('>History<');
@@ -86,11 +86,66 @@ describe('MissionBoardHeader', () => {
     expect(html).toContain('data-testid="mission-description-open"');
   });
 
-  it('clamps a long goal line below md too, so the strip stays on the first screen', () => {
+  it('clamps a long goal line to two lines below md too, so the strip stays on the first screen', () => {
     const html = renderToStaticMarkup(<MissionBoardHeader {...base} goal={'A long goal. '.repeat(80)} description={<p>Full text</p>} />);
     const cls = html.match(/<p data-testid="mission-goal-line"[^>]*? class="([^"]*)"/)?.[1] ?? '';
-    expect(cls.split(' ')).toContain('max-md:line-clamp-3');
+    expect(cls.split(' ')).toContain('max-md:line-clamp-2');
     expect(cls.split(' ')).toContain('md:truncate');
     expect(html).toContain('data-testid="mission-description-open"');
+  });
+});
+
+describe('MissionBoardHeader, compact', () => {
+  const base = {
+    back: { label: 'Missions', href: '/app/missions' },
+    title: 'A mission title long enough to need more than one line on a phone',
+    chip: { label: 'RUNNING', cls: 'text-accent-text' },
+    serverNow: T + 60_000,
+    startedAt: T,
+  };
+  const board = (extra: Record<string, unknown> = {}) => renderToStaticMarkup(
+    <MissionLayoutShell
+      initial="board"
+      board={<MissionBoardHeader {...base} {...extra} actions={<button type="button" data-testid="act">More</button>}><div data-testid="content" /></MissionBoardHeader>}
+      flow={<div />}
+      feed={<div />}
+    />,
+  );
+
+  it('back and the actions share the first row; the title, state line and tabs follow in that order', () => {
+    const html = board();
+    const at = (s: string) => html.indexOf(s);
+    expect(at('‹ Missions')).toBeGreaterThan(-1);
+    expect(at('data-testid="mission-header-actions"')).toBeGreaterThan(at('‹ Missions'));
+    expect(at('<h1')).toBeGreaterThan(at('data-testid="act"'));
+    expect(at('data-testid="mission-state-line"')).toBeGreaterThan(at('<h1'));
+    expect(at('data-testid="mission-layout-tabs"')).toBeGreaterThan(at('data-testid="mission-state-line"'));
+  });
+
+  it('the title is sans, wraps, and is clamped (never truncated to one line), with its full text as a tooltip', () => {
+    const h1 = board().match(/<h1[^>]*>/)?.[0] ?? '';
+    expect(h1).not.toContain('font-mono');
+    expect(h1).not.toContain('truncate');
+    expect(h1).toContain('line-clamp-3');
+    expect(h1).toContain(`title="${base.title}"`);
+  });
+
+  it('the state chip is a quiet line: no frame, no oversized caps', () => {
+    const chip = board().match(/<span data-testid="mission-state-chip"[^>]*>/)?.[0] ?? '';
+    expect(chip).not.toContain('border-[1.5px]');
+    expect(chip).toContain('text-meta');
+    expect(chip).not.toContain('font-mono');
+    expect(chip).not.toMatch(/upper[c]ase/);
+    expect(board()).toMatch(/data-testid="mission-state-chip"[^>]*>(?:<span[^>]*><\/span>)?Running<\/span>/);
+  });
+
+  it('tabs: one tab stop, each controls the panel, and the panel names the selected tab', () => {
+    const html = board();
+    const tabs = html.match(/<button[^>]*role="tab"[^>]*>/g) ?? [];
+    expect(tabs).toHaveLength(3);
+    expect(tabs.filter(t => t.includes('tabindex="0"'))).toHaveLength(1);
+    for (const t of tabs) expect(t).toContain('aria-controls="mission-layout-panel"');
+    expect(html).toMatch(/id="mission-layout-panel" role="tabpanel" aria-labelledby="mission-tab-board"/);
+    expect(html.indexOf('data-testid="content"')).toBeGreaterThan(html.indexOf('role="tabpanel"'));
   });
 });

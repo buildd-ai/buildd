@@ -65,5 +65,7 @@ describe('overviewCounts', () => {
   it('prints landed (not merged), then criteria when there are any', () => {
     expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [], criteriaPassed: 0 } as never)).toBe('2 of 7 landed');
     expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [{}, {}, {}, {}], criteriaPassed: 1 } as never)).toBe('2 of 7 landed · 1 of 4 criteria');
+    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [{}, {}, {}, {}], criteriaPassed: 1 } as never, { criteria: false })).toBe('2 of 7 landed');
+    expect(overviewCounts({ landed: { done: 0, total: 0 }, criteria: [], criteriaPassed: 0 } as never)).toBe('No tasks');
   });
 });
