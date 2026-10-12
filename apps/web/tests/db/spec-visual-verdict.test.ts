@@ -49,8 +49,14 @@ const deps = (over: Partial<{ head: string | null; contains: boolean | null }> =
 });
 
 /** An approved spec; a builder task in the mission pinned to AC-1 and AC-2; its platform-filed audit with one screenshot. */
-async function setup(opts: { auditMission?: string; auditCreatedByWorker?: boolean } = {}) {
-  const d = await createSpecDraft(user(), { workspaceId: wsA, title: `Cart ${rand()}`, body: BODY });
+async function setup(opts: { auditMission?: string; auditCreatedByWorker?: boolean; designed?: boolean } = {}) {
+  let design: unknown;
+  if (opts.designed) {
+    const [art] = await q<{ id: string }>(sql`INSERT INTO artifacts (workspace_id, type, title, content) VALUES (${wsA}::uuid, 'content', 'Cart prototype', '<main/>') RETURNING id`);
+    design = { kind: 'artifact', ref: art.id, screens: [{ id: 'cart-empty', name: 'Empty cart' }] };
+  }
+  const body = opts.designed ? BODY.replace('- AC-1: An empty cart shows the empty state.\n', '- AC-1: An empty cart shows the empty state.\n  screen: cart-empty\n') : BODY;
+  const d = await createSpecDraft(user(), { workspaceId: wsA, title: `Cart ${rand()}`, body, design });
   if (!d.ok) throw new Error(d.error);
   const a = await approveSpecRevision(user(), d.spec.id, { revision: 1, expectedVersion: 1 });
   if (!a.ok) throw new Error(a.error);
@@ -139,6 +145,20 @@ describe('the visual audit grades the criteria of the tasks it reviews', () => {
     expect(await recordVisualVerdict(token(s.auditId), s.builderId, { ...base, verdict: 'inconclusive' }, deps())).toMatchObject({ ok: false, status: 400, error: expect.stringContaining('observed') });
     const inc = await recordVisualVerdict(token(s.auditId), s.builderId, { ...base, verdict: 'inconclusive', observed: 'The full-cart state needs seeded data the sandbox lacks.' }, deps());
     expect(inc.ok).toBe(true);
+  });
+
+  test('a criterion that names design screens needs a shot of the design too, and the verdict cites the design version', async () => {
+    const s = await setup({ designed: true });
+    const base = { criterionId: 'AC-1', verdict: 'pass', capturedSha: CAPTURED, screenshotIds: [s.shot] };
+    expect(await recordVisualVerdict(token(s.auditId), s.builderId, base, deps())).toMatchObject({ ok: false, status: 400, error: expect.stringContaining('designShotIds') });
+    const designShot = await screenshot(s.auditId);
+    const r = await recordVisualVerdict(token(s.auditId), s.builderId, { ...base, designShotIds: [designShot] }, deps());
+    if (!r.ok) throw new Error(r.error);
+    const [row] = await q<{ evidence: any }>(sql`SELECT evidence FROM spec_outcome_verdicts WHERE id = ${r.verdictId}::uuid`);
+    expect(row.evidence.refs.filter((x: any) => x.kind === 'design-shot')).toEqual([{ kind: 'design-shot', ref: designShot }]);
+    expect(row.evidence.refs.find((x: any) => x.kind === 'design').ref).toMatch(/^artifact:[0-9a-f-]+@\d+$/);
+    // AC-2 names no screen: a shot of the build alone is enough.
+    expect((await recordVisualVerdict(token(s.auditId), s.builderId, { ...base, criterionId: 'AC-2' }, deps())).ok).toBe(true);
   });
 
   test('a captured commit that does not contain the PR head is refused, and nothing is recorded', async () => {

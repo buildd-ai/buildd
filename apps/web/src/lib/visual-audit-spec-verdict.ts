@@ -12,6 +12,8 @@ import { isAncestor } from '@/lib/integration-refresh';
 import { mintedByUploadUrl } from '@/lib/visual-audit-evidence';
 import { currentPrHeadSha, recordAuditedVerdict, type OutcomeView } from '@/lib/specs/outcome';
 import { linkedRepo } from '@/lib/specs/repo-source';
+import { readPinnedSpecRevision } from '@/lib/specs/pin';
+import { criterionScreens } from '@buildd/spec-contract/check-lines';
 import { MAX_VISUAL_SHOTS, VISUAL_EVIDENCE_RETENTION_DAYS } from '@/lib/specs/visual-limits';
 
 export { MAX_VISUAL_SHOTS, VISUAL_EVIDENCE_RETENTION_DAYS };
@@ -46,6 +48,8 @@ export interface VisualVerdictInput {
   verdict: unknown;
   capturedSha: unknown;
   screenshotIds?: unknown;
+  /** Screenshots of the pinned design rendered at the same state, for a criterion that names screens (§12). */
+  designShotIds?: unknown;
   observed?: unknown;
 }
 
@@ -67,13 +71,15 @@ const defaultDeps: VisualVerdictDeps = {
 
 type TaskRow = {
   id: string; title: string; workspaceId: string; missionId: string | null; roleSlug: string | null;
-  dependsOn: unknown; parentTaskId: string | null; createdByWorkerId: string | null;
+  dependsOn: unknown; parentTaskId: string | null; createdByWorkerId: string | null; context?: unknown;
 };
+
+export const MAX_DESIGN_SHOTS = 2;
 
 async function loadTask(id: string): Promise<TaskRow | null> {
   const [t] = await db.select({
     id: tasks.id, title: tasks.title, workspaceId: tasks.workspaceId, missionId: tasks.missionId, roleSlug: tasks.roleSlug,
-    dependsOn: tasks.dependsOn, parentTaskId: tasks.parentTaskId, createdByWorkerId: tasks.createdByWorkerId,
+    dependsOn: tasks.dependsOn, parentTaskId: tasks.parentTaskId, createdByWorkerId: tasks.createdByWorkerId, context: tasks.context,
   }).from(tasks).where(eq(tasks.id, id)).limit(1);
   return (t as TaskRow | undefined) ?? null;
 }
@@ -90,6 +96,17 @@ export function auditorRefusal(audit: TaskRow, subject: TaskRow): string | null 
 }
 
 const basename = (key: string) => key.split('/').pop() || 'screenshot.png';
+
+/** The screenshots among `ids` that a worker of `audit` uploaded through upload-url; null when any is not. */
+async function ownShots(audit: TaskRow, ids: readonly string[]): Promise<Array<{ id: string; storageKey: string }> | null> {
+  if (ids.length === 0) return [];
+  const rows = await db.select({ id: artifacts.id, storageKey: artifacts.storageKey, type: artifacts.type, workspaceId: artifacts.workspaceId })
+    .from(artifacts)
+    .innerJoin(workers, eq(workers.id, artifacts.workerId))
+    .where(and(inArray(artifacts.id, [...ids]), eq(workers.taskId, audit.id)));
+  const own = rows.filter((r) => r.type === 'screenshot' && r.workspaceId === audit.workspaceId && r.storageKey && mintedByUploadUrl(r, audit.workspaceId));
+  return own.length === ids.length ? own.map((r) => ({ id: r.id, storageKey: r.storageKey as string })) : null;
+}
 
 export async function recordVisualVerdict(
   caller: SpecCaller,
@@ -121,16 +138,24 @@ export async function recordVisualVerdict(
   if (verdict !== 'inconclusive' && shotIds.length === 0) return fail(400, `A visual ${verdict} cites at least one screenshot this audit took`);
   if (verdict === 'inconclusive' && !observed) return fail(400, 'An inconclusive visual verdict says what could not be seen (observed)');
 
-  let shots: Array<{ id: string; storageKey: string }> = [];
-  if (shotIds.length > 0) {
-    const rows = await db.select({ id: artifacts.id, storageKey: artifacts.storageKey, type: artifacts.type, workspaceId: artifacts.workspaceId })
-      .from(artifacts)
-      .innerJoin(workers, eq(workers.id, artifacts.workerId))
-      .where(and(inArray(artifacts.id, shotIds), eq(workers.taskId, audit.id)));
-    const own = rows.filter((r) => r.type === 'screenshot' && r.workspaceId === audit.workspaceId && r.storageKey && mintedByUploadUrl(r, audit.workspaceId));
-    if (own.length !== shotIds.length) return fail(400, 'screenshotIds must name screenshots this audit\'s own run uploaded');
-    shots = own.map((r) => ({ id: r.id, storageKey: r.storageKey as string }));
+  const own = await ownShots(audit, shotIds);
+  if (!own) return fail(400, 'screenshotIds must name screenshots this audit\'s own run uploaded');
+
+  // A criterion that names design screens is judged against the design too (§12).
+  const pin = subject.context && typeof subject.context === 'object' ? (subject.context as Record<string, unknown>).specSource as Record<string, unknown> | undefined : undefined;
+  const read = pin ? await readPinnedSpecRevision(pin) : null;
+  const screens = read?.ok && read.design ? criterionScreens(read.body).find((c) => c.criterionId === criterionId)?.screens ?? [] : [];
+  const rawDesign = input.designShotIds === undefined ? [] : input.designShotIds;
+  if (!Array.isArray(rawDesign) || rawDesign.length > MAX_DESIGN_SHOTS || !rawDesign.every((id) => typeof id === 'string' && isUuid(id))) {
+    return fail(400, `designShotIds must be at most ${MAX_DESIGN_SHOTS} screenshot artifact ids`);
   }
+  const designIds = [...new Set(rawDesign as string[])];
+  if (screens.length > 0 && verdict !== 'inconclusive' && designIds.length === 0) {
+    return fail(400, `${criterionId} names design screens (${screens.join(', ')}): a visual ${verdict} cites at least one screenshot of the design at the pinned version (designShotIds)`);
+  }
+  const designShots = await ownShots(audit, designIds);
+  if (!designShots) return fail(400, 'designShotIds must name screenshots this audit\'s own run uploaded');
+  const shots = own;
 
   const head = await deps.prHead(subject.id);
   if (!head) return fail(409, 'This task has no PR head to judge, so a visual verdict cannot bind to one');
@@ -140,20 +165,21 @@ export async function recordVisualVerdict(
   if (contains === null) return fail(502, 'GitHub could not be reached to check the captured commit; nothing was recorded, try again');
   if (!contains) return fail(409, `The captured commit ${capturedSha.slice(0, 12)} does not contain this task's PR head ${head.slice(0, 12)}; capture again after it lands. Nothing was recorded`);
 
-  const retained: Array<{ id: string; key: string }> = [];
+  const retained: Array<{ id: string; key: string; design: boolean }> = [];
   try {
-    for (const s of shots) {
+    for (const s of [...shots.map((x) => ({ ...x, design: false })), ...designShots.map((x) => ({ ...x, design: true }))]) {
       const key = buildArtifactKey(audit.workspaceId, randomUUID(), basename(s.storageKey));
       await deps.copy(s.storageKey, key);
-      retained.push({ id: s.id, key });
+      retained.push({ id: s.id, key, design: s.design });
     }
   } catch {
     return fail(502, 'The screenshots could not be kept for the verdict; nothing was recorded, try again');
   }
 
   const refs = [
-    ...retained.flatMap((r) => [{ kind: 'screenshot', ref: r.id }, { kind: 'retained', ref: r.key }]),
+    ...retained.flatMap((r) => [{ kind: r.design ? 'design-shot' : 'screenshot', ref: r.id }, { kind: 'retained', ref: r.key }]),
     { kind: 'capture', ref: capturedSha.toLowerCase() },
+    ...(read?.ok && read.design && designShots.length ? [{ kind: 'design', ref: `${read.design.kind}:${read.design.ref}@${read.design.version}` }] : []),
   ];
   const retainUntil = new Date(deps.now().getTime() + VISUAL_EVIDENCE_RETENTION_DAYS * DAY_MS).toISOString();
   return recordAuditedVerdict(subject.id, {

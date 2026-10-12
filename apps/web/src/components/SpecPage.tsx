@@ -163,6 +163,25 @@ export default function SpecPage({ view }: { view: Ok }) {
             </ul>
           </div>
         ) : null}
+        {view.design ? (
+          <div data-testid="spec-page-design">
+            <p className="text-body text-text-secondary">
+              Built to the design{' '}
+              {view.design.href
+                ? <a href={view.design.href} className="text-text-primary underline">{view.design.label}</a>
+                : <span className="text-text-primary">{view.design.label}</span>}
+              , version {view.design.version}.
+            </p>
+            {view.design.screens.length ? (
+              <p className="text-meta text-text-secondary">Screens: {view.design.screens.join(', ')}</p>
+            ) : null}
+            {view.design.changedSince ? (
+              <p className="text-body text-status-warning" data-testid="spec-page-design-changed">
+                The design changed since approval: it is at version {view.design.changedSince.current}, and revision {view.reading.revision} was approved with version {view.design.changedSince.pinned}.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         {view.repoRefs.length ? (
           <div data-testid="spec-page-repo-refs">
             <p className="text-body text-text-secondary">Repo specs revision {view.reading.revision} cites:</p>

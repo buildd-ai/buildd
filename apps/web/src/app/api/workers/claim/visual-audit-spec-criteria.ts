@@ -12,6 +12,7 @@ import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
 import { specCriteria } from '@buildd/spec-contract/requirements';
+import { criterionScreens } from '@buildd/spec-contract/check-lines';
 import { inScope } from '@buildd/spec-contract/scope';
 import { readPinnedSpecRevision } from '@/lib/specs/pin';
 import { MAX_VISUAL_SHOTS } from '@/lib/specs/visual-limits';
@@ -27,8 +28,12 @@ export interface SubjectCriteria {
   taskTitle: string;
   specTitle: string;
   revision: number;
-  criteria: Array<{ id: string; text: string }>;
+  /** The pinned revision's design (§12), when it has one. */
+  design?: { kind: string; ref: string; version: string; screens: Array<{ id: string; name: string }> } | null;
+  criteria: Array<{ id: string; text: string; screens?: string[] }>;
 }
+
+const screensFor = (body: string) => new Map(criterionScreens(body).map((x) => [x.criterionId, x.screens]));
 
 const pinOf = (context: unknown): Record<string, unknown> | null => {
   const c = context && typeof context === 'object' ? (context as Record<string, unknown>).specSource : null;
@@ -49,13 +54,24 @@ export function renderVisualAuditSpecCriteria(subjects: readonly SubjectCriteria
     '- Skip a criterion nothing on screen can show. The code reviewer grades it, and your verdict would replace theirs.',
     '- inconclusive needs `observed` saying what you could not see; pass and fail need at least one screenshot.',
     '- A verdict is refused while the task\'s PR is not in the commit you captured. Say so in your summary rather than retrying.',
+    ...(withCriteria.some((s) => s.design) ? [
+      '- Where a criterion names design screens, open the design at the pinned version, render each named screen at the same viewport and state as your shot, screenshot it, upload it like any shot, and pass it as `designShotIds` (1-2). Judge whether the build matches the design in layout, content and states, not pixels. A verdict on such a criterion is refused without one.',
+    ] : []),
     ...withCriteria.flatMap((s) => [
       '',
       `### ${s.taskTitle}`,
       `taskId \`${s.taskId}\`, spec "${s.specTitle}" revision ${s.revision}`,
-      ...s.criteria.map((c) => `- **${c.id}** ${c.text}`),
+      ...(s.design ? [designLine(s.design)] : []),
+      ...s.criteria.map((c) => `- **${c.id}** ${c.text}${c.screens?.length ? ` (screens: ${c.screens.join(', ')})` : ''}`),
     ]),
   ].join('\n');
+}
+
+function designLine(d: NonNullable<SubjectCriteria['design']>): string {
+  const open = d.kind === 'artifact'
+    ? `get_artifact { artifactId: "${d.ref}", revision: ${d.version} }`
+    : d.ref;
+  return `Design: ${d.kind} at version ${d.version}, open with ${open}${d.screens.length ? `; screens ${d.screens.map((x) => `${x.id} (${x.name})`).join(', ')}` : ''}`;
 }
 
 export async function loadVisualAuditSpecCriteria(dependsOn: readonly string[]): Promise<SubjectCriteria[]> {
@@ -75,7 +91,11 @@ export async function loadVisualAuditSpecCriteria(dependsOn: readonly string[]):
       taskTitle: row.title,
       specTitle: read.title,
       revision: read.revision,
-      criteria: inScope(pin, specCriteria(read.body)).map((c) => ({ id: c.id, text: c.text })),
+      design: read.design ? { kind: read.design.kind, ref: read.design.ref, version: read.design.version, screens: read.design.screens ?? [] } : null,
+      criteria: inScope(pin, specCriteria(read.body)).map((c) => {
+        const screens = read.design ? screensFor(read.body).get(c.id) : undefined;
+        return { id: c.id, text: c.text, ...(screens?.length ? { screens } : {}) };
+      }),
     });
   }
   return out;

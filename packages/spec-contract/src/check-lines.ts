@@ -20,12 +20,16 @@ export const MAX_CHECK_COMMAND = 1000;
 
 const ID = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)?(?:\*\*|__)?\s*(R|AC|D|I)-(\d+)\b/;
 const HEADING = /^\s*#{1,6}\s/;
-const CHECK = /^\s*(?:[-*+]\s+)?(?:\*\*|__)?check(?:\*\*|__)?\s*:\s*(.+?)\s*$/i;
 
-export function criterionChecks(body: string): CriterionCheck[] {
-  const out: CriterionCheck[] = [];
+/**
+ * Every `<label>: value` line under a criterion, in order, by the same rule as
+ * check lines: the line belongs to the nearest R-n or AC-n above it, until the
+ * next id or heading; fenced blocks are skipped; a repeated id owns nothing.
+ */
+export function criterionLines(body: string, label: string): Array<{ criterionId: string; value: string }> {
+  const LINE = new RegExp(`^\\s*(?:[-*+]\\s+)?(?:\\*\\*|__)?${label}(?:\\*\\*|__)?\\s*:\\s*(.+?)\\s*$`, 'i');
+  const out: Array<{ criterionId: string; value: string }> = [];
   const seen = new Set<string>();
-  const checked = new Set<string>();
   let current: string | null = null;
   let fenced = false;
   for (const raw of body.split('\n')) {
@@ -34,20 +38,48 @@ export function criterionChecks(body: string): CriterionCheck[] {
     const id = ID.exec(raw);
     if (id) {
       const key = `${id[1]}-${Number(id[2])}`;
-      // The first definition of an id wins (requirements.ts); a repeat owns no check.
+      // The first definition of an id wins (requirements.ts); a repeat owns no line.
       current = (id[1] === 'R' || id[1] === 'AC') && !seen.has(key) ? key : null;
       seen.add(key);
       continue;
     }
     if (HEADING.test(raw)) { current = null; continue; }
-    const m = CHECK.exec(raw);
-    if (!m || !current || checked.has(current)) continue;
-    const command = m[1]!.replace(/^`+|`+$/g, '').trim();
-    if (!command || command.length > MAX_CHECK_COMMAND) continue;
-    checked.add(current);
-    out.push({ criterionId: current, command });
+    const m = LINE.exec(raw);
+    if (m && current) out.push({ criterionId: current, value: m[1]! });
   }
   return out;
+}
+
+export function criterionChecks(body: string): CriterionCheck[] {
+  const out: CriterionCheck[] = [];
+  const checked = new Set<string>();
+  for (const { criterionId, value } of criterionLines(body, 'check')) {
+    if (checked.has(criterionId)) continue;
+    const command = value.replace(/^`+|`+$/g, '').trim();
+    if (!command || command.length > MAX_CHECK_COMMAND) continue;
+    checked.add(criterionId);
+    out.push({ criterionId, command });
+  }
+  return out;
+}
+
+/**
+ * The design screens a criterion covers (D-8), named on a line under it:
+ *
+ *   - AC-2: An empty cart shows the empty state.
+ *     screen: cart-empty, cart-empty-mobile
+ *
+ * Ids are matched against the revision's design reference by the host.
+ * Several lines under one criterion add up; repeats are dropped.
+ */
+export function criterionScreens(body: string): Array<{ criterionId: string; screens: string[] }> {
+  const byId = new Map<string, string[]>();
+  for (const { criterionId, value } of criterionLines(body, 'screens?')) {
+    const list = byId.get(criterionId) ?? [];
+    for (const s of value.split(',').map((x) => x.replace(/`/g, '').trim()).filter(Boolean)) if (!list.includes(s)) list.push(s);
+    byId.set(criterionId, list);
+  }
+  return [...byId].map(([criterionId, screens]) => ({ criterionId, screens }));
 }
 
 /** The exit code the wrapper uses when the judged commit cannot be checked out. */

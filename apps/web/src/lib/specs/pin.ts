@@ -5,6 +5,7 @@ import { isUuid } from '@/lib/uuid';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { specCriteria } from '@buildd/spec-contract/requirements';
 import { checkCriteriaScope } from '@buildd/spec-contract/scope';
+import type { StoredDesign } from './design';
 
 /**
  * Pinning work to a Living Spec revision (G2, decision D-4).
@@ -70,7 +71,7 @@ export async function pinSpecSource<C extends Ctx>(workspaceId: string, context:
 }
 
 export type PinnedRead =
-  | { ok: true; specId: string; revision: number; contentHash: string; body: string; title: string }
+  | { ok: true; specId: string; revision: number; contentHash: string; body: string; title: string; design: StoredDesign | null }
   | { ok: false; reason: string };
 
 /**
@@ -93,5 +94,5 @@ export async function readPinnedSpecRevision(pin: Record<string, unknown> | null
   if (!body || body.contentHash !== contentHash || typeof body.content !== 'string') {
     return { ok: false, reason: `the body of pinned spec revision ${row.rev.revision} is missing or does not match its hash` };
   }
-  return { ok: true, specId, revision: row.rev.revision, contentHash, body: body.content, title: row.title };
+  return { ok: true, specId, revision: row.rev.revision, contentHash, body: body.content, title: row.title, design: row.rev.design ?? null };
 }

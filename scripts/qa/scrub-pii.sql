@@ -621,8 +621,9 @@ UPDATE artifact_links SET created_by = NULL;
 -- Living Specs: titles and summaries are prose; who wrote or approved a
 -- revision is an account or user id. Bodies are artifacts, scrubbed above.
 UPDATE specs SET title = 'Spec ' || left(md5(id::text), 8), created_by = NULL;
+-- A design reference carries free-text screen names and may carry a URL: wiped.
 UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
-  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END;
+  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL;
 -- Outcome verdicts: the evidence holds what a reviewer observed (prose), file
 -- refs and who recorded it; criterion ids and head SHAs are not content.
 UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence);

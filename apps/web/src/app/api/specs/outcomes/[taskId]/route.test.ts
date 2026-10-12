@@ -43,7 +43,7 @@ describe('/api/specs/outcomes/[taskId]', () => {
     account = { id: 'a1', taskScope: { taskId: 'audit-1', workspaceId: 'ws-a' } };
     const res = await post({ checker: 'visual', criterionId: 'AC-1', verdict: 'pass', capturedSha: 'c'.repeat(40), screenshotIds: ['s1'], headSha: 'a'.repeat(40), evidenceRefs: [{ kind: 'x', ref: 'y' }] });
     expect([res.status, (await res.json()).verdictId]).toEqual([200, 'v2']);
-    expect(calls.at(-1)).toEqual(['visual', { kind: 'account', account }, { criterionId: 'AC-1', verdict: 'pass', capturedSha: 'c'.repeat(40), screenshotIds: ['s1'], observed: undefined }]);
+    expect(calls.at(-1)).toEqual(['visual', { kind: 'account', account }, { criterionId: 'AC-1', verdict: 'pass', capturedSha: 'c'.repeat(40), screenshotIds: ['s1'], designShotIds: undefined, observed: undefined }]);
   });
 
   it('a person session reads; no caller is a 401', async () => {
