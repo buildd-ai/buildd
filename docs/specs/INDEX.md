@@ -182,7 +182,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task Estimates (Rollout and Team Switch)](./task-estimates.md) · @max — verified 2026-10-11
   Task estimates MUST be on for a team that turned them on, off for a team that turned them off, and follow a default that is on only when a pinned, evidence-backed quality gate passes; they never block or order work.
 
-## Draft (9)
+## Draft (10)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
@@ -190,6 +190,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An inferred path-overlap hold MUST bind only to live work (a live worker, a held lease or an open PR on the same base); overlap between unstarted tasks is settled by the first claim's lease.
 - [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
   The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
+- [Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal Collection)](./decision-model-selection.md) · @max — verified 2026-10-12
+  Each decision kind MUST act only through a model and threshold measured for that kind on graded cases, MAY switch model by itself when a challenger measurably wins, and MUST collect every grading signal it can; the team sees a switch, never the scores.
 - [Execution Control Plane](./execution-control-plane.md) · @max — verified 2026-10-11
   Authorized execution (claims, heartbeats, results, webhooks, Dispatch callbacks) MUST keep moving while the web app is down, served by a separate Worker running the same handlers.
 - [Living Specs](./living-specs.md) · @max — verified 2026-10-11
