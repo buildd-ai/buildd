@@ -306,17 +306,20 @@ export function compositionCounts(missions: number, other: number): string {
 export function releaseLede(input: {
   version: string | null;
   step: FlowStep;
-  missions: number;
-  other: number;
+  /** Omitted when unknown (a candidate merged outside this flow): the sentence then drops the counts. */
+  missions?: number;
+  other?: number;
   verdict?: Pick<CandidateVerdict, 'checks' | 'allChecksPassed' | 'approved'> | null;
 }): string {
   const v = input.version ? `v${input.version.replace(/^v/, '')}` : 'The next release';
-  const counts = compositionCounts(input.missions, input.other);
+  const known = input.missions !== undefined && input.other !== undefined;
+  const counts = known ? compositionCounts(input.missions!, input.other!) : '';
+  const tail = known ? `: ${counts}.` : '.';
   switch (input.step) {
     case 'released':
-      return `${v} is in production: ${counts}.`;
+      return `${v} is in production${tail}`;
     case 'release':
-      return `${v} is merged and waiting for production to run it: ${counts}.`;
+      return `${v} is merged and waiting for production to run it${tail}`;
     case 'review': {
       const vd = input.verdict;
       if (!vd) return `${v} is cut: ${counts}. Checks have not reported.`;
