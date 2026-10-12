@@ -7,7 +7,7 @@ summary: Each viewer MUST see one plain status per root cause, actionable only b
 domain: surfaces
 surfaces: [apps/web/src/lib/service-status.ts, apps/web/src/lib/home-attention.ts, apps/web/src/lib/failure-incident-escalation.ts, apps/web/src/app/app/(protected)/health/member-scope.test.ts]
 related: [team-permissions, credential-refresh-lifecycle, auth-oauth-boundaries, runner-liveness, human-in-the-loop-protocol, surface-ia-home-missions-initiatives]
-keywords: [service status, runner needs sign-in, waiting for runner sign-in, quiet status surface, needs you, credential owner, incident, root cause, member, team admin, operator parity, hosted runner, self-hosted runner, runner owner, admin app]
+keywords: [service status, runner needs sign-in, waiting for runner sign-in, quiet status surface, needs you, credential owner, incident, root cause, member, team admin, operator parity, hosted runner, self-hosted runner, runner owner, platform-owner API]
 verified_by: [apps/web/src/lib/service-status.test.ts, apps/web/src/lib/team-incident-boundary.test.ts, apps/web/src/app/app/(protected)/health/member-scope.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/incident-view.test.ts, apps/web/src/lib/home-attention.test.ts]
 assertions:
   - id: "escalation-rule"
@@ -67,9 +67,10 @@ This spec is the team-facing contract. It does not redo recovery.
 - **Mission `ecea17f3`** (incident recovery) owns resuming interrupted work.
   Section 4 only states what the team sees while that happens and requires it
   to use the same resume authority.
-- **Operator-side recovery** lives in the buildd-admin repo
-  (`docs/specs/operator-recovery.md`, read-only reference). The only contract
-  between the two is the projection in section 6.
+- **Operator tooling** is a client of the platform-owner API, the same way any
+  operator would build one on these routes. This product ships the API, not
+  the client. The only contract a team surface has with it is the projection
+  in section 6.
 - **Credentials**: buildd coordinates the agent and does not provide model
   access. A subscription login stays on the runner machine that owns it (see
   `auth-oauth-boundaries`, `credential-refresh-lifecycle`). Nothing in this
@@ -189,9 +190,9 @@ Rules:
 
 ## 6. Service-status projection contract
 
-The only interface between this product and buildd-admin recovery tooling.
-Admin storage, endpoints and topology are out of scope for this spec and MUST
-NOT be named in it.
+The only interface between team surfaces and operator tooling. Operator
+clients, their storage and their topology are out of scope for this spec and
+MUST NOT be named in it.
 
 **Input** (per team, produced by detection/classification, read-only to the
 projection): zero or more root-cause records, each with a stable root-cause
@@ -223,11 +224,12 @@ role. The operator role adds nothing to them.
   cards (the stored escalation verdicts), decision-feature health rows ("…is
   not deciding", the decision collection items), and any other item whose
   subject is buildd's own machinery rather than the team's work.
-- **Where it goes**: the private admin app, read through the platform-owner
-  API. The operator's push page for an owner verdict is unchanged; only its
-  Home card goes. Moving them MUST NOT leave the operator without them: the
-  admin app serves the same items, with the same verdicts, before Home stops
-  rendering them.
+- **Where it goes**: the platform-owner API, which any operator client reads.
+  Incidents and decision health stay in the product as API routes, with no
+  team UI. The operator's push page for an owner verdict is unchanged; only
+  its Home card goes. Moving them MUST NOT leave the operator without them:
+  the platform-owner API serves the same items, with the same verdicts, before
+  Home stops rendering them.
 - **What the operator sees on Home instead**: the section 6 projection for
   their own team, at their team role, like anyone else. A Sentinel pattern
   that hit their team's work reaches them as a team status ("Runner A needs
@@ -354,8 +356,8 @@ others exist and cover the neighbouring behaviour.
 - AC-8: GIVEN a platform operator who is a team admin of their team, and an
   open owner-verdict incident and a decision feature that is not deciding
   WHEN their Home and Needs You badge are computed THEN neither item is
-  present, the badge equals a non-operator team admin's, and the admin app's
-  read returns both items with their verdicts.
+  present, the badge equals a non-operator team admin's, and the platform-owner
+  API returns both items with their verdicts.
   Test: `home-operator-parity.test.ts` *(new)*; replaces the "loads incident
   cards onto Home only for a platform operator" case in
   `team-incident-boundary.test.ts`.
@@ -397,13 +399,14 @@ Existing, read-only context for this spec:
   `hostRunner`, `createdByUserId`: the section 8 inputs.
 
 To be added: the section 9 loader, the team-facing renderers on Home and
-Health, and the admin app's read of incidents and decision-feature health.
+Health, and the platform-owner API routes for incidents and decision-feature
+health.
 
 ## Out of scope
 
 - Detecting, classifying severity of or fixing failures (Sentinel, fix tasks).
 - Resuming interrupted work (mission `ecea17f3`, delivery kernel).
-- Operator-side storage, endpoints and tooling (buildd-admin).
+- Operator clients of the platform-owner API, their storage and their UI.
 - Storing, refreshing, relaying or substituting any subscription login.
 - Paging the platform owner (the escalation gate).
 - Visual design of the status surface and banner.
