@@ -141,6 +141,7 @@ describe('SpecPage', () => {
     globalThis.fetch = (() => new Promise<Response>(r => { answer = r; })) as unknown as typeof fetch;
     const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
     act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    expect(q('spec-page-review-panel')!.querySelector('h2')!.textContent).toBe('Revision 2 (nothing approved yet)');
     await act(async () => { q('spec-page-approve')!.click(); });
     expect(q('spec-page-approve-result')!.textContent).toBe('Approved. Revision 2 is in force.');
     expect(q('spec-page-approve')).toBeNull();
