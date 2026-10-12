@@ -49,6 +49,9 @@ assertions:
 
 # Task Page
 
+Governed by the workspace's Living Spec "Task Page", which cites this file at
+a commit and carries the same criteria; this file stays the full contract.
+
 ## Why this spec exists
 
 The page grew by accretion: a verdict card, a "What shipped" header, a
@@ -335,6 +338,7 @@ branch update" for a carried approval), binding what follows to that round.
 - AC-16: GIVEN an approval with findings on head A and a current head B with no round WHEN the checks render THEN Code review reads Awaiting review, is not a disclosure, and none of head A's prose appears in it; the approval is under Earlier rounds.
 - AC-17: GIVEN a title longer than three phone lines WHEN the header renders below `md` THEN the h1 is `text-heading`, spans the full width, is clamped to three lines with a 44px "Show full title" (`aria-expanded=false`) that expands it in place and "Show less" that collapses it; Ask and ⋯ sit on the row under the title, never beside it.
 - AC-18: GIVEN a review attempt of a deliverable with PR #N WHEN the header renders THEN the attempt link reads "Review of PR #N ›" and the deliverable's full title is in its accessible name and tooltip, not its visible text.
+- AC-19: GIVEN the long-title pending reviewer fixture (`review-pending`) at 390×844 with the title collapsed WHEN it renders THEN the Checks heading and the Code review and Tests rows are above the bottom nav without scrolling; at 320 and 360 wide there is no sideways scroll and no tap target under 44px (Visual QA `assertLayout`).
 
 ## Code surface
 
