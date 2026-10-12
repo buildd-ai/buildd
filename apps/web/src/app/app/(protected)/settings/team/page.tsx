@@ -129,7 +129,7 @@ export default async function TeamSettingsPage({
         </TeamDetailClient>
       ) : (
         <>
-          <p className="text-sm text-text-muted">Could not load the team.</p>
+          <p className="text-sm text-text-muted">Couldn&apos;t load the team.</p>
           {sections}
         </>
       )}

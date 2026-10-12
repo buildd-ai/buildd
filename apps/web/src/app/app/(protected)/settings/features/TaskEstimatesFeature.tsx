@@ -7,9 +7,9 @@ import type { TaskEstimatesState } from '@buildd/core/task-estimate-rollout';
 
 /** "On, turned on by your team" and the like: whether it is on, and who decided. */
 export function taskEstimatesStatusLine(s: Pick<TaskEstimatesState, 'enabled' | 'source'>): string {
-  if (s.source === 'default') return s.enabled ? 'On (the default)' : 'Off (the default)';
-  if (s.enabled) return 'On, turned on by your team';
-  return 'Off, turned off by your team';
+  if (s.source === 'default') return s.enabled ? 'On (default)' : 'Off (default)';
+  if (s.enabled) return 'On for this team';
+  return 'Off for this team';
 }
 
 /**
@@ -42,11 +42,11 @@ export default function TaskEstimatesFeature({
       });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(data.error || 'Could not save. Try again.');
+        throw new Error(data.error || "Could not save. Try again.");
       }
       setState((s) => ({ ...s, enabled, source: 'team' }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save. Try again.');
+      setError(err instanceof Error ? err.message : "Could not save. Try again.");
     } finally {
       setSaving(false);
     }
@@ -56,11 +56,11 @@ export default function TaskEstimatesFeature({
     <Section title="Task estimates">
       <div className="space-y-3 text-sm" data-testid="feature-task-estimates">
         <p className="text-text-secondary max-w-prose">
-          Each new task gets a typical time and an upper time most similar tasks finished within. A forecast
-          only: it never decides what runs or when.
+          Shows a typical duration and an upper bound for each new task, based on similar past tasks.
+          Estimates don&apos;t affect which tasks run or when.
         </p>
         <p className="max-w-prose text-text-muted">
-          A repo with little history gets a rough estimate, marked as such.
+          Estimates for repos with little history are marked as rough.
         </p>
         <div className="flex flex-wrap items-center gap-3">
           <span data-testid="task-estimates-state" className={state.enabled ? 'font-medium text-text-primary' : 'text-text-muted'}>
@@ -74,14 +74,14 @@ export default function TaskEstimatesFeature({
               disabled={saving}
               className="btn btn-sm h-11 md:h-8"
             >
-              {saving ? 'Saving...' : state.enabled ? 'Turn off' : 'Turn on'}
+              {saving ? 'Saving…' : state.enabled ? 'Turn off' : 'Turn on'}
             </button>
           )}
         </div>
         {error && <p className="text-status-error" role="alert">{error}</p>}
         {state.enabled && (
           <Link href="/app/health/estimates" className="inline-block text-accent-text hover:underline">
-            How accurate they have been
+            View estimate accuracy
           </Link>
         )}
       </div>

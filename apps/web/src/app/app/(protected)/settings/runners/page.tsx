@@ -80,7 +80,7 @@ export default async function RunnersSettingsPage({
                 {hasSignIn === true && <StatusChip tone="ok">Connected</StatusChip>}
                 {hasSignIn === false && <StatusChip tone="idle">Not connected</StatusChip>}
               </span>
-              <span className="mt-1 block truncate text-meta text-text-muted">What your runners log in with</span>
+              <span className="mt-1 block truncate text-meta text-text-muted">Model accounts your runners use</span>
             </span>
             <Link href={SIGN_INS_HREF} className="btn btn-quiet shrink-0">Models ›</Link>
           </div>

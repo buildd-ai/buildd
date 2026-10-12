@@ -52,8 +52,8 @@ export default async function NewTeamRolePage({
 
   return (
     <SettingsPage
-      title={kinds.length === 1 && initialKind === 'personal' ? 'New agent, just for you' : 'New agent'}
-      description="Define an agent persona with a model, tools, and instructions."
+      title={kinds.length === 1 && initialKind === 'personal' ? 'New personal agent' : 'New agent'}
+      description="Choose the model, tools and instructions for a new agent."
     >
       <TeamRoleForm
         teamId={teamId}

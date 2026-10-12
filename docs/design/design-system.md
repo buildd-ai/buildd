@@ -607,7 +607,22 @@ notification text) follows the same rules as a PR lede:
     chosen. Pick one to…".
 11. **Say it once** (`duplicate-explanation`). A sentence rendered twice in
     one file, on a card and again in its disclosure, counts.
-12. **Change the flow before the words.** When a page needs explaining, it
+13. **People and accounts pay, keys don't** (`object-pays`). "Used when the
+    team lets personal keys pay" was the Settings → Keys line; it reads
+    **Manage your personal API keys.** Say who is billed (you, the team, a
+    provider account), and only beside the control where that decides
+    something, never on an index line.
+14. **Settings reads like a service, not a narrator.** An index line is one
+    short phrase naming what the page manages ("Configure team agents,
+    models and tools."). No "the team decides", "chat follows", "just for
+    me". An error says what failed and what to do: "Could not save. Try
+    again." A read-only page states who manages it once
+    (`TEAM_MANAGED_LINE`). Keep real limits as short facts beside the control
+    ("Requires a linked GitHub repository."). Platform readiness and
+    review internals belong on operator surfaces, not a member's Settings.
+    Living Spec "Product voice and professional Settings copy" carries the
+    same rules as requirements.
+15. **Change the flow before the words.** When a page needs explaining, it
     mirrors the data model. Collapse it: one row per thing the reader knows
     (Claude, not "Anthropic" plus "Claude subscription"), one input that
     works out what was pasted, a control hidden until it can matter.

@@ -189,7 +189,7 @@ export default async function WorkspaceSettingsPage({
             ? <span className="font-mono text-text-primary break-all">{workspace.repo}</span>
             : 'No repository linked.'}
           {/* The phone header says "Workspaces"; the h1 and repo carry it there. */}
-          <span className="hidden md:inline">{' '}How agents work in this workspace: git, merging, releases and where tasks run.</span>
+          <span className="hidden md:inline">{' '}Git, merging, releases and where tasks run.</span>
         </>
       }
     >
@@ -308,7 +308,7 @@ export default async function WorkspaceSettingsPage({
             canEdit={canManageSettings}
           />
           <p className="py-4 last:pb-0 text-xs text-text-secondary" data-testid="workspace-runners-pointer">
-            Runners and their sign-ins are set up in{' '}
+            Manage runners in{' '}
             <Link href="/app/settings/runners" className="text-text-primary underline">Settings › Runners</Link>.
           </p>
         </div>
@@ -334,7 +334,7 @@ export default async function WorkspaceSettingsPage({
               <div className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium text-text-primary">Move to another team</h3>
-                  <p className="text-xs text-text-secondary mt-0.5">Hands this workspace to a team you manage.</p>
+                  <p className="text-xs text-text-secondary mt-0.5">Transfers this workspace to another team you manage.</p>
                 </div>
                 <MoveToTeamButton
                   workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}

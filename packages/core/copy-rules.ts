@@ -24,7 +24,8 @@ export type CopyRuleId =
   | 'not-this-its-that'
   | 'internal-jargon'
   | 'warning-instead-of-default'
-  | 'duplicate-explanation';
+  | 'duplicate-explanation'
+  | 'object-pays';
 
 export interface CopyRule {
   id: CopyRuleId;
@@ -137,6 +138,14 @@ export const COPY_RULES: CopyRule[] = [
     why: 'If the system already behaves one way, show that option as chosen. A prompt to pick one reads as an error.',
     bad: 'No policy chosen: agents use team keys. Pick one to apply it to agent runs.',
     good: 'Team key',
+  },
+  {
+    id: 'object-pays',
+    name: 'A key or token pays',
+    test: re(/\b(?:keys?|tokens?|credentials?|subscriptions?)\s+(?:pays?|paid|paying|spends?|spending)\b/i),
+    why: 'Keys and tokens do not pay or spend; a person, the team or a provider account is billed. Name who, beside the control where it decides something.',
+    bad: 'Your own model keys, used when the team lets personal keys pay.',
+    good: 'Manage your personal API keys.',
   },
   {
     id: 'duplicate-explanation',

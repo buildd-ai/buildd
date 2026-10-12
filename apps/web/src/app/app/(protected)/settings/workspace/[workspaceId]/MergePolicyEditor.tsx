@@ -161,10 +161,10 @@ export default function MergePolicyEditor({
         setMsg({ type: 'success', text: 'Merge policy saved.' });
       } else {
         const err = await res.json().catch(() => ({}));
-        setMsg({ type: 'error', text: (err as any).error || 'Save failed.' });
+        setMsg({ type: 'error', text: (err as any).error || 'Could not save the merge policy. Try again.' });
       }
     } catch {
-      setMsg({ type: 'error', text: 'Network error.' });
+      setMsg({ type: 'error', text: 'Network error. Try again.' });
     } finally {
       setSaving(false);
     }
@@ -362,7 +362,7 @@ export default function MergePolicyEditor({
           <span className="text-sm text-text-muted">minutes</span>
         </div>
         <p className="text-xs text-text-muted">
-          Pushover alert after this long. Default 30 min for review, 5 min for auto.
+          Pushover alert when a PR waits this long. Defaults: 30 min for review, 5 min for auto.
         </p>
       </div>
       </div>
@@ -389,7 +389,7 @@ export default function MergePolicyEditor({
         <div className="space-y-2">
           <div>
             <h4 className="text-sm font-medium text-text-primary">Mission overrides</h4>
-            <p className="mt-0.5 text-xs text-text-muted">These missions use a different merge policy than the workspace default.</p>
+            <p className="mt-0.5 text-xs text-text-muted">Missions with their own merge policy.</p>
           </div>
           <ul className="divide-y divide-border-default border-y border-border-default">
             {missionOverrides.map(m => (
@@ -550,7 +550,7 @@ export function PolicySuggestionsSection({
       }
       onApplied();
     } catch {
-      setError('Network error.');
+      setError('Network error. Try again.');
     } finally {
       setBusy(false);
     }

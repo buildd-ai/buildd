@@ -36,6 +36,21 @@ describe('copy rules', () => {
     expect(ids('Pick one to apply it to agent runs.')).toContain('warning-instead-of-default');
   });
 
+  it('flags a key or token that pays or spends: the Settings › Keys line, verbatim', () => {
+    // Settings index, Keys description (owner, 2026-10-12: "Keys don't pay").
+    expect(ids('Your own model keys, used when the team lets personal keys pay.')).toContain('object-pays');
+    expect(ids('Your own model keys. The team decides whether they pay for your work.')).not.toContain('object-pays');
+    expect(ids('Decision calls made for you spend it.')).toEqual([]);
+    expect(ids('Personal keys pay for chat.')).toContain('object-pays');
+    expect(ids('The team token spends credits on every call.')).toContain('object-pays');
+  });
+
+  it('leaves who is billed alone, and the word "used"', () => {
+    for (const t of ['Manage your personal API keys.', 'Billed to your provider account.', 'Who pays', 'Used for chat and Claude agents.', 'Your team pays for agent work.']) {
+      expect(ids(t)).toEqual([]);
+    }
+  });
+
   it('leaves the rewritten Models copy alone', () => {
     for (const t of ['Keys and subscriptions your agents and chat use.', 'Who pays', 'Team key', "Everyone uses the team's key.", "Mine, then the team's", "Uses your key when you've added one.", 'Mine only', 'You need your own key to start work.', 'Used for chat and Claude agents.', 'Used by Claude agents on your runners.', 'Not set', 'Working', 'Not used by anything']) {
       expect(ids(t)).toEqual([]);

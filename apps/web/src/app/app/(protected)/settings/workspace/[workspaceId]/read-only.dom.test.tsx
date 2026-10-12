@@ -106,11 +106,11 @@ describe('workspace settings, read by a member', () => {
     expect(host.querySelector('[data-testid="member-repo-access-value"]')!.textContent).toBe('On');
   });
 
-  it('MemberRepoAccessSection: no "link a repository to turn this on" for someone who cannot turn it on', async () => {
+  it('MemberRepoAccessSection: no "requires a linked repository" hint for someone who cannot turn it on', async () => {
     await mount(<MemberRepoAccessSection workspaceId="ws-1" mode="off" repoFullName={null} canManage={false} viewer={null} />);
     expectReadOnly();
     expect(host.querySelector('[data-testid="member-repo-access-value"]')!.textContent).toBe('Off');
-    expect(host.textContent).not.toContain('to turn this on');
+    expect(host.textContent).not.toContain('Requires a linked GitHub repository');
   });
 
   it('MergePolicyEditor: tier, limit, paths and suggestions as text; mission overrides keep their own actions', async () => {

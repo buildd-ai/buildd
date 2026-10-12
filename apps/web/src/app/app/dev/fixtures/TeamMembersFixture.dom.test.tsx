@@ -42,7 +42,7 @@ describe('team-members fixture controls', () => {
     expect(v.count('Transfer ownership')).toBe(2);
     expect(v.count('Remove')).toBe(2);
     expect(v.count('Delete team')).toBe(1);
-    expect(v.count('+ Invite someone')).toBe(1);
+    expect(v.count('+ Invite member')).toBe(1);
     expect(v.leave.disabled).toBe(true);
     expect(v.text).toContain('You are the only owner.');
   });
@@ -76,7 +76,7 @@ describe('team-members fixture controls', () => {
     expect(v.count('Remove')).toBe(1);
     expect(v.count('Delete team')).toBe(0);
     expect(v.count('Rename')).toBe(1);
-    expect(v.count('+ Invite someone')).toBe(1);
+    expect(v.count('+ Invite member')).toBe(1);
     expect(v.leave.disabled).toBe(false);
   });
 
@@ -86,7 +86,7 @@ describe('team-members fixture controls', () => {
     expect(v.count('Transfer ownership')).toBe(0);
     expect(v.count('Remove')).toBe(0);
     expect(v.count('Rename')).toBe(0);
-    expect(v.count('+ Invite someone')).toBe(0);
+    expect(v.count('+ Invite member')).toBe(0);
     expect(v.leave.disabled).toBe(false);
   });
 });
