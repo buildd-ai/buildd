@@ -78,7 +78,7 @@ export function Limit({ id, label, titleId, caps, onPick, bound, boundBy, disabl
       {pick('all', titleId ? undefined : label)}
       {surface !== false && (
         <>
-          <button type="button" className="self-start text-meta text-text-muted underline-offset-2 hover:underline" aria-expanded={open}
+          <button type="button" className="flex min-h-11 md:min-h-0 items-center self-start text-meta text-text-muted underline-offset-2 hover:underline" aria-expanded={open}
             data-testid={`${id}-advanced`} onClick={() => setOpen(!open)}>
             {open ? 'Hide' : 'Set'} Coding and Chat separately
           </button>
