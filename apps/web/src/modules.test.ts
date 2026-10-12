@@ -27,6 +27,10 @@ describe('composition root', () => {
     ]);
   });
 
+  it('worker.late_verification_reported: the late runner report becomes the verification verdict', () => {
+    expect(byEvent('worker.late_verification_reported')).toEqual(['reviews:late-runner-evidence']);
+  });
+
   it('task.completed: a resolved release\'s mission attempt, chat, the ledger, the team push, then its analytics row', () => {
     expect(byEvent('task.completed')).toEqual([
       'missions:mission-completion-on-release-completed',
@@ -92,7 +96,7 @@ describe('composition root', () => {
     expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);
     // The ledger records the red head before the CI-fix retry is asked.
     expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed', 'reviews:ci-failure-retry', 'jev-decisions:verdict-on-ci-failed']);
-    expect(byEvent('pr.ci_passed')).toEqual(['jev-decisions:verdict-on-ci-passed']);
+    expect(byEvent('pr.ci_passed')).toEqual(['missions:loop-advance-on-ci-green', 'jev-decisions:verdict-on-ci-passed']);
     // The push is noted on the PR before a reviewer is re-dispatched.
     expect(byEvent('pr.synchronized')).toEqual(['reviews:pr-activity-changes-pushed', 'reviews:reviewer-redispatch-on-push', 'reviews:spec-checks-on-push', 'jev-decisions:verdict-on-push']);
   });

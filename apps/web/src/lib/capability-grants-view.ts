@@ -8,7 +8,7 @@
  *
  * Spec: docs/specs/capability-requests.md → Showing and deciding.
  */
-import { CONNECTOR_CATALOG, connectorHostKey, type ConnectorClientSupport } from './connector-catalog';
+import { CONNECTOR_CATALOG } from './connector-catalog';
 
 export type AccessRisk = 'read' | 'query' | 'write' | 'admin';
 export type AccessStatus = 'pending' | 'granted' | 'denied' | 'revoked' | 'expired';
@@ -163,46 +163,4 @@ export function decisionResultText(decision: 'approve' | 'deny' | 'revoke', stat
   if (status === 404) return { ok: false, text: 'This request no longer exists.' };
   if (status === 409 && body.grant?.status) return { ok: false, text: `Someone already decided: this request is ${body.grant.status}.` };
   return { ok: false, text: body.error || body.message || 'Could not save the decision.' };
-}
-
-// ── Provider state on a catalog card ────────────────────────────────────────
-
-export interface InstalledConnector {
-  id: string;
-  url: string;
-  authMode: 'none' | 'header' | 'oauth';
-  status: 'connected' | 'expired' | 'not_connected';
-  shared?: boolean;
-}
-
-export type ProviderStateKind = 'needs_client_approval' | 'not_installed' | 'connect' | 'set_key' | 'reconnect' | 'connected' | 'no_auth';
-
-export interface ProviderState {
-  kind: ProviderStateKind;
-  /** The pill: what is true now. */
-  label: string;
-  tone: 'ok' | 'act' | 'q';
-  /** The one next step for an admin, or null when there is none to take here. */
-  action: { kind: 'install' | 'connect' | 'set_key'; label: string; connectorId?: string } | null;
-}
-
-/**
- * A catalog entry's real state for this team: the installed connector on the
- * same host (the catalog policy's matching key) and its credential. A provider
- * that has not approved buildd as a client offers no Connect at all: the only
- * honest next step is the provider's review, so the card links there instead.
- */
-export function providerState(entry: { url: string; authMode: 'none' | 'header' | 'oauth'; clientSupport?: ConnectorClientSupport }, installed: readonly InstalledConnector[]): ProviderState {
-  const host = connectorHostKey(entry.url);
-  const c = installed.find(i => !i.shared && connectorHostKey(i.url) === host) ?? installed.find(i => connectorHostKey(i.url) === host) ?? null;
-  if (c && (c.authMode === 'none')) return { kind: 'no_auth', label: 'Installed', tone: 'ok', action: null };
-  if (c && c.status === 'connected') return { kind: 'connected', label: 'Connected', tone: 'ok', action: null };
-  if (entry.clientSupport?.status === 'needs_approved_client') {
-    return { kind: 'needs_client_approval', label: 'Client approval needed', tone: 'q', action: null };
-  }
-  if (!c) return { kind: 'not_installed', label: 'Not installed', tone: 'q', action: { kind: 'install', label: 'Install' } };
-  if (c.shared) return { kind: c.status === 'expired' ? 'reconnect' : 'connect', label: c.status === 'expired' ? 'Expired' : 'Not connected', tone: c.status === 'expired' ? 'act' : 'q', action: null };
-  if (c.status === 'expired') return { kind: 'reconnect', label: 'Expired', tone: 'act', action: { kind: 'connect', label: 'Reconnect', connectorId: c.id } };
-  if (c.authMode === 'header') return { kind: 'set_key', label: 'Not connected', tone: 'q', action: { kind: 'set_key', label: 'Set key', connectorId: c.id } };
-  return { kind: 'connect', label: 'Not connected', tone: 'q', action: { kind: 'connect', label: 'Connect', connectorId: c.id } };
 }

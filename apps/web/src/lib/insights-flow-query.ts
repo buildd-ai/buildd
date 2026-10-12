@@ -64,7 +64,10 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
     },
     with: {
       task: {
-        columns: { id: true, title: true, status: true, roleSlug: true, tier: true, predictedModel: true, parentTaskId: true, missionId: true },
+        columns: {
+          id: true, title: true, status: true, roleSlug: true, tier: true, predictedModel: true, parentTaskId: true, missionId: true,
+          createdAt: true, ciRetryPrNumber: true, conflictRetryPrNumber: true, reviewerRetryPrNumber: true,
+        },
         // Only the keys `deriveTaskModel` reads, never the whole context blob:
         // across a 30-day window the full blobs overflow Neon's 64 MB response cap.
         // The callback form: a nested relation is aliased, so the column must
@@ -77,6 +80,7 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
             'routingInferred', ${t.context} -> 'routingInferred',
             'routingInferredReason', ${t.context} -> 'routingInferredReason'
           )`.as('routing_context'),
+          dependencyCount: sql<number>`coalesce(jsonb_array_length(${t.dependsOn}), 0)`.as('dependency_count'),
         }),
       },
     },
@@ -106,6 +110,9 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
     prBaseRef: w.prBaseRef ?? null,
     costBasis: w.costBasis ?? null,
     runner: w.runner ?? null,
+    taskCreatedAt: ms(w.task?.createdAt),
+    taskHasDependencies: Number(w.task?.dependencyCount ?? 0) > 0,
+    taskRetryKind: w.task?.ciRetryPrNumber != null ? 'ci' : w.task?.conflictRetryPrNumber != null ? 'conflict' : w.task?.reviewerRetryPrNumber != null ? 'review' : null,
   }));
 }
 
@@ -165,28 +172,48 @@ export async function fetchMissionTrunkMerges(missionIds: string[]): Promise<Rec
   return out;
 }
 
-/** The flow series for a set of workspaces (one team's), for the given window. */
+/**
+ * The flow series for a set of workspaces (one team's), for the given window,
+ * with the window before it for comparison. Reads reach back one window
+ * further for that; when the row cap cuts them short, `previous` is null
+ * rather than a count that reads low.
+ */
 export async function loadFlowSeries(workspaceIds: string[], window: FlowWindow, now = Date.now()): Promise<FlowSeries & { truncated: boolean }> {
-  const from = now - windowMsFor(window);
+  const span = windowMsFor(window);
+  const from = now - span;
   const since = new Date(from - LOOKBACK_MS);
+  const prevSince = new Date(from - span - LOOKBACK_MS);
   const [workerRows, rel] = await Promise.all([
-    fetchFlowWorkerRows(workspaceIds, since),
-    fetchFlowReleases(workspaceIds, since),
+    fetchFlowWorkerRows(workspaceIds, prevSince),
+    fetchFlowReleases(workspaceIds, prevSince),
   ]);
   const viaMission = new Set(
     workerRows.filter(w => w.missionId && w.mergedAt != null && (w.prBaseRef ?? '').startsWith('mission/')).map(w => w.missionId!),
   );
   const missionTrunkMergedAt = await fetchMissionTrunkMerges([...viaMission]);
+  const capped = workerRows.length >= FLOW_ROW_LIMIT;
+  // Rows come newest first, so a cut drops the oldest: say which reads it reached.
+  const oldest = capped ? Math.min(...workerRows.map(w => w.startedAt ?? now)) : -Infinity;
+  // The current window keeps its own lookback, so a PR left open months ago doesn't read as in review now.
+  const recent = workerRows.filter(w => w.completedAt == null || w.completedAt >= since.getTime() || (w.mergedAt ?? 0) >= since.getTime());
   const series = buildFlowSeries({
     window: { from, to: now },
     bucketMs: bucketMsFor(window),
     now,
-    workers: workerRows,
+    workers: recent,
     ...rel,
     missionTrunkMergedAt,
   });
+  const prior = oldest <= prevSince.getTime() + LOOKBACK_MS
+    ? buildFlowSeries({ window: { from: from - span, to: from }, bucketMs: span, now, workers: workerRows, ...rel, missionTrunkMergedAt })
+    : null;
   const names = workspaceIds.length ? await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(inArray(workspaces.id, workspaceIds)) : [];
-  return { ...series, workspaceNames: Object.fromEntries(names.map(w => [w.id, w.name])), truncated: workerRows.length >= FLOW_ROW_LIMIT };
+  return {
+    ...series,
+    previous: prior && { shippedTasks: prior.headline.shippedTasks, lostTasks: prior.days.reduce((n, d) => n + d.lost, 0), days: prior.days },
+    workspaceNames: Object.fromEntries(names.map(w => [w.id, w.name])),
+    truncated: oldest > since.getTime(),
+  };
 }
 
 /** The role/tier counters formerly shown on Insights, using the same attribution. */

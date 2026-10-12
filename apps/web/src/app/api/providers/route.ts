@@ -10,6 +10,7 @@ import {
 import {
   deleteProviderCredential,
   countPersonalKeys,
+  workspacesWithKeys,
   listProviders,
   loadPolicySummary,
   planProviderWrite,
@@ -85,7 +86,7 @@ export async function GET(req: NextRequest) {
   const workspaceId = req.nextUrl.searchParams.get('workspaceId') || (caller.taskScope?.workspaceId ?? null);
   if (!taskScopeAllowsWorkspace(caller, workspaceId)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   try {
-    const [providers, policy, keys, creds, inference, settings, personalKeyCount] = await Promise.all([
+    const [providers, policy, keys, creds, inference, settings, personalKeyCount, withKeys] = await Promise.all([
       listProviders({ teamId: caller.teamId, workspaceId, userId: caller.userId }),
       loadPolicySummary(caller.teamId),
       caller.may('manage_team_model_keys'),
@@ -93,6 +94,8 @@ export async function GET(req: NextRequest) {
       caller.may('manage_inference_providers'),
       caller.may(POLICY_PERMISSION),
       countPersonalKeys(caller.teamId),
+      // A task token sees its own workspace only: no list of the team's others.
+      caller.taskScope ? Promise.resolve([] as string[]) : workspacesWithKeys(caller.teamId),
     ]);
     const body: ListProvidersResponse = {
       teamId: caller.teamId,
@@ -104,6 +107,7 @@ export async function GET(req: NextRequest) {
       },
       policy,
       personalKeyCount,
+      workspacesWithKeys: withKeys,
       providers,
     };
     return NextResponse.json(body, { headers: { 'Cache-Control': 'no-store' } });

@@ -15,6 +15,7 @@ import { eq } from 'drizzle-orm';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
 import { currentPrHeadSha } from '@/lib/specs/outcome';
 import { dispatchCriterionChecks, handleCriterionCheckOutcome, isCriterionCheckTask } from '@/lib/specs/criterion-checks';
+import { recordLateRunnerEvidence } from '@/lib/late-runner-evidence';
 
 export const specCheckSubscribers: readonly AnySubscriber[] = [
   subscriber('reviews', 'pr.review_ready', 'spec-checks-on-open', async e => {
@@ -25,6 +26,11 @@ export const specCheckSubscribers: readonly AnySubscriber[] = [
   subscriber('reviews', 'pr.synchronized', 'spec-checks-on-push', async e => {
     if (e.pr.draft || !e.worker.taskId) return;
     await dispatchCriterionChecks({ taskId: e.worker.taskId, headSha: e.pr.headSha, headBranch: e.worker.branch });
+  }),
+  // The runner's report that lands after the agent completed a verification
+  // run itself: kept, and turned into the check or command-criterion verdict.
+  subscriber('reviews', 'worker.late_verification_reported', 'late-runner-evidence', async e => {
+    await recordLateRunnerEvidence({ workerId: e.workerId, taskId: e.taskId, evidence: e.verificationEvidence });
   }),
   subscriber('reviews', 'worker.reported', 'spec-check-outcome', async e => {
     const [row] = await db.select({ context: tasks.context }).from(tasks).where(eq(tasks.id, e.taskId)).limit(1);

@@ -53,7 +53,7 @@ export interface CommitChecks {
 
 export interface Lineage {
   steps: LineageStep[];
-  totals: { add: number; rem: number; files: number; commits: number; attempts: number; claimToMerge: string | null };
+  totals: { add: number; rem: number; files: number; commits: number; attempts: number; claimToMerge: string | null; claimToMergeMs: number | null };
   commits: CommitChecks[];
 }
 
@@ -165,6 +165,7 @@ export function buildLineage({
       commits: sum(a => a.commits ?? 0),
       attempts: attempts.length,
       claimToMerge: pr.mergedAt != null && first ? formatOffset(pr.mergedAt - first.createdAt) : null,
+      claimToMergeMs: pr.mergedAt != null && first ? Math.max(0, pr.mergedAt - first.createdAt) : null,
     },
   };
 }

@@ -439,6 +439,17 @@ describe('DELETE /api/providers', () => {
   });
 });
 
+describe('GET /api/providers: workspaces with their own keys', () => {
+  it('names each workspace holding a model key of its own, never a personal row, and nothing to a task token', async () => {
+    asAdmin();
+    const { body } = await call(await GET(req('GET', '/api/providers')));
+    expect(body.workspacesWithKeys).toEqual(['ws-1']);
+    sessionUser = null;
+    const task = await call(await GET(req('GET', '/api/providers?workspaceId=ws-1', { bearer: 'bldt_task' })));
+    expect(task.body.workspacesWithKeys).toEqual([]);
+  });
+});
+
 // ── PATCH (policy) ───────────────────────────────────────────────────────────
 
 describe('PATCH /api/providers (credential policy)', () => {
