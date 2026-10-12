@@ -286,9 +286,9 @@ export default async function MissionDetailPage({
   const workspaceDefaultPolicy = resolvePolicy(workspaceForPolicy ?? { gitConfig: null });
   const hasPolicyOverride = (mission as any).mergePolicy != null;
   const policyTierLabel: Record<string, string> = {
-    'auto-threshold': 'Auto',
-    'agent-review': 'Agent Review',
-    'human': 'Human Gate',
+    'auto-threshold': 'Auto-merge',
+    'agent-review': 'Agent reviews',
+    'human': 'You approve',
   };
   const policyLabel = policyTierLabel[effectivePolicy.tier] ?? effectivePolicy.tier;
 
@@ -759,7 +759,7 @@ export default async function MissionDetailPage({
             ? 'Task PRs merge into the integration branch. No PR to the target branch is open, so none of this work has shipped.'
             : missionIntegrationPr.state === 'merged'
               ? "This mission's work reached the target branch through one PR from its integration branch."
-              : "The mission's review gate: one PR from the integration branch into the target branch. The merge policy applies to this PR only."}
+              : "All of this mission's work ships in this one PR."}
         </span>
       </p>
       {missionIntegrationPr.prUrl && (
@@ -945,9 +945,9 @@ export default async function MissionDetailPage({
 
       {!['completed', 'archived'].includes(mission.status) && (
         <div>
-          <h3 className="mb-2 text-body font-semibold text-text-primary">Agent backend</h3>
+          <h3 className="mb-2 text-body font-semibold text-text-primary">Agent</h3>
           <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
-          <p className="text-[11px] text-text-muted mt-1.5">Default engine for this mission&apos;s tasks. Auto uses the agent or workspace default.</p>
+          <p className="text-[11px] text-text-muted mt-1.5">Used for this mission&apos;s tasks. Auto uses the workspace default.</p>
         </div>
       )}
 

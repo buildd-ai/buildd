@@ -613,7 +613,7 @@ export default function NewWorkspacePage() {
                 />
                 <div>
                   <span className="text-sm font-medium">Open</span>
-                  <p className="text-xs text-text-muted mt-0.5">Any account in this team can claim tasks</p>
+                  <p className="text-xs text-text-muted mt-0.5">Anyone in this team can run tasks here</p>
                 </div>
               </label>
               <label className={optionClass(accessMode === 'restricted')}>
@@ -627,7 +627,7 @@ export default function NewWorkspacePage() {
                 />
                 <div>
                   <span className="text-sm font-medium">Restricted</span>
-                  <p className="text-xs text-text-muted mt-0.5">Only accounts you link can claim tasks</p>
+                  <p className="text-xs text-text-muted mt-0.5">Only accounts you link can run tasks here</p>
                 </div>
               </label>
             </div>

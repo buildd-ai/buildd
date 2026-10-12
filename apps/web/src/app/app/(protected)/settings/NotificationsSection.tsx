@@ -29,7 +29,7 @@ interface NotificationsState {
 }
 
 const EVENT_LABELS: { key: NotifyEvent; label: string; hint: string }[] = [
-  { key: 'taskClaimed', label: 'Task claimed', hint: 'A worker picked up a task.' },
+  { key: 'taskClaimed', label: 'Task claimed', hint: 'A runner picked up a task.' },
   { key: 'taskCompleted', label: 'Task completed', hint: 'A task finished.' },
   { key: 'taskFailed', label: 'Task failed', hint: 'A task failed or is retrying.' },
   { key: 'credentialExpired', label: 'Credential expired', hint: 'A Claude/Codex credential is invalid or expired.' },

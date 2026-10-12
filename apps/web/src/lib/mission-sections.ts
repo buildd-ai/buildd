@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * The Missions list's sections: Needs you, In motion, Waiting, and the
  * collapsed On dev, criteria pending group. Pure rules over the shared
@@ -22,7 +23,7 @@ export const SECTION_META: Record<MissionSectionKey, { label: string; order: str
   needs: { label: 'Needs you', order: 'oldest first' },
   motion: { label: 'In motion', order: 'slipping first' },
   waiting: { label: 'Waiting', order: 'next to start first' },
-  landed: { label: 'On dev, criteria pending', order: 'oldest first' },
+  landed: { label: 'Landed, checks pending', order: 'oldest first' },
 };
 
 export const SECTION_KEYS: readonly MissionSectionKey[] = ['needs', 'motion', 'waiting', 'landed'];
