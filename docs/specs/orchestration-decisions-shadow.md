@@ -140,6 +140,10 @@ current manifests.
 - A team that has not opted in to the capability writes no ledger row. An
   opted-in team writes one content-free row per look: labels that are not
   short opaque tokens are stored hashed (`contentFreeLabel`).
+- Opting a team in (`teams.enabledDecisionShadows`) is a platform operator's
+  switch, written only through `PATCH /api/admin/teams/[id]/experiment-flags`;
+  team settings refuse it to every team role
+  (`docs/specs/team-permissions.md` "Platform operator").
 - At claim, only advisory deferrals are asked about: `advisory_manifest`,
   `open_pr_overlap` (every overlapping PR's worker ended) and `soft_overlap`.
   `classifyClaimHoldEligibility` refuses a forced claim, an unresolved lease
@@ -334,8 +338,9 @@ current manifests.
 - `apps/web/src/lib/orchestration-decision-stats-query.ts`:
   `fetchOrchestrationDecisionStats`, the DB-free evidence count (rows by
   decision group / UTC day / fallback reason, labelled vs unlabelled, opt-in
-  state) behind MCP `get_decision_stats`. The readout script
-  needs `DATABASE_URL`; this does not.
+  state) behind MCP `get_decision_stats` without `capability`; with it, the
+  raw ledger (`GET /api/decisions`) of the caller's own team. The readout
+  script needs `DATABASE_URL`; this does not.
 - Data model: `orchestration_decisions`, `orchestration_touch_labels`,
   `orchestration_manifest_predictions` in `packages/core/db/schema.ts`.
 

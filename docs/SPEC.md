@@ -391,7 +391,9 @@ per-request form, so server-side calls **structurally cannot** use a seat.
     `heartbeat_triage_looks` table and the experiment kind remain until a
     follow-up drops them. All default by billing
     model — a team key resolves → server-side, else the runner — with per-feature
-    overrides (`server` | `runner`) in `teams.inferenceFeatureModes`. buildd's own
+    overrides (`server` | `runner`) in `teams.inferenceFeatureModes`, set by the
+    platform operator only (`PATCH /api/admin/teams/[id]/experiment-flags`; team
+    settings refuse it, as they refuse `enabledDecisionShadows`). buildd's own
     CI visual QA judges on an OAuth seat via `claude-code-action`, not through this.
   - The old opt-in allowlist `teams.enabledInferenceCapabilities` is deprecated
     (nothing reads it).
@@ -638,6 +640,18 @@ OAuth MCP session) must also hold read or higher on the linked repo on GitHub to
 create tasks, read diff artifacts, chat over the workspace or recall its `code`
 corpus. A person with no linked GitHub account, or whom GitHub cannot confirm,
 is refused. API keys and runners are unaffected (`lib/member-repo-access.ts`).
+
+**Platform operator.** Team roles (`owner` / `admin` / `member`, the fixed
+registry in `apps/web/src/lib/permission-registry.ts`) never reach buildd's own
+platform machinery: experiments (create, change, start, pause, conclude, and
+operator-only ones), grading decisions, decision shadows,
+per-feature inference modes and chat retro. Those are gated on the platform
+operator: a signed-in person in `BUILDD_OPERATOR_USER_EMAILS`, the same person
+over OAuth, or an admin-level key of an account in
+`BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS` (`lib/admin/platform-operator-caller.ts`,
+`/api/admin/*`). Team members still read `visibility: 'team'` experiments and their own team's
+decision ledger.
+Full rule: `docs/specs/team-permissions.md` "Platform operator".
 
 ---
 
