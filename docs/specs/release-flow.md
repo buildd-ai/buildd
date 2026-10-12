@@ -2,12 +2,13 @@
 title: Release Flow
 status: active
 owner: max
-last_verified: 2026-07-18
+last_verified: 2026-10-12
 summary: The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
-keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult]
+keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult, release candidate, release/v]
+verified_by: [packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/release-executor.test.ts]
 assertions:
   - id: trigger-release-route
     type: route
@@ -27,6 +28,10 @@ assertions:
     type: symbol
     name: effectiveStrategy
     path: packages/core/release-strategy.ts
+  - id: classify-release-pr
+    type: symbol
+    name: classifyReleasePr
+    path: packages/core/release-candidate.ts
 supersedes: []
 ---
 # Release Flow
@@ -127,6 +132,73 @@ and URL.
 - Trigger route: `apps/web/src/app/api/releases/trigger/route.ts`
 - Status route: `apps/web/src/app/api/releases/status/route.ts`
 - GitHub API wrapper: `apps/web/src/lib/github.ts`
+
+---
+
+## Release candidate recognition
+
+**Capability statement**: buildd MUST treat a PR into `prodBranch` as the
+workspace's frozen release candidate only when the workspace declares one
+(`releaseConfig.candidate`) and the PR proves it was opened by the release
+workflow at the head it records. Recognition narrows review to what the
+candidate's PRs did not already cover; it never relaxes CI, branch protection,
+path escalation or the migration inspector.
+
+**Invariants**:
+- `releaseConfig.candidate = { branches, sourceBranch, authors }` has no
+  defaults. Absent, or with any field empty, no PR is a candidate. A branch
+  pattern is an exact ref or a path prefix ending in `*`; a pattern matching
+  `prodBranch` or `sourceBranch` is refused on save.
+- `ref` stays the ref `workflow_dispatch` runs on. It is never read as the
+  candidate branch or the candidate source.
+- A PR is a candidate only when all hold: base is `prodBranch`; head matches a
+  pattern; head repo is the base repo; author is in `authors`; the body carries
+  the `<!-- release-candidate {...} -->` metadata naming this branch,
+  `prodBranch` and `sourceBranch`; and the metadata's `candidateSha` is the PR's
+  current head. A push that did not go through the workflow's explicit
+  amendment leaves `candidateSha` stale, and the PR reviews in full.
+- The legacy `releaseBranch` → `prodBranch` PR is still recognised by refs
+  alone.
+- Composition review of a candidate looks up constituent PRs merged into
+  `sourceBranch` (never into the candidate branch), and proves each landed
+  patch equals its approved reviewed head. The single release-only commit
+  (version bump + CHANGELOG) is a release artifact. Anything else (a
+  release-only change, an unapproved PR, a direct commit) is a novel delta
+  that gets its own review.
+- A candidate workspace's releases are `gated`: a successful release workflow
+  run moves its row to `pending_external` (the PR is open), never to
+  `deploying`. Only a merge into `prodBranch` whose head contains the row's sha
+  advances it, re-pointed at the merge commit, and only deploy verification of
+  that sha makes it `healthy`. A row for a `sourceBranch` commit that landed
+  after the cut is not contained by the candidate and stays in flight.
+- The stale-row heal searches merged PRs into `prodBranch` whose head is a
+  candidate branch (or the legacy head), since a candidate's head is not
+  `ref`.
+
+**Acceptance criteria**:
+- AC-C1: GIVEN `candidate.branches = ['release/v*']` WHEN `github-actions[bot]`
+  opens `release/v1.2.3` → `main` with metadata naming its head THEN
+  `classifyReleasePr` returns `kind: 'candidate'` with constituent base
+  `sourceBranch`.
+- AC-C2: GIVEN the same PR opened by another account, from a fork, without
+  metadata, or after a push moved its head THEN it is `kind: 'none'` and gets
+  the full review and the aggregate size cap.
+- AC-C3: GIVEN a candidate whose every commit is an approved dev PR plus the
+  version commit THEN its head is covered by composition and no aggregate
+  reviewer is dispatched; a migration still meets the migration inspector at
+  merge.
+
+**Code surface**:
+- Policy and classifier: `packages/core/release-candidate.ts` —
+  `classifyReleasePr()`, `releaseCandidatePolicy()`, `hasReleasePrShape()`
+- Composition: `apps/web/src/lib/workflow/review-composition.ts` —
+  `compositionConstituentBase()`; write site `review-effects.ts`
+- Merge gate: `apps/web/src/lib/auto-merge.ts`
+- Tracking: `packages/core/release-archetype.ts`,
+  `apps/web/src/lib/release/gated-merge.ts`,
+  `apps/web/src/app/api/cron/release-health-check/route.ts`
+- Config: `apps/web/src/app/api/workspaces/[id]/config/route.ts`,
+  workspace settings `ReleaseSection.tsx`
 
 ---
 

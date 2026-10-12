@@ -234,6 +234,8 @@
     "./spec-discrepancy-ledger": "./spec-discrepancy-ledger.ts",
     "./spec-doc-fix": "./spec-doc-fix.ts",
     "./release-strategy": "./release-strategy.ts",
+    "./release-candidate": "./release-candidate.ts",
+    "./release-config-shape": "./release-config-shape.ts",
     "./branch-strategy": "./branch-strategy.ts",
     "./knowledge-store": "./knowledge-store/index.ts",
     "./knowledge-store/edge-builder": "./knowledge-store/edge-builder.ts",

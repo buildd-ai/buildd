@@ -8,6 +8,7 @@ import { Select } from '@/components/ui/Select';
 import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import type { StateKey } from '@/components/ui/states';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
+import { buildReleaseConfigPayload } from './release-config-payload';
 
 type StrategyOption = ReleaseStrategy | 'none';
 
@@ -141,6 +142,10 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
   const [trigger, setTrigger] = useState<ReleaseTrigger>(
     effectiveTrigger ?? resolveReleaseTrigger(cfg)
   );
+  const [candidateEnabled, setCandidateEnabled] = useState(!!cfg?.candidate);
+  const [candidateBranches, setCandidateBranches] = useState((cfg?.candidate?.branches ?? []).join(', '));
+  const [candidateSource, setCandidateSource] = useState(cfg?.candidate?.sourceBranch ?? '');
+  const [candidateAuthors, setCandidateAuthors] = useState((cfg?.candidate?.authors ?? []).join(', '));
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -211,28 +216,10 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
     setSaved(false);
     setSaveError(null);
 
-    let releaseConfig: Record<string, unknown>;
-    if (strategy === 'none') {
-      releaseConfig = { strategy: 'none' }; // API treats 'none' as enabled: false
-    } else if (strategy === 'branch_merge') {
-      releaseConfig = {
-        enabled: true,
-        strategy: 'branch_merge',
-        prodBranch: prodBranch.trim() || 'main',
-        ref: ref.trim() || 'dev',
-        trigger,
-      };
-    } else if (strategy === 'workflow_dispatch') {
-      releaseConfig = {
-        enabled: true,
-        strategy: 'workflow_dispatch',
-        workflowFile: workflowFile.trim() || 'release.yml',
-        ref: ref.trim() || 'dev',
-        trigger,
-      };
-    } else {
-      releaseConfig = { enabled: false };
-    }
+    const releaseConfig = buildReleaseConfigPayload(cfg, {
+      strategy, prodBranch, ref, workflowFile, trigger,
+      candidateEnabled, candidateBranches, candidateSource, candidateAuthors,
+    });
 
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/config`, {
@@ -338,6 +325,74 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
                     />
                   </div>
+                  <div>
+                    <label className="block text-sm text-text-primary mb-1">Production (e.g. main)</label>
+                    <input
+                      type="text"
+                      value={prodBranch}
+                      onChange={(e) => setProdBranch(e.target.value)}
+                      placeholder="main"
+                      className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Frozen release candidates */}
+              {isReleaseEnabled && (
+                <div data-testid="release-candidate-settings">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={candidateEnabled}
+                      onChange={(e) => setCandidateEnabled(e.target.checked)}
+                      className="mt-0.5 shrink-0"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm text-text-primary">Release candidates</span>
+                      <span className="block text-xs text-text-muted mt-0.5">
+                        Versioned release PRs from your release workflow skip re-review of already-reviewed changes.
+                        Shipped once production runs the merge.
+                      </span>
+                    </span>
+                  </label>
+                  {candidateEnabled && (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
+                      <div>
+                        <label className="block text-sm text-text-primary mb-1">Candidate branches</label>
+                        <input
+                          type="text"
+                          value={candidateBranches}
+                          onChange={(e) => setCandidateBranches(e.target.value)}
+                          placeholder="release/v*"
+                          className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-text-primary mb-1">Cut from</label>
+                        <input
+                          type="text"
+                          value={candidateSource}
+                          onChange={(e) => setCandidateSource(e.target.value)}
+                          placeholder="dev"
+                          className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-text-primary mb-1">Opened by</label>
+                        <input
+                          type="text"
+                          value={candidateAuthors}
+                          onChange={(e) => setCandidateAuthors(e.target.value)}
+                          placeholder="github-actions[bot]"
+                          className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                        />
+                      </div>
+                      <p className="sm:col-span-3 text-xs text-text-muted">
+                        A PR from any other account, or one pushed to after it was cut, is reviewed like any other PR.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -395,7 +450,15 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   ? [
                       { label: 'Workflow file', value: <span className="font-mono">{workflowFile}</span> },
                       { label: 'Ref', value: <span className="font-mono">{ref}</span> },
+                      { label: 'Production', value: <span className="font-mono">{prodBranch}</span> },
                     ]
+                  : []),
+                ...(isReleaseEnabled && cfg?.candidate
+                  ? [{
+                      label: 'Release candidates',
+                      value: <span className="font-mono">{cfg.candidate.branches.join(', ')}</span>,
+                      note: `Cut from ${cfg.candidate.sourceBranch}, opened by ${cfg.candidate.authors.join(', ')}`,
+                    }]
                   : []),
                 ...(isReleaseEnabled
                   ? [{

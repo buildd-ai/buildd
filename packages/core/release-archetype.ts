@@ -1,4 +1,5 @@
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from './db/schema';
+import { releaseCandidatePolicy } from './release-candidate';
 
 export type ReleaseArchetype = 'gated' | 'continuous' | 'store' | 'package' | 'none';
 
@@ -14,6 +15,12 @@ export function detectArchetype(workspace: ArchetypeInput): ReleaseArchetype {
   // none: coordination/unconfigured workspaces
   if (name === '__coordination' || name === 'My Workspace') return 'none';
   if ((!releaseConfig || releaseConfig.enabled === false) && gitConfig?.requiresPR !== false) return 'none';
+
+  // gated: a frozen-candidate workspace always ships through a reviewed
+  // candidate PR into prodBranch, whatever its default branch or PR setting.
+  // Its release workflow succeeding has only opened that PR; the merge is the
+  // deploy signal (release/subscribers.ts, release-executor.ts).
+  if (releaseCandidatePolicy(releaseConfig)) return 'gated';
 
   // continuous: PR not required, or release points to the same branch as default
   const defaultBranch = gitConfig?.defaultBranch ?? 'main';
