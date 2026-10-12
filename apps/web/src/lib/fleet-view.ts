@@ -14,6 +14,7 @@ import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
 import { taskDisplayLabel } from '@buildd/core/task-label';
+import { taskShortName } from './task-title';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { runEndReason } from './fleet-view-end-reason';
 
@@ -216,7 +217,7 @@ export function buildFleetSnapshot(
       live++;
       slot.worker = {
         workerId: w.id, taskId: t?.id ?? null, missionId: t?.missionId ?? null,
-        label, rest, title: t?.title ?? null, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
+        label, rest, name: t ? taskShortName(t) : undefined, title: t?.title ?? null, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
         status: w.status, phase: w.phase ?? null,
         startedAt: new Date(iv.start).toISOString(),
         question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Needs input' : null,

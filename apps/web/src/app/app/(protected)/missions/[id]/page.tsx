@@ -50,7 +50,7 @@ import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import { MissionNotesSheet } from './MissionFeed';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
-import MissionLayoutShell, { MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
+import MissionLayoutShell, { MISSION_HEADER_ACTION, MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
 import MissionOverview from './MissionOverview';
@@ -1116,11 +1116,27 @@ export default async function MissionDetailPage({
     />
   );
   // Chat is how you ask about work: opens a conversation with this mission docked.
-  const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} />;
+  const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} className={MISSION_HEADER_ACTION} />;
   // The mission's visual review as a mission command (never the task composer),
   // started from ⋯ on any open mission with a workspace to run it in; once an
   // audit exists the footer's Screens row is where it is reviewed.
   const visualReviewEntry = !isTerminal && mission.workspaceId ? { initialOpen: visualReviewParam === '1' } : null;
+  const completionFailingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
+  const completionFailingIndex = completionFailingState ? completionFailingState.index : null;
+  const completionDecision = isTerminal ? null : {
+    goalCriteria,
+    failingCriterionIndex: completionFailingIndex,
+    fileWorkHref: buildFileWorkHref({
+      missionId: id,
+      missionTitle: mission.title,
+      criterion: completionFailingIndex != null ? goalCriteria[completionFailingIndex] ?? null : null,
+      evidence: completionFailingState?.evidence ?? null,
+    }),
+    criteriaUnmet: goalCriteria.length > 0 && goalCriteriaStateFull?.overall !== 'pass',
+    surfaceAudit: missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true
+      ? { paths: missionAnswer.waitingOn.surfaceAuditPaths ?? [], executorLocal: (mission as any).executor === 'local' }
+      : null,
+  };
   const overflowMenu = (
     <MissionOverflowMenu
       missionId={id}
@@ -1133,6 +1149,7 @@ export default async function MissionDetailPage({
       isHeld={isHeld}
       displayState={displayState}
       hasPrimaryAction={hasPrimaryAction}
+      completionDecision={completionDecision}
       executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
       visualReview={visualReviewEntry}
       settings={settings}
