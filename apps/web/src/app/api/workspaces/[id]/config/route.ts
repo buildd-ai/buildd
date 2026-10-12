@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { releaseCandidateConfigError } from '@buildd/core/release-config-shape';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type ReleaseTrigger, type ReleaseStrategy, type BranchStrategy } from '@buildd/core/db/schema';
@@ -88,6 +89,23 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
         }
     }
 
+    if (r.releaseBranch !== undefined && typeof r.releaseBranch !== 'string') {
+        return { ok: false, error: 'releaseBranch must be a string', status: 422 };
+    }
+    let candidate: WorkspaceReleaseConfig['candidate'];
+    if (r.candidate !== undefined && r.candidate !== null) {
+        const c = r.candidate as Record<string, unknown>;
+        const strings = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+        if (typeof c !== 'object' || !strings(c.branches) || !strings(c.authors) || typeof c.sourceBranch !== 'string') {
+            return { ok: false, error: 'candidate must be { branches: string[], sourceBranch: string, authors: string[] }', status: 422 };
+        }
+        candidate = {
+            branches: (c.branches as string[]).map((b) => b.trim()).filter(Boolean),
+            sourceBranch: c.sourceBranch.trim(),
+            authors: (c.authors as string[]).map((a) => a.trim()).filter(Boolean),
+        };
+    }
+
     const config: WorkspaceReleaseConfig = {
         enabled: Boolean(r.enabled ?? true),
         ...(strategy ? { strategy } : {}),
@@ -98,6 +116,9 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
         ...(r.inputs && typeof r.inputs === 'object' ? { inputs: r.inputs as Record<string, string> } : {}),
         // branch_merge
         ...(typeof r.prodBranch === 'string' ? { prodBranch: r.prodBranch } : {}),
+        ...(typeof r.releaseBranch === 'string' && r.releaseBranch.trim() ? { releaseBranch: r.releaseBranch.trim() } : {}),
+        // frozen release candidates (any strategy; see @buildd/core/release-config-shape)
+        ...(candidate ? { candidate } : {}),
         ...(r.deployTarget && (r.deployTarget as any).type === 'vercel'
             ? { deployTarget: { type: 'vercel', projectId: (r.deployTarget as any).projectId, teamId: (r.deployTarget as any).teamId } }
             : {}),
@@ -106,6 +127,9 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
         // script
         ...(typeof r.command === 'string' ? { command: r.command } : {}),
     };
+
+    const candidateError = releaseCandidateConfigError(config);
+    if (candidateError) return { ok: false, error: candidateError, status: 422 };
 
     return { ok: true, config };
 }

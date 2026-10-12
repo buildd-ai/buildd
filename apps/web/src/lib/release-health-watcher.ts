@@ -172,7 +172,7 @@ async function fetchDeployedIdentity(verificationUrl: string): Promise<DeployedI
   }
 }
 
-async function fetchDeployedSha(verificationUrl: string): Promise<string | null> {
+export async function fetchDeployedSha(verificationUrl: string): Promise<string | null> {
   return (await fetchDeployedIdentity(verificationUrl))?.sha ?? null;
 }
 

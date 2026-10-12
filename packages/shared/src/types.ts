@@ -1607,6 +1607,7 @@ export type ClaimTaskExclusionCode =
   | 'deferred'
   | 'active_worker'
   | 'task_held'
+  | 'task_reserved'
   | 'mission_held'
   | 'mission_local'
   | 'deps_blocked'

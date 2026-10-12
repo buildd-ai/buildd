@@ -940,6 +940,45 @@ describe('PATCH /api/workspaces/[id]/config', () => {
     expect(data.releaseConfig.ref).toBe('dev');
   });
 
+  const patchRelease = (releaseConfig: unknown) => PATCH(new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+    method: 'PATCH',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ releaseConfig }),
+  }), { params: mockParams });
+  const candidateRelease = (candidate: unknown) => ({
+    enabled: true, strategy: 'workflow_dispatch', workflowFile: 'release.yml', ref: 'dev', prodBranch: 'main', candidate,
+  });
+
+  it('saves a frozen release candidate policy alongside workflow_dispatch, keeping ref and prodBranch', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await patchRelease(candidateRelease({ branches: [' release/v* '], sourceBranch: 'dev', authors: ['github-actions[bot]'] }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.releaseConfig.candidate).toEqual({ branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] });
+    expect(data.releaseConfig.ref).toBe('dev');
+    expect(data.releaseConfig.prodBranch).toBe('main');
+  });
+
+  it('keeps releaseBranch on save (it was silently dropped before)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await patchRelease({ enabled: true, strategy: 'branch_merge', prodBranch: 'main', releaseBranch: 'dev' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).releaseConfig.releaseBranch).toBe('dev');
+  });
+
+  it('refuses a candidate policy that would make ordinary PRs releases', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    for (const candidate of [
+      { branches: ['*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+      { branches: ['release/v*'], sourceBranch: 'dev', authors: [] },
+      { branches: ['dev'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+      { branches: 'release/v*', sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+    ]) {
+      const res = await patchRelease(candidateRelease(candidate));
+      expect(res.status).toBe(422);
+    }
+  });
+
   it('rejects invalid strategy', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
 

@@ -359,5 +359,11 @@
     "tag": "0319_good_phil_sheldon",
     "when": 1791772712966,
     "hash": "56e7c6ab230a080b7a9547459956145b1373a9347985f1d852fb24be7e98b7e7"
+  },
+  {
+    "name": "20261012130131_condemned_joystick",
+    "tag": "0320_condemned_joystick",
+    "when": 1791810091537,
+    "hash": "23c9b07bc74bfaa27399cb2c3f1b5e0daa15d42724293e4089c491b9aa184ded"
   }
 ]

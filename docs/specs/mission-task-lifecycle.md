@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-10-01
+last_verified: 2026-10-12
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -363,6 +363,16 @@ stalled a whole workspace.
   `continue` plus a `deferrals` counter, retried next poll — never as a stored
   `dependsOn` edge, which waits for `completed` + PR `merged`.
 
+- **CG-7 (a reservation is a lease, not a lock)**: a session MAY reserve one
+  waiting task (`update_task reserve`, or `create_task claim`, which files it
+  already reserved). While the reservation is live, runners and every other
+  account's claim MUST skip the task, and the reserving account's own explicit
+  `claim_task {taskId}` passes. It MUST lapse by itself at `expiresAt` with no
+  sweep, MUST be cleared when the task is claimed (so a re-queue is not held from
+  runners), and is never lifted by an admin force claim. It is a claim exclusion
+  (`task_reserved`), not a coordination `WaitingKind`: the task page does not
+  yet name it.
+
 **Gate inventory** (`gateReason` → class):
 
 | gateReason | Clears by | Class |
@@ -371,6 +381,8 @@ stalled a whole workspace.
 | `dep_missing` / `dep_failed` / `unmerged_dep_pr` | upstream terminal state | policy, forceable |
 | `mission_held` | arming the mission | policy, forceable |
 | `mission_local` | a verified interactive session's explicit claim, or `executor: 'runner'` | policy, forceable |
+| `task_held` | a person resumes the task (`context.heldBy`) | hold, never forced |
+| `task_reserved` | the reserving session claims it, releases it, or the reservation lapses (`context.reservedBy`, 20 minutes, renewed by that session) | hold, never forced |
 | `mission_budget_exhausted` | raising the mission budget | policy, forceable |
 | `subject_dead` | never (terminal) | policy, forceable |¹
 | `workspace_cap_reached` | drain | policy, forceable |

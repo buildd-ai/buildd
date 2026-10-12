@@ -2,13 +2,13 @@
 title: Living Specs
 status: draft
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 summary: Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, apps/web/src/lib/specs/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, apps/web/src/lib/specs/check-lines.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -229,15 +229,36 @@ later ones are proposed (D-4).
   that is not approved, or a spec in another workspace refuses the filing
   (409/409/404) and nothing is inserted. `commitSha` is kept when it is a SHA.
   A task naming no spec, or only a repo document (`specPath`), is untouched.
+- Work runs on the revision approved when it starts: the task's first claim
+  re-pins it to the revision approved then (`apps/web/src/lib/specs/claim-pin.ts`,
+  `pinnedAt: 'claim'`, `repinnedFrom`). After that the pin never moves: a task
+  a worker has run, a retry attempt, a pin taken at a claim, and a revision
+  the filer named explicitly all keep theirs.
+- A task names the criteria it answers for in `context.specSource.criteria`
+  (`apps/web/src/lib/specs/scope.ts`): 1 to 50 `R-n`/`AC-n` ids of the pinned
+  revision, normalized (`AC-03` is `AC-3`) and de-duplicated. An id the
+  revision lacks, a decision or invariant, an empty list or a non-list is a
+  400 naming the revision's criteria, and nothing is inserted. Left out, the
+  task answers for every criterion. The claim re-pin moves a scoped task only
+  when the new revision still has every id in its scope; otherwise the task
+  keeps the revision those ids came from, and the claim log says which id is
+  gone.
 - `specSource` grew additively: `{specPath, planningTaskId}` (repo document,
   approvePlan) and `{specId, specRevisionId, revision, contentHash, commitSha}`
-  (Living Spec pin). Children of an approved plan inherit the planning task's
+  (Living Spec pin), plus `criteria`, `pinnedAt`, `repinnedFrom` and
+  `explicit`. Children of an approved plan inherit the planning task's
   pin.
 - The reviewer reads the pinned content, never the PR's copy: a Living Spec
   pin reads exactly that revision, hash-checked; a repo document pinned to
   `commitSha` is read at that commit. A spec the task names that cannot be
   read (missing, hash mismatch, fetch failure) is an explicit finding: the
-  reviewer is told conformance is unverified and to escalate.
+  reviewer is told conformance is unverified and to escalate. A scoped task's
+  reviewer is told which criteria the task answers for, and that the others
+  are context, not work it owes.
+- The task page names the spec, links its page (§9) and shows the pinned
+  revision, a newer approved revision when there is one, and the governed
+  outcome (§7) of each criterion the task answers for, failures first, at
+  most 8 with the rest counted (`apps/web/src/components/SpecSourceBlock.tsx`).
 
 **Acceptance criteria**:
 - AC-3: GIVEN revision N approved and a task filed against the spec WHEN an
@@ -268,11 +289,28 @@ later ones are proposed (D-4).
 - AC-15: GIVEN a person who switches between the two views WHEN they press
   Approve THEN the one request sent is the token the page was opened with,
   naming the same revision (`apps/web/src/components/SpecApprovalRequest.dom.test.tsx`).
+- AC-28: GIVEN a task filed while N is approved and N+1 approved before its
+  first claim WHEN it is claimed THEN it is pinned to N+1 with its hash; GIVEN
+  it scoped to an id N+1 no longer has THEN it keeps N
+  (`apps/web/tests/db/spec-pin-at-claim.test.ts`).
+- AC-29: GIVEN a task scoped to AC-1 of a revision with R-1 and AC-1 WHEN AC-1
+  passes on the current head THEN the outcome reads verified, and a verdict on
+  R-1 is a 400; GIVEN a scope naming an id the revision lacks THEN the filing
+  is a 400 naming the revision's criteria
+  (`apps/web/tests/db/spec-outcome-verification.test.ts`,
+  `apps/web/src/lib/specs/scope.test.ts`).
+- AC-30: GIVEN a pinned task WHEN its page renders THEN it names and links
+  the spec, says when a newer revision is approved, and lists each criterion
+  it answers for with its verdict, failures first; a pass on an older commit
+  reads as such, not as a pass (`apps/web/src/components/SpecSourceBlock.test.tsx`).
 
 **Code surface**:
 - `apps/web/src/lib/specs/approval.ts` — `specApprover`, `submitSpecRevision`, `approveSpecRevision`, `confirmSpecApproval`
 - `apps/web/src/lib/specs/approval-request.ts` — `signSpecApprovalRequest`, `verifySpecApprovalRequest`
 - `apps/web/src/lib/specs/pin.ts` — `pinSpecSource`, `readPinnedSpecRevision`
+- `apps/web/src/lib/specs/claim-pin.ts` — `repinSpecAtClaim`
+- `apps/web/src/lib/specs/scope.ts` — `checkCriteriaScope`, `inScope`, `scopeOf`
+- `apps/web/src/lib/specs/task-view.ts` — `loadLivingSpecView`; `apps/web/src/components/SpecSourceBlock.tsx` — `SpecSourceBlock`
 - `apps/web/src/lib/reviewer.ts` — `renderSpecConformanceGuidance`
 - `apps/web/src/lib/specs/approval-view.ts` — `approvalRequestView`
 - `apps/web/src/lib/specs/diff.ts` — `diffSpecBodies`, `diffSpecHunks`, `diffSpecRevisions`
@@ -280,10 +318,6 @@ later ones are proposed (D-4).
 - `apps/web/src/components/SpecDiffView.tsx` — `SpecDiffView`
 
 **Not yet**:
-- The pin is taken when a task is filed, not when it is claimed: a task filed
-  under N and claimed after N+1 is approved still runs on N, by design.
-- The task page shows the pinned revision as text; it does not link to the
-  spec page yet (§9).
 - No horizontal overflow at 320px is held by the wrapping the DOM test
   asserts and was measured on screenshots at 320, 390 and 1280px; no CI test
   renders the page at a real width yet.
@@ -293,8 +327,8 @@ later ones are proposed (D-4).
 ## 7. Verified outcomes
 
 **Capability statement**: A task pinned to an approved revision MUST read
-verified only when its outcome passes every criterion of that revision on
-the current PR head; a violated criterion MUST read fail, and anything not
+verified only when its outcome passes every criterion it answers for (§6:
+its scope, else all of the revision's) on the current PR head; a violated criterion MUST read fail, and anything not
 shown MUST read unverified, never pass (D-5). This is separate from whether
 the task completed or its PR merged.
 
@@ -305,7 +339,8 @@ the task completed or its PR merged.
   `apps/web/src/lib/specs/requirements.ts` `specCriteria`). Decisions (`D-n`)
   and invariants (`I-n`) are context, not criteria. They are read from the
   pinned revision's body, so a later revision never changes what a running
-  task is judged against.
+  task is judged against, and narrowed to the task's scope when it has one; a
+  verdict on a criterion outside the scope is a 400.
 - A verdict is one row in `spec_outcome_verdicts`: the task, the pinned
   revision, the criterion, `pass | fail | inconclusive | unsupported` (the
   verification-check vocabulary), the PR head it judged, and its evidence:
@@ -330,8 +365,17 @@ the task completed or its PR merged.
 - The reviewer of a pinned task is given the revision's criteria and asked to
   record one verdict each at the head it reviews (`manage_specs action=verdict`).
   Its review verdict still alone decides the merge.
+- A criterion with a check line under it (`check: <command>`,
+  `apps/web/src/lib/specs/check-lines.ts`) is verified by running that
+  command at the PR head (`apps/web/src/lib/specs/criterion-checks.ts`): one
+  run per task, revision, criterion and head, filed as a verification task a
+  runner executes. The runner's exit code is the verdict (0 pass, nonzero
+  fail, a failed checkout inconclusive), recorded as `check:<task>`; an agent
+  cannot write it. Only criteria in the task's scope are run. A criterion
+  with no check stays graded by the reviewer or a person.
 - `get_task` shows `Governed outcome` beside `Status` for a pinned task;
-  `manage_specs action=outcome` lists each criterion.
+  `manage_specs action=outcome` lists each criterion; the task page shows it
+  (§6).
 - Two criteria of an approved revision that disagree are recorded as a
   `conflict` discrepancy (`POST /api/specs/[id]/conflicts`,
   `manage_specs action=conflict`): `spec_discrepancies` with
@@ -352,15 +396,16 @@ the task completed or its PR merged.
 
 **Code surface**:
 - `apps/web/src/lib/specs/outcome.ts` — `recordSpecVerdict`, `readGovernedOutcome`, `recordSpecConflict`
+- `apps/web/src/lib/specs/criterion-checks.ts` — `dispatchCriterionChecks`, `handleCriterionCheckOutcome`; `apps/web/src/lib/specs/check-lines.ts` — `criterionChecks`
 - `apps/web/src/app/api/specs/outcomes/[taskId]/route.ts` — `GET`, `POST`
 - `apps/web/src/app/api/specs/[specId]/conflicts/route.ts` — `POST`
 - `packages/core/verification-check.ts` — `foldGovernedOutcome`
 
 **Not yet**:
-- Verdicts come from the reviewer agent or a person; no executor yet runs a
-  criterion as a mechanical check.
-- The dashboard does not show the governed outcome yet (U1); it is in
-  `get_task` and the API.
+- A criterion with no check line is graded by the reviewer's judgement, with
+  no fixed rubric beyond the verdict vocabulary.
+- Nothing reads a spec's conformance across all its tasks, and no mission
+  goal criterion names a spec's criteria.
 
 ## 8. Approved specs in knowledge
 
@@ -517,7 +562,6 @@ same page, without an agent in between.
 - `apps/web/src/lib/specs/repo-source.ts` — `linkedRepoFullName`
 
 **Not yet**:
-- The task page names the pinned revision but does not link to the spec page.
 - Reading the rendered body is not recorded in the read ledger, matching
   `GET /api/specs/[id]`, which does not record either; diffs are recorded.
 - There is no list across a team's workspaces; each workspace has its own.

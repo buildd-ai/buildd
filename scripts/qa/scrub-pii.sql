@@ -304,6 +304,8 @@ DELETE FROM gate_events;
 DELETE FROM failure_incidents;
 -- Who deployed what with which credential reference: an audit trail, not app state.
 DELETE FROM deployment_audit_events;
+-- Who pressed each release-flow button, with mission titles and refusal text: an audit trail.
+DELETE FROM release_flow_steps;
 -- Writes made through the platform-owner API: an audit trail, not app state.
 DELETE FROM platform_admin_audit_events;
 -- The platform owner's per-feature acting switch: an owner note in `reason`;

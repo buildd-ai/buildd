@@ -1,6 +1,7 @@
 name: Post-merge Integration
 
-# Runs the API integration tests on every push to dev, after merge.
+# Runs the API integration tests after merge to dev, for any push that carries
+# server code no earlier run verified.
 #
 # Before this, integration ran only on PRs into main whose head was not dev
 # (hotfixes), so nothing exercised a live server on the dev→main path: a
@@ -17,22 +18,32 @@ name: Post-merge Integration
 #     `postMergeIntegration` in release_status (apps/web/src/lib/release/
 #     dispatch.ts, matched by the job name prefix "post-merge integration").
 #
-# The job body is integration.yml, shared with the hotfix-PR path, and it
-# serialises both on the one test machine.
+# The job body is integration.yml, shared with the hotfix-PR and release-
+# candidate paths, and it serialises all of them on the one test machine.
+#
+# Incremental, not "everything ahead of main": the `changes` job tests only
+# what changed since the newest dev ancestor whose integration run actually
+# passed (scripts/ci/post-merge-coverage.ts). A docs push on top of a tested
+# server change no longer re-requests the machine; a server change whose run
+# failed, was cancelled or was superseded stays in the diff until one passes.
+# A skipped run is reported as skipped, never as passing.
 
 on:
   push:
     branches: [dev]
   workflow_dispatch:
 
-# Newest dev head wins: a queued run is replaced by a newer push, a running one
-# is left to finish so its SHA still gets a verdict.
+# One post-merge run at a time; GitHub keeps one pending run per group, so a
+# burst of pushes coalesces into the newest. A running one is left to finish
+# so its SHA still gets a verdict.
 concurrency:
   group: post-merge-integration
   cancel-in-progress: false
 
 permissions:
   contents: read
+  # Reads this workflow's earlier runs and their jobs: that is the evidence.
+  actions: read
 
 jobs:
   changes:
@@ -42,31 +53,33 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       api: ${{ steps.filter.outputs.api }}
+      runner: ${{ steps.filter.outputs.runner }}
+      reason: ${{ steps.filter.outputs.reason }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Detect server changes that a release would ship
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Decide coverage from the last verified dev run
         id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Against main, not the previous push: the question is whether the
-          # release PR (dev → main) carries server code, and a docs-only push on
-          # top of an untested server change must not leave the head untested.
-          git fetch --quiet origin main
-          CHANGED=$(git diff --name-only origin/main...HEAD)
-          # The server's start script and the job body count too: a change to
-          # either is exactly what this job has to exercise.
-          API=$(echo "$CHANGED" | grep -qE '^(apps/web/src/|apps/web/package\.json$|packages/core/|packages/shared/|\.github/workflows/(post-merge-)?integration\.yml$)' && echo "true" || echo "false")
-          # A manual run always tests: otherwise dispatching it on a branch
-          # right after a release (dev == main) reports green having run nothing.
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then API=true; fi
-          echo "api=$API" >> "$GITHUB_OUTPUT"
-          echo "::notice::server changes ahead of main: $API"
+          # Fail closed: if the decision itself errors, test everything.
+          if ! bun run scripts/ci/post-merge-coverage.ts; then
+            echo "::warning::coverage decision failed; testing API and runner"
+            printf 'api=true\nrunner=true\nreason=error\n' >> "$GITHUB_OUTPUT"
+          fi
 
   integration:
     # Must start with "post-merge integration": the release gate matches the
-    # check-run name ("<this name> / integration") by that prefix.
+    # check-run name ("<this name> / integration") by that prefix, and
+    # scripts/ci/post-merge-coverage.ts reads earlier runs by that exact name.
     name: post-merge integration
     needs: changes
     if: needs.changes.outputs.api == 'true'
@@ -74,7 +87,8 @@ jobs:
     secrets: inherit
     with:
       api: true
-      runner: false
+      runner: ${{ needs.changes.outputs.runner == 'true' }}
       e2e: false
       neon_branch: ci/post-merge-dev
       checkout_sha: ${{ github.sha }}
+      source: ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'post-merge-dev' }}
