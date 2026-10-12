@@ -43,7 +43,7 @@ describe('InteractiveSessions', () => {
     expect(html).toContain('Claude Code');
     expect(html).toContain('Working');
     expect(html).toContain('href="/app/tasks/t1"');
-    expect(html).toContain('Buildd can release its slot, not close it.');
+    expect(html).toContain('buildd can release its slot, not close it.');
     // Runtime is a muted badge, never a task-state colour.
     expect(html).toContain('data-tone="muted"');
     expect(html).not.toContain('—');

@@ -25,7 +25,7 @@ export default async function SpecApprovePage({
   }
   const view = await approvalRequestView(user.id, specId, request ?? null);
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-6 md:py-10">
+    <main className="mx-auto w-full max-w-3xl px-4 py-6 md:py-10">
       <SpecApprovalRequest specId={specId} token={request ?? ''} view={view} />
     </main>
   );

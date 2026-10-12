@@ -43,6 +43,8 @@ import ExecutorSection from './ExecutorSection';
 import RunnerSizeSection from './RunnerSizeSection';
 import WorkspaceModels from './WorkspaceModels';
 import ConcurrencySection from './ConcurrencySection';
+import PauseStartsSection from './PauseStartsSection';
+import { isPaused } from '@/lib/workspace-pause';
 import WorkTrackerSection from './WorkTrackerSection';
 import DeleteWorkspaceButton from './DeleteWorkspaceButton';
 
@@ -86,6 +88,7 @@ export default async function WorkspaceSettingsPage({
       workTrackerConfig: true,
       webhookConfig: true,
       maxConcurrentTasks: true,
+      newStartsPausedUntil: true,
     },
   });
   if (!workspace) notFound();
@@ -297,6 +300,12 @@ export default async function WorkspaceSettingsPage({
           <ConcurrencySection
             workspaceId={workspace.id}
             initialMaxConcurrentTasks={workspace.maxConcurrentTasks}
+            canEdit={canManageSettings}
+          />
+          <PauseStartsSection
+            workspaceId={workspace.id}
+            pausedUntil={isPaused(workspace.newStartsPausedUntil) ? new Date(workspace.newStartsPausedUntil!).toISOString() : null}
+            canEdit={canManageSettings}
           />
           <p className="py-4 last:pb-0 text-xs text-text-secondary" data-testid="workspace-runners-pointer">
             Runners and their sign-ins are set up in{' '}

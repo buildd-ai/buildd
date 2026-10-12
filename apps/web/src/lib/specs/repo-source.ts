@@ -61,6 +61,11 @@ async function linkedRepo(workspaceId: string): Promise<{ fullName: string; inst
   return { fullName: id.fullName, installationId: id.installationId };
 }
 
+/** The `owner/name` of the workspace's linked repo, for links to a cited file; null without one. */
+export async function linkedRepoFullName(workspaceId: string): Promise<string | null> {
+  return (await linkedRepo(workspaceId))?.fullName ?? null;
+}
+
 export async function readRepoFileAtCommit(workspaceId: string, path: string, commitSha: string): Promise<RepoFileResult> {
   const repo = await linkedRepo(workspaceId);
   if (!repo) return { ok: false, reason: 'no_repo', message: 'this workspace has no GitHub repo linked through the GitHub App' };

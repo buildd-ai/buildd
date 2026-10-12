@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * Home's fleet panel model: runners × slots, each slot's live worker and its
  * day on a lane timeline. Pure and client-safe — `lib/home-fleet.ts` loads the
@@ -14,6 +15,7 @@ import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
 import { taskDisplayLabel } from '@buildd/core/task-label';
+import { taskShortName } from './task-title';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { runEndReason } from './fleet-view-end-reason';
 
@@ -216,7 +218,7 @@ export function buildFleetSnapshot(
       live++;
       slot.worker = {
         workerId: w.id, taskId: t?.id ?? null, missionId: t?.missionId ?? null,
-        label, rest, title: t?.title ?? null, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
+        label, rest, name: t ? taskShortName(t) : undefined, title: t?.title ?? null, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
         status: w.status, phase: w.phase ?? null,
         startedAt: new Date(iv.start).toISOString(),
         question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Needs input' : null,
@@ -398,7 +400,7 @@ export function homeHeadline(input: { live: number; needsYou: number; shipped?: 
     return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing needs input.' }];
   }
   if (shipped) return [{ text: `No agents working. ${shipped} ` }, { text: 'shipped', tone: 'success' }, { text: '.' }];
-  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'Nothing needs you right now.' }];
+  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'No agents working. Nothing needs input.' }];
 }
 
 /** Midnight of `now`'s calendar day in `tz` (IANA), epoch ms. Invalid zone → UTC. */

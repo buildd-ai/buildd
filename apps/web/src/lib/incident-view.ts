@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /** Plain words for the incident page (app/(protected)/incidents/[id]). Pure. */
 import type { FailureIncidentAffectedRefs, FailureIncidentSeverity, FailureIncidentStatus } from '@buildd/shared';
 

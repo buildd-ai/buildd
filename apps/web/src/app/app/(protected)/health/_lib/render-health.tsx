@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { getUserTeamIds } from '@/lib/team-access';
 import { HealthClient } from '../HealthClient';
 import { sampleRunnerLanes, resolveRunnerLanesSample } from '../runners/sample-lanes';
@@ -28,7 +29,7 @@ export async function renderHealthPage(page: HealthPageKey, searchParams: Health
   }
 
   const params = await searchParams;
-  const loaded = await loadHealth({ page, userId: user.id, teamIds, searchParams: params });
+  const loaded = await loadHealth({ page, userId: user.id, teamIds, searchParams: params, operator: isPlatformOperator(user) });
   if (loaded.kind === 'no-workspaces') return <Empty>No workspaces.</Empty>;
   const runnerLanes = page === 'runners' && resolveRunnerLanesSample(params.state)
     ? sampleRunnerLanes(loaded.data.now) : loaded.data.runnerLanes;

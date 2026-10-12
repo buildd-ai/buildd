@@ -53,7 +53,7 @@ describe('ChatContextPanel', () => {
   });
 
   it('a busy fleet is the card', () => {
-    const html = renderToStaticMarkup(<ChatContextPanel {...base} audience="operator" fleet={{ live: 3, capacity: 10 }} />);
+    const html = renderToStaticMarkup(<ChatContextPanel {...base} audience="admin" fleet={{ live: 3, capacity: 10 }} />);
     expect(html).toContain('3 of 10 agents busy');
   });
 });

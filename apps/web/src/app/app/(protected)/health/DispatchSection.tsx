@@ -9,9 +9,9 @@ import { Stat } from '@/components/StatTile';
 import { formatDuration, type DispatchHealthReport, type DispatchWorkerStatus } from '@buildd/core/dispatch-health-report';
 
 const WORKER: Record<DispatchWorkerStatus['status'], { tone: ChipTone; label: string }> = {
-  reachable: { tone: 'success', label: 'Worker reachable' },
-  unreachable: { tone: 'error', label: 'Worker unreachable' },
-  unconfigured: { tone: 'muted', label: 'Worker not configured' },
+  reachable: { tone: 'success', label: 'Dispatch reachable' },
+  unreachable: { tone: 'error', label: 'Dispatch unreachable' },
+  unconfigured: { tone: 'muted', label: 'Dispatch not configured' },
 };
 
 const TRANSPORT_LABEL: Record<string, string> = { in_app: 'in app', shadow: 'shadow', dispatch: 'dispatch' };
@@ -94,7 +94,7 @@ export function DispatchSection({ report, now }: { report: DispatchHealthReport 
               {formatDuration(now - Date.parse(repair.at))} ago, all teams
               {repair.ok ? '' : ' (failed)'}
               {rc
-                ? `: checked ${rc.checked}, republished ${rc.republished}, projected ${rc.projected}, taken back ${rc.fellBack}, left ${rc.left}, Worker errors ${rc.workerErrors}`
+                ? `: ${rc.checked} checked, ${rc.republished} sent again, ${rc.projected} updated, ${rc.fellBack} taken back, ${rc.left} left as they were, ${rc.workerErrors} errors`
                 : repair.reconcileError ? `: reconcile failed (${repair.reconcileError})` : ''}
             </>
           )}

@@ -1543,7 +1543,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
               <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
                 <span
                   className="tabular-nums font-medium text-text-primary"
-                  title="Usage vs. conservative floor (p25 of exhaustion history). Remaining capacity is usually higher."
+                  title="Measured against a low estimate of your limit. You usually have more left."
                 >
                   {s.pressurePct}% of usual limit
                 </span>

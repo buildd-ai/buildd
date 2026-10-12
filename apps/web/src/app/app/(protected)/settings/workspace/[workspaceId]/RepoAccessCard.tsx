@@ -84,7 +84,7 @@ export function RepoAccessCard({ workspaceId, initialView, canCheck }: Props) {
                 <h3 className="text-sm font-medium text-text-primary mb-0.5">GitHub access</h3>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <p className="text-xs text-text-secondary">
-                        Buildd can open pull requests on <span className="font-mono text-text-primary">{view.repo}</span>.
+                        buildd can open pull requests on <span className="font-mono text-text-primary">{view.repo}</span>.
                     </p>
                     {checkButton}
                 </div>
@@ -159,7 +159,7 @@ export function RepoAccessCard({ workspaceId, initialView, canCheck }: Props) {
                 </p>
             )}
             {checkable && action.kind !== 'check_connection' && action.kind !== 'operator' && action.kind !== 'link_repo' && (
-                <p className="text-xs text-text-muted mt-2">After the change on GitHub, Buildd usually notices on its own. If not, press Check connection.</p>
+                <p className="text-xs text-text-muted mt-2">After the change on GitHub, buildd usually notices on its own. If not, press Check connection.</p>
             )}
             {result && <p className="text-xs text-text-muted mt-2" role="status">{result}</p>}
         </div>

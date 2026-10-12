@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * What the landing action screen shows once a tap has run, and where its
  * "open the task" link goes. Pure, and free of token signing, so the client

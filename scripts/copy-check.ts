@@ -6,8 +6,9 @@
  *   bun run copy:check --update                   # lower the baseline to today's counts
  *   bun run copy:check --update --allow-increase  # deliberately raise it
  *
- * Extracts rendered strings with the TypeScript AST (JSX text, string and
- * template literals; comments, imports and class lists never count) and runs
+ * Scans apps/web/src/app and components, and the lib/ modules tagged
+ * `@ui-copy` (see UI_COPY_MARKER). Extracts rendered strings with the
+ * TypeScript AST (JSX text, string and template literals; comments, imports and class lists never count) and runs
  * them through the rules in packages/core/copy-rules.ts. Same ratchet shape as
  * scripts/design-check.ts: per-file counts per rule, the gate compares totals,
  * a failure lists every hit in the files whose count rose.
@@ -22,12 +23,30 @@ import { COPY_RULES, DUPLICATE_MIN_WORDS, copyViolations, type CopyRuleId } from
 
 export const BASELINE_FILE = 'scripts/copy-check.baseline.json';
 
-/** Rendered app surface: pages, components and their copy helpers. API routes are not UI. */
-export function inScope(path: string): boolean {
+/**
+ * A module under apps/web/src/lib/ opts in with this tag in a comment: its strings
+ * render in the app. lib/ also holds agent prompts and API messages, so it is
+ * opt-in per file rather than scanned whole.
+ */
+export const UI_COPY_MARKER = '@ui-copy';
+const LIB_ROOT = 'apps/web/src/lib/';
+const MARKER_RE = /^\s*(?:\/\/|\/?\*+)\s*@ui-copy\b/m;
+
+/** True when a lib/ file carries the UI_COPY_MARKER comment. */
+export const hasUiCopyMarker = (content: string) => MARKER_RE.test(content);
+
+/**
+ * Rendered app surface: pages, components and their copy helpers, plus lib/
+ * modules tagged with UI_COPY_MARKER. API routes are not UI. A lib/ path is
+ * only in scope when its content is passed and carries the marker.
+ */
+export function inScope(path: string, content?: string): boolean {
+  if (!/\.tsx?$/.test(path)) return false;
+  if (/\.(test|stories|fixtures?)\.tsx?$/.test(path) || path.includes('/__tests__/')) return false;
+  if (path.startsWith(LIB_ROOT)) return content !== undefined && hasUiCopyMarker(content);
   if (!/^apps\/web\/src\/(app|components)\//.test(path)) return false;
   if (path.startsWith('apps/web/src/app/api/')) return false;
-  if (!/\.tsx?$/.test(path)) return false;
-  return !/\.(test|stories|fixtures?)\.tsx?$/.test(path) && !path.includes('/__tests__/') && !path.startsWith('apps/web/src/app/app/dev/');
+  return !path.startsWith('apps/web/src/app/app/dev/');
 }
 
 /** Attribute values that are never rendered text. */
@@ -115,7 +134,7 @@ export function scanSources(sources: { path: string; content: string }[]): { cou
   const counts = Object.fromEntries(COPY_RULES.map((r) => [r.id, {}])) as Counts;
   const violations: Violation[] = [];
   for (const { path, content } of sources) {
-    if (!inScope(path)) continue;
+    if (!inScope(path, content)) continue;
     const seen = new Set<string>();
     for (const s of extractCopy(path, content)) {
       for (const rule of copyViolations(s.text)) {
@@ -139,7 +158,11 @@ export function scanSources(sources: { path: string; content: string }[]): { cou
 export function readSources(): { path: string; content: string }[] {
   const ls = spawnSync('git', ['ls-files', '-z', 'apps/web/src'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (ls.status !== 0) throw new Error(`git ls-files failed: ${ls.stderr}`);
-  return ls.stdout.split('\0').filter(inScope).sort().map((path) => ({ path, content: readFileSync(path, 'utf8') }));
+  return ls.stdout.split('\0')
+    .filter((path) => inScope(path) || (path.startsWith(LIB_ROOT) && /\.tsx?$/.test(path)))
+    .sort()
+    .map((path) => ({ path, content: readFileSync(path, 'utf8') }))
+    .filter(({ path, content }) => inScope(path, content));
 }
 
 const total = (perFile: Record<string, number> = {}) => Object.values(perFile).reduce((a, b) => a + b, 0);
