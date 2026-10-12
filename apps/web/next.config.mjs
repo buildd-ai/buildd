@@ -47,6 +47,14 @@ export const SETTINGS_ROUTE_MOVES = [
   { source: '/app/workspaces', destination: '/app/settings/workspaces' },
   { source: '/app/workspaces/new', destination: '/app/settings/workspaces/new' },
   { source: '/app/workspaces/:id/config', destination: '/app/settings/workspace/:id' },
+  // Team apps and agent access left Connected apps (yours) for Settings ›
+  // Team › Apps. A link that carried a team-app query still lands there; a
+  // bare link opens your own connected apps.
+  ...['connected', 'error', 'request', 'reconnect'].map((key) => ({
+    source: '/app/settings/connections',
+    has: [{ type: 'query', key }],
+    destination: '/app/settings/apps',
+  })),
 ];
 
 /**
@@ -60,7 +68,7 @@ export const PAGE_MERGES = [
   { source: '/app/settings/github', destination: '/app/settings/integrations' },
   { source: '/app/settings/storage', destination: '/app/settings/integrations' },
   { source: '/app/settings/budgets', destination: '/app/settings/billing' },
-  { source: '/app/settings/connectors', destination: '/app/settings/connections' },
+  { source: '/app/settings/connectors', destination: '/app/settings/apps' },
   // A task starts as a chat; an old link keeps the workspace it named.
   { source: '/app/tasks/new', has: [{ type: 'query', key: 'workspaceId', value: '(?<ws>[^&]+)' }], destination: '/app/chat?new=task&ws=:ws' },
   { source: '/app/tasks/new', destination: '/app/chat?new=task' },

@@ -1,7 +1,7 @@
 // @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * How a capability request, a grant and a provider's state read to a person:
- * Settings → Connected apps → Agent access, and the Needs You card. Client-safe
+ * Settings › Team › Apps › Agent access, and the Needs You card. Client-safe
  * and pure (no server imports): the rules live in capability-grants.ts, the
  * state comes from the API, and nothing here decides anything. A label never
  * says more than the backend did: "Connected" only for a live credential,

@@ -6,10 +6,10 @@ import Section from '@/components/ui/Section';
 import type { TaskEstimatesState } from '@buildd/core/task-estimate-rollout';
 
 /** "On, turned on by your team" and the like: whether it is on, and who decided. */
-export function taskEstimatesStatusLine(s: Pick<TaskEstimatesState, 'enabled' | 'source' | 'defaultOn'>): string {
+export function taskEstimatesStatusLine(s: Pick<TaskEstimatesState, 'enabled' | 'source'>): string {
   if (s.source === 'default') return s.enabled ? 'On (the default)' : 'Off (the default)';
   if (s.enabled) return 'On, turned on by your team';
-  return s.defaultOn ? 'Off, turned off by your team. Other teams have it on by default.' : 'Off, turned off by your team';
+  return 'Off, turned off by your team';
 }
 
 /**
@@ -22,13 +22,10 @@ export default function TaskEstimatesFeature({
   teamId,
   initial,
   canManage,
-  defaultOffReason,
 }: {
   teamId: string;
   initial: TaskEstimatesState;
   canManage: boolean;
-  /** Why the default is off (task-estimate-rollout.ts), or null when it is on. */
-  defaultOffReason: string | null;
 }) {
   const [state, setState] = useState(initial);
   const [saving, setSaving] = useState(false);
@@ -81,11 +78,6 @@ export default function TaskEstimatesFeature({
             </button>
           )}
         </div>
-        {defaultOffReason && (
-          <p className="max-w-prose text-meta text-text-muted" data-testid="task-estimates-default-reason">
-            {defaultOffReason} Teams can still turn it on.
-          </p>
-        )}
         {error && <p className="text-status-error" role="alert">{error}</p>}
         {state.enabled && (
           <Link href="/app/health/estimates" className="inline-block text-accent-text hover:underline">

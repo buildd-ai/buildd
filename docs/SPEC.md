@@ -390,13 +390,19 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   account row (no-account callers) → provider env var (only outside production, or
   `BUILDD_ALLOW_ENV_INFERENCE_KEYS=1` for self-hosting). OAuth rows are never read.
   Runners never use these keys.
-- **Key policy** — `teams.inferenceKeyPolicy` (default `team`; Settings → Model
-  providers → "Whose key": "Team key" / "Each person's own key") binds every
-  server-side call: `team` = team key for everyone, personal keys ignored;
-  `team_or_own` = a person's own key wins, team key covers the rest; `own` = own
-  key only, no fallback, so work with no person (grading, cron) finds no key and
-  takes its runner path. Personal keys are managed via `/api/inference-keys` (any
-  member) and never served to anyone else.
+- **Key policy** — `teams.credentialPolicy` (`team` | `personal_first` |
+  `personal_only`; NULL = not chosen, read as `personal_first`) binds every
+  server-side call (`effectiveKeyPolicy` in `packages/core/inference-key-policy.ts`):
+  `personal_first` (the default) = a person's own key wins, team key covers the
+  rest; `team` = team key for everyone, personal keys ignored; `personal_only` =
+  own key only, no fallback, so work with no person (grading, cron) finds no key
+  and takes its runner path. The legacy `teams.inferenceKeyPolicy` (`team` |
+  `team_or_own` | `own`) is read only when `credentialPolicy` is NULL, and its
+  NOT NULL default `team` reads as not chosen. Settings → Models offers no
+  selector: a team that stored `team` or `personal_only` sees one line with a
+  way back to the default (`docs/specs/team-permissions.md` → "Credential
+  policy"). Personal keys are managed via `/api/inference-keys` (any member) and
+  never served to anyone else.
 - **Which calls may spend** (`packages/core/inference-policy.ts`, `isInferenceAllowed`):
   - *Interactive* (chat and its per-turn routing): always on, no switch; it
     runs whenever a key resolves (`teams.chatDisabled` is deprecated and
