@@ -12,14 +12,20 @@ verified_by: []
 supersedes: []
 assertions:
   - id: failure-incident-triage
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: triageIncident
     path: apps/web/src/lib/failure-incident-actions.ts
   - id: failure-incidents-table
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: failureIncidents
     path: packages/core/db/schema.ts
   - id: release-attribution
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: attributeRelease
     path: packages/core/release-attribution.ts

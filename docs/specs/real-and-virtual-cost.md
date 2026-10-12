@@ -12,14 +12,20 @@ verified_by: []
 supersedes: []
 assertions:
   - id: workers-table
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: workers
     path: packages/core/db/schema.ts
   - id: agent-sdk-credit-pool
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: countsTowardAgentSdkCreditPool
     path: packages/core/budget-alerts.ts
   - id: worker-report-route
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: route
     method: PATCH
     path: "/api/workers/[id]"

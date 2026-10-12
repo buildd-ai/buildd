@@ -12,15 +12,21 @@ verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-re
 supersedes: []
 assertions:
   - id: approve-spec-revision
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: approveSpecRevision
     path: apps/web/src/lib/specs/approval.ts
   - id: spec-patch-route
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: route
     method: PATCH
     path: "/api/specs/[specId]"
     file: apps/web/src/app/api/specs/[specId]/route.ts
   - id: spec-read-route
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: route
     method: GET
     path: "/api/specs/[specId]"

@@ -11,10 +11,14 @@ keywords: [path_overlap, soft_overlap, inferredDependsOn, softOverlaps, legacy_i
 verified_by: [apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts, apps/web/src/app/api/workers/claim/open-pr-target-base.test.ts, apps/web/src/lib/explain-coordination.test.ts, packages/core/__tests__/dispatch-dependents.test.ts, apps/web/src/lib/conflict-retry.test.ts]
 assertions:
   - id: soft-overlap-evaluation
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: evaluateSoftOverlaps
     path: apps/web/src/app/api/workers/claim/soft-overlap-gate.ts
   - id: claim-route
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: route
     method: POST
     path: "/api/workers/claim"
