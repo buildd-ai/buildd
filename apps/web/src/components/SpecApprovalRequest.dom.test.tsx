@@ -129,6 +129,22 @@ describe('SpecApprovalRequest', () => {
     expect(q('spec-approval-diff')!.className).not.toContain('overflow-x-auto');
   });
 
+  it('switching views never changes what Approve confirms', async () => {
+    const bodies: unknown[] = [];
+    globalThis.fetch = mock(async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string));
+      return new Response(JSON.stringify({ already: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={ready} />));
+    act(() => radio('Spec').click());
+    expect(approveButton()!.textContent).toContain('Approve revision 3');
+    act(() => radio('Changes').click());
+    act(() => radio('Spec').click());
+    expect(approveButton()!.textContent).toContain('Approve revision 3');
+    await act(async () => { approveButton()!.click(); });
+    expect(bodies).toEqual([{ request: 'tok' }]);
+  });
+
   it('says how much of a long diff it left out', () => {
     act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={{ ...ready, omittedLines: 42 }} />));
     expect(q('spec-approval-diff')!.textContent).toContain('42 more lines');

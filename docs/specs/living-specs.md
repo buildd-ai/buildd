@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
 supersedes: []
 ---
 # Living Specs
@@ -180,6 +180,19 @@ later ones are proposed (D-4).
   A spec that moved since the request is a 409 `request_stale`, an expired or
   forged request a 400, and a request already confirmed reads as done and
   writes nothing.
+- The confirm page shows what the request would put in force two ways: the
+  revision itself rendered as Markdown, and its changes. It opens on the
+  rendered revision when the spec has no approved revision (the diff would be
+  every line added), and on the changes otherwise.
+- The changes come from `apps/web/src/lib/specs/diff.ts`, the same bounded
+  diff `GET /api/specs/[id]/diff` returns (same sections, context and caps),
+  against the approved revision. Each changed section shows its heading path
+  and its lines added and removed; each line shows its number in the old and
+  the new revision. Long lines wrap: nothing is cut off and the page does not
+  scroll sideways, down to a 320px-wide screen. What the caps leave out is
+  stated as a count.
+- Switching views never changes what Confirm approves: it always sends the
+  request it was opened with, for the revision that request names.
 - Only the head revision is approved, from the version the person read. One
   statement stamps the revision (`approved_by`, `approved_at`, set only while
   unset) and moves `specs.approved_revision` to it, both only while the spec
@@ -217,12 +230,33 @@ later ones are proposed (D-4).
   or admin) confirms it from the dashboard THEN that revision is approved, and
   a revise in between makes the link stale
   (`apps/web/tests/db/spec-approval-confirm.test.ts`).
+- AC-12: GIVEN a spec with no approved revision WHEN a person opens its
+  confirmation link THEN the page carries the whole revision and shows it
+  rendered, with every line counted as added from line 1; GIVEN an approved
+  revision N and a request for N+1 THEN it opens on the changes against N
+  (`apps/web/tests/db/spec-approval-view.test.ts`,
+  `apps/web/src/components/SpecApprovalRequest.dom.test.tsx`).
+- AC-13: GIVEN a changed, an added and a removed section WHEN the changes are
+  shown THEN each section carries its +/− counts and each line its old and new
+  line numbers, elided context reads exactly like the API's text diff, and the
+  rows obey the same caps (`apps/web/src/lib/specs/diff.test.ts`,
+  `apps/web/src/components/SpecApprovalRequest.dom.test.tsx`).
+- AC-14: GIVEN a line longer than the screen WHEN it is shown in the changes
+  THEN it wraps and the diff has no sideways scroll
+  (`apps/web/src/components/SpecApprovalRequest.dom.test.tsx`).
+- AC-15: GIVEN a person who switches between the two views WHEN they press
+  Approve THEN the one request sent is the token the page was opened with,
+  naming the same revision (`apps/web/src/components/SpecApprovalRequest.dom.test.tsx`).
 
 **Code surface**:
 - `apps/web/src/lib/specs/approval.ts` — `specApprover`, `submitSpecRevision`, `approveSpecRevision`, `confirmSpecApproval`
 - `apps/web/src/lib/specs/approval-request.ts` — `signSpecApprovalRequest`, `verifySpecApprovalRequest`
 - `apps/web/src/lib/specs/pin.ts` — `pinSpecSource`, `readPinnedSpecRevision`
 - `apps/web/src/lib/reviewer.ts` — `renderSpecConformanceGuidance`
+- `apps/web/src/lib/specs/approval-view.ts` — `approvalRequestView`
+- `apps/web/src/lib/specs/diff.ts` — `diffSpecBodies`, `diffSpecHunks`, `diffSpecRevisions`
+- `apps/web/src/components/SpecApprovalRequest.tsx` — `SpecApprovalRequest`
+- `apps/web/src/components/SpecDiffView.tsx` — `SpecDiffView`
 
 **Not yet**:
 - The pin is taken when a task is filed, not when it is claimed: a task filed
@@ -230,6 +264,9 @@ later ones are proposed (D-4).
 - No dashboard page lists specs yet. The one spec page is the approval
   confirm page; approving directly is over the routes from a dashboard
   session. The task page shows the pinned revision.
+- No horizontal overflow at 320px is held by the wrapping the DOM test
+  asserts and was measured on screenshots at 320, 390 and 1280px; no CI test
+  renders the page at a real width yet.
 - A repo document without `commitSha` (the legacy emitsPlan shape) is still
   read at the PR head.
 
