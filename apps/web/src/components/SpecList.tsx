@@ -38,7 +38,7 @@ export default function SpecList({ specs }: { specs: SpecListItem[] }) {
     return (
       <Lede>
         <span data-testid="spec-list-empty">
-          No specs here yet. Ask an agent to draft one over MCP or in chat; it shows up here for you to read and approve.
+          No specs. Agents draft them over MCP or in chat, and each one appears here for you to read and approve.
         </span>
       </Lede>
     );
