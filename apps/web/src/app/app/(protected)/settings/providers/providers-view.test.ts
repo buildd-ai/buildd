@@ -259,6 +259,19 @@ describe('Used for: a choice only once there is one', () => {
     expect(claude.options.map((o) => o.label).sort()).toEqual(['Anthropic', 'Claude subscription'].sort());
   });
 
+  it('a group appears once per surface: a member that cannot serve it is left out when another can', () => {
+    const both = fixtureResponse({ rows: [{ provider: 'anthropic', scope: 'team' }, { provider: 'claude-subscription', scope: 'team', shape: 'setup_token' }, { provider: 'openrouter', scope: 'team' }] });
+    const rows = usedForView(both, {})!;
+    const chat = rows.find((r) => r.surface === 'chat')!;
+    expect(chat.options.filter((o) => o.label === 'Claude')).toEqual([{ value: 'anthropic', label: 'Claude', disabled: false }]);
+    expect(chat.options.some((o) => o.value === 'claude-subscription')).toBe(false);
+    // Where no member serves, the group still shows once, disabled with what it needs.
+    for (const r of rows) {
+      const labels = r.options.map((o) => o.label);
+      expect(labels).toEqual([...new Set(labels)]);
+    }
+  });
+
   it('a stored pick shows; a pick the surface cannot use reads as automatic', () => {
     const res = fixtureResponse({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] });
     const rows = usedForView(res, { chat: 'openrouter', 'agent-codex': 'anthropic' })!;
