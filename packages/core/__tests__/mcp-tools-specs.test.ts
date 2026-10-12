@@ -33,6 +33,29 @@ describe('manage_specs', () => {
     expect(r).toContain('Version: 1');
   });
 
+  it('create_draft and get return the spec page URL, from appBaseUrl when set and buildd.dev otherwise', async () => {
+    const run = async (action: string, c: ActionContext) => {
+      api.mockResolvedValueOnce(action === 'get'
+        ? { spec, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body: 'x', requirements: [], revisions: [] }
+        : { spec: { ...spec, version: 1 } });
+      return out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action, specId: SPEC, title: 'Checkout', body: 'R-1: x' }, c));
+    };
+    for (const action of ['create_draft', 'get']) {
+      expect(await run(action, ctx())).toContain(`Spec URL: https://buildd.dev/app/specs/${SPEC}`);
+      expect(await run(action, ctx({ appBaseUrl: 'https://app.example.test/' }))).toContain(`Spec URL: https://app.example.test/app/specs/${SPEC}`);
+    }
+  });
+
+  it('revise, submit and approve also return the spec page URL', async () => {
+    const url = `Spec URL: https://buildd.dev/app/specs/${SPEC}`;
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, body: 'n' }, ctx()))).toContain(url);
+    api.mockResolvedValueOnce({ spec, revision: { revision: 2 } });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'submit', specId: SPEC, expectedVersion: 2 }, ctx()))).toContain(url);
+    api.mockResolvedValueOnce({ spec, revision: { revision: 2, contentHash: 'abc' } });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, expectedVersion: 2, revision: 2 }, ctx()))).toContain(url);
+  });
+
   it('get inlines a short body with its requirement ids and history', async () => {
     api.mockResolvedValueOnce({ spec, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body: '# Checkout\nR-1: x', requirements: [{ id: 'R-1' }], revisions: [{ revision: 2, authorKind: 'agent', changeSummary: 'tighten' }, { revision: 1, authorKind: 'user' }] });
     const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'get', specId: SPEC, revision: 2 }, ctx()));
