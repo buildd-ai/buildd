@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * `?state=operator-access`: team settings → Platform Operator access
+ * `?state=operator-access`: agent settings → Deploy access
  * (OperatorAccessSection.tsx), reached in the real app only once a team has
  * the `operator` role row, which late-created rows never acquire on their
  * own (page.tsx lazily backfills it, but only when writes are allowed — not
@@ -64,9 +64,9 @@ export default function OperatorAccessFixture() {
   return (
     <div className="min-h-screen bg-surface-1 p-4 md:p-8">
       <div className="max-w-5xl mx-auto">
-        <h1 className="text-xl font-bold text-text-primary mb-1">Platform Operator access (fixture)</h1>
+        <h1 className="text-xl font-bold text-text-primary mb-1">Deploy access (fixture)</h1>
         <p className="text-body text-text-muted mb-6">
-          Team ceiling, plus three workspaces: one enabled with standard capabilities only, one enabled with secret
+          Team limit, plus three workspaces: one enabled with standard capabilities only, one enabled with secret
           reveal also granted, one never opted in.
         </p>
         <OperatorAccessSection

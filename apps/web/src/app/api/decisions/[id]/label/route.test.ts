@@ -21,14 +21,9 @@ let auditCalls: unknown[];
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => user }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => account }));
 mock.module('@/lib/team-access', () => ({ getUserTeamRole: async () => teamRole }));
-// The real rule for run_experiments: owner or admin, or an admin-level key of the team.
-mock.module('@/lib/permissions', () => ({
-  can: async (caller: { kind: string; level?: string; teamId?: string }, permission: string, teamId: string) =>
-    permission === 'run_experiments' && (caller.kind === 'account' ? caller.level === 'admin' && caller.teamId === teamId : teamRole === 'owner' || teamRole === 'admin'),
-}));
 mock.module('@/lib/platform-admin', () => ({ isPlatformAdminAccount: (id: string) => platformAdmins.has(id) }));
 mock.module('@/lib/platform-operator', () => ({ isPlatformOperator: (u: { email?: string } | null) => !!u?.email && operators.has(u.email) }));
-mock.module('@buildd/core/db/schema', () => ({ decisionRecords: { id: 'decision_records.id' } }));
+mock.module('@buildd/core/db/schema', () => ({ decisionRecords: { id: 'decision_records.id' }, users: { id: 'users.id' } }));
 mock.module('drizzle-orm', () => ({ eq: (f: unknown, v: unknown) => ({ f, v }) }));
 mock.module('@buildd/core/db', () => ({
   db: { select: () => ({ from: () => ({ where: () => ({ limit: async () => (record ? [record] : []) }) }) }) },
@@ -66,7 +61,15 @@ beforeEach(() => {
 });
 
 describe('POST /api/decisions/[id]/label', () => {
-  it('a team admin key labels its own team\'s decision', async () => {
+  it("a team admin key is refused on its own team's decision: grading is operator-only", async () => {
+    const res = await POST(post(good), params());
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('platform operators');
+    expect(auditCalls).toHaveLength(0);
+  });
+
+  it('the platform owner key labels its own team\'s decision', async () => {
+    platformAdmins.add('acct-a');
     const res = await POST(post(good), params());
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, decisionId: DECISION_ID, label: 'recorded' });
@@ -100,11 +103,13 @@ describe('POST /api/decisions/[id]/label', () => {
     expect(auditCalls).toHaveLength(0);
   });
 
-  it('a signed-in team admin labels; a member is forbidden; a stranger gets not found', async () => {
+  it('a signed-in team owner or admin is forbidden, as is a member; a stranger gets not found', async () => {
     account = null;
     user = { id: 'u1' };
+    teamRole = 'owner';
+    expect((await POST(post(good, null), params())).status).toBe(403);
     teamRole = 'admin';
-    expect((await POST(post(good, null), params())).status).toBe(200);
+    expect((await POST(post(good, null), params())).status).toBe(403);
     teamRole = 'member';
     expect((await POST(post(good, null), params())).status).toBe(403);
     teamRole = null;
@@ -123,12 +128,14 @@ describe('POST /api/decisions/[id]/label', () => {
     account = null;
     expect((await POST(post(good, null), params())).status).toBe(401);
     account = { id: 'acct-a', teamId: TEAM_A, level: 'admin', scopes: null };
+    platformAdmins.add('acct-a');
     expect((await POST(post(good), params('nope'))).status).toBe(404);
     record = null;
     expect((await POST(post(good), params())).status).toBe(404);
   });
 
   it('400 for a label outside right / wrong / unsure, or a missing or long rationale', async () => {
+    platformAdmins.add('acct-a');
     expect((await POST(post({ ...good, label: 'maybe' }), params())).status).toBe(400);
     expect((await POST(post({ ...good, rationale: '' }), params())).status).toBe(400);
     expect((await POST(post({ ...good, rationale: 'x'.repeat(281) }), params())).status).toBe(400);
@@ -138,10 +145,15 @@ describe('POST /api/decisions/[id]/label', () => {
 });
 
 describe('GET /api/decisions/[id]', () => {
-  it('returns the judging bundle to a team admin of the decision\'s team', async () => {
+  it('returns the judging bundle to the platform owner key', async () => {
+    platformAdmins.add('acct-a');
     const res = await GET(get(), params());
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ decision: { id: DECISION_ID } });
+  });
+
+  it("is forbidden to a team admin key of the decision's own team", async () => {
+    expect((await GET(get(), params())).status).toBe(403);
   });
 
   it("is not found for another team's admin", async () => {

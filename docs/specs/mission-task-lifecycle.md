@@ -391,7 +391,7 @@ therefore has no task-level `gateReason`, and must not be given one.
 That gap is now closed at configuration time instead, by
 `apps/web/src/lib/backend-strand.ts` — one module, three read-only surfaces, no
 gate:
-- **Settings → Agent backends** (`AgentBackendsSection.tsx`, fed by
+- **Settings → Models**, in each provider's row (`AgentBackendsSection.tsx`, fed by
   `GET /api/teams/[id]/backend-readiness`): each backend card states how many
   **pending** tasks are routed to it with no credential, and links to them. The
   count is the consequence a bare "not configured" chip failed to convey.
@@ -534,7 +534,7 @@ pause: it also blocks the interactive claim, so it was never a fit for that.
   become claimable.
 - AC-CG-6: GIVEN a pending task whose effective backend has no credential THEN
   `/api/cron/queue-stall` reports `backend_credential_missing` (not
-  `no_gate_identified`) AND Settings → Agent backends counts it against that
+  `no_gate_identified`) AND Settings → Models counts it against that
   backend AND `/start` still returns no `gateReason` for it.
 
 **Code surface**:
@@ -1132,7 +1132,7 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   `NOT_EVALUATED` with evidence naming the missing key.
 - AC-11e: GIVEN the same mission with NO agent backend credential connected WHEN
   criteria are evaluated THEN no task is dispatched and the criterion reads
-  `NOT_EVALUATED` with evidence naming Settings → Agent Backends.
+  `NOT_EVALUATED` with evidence naming Settings → Models.
 - AC-11d: GIVEN a `command` criterion WHEN a verdict is owed THEN a verification
   task is dispatched, the criterion reads `PENDING` with its `workerTaskId`, and
   the mission does NOT complete until that task's evidence resolves it.
