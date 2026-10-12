@@ -55,7 +55,7 @@ async function main() {
     console.error('ERROR: DATABASE_URL is not set');
     process.exit(1);
   }
-  const db = drizzle(neon(DATABASE_URL), { schema });
+  const db = drizzle({ client: neon(DATABASE_URL), schema });
 
   // (1) missions that carry the system exhaustion note
   const exhaustionNotes = await db

@@ -1,12 +1,13 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
+import { normaliseSqlGrouping } from '../db/sql-grouping';
 import { computeHeartbeatTriageReadout, organizerActed, type OrganizerOutcome, type TriageLookRow } from '../heartbeat-triage-readout';
 
 mock.module('../db/client', () => ({
   db: { select: (fields: any) => new QueryBuilder().select(fields) },
 }));
 const src = await import('../heartbeat-triage-readout-source');
-const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+const norm = (s: string) => normaliseSqlGrouping(s.replace(/\s+/g, ' ').trim().toLowerCase());
 
 let t = 0;
 const look = (missionId: string, arm: 'control' | 'treatment', over: Partial<TriageLookRow> = {}): TriageLookRow => ({

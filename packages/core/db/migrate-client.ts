@@ -13,13 +13,36 @@ export const TABLE = '__drizzle_migrations';
 export const LOCK_TABLE = '__buildd_migrate_lock';
 
 /**
- * The subset of drizzle's neon-http session this file uses. Narrow on purpose:
- * `transaction()` is deliberately absent because the neon-http driver throws
- * "No transactions support in neon-http driver" if you call it.
+ * The one method of drizzle's neon-http database this file uses: the public
+ * `db.execute`. Narrow on purpose: `transaction()` is deliberately absent
+ * because the neon-http driver throws "No transactions support in neon-http
+ * driver" if you call it.
+ *
+ * Rows are read from `execute`'s full result rather than through the
+ * session's `all()`: `all()` is internal and drizzle v1 removed it (its
+ * session has `objects()` instead), so a call to it compiles through a cast
+ * and fails at runtime. `execute` returns `{ rows, ... }` on both 0.45 and v1
+ * (pinned in __tests__/migrate-driver-contract.test.ts).
  */
 export interface MigrateSession {
-  execute(query: SQL): Promise<unknown>;
-  all(query: SQL): Promise<unknown[]>;
+  execute(query: SQL): PromiseLike<unknown>;
+}
+
+/**
+ * Run a query and return its rows. Throws on a result with no `rows` array
+ * rather than returning `[]`: an empty applied-set reads as an empty database,
+ * and the migrator would then try to replay the baseline over a live schema.
+ */
+export async function queryRows<T>(session: MigrateSession, query: SQL): Promise<T[]> {
+  const result = await session.execute(query);
+  const rows = (result as { rows?: unknown } | null | undefined)?.rows;
+  if (!Array.isArray(rows)) {
+    throw new Error(
+      'migrator: db.execute() returned no rows array. The drizzle driver changed its result shape; ' +
+        'refusing to read that as "no rows".'
+    );
+  }
+  return rows as T[];
 }
 
 export async function ensureTrackingTable(session: MigrateSession): Promise<void> {
@@ -36,9 +59,10 @@ export async function ensureTrackingTable(session: MigrateSession): Promise<void
 export async function readAppliedRows(
   session: MigrateSession
 ): Promise<{ created_at: string | number }[]> {
-  return (await session.all(
+  return await queryRows<{ created_at: string | number }>(
+    session,
     sql`SELECT created_at FROM ${sql.identifier(SCHEMA)}.${sql.identifier(TABLE)}`
-  )) as { created_at: string | number }[];
+  );
 }
 
 export async function recordApplied(
@@ -59,24 +83,28 @@ export async function recordApplied(
 export async function readDbShape(session: MigrateSession): Promise<DbShape> {
   const shape = emptyDbShape();
 
-  const tables = (await session.all(
+  const tables = await queryRows<{ table_name: string }>(
+    session,
     sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`
-  )) as { table_name: string }[];
+  );
   for (const row of tables) shape.tables.add(row.table_name);
 
-  const columns = (await session.all(
+  const columns = await queryRows<{ table_name: string; column_name: string }>(
+    session,
     sql`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'`
-  )) as { table_name: string; column_name: string }[];
+  );
   for (const row of columns) shape.columns.add(`${row.table_name}.${row.column_name}`);
 
-  const indexes = (await session.all(
+  const indexes = await queryRows<{ indexname: string }>(
+    session,
     sql`SELECT indexname FROM pg_indexes WHERE schemaname = 'public'`
-  )) as { indexname: string }[];
+  );
   for (const row of indexes) shape.indexes.add(row.indexname);
 
-  const constraints = (await session.all(
+  const constraints = await queryRows<{ table_name: string; constraint_name: string }>(
+    session,
     sql`SELECT table_name, constraint_name FROM information_schema.table_constraints WHERE table_schema = 'public'`
-  )) as { table_name: string; constraint_name: string }[];
+  );
   for (const row of constraints) shape.constraints.add(`${row.table_name}.${row.constraint_name}`);
 
   return shape;
@@ -106,14 +134,14 @@ export function lockDriver(session: MigrateSession): MigrationLockDriver {
       // staleSeconds is interpolated raw (it is Math.floor of a number, not
       // user input) because a bound parameter inside make_interval's named
       // argument has no inferable type.
-      const rows = (await session.all(sql`
+      const rows = await queryRows<{ holder: string }>(session, sql`
         INSERT INTO ${sql.identifier(SCHEMA)}.${sql.identifier(LOCK_TABLE)} (id, holder, acquired_at)
         VALUES (1, ${holder}, now())
         ON CONFLICT (id) DO UPDATE
           SET holder = ${holder}, acquired_at = now()
           WHERE ${sql.identifier(LOCK_TABLE)}.acquired_at < now() - make_interval(secs => ${sql.raw(String(staleSeconds))})
         RETURNING holder
-      `)) as { holder: string }[];
+      `);
       return rows.length > 0;
     },
     async release(holder) {
@@ -123,11 +151,11 @@ export function lockDriver(session: MigrateSession): MigrationLockDriver {
       `);
     },
     async describeHolder() {
-      const rows = (await session.all(sql`
+      const rows = await queryRows<{ holder: string; acquired_at: string }>(session, sql`
         SELECT holder, acquired_at
         FROM ${sql.identifier(SCHEMA)}.${sql.identifier(LOCK_TABLE)}
         WHERE id = 1
-      `)) as { holder: string; acquired_at: string }[];
+      `);
       const row = rows[0];
       return row ? { holder: row.holder, acquiredAtIso: String(row.acquired_at) } : null;
     },

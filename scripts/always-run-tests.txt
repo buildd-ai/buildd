@@ -124,3 +124,6 @@ scripts/jsonb-casts.test.ts
 # account id, which judges a grant session's shared team account instead of
 # its grant.
 apps/web/src/lib/grant-scope.test.ts
+# Enumerates every tracked source file for a session.all call or a positional
+# drizzle(client, ...) init, both of which drizzle v1 breaks at runtime only.
+packages/core/__tests__/migrate-driver-contract.test.ts

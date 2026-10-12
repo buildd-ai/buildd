@@ -9,6 +9,19 @@ surfaces: [packages/core/decision-model.ts, packages/core/decision-client.ts, pa
 related: [decision-kinds, orchestration-decisions-shadow, settings-models]
 keywords: [decision model, jev, clef, clef flash, threshold, calibration, top p, margin, wilson, comparison, replay, outcome, override, champion, challenger, optimizer, undo, signal collection]
 verified_by: []
+assertions:
+  - id: decision-model-lookup
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: decisionModelFor
+    path: packages/core/decision-model.ts
+  - id: decision-model-normalize
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: normalizeDecisionModel
+    path: packages/core/decision-model.ts
 ---
 
 # Decision Model Selection

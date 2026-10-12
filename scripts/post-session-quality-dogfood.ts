@@ -161,7 +161,7 @@ async function main(): Promise<number> {
   const { drizzle } = await import('drizzle-orm/neon-http');
   const { and, eq } = await import('drizzle-orm');
   const schema = await import('../packages/core/db/schema');
-  const db = drizzle(neon(DATABASE_URL), { schema });
+  const db = drizzle({ client: neon(DATABASE_URL), schema });
   const { postSessionRuns: r, postSessionFindings: f, workspaces } = schema;
 
   const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { id: true, gitConfig: true } });

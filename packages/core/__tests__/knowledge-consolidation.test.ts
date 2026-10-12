@@ -269,6 +269,10 @@ describe('WEEKLY_CONSOLIDATION_SCHEDULE', () => {
     expect(WEEKLY_CONSOLIDATION_SCHEDULE.taskTemplate.title.length).toBeGreaterThan(0);
   });
 
+  it('runs as the consolidator role so the runner keeps admin-level buildd access', () => {
+    expect(WEEKLY_CONSOLIDATION_SCHEDULE.taskTemplate.roleSlug).toBe('consolidator');
+  });
+
   it('prompt covers spec §5 steps 1–4: find dups, merge via learn, archive decayed, report', () => {
     const prompt = WEEKLY_CONSOLIDATION_SCHEDULE.taskTemplate.description ?? '';
     expect(prompt).toContain('consolidate_knowledge');

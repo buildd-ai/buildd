@@ -9,6 +9,7 @@
  * round) that caused it; a review round is never a repair, and a mechanical
  * branch refresh is not one either.
  */
+import { TaskStatus } from '@buildd/shared';
 import type { DeliveryView } from './workflow/projections';
 
 // The kernel's snapshots, read through the view (only its read model is imported outside the kernel).
@@ -33,6 +34,8 @@ export interface CheckRow {
   repair: CheckRepair | null;
   /** Code review only: the reviewer run whose findings the row opens. */
   reviewTaskId?: string | null;
+  /** Code review only: the round the row reads, so its findings stay bound to that round's head. */
+  reviewRound?: { round: number; headSha: string; status: RoundSnapshot['status']; carried: boolean } | null;
 }
 
 export interface RoundHistoryEntry {
@@ -88,15 +91,23 @@ function roundReading(r: RoundSnapshot): { state: CheckState; word: string } {
   return (v && ROUND_WORD[v]) ?? { state: 'pending', word: 'Awaiting review' };
 }
 
+const roundRef = (r: RoundSnapshot, carried: boolean) => ({ round: r.round, headSha: r.headSha, status: r.status, carried });
+
 function reviewRow(v: ChecksInput, current: RoundSnapshot | undefined, carried: RoundSnapshot | undefined): CheckRow {
   const base = { key: 'review' as const, name: 'Code review', repair: null };
   if (current) {
     const r = roundReading(current);
     const fix = r.state === 'failed' ? newest(repairs(v.ledger).filter(a => a.family === 'review_fix' && a.triggerReason === current.id)) : undefined;
-    return { ...base, state: r.state, result: `${r.word} · round ${current.round}`, repair: fix ? repairOf(fix) : null, reviewTaskId: current.reviewerTaskId ?? null };
+    return {
+      ...base, state: r.state, result: `${r.word} · round ${current.round}`, repair: fix ? repairOf(fix) : null,
+      reviewTaskId: current.reviewerTaskId ?? null, reviewRound: roundRef(current, false),
+    };
   }
   if (carried) {
-    return { ...base, state: 'passed', result: `Approved · round ${carried.round} · still valid after a branch update`, reviewTaskId: carried.reviewerTaskId ?? null };
+    return {
+      ...base, state: 'passed', result: `Approved · round ${carried.round} · still valid after a branch update`,
+      reviewTaskId: carried.reviewerTaskId ?? null, reviewRound: roundRef(carried, true),
+    };
   }
   if (v.approvalBasis === 'policy') return { ...base, state: 'skipped', result: 'Not required by policy' };
   return { ...base, state: 'pending', result: 'Awaiting review' };
@@ -162,6 +173,58 @@ export function deriveTaskChecks(v: ChecksInput): TaskChecks {
       return { round: r.round, headSha: r.headSha.slice(0, 7), result: reading.word, state: reading.state, reviewTaskId: r.reviewerTaskId ?? null, repairs: caused.sort((a, b) => a.attemptNo - b.attemptNo).map(repairOf) };
     });
   return { current: rows, history };
+}
+
+// ── What an opened Code review row says ─────────────────────────────────────
+
+/** A reviewer run's findings as the page loaded them (lib/task-delivery-context.ts). */
+export interface ReviewFindings {
+  prose: string | null;
+  verdict: string | null;
+  /** The reviewer task's status, when its row was read. */
+  status?: string | null;
+}
+
+export interface ReviewRoundRef {
+  round: number;
+  /** Short head SHA the round reviewed. */
+  headSha: string;
+  /** An approval the kernel carried to the current head after a branch update. */
+  carried: boolean;
+}
+
+export type ReviewDetail =
+  | { kind: 'findings'; prose: string; round: ReviewRoundRef; linkTaskId: string | null }
+  | { kind: 'queued' | 'running' | 'no-output' | 'run-failed' | 'unavailable'; text: string; round: ReviewRoundRef; linkTaskId: string | null };
+
+/**
+ * What the Code review row opens to, or null when it has nothing to add (then
+ * the row is not a disclosure). Findings are only ever the current round's
+ * reviewer's, so an earlier head's prose never reads as this head's review; a
+ * reviewer that left no output is said to have left none, never an approval;
+ * the page's own run is not linked to itself.
+ */
+export function reviewDetailOf(
+  row: Pick<CheckRow, 'key' | 'reviewTaskId' | 'reviewRound'>,
+  p: { findings: Map<string, ReviewFindings>; findingsUnavailable?: boolean; currentTaskId: string },
+): ReviewDetail | null {
+  const r = row.reviewRound;
+  if (row.key !== 'review' || !r) return null;
+  const id = row.reviewTaskId ?? null;
+  const round: ReviewRoundRef = { round: r.round, headSha: r.headSha.slice(0, 7), carried: r.carried };
+  const linkTaskId = id && id !== p.currentTaskId ? id : null;
+  const f = id ? p.findings.get(id) : undefined;
+  const say = (kind: Exclude<ReviewDetail['kind'], 'findings'>, text: string): ReviewDetail => ({ kind, text, round, linkTaskId });
+
+  if (r.status === 'failed') return say('run-failed', 'The review run ended before giving a verdict');
+  if (r.status === 'queued' || r.status === 'reviewing') {
+    return r.status === 'reviewing' || f?.status === TaskStatus.IN_PROGRESS
+      ? say('running', 'Review in progress · no findings yet')
+      : say('queued', 'Review queued · no findings yet');
+  }
+  if (f?.prose) return { kind: 'findings', prose: f.prose, round, linkTaskId };
+  if (p.findingsUnavailable) return say('unavailable', 'Couldn’t load the review’s findings');
+  return say('no-output', 'The review finished without written findings');
 }
 
 // ── Which run this page is ──────────────────────────────────────────────────

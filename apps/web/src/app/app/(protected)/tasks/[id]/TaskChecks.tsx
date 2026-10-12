@@ -9,8 +9,7 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import MarkdownContent from '@/components/MarkdownContent';
-import type { CheckRepair, CheckRow, CheckState, TaskChecks as TaskChecksModel } from '@/lib/task-checks';
-import type { ReadableResult } from '@/lib/task-result';
+import { reviewDetailOf, type CheckRepair, type CheckRow, type CheckState, type ReviewDetail, type ReviewFindings, type TaskChecks as TaskChecksModel } from '@/lib/task-checks';
 
 const GLYPH: Record<CheckState, { glyph: string; cls: string; label: string }> = {
   passed: { glyph: '✓', cls: 'text-status-success', label: 'passed' },
@@ -28,7 +27,7 @@ const REPAIR_WORD: Record<CheckRepair['status'], string> = {
   queued: 'queued', running: 'fixing', completed: 'completed', failed: 'failed', ended: 'ended', cancelled: 'cancelled',
 };
 
-type Findings = Map<string, Pick<ReadableResult, 'prose' | 'verdict'>>;
+type Findings = Map<string, ReviewFindings>;
 
 function RepairLine({ repair, currentTaskId }: { repair: CheckRepair; currentTaskId: string }) {
   const text = `${repair.label} · ${REPAIR_WORD[repair.status]}`;
@@ -41,10 +40,34 @@ function RepairLine({ repair, currentTaskId }: { repair: CheckRepair; currentTas
   );
 }
 
-function ReviewLink({ reviewTaskId, currentTaskId }: { reviewTaskId: string | null | undefined; currentTaskId: string }) {
-  if (!reviewTaskId) return null;
-  if (reviewTaskId === currentTaskId) return <p className="text-meta text-text-muted">This review run</p>;
-  return <Link href={taskPageHref({ taskId: reviewTaskId })} className="inline-flex min-h-11 items-center text-meta text-accent-text hover:underline">Open review run ›</Link>;
+/**
+ * The opened Code review row: which round and head the review read, then its
+ * findings or a plain account of why there are none. Never a bare pointer at
+ * this page ("This review run"); another task's review keeps its link.
+ */
+function ReviewDetailBody({ d, currentTaskId }: { d: ReviewDetail; currentTaskId: string }) {
+  const { round } = d;
+  return (
+    <>
+      <p data-testid="task-check-review-round" className="font-mono text-meta text-text-muted">
+        Round {round.round} · head {round.headSha}{round.carried ? ' · carried to the current head after a branch update' : ''}
+      </p>
+      {d.kind === 'findings'
+        ? <div data-testid="task-check-findings" className="text-body [overflow-wrap:anywhere]"><MarkdownContent content={d.prose} /></div>
+        : (
+          <p data-testid="task-check-review-state" data-kind={d.kind} className={`text-body ${d.kind === 'unavailable' || d.kind === 'run-failed' ? 'text-status-error' : 'text-text-secondary'}`}>
+            {d.text}
+          </p>
+        )}
+      {d.kind === 'unavailable' && (
+        // A full reload re-reads the findings; the page has no client fetch of its own.
+        <a href={taskPageHref({ taskId: currentTaskId })} data-testid="task-check-review-retry" className="inline-flex min-h-11 items-center text-meta text-accent-text hover:underline">Try again</a>
+      )}
+      {d.linkTaskId && (
+        <Link href={taskPageHref({ taskId: d.linkTaskId })} className="inline-flex min-h-11 items-center text-meta text-accent-text hover:underline">Open review run ›</Link>
+      )}
+    </>
+  );
 }
 
 function RowHead({ row }: { row: Pick<CheckRow, 'name' | 'state' | 'result'> }) {
@@ -60,13 +83,10 @@ function RowHead({ row }: { row: Pick<CheckRow, 'name' | 'state' | 'result'> }) 
   );
 }
 
-function rowDetail(row: CheckRow, p: { findings: Findings; prUrl: string | null; currentTaskId: string }) {
+function rowDetail(row: CheckRow, p: { findings: Findings; findingsUnavailable: boolean; prUrl: string | null; currentTaskId: string }) {
   const parts: ReactNode[] = [];
-  if (row.key === 'review' && row.reviewTaskId) {
-    const f = p.findings.get(row.reviewTaskId);
-    if (f?.prose) parts.push(<div key="prose" data-testid="task-check-findings" className="text-body [overflow-wrap:anywhere]"><MarkdownContent content={f.prose} /></div>);
-    parts.push(<ReviewLink key="link" reviewTaskId={row.reviewTaskId} currentTaskId={p.currentTaskId} />);
-  }
+  const review = reviewDetailOf(row, p);
+  if (review) parts.push(<ReviewDetailBody key="review" d={review} currentTaskId={p.currentTaskId} />);
   if (row.key === 'tests' && p.prUrl) {
     parts.push(<a key="checks" href={`${p.prUrl.replace(/\/+$/, '')}/checks`} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center text-meta text-accent-text hover:underline">View checks on GitHub ↗</a>);
   }
@@ -82,6 +102,7 @@ export default function TaskChecks({
   prUrl,
   headSha,
   findings,
+  findingsUnavailable = false,
   currentTaskId,
 }: {
   checks: TaskChecksModel;
@@ -89,23 +110,25 @@ export default function TaskChecks({
   prUrl: string | null;
   headSha: string | null;
   findings: Findings;
+  /** The reviewer rows could not be read (lib/task-delivery-context.ts). */
+  findingsUnavailable?: boolean;
   currentTaskId: string;
 }) {
   if (checks.current.length === 0 && checks.history.length === 0) return null;
   return (
     <section aria-label="Checks" data-testid="task-checks" className="mb-6">
-      <div className="section-label flex flex-wrap items-baseline gap-x-2 border-b border-border-default pb-2">
+      <div className="section-label flex flex-wrap items-center gap-x-2 border-b border-border-default pb-1 md:items-baseline md:pb-2">
         <span>Checks</span>
         {prNumber != null && (
           <span className="font-mono normal-case tracking-normal text-text-muted">
-            {prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">PR #{prNumber} ↗</a> : `PR #${prNumber}`}
+            {prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center hover:underline md:min-h-0">PR #{prNumber} ↗</a> : `PR #${prNumber}`}
             {headSha ? ` · ${headSha.slice(0, 7)}` : ''}
           </span>
         )}
       </div>
       <ul className="flex flex-col">
         {checks.current.map(row => {
-          const detail = rowDetail(row, { findings, prUrl, currentTaskId });
+          const detail = rowDetail(row, { findings, findingsUnavailable, prUrl, currentTaskId });
           return (
             <li key={row.key} data-testid="task-check" data-check={row.key} data-state={row.state} className="border-b border-border-default">
               {detail ? (

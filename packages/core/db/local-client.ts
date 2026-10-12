@@ -13,7 +13,7 @@ export function createLocalDb(env: Record<string, string | undefined> = process.
   if (!applyNeonLocalOverride(env)) {
     throw new Error('[local-client] NEON_LOCAL_FETCH_ENDPOINT is required (loopback only)');
   }
-  return drizzle(neon(env.DATABASE_URL!), { schema });
+  return drizzle({ client: neon(env.DATABASE_URL!), schema });
 }
 
 export type LocalDb = ReturnType<typeof createLocalDb>;

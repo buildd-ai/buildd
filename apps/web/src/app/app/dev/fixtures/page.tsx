@@ -57,6 +57,7 @@ import {
     INTERACTIVE_SESSIONS_FIXTURE_STATE,
     MODEL_PROVIDERS_FIXTURE_STATE,
     MODEL_PROVIDERS_LONE_FIXTURE_STATE,
+    MODEL_PROVIDERS_STORED_POLICY_FIXTURE_STATE,
     TOOL_BREAKDOWN_FIXTURE_STATE,
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
@@ -226,6 +227,9 @@ export default function DevFixturesPage() {
     }
     if (state === MODEL_PROVIDERS_LONE_FIXTURE_STATE) {
         return <ModelProvidersFixture variant="lone" />;
+    }
+    if (state === MODEL_PROVIDERS_STORED_POLICY_FIXTURE_STATE) {
+        return <ModelProvidersFixture variant="stored-policy" />;
     }
 
     if (state === RUN_ACTIVITY_FIXTURE_STATE) {
