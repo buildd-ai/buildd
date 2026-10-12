@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-10-11
 summary: A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 domain: tasks
-surfaces: [packages/core/decision-kinds.ts, packages/core/decision-policy.ts, packages/core/decision-kind-post-session-triage.ts, packages/core/decision-kind-scout-probe-selection.ts]
+surfaces: [packages/core/decision-kinds.ts, packages/core/decision-policy.ts, packages/core/decision-kind-post-session-triage.ts, packages/core/decision-kind-scout-probe-selection.ts, packages/core/decision-kind-visual-impact.ts]
 related: [orchestration-decisions-shadow, mission-goal-criteria-quality, model-routing-and-tiers]
 keywords: [decision audit, agent_audit, feature health, decision policy platform, decision kind, post_session_triage, scout_probe_selection, challenger, escalation, shadow, decision_records, decision_outcomes, readout, collection health]
 verified_by: [packages/core/__tests__/decision-feature-health.test.ts, packages/core/__tests__/decision-kind-adapters.test.ts, packages/core/__tests__/decision-kinds-e2e.test.ts, packages/core/__tests__/decision-policy.test.ts, packages/core/__tests__/decision-readout.test.ts]
@@ -143,6 +143,13 @@ It answers `known_noise` \| `monitor` \| `systemic_bug` \| `page_now` with a
 floor severity. The caller only ever raises severity from the answer, never
 lowers it. Capability `failure_incident_triage` (opt-in), rollout `live`, no
 escalation or outcome source yet.
+
+A fourth kind, `buildd.visual_impact`
+(`packages/core/decision-kind-visual-impact.ts`), answers `review_required` \|
+`no_visual_impact` \| `insufficient_evidence` for the visual-review impact
+assessment on bounded diff counters. A protected hit is `review_required` by
+rule; every fallback is `review_required`, so not knowing never skips a
+review. Capability `visual_impact` (opt-in), rollout `live`.
 
 `packages/core/decision-shadow-harness.ts` gives a feature an in-memory
 ledger (`createSyntheticDecisionLedger`) wired the same way as the database

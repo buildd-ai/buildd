@@ -1967,6 +1967,21 @@ effective value and where it comes from (`VisualReviewPolicySection`), and
 `PATCH /api/workspaces/[id]/config` writes the override (`visualReview: null`
 clears it).
 
+**Impact assessment.** `assessVisualImpact`
+(`apps/web/src/lib/workflow/visual-review-impact.ts`) decides whether the
+integration branch diff vs trunk owes a review: policy first (`off` is
+`not_applicable` by policy; `strict` never skips on a model's say-so), then
+deterministic rules (styles, tokens, route screens and risky flows are
+`review_required`; tests, types, docs, comments, server-only code are
+`not_applicable` with recorded evidence), then, only for the ambiguous
+remainder, the `buildd.visual_impact` decision kind through the shared
+decision substrate (see `decision-kinds.md`). A missing diff, an error, low
+confidence or `insufficient_evidence` runs the audit; there is never a human
+prompt. The result is an *applicability* record (`recordKind: 'applicability'`,
+head SHA, basis, confidence, structured reasons), distinct from a waiver, and
+holds only for the head SHA it was made on (`isImpactAssessmentCurrent`).
+`uiChangeFromImpact` maps it onto the state's `uiChange`.
+
 **Not yet wired.** The completion gate, the audit-creation hooks and the
 mission, Home and Health surfaces still read `autoSurfaceAudit` and the two
 older gates; moving them onto the canonical state and policy is follow-up work.

@@ -48,6 +48,7 @@ export type InferenceCapability =
   | 'escalation_gate'
   | 'post_session_triage'
   | 'failure_incident_triage'
+  | 'visual_impact'
   | 'task_verdict'
   | 'early_release'
   | 'merge_readiness'
@@ -239,6 +240,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Failure incident triage',
     description: 'When a repeated failure pattern opens or grows, a decision model reads its counts (never logs or code) and says whether it is noise, worth watching, a bug to fix, or worth paging you. It can only raise the alert level.',
     costHint: '~$0.00003 per incident change',
+  },
+  // Visual review applicability (packages/core/decision-kind-visual-impact.ts).
+  // Opt-in: asked only about a diff the deterministic rules cannot call. Its
+  // fallback runs the audit, so a team that leaves it off loses a skip, never a check.
+  visual_impact: {
+    id: 'visual_impact',
+    kind: 'opt_in',
+    label: 'Visual impact',
+    description: 'When a change touches UI-adjacent files and the rules cannot tell whether anything on screen moved, a decision model reads bounded facts about the diff (file kinds and change counts, never code) and says whether a visual review is needed. When unsure it asks for the review.',
+    costHint: '~$0.00005 per ambiguous change',
   },
   // Task verdict (apps/web/src/lib/task-verdict-decision.ts). Runs on a task
   // state change only (CI result, attempt end, PR event, worker terminal),

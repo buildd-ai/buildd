@@ -52,6 +52,7 @@ const KIND_LABELS = {
   'buildd.post_session_triage': 'Post-session triage',
   'buildd.failure_incident_triage': 'Failure triage',
   'buildd.scout_probe_selection': 'Scout probe pick',
+  'buildd.visual_impact': 'Visual impact',
   'buildd.early_release': 'Early release',
 } as const;
 
