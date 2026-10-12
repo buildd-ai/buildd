@@ -2122,6 +2122,16 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
     expect(updatedSetData).toBeNull();
   });
 
+  it('strict visual review policy refuses a waiver and an opt-out with 409', async () => {
+    for (const b of [{ surfaceAuditWaiver: 'Copy-only change, checked by hand' }, { autoSurfaceAudit: false }]) {
+      mockWorkspacesFindFirst.mockReturnValueOnce({ id: 'ws-1', gitConfig: { visualReview: { policy: 'strict' } } });
+      const res = await patch(b);
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('visual_review_policy_locked');
+    }
+    expect(insertedNotes).toHaveLength(0);
+  });
+
   it('rejects a waiver with no real reason', async () => {
     const res = await patch({ surfaceAuditWaiver: 'skip' });
     expect(res.status).toBe(400);

@@ -551,6 +551,29 @@ export function copyReviewConfigOf(gitConfig: unknown): CopyReviewConfig | null 
   return parsed.ok ? parsed.config : null;
 }
 
+// ── Visual review policy ─────────────────────────────────────────────────────
+// Owner decision: visual audit is an automatic, workspace-governed process, never a
+// routine owner prompt. Resolved team default -> workspace override -> mission
+// exception by `resolveVisualReviewPolicy` (apps/web/src/lib/workflow/visual-review-policy.ts).
+
+export const VISUAL_REVIEW_POLICY_MODES = ['strict', 'automatic', 'ask', 'off'] as const;
+export type VisualReviewPolicyMode = (typeof VISUAL_REVIEW_POLICY_MODES)[number];
+/** What applies when neither the team, the workspace nor the mission says. */
+export const DEFAULT_VISUAL_REVIEW_POLICY: VisualReviewPolicyMode = 'automatic';
+
+export function isVisualReviewPolicyMode(v: unknown): v is VisualReviewPolicyMode {
+  return typeof v === 'string' && (VISUAL_REVIEW_POLICY_MODES as readonly string[]).includes(v);
+}
+
+/** The workspace override a stored gitConfig carries (`gitConfig.visualReview.policy`), or null (inherit). A malformed value reads as inherit. */
+export function visualReviewPolicyOf(gitConfig: unknown): VisualReviewPolicyMode | null {
+  if (!gitConfig || typeof gitConfig !== 'object') return null;
+  const raw = (gitConfig as { visualReview?: unknown }).visualReview;
+  if (!raw || typeof raw !== 'object') return null;
+  const policy = (raw as { policy?: unknown }).policy;
+  return isVisualReviewPolicyMode(policy) ? policy : null;
+}
+
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
 const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);

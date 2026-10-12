@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-10-01
+last_verified: 2026-10-12
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -55,6 +55,20 @@ assertions:
   - id: "pr-shipped-tests"
     type: "test_file"
     path: "packages/core/__tests__/pr-shipped.test.ts"
+  - id: "visual-review-policy"
+    type: "symbol"
+    name: "resolveVisualReviewPolicy"
+    path: "apps/web/src/lib/workflow/visual-review-policy.ts"
+  - id: "visual-review-policy-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/workflow/visual-review-policy.test.ts"
+  - id: "visual-review-state"
+    type: "symbol"
+    name: "deriveMissionVisualReview"
+    path: "apps/web/src/lib/workflow/visual-review-state.ts"
+  - id: "visual-review-state-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/workflow/visual-review-state.test.ts"
 ---
 # Mission and Task Lifecycle
 
@@ -1894,3 +1908,65 @@ unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionSurfaceAuditWaiver.tsx` —
   the dashboard waiver
 - `packages/core/db/schema.ts` — `missions.autoSurfaceAudit` (default `true`)
+
+### Visual review: automatic, workspace-governed, verified before merge
+
+**Owner decision (2026-10-12).** Visual audit is an **automatic,
+workspace-governed process, never a routine owner prompt.**
+
+- **Code decides impact.** Whether rendered UI changed is answered
+  deterministically (declared manifests, then the PR diff; an unreadable diff
+  fails open as `unknown`, never `no`). Jev is asked only about an *ambiguous*
+  finding (an undecided unsure screen, the round cap). The owner is not a
+  routine reviewer.
+- **Verification runs BEFORE the mission-to-trunk merge.** While the
+  integration PR is open, a review that is owed sets `blocksMerge`. If the PR
+  merged first, the state carries `postMergeRecovery` and the review still runs.
+- **The owner sees Merge now / Wait only where the merge policy requires
+  approval.** That is a merge-policy concern. Visual review adds the owner as
+  `nextActor` only for `ask` mode, and for a blocked review the owner must fix
+  (a workspace-caused setup problem, or a system failure whose automatic
+  retries are used up).
+
+**Canonical state.** `deriveMissionVisualReview`
+(`apps/web/src/lib/workflow/visual-review-state.ts`) is the one derivation;
+`getMissionVisualReviewState` (`visual-review-state-load.ts`) is the one helper
+surfaces call. It reads the existing `VisualReviewModel`, the surface-audit gate
+and the integration PR delivery, and writes nothing. No surface re-derives
+status from `VisualReviewModel.phase` or the gate. Statuses:
+
+| Status | Meaning | Blocks completion / merge |
+|---|---|---|
+| `not_applicable` | no rendered UI changed | no |
+| `optional` | UI changed (or unknown) but policy does not require review | no |
+| `needed` | required, not started (system creates it; `ask` waits on the owner) | yes |
+| `queued` / `running` | audit waiting / capturing | yes |
+| `findings` | review worked and found **product** defects | yes |
+| `blocked` | the review **system** failed (boot, stall, auditor, no browser runner, preview or auth setup) | yes |
+| `passed` | nothing unresolved | no |
+| `waived` | a person skipped it with a recorded reason | no |
+
+`findings` and `blocked` never share a status, tone, copy or action: an `issue`
+verdict is always `findings`, and `blocked` never files `[surface fix]` tasks.
+The state also carries branch-stage fields (`headSha`, `base`, integration PR
+`open | ready | blocked | merged`, `pendingVerification`, `blocksMerge`,
+`postMergeRecovery`) and `nextActor` (`system | jev | owner | none`). A waiver
+stands only while no audit started after it, and never under `strict`.
+
+**Policy.** `strict | automatic (default) | ask | off`, stored in the workspace
+`gitConfig.visualReview.policy` (no migration; null/absent inherits). Resolved by
+`resolveVisualReviewPolicy` as **team default -> workspace override -> mission
+exception**; the result names its `origin` (`default | team | workspace |
+mission`). `strict` forbids skip and waive and ignores any mission exception;
+`PATCH /api/missions/[id]` refuses a waiver or `autoSurfaceAudit: false` there
+with 409 `visual_review_policy_locked`. Legacy `missions.autoSurfaceAudit`
+maps to the mission exception: `true` or null inherits, `false` is `off`. No
+team-level column exists yet, so the team default is the platform default
+(`automatic`) until one is added. The workspace settings page shows the
+effective value and where it comes from (`VisualReviewPolicySection`), and
+`PATCH /api/workspaces/[id]/config` writes the override (`visualReview: null`
+clears it).
+
+**Not yet wired.** The completion gate, the audit-creation hooks and the
+mission, Home and Health surfaces still read `autoSurfaceAudit` and the two
+older gates; moving them onto the canonical state and policy is follow-up work.
