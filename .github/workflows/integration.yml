@@ -490,6 +490,11 @@ jobs:
                 export BUILDD_API_KEY=$BUILDD_API_KEY
                 export BUILDD_SERVER=http://localhost:3333
                 export BUILDD_HOME=/tmp/buildd-ci/.buildd-home
+                # The runner under test is the exact commit this job checked out. Its idle
+                # self-updater would move that checkout to a newer commit mid-run (and restart
+                # the process, so the port stops answering): the verdict would be for code the
+                # job never named.
+                export BUILDD_DISABLE_AUTO_UPDATE=1
                 cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
               '
             "
