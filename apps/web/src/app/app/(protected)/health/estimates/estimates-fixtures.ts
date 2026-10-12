@@ -2,7 +2,7 @@ import type { TaskEstimateReadout } from '@buildd/core/task-estimate-accuracy';
 import type { EstimatePoint } from './EstimatesClient';
 
 /** `?state=` values the page renders from static data, so the visual audit can capture each variant. */
-export const ESTIMATES_FIXTURE_STATES = ['enabled', 'enabled-empty', 'error'] as const;
+export const ESTIMATES_FIXTURE_STATES = ['enabled', 'enabled-empty', 'error', 'off-admin', 'off-member'] as const;
 export type EstimatesFixtureState = (typeof ESTIMATES_FIXTURE_STATES)[number];
 
 export function isEstimatesFixtureState(v: string | undefined): v is EstimatesFixtureState {

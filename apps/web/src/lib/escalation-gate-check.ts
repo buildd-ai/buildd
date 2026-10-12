@@ -55,6 +55,7 @@ import {
 import type * as EscalationDecision from '@buildd/core/escalation-gate-decision';
 import type { DecisionAccess, DecisionReceipt } from '@buildd/core/decision-client';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
+import type { DecisionReplayCapture } from '@buildd/core/decision-replay';
 import type { FileRepairInput } from './question-gate-check';
 
 /** A Buildd-owned state that has not changed for this long is the person's again. */
@@ -189,7 +190,7 @@ async function askJev(
   deps: Pick<EscalationGateDeps, 'resolveAccess' | 'recordReceipts' | 'run'>,
   started: number,
   now: () => number,
-): Promise<{ verdict: EscalationVerdict; jev: { label: string; confidence: number } | null; error?: string }> {
+): Promise<{ verdict: EscalationVerdict; jev: { label: string; confidence: number } | null; error?: string; replay?: DecisionReplayCapture }> {
   const fallback = (error: string) => ({
     verdict: { owner: 'person' as const, by: 'fallback' as const, reason: 'Jev couldn\'t be asked, so it comes to you.' },
     jev: null,
@@ -204,9 +205,10 @@ async function askJev(
     if (unsupportedModel(access)) return fallback('unsupported_decision_model');
     const remaining = ESCALATION_GATE_DECISION_TIMEOUT_MS - (now() - started);
     if (remaining <= 100) return fallback('timeout');
+    const state = buildEscalationGateState(s);
     const result = await deps.run({
       apiKey: access.apiKey,
-      state: buildEscalationGateState(s),
+      state,
       timeoutMs: remaining,
       headers: { 'http-referer': 'https://buildd.dev', 'x-title': 'buildd' },
       onUsage: r => { receipts.push(r); },
@@ -216,6 +218,11 @@ async function askJev(
     return {
       verdict: resolveEscalationAnswer(read, ESCALATION_GATE_MIN_CONFIDENCE, now()),
       jev: { label: read.action ? `${read.disposition}:${read.action}` : read.disposition, confidence: read.dispositionConfidence },
+      // What the answered row keeps as a replayable copy, through the ledger write.
+      replay: {
+        state, questionIds: Object.keys(result.outcomes), candidates: null,
+        promptRef: { id: result.decisionId, version: result.version, contentHash: null },
+      },
     };
   } catch {
     return fallback('transport');
@@ -309,7 +316,7 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
           verdict: answer.jev?.label ?? null, confidence: answer.jev?.confidence ?? null,
           appliedAnswer: verdictCode(answer.verdict),
           applied: answer.verdict.by === 'jev', status: answer.error ? 'fallback' : answer.verdict.by === 'jev' ? 'applied' : 'suggested',
-          reason: answer.error ?? null, latencyMs: now() - started,
+          reason: answer.error ?? null, latencyMs: now() - started, replay: answer.replay ?? null,
         }).catch(() => {});
         if (answer.verdict.owner === 'buildd' && answer.verdict.by === 'jev' && answer.verdict.action !== 'hold' && deps.act) {
           await deps.act(s, answer.verdict.action as JevAction).catch(() => {});

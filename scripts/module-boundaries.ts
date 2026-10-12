@@ -35,7 +35,7 @@ export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
   ['workspace-migration', /\/migrate\/|migration-slot|workspace-migration|migrate-access|migration-(inspector|outcomes|safety)/],
   ['intake-integrations', /linear|\/webhooks\/ingest|subject-intake/],
   // settings/connections is Connected apps: the team's MCP connectors live there.
-  ['connectors', /\/connectors|settings\/connections\/|connector-|mcp-connector|required-connectors|cross-app|assertion|capability-grants|\/api\/mcp\/c\/|\/agent-capabilities\/(requests|policy)\//],
+  ['connectors', /\/connectors|settings\/connections\/|connector-|mcp-connector|required-connectors|cross-app|assertion|capability-grants|team-apps-view|\/api\/mcp\/c\/|\/agent-capabilities\/(requests|policy)\//],
   ['spec-conformance', /spec-(conformance|discrepancy|doc-fix|recheck)|discrepanc|doc-fix/],
   ['visual-qa', /visual-(qa|review|audit|fix)|surface-audit|mcp-visual-review|page-source/],
   ['onboarding', /onboarding|workspace-readiness|\/readiness\//],

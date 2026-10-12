@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-11
 summary: Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 domain: runners
-surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts]
+surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/web/src/lib/answer-wait-capability.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts]
 related: [human-in-the-loop-protocol, runner-liveness, codex-backend-spec, credential-refresh-lifecycle]
-keywords: [await_answer, ask_human, sessionSeenAt, resume, sessionId, codexThreadId, waiting_input, Continue task, superseded, pendingInstructions, answerDelivery, cold continuation, AskUserQuestion, transcript]
-verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
+keywords: [await_answer, ask_human, waitCommand, wait capability, run_in_background, sessionSeenAt, resume, sessionId, codexThreadId, waiting_input, Continue task, superseded, pendingInstructions, answerDelivery, cold continuation, AskUserQuestion, transcript]
+verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, apps/web/src/lib/answer-wait-capability.test.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.test.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.test.ts, packages/core/__tests__/mcp-tools-ask-human.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -25,6 +25,16 @@ assertions:
     method: "POST"
     path: "/api/workers/[id]/answer"
     file: "apps/web/src/app/api/workers/[id]/answer/route.ts"
+  - id: "answer-wait-capability"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/[id]/answer/capability"
+    file: "apps/web/src/app/api/workers/[id]/answer/capability/route.ts"
+  - id: "answer-wait"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/[id]/answer/wait"
+    file: "apps/web/src/app/api/workers/[id]/answer/wait/route.ts"
 ---
 # Answered-Question Resume
 
@@ -411,6 +421,61 @@ local work to a runner. So it gets its own path.
   `reasonCode`: `session_ended` (terminal; `continuationTaskId` when the
   answer went cold) or `no_question`. A runner-managed worker is refused
   (`not_interactive`).
+
+### Waiting at no cost: `waitCommand`
+
+The `await_answer` loop costs one model turn per 45 s. Claude Code wakes a
+session when a `run_in_background` Bash command exits, so ask_human hands back
+a shell command that does the waiting instead.
+
+**Invariants**:
+- After parking, ask_human calls `POST /api/workers/[id]/answer/capability`
+  (owner or per-task token, interactive worker in `waiting_input` only; else
+  403/409; 503 with no signing secret) and returns its `waitCommand` and
+  `waitExpiresAt`. A failed mint never fails the ask: the reply drops
+  `waitCommand` and the hint points at `await_answer`.
+- The mint stamps a fresh random ask id on the live question
+  (`waitingFor.waitCapId`, a `jsonb_set` gated like the heartbeat; never moves
+  `updated_at`) and signs `bldw_<{w: workerId, a: askId, e: expiresAtMs}>.<HMAC>`.
+  The key is HKDF-SHA256 over the existing server secret (`AUTH_SECRET`, else
+  `NEXTAUTH_SECRET`, else `ENCRYPTION_KEY`, the presence-token and
+  interactive-session precedence) under its own label
+  `answer-wait-capability`; comparison is constant-time. No new env var, no
+  table: expiry is the park deadline (park time + 24 h, 4 h in a mission).
+- `/respond`'s interactive path copies `waitCapId` into `answerDelivery`.
+- `POST /api/workers/[id]/answer/wait` accepts ONLY that capability, in the
+  `x-buildd-wait-cap` header (never the query string). It answers status
+  only, never the answer or question: `{ answered: true, state: 'answered' }`
+  when the unread answer's `answerDelivery.waitCapId` is this ask;
+  `{ answered: false, state: 'waiting', retryAfter }` after a long-poll of at
+  most 45 s (bounded by the capability's expiry); `{ answered: false, state:
+  'ended', reason }` for an ended worker. 401 `{ reason }` for a missing,
+  tampered, expired or other-worker capability, and `superseded` once a newer
+  ask replaced the question or its answer was read. 403 for a runner-managed
+  worker, 404 for none.
+- Every wait call on a parked worker records the poll heartbeat
+  (`recordInteractiveSessionSeen`), so a closed terminal still goes cold after
+  5 min, and never restarts the park clock.
+- `waitCommand` is `sh -c '<script>' buildd-wait '<waitUrl>' '<capability>'
+  <deadlineEpochSeconds>`: POSIX sh + curl, never the buildd CLI, no bearer
+  token. Exit 0 answered; 1 curl missing; 2 deadline passed; 3 capability
+  refused; 4 worker ended or gone, each non-zero with one line saying why.
+  Network errors, 429 and 5xx retry (2 s, then 30 s), bounded by the deadline.
+  On exit 0 the session calls `await_answer { waitSeconds: 0 }`, which reads
+  and acks the answer as above. The `await_answer` loop stays the fallback for
+  clients without background commands.
+
+**Acceptance criteria**:
+- AC-AQR-I11: GIVEN a minted capability WHEN it is used for another worker,
+  after its expiry, tampered with, or after a newer ask THEN the wait route
+  answers 401 and reads nothing for the first three.
+- AC-AQR-I12: GIVEN the answer to the capability's ask WHEN the wait route is
+  called THEN `{ answered: true, state: 'answered' }` and the body contains
+  neither the answer nor the question.
+- AC-AQR-I13: GIVEN the generated `waitCommand` against a stub that answers
+  "waiting" then "answered" THEN it exits 0, sending the capability header on
+  every call; a 401 exits 3 with one line, a passed deadline exits 2 without
+  calling.
 
 ### The poll heartbeat
 
