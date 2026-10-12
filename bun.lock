@@ -180,7 +180,7 @@
       "version": "0.327.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.290",
-        "@ast-grep/napi": "^0.45.0",
+        "@ast-grep/napi": "^0.50.0",
         "@buildd/dispatch-contract": "workspace:*",
         "@buildd/shared": "workspace:*",
         "@builddai/ai-kit": "workspace:*",
@@ -257,25 +257,25 @@
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.133.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-jlqUN8p8ESTJj+GJnA4KjzbEfF1waEoGzRT8jwytlYGFFgv+/DUQOxlYGvYw10UzhD1kwLqYzxvA3FrTB2YWuQ=="],
 
-    "@ast-grep/napi": ["@ast-grep/napi@0.45.0", "", { "optionalDependencies": { "@ast-grep/napi-darwin-arm64": "0.45.0", "@ast-grep/napi-darwin-x64": "0.45.0", "@ast-grep/napi-linux-arm64-gnu": "0.45.0", "@ast-grep/napi-linux-arm64-musl": "0.45.0", "@ast-grep/napi-linux-x64-gnu": "0.45.0", "@ast-grep/napi-linux-x64-musl": "0.45.0", "@ast-grep/napi-win32-arm64-msvc": "0.45.0", "@ast-grep/napi-win32-ia32-msvc": "0.45.0", "@ast-grep/napi-win32-x64-msvc": "0.45.0" } }, "sha512-5dQqAVZeHfdQsXjH9FCn+A8a1tb+GVa3Asdq6cKP4l7O0KqH/gmWLswvSaPx7twWfpUwHtGpX7L9frPEAqfNng=="],
+    "@ast-grep/napi": ["@ast-grep/napi@0.50.0", "", { "optionalDependencies": { "@ast-grep/napi-darwin-arm64": "0.50.0", "@ast-grep/napi-darwin-x64": "0.50.0", "@ast-grep/napi-linux-arm64-gnu": "0.50.0", "@ast-grep/napi-linux-arm64-musl": "0.50.0", "@ast-grep/napi-linux-x64-gnu": "0.50.0", "@ast-grep/napi-linux-x64-musl": "0.50.0", "@ast-grep/napi-win32-arm64-msvc": "0.50.0", "@ast-grep/napi-win32-ia32-msvc": "0.50.0", "@ast-grep/napi-win32-x64-msvc": "0.50.0" } }, "sha512-GXaeLVLuD7r7it44UIEtrvQ6HkUw0GgQg4m9wAXZYS5sgwQpEZFJkVycdJzhpNfsZCsIqOeC68geCJQ3QdirPw=="],
 
-    "@ast-grep/napi-darwin-arm64": ["@ast-grep/napi-darwin-arm64@0.45.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-yRf7pj+KFgCLw7mA39MjwrTu9zUnz7Kp7f/y8NrZ8Z7b3nI+eBQRvqwdG85J3nR8IJGXLbGBtCBLkrmYtAxWpQ=="],
+    "@ast-grep/napi-darwin-arm64": ["@ast-grep/napi-darwin-arm64@0.50.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-JZLEB4vKLbQc6FAFmia/pJ6u5EbPvhyxv5yx7VbnX0JKlMOBjYzE6AH3H0qq6sIwovZqiRVsXsAe/I9jqbJiTg=="],
 
-    "@ast-grep/napi-darwin-x64": ["@ast-grep/napi-darwin-x64@0.45.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-rS4PI6qbi828AuvnxT5Yh7rVsy8mAGiN5ruLdi99Po8Ll3v+01x3OXEC/px/816/72WFCXGWacaZ17otowgA1Q=="],
+    "@ast-grep/napi-darwin-x64": ["@ast-grep/napi-darwin-x64@0.50.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-sKuGK1oba5usEnKkOxQnNTUTWPSar6gmBIBBtjZvJhePMzQu8ptFeLH+rf9KSFh/3OaIUYYHqkxVc/xnSkElyg=="],
 
-    "@ast-grep/napi-linux-arm64-gnu": ["@ast-grep/napi-linux-arm64-gnu@0.45.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-RD0B8fwENAVfQ54+M+l4h0GtIWReefuNXohzSeu9QkKm12vsui9LLNkS5bBdYko/riW5WSeGwgToGmVLxaJBTg=="],
+    "@ast-grep/napi-linux-arm64-gnu": ["@ast-grep/napi-linux-arm64-gnu@0.50.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-IEAO877JitLW78SMa3w5oceIHsE9BsKQZmLXx4RebHUfIyzGNj6+c4AVCOehVwyBIdpiTPb4JQkTvAFaSBvPdA=="],
 
-    "@ast-grep/napi-linux-arm64-musl": ["@ast-grep/napi-linux-arm64-musl@0.45.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-Q4GCYojuHVM3hfLOZ9DaOQmhMTUEHYmGhkWavPQyYZGO0/cc0DqSqOqewBPpP/sM9Q2X5ZYAo0HM9nsoklEm/A=="],
+    "@ast-grep/napi-linux-arm64-musl": ["@ast-grep/napi-linux-arm64-musl@0.50.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-rgeRD25FBhuvt0yG5HVIyaVuJNAM0O1j1Hank+KjcLGcu09U3/JspzhrBWbDqpLHTNC6ZDEHZZ0pUICyhCteQw=="],
 
-    "@ast-grep/napi-linux-x64-gnu": ["@ast-grep/napi-linux-x64-gnu@0.45.0", "", { "os": "linux", "cpu": "x64" }, "sha512-yRrrvPaC0xt/kSRCrZctHwaosgEKGjSsU68yb4xqToC8Ue0TdLm0VuHjaCevzonRvO602NwKyyzYXtpFLdMzfw=="],
+    "@ast-grep/napi-linux-x64-gnu": ["@ast-grep/napi-linux-x64-gnu@0.50.0", "", { "os": "linux", "cpu": "x64" }, "sha512-LIDKSVqTexdiJMgkndOxlgjDaWpo0CLiUrxGaCnTbJAOL386Gib7O9iaNC0TsuLGy3oIzjno0FEZMVIifnRUVg=="],
 
-    "@ast-grep/napi-linux-x64-musl": ["@ast-grep/napi-linux-x64-musl@0.45.0", "", { "os": "linux", "cpu": "x64" }, "sha512-Z80/+rdrk0xxGwbYkw14/xZJ6G1nA+6R5xqiWjq4UzoNs+azQ5+zOQAuD2m/hj+asbZxcA/KD+SXVaWX0+QWgA=="],
+    "@ast-grep/napi-linux-x64-musl": ["@ast-grep/napi-linux-x64-musl@0.50.0", "", { "os": "linux", "cpu": "x64" }, "sha512-a4iml0lXl1wCrfjg5jyPbqyVF9yA+agvLS6aeNYSgVNsWuTF6udh11UPcJU/UPcHeks6LVzTfQkPfn8fBJJxbQ=="],
 
-    "@ast-grep/napi-win32-arm64-msvc": ["@ast-grep/napi-win32-arm64-msvc@0.45.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-gfuDq5TEEZGjV0cpj9queABM0E2y/WSwloE38Og1xdHPYmxQNLaCLayfqvtBzgG911NEVoD8+DCeEAYLcgByng=="],
+    "@ast-grep/napi-win32-arm64-msvc": ["@ast-grep/napi-win32-arm64-msvc@0.50.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-lJU8knsVmLl8o3rv2fo2KD2VR3oC0oySlPzcac3SzeYC0AhJV3uH5iNH/9bcKmhHGB/VZ4RSO3uyYaCbzGg3HA=="],
 
-    "@ast-grep/napi-win32-ia32-msvc": ["@ast-grep/napi-win32-ia32-msvc@0.45.0", "", { "os": "win32", "cpu": "ia32" }, "sha512-BzysPG/tobpa4YBQ7VHPvvxPth6o3ct4LUS8A9hG0rvYdMGi5DKZya9nxSgpY/8yuxQsi9VSNAzWnCamnKWReg=="],
+    "@ast-grep/napi-win32-ia32-msvc": ["@ast-grep/napi-win32-ia32-msvc@0.50.0", "", { "os": "win32", "cpu": "ia32" }, "sha512-/KbxgJBODuk4OTekRsorFIs/2mEOyKmJMpzlLk+8h9D3MWSzdTCrfk+HM+N0YcFe51SB1nHW0hhObC1wYw1mdw=="],
 
-    "@ast-grep/napi-win32-x64-msvc": ["@ast-grep/napi-win32-x64-msvc@0.45.0", "", { "os": "win32", "cpu": "x64" }, "sha512-sBAdQUZHrZL4JECMPWtz+aFF7nK0vUG4xQ68w8UGkqKbA//8JYtddpTtpJ1hM9nYfZupZN/saprkIMWjp7cqbA=="],
+    "@ast-grep/napi-win32-x64-msvc": ["@ast-grep/napi-win32-x64-msvc@0.50.0", "", { "os": "win32", "cpu": "x64" }, "sha512-/+XkXmSN/8Sp7MafROe/C5KuV4VSFueCVAQUUk0ZmR56sjMTwX66MCSyxShh5tGOcQ99FnU5fpU8JD0Npg8kNQ=="],
 
     "@auth/core": ["@auth/core@0.41.2", "", { "dependencies": { "@panva/hkdf": "^1.2.1", "jose": "^6.0.6", "oauth4webapi": "^3.3.0", "preact": "10.24.3", "preact-render-to-string": "6.5.11" }, "peerDependencies": { "@simplewebauthn/browser": "^9.0.1", "@simplewebauthn/server": "^9.0.2", "nodemailer": "^7.0.7" }, "optionalPeers": ["@simplewebauthn/browser", "@simplewebauthn/server", "nodemailer"] }, "sha512-Hx5MNBxN2fJTbJKGUKAA0wca43D0Akl3TvufY54Gn8lop7F+34vU1zA1pn0vQfIoVuLIrpfc2nkyjwIaPJMW7w=="],
 
