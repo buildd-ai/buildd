@@ -14,6 +14,7 @@ import { authenticateApiKey } from './api-auth';
 import { IS_PLATFORM_OPERATOR_CALLER } from '@/modules';
 import { getUserTeamRole } from './team-access';
 import type { CeilingsApiDeps } from './model-ceilings-api';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export function ceilingsDeps(req: NextRequest): CeilingsApiDeps {
   return {
@@ -35,9 +36,9 @@ export function ceilingsDeps(req: NextRequest): CeilingsApiDeps {
       const account = await authenticateApiKey(bearer, req);
       return account ? IS_PLATFORM_OPERATOR_CALLER({ account }) : false;
     },
-    loadPolicy: async (teamId) => (await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { modelTierCeilings: true } }))?.modelTierCeilings ?? null,
+    loadPolicy: async (teamId) => (await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { modelTierCeilings: true } }))?.modelTierCeilings ?? null,
     loadMember: async (teamId, userId) => (await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)),
+      where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId))),
       columns: { modelTierCeilings: true },
     }))?.modelTierCeilings ?? null,
     listMembers: listMemberTierCeilings,

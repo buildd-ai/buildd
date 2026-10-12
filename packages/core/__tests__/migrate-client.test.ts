@@ -275,10 +275,10 @@ describe('db/migrate.ts wiring', () => {
 
   it('runs the apply loop inside the migration lock', () => {
     const lockAt = source.indexOf('withMigrationLock(');
-    const applyAt = source.indexOf('applyMigrations(session)');
+    const applyAt = source.indexOf('applyMigrationsV1(session, runBatch)');
     expect(
       lockAt >= 0 && applyAt > lockAt,
-      'db/migrate.ts no longer runs applyMigrations() inside withMigrationLock(). ' +
+      'db/migrate.ts no longer runs applyMigrationsV1() inside withMigrationLock(). ' +
         'Two concurrent deploys would race the migrator again (finding C11).',
     ).toBe(true);
   });

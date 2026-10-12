@@ -18,6 +18,7 @@ import { db } from '@buildd/core/db';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 // A precise graph for a whole repo can be large, but the Vercel body cap
 // (~4.5 MB) is the real limiter. Guard against pathological payloads by capping
@@ -84,7 +85,7 @@ export async function POST(
   }
 
   const job = await db.query.knowledgeIngestJobs.findFirst({
-    where: (jobs, { eq }) => eq(jobs.id, id),
+    where: { RAW: sqlWhereFn((jobs, { eq }) => eq(jobs.id, id)) },
   });
   if (!job) {
     return NextResponse.json({ error: 'Job not found' }, { status: 404 });

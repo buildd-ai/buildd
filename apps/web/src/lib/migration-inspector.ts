@@ -265,7 +265,7 @@ async function inspectOnce(params: {
       : Promise.resolve(undefined);
 
   // An integration refresh whose merge moved the mission's own migration to a
-  // free index past trunk's (`bun run migrations:renumber`) shows a deletion
+  // free index past trunk's (`bun run migrations:regenerate`, legacy layout only) shows a deletion
   // paired one to one with an addition holding the same bytes. That is a
   // renumber, the shape the review exemption skips (`renumberedMigrations`);
   // the moved SQL is still classified below. Spec db-migration-gates.md

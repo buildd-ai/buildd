@@ -7,13 +7,14 @@
 import { drizzle } from 'drizzle-orm/neon-http';
 import { neon } from '@neondatabase/serverless';
 import * as schema from './schema';
+import { relations } from './relations';
 import { applyNeonLocalOverride } from './neon-local';
 
 export function createLocalDb(env: Record<string, string | undefined> = process.env) {
   if (!applyNeonLocalOverride(env)) {
     throw new Error('[local-client] NEON_LOCAL_FETCH_ENDPOINT is required (loopback only)');
   }
-  return drizzle({ client: neon(env.DATABASE_URL!), schema });
+  return drizzle({ client: neon(env.DATABASE_URL!), relations });
 }
 
 export type LocalDb = ReturnType<typeof createLocalDb>;

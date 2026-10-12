@@ -72,7 +72,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch -q --depth=1 origin "$BASE_REF"
-          added=$(git diff --name-only --diff-filter=A FETCH_HEAD HEAD -- 'packages/core/drizzle/*.sql')
+          added=$(git diff --name-only --diff-filter=A FETCH_HEAD HEAD -- 'packages/core/drizzle/*/migration.sql')
           if [ -n "$added" ]; then
             echo "::notice::PR adds migrations not yet applied to the eval DB ($added). Skipping the retrieval gate; re-run via workflow_dispatch after deploy."
             echo "skip=true" >> "$GITHUB_OUTPUT"

@@ -1,16 +1,16 @@
 ---
 name: schema-change
-description: "Ship a Drizzle schema change in buildd without losing a migration, a column, or a release. Covers generating migrations, the index collisions that happen several times a day with concurrent sessions, dropping things safely, and unblocking the release drift gate."
+description: "Ship a Drizzle schema change in buildd without losing a migration, a column, or a release. Covers generating migrations (drizzle v1 folders), parallel branches whose migrations do not commute, dropping things safely, and unblocking the release drift gate."
 author: buildd
 ---
 
 # Shipping a Schema Change
 
 `packages/core/db/schema.ts` is the source of truth. Everything else — the SQL in
-`packages/core/drizzle/`, the snapshots, the journal — is **generated**. The whole
+`packages/core/drizzle/` folders and their snapshots — is **generated**. The whole
 skill is one rule and its consequences:
 
-> **Generate. Never hand-edit a migration, a snapshot, or the journal.**
+> **Generate. Never hand-edit a migration or a snapshot.**
 
 Hand-editing is how a snapshot stops describing the schema, and a snapshot that
 lies is invisible until a deploy fails or a column silently isn't there.
@@ -19,115 +19,93 @@ lies is invisible until a deploy fails or a column silently isn't there.
 
 ```bash
 # 1. edit packages/core/db/schema.ts
-cd packages/core && bun db:generate     # emits drizzle/NNNN_*.sql + meta/
+cd packages/core && bun db:generate     # emits drizzle/<YYYYMMDDHHMMSS>_<slug>/{migration.sql,snapshot.json}
 # 2. read the emitted SQL. Every time. It is short.
-# 3. commit schema.ts AND drizzle/ together
+# 3. commit schema.ts AND the new folder together
 ```
 
 CI fails if `schema.ts` changed without committed migration files. Migrations
 auto-run on Vercel deploy. **Never `db:push`** — it bypasses migration tracking.
 
-## Index collisions — expect these, they are not bad luck
+## Parallel branches: names cannot collide, intent can
 
-Many sessions work this repo at once and each runs `db:generate`. A branch open
-for a few hours routinely collides two to four times. Git will **not** warn you:
-the `.sql` files have different generated names so they merge cleanly; only
-`meta/_journal.json` and the snapshot conflict. A collision can survive a
-clean-looking merge and only show up as a failed deploy.
+drizzle v1 keeps each migration in its own folder named by a timestamp and slug,
+with no journal and no index. Two sessions that each run `db:generate` get
+different folders, so **git merges them cleanly and warns about nothing**. What it
+cannot see is that both snapshots name the same parent: the second migration's SQL
+was diffed against a schema the first already changed. Whether that matters depends
+on whether the two changes touch each other (the same table or column), which is
+what the kit's own `check` decides.
 
-**Check immediately before every push that touches `drizzle/`** (CI runs the
-same check on every PR, step "Check migration indices are free on the base"):
-
-```bash
-git fetch -q origin dev
-bun run migrations:index-check --base=origin/dev
-# ✖ 0280_tense_donald_blake.sql: index 0280 is already taken on the base by
-#   0280_failure_incidents.sql. Next free index: 0281.
-```
-
-If it fails, merge dev in and let the tool regenerate:
+**Before every push that touches `drizzle/`** (CI runs both on every PR):
 
 ```bash
-git merge origin/dev                     # resolve non-drizzle conflicts; leave drizzle ones
-bun run migrations:renumber --base=origin/dev
+git fetch -q origin dev && git merge origin/dev     # resolve schema.ts conflicts on their merits
+bun run migrations:layout-check --base=origin/dev   # fails closed on a leftover legacy file
+bun run migrations:commute                          # drizzle-kit check: do the pair commute?
+cd packages/core && bun db:generate                 # must say "No schema changes"
 ```
 
-`migrations:renumber` resets `packages/core/drizzle/` to dev's exact state
-(journal, snapshots, SQL), re-runs `drizzle-kit generate` with your migration's
-name, and stages the result. A hand-written `--custom` migration is re-minted at
-the new index with its SQL carried verbatim. Exit 3 means the regenerated SQL
-differs from what it replaced: read both before committing. Colliding with an
-**open** PR whose migration is not on dev yet? Add `--min-index=<its index + 1>`;
-once that PR lands, merging dev and re-running without the flag closes the gap.
-`packages/core/db/migration-index.ts`; proof in
-`packages/core/__tests__/migration-index.test.ts`.
-
-**Two names, one repair.** `bun run migrations:regenerate` is the forward name of
-`migrations:renumber`; both run the same repair in this (journal) layout. CI also runs
-`bun run migrations:commute` (`drizzle-kit check`): two branches that each generated
-from the same base leave snapshots sharing a parent, which git merges cleanly and
-which fails there. The fix is the same: merge the base, regenerate.
-
-**Drizzle v1 folders (when the repo adopts them).** A migration is then
-`drizzle/<YYYYMMDDHHMMSS>_name/migration.sql` plus `snapshot.json`, with no journal
-and no index. Names cannot collide, so there is nothing to renumber; the failure
-mode becomes a numbered `NNNN_name.sql` left over from an old checkout, which v1
-never reads (its DDL would be silently skipped). `migrations:index-check` and the
-merge inspector both refuse that. Regenerate with the base's own drizzle-kit
-(`bun install`, then `bun db:generate`) rather than moving files.
-
-**Only the tools move a migration.** `bun run migrations:renumber --base=origin/dev`
-(or, for a conflicted merge, `bun run conflicts:generated`, which calls it) is the
-only sanctioned way. On a dev→mission refresh PR the merge-safety inspector reads
-"mission migration deleted, a new `.sql` with the same bytes added" as a renumber
-and lets it through (docs/specs/db-migration-gates.md, "A renumber in a refresh PR
-is not lineage"). A rename, a hand-edited file, or SQL that changed on the way is
-lineage and goes to a person.
-
-**Regenerate rather than renumber by hand.** Regeneration re-diffs your
-`schema.ts` against dev's *newest* snapshot, so a column another session added in
-the same window survives in yours. Hand-editing `idx`/`when` leaves a snapshot
-describing a schema that no longer exists.
-
-Then verify, and actually read the file — `cat` the number you just generated,
-not the one you expected:
+If `commute` fails, or `generate` finds something, or the merge changed `schema.ts`
+under your migration, repair it with the tool, never by hand:
 
 ```bash
-ls packages/core/drizzle/*.sql | tail -1     # confirm the number
-cat packages/core/drizzle/<new>.sql          # confirm the SQL is still your intent
-python3 -c "import json;e=json.load(open('packages/core/drizzle/meta/_journal.json'))['entries'];print('monotonic:', e[-1]['when'] > e[-2]['when'])"
+bun run migrations:regenerate --base=origin/dev
 ```
 
-`packages/core/__tests__/migration-journal-ordering.test.ts` guards the ordering.
+`migrations:regenerate` resets `packages/core/drizzle/` to dev's exact state,
+re-runs `drizzle-kit generate` with your migration's name, and stages the result.
+A hand-written `--custom` migration is re-minted with its SQL carried verbatim.
+Exit 3 means the regenerated SQL differs from what it replaced: read both before
+committing. For a conflicted merge, `bun run conflicts:generated` calls it for you.
+Proof in `packages/core/__tests__/migration-layout.test.ts`, which runs the pinned
+kit on two real branches.
 
-## Why monotonic `when` still matters
+**A branch cut before the cutover** has a `meta/_journal.json` and a numbered
+`NNNN_x.sql`. drizzle v1 never reads a numbered file, so its DDL would be skipped
+with the deploy green; `migrations:layout-check` and the merge-safety inspector both
+refuse it. Merge dev, then `migrations:regenerate`: your schema change comes back as
+a v1 folder.
 
-The migrator applies by a `when` high-water-mark, so a lower-`when` migration is
-not executed blind. **This is not the old silent-skip hazard** — `migrate.ts`
-routes an untracked below-mark migration to `backfillTrackingRows`, which
-introspects the live schema and throws `BackfillContradictedError` if the DDL is
-genuinely absent. So a collision is a **loud failed deploy**, not a missing
-column. That is why it must be fixed before merging, not discovered after.
+**Only the tools move a migration.** On a dev→mission refresh PR the merge-safety
+inspector reads "mission migration deleted, a new one with the same bytes added" as
+a move and lets it through (docs/specs/db-migration-gates.md, "A renumber in a
+refresh PR is not lineage"). A rename, a hand-edited file, or SQL that changed on
+the way is lineage and goes to a person.
+
+**Regenerate rather than edit by hand.** Regeneration re-diffs your `schema.ts`
+against dev's *newest* snapshot, so a column another session added in the same
+window survives in yours. A hand-edited snapshot describes a schema that no longer
+exists.
+
+## How a migration is recognised as applied
+
+There is no high-water mark for post-cutover migrations: each one is applied iff a
+tracking row carries its folder `name`, and each file runs with its tracking insert
+as one atomic batch. Legacy history is recognised through the committed legacy map
+(`packages/core/db/legacy-migrations.json`), by exact-ms `created_at`. A migration
+that is untracked but whose DDL is already in the database is recorded, not replayed;
+partly present DDL is refused. Spec: `docs/specs/migration-execution.md`.
 
 One exception, on a throwaway database only: `visual-qa.yml` sets
 `MIGRATION_CI_CLONE_APPLY_ABSENT=1` (honoured only in GitHub Actions) so a
-mission branch's below-mark migration whose DDL is **wholly** absent is executed
-on the prod clone instead of refused. Partly present DDL still fails there, and
-prod deploys never see the flag.
+mission branch's untracked migration whose DDL is **wholly** absent is executed on
+the prod clone instead of refused. Partly present DDL still fails there, and prod
+deploys never see the flag.
 
 ## The squashed baseline
 
 Every migration released up to `v0.284.0` (through `0250_shallow_bushwacker`)
-lives in one file, `drizzle/0000_baseline.sql`: a `pg_dump` of the schema, with
-`"baseline": true` and 0250's `when` in the journal. The old files and
+lives in one folder, `drizzle/20261006230118_baseline/migration.sql`: a `pg_dump` of
+the schema, which the legacy map (`packages/core/db/legacy-migrations.json`) flags as
+the baseline. The old files and
 snapshots are in git history before the squash. Read them with
 `git show v0.284.0:packages/core/drizzle/<file>.sql`, not from the tree.
 
 - **Never edit the baseline.** It runs only on an empty tracking table, which
   means fresh DBs: CI, demo, local Docker. Every released DB skips it. A change
   belongs in a new migration, as always.
-- New migrations keep numbering after the last journal `idx`, not after the
-  file count. `db:generate` does this for you, so `0254` follows `0253`.
+- New migrations are timestamped folders; `db:generate` names them for you.
 - A DB with tracking rows whose newest row is older than the baseline's `when`
   fails with `PreBaselineDatabaseError`. Migrate it with `v0.284.0` first, or
   start it fresh. Do not hand-insert tracking rows to get past it.
@@ -194,7 +172,6 @@ against it exits immediately and looks like success. Poll `vercel inspect`.
 
 - [ ] `schema.ts` edited, `bun db:generate` run, emitted SQL read
 - [ ] `schema.ts` and `drizzle/` committed together
-- [ ] `bun run migrations:index-check --base=origin/dev` passes immediately before pushing
-- [ ] newest `when` strictly greater than its predecessor
+- [ ] dev merged in, then `bun run migrations:layout-check --base=origin/dev` and `bun run migrations:commute` pass and `bun db:generate` reports no changes, immediately before pushing
 - [ ] anything dropped: code checked by accessor, prod rows counted, numbers in the PR
-- [ ] no `db:push`, no hand-edited journal/snapshot/SQL
+- [ ] no `db:push`, no hand-edited snapshot/SQL, no renamed migration folder

@@ -23,6 +23,7 @@
 import type { MergePolicy } from '@buildd/shared';
 import type { ReReviewPlan } from '@/lib/pr-re-review';
 import type { CreateReviewerTaskParams } from '@/lib/reviewer';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface StaleApprovalReReviewInput {
   workspaceId: string;
@@ -206,12 +207,12 @@ async function loadContext(p: { workspaceId: string; taskId: string; workerId: s
     import('@/lib/path-declaration'),
   ]);
   const [workspace, task, worker] = await Promise.all([
-    db.query.workspaces.findFirst({ where: eq(workspaces.id, p.workspaceId) }),
+    db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, p.workspaceId)) }),
     db.query.tasks.findFirst({
-      where: eq(tasks.id, p.taskId),
+      where: sqlWhere(eq(tasks.id, p.taskId)),
       columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
     }),
-    db.query.workers.findFirst({ where: eq(workers.id, p.workerId), columns: { branch: true, prUrl: true } }),
+    db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, p.workerId)), columns: { branch: true, prUrl: true } }),
   ]);
   if (!workspace || !task || !worker) return null;
   return {

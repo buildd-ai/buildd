@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { finalizeArtifactUpload } from '@/lib/artifact-upload';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // GET /api/artifacts/[artifactId]/download - Redirect to presigned download URL
 export async function GET(
@@ -25,7 +26,7 @@ export async function GET(
 
   // The worker relation is what makes a tenant comparison possible below.
   const artifact = await db.query.artifacts.findFirst({
-    where: eq(artifacts.id, artifactId),
+    where: sqlWhere(eq(artifacts.id, artifactId)),
     with: { worker: true },
   });
 

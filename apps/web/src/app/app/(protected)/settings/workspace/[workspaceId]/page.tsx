@@ -47,6 +47,7 @@ import PauseStartsSection from './PauseStartsSection';
 import { isPaused } from '@/lib/workspace-pause';
 import WorkTrackerSection from './WorkTrackerSection';
 import DeleteWorkspaceButton from './DeleteWorkspaceButton';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,7 +76,7 @@ export default async function WorkspaceSettingsPage({
   if (!access) notFound();
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: {
       id: true,
       name: true,
@@ -98,19 +99,19 @@ export default async function WorkspaceSettingsPage({
 
   // Roles a reviewer can be picked from (skills with isRole = true).
   const roles = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.workspaceId, workspaceId),
       eq(workspaceSkills.isRole, true),
-    ),
+    )),
     columns: { slug: true, name: true },
   });
 
   // Missions with their own merge policy.
   const missionsWithOverrides = await db.query.missions.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(missions.workspaceId, workspaceId),
       isNotNull(missions.mergePolicy),
-    ),
+    )),
     columns: { id: true, title: true, mergePolicy: true },
   });
 

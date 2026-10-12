@@ -18,6 +18,7 @@ import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
 import { FULL_LEASE_MS } from '@/lib/knowledge-ingest-lease';
 import { isUuid } from '@/lib/uuid';
 import { ingestFileBatch } from '@/lib/knowledge-ingest-batch';
+import { sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 // Stay under serverless request-body limits (~4.5 MB) with JSON overhead room.
 export const MAX_BATCH_TOTAL_BYTES = 4 * 1024 * 1024;
@@ -80,7 +81,7 @@ export async function POST(
     : [];
 
   const job = await db.query.knowledgeIngestJobs.findFirst({
-    where: (jobs, { eq }) => eq(jobs.id, id),
+    where: { RAW: sqlWhereFn((jobs, { eq }) => eq(jobs.id, id)) },
   });
   if (!job) {
     return NextResponse.json({ error: 'Job not found' }, { status: 404 });

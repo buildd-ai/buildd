@@ -20,6 +20,7 @@ import {
 } from '@buildd/core/token-delegation';
 import { loadRawTaskGrants, teamsOf } from './task-delegation';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from './team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type DelegatedTaskRow = Parameters<typeof loadRawTaskGrants>[0];
 
@@ -110,7 +111,7 @@ export async function addTaskDelegationGrant(
   by: { userId: string; capabilityGrantId: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { id: true, delegation: true, updatedAt: true } });
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true, delegation: true, updatedAt: true } });
     if (!task) return { ok: false, error: 'Task not found' };
     const current = task.delegation as TaskDelegation | null;
     const merged = mergeDelegationGrants(readScheduleDelegation(current), [{ workspaceId: grant.workspaceId, capabilities: [grant.capability] }]);
@@ -138,7 +139,7 @@ export async function removeTaskDelegationGrant(
   grant: { workspaceId: string; capability: ScheduleDelegationCapability },
 ): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { id: true, delegation: true, updatedAt: true } });
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true, delegation: true, updatedAt: true } });
     if (!task?.delegation) return;
     const current = task.delegation as TaskDelegation;
     const grants = removeDelegationCapability(readScheduleDelegation(current), grant.workspaceId, grant.capability);

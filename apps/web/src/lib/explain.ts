@@ -76,6 +76,7 @@ import {
   type HistoryNode,
   type GateHistoryEntry,
 } from '@/lib/explain-types';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** How many recent gate_events rows a task's `explain` answer carries. */
 const GATE_HISTORY_LIMIT = 10;
@@ -92,8 +93,8 @@ async function loadGateHistory(taskId: string): Promise<GateHistoryEntry[]> {
 
 async function loadGateRows(taskId: string): Promise<Array<{ entry: GateHistoryEntry; detail: unknown }>> {
   const rows = await db.query.gateEvents.findMany({
-    where: eq(gateEvents.taskId, taskId),
-    orderBy: [desc(gateEvents.occurredAt)],
+    where: sqlWhere(eq(gateEvents.taskId, taskId)),
+    orderBy: sqlOrderBy([desc(gateEvents.occurredAt)]),
     limit: GATE_HISTORY_LIMIT,
     columns: { occurredAt: true, gate: true, outcome: true, reason: true, detail: true },
   });
@@ -224,7 +225,7 @@ const WORKER_WITH = {
     supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
     abandonedAt: true, abandonedReason: true, supersessionScan: true,
   },
-  orderBy: [desc(workers.startedAt)],
+  orderBy: sqlOrderBy([desc(workers.startedAt)]),
 };
 
 const LIVE_WORKER_STATUSES = new Set<string>(SHARED_LIVE_WORKER_STATUSES);
@@ -235,7 +236,7 @@ async function missingBrowserFor(rows: LoadedTask[], workspaceId: string | null,
   if (local || !workspaceId || !rows.some(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && t.status === 'pending' && !hasLiveWorker(t))) return false;
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { id: true, teamId: true, accessMode: true, gitConfig: true, webhookConfig: true },
     });
     if (!ws) return false;
@@ -297,7 +298,7 @@ function deriveOpenAttempt(attempts: LoadedTask[]): OpenAttemptInfo | null {
  */
 export async function loadOpenAttempt(taskId: string): Promise<OpenAttemptInfo | null> {
   const attempts = (await db.query.tasks.findMany({
-    where: eq(tasks.parentTaskId, taskId),
+    where: sqlWhere(eq(tasks.parentTaskId, taskId)),
     columns: TASK_COLUMNS,
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -400,13 +401,13 @@ async function viewForMission(missionId: string): Promise<{
   answerExtras: StateBecauseExtras;
 } | null> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     with: { schedule: true },
   });
   if (!mission) return null;
 
   const loaded = (await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: TASK_COLUMNS,
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -647,7 +648,7 @@ export async function explainMission(missionId: string): Promise<ExplainResult |
   // Name the upstream mission rather than pointing at a UUID.
   if (view.waitingOn?.kind === 'dependency') {
     const upstream = await db.query.missions.findFirst({
-      where: eq(missions.id, view.waitingOn.missionId),
+      where: sqlWhere(eq(missions.id, view.waitingOn.missionId)),
       columns: { title: true },
     });
     answerExtras.dependencyTitle = upstream?.title ?? null;
@@ -745,8 +746,8 @@ async function loadLandingBlocker(
   lineage: LoadedTask[],
 ): Promise<LandingBlocker[]> {
   const rows = await db.query.gateEvents.findMany({
-    where: and(eq(gateEvents.taskId, task.id), eq(gateEvents.gate, GATE_SLUGS.PR_LANDING)),
-    orderBy: [desc(gateEvents.occurredAt)],
+    where: sqlWhere(and(eq(gateEvents.taskId, task.id), eq(gateEvents.gate, GATE_SLUGS.PR_LANDING))),
+    orderBy: sqlOrderBy([desc(gateEvents.occurredAt)]),
     limit: 1,
     columns: { occurredAt: true, gate: true, outcome: true, reason: true, detail: true },
   }).catch(() => []);
@@ -792,7 +793,7 @@ async function viewForTask(taskId: string): Promise<{
   missionId: string | null;
 } | null> {
   const task = (await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true, backend: true, pathDeclaration: true },
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -800,7 +801,7 @@ async function viewForTask(taskId: string): Promise<{
   if (!task) return null;
 
   const attempts = (await db.query.tasks.findMany({
-    where: eq(tasks.parentTaskId, taskId),
+    where: sqlWhere(eq(tasks.parentTaskId, taskId)),
     columns: TASK_COLUMNS,
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -811,7 +812,7 @@ async function viewForTask(taskId: string): Promise<{
   // A held mission is the pause and wins, so it is not read as local.
   const parentMission = task.missionId
     ? await db.query.missions.findFirst({
-        where: eq(missions.id, task.missionId),
+        where: sqlWhere(eq(missions.id, task.missionId)),
         columns: { executor: true, isHeld: true },
       })
     : null;
@@ -830,14 +831,14 @@ async function viewForTask(taskId: string): Promise<{
       id === taskId
         ? (task as LoadedTask)
         : (((await db.query.tasks.findFirst({
-            where: eq(tasks.id, id),
+            where: sqlWhere(eq(tasks.id, id)),
             columns: TASK_COLUMNS,
             with: { workers: WORKER_WITH },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
           })) as any as LoadedTask | undefined) ?? null),
     fetchChildren: async (parentIds) =>
       (await db.query.tasks.findMany({
-        where: inArray(tasks.parentTaskId, parentIds),
+        where: sqlWhere(inArray(tasks.parentTaskId, parentIds)),
         columns: TASK_COLUMNS,
         with: { workers: WORKER_WITH },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1043,18 +1044,18 @@ async function loadBaseSideMerges(input: {
   excludeWorkerId: string;
 }): Promise<BaseSideMerge[]> {
   const rows = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.workspaceId, input.workspaceId),
       eq(workers.prBaseRef, input.baseRef),
       isNotNull(workers.mergedAt),
       gt(workers.mergedAt, input.since),
       ne(workers.id, input.excludeWorkerId),
-    ),
+    )),
     columns: {
       id: true, taskId: true, prNumber: true, branch: true,
       mergedAt: true, lastCommitSha: true, observedTouches: true,
     },
-    orderBy: (w, { desc: d }) => [d(w.mergedAt)],
+    orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.mergedAt)]),
     limit: BASE_SIDE_LIMIT,
   });
   if (rows.length === 0) return [];
@@ -1062,7 +1063,7 @@ async function loadBaseSideMerges(input: {
   const taskIds = rows.map(r => r.taskId).filter((t): t is string => !!t);
   const taskRows = taskIds.length > 0
     ? await db.query.tasks.findMany({
-        where: inArray(tasks.id, taskIds),
+        where: sqlWhere(inArray(tasks.id, taskIds)),
         columns: { id: true, title: true, pathManifest: true },
       })
     : [];
@@ -1184,7 +1185,7 @@ export async function explainPr(worker: {
  */
 export async function explainWorkspace(workspaceId: string, actor: EvidenceActor): Promise<ExplainResult> {
   const activeMissions = await db.query.missions.findMany({
-    where: and(eq(missions.workspaceId, workspaceId), eq(missions.status, 'active')),
+    where: sqlWhere(and(eq(missions.workspaceId, workspaceId), eq(missions.status, 'active'))),
     columns: { id: true },
     // Same scan cap as the orphan-tasks query below — without it, a workspace
     // with many active missions fans out one explainMission() call (several
@@ -1195,10 +1196,10 @@ export async function explainWorkspace(workspaceId: string, actor: EvidenceActor
   });
 
   const orphanTasks = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress', 'completed']),
-    ),
+    )),
     columns: { id: true, missionId: true, taskClass: true },
     limit: 200,
   });

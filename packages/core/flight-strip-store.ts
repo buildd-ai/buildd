@@ -8,6 +8,7 @@ import {
   type FlightStripWorker,
   type MissionFlightStripData,
 } from './mission-helpers';
+import { sqlWhere } from './db/relational-sql';
 
 /** Columns computeMissionFlightStrip needs off `tasks`, in the query shape
  * both the write-side store and the list page share. */
@@ -39,7 +40,7 @@ export async function loadFlightStripInputs(
   missionId: string,
 ): Promise<{ tasks: FlightStripTask[]; workers: FlightStripWorker[] }> {
   const rows = await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: FLIGHT_STRIP_TASK_COLUMNS,
     with: { workers: { columns: FLIGHT_STRIP_WORKER_COLUMNS } },
   });

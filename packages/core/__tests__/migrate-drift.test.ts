@@ -19,7 +19,7 @@ import {
   type SnapshotMeta,
   type SnapshotMetaV1,
 } from '../db/migrate-drift';
-import { predictedFolderName, type LegacyMigration } from '../db/legacy-migrations';
+import { predictedFolderName, loadLegacyMap, LEGACY_MIGRATIONS_PATH, type LegacyMigration } from '../db/legacy-migrations';
 import { readMigrationTree } from '../db/migrate-tree';
 
 /**
@@ -178,28 +178,36 @@ describe('pg_dump-format baseline attribution', () => {
   });
 });
 
-describe('loadMigrationSources', () => {
-  it('loads this repo\'s real journal with statements for every entry', () => {
-    const sources = loadMigrationSources(new URL('../drizzle', import.meta.url).pathname);
+const REPO_DRIZZLE = new URL('../drizzle', import.meta.url).pathname;
+const repoSources = () => loadMigrationSourcesV1(REPO_DRIZZLE, loadLegacyMap(LEGACY_MIGRATIONS_PATH));
+// The rebase migration is comment-only by design: it carries a snapshot, no DDL.
+const isRebase = (tag: string) => /_snapshot_rebase$/.test(tag);
 
-    console.log(`loadMigrationSources: ${sources.length} migrations, ` +
+describe('loadMigrationSourcesV1 over the repo', () => {
+  it('loads this repo\'s real v1 tree with statements for every migration that has DDL', () => {
+    const sources = repoSources();
+
+    console.log(`loadMigrationSourcesV1: ${sources.length} migrations, ` +
       `${sources.reduce((n, s) => n + s.statements.length, 0)} statements`);
 
     // The squashed baseline comes first and carries the whole released schema,
     // one statement per breakpoint.
-    expect(sources[0]!.tag).toBe('0000_baseline');
+    expect(sources[0]!.tag).toMatch(/^\d{14}_baseline$/);
     expect(sources[0]!.statements.length).toBeGreaterThan(500);
-    // Every entry must carry SQL: a journal entry whose file failed to read
-    // would silently make its columns look "unexplained" instead of drifted.
-    expect(sources.filter((s) => s.statements.length === 0).map((s) => s.tag)).toEqual([]);
-    expect(sources.every((s) => Number.isFinite(s.when) && s.when > 0)).toBe(true);
+    // Every folder must carry SQL: one whose file failed to read would silently
+    // make its columns look "unexplained" instead of drifted.
+    expect(sources.filter((s) => s.statements.length === 0 && !isRebase(s.tag)).map((s) => s.tag)).toEqual([]);
+    // Legacy history keeps its exact-ms `when`; post-cutover folders are keyed by name only.
+    const legacyNames = new Set(loadLegacyMap(LEGACY_MIGRATIONS_PATH).map((e) => e.name));
+    expect(sources.filter((s) => legacyNames.has(s.name!)).every((s) => Number.isFinite(s.when) && s.when! > 0)).toBe(true);
+    expect(sources.filter((s) => !legacyNames.has(s.name!)).every((s) => s.when === null)).toBe(true);
   });
 
-  it('classifies the real journal against a DB that is missing a real column', () => {
-    // End-to-end over the actual corpus: pick the newest ADD COLUMN in the
-    // journal, mark its migration applied, and remove the column from the
-    // "database". The gate must call that drift, not pending.
-    const sources = loadMigrationSources(new URL('../drizzle', import.meta.url).pathname);
+  it('classifies the real tree against a DB that is missing a real column', () => {
+    // End-to-end over the actual corpus: pick the newest ADD COLUMN, mark its
+    // migration applied, and remove the column from the "database". The gate
+    // must call that drift, not pending.
+    const sources = repoSources();
     const withAdd = [...sources]
       .reverse()
       .find((s) => s.statements.some((st) => /ADD COLUMN/i.test(st)))!;
@@ -208,7 +216,8 @@ describe('loadMigrationSources', () => {
 
     const result = classifyMissingSchemaObjects({
       sources,
-      appliedWhens: new Set(sources.map((s) => s.when)),
+      appliedWhens: new Set(sources.flatMap((s) => (s.when === null ? [] : [s.when]))),
+      appliedNames: new Set(sources.map((s) => s.name!)),
       expected: new Map([[table!, new Set([column!])]]),
       actual: new Map([[table!, new Set()]]),
     });
@@ -228,25 +237,14 @@ describe('real snapshot coverage', () => {
    * multi-CREATE-TABLE file, a rename this does not follow) shows up here first.
    */
   it('traces every snapshot object to a creating migration', () => {
-    const drizzleDir = new URL('../drizzle', import.meta.url).pathname;
-    const sources = loadMigrationSources(drizzleDir);
+    const sources = repoSources();
 
-    const metaDir = join(drizzleDir, 'meta');
-    const snapshotFile = readdirSync(metaDir)
-      .filter((f) => /^\d+_snapshot\.json$/.test(f))
-      .sort()
-      .pop()!;
-    const snapshot = JSON.parse(readFileSync(join(metaDir, snapshotFile), 'utf8')) as {
-      tables: Record<string, { name: string; columns: Record<string, { name: string }> }>;
-    };
-
-    const expectedFromSnapshot = new Map<string, Set<string>>();
-    for (const table of Object.values(snapshot.tables)) {
-      expectedFromSnapshot.set(
-        table.name,
-        new Set(Object.values(table.columns).map((c) => c.name))
-      );
-    }
+    // The tip is the newest folder's v8 snapshot.
+    const tipFolder = readMigrationTree(REPO_DRIZZLE).at(-1)!.name;
+    const snapshotFile = `${tipFolder}/snapshot.json`;
+    const expectedFromSnapshot = expectedColumnsFromSnapshot(
+      JSON.parse(readFileSync(join(REPO_DRIZZLE, snapshotFile), 'utf8')),
+    );
 
     const result = classifyMissingSchemaObjects({
       sources,
@@ -441,15 +439,16 @@ describe('resolveSnapshotSelection', () => {
   });
 
   it("resolves THIS repo's own snapshot chain — a live fork must fail the suite, not the release", () => {
-    const metas = loadSnapshotMetas(join(import.meta.dir, '..', 'drizzle', 'meta'));
-    // The squash left the baseline's snapshot plus one per later migration.
+    const metas = loadSnapshotMetasV1(REPO_DRIZZLE);
+    // One snapshot per folder: the squashed baseline, every later migration, the rebase.
     expect(metas.length).toBeGreaterThan(0);
+    expect(snapshotChainGaps(metas)).toEqual([]);
 
-    const result = resolveSnapshotSelection(metas);
+    const result = resolveSnapshotSelectionV1(metas);
     if (result.kind === 'forked') {
       throw new Error(
         `Snapshot chain is forked: ${result.file} and ${result.siblings.join(', ')} ` +
-          `all claim prevId ${result.prevId}. Relinearize before releasing.`
+          `all claim prevId ${result.prevId}. Run bun run migrations:regenerate before releasing.`
       );
     }
     expect(result.kind).toBe('resolved');

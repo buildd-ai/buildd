@@ -9,6 +9,7 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { requestingPerson } from '@/lib/request-person';
 import { dismissSupersessionSuggestion, recordPrAbandonment, recordPrSupersession } from '@/lib/pr-supersession';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ACTIONS = new Set(['confirm', 'dismiss', 'abandon']);
 
@@ -69,7 +70,7 @@ export async function POST(
   try {
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       columns: { id: true, teamId: true },
     });
     if (!mission || !teamIds.includes(mission.teamId)) {
@@ -77,12 +78,12 @@ export async function POST(
     }
 
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { id: true, missionId: true },
       with: {
         workers: {
           columns: { id: true, prUrl: true, prNumber: true, supersessionScan: true },
-          orderBy: [desc(workers.startedAt)],
+          orderBy: sqlOrderBy([desc(workers.startedAt)]),
           limit: 1,
         },
       },

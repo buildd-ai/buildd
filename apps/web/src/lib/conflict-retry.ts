@@ -49,6 +49,7 @@ import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 import { classifyConflictFix, type ConflictRecoveryAction } from '@/lib/conflict-fix-liveness';
 import { observeConflict, type ConflictSeen } from '@/lib/workflow/seam';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Public default; read the live value with `policyValue('maxConflictIterations')`. */
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = POLICY_DEFAULTS.maxConflictIterations;
@@ -409,7 +410,7 @@ function buildConflictDescription(
    \`\`\`
 3. Where the repo defines it, run \`bun run conflicts:generated\` first: it regenerates the conflicted files a script writes (a specs index, the Drizzle journal, snapshots and migrations, a lint baseline) instead of merging their text, and lists every conflict left.
    Resolve those on their merits — keep both intents, do NOT use blanket \`--ours\` or \`--theirs\` — then run it again to finish the generated files it was waiting on.
-   Without it: a conflict in a Drizzle \`meta/_journal.json\` or snapshot is a migration-index collision, not text to merge: resolve the rest, then regenerate this branch's migration at the next free index — \`bun run migrations:renumber --base=origin/<the PR base branch>\` where the repo defines it, otherwise take the base's journal and snapshots, delete this branch's migration and re-run \`drizzle-kit generate\`.
+   Without it: a conflict in a Drizzle \`meta/_journal.json\` or snapshot is a migration-index collision, not text to merge: resolve the rest, then regenerate this branch's migration on top of the base — \`bun run migrations:regenerate --base=origin/<the PR base branch>\` where the repo defines it, otherwise take the base's journal and snapshots, delete this branch's migration and re-run \`drizzle-kit generate\`.
 4. Run the test suite and verify correctness before pushing.
 5. ${pushStep}
 
@@ -516,7 +517,9 @@ function buildMigrationCollisionDescription(
   // Regenerating against the base alone would mint an open PR's slot again,
   // so start past it until that PR lands.
   const otherIndex = Number(/^(\d{4,})_/.exec(collision.otherFile)?.[1]);
-  const minIndex = !onBase && Number.isFinite(otherIndex) ? ` --min-index=${otherIndex + 1}` : '';
+  const pastOpenPr = !onBase && Number.isFinite(otherIndex)
+    ? ` The other open PR holds index ${otherIndex}: number this one past it until that PR lands.`
+    : '';
 
   return `${opening}${lineageNote}
 
@@ -524,7 +527,7 @@ function buildMigrationCollisionDescription(
 
 ## Instructions
 
-\`migrations:renumber\` does the whole renumber: it resets \`packages/core/drizzle/\` to the base's exact state and re-runs \`drizzle-kit generate\`, so this branch's schema change lands at the next free index with a fresh name, journal entry and snapshot. Do NOT hand-edit the journal, a snapshot or a migration's number.
+\`migrations:regenerate\` does the whole repair: it resets \`packages/core/drizzle/\` to the base's exact state and re-runs \`drizzle-kit generate\`, so this branch's schema change is re-diffed against the base's newest snapshot and lands as a fresh migration. Do NOT hand-edit a snapshot, a journal or a migration's name or number.
 
 1. You are on branch \`${worker.branch}\`. Your worktree is based on the previous attempt's work.
 2. Merge the base branch in (do NOT rebase). Resolve any conflicts OUTSIDE \`packages/core/drizzle/\` on the merits; leave the drizzle ones, the next step resolves them:
@@ -532,13 +535,13 @@ function buildMigrationCollisionDescription(
    git fetch origin
    git merge origin/${baseRef}
    \`\`\`
-3. Renumber:
+3. Regenerate:
    \`\`\`bash
-   bun run migrations:renumber --base=origin/${baseRef}${minIndex}
+   bun run migrations:regenerate --base=origin/${baseRef}
    \`\`\`
-   (No \`migrations:renumber\` script in this repo? Do it by hand the same way: \`git checkout origin/${baseRef} -- packages/core/drizzle\`, delete this branch's \`${collision.file}\`, then \`cd packages/core && bun db:generate\`.)
+   (No \`migrations:regenerate\` script in this repo? Do it by hand the same way: \`git checkout origin/${baseRef} -- packages/core/drizzle\`, delete this branch's \`${collision.file}\`, then \`cd packages/core && bun db:generate\`.${pastOpenPr})
    Exit 0: staged and clean. Exit 3: the regenerated SQL differs from the SQL it replaced — read both; re-add any hand-written statement the old file had (via \`bun db:generate --custom\`, never by editing an existing file). Any other exit: read the message, it names what to fix.
-4. Verify: \`bun run migrations:index-check --base=origin/${baseRef}\` passes and \`cd packages/core && bun db:generate\` reports no schema changes.
+4. Verify: \`bun run migrations:layout-check --base=origin/${baseRef}\` and \`bun run migrations:commute\` pass and \`cd packages/core && bun db:generate\` reports no schema changes.
 5. Commit (completing the merge) — change nothing else; this is a migration-file-only fix, same doctrine as any conflict-retry.
 6. ${pushStep}
 
@@ -767,16 +770,16 @@ async function kernelConflictRetry(
   // A conflict retry filed by the legacy path (before cutover) is legacy's to
   // finish or recover: one authority per remediation (S37).
   const legacyLive = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, params.workspaceId),
       eq(tasks.conflictRetryPrNumber, params.prNumber),
       inArray(tasks.status, [...OPEN_TASK_STATUSES]),
       sql`${tasks.deliveryId} IS NULL`,
-    ),
+    )),
     columns: { id: true, deliveryId: true },
   });
   if (legacyLive) return null;
-  const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, params.taskId), columns: { context: true } });
+  const owner = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, params.taskId)), columns: { context: true } });
   const disabled = !params.humanInitiated && !isAutoResolveMergeConflictsEnabled(workspace.gitConfig as WorkspaceGitConfig | null);
   const seen = await observeConflict({
     workspaceId: params.workspaceId,
@@ -798,7 +801,7 @@ async function kernelConflictRetry(
     // S37: the kernel's live conflict fix is the canonical remediation. A stalled
     // one is re-woken or requeued in place (a task-row repair, not a decision).
     const row = await db.query.tasks.findFirst({
-      where: eq(tasks.id, out.inFlightTaskId),
+      where: sqlWhere(eq(tasks.id, out.inFlightTaskId)),
       columns: { id: true, status: true, createdAt: true, claimedAt: true, updatedAt: true, context: true },
     });
     if (row && (OPEN_TASK_STATUSES as readonly string[]).includes(row.status)) {
@@ -823,10 +826,10 @@ async function reconcilePendingRepairEdges(
   // copied no caller edges, so untagged pre-v2 attempts have only inferred ones.
   const inferred = new Set(decl?.inferredDependsOn ?? (decl?.overlapPolicy == null ? deps : []));
   if (!inferred.size) return;
-  const subject = await db.query.tasks.findFirst({ where: eq(tasks.id, subjectTaskId), columns: { pathManifest: true } });
+  const subject = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, subjectTaskId)), columns: { pathManifest: true } });
   if (!subject) return;
   const candidates = await db.query.tasks.findMany({
-    where: and(eq(tasks.workspaceId, workspaceId), inArray(tasks.status, [...OPEN_TASK_STATUSES])),
+    where: sqlWhere(and(eq(tasks.workspaceId, workspaceId), inArray(tasks.status, [...OPEN_TASK_STATUSES]))),
     columns: { id: true, status: true, pathManifest: true, dependsOn: true },
   });
   const graph = new Map(candidates.map(t => [t.id, t.dependsOn]));
@@ -870,9 +873,9 @@ export async function recoverStalledConflictFix(row: {
   let workerUpdatedAt: Date | null = null;
   if (row.status !== 'pending') {
     const w = await db.query.workers.findFirst({
-      where: eq(workers.taskId, row.id),
+      where: sqlWhere(eq(workers.taskId, row.id)),
       columns: { status: true, updatedAt: true },
-      orderBy: (wk, { desc }) => [desc(wk.createdAt)],
+      orderBy: sqlOrderByFn((wk, { desc }) => [desc(wk.createdAt)]),
     }).catch(() => null);
     workerStatus = (w?.status as string | undefined) ?? null;
     workerUpdatedAt = (w?.updatedAt as Date | undefined) ?? null;
@@ -906,7 +909,7 @@ export async function dispatchConflictRetry(
 
   // Fetch workspace (needed for autoResolveMergeConflicts flag + announceTaskCreated)
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     with: { githubInstallation: true },
   });
   if (!workspace) {
@@ -932,7 +935,7 @@ export async function dispatchConflictRetry(
   // as part of its own push). Checked before the behind-only update too:
   // moving the branch under a working agent races its push.
   const liveRetry = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       or(
         eq(tasks.conflictRetryPrNumber, prNumber),
@@ -940,7 +943,7 @@ export async function dispatchConflictRetry(
         eq(tasks.reviewerRetryPrNumber, prNumber),
       ),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-    ),
+    )),
     columns: { id: true, conflictRetryHeadSha: true, status: true, conflictRetryPrNumber: true, createdAt: true, claimedAt: true, updatedAt: true, context: true, taskClass: true, dependsOn: true, pathDeclaration: true },
   });
   if (liveRetry) {
@@ -968,7 +971,7 @@ export async function dispatchConflictRetry(
   // Fetch the original task — before the behind-only update, whose target
   // branch it may rule out (below).
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, title: true, description: true, workspaceId: true, context: true, missionId: true, parentTaskId: true, pathManifest: true },
   });
   if (!task) {
@@ -1090,7 +1093,7 @@ export async function dispatchConflictRetry(
 
   // Fetch the worker for branch info and recorded diff stats
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, workerId),
+    where: sqlWhere(eq(workers.id, workerId)),
     columns: { id: true, branch: true, prNumber: true, filesChanged: true, linesAdded: true, linesRemoved: true, prOpenedBaseSha: true },
   });
   if (!worker || !worker.branch) {
@@ -1227,11 +1230,11 @@ export async function dispatchConflictRetry(
   // attempt; the same basis twice is a person's.
   if (!retryTask && basis && !params.humanInitiated && policyValue('maxConflictIterations') > 0) {
     const attempted = await db.query.tasks.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.workspaceId, workspaceId),
         eq(tasks.conflictRetryPrNumber, prNumber),
         sql`${tasks.context}->>'conflictBasis' = ${basis}`,
-      ),
+      )),
       columns: { id: true, subjectHeadSha: true },
     });
     if (!attempted) {
@@ -1264,10 +1267,10 @@ export async function dispatchConflictRetry(
     // intermediate task that declares no manifest at all, and isDownstreamOf needs
     // every live dependsOn edge in the workspace to walk that chain.
     const inFlightTasks = await db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.workspaceId, workspaceId),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-      ),
+      )),
       columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true, dependsOn: true, status: true },
     });
     const dependsOnById = new Map<string, readonly string[] | null | undefined>(
@@ -1411,7 +1414,7 @@ export async function escalateSupersession(
   successorPrNumber: number | null,
 ): Promise<void> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, context: true },
   });
   if (!task) return;
@@ -1492,7 +1495,7 @@ export async function escalateBaseRewrite(
   currentBaseSha: string | undefined,
 ): Promise<void> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, context: true },
   });
   if (!task) return;

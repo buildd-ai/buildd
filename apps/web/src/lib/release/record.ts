@@ -30,6 +30,7 @@ import { githubApi as defaultGithubApi } from '@/lib/github';
 import { dispatchWorkflowRelease, releasePreflight } from '@/lib/release/dispatch';
 import { attributeRelease } from '@buildd/core/release-attribution';
 import type { ReleaseArchetype } from '@buildd/core/release-archetype';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface RecordAndDispatchParams {
   workspaceId: string;
@@ -131,11 +132,11 @@ export async function recordAndDispatchRelease(
   // re-dispatching a release that was never actually finished.
   if (!params.force) {
     const existing = await db.query.releases.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(releases.workspaceId, workspaceId),
         eq(releases.headSha, headSha),
         inArray(releases.state, ['dispatched', 'deploying', 'pending_external']),
-      ),
+      )),
     });
     if (existing) {
       return { ok: true, releaseId: existing.id, deduped: true, headSha };

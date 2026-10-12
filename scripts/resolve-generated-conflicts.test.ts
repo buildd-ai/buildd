@@ -118,86 +118,77 @@ describe('a real code conflict', () => {
   });
 });
 
-describe('drizzle migrations at the same index', () => {
+describe('drizzle migrations on a branch cut before the v1 cutover', () => {
   const journal = (tags: string[]) => JSON.stringify({ entries: tags.map((tag, idx) => ({ idx, tag })) }, null, 2) + '\n';
-  function journalsCollide(extra: { trunk?: () => void; mission?: () => void } = {}) {
-    diverge({
-      base: () => { write('packages/core/db/schema.ts', 's0\n'); write('packages/core/drizzle/meta/_journal.json', journal(['0000_base'])); },
-      trunk: () => { write('packages/core/drizzle/meta/_journal.json', journal(['0000_base', '0001_trunk'])); extra.trunk?.(); },
-      mission: () => { write('packages/core/drizzle/meta/_journal.json', journal(['0000_base', '0001_mission'])); extra.mission?.(); },
-    });
-  }
-  /** Stands in for renumberAgainstBase: settles the drizzle conflict the way it would. */
-  const renumbered = (r: { sqlChanged?: boolean; throws?: string } = {}) => (dir: string) => {
-    if (r.throws) throw new Error(r.throws);
-    realRun('git', ['checkout', 'MERGE_HEAD', '--', 'packages/core/drizzle'], { cwd: dir });
-    realRun('git', ['add', '-A', '--', 'packages/core/drizzle'], { cwd: dir });
-    return { removed: ['0001_mission.sql'], generated: ['0002_mission.sql'], sqlChanged: r.sqlChanged ?? false };
-  };
-
-  it('is repaired by the migration renumber, against the trunk being merged', () => {
-    journalsCollide();
-    let calledWith: string | null = null;
-    const report = resolveGeneratedConflicts(root, runWith({}), (dir) => { calledWith = dir; return renumbered()(dir); });
-    expect(calledWith).toBe(root);
-    expect(report.steps).toEqual([{ path: 'packages/core/drizzle/', result: 'resolved' }]);
-    expect(report.remaining).toEqual([]);
-  });
-
-  it('runs after the INDEX is regenerated, so that conflict does not hold it back', () => {
-    journalsCollide({
-      trunk: () => write('docs/specs/INDEX.md', 'trunk\n'),
-      mission: () => write('docs/specs/INDEX.md', 'mission\n'),
-    });
-    write('docs/specs/INDEX.md', 'x'); // keep the working copy conflicted as git left it
-    realRun('git', ['checkout', '-m', '--', 'docs/specs/INDEX.md'], { cwd: root });
-    const report = resolveGeneratedConflicts(root, runWith({}), renumbered());
-    expect(report.steps.map((s) => [s.path, s.result])).toEqual([['docs/specs/INDEX.md', 'resolved'], ['packages/core/drizzle/', 'resolved']]);
-  });
-
-  it('waits while real code is conflicted: the migrations regenerate from the merged schema', () => {
-    journalsCollide({
-      trunk: () => write('packages/core/db/schema.ts', 's trunk\n'),
-      mission: () => write('packages/core/db/schema.ts', 's mission\n'),
-    });
-    let called = false;
-    const report = resolveGeneratedConflicts(root, runWith({}), (dir) => { called = true; return renumbered()(dir); });
-    expect(called).toBe(false);
-    expect(report.steps[0]).toMatchObject({ path: 'packages/core/drizzle/', result: 'waiting' });
-    expect(report.remaining).toContain('packages/core/db/schema.ts');
-  });
-
-  it('leaves it for a person when the regenerated SQL differs from what it replaced', () => {
-    journalsCollide();
-    const report = resolveGeneratedConflicts(root, runWith({}), renumbered({ sqlChanged: true }));
-    expect(report.steps[0]).toMatchObject({ path: 'packages/core/drizzle/', result: 'needs_person' });
-    expect((report.steps[0] as { reason: string }).reason).toContain('hand-written');
-    expect(exitCodeFor(report)).toBe(2);
-  });
-
-  it('trunk on drizzle v1, branch still on the journal: renumber refuses, a person regenerates', () => {
-    // dev deleted the journal at the cutover; the branch modified it: a
-    // modify/delete conflict the legacy renumber must not "resolve".
+  /**
+   * Trunk deleted the journal and moved to folders; the branch kept the journal,
+   * modified it and added a numbered file: a modify/delete conflict on meta/.
+   */
+  function legacyBranchOverV1(extra: { trunk?: () => void; mission?: () => void } = {}) {
     diverge({
       base: () => { write('packages/core/db/schema.ts', 's0\n'); write('packages/core/drizzle/0000_base.sql', 'SELECT 1;\n'); write('packages/core/drizzle/meta/_journal.json', journal(['0000_base'])); },
       trunk: () => {
         realRun('git', ['rm', '-q', '-r', 'packages/core/drizzle'], { cwd: root });
         write('packages/core/drizzle/20260101000000_base/migration.sql', 'SELECT 1;\n');
         write('packages/core/drizzle/20260101000000_base/snapshot.json', '{}\n');
+        extra.trunk?.();
       },
-      mission: () => { write('packages/core/drizzle/0001_mission.sql', 'SELECT 2;\n'); write('packages/core/drizzle/meta/_journal.json', journal(['0000_base', '0001_mission'])); },
+      mission: () => { write('packages/core/drizzle/0001_mission.sql', 'SELECT 2;\n'); write('packages/core/drizzle/meta/_journal.json', journal(['0000_base', '0001_mission'])); extra.mission?.(); },
     });
-    const report = resolveGeneratedConflicts(root, runWith({}));
+  }
+  /** Stands in for regenerateAgainstBase: settles the drizzle conflict the way it would. */
+  const regenerated = (r: { sqlChanged?: boolean; throws?: string } = {}) => (dir: string) => {
+    if (r.throws) throw new Error(r.throws);
+    realRun('git', ['checkout', 'MERGE_HEAD', '--', 'packages/core/drizzle'], { cwd: dir });
+    realRun('git', ['rm', '-q', '-r', '-f', '--ignore-unmatch', 'packages/core/drizzle/meta', 'packages/core/drizzle/0001_mission.sql'], { cwd: dir });
+    realRun('git', ['add', '-A', '--', 'packages/core/drizzle'], { cwd: dir });
+    return { removed: ['0001_mission.sql'], generated: ['20260102000000_mission'], sqlChanged: r.sqlChanged ?? false };
+  };
+
+  it('is repaired by the migration regenerate, against the trunk being merged', () => {
+    legacyBranchOverV1();
+    let calledWith: string | null = null;
+    const report = resolveGeneratedConflicts(root, runWith({}), (dir) => { calledWith = dir; return regenerated()(dir); });
+    expect(calledWith).toBe(root);
+    expect(report.steps).toEqual([{ path: 'packages/core/drizzle/', result: 'resolved' }]);
+    expect(report.remaining).toEqual([]);
+  });
+
+  it('runs after the INDEX is regenerated, so that conflict does not hold it back', () => {
+    legacyBranchOverV1({
+      trunk: () => write('docs/specs/INDEX.md', 'trunk\n'),
+      mission: () => write('docs/specs/INDEX.md', 'mission\n'),
+    });
+    write('docs/specs/INDEX.md', 'x'); // keep the working copy conflicted as git left it
+    realRun('git', ['checkout', '-m', '--', 'docs/specs/INDEX.md'], { cwd: root });
+    const report = resolveGeneratedConflicts(root, runWith({}), regenerated());
+    expect(report.steps.map((s) => [s.path, s.result])).toEqual([['docs/specs/INDEX.md', 'resolved'], ['packages/core/drizzle/', 'resolved']]);
+  });
+
+  it('waits while real code is conflicted: the migrations regenerate from the merged schema', () => {
+    legacyBranchOverV1({
+      trunk: () => write('packages/core/db/schema.ts', 's trunk\n'),
+      mission: () => write('packages/core/db/schema.ts', 's mission\n'),
+    });
+    let called = false;
+    const report = resolveGeneratedConflicts(root, runWith({}), (dir) => { called = true; return regenerated()(dir); });
+    expect(called).toBe(false);
+    expect(report.steps[0]).toMatchObject({ path: 'packages/core/drizzle/', result: 'waiting' });
+    expect(report.remaining).toContain('packages/core/db/schema.ts');
+  });
+
+  it('leaves it for a person when the regenerated SQL differs from what it replaced', () => {
+    legacyBranchOverV1();
+    const report = resolveGeneratedConflicts(root, runWith({}), regenerated({ sqlChanged: true }));
     expect(report.steps[0]).toMatchObject({ path: 'packages/core/drizzle/', result: 'needs_person' });
-    expect((report.steps[0] as { reason: string }).reason).toMatch(/drizzle v1/);
+    expect((report.steps[0] as { reason: string }).reason).toContain('hand-written');
     expect(exitCodeFor(report)).toBe(2);
   });
 
   it('does not call it resolved when the repair leaves a legacy .sql next to v1 folders', () => {
-    journalsCollide();
+    legacyBranchOverV1();
     const report = resolveGeneratedConflicts(root, runWith({}), (dir) => {
-      const r = renumbered()(dir);
-      write('packages/core/drizzle/20260101000000_x/migration.sql', 'SELECT 1;\n');
+      const r = regenerated()(dir);
       write('packages/core/drizzle/0002_left_behind.sql', 'SELECT 1;\n');
       return r;
     });
@@ -205,9 +196,9 @@ describe('drizzle migrations at the same index', () => {
     expect((report.steps[0] as { reason: string }).reason).toContain('layout check');
   });
 
-  it('leaves it for a person when the renumber itself fails', () => {
-    journalsCollide();
-    const report = resolveGeneratedConflicts(root, runWith({}), renumbered({ throws: 'drizzle-kit generate failed' }));
+  it('leaves it for a person when the regenerate itself fails', () => {
+    legacyBranchOverV1();
+    const report = resolveGeneratedConflicts(root, runWith({}), regenerated({ throws: 'drizzle-kit generate failed' }));
     expect(report.steps[0]).toMatchObject({ result: 'needs_person', reason: 'drizzle-kit generate failed' });
   });
 });

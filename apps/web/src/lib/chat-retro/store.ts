@@ -20,6 +20,7 @@ import type { ChatRetroSettings } from './settings';
 import { CHAT_RETRO_DOGFOOD, effectiveChatRetroSettings, readChatRetroSettings } from './settings';
 import { isUuid } from '@/lib/uuid';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Lessons are kept this long, then pruned by the same cron. */
 export const RETRO_RETENTION_DAYS = 90;
@@ -244,8 +245,8 @@ export async function proposalsFiledToday(teamId: string, now: Date): Promise<nu
 
 export async function priorFiling(workspaceId: string, signature: string): Promise<PriorFiling | null> {
   const row = await db.query.tasks.findFirst({
-    where: priorFilingWhere(workspaceId, signature),
-    orderBy: [desc(tasks.createdAt)],
+    where: sqlWhere(priorFilingWhere(workspaceId, signature)),
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     columns: { id: true, status: true, context: true },
   });
   if (!row) return null;

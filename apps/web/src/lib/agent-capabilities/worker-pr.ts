@@ -43,6 +43,7 @@ import type { PrOwnershipTask } from './pr-ownership';
 import { taskLinksPr } from './pr-links';
 import type { AgentPrincipal } from './principal';
 import type { GithubCapability } from './github';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type WorkerPrCapability = Extract<GithubCapability, 'pr.create' | 'pr.adopt'>;
 
@@ -143,9 +144,9 @@ export async function authorizeWorkerPrCapability(
 /** The mission of the task whose worker carries `prNumber` in this workspace, or null. */
 export async function missionOfPr(workspaceId: string, prNumber: number): Promise<string | null> {
   const owner = await db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    where: sqlWhere(and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber))),
     // The callback form hands `desc` in, so this module needs no extra drizzle import.
-    orderBy: (w, { desc }) => [desc(w.createdAt)],
+    orderBy: sqlOrderByFn((w, { desc }) => [desc(w.createdAt)]),
     columns: { id: true },
     with: { task: { columns: { missionId: true } } },
   });

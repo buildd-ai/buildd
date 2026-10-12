@@ -667,7 +667,7 @@ runner without it is no less safe, only noisier.
    `db.transaction()` (neon-http), so the transition row, fact link and effect rows are
    written by the **same single statement** using data-modifying CTEs, the pattern
    `enqueueDispatchSql` in `packages/core/dispatch-outbox.ts` uses and the trigger in
-   migration 0231 (now in `packages/core/drizzle/0000_baseline.sql`) backs up.
+   migration 0231 (now in `packages/core/drizzle/20261006230118_baseline/migration.sql`) backs up.
 2. **Who supplies `expectedVersion`.**
    - Human and agent callers (dashboard, MCP, task token) receive `version` with every
      read of a delivery and send it back; a stale one gets `stale` plus the current

@@ -20,6 +20,7 @@ import { ManageBillingButton, SeatsForm, UpgradeButton } from './BillingActions'
 import CapsForm from './CapsForm';
 import { timeZoneLabel } from './timezone-label';
 import { MySpend, PeopleSpend } from './SpendTables';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,11 +55,11 @@ export default async function BillingSettingsPage({
 
   const [teamRow, members, usage] = await Promise.all([
     db.query.teams.findFirst({
-      where: eq(teams.id, currentTeam.id),
+      where: sqlWhere(eq(teams.id, currentTeam.id)),
       columns: { ...BILLING_TEAM_COLUMNS, timezone: true, inferenceKeyPolicy: true, credentialPolicy: true },
     }).catch(() => null),
     db.query.teamMembers.findMany({
-      where: eq(teamMembers.teamId, currentTeam.id),
+      where: sqlWhere(eq(teamMembers.teamId, currentTeam.id)),
       with: { user: { columns: { id: true, name: true, email: true } } },
     }).catch(() => [] as Array<{ userId: string; user: { name: string | null; email: string | null } | null }>),
     billing ? teamSeatUsage(currentTeam.id).catch(() => ({ members: 0, pending: 0 })) : null,

@@ -8,6 +8,7 @@ import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { taskLinksPr } from './agent-capabilities/pr-links';
 import { delegationAllows, type ScheduleDelegationCapability, type ScheduleDelegationGrant } from '@buildd/core/token-delegation';
 import { loadTokenDelegations } from './task-delegation';
+import { sqlWhere, sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 /**
  * Authentication for the few routes a cloud container's per-task token may
@@ -58,7 +59,7 @@ export async function authenticateTaskScopedCaller(
   if (!isTaskToken(apiKey)) return request ? authenticateApiKey(apiKey, request) : authenticateApiKey(apiKey);
   const claims = verifyTaskToken(apiKey);
   if (!claims) return null;
-  const account = await db.query.accounts.findFirst({ where: eq(accounts.id, claims.accountId) });
+  const account = await db.query.accounts.findFirst({ where: sqlWhere(eq(accounts.id, claims.accountId)) });
   if (!account) return null;
   if (taskTokenKeyBinding(account.apiKey) !== claims.keyBinding) return null;
   // The minting key's current scopes and workspace list still bound the
@@ -180,7 +181,7 @@ export async function taskScopeTaskLinksPr(
   const scope = account.taskScope;
   if (!scope || !pr.workspaceId || pr.workspaceId !== scope.workspaceId) return false;
   const task = await db.query.tasks.findFirst({
-    where: (t, { eq: eqOp }) => eqOp(t.id, scope.taskId),
+    where: { RAW: sqlWhereFn((t, { eq: eqOp }) => eqOp(t.id, scope.taskId)) },
     columns: {
       id: true, workspaceId: true, context: true,
       reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
@@ -197,7 +198,7 @@ export async function taskScopeTaskLinksPr(
  */
 async function ownTaskMission(scope: TaskScope): Promise<{ missionId: string | null; initiativeId: string | null } | null> {
   const task = await db.query.tasks.findFirst({
-    where: (t, { eq: eqOp }) => eqOp(t.id, scope.taskId),
+    where: { RAW: sqlWhereFn((t, { eq: eqOp }) => eqOp(t.id, scope.taskId)) },
     columns: { missionId: true, workspaceId: true },
     with: { mission: { columns: { initiativeId: true } } },
   });
@@ -246,7 +247,7 @@ export async function taskScopeAllowsWorkerId(
 ): Promise<boolean> {
   if (!account.taskScope || !workerId) return true;
   const worker = await db.query.workers.findFirst({
-    where: (w, { eq: eqOp }) => eqOp(w.id, workerId),
+    where: { RAW: sqlWhereFn((w, { eq: eqOp }) => eqOp(w.id, workerId)) },
     columns: { taskId: true, accountId: true },
   });
   return !!worker && worker.accountId === account.id && taskScopeAllowsWorker(account, worker);

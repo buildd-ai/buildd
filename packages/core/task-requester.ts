@@ -13,6 +13,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from './db';
 import { missions, taskSchedules, tasks } from './db/schema';
+import { sqlWhere } from './db/relational-sql';
 
 export interface RequesterTaskFields {
   createdByUserId?: string | null;
@@ -32,7 +33,7 @@ export async function resolveTaskRequesterUserId(task: RequesterTaskFields): Pro
   for (let hop = 0; hop < MAX_PARENT_HOPS && current.parentTaskId && !seen.has(current.parentTaskId); hop++) {
     seen.add(current.parentTaskId);
     const parent = await db.query.tasks.findFirst({
-      where: eq(tasks.id, current.parentTaskId),
+      where: sqlWhere(eq(tasks.id, current.parentTaskId)),
       columns: { createdByUserId: true, parentTaskId: true, missionId: true, scheduleId: true },
     });
     if (!parent) break;
@@ -47,7 +48,7 @@ export async function resolveTaskRequesterUserId(task: RequesterTaskFields): Pro
   const missionId = task.missionId ?? current.missionId;
   if (missionId) {
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, missionId),
+      where: sqlWhere(eq(missions.id, missionId)),
       columns: { createdByUserId: true },
     });
     if (mission?.createdByUserId) return mission.createdByUserId;
@@ -56,7 +57,7 @@ export async function resolveTaskRequesterUserId(task: RequesterTaskFields): Pro
   const scheduleId = task.scheduleId ?? current.scheduleId;
   if (scheduleId) {
     const schedule = await db.query.taskSchedules.findFirst({
-      where: eq(taskSchedules.id, scheduleId),
+      where: sqlWhere(eq(taskSchedules.id, scheduleId)),
       columns: { createdByUserId: true },
     });
     if (schedule?.createdByUserId) return schedule.createdByUserId;

@@ -65,6 +65,7 @@ import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity } from '@/lib/wo
 import { findMergedReleasePrContaining, advanceGatedRowForMerge, versionFromReleasePrTitle } from '@/lib/release/gated-merge';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { checkPromptFallbacks } from '@/lib/prompt-fallback-alert';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
 
@@ -86,7 +87,7 @@ export async function GET(req: NextRequest) {
 // (see workspace-installation.ts), which a hand-written innerJoin can't express.
 async function resolveRepoIdentity(workspaceId: string): Promise<RepoIdentity> {
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true, repo: true, githubInstallationId: true, githubRepoId: true },
     with: WORKSPACE_INSTALLATION_WITH,
   });
@@ -475,7 +476,7 @@ async function findMergedReleasePrForRow(row: {
 }): ReturnType<typeof findMergedReleasePrContaining> {
   if (!row.headSha) return 'unknown';
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, row.workspaceId),
+    where: sqlWhere(eq(workspaces.id, row.workspaceId)),
     columns: { id: true, repo: true, githubInstallationId: true, githubRepoId: true, releaseConfig: true },
     with: WORKSPACE_INSTALLATION_WITH,
   });

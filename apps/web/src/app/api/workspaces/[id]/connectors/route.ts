@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { roleHas } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -65,10 +66,10 @@ export async function GET(
 
   try {
     const rows = await db.query.connectorWorkspaces.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(connectorWorkspaces.workspaceId, workspaceId),
         eq(connectorWorkspaces.enabled, true),
-      ),
+      )),
       with: { connector: true },
     });
 
@@ -80,7 +81,7 @@ export async function GET(
     if (connectorIds.length > 0) {
       const ownerTeamIds = [...new Set(rows.map(r => r.connector?.teamId).filter(Boolean))] as string[];
       const secretRows = await db.query.secrets.findMany({
-        where: teamCredentialWhere({ teamId: ownerTeamIds.length > 0 ? ownerTeamIds : [teamId], purpose: 'mcp_connector_credential' }),
+        where: sqlWhere(teamCredentialWhere({ teamId: ownerTeamIds.length > 0 ? ownerTeamIds : [teamId], purpose: 'mcp_connector_credential' })),
         columns: { label: true, tokenExpiresAt: true },
       });
       for (const s of secretRows) {
@@ -155,16 +156,16 @@ export async function PATCH(
   // team OWNS, or one SHARED to its team via connector_shares. Anything else
   // is not visible → 404.
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, connectorId),
+    where: sqlWhere(eq(connectors.id, connectorId)),
     columns: { id: true, teamId: true },
   });
   let visible = !!connector && connector.teamId === teamId;
   if (connector && !visible) {
     const share = await db.query.connectorShares.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(connectorShares.connectorId, connectorId),
         eq(connectorShares.sharedWithTeamId, teamId),
-      ),
+      )),
     });
     visible = !!share;
   }

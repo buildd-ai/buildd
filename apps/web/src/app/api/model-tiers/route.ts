@@ -8,6 +8,7 @@ import { POOL_SURFACES, incumbentRoute, tierAllowsPool } from '@buildd/core/tier
 import { syncIncumbentToRegistry } from '@buildd/core/tier-pool-admin';
 import { invalidateTierPoolCache } from '@buildd/core/tier-pool-source';
 import { isTierSurface, type TierEntryWithSurfaces } from '@buildd/core/model-tier-defaults';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** `surface` from a body or query: absent/null = the shared row; anything else must name a surface. */
 function parseSurface(raw: unknown): { surface: TierSurface | null } | { error: NextResponse } {
@@ -117,14 +118,14 @@ export async function POST(req: NextRequest) {
     // Manual upsert to handle NULL workspace_id uniqueness correctly.
     // First check if a row already exists.
     const existing = await db.query.modelTierRegistry.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(modelTierRegistry.teamId, teamId),
         eq(modelTierRegistry.tier, tier as Tier),
         workspaceId
           ? eq(modelTierRegistry.workspaceId, workspaceId)
           : isNull(modelTierRegistry.workspaceId),
         surfaceMatch(surface),
-      ),
+      )),
     });
 
     if (existing) {

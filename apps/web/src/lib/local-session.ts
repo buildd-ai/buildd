@@ -13,6 +13,7 @@ import { INTERACTIVE_CLAIM_USER_KEY, INTERACTIVE_LIVE_STATUSES } from '@/lib/int
 import { priceSessionUsage } from '@buildd/core/model-prices';
 import type { LocalSessionCostBasis, LocalSessionUsage } from '@buildd/shared';
 import { costBasisWrite, type CostBasis } from '@buildd/core/cost-basis';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Presence for a person's interactive coding session, fed by the buildd agent
@@ -446,7 +447,7 @@ export async function resolveWorkspaceForRepo(principal: LocalSessionPrincipal, 
         .filter(id => principal.workspaceIds == null || principal.workspaceIds.includes(id));
     if (reachable.length === 0) return null;
     const ws = await db.query.workspaces.findFirst({
-      where: and(workspaceRepoMatches(repo), inArray(workspaces.id, reachable)),
+      where: sqlWhere(and(workspaceRepoMatches(repo), inArray(workspaces.id, reachable))),
       columns: { id: true },
     });
     return ws && reachable.includes(ws.id) ? ws.id : null;
@@ -703,7 +704,7 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
   },
   async workerState(workerId) {
     const w = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
+      where: sqlWhere(eq(workers.id, workerId)),
       columns: { taskId: true, pendingInstructions: true, status: true },
     });
     if (!w) return null;

@@ -10,6 +10,7 @@ import type {
   GoalCriteriaState,
 } from '@buildd/shared';
 import { sanitizeUntrustedText } from './untrusted-text';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Grade prose criteria where the evidence is — at PR review time.
@@ -75,7 +76,7 @@ export async function loadMissionProseCriteria(
   if (!missionId) return [];
   try {
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, missionId),
+      where: sqlWhere(eq(missions.id, missionId)),
       columns: { id: true, goalCriteria: true },
     });
     const criteria = Array.isArray(mission?.goalCriteria)
@@ -300,7 +301,7 @@ export async function recordReviewerCriteriaFindings(opts: {
 
   try {
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, missionId),
+      where: sqlWhere(eq(missions.id, missionId)),
       columns: { id: true, criteriaReviewerFindings: true },
     });
     if (!mission) return { recorded: 0 };

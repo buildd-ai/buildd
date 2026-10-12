@@ -8,6 +8,7 @@ import { db } from '@buildd/core/db';
 import { conversationMessages, conversations, missions } from '@buildd/core/db/schema';
 import { conversationDisplayTitle } from '@buildd/core/conversation-title';
 import type { ChatMessage } from '@/components/chat/chat-contract';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface ConversationListItem {
   id: string;
@@ -83,7 +84,7 @@ export async function listConversations(userId: string, teamId: string, limit = 
 export async function loadConversation(id: string, userId: string, authorName: string | null): Promise<LoadedConversation | null> {
   const [conv, rows] = await Promise.all([
     db.query.conversations.findFirst({
-      where: and(eq(conversations.id, id), eq(conversations.createdByUserId, userId)),
+      where: sqlWhere(and(eq(conversations.id, id), eq(conversations.createdByUserId, userId))),
       columns: { id: true, teamId: true, workspaceId: true, title: true, titleSource: true, archivedAt: true, tier: true },
     }),
     db

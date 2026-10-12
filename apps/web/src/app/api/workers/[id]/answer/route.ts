@@ -35,6 +35,7 @@ import {
   type AnswerReadState,
 } from '@/lib/await-answer';
 import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   if (!isUuid(id)) return notFound();
 
-  const first = await db.query.workers.findFirst({ where: eq(workers.id, id), columns: WORKER_COLUMNS });
+  const first = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)), columns: WORKER_COLUMNS });
   if (!first || !callerOwnsWorker(account, first)) return notFound();
 
   let body: { waitSeconds?: unknown } = {};
@@ -79,13 +80,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const readTaskContext = async (taskId: string | null) => (taskId
-    ? (await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } }))?.context ?? null
+    ? (await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } }))?.context ?? null
     : null);
 
   let row: typeof first | undefined = first;
   let reads = 0;
   const read = async (): Promise<AnswerReadState> => {
-    if (reads++ > 0) row = await db.query.workers.findFirst({ where: eq(workers.id, id), columns: WORKER_COLUMNS });
+    if (reads++ > 0) row = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)), columns: WORKER_COLUMNS });
     if (!row) return { state: 'not_waiting', reasonCode: 'session_ended', message: 'This worker no longer exists.' };
     return readInteractiveAnswer({ worker: row, taskContext: await readTaskContext(row.taskId ?? null) });
   };

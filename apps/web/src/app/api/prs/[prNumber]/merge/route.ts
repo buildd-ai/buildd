@@ -34,6 +34,7 @@ import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { latestRunPerName } from '@/lib/auto-merge-bound';
 import { kernelLandingView, landThroughKernel, type KernelLanding } from '@/lib/workflow/seam';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The dashboard's answer when the landing function did not merge. A refresh in
@@ -170,7 +171,7 @@ export async function POST(
       workspaceId = rawWorkspaceId;
     } else {
       const allWs = await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
+        where: sqlWhere(inArray(workspaces.id, wsIds)),
         columns: { id: true, name: true, repo: true },
       });
       const lower = rawWorkspaceId.toLowerCase();
@@ -195,12 +196,12 @@ export async function POST(
   // PR numbers are not unique across repos — findFirst would silently pick the wrong
   // workspace's worker if two repos both happen to have an open PR with this number.
   const matchingWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, searchIds),
       eq(workers.prNumber, prNumber),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
-    ),
+    )),
     columns: {
       id: true,
       taskId: true,
@@ -249,7 +250,7 @@ export async function POST(
   // workspaces.githubInstallationId columns can be stale or null, which causes
   // GitHub to return 404 "Not Found" on the merge PUT.
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, worker.workspaceId),
+    where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
     columns: { id: true, gitConfig: true, releaseConfig: true },
     with: {
       githubRepo: {
@@ -417,7 +418,7 @@ export async function POST(
   if (landingMode !== 'off') {
     const missionForPolicy = worker.task?.missionId
       ? await db.query.missions.findFirst({
-          where: eq(missions.id, worker.task.missionId),
+          where: sqlWhere(eq(missions.id, worker.task.missionId)),
           columns: RESOLVE_POLICY_MISSION_COLUMNS,
         })
       : null;

@@ -50,6 +50,7 @@ import { dispatchStaleApprovalReReview } from '@/lib/stale-approval-re-review';
 import type { DispatchConflictRetryResult } from '@/lib/conflict-retry';
 import { refreshCause } from '@/lib/refresh-cause';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The base-freshness refusal below: behind the base but not conflicting.
@@ -746,7 +747,7 @@ export async function tryAutoMergeWorkerPr(params: {
     // Non-conflict or disabled auto-resolve — notify the mission feed
     if (worker.taskId) {
       const task = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { missionId: true, title: true },
       });
       if (task?.missionId) {
@@ -839,7 +840,7 @@ export async function tryAutoMergeWorkerPr(params: {
   // the integration branch is still open, since merging deletes that branch.
   const mergingTask = worker.taskId
     ? await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
       })
     : null;
@@ -1067,7 +1068,7 @@ async function refreshDeltaBaseForTask(
 ): Promise<string | null> {
   if (!taskId) return null;
   try {
-    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } });
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });
     return refreshDeltaBase(task?.context, gitConfig);
   } catch {
     return null;
@@ -1086,7 +1087,7 @@ async function loadTaskMergeFields(
   if (!taskId) return { mission: null, requiresReview: false };
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { id: true, requiresReview: true },
       with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
     });
@@ -1100,7 +1101,7 @@ async function loadTaskMergeFields(
 
 async function resolveWorkspaceId(taskId: string): Promise<string | null> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { workspaceId: true },
   });
   return task?.workspaceId ?? null;
@@ -1123,7 +1124,7 @@ export async function escalateConflictExhaustion(
   headSha: string,
 ): Promise<void> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, context: true },
   });
   if (!task) return;
@@ -1203,7 +1204,7 @@ export async function escalateReviewerExhaustion(
   lastFeedback: string | null | undefined,
 ): Promise<void> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, context: true },
   });
   if (!task) return;
@@ -1290,7 +1291,7 @@ export async function escalateReviewContractFailure(params: {
   const { taskId, repoFullName, prNumber, headSha, installationId } = params;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, workspaceId: true },
   });
   if (!task) return;
@@ -1376,11 +1377,11 @@ export async function hasActiveReviewerFixTask(
   prNumber: number,
 ): Promise<boolean> {
   const existing = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.reviewerRetryPrNumber, prNumber),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-    ),
+    )),
     columns: { id: true },
   });
   return existing != null;

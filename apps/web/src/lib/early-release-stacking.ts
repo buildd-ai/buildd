@@ -20,6 +20,7 @@ import { db } from '@buildd/core/db';
 import { dependencyReleases, githubRepos, workers } from '@buildd/core/db/schema';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { markPullRequestReadyForReview } from '@/lib/github';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Is `baseBranch` a non-revoked `start_stacked` early-release base for this
@@ -34,12 +35,12 @@ export interface FindStackedReleaseDeps {
 
 async function defaultFindRelease(dependentTaskId: string, baseBranch: string): Promise<{ id: string } | null> {
   const row = await db.query.dependencyReleases.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(dependencyReleases.dependentTaskId, dependentTaskId),
       eq(dependencyReleases.decision, 'start_stacked'),
       eq(dependencyReleases.baseBranch, baseBranch),
       isNull(dependencyReleases.revokedAt),
-    ),
+    )),
     columns: { id: true },
   });
   return row ?? null;
@@ -87,15 +88,15 @@ async function defaultFindStackedDependentTaskIds(upstreamTaskId: string): Promi
 
 async function defaultFindOpenPrForTask(taskId: string): Promise<Omit<StackedDependentPr, 'taskId'> | null> {
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.taskId, taskId),
-    orderBy: (w, { desc }) => [desc(w.createdAt)],
+    where: sqlWhere(eq(workers.taskId, taskId)),
+    orderBy: sqlOrderByFn((w, { desc }) => [desc(w.createdAt)]),
     with: { workspace: true },
   });
   if (!worker?.prNumber || worker.mergedAt || isTerminalPrLifecycle(worker.prLifecycleStatus)) return null;
   if (!worker.workspace?.githubRepoId) return null;
 
   const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.id, worker.workspace.githubRepoId),
+    where: sqlWhere(eq(githubRepos.id, worker.workspace.githubRepoId)),
     with: { installation: true },
   });
   if (!repo?.installation) return null;

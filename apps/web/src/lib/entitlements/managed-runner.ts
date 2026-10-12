@@ -24,6 +24,7 @@ import {
 import { resolveManagedRunnerEntitlement, type TeamManagedRunnerPlan } from './plans';
 import { wakeTasks } from '@/lib/dispatch-authority';
 import { checkHostedRunnerAllowance, dbHostedRunnerDeps, type HostedRunnerDeps } from '@/lib/hosted-runner-usage-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Hold kinds a managed plan lifts; `hosted_runner` lifts with the hosted allowance. */
 export const MANAGED_HOLD_KINDS = ['concurrency', 'usage'] as const;
@@ -40,7 +41,7 @@ const liveStatusList = () => sql.join(LIVE_WORKER_STATUSES.map(s => sql`${s}`), 
 
 export const dbManagedRunnerDeps: ManagedRunnerDeps = {
   async loadTeamPlan(teamId) {
-    const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { managedRunnerPlan: true } });
+    const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { managedRunnerPlan: true } });
     return (row?.managedRunnerPlan as TeamManagedRunnerPlan | null | undefined) ?? null;
   },
   async countActiveManagedRuns(teamId) {
@@ -151,7 +152,7 @@ export async function wakeEntitlementBlockedTasks(teamId: string, limit = 1, kin
  */
 export async function onManagedWorkerTerminal(workspaceId: string): Promise<void> {
   try {
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { teamId: true } });
     if (ws?.teamId) await wakeEntitlementBlockedTasks(ws.teamId, 1, MANAGED_HOLD_KINDS);
   } catch (err) {
     console.error(`[entitlements] terminal wake failed for workspace ${workspaceId}:`, err);

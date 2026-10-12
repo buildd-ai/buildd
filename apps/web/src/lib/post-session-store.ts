@@ -34,6 +34,7 @@ import { sessionArtifactKey } from './session-artifact-keys';
 import { WORKSPACE_NOT_OFF } from './post-session-mode-sql';
 import type { PostSessionRunStore, PostSessionWorkerRef } from './post-session-run';
 import { triagedRunState } from '@buildd/core/post-session-triage';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Runs triaged since `since` whose skip was sampled for analysis. Exported for a dialect test. */
 export function sampledSkipsSinceWhere(since: Date) {
@@ -72,7 +73,7 @@ async function corpusAvailability(namespace: string): Promise<CorpusAvailability
 export const postSessionRunStore: PostSessionRunStore = {
   async loadWorker(workerId) {
     const row = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
+      where: sqlWhere(eq(workers.id, workerId)),
       columns: { id: true, status: true, startedAt: true, exitCause: true, taskId: true, workspaceId: true },
       with: {
         task: { columns: { missionId: true } },
@@ -128,7 +129,7 @@ export const postSessionRunStore: PostSessionRunStore = {
 
   async loadSource(ref: PostSessionWorkerRef, mode) {
     const w = await db.query.workers.findFirst({
-      where: eq(workers.id, ref.id),
+      where: sqlWhere(eq(workers.id, ref.id)),
       columns: {
         id: true, status: true, exitCause: true, error: true, turns: true, inputTokens: true, outputTokens: true,
         costUsd: true, startedAt: true, completedAt: true, prNumber: true, prLifecycleStatus: true, mergedAt: true,

@@ -2,14 +2,12 @@
  * The drizzle v1 folder layout, migrated through the app's own migrator on real
  * Postgres. Design: knowledge-base buildd/design/drizzle-v1-migration-layout.md.
  *
- * Until the cutover runs `drizzle-kit up` for real, the v1 tree here is built
- * from the current journal by `convertToV1` below: each journal entry becomes
- * `<UTC-second(when)>_<tag without NNNN_>/migration.sql` with the same bytes
- * (what `up` does), the legacy map comes from `legacyMapFromJournal`, and a
- * comment-only `snapshot_rebase` folder follows. Every folder gets a v8
- * snapshot chained by prevIds; the newest carries the legacy tip snapshot's
- * tables and columns, which is all the drift gate reads. The cutover swaps
- * this for the real `up` output; the cases stay.
+ * The tree under test is the repo's real one: `drizzle-kit up` output, the
+ * committed legacy map and the cutover's snapshot rebase, copied per case with
+ * any extra probe folders a case needs. The history databases are built the way
+ * production's were, by the PREVIOUS release's migrator (with the drizzle it was
+ * written against) on the legacy form of the same migrations, rebuilt from the
+ * tree by `synthesizeLegacyTree`.
  *
  * Each case runs on its own database on the DATABASE_URL server:
  *   (A) fresh                (F) DB several releases behind
@@ -22,16 +20,15 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
 import { LAST_RELEASE_BEFORE_SQUASH } from '@buildd/core/db/migrate-plan';
-import { legacyMapFromJournal, type LegacyMigration } from '@buildd/core/db/legacy-migrations';
+import { LEGACY_MIGRATIONS_PATH, loadLegacyMap, type LegacyMigration } from '@buildd/core/db/legacy-migrations';
 import { folderMillis, formatFolderPrefix, readMigrationTree } from '@buildd/core/db/migrate-tree';
 import { emptyDbShape, evaluateBackfill, type DbShape } from '@buildd/core/db/migrate-backfill';
-import { assertDbConfigured, fingerprint, withDb } from './harness';
+import { assertDbConfigured, fingerprint, prepareRollbackMigrator, synthesizeLegacyTree, withDb } from './harness';
 
 /**
  * The release whose migrator stands in for "the previous release" in the
@@ -42,7 +39,9 @@ const ROLLBACK_MIGRATOR_REF = 'v0.327.1';
 
 const ROOT = join(import.meta.dir, '..', '..', '..', '..');
 const CORE = join(ROOT, 'packages', 'core');
-const LEGACY_TREE = join(CORE, 'drizzle');
+const REAL_TREE = join(CORE, 'drizzle');
+// The legacy form of the same history: what the previous release's migrator reads.
+const LEGACY_TREE = synthesizeLegacyTree('mv1-legacy');
 
 type JournalEntry = { idx: number; when: number; tag: string; baseline?: boolean };
 type Journal = { version: string; dialect: string; entries: JournalEntry[] };
@@ -98,44 +97,31 @@ function legacySubset(src: string, label: string, keep: (e: JournalEntry, i: num
   return dir;
 }
 
-/** The legacy chain tip's tables/columns as v8 `ddl[]` entities. */
-function v8DdlFromLegacyTip(): unknown[] {
-  const metaDir = join(LEGACY_TREE, 'meta');
-  const files = readdirSync(metaDir).filter((f) => /^\d+_snapshot\.json$/.test(f)).sort();
-  const tip = JSON.parse(readFileSync(join(metaDir, files.at(-1)!), 'utf8')) as {
-    tables: Record<string, { name: string; schema: string; columns: Record<string, { name: string }> }>;
-  };
-  return Object.values(tip.tables).flatMap((t) => [
-    { entityType: 'tables', name: t.name, schema: t.schema || 'public' },
-    ...Object.values(t.columns).map((c) => ({ entityType: 'columns', name: c.name, table: t.name, schema: t.schema || 'public' })),
-  ]);
-}
-
-/** Stand-in for `drizzle-kit up` + the cutover script (see the header). */
+/**
+ * A per-case copy of the real tree plus any probe folders `post` adds on top.
+ * The migrator reads only `migration.sql`; the probe folders get a minimal v8
+ * snapshot chained to the tip so the layout check and drift gate can still read
+ * the tree.
+ */
 function convertToV1(label: string, post: Array<{ name: string; sql: string }>): V1Tree {
   const dir = join(work, label);
-  mkdirSync(dir, { recursive: true });
-  const journal = readJournal(LEGACY_TREE);
-  const legacy = legacyMapFromJournal(journal, (tag) => readFileSync(join(LEGACY_TREE, `${tag}.sql`), 'utf8'));
-  for (const e of legacy) {
-    mkdirSync(join(dir, e.name));
-    copyFileSync(join(LEGACY_TREE, `${e.tag}.sql`), join(dir, e.name, 'migration.sql'));
-  }
+  cpSync(REAL_TREE, dir, { recursive: true });
+  const legacy = loadLegacyMap(LEGACY_MIGRATIONS_PATH);
+  const tip = readMigrationTree(REAL_TREE).at(-1)!.name;
+  const tipSnapshot = JSON.parse(readFileSync(join(REAL_TREE, tip, 'snapshot.json'), 'utf8')) as { id: string; ddl: unknown[] };
+  let prev = tipSnapshot.id;
   for (const p of post) {
+    if (readdirSync(dir).includes(p.name)) {
+      // The case names the real rebase: keep the real folder as it is.
+      continue;
+    }
     mkdirSync(join(dir, p.name));
     writeFileSync(join(dir, p.name, 'migration.sql'), p.sql);
-  }
-  const names = [...legacy.map((e) => e.name), ...post.map((p) => p.name)].sort((a, b) => a.localeCompare(b));
-  let prev = '00000000-0000-0000-0000-000000000000';
-  names.forEach((name, i) => {
-    const id = randomUUID();
-    const ddl = i === names.length - 1 ? v8DdlFromLegacyTip() : [];
-    writeFileSync(join(dir, name, 'snapshot.json'), JSON.stringify({ version: '8', dialect: 'postgres', id, prevIds: [prev], ddl }));
+    const id = `00000000-0000-4000-8000-${String(prev.length).padStart(12, '0')}`;
+    writeFileSync(join(dir, p.name, 'snapshot.json'), JSON.stringify({ version: '8', dialect: 'postgres', id, prevIds: [prev], ddl: tipSnapshot.ddl }));
     prev = id;
-  });
-  const legacyPath = join(work, `${label}.legacy-migrations.json`);
-  writeFileSync(legacyPath, JSON.stringify(legacy, null, 2));
-  return { dir, legacyPath, legacy };
+  }
+  return { dir, legacyPath: LEGACY_MIGRATIONS_PATH, legacy };
 }
 
 type Run = { status: number; out: string };
@@ -240,10 +226,12 @@ const shapeOf = (url: string) =>
 // ─── Trees ───────────────────────────────────────────────────────────────────
 
 const legacyJournal = readJournal(LEGACY_TREE);
-const maxWhen = Math.max(...legacyJournal.entries.map((e) => e.when));
+const legacyNames = new Set(loadLegacyMap(LEGACY_MIGRATIONS_PATH).map((e) => e.name));
+// The cutover's snapshot rebase: the one real folder that is not legacy history.
+const REBASE = readMigrationTree(REAL_TREE).map((m) => m.name).filter((n) => !legacyNames.has(n)).at(-1)!;
+const REBASE_SQL = readFileSync(join(REAL_TREE, REBASE, 'migration.sql'), 'utf8');
+const maxWhen = Math.max(...legacyJournal.entries.map((e) => e.when), folderMillis(REBASE));
 const DAY = 86_400_000;
-const REBASE = `${formatFolderPrefix(maxWhen + DAY)}_snapshot_rebase`;
-const REBASE_SQL = '-- Snapshot rebase: no DDL. drizzle v1 renders some expressions differently; the\n-- snapshot is kept, the generated churn is not.\n';
 const PROBE_E = `${formatFolderPrefix(maxWhen + 2 * DAY)}_probe_e`;
 const ATOMIC = `${formatFolderPrefix(maxWhen + 3 * DAY)}_atomic_probe`;
 
@@ -286,30 +274,16 @@ beforeAll(() => {
   const postCut = legacyJournal.entries.slice(1);
   preSquashTree = legacySubset(join(extract, 'packages', 'core', 'drizzle'), 'presquash', () => true, { dir: LEGACY_TREE, entries: postCut });
 
-  // The previous release's migrator, out of git, runnable against this
-  // checkout's installed packages.
-  const rb = join(work, 'rollback');
-  mkdirSync(rb);
-  const rbArchive = spawnSync(
-    'sh',
-    ['-c', `git -C "$ROOT" archive --format=tar "$REF" -- packages/core/db packages/core/config.ts | tar -x -C "$OUT"`],
-    { env: { ...process.env, ROOT, REF: ROLLBACK_MIGRATOR_REF, OUT: rb }, encoding: 'utf8' }
-  );
-  if (rbArchive.status !== 0) {
-    throw new Error(
-      `cannot read the migrator at ${ROLLBACK_MIGRATOR_REF} (fetch it: git fetch --no-tags --depth=1 origin ` +
-        `+refs/tags/${ROLLBACK_MIGRATOR_REF}:refs/tags/${ROLLBACK_MIGRATOR_REF}):\n${rbArchive.stderr}`
-    );
-  }
-  rollbackCore = join(rb, 'packages', 'core');
-  symlinkSync(join(CORE, 'node_modules'), join(rollbackCore, 'node_modules'));
-}, 120_000);
+  // The previous release's migrator, out of git, with the drizzle it was written against.
+  rollbackCore = prepareRollbackMigrator(work, ROLLBACK_MIGRATOR_REF, ROOT);
+}, 300_000);
 
 afterAll(async () => {
   for (const name of created) {
     await admin((c) => c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)).catch(() => {});
   }
   if (work) rmSync(work, { recursive: true, force: true });
+  rmSync(LEGACY_TREE, { recursive: true, force: true });
 }, 120_000);
 
 const summary = (applied: number, backfilled: number, recorded: number) =>

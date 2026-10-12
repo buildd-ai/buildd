@@ -31,6 +31,7 @@ import {
   newWaitAskId,
   signAnswerWaitCapability,
 } from '@/lib/answer-wait-capability';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,7 +47,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!isUuid(id)) return notFound();
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, accountId: true, claimedByUserId: true, taskId: true, runner: true, status: true, waitingFor: true },
   });
   if (!worker || !callerOwnsWorker(account, worker)) return notFound();
@@ -73,7 +74,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!stamped) return noQuestion();
 
   const task = stamped.taskId
-    ? await db.query.tasks.findFirst({ where: eq(tasks.id, stamped.taskId), columns: { missionId: true } })
+    ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, stamped.taskId)), columns: { missionId: true } })
     : null;
   const expiresAt = parkedUntilFor(new Date(stamped.updatedAt), !!task?.missionId).getTime();
   if (expiresAt <= Date.now()) return noQuestion();

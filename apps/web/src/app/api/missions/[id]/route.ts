@@ -44,6 +44,7 @@ import {
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
   surfaceAuditMissingReason,
 } from '@buildd/core/surface-audit';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -107,13 +108,13 @@ export async function GET(
     const teamIds = await resolveTeamIds(user, apiAccount);
 
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
           columns: { id: true, title: true, status: true, priority: true, roleSlug: true, createdAt: true, result: true, updatedAt: true, kind: true, mode: true, category: true, parentTaskId: true, creationSource: true, taskClass: true },
-          orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
-          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, prLastCheckedAt: true, supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true, abandonedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
+          orderBy: sqlOrderByFn((tasks, { desc }) => [desc(tasks.createdAt)]),
+          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, prLastCheckedAt: true, supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true, abandonedAt: true }, orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt)]), limit: 1 } },
         },
         subMissions: { columns: { id: true, title: true, status: true } },
         schedule: true,
@@ -252,7 +253,7 @@ export async function PATCH(
     const teamIds = await resolveTeamIds(user, apiAccount);
 
     const existing = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
     });
 
     if (!existing || !(await hasMissionAccess(existing, teamIds, apiAccount?.id))) {
@@ -534,7 +535,7 @@ export async function PATCH(
     if (initiativeId !== undefined) {
       if (initiativeId) {
         const init = await db.query.initiatives.findFirst({
-          where: eq(initiatives.id, initiativeId),
+          where: sqlWhere(eq(initiatives.id, initiativeId)),
           columns: { id: true, teamId: true },
         });
         if (!init || !teamIds.includes(init.teamId)) {
@@ -664,7 +665,7 @@ export async function PATCH(
       const templateContext: Record<string, unknown> = {};
       if (existing.scheduleId) {
         const existingSchedule = await db.query.taskSchedules.findFirst({
-          where: eq(taskSchedules.id, existing.scheduleId),
+          where: sqlWhere(eq(taskSchedules.id, existing.scheduleId)),
           columns: { taskTemplate: true, cronExpression: true },
         });
         if (existingSchedule) {
@@ -721,7 +722,7 @@ export async function PATCH(
           // every run of a non-UTC schedule the first time anything else about the
           // mission was edited.
           const currentSchedule = await db.query.taskSchedules.findFirst({
-            where: eq(taskSchedules.id, existing.scheduleId),
+            where: sqlWhere(eq(taskSchedules.id, existing.scheduleId)),
             columns: { timezone: true },
           });
           const scheduleTimezone = resolveTimezone(currentSchedule?.timezone);
@@ -768,7 +769,7 @@ export async function PATCH(
       let nextRunAt = updatedStartAt;
       if (nextRunAt === null) {
         const schedule = await db.query.taskSchedules.findFirst({
-          where: eq(taskSchedules.id, existing.scheduleId),
+          where: sqlWhere(eq(taskSchedules.id, existing.scheduleId)),
           columns: { cronExpression: true, timezone: true },
         });
         // Same rule as the recompute above: the schedule's own stored zone, not UTC.
@@ -821,7 +822,7 @@ export async function PATCH(
     if (released || budgetLifted) {
       try {
         const pending = await db.query.tasks.findMany({
-          where: and(eq(tasks.missionId, id), eq(tasks.status, 'pending')),
+          where: sqlWhere(and(eq(tasks.missionId, id), eq(tasks.status, 'pending'))),
           columns: { id: true },
         });
         await wakeTasks(pending.map(t => t.id), released ? 'mission.released' : 'budget.available');
@@ -1077,7 +1078,7 @@ export async function DELETE(
     const teamIds = await resolveTeamIds(user, apiAccount);
 
     const existing = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
     });
 
     if (!existing || !(await hasMissionAccess(existing, teamIds, apiAccount?.id))) {
