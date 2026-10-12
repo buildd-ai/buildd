@@ -144,6 +144,7 @@
     "./task-area-prediction-source": "./task-area-prediction-source.ts",
     "./orchestration-decision": "./orchestration-decision.ts",
     "./orchestration-outcomes": "./orchestration-outcomes.ts",
+    "./orchestration-claim-gold": "./orchestration-claim-gold.ts",
     "./orchestration-ledger-source": "./orchestration-ledger-source.ts",
     "./orchestration-claim-decision": "./orchestration-claim-decision.ts",
     "./orchestration-claim-readout": "./orchestration-claim-readout.ts",
