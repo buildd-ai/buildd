@@ -205,7 +205,7 @@ export async function recordCheckVerdict(taskId: string, input: {
 }
 
 /**
- * Record a verdict the mission's visual audit made (./visual-verdict.ts),
+ * Record a verdict the mission's visual audit made (lib/visual-audit-spec-verdict.ts),
  * after that module has checked who the auditor is, what it captured and
  * which screenshots it cites. Server-side, no caller, like a check run's;
  * authored as `visual:<audit task id>`.

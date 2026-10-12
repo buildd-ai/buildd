@@ -64,6 +64,7 @@ import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
 import type { ClaimContextInjection } from '@/app/api/workers/claim/context-injection';
 import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-routes';
 import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-audit-spec-criteria';
+import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -247,6 +248,13 @@ export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers,
   await attachVisualAuditRoutes(claimedWorkers, claimedTasks);
   await attachVisualAuditSpecCriteria(claimedWorkers, claimedTasks);
 };
+
+/**
+ * The visual-qa module's spec verdict slot (lib/visual-audit-spec-verdict.ts):
+ * POST /api/specs/outcomes/[taskId] with `checker: 'visual'` records what a
+ * mission's [surface audit] saw on a spec criterion.
+ */
+export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
 
 /**
  * The decisions module's boot slot (instrumentation.ts): installs the evidence

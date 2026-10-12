@@ -14,7 +14,7 @@ const { createSpecDraft } = await import('../../src/lib/specs/store');
 const { approveSpecRevision } = await import('../../src/lib/specs/approval');
 const { pinSpecSource } = await import('../../src/lib/specs/pin');
 const { readGovernedOutcome } = await import('../../src/lib/specs/outcome');
-const { recordVisualVerdict, VISUAL_EVIDENCE_RETENTION_DAYS } = await import('../../src/lib/specs/visual-verdict');
+const { recordVisualVerdict, VISUAL_EVIDENCE_RETENTION_DAYS } = await import('../../src/lib/visual-audit-spec-verdict');
 const { loadVisualAuditSpecCriteria } = await import('../../src/app/api/workers/claim/visual-audit-spec-criteria');
 const { buildAuditScreenshotKey } = await import('../../src/lib/storage-keys');
 

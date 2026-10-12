@@ -10,12 +10,12 @@ import { copyObject } from '@/lib/storage';
 import { buildArtifactKey } from '@/lib/storage-keys';
 import { isAncestor } from '@/lib/integration-refresh';
 import { mintedByUploadUrl } from '@/lib/visual-audit-evidence';
-import { currentPrHeadSha, recordAuditedVerdict, type OutcomeView } from './outcome';
-import { linkedRepo } from './repo-source';
-import { MAX_VISUAL_SHOTS, VISUAL_EVIDENCE_RETENTION_DAYS } from './visual-limits';
+import { currentPrHeadSha, recordAuditedVerdict, type OutcomeView } from '@/lib/specs/outcome';
+import { linkedRepo } from '@/lib/specs/repo-source';
+import { MAX_VISUAL_SHOTS, VISUAL_EVIDENCE_RETENTION_DAYS } from '@/lib/specs/visual-limits';
 
 export { MAX_VISUAL_SHOTS, VISUAL_EVIDENCE_RETENTION_DAYS };
-import { fail, type SpecCaller, type SpecError } from './store';
+import { fail, type SpecCaller, type SpecError } from '@/lib/specs/store';
 
 /**
  * Visual verdicts on spec criteria (docs/specs/living-specs.md §11): the

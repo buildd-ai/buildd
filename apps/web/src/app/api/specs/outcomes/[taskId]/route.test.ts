@@ -15,8 +15,8 @@ mock.module('@/lib/specs/outcome', () => ({
   readGovernedOutcome: async (c: unknown) => { calls.push(['read', c]); return { ok: true, outcome: { outcome: 'unverified' } }; },
   recordSpecVerdict: async (c: unknown, _t: string, input: unknown) => { calls.push(['record', c, input]); return { ok: true, verdictId: 'v1', outcome: { outcome: 'fail' } }; },
 }));
-mock.module('@/lib/specs/visual-verdict', () => ({
-  recordVisualVerdict: async (c: unknown, _t: string, input: unknown) => { calls.push(['visual', c, input]); return { ok: true, verdictId: 'v2', outcome: { outcome: 'unverified' } }; },
+mock.module('@/modules', () => ({
+  VISUAL_SPEC_VERDICT: async (c: unknown, _t: string, input: unknown) => { calls.push(['visual', c, input]); return { ok: true, verdictId: 'v2', outcome: { outcome: 'unverified' } }; },
 }));
 const { GET, POST } = await import('./route');
 const params = Promise.resolve({ taskId: 't1' });

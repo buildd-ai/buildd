@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { governedTaskWorkspace, readGovernedOutcome, recordSpecVerdict } from '@/lib/specs/outcome';
-import { recordVisualVerdict } from '@/lib/specs/visual-verdict';
+import { VISUAL_SPEC_VERDICT } from '@/modules';
 import type { SpecCaller } from '@/lib/specs/store';
 
 type Ctx = { params: Promise<{ taskId: string }> };
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
  * own token cannot record on it (403); its reviewer's can.
  *
  * With `checker: 'visual'` { criterionId, verdict, capturedSha, screenshotIds?, observed? }:
- * the mission's visual audit records what it saw (lib/specs/visual-verdict.ts).
+ * the mission's visual audit records what it saw (lib/visual-audit-spec-verdict.ts, through the visual-qa module slot).
  * The server binds it to the PR head when the captured commit contains it.
  */
 export async function POST(req: NextRequest, { params }: Ctx) {
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if (c instanceof NextResponse) return c;
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   if (body?.checker === 'visual') {
-    const v = await recordVisualVerdict(c, taskId, {
+    const v = await VISUAL_SPEC_VERDICT(c, taskId, {
       criterionId: body.criterionId, verdict: body.verdict, capturedSha: body.capturedSha,
       screenshotIds: body.screenshotIds, observed: body.observed,
     });

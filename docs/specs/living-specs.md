@@ -710,7 +710,7 @@ captured contains that head; no task MAY grade its own work this way.
   (`apps/web/tests/db/spec-visual-verdict.test.ts`).
 
 **Code surface**:
-- `apps/web/src/lib/specs/visual-verdict.ts` — `recordVisualVerdict`, `auditorRefusal`
+- `apps/web/src/lib/visual-audit-spec-verdict.ts` — `recordVisualVerdict`, `auditorRefusal`
 - `apps/web/src/lib/specs/outcome.ts` — `recordAuditedVerdict`
 - `apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.ts` — `attachVisualAuditSpecCriteria`, `renderVisualAuditSpecCriteria`, `loadVisualAuditSpecCriteria`
 
