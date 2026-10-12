@@ -69,6 +69,7 @@ import { deriveTaskOrigin } from '@/lib/task-origin';
 import { originLinkCards } from './origin-links';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
+import { loadLivingSpecView } from '@/lib/specs/task-view';
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
@@ -500,6 +501,8 @@ export default async function TaskDetailPage({
         ...(typeof specSourceRaw.contentHash === 'string' ? { contentHash: specSourceRaw.contentHash } : {}),
       }
     : null;
+
+  const livingSpec = specSource?.specId ? await loadLivingSpecView(task.id, specSource.specId, specSourceRaw) : null;
 
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'
@@ -2122,7 +2125,7 @@ export default async function TaskDetailPage({
             </SideDescription>
           )}
 
-          <SpecSourceBlock specSource={specSource} />
+          <SpecSourceBlock specSource={specSource} living={livingSpec} />
 
           {dependentTasks.length > 0 && (
             <section data-testid="task-unblocked">
