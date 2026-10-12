@@ -5889,7 +5889,7 @@ export async function handleBuilddAction(
       if ((op === 'create_draft' || op === 'list') && params.workspaceId && !wsId) {
         return errorResult(`Workspace "${params.workspaceId}" not found or not visible to this token.`);
       }
-      return handleSpecsAction(api, params, wsId);
+      return handleSpecsAction(api, params, wsId, ctx.appBaseUrl || 'https://buildd.dev');
     }
 
     case 'get_decision': {
