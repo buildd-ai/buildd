@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, mock } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 
 mock.module('@buildd/core/db', () => ({ db: { query: {} } }));
 
@@ -34,7 +35,7 @@ import {
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import type { PrScopeRead } from './pr-scope-reconcile';
 
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => dialect.sqlToQuery(q);
 
 const MIGRATIONS = 'Drizzle migrations';

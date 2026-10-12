@@ -1,5 +1,6 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
+import { normaliseSqlGrouping } from '../db/sql-grouping';
 
 /**
  * The readout's four queries, rendered to real SQL.
@@ -17,7 +18,7 @@ mock.module('../db/client', () => ({
 
 const src = await import('../experiment-readout-source');
 
-const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+const norm = (s: string) => normaliseSqlGrouping(s.replace(/\s+/g, ' ').trim().toLowerCase());
 const EXP_ID = '5b0f6c1e-0000-4000-8000-00000000000b';
 
 describe('experiment readout queries', () => {

@@ -131,10 +131,11 @@ async function main() {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const neonSql = neon(config.databaseUrl);
-      const db = drizzle(neonSql);
-      // `session` is not in drizzle's public typings, but it is the only handle
-      // that takes a raw SQL template on the neon-http driver.
-      const session = (db as unknown as { session: MigrateSession }).session;
+      // Object form: drizzle v1 reads a positional client as a config object
+      // and silently builds its own client instead of using this one.
+      const db = drizzle({ client: neonSql });
+      // The public `db.execute` is all the migrator needs (see MigrateSession).
+      const session: MigrateSession = db;
 
       await ensureTrackingTable(session);
 
