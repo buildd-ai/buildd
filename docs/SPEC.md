@@ -97,14 +97,26 @@ by the token's list. An unrestricted token is auto-linked to open workspaces
 only; linking a token to a restricted workspace takes `manage_team_keys` (owner or admin by default). `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
-A per-task token (`bldt_`) is confined to its own task's workspace. The one
-exception is a **schedule delegation** (`task_schedules.delegation`,
-`packages/core/token-delegation.ts`): a holder of `delegate_schedule_access` (owner or admin by default) may grant the tasks
-one schedule spawns `analytics:read` (decision ledger, decision/coordination stats,
-gate ledger, workspace name resolution) and/or `tasks:create` (the normal create
-path, no mission, dependencies or foreign parent) on named workspaces of the same
-team. It is stored on the schedule, never the task, records who granted it and
-when, is re-read on every request, and never exceeds the minting account's reach.
+A per-task token (`bldt_`) is confined to its own task's workspace. The
+exception is a **delegation** (`packages/core/token-delegation.ts`): an explicit
+grant of `analytics:read` (decision ledger, decision/coordination stats, gate
+ledger, workspace name resolution) and/or `tasks:create` (the normal create
+path; a mission link and dependencies only within that same workspace, never a
+foreign parent) on named workspaces of the same team. It lives in two places,
+never in task context (caller-written, so forgeable):
+- `task_schedules.delegation`: set by a holder of `delegate_schedule_access`
+  (owner or admin by default), for every task the schedule spawns;
+- `tasks.delegation`: set by a **person** who reaches each target (dashboard or
+  OAuth session) when filing the task or with `update_task` before it is
+  claimed, or by a person approving the running task's `tasks:create`
+  capability request (`request_capability`, resource = target workspace).
+  A continuation or retry of the task copies it.
+Both record who granted it and when, are re-read on every request, and never
+exceed the minting key's reach. A task may declare `filingTargets` (workspaces it
+will file in): a need, not a grant. The claim pre-flight holds a task
+(`delegation_unmet`, not forceable) when a declared target is not granted, or a
+grant names a workspace the claiming account (which mints the token) cannot use
+— before any agent turn, instead of letting the run discover the wall.
 Analytics reads a reviewer depends on report `status` — `OK` / `NO_DATA` reached
 the data; `FORBIDDEN` / `UNAUTHORIZED` / `TOOL_UNAVAILABLE` did not and are never
 evidence of zero rows.
@@ -476,6 +488,10 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).
   Thresholds were measured on Jev, so a call site that auto-applies (task
   category) records another model's pick without applying it.
+  A platform operator control, not a team setting (see "Platform operator"): only an operator
+  sees it under Settings › Models › Used
+  for or may PATCH `decisionModel`, and only an operator gets the "Decisions are
+  failing" Home card.
 - **Decision calls** (`decisionCall`) — fixed-label classifications. Chat uses them
   to pick each turn's tier and tool set, confidence-gated, defaulting to `standard`
   with all tools. The task-category check is shadow only
@@ -486,14 +502,17 @@ per-request form, so server-side calls **structurally cannot** use a seat.
 Callers ask for a **tier**, never a vendor model: `premium-plus` (opt-in only;
 nothing routes there on its own) · `premium` · `standard` · `budget`
 (`packages/core/model-tier-defaults.ts`). An admin maps tier → `(provider, model)` in
-`model_tier_registry` (Settings → Model tiers, or `manage_model_tiers`); provider ∈
+`model_tier_registry` (Settings › Models, or `manage_model_tiers`); provider ∈
 `anthropic | openai | openai-codex | openrouter`. Resolution (`resolveTierEntry`,
 60s cache): workspace row → team row → the catalog's newest in-band release →
 `TIER_DEFAULTS`. Agent runs resolve at **claim** time, so a remap applies to queued
 tasks. Chat and inference calls resolve per call; for chat, a tier on Anthropic or
 OpenAI with only an OpenRouter key is served through OpenRouter. An explicit `model` on a task or a
-role's full-ID pin bypasses tiers. **Tier model pools** (several models per tier with
-traffic splits) are proposed, not shipped (`knowledge-base: buildd/design/tier-model-pools.md`).
+role's full-ID pin bypasses tiers. A team admin picks each tier's primary model and an
+Automatic or Manual upgrade policy. **Tier model pools** (several models per tier, the
+Quality↔Savings dial, splits; `docs/specs/model-policy-cells.md`) and the soak upgrade mode
+are platform operator controls: their writes refuse a team admin and the page renders them
+only for an operator.
 
 ---
 
@@ -677,7 +696,10 @@ is refused. API keys and runners are unaffected (`lib/member-repo-access.ts`).
 registry in `apps/web/src/lib/permission-registry.ts`) never reach buildd's own
 platform machinery: experiments (create, change, start, pause, conclude, and
 operator-only ones), grading decisions, decision shadows,
-per-feature inference modes and chat retro. Those are gated on the platform
+per-feature inference modes, chat retro, and on Settings › Models the model
+traffic pools, the soak upgrade mode, `overCapAuto` and the decision model (a
+team admin picks only each tier's primary and Automatic or Manual upgrades).
+Those are gated on the platform
 operator: a signed-in person in `BUILDD_OPERATOR_USER_EMAILS`, the same person
 over OAuth, or an admin-level key of an account in
 `BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS` (`lib/admin/platform-operator-caller.ts`,

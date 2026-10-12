@@ -6,9 +6,10 @@
  * Workers AI, a revoked OpenRouter key) degrades on every call and nothing
  * says so. When at least `DECISION_HEALTH_FAILING_SHARE` of a team's
  * decisions in the last `DECISION_HEALTH_WINDOW_MS` were `provider_error`,
- * Home shows one card to the people who can change the decision model
- * (`manage_team_settings`), with the provider's own words and a link to the
- * setting.
+ * Home shows one card to the people who can change the decision model, with
+ * the provider's own words and a link to the setting. The decision model is a
+ * platform operator control (lib/admin/platform-operator-caller.ts), so that is an operator in
+ * the team; a team owner or admin never gets the card.
  *
  * Read on Home with no model call, from the two decision ledgers
  * (`orchestration_decisions`: start/wait, file prediction, task verdict;
@@ -17,6 +18,7 @@
  */
 import { providerRejectionText } from '@buildd/core/decision-probe';
 import type { WaitingOnYouRawItem } from './action-queue';
+import { isPlatformOperatorCaller } from './admin/platform-operator-caller';
 
 export const DECISION_HEALTH_WINDOW_MS = 30 * 60 * 1000;
 export const DECISION_HEALTH_FAILING_SHARE = 0.9;
@@ -83,6 +85,8 @@ export function providerErrorFromReason(reason: string | null | undefined): stri
 }
 
 export interface DecisionHealthDeps {
+  /** A platform operator: the only viewer the card is for. */
+  isOperator?: (viewer: DecisionHealthViewer) => boolean | Promise<boolean>;
   /** The teams of these workspaces. */
   teamsOf: (workspaceIds: readonly string[]) => Promise<string[]>;
   canManage: (userId: string, teamId: string) => Promise<boolean>;
@@ -164,6 +168,10 @@ async function dbReadCounts(teamId: string, since: Date): Promise<DecisionHealth
   return { calls, providerErrors, lastError: (orchNewer ? fromOrch ?? fromKind : fromKind ?? fromOrch) ?? null };
 }
 
+export interface DecisionHealthViewer { id: string; email?: string | null }
+
+const defaultIsOperator = (viewer: DecisionHealthViewer) => isPlatformOperatorCaller({ user: viewer });
+
 const DB_DEPS: DecisionHealthDeps = {
   teamsOf: dbTeamsOf,
   canManage: dbCanManage,
@@ -173,15 +181,17 @@ const DB_DEPS: DecisionHealthDeps = {
 
 /**
  * Home's read: one item per team of these workspaces whose decisions are
- * failing at the provider, for a viewer who can change the decision model.
+ * failing at the provider, for a platform operator in that team.
  * Never throws (Home keeps every other card).
  */
 export async function loadDecisionHealthNeedsYou(
-  userId: string | null | undefined,
+  viewer: DecisionHealthViewer | null | undefined,
   workspaceIds: readonly string[],
   deps: DecisionHealthDeps = DB_DEPS,
 ): Promise<WaitingOnYouRawItem[]> {
-  if (!userId || workspaceIds.length === 0) return [];
+  const userId = viewer?.id;
+  if (!viewer || !userId || workspaceIds.length === 0) return [];
+  if (!(await (deps.isOperator ?? defaultIsOperator)(viewer))) return [];
   try {
     const since = new Date((deps.now ?? Date.now)() - DECISION_HEALTH_WINDOW_MS);
     const out: WaitingOnYouRawItem[] = [];

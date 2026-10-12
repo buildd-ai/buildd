@@ -20,7 +20,7 @@
  */
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { isCiVerifiedGeneratedPath, isMigrationSqlPath } from '@buildd/core/generated-artifacts';
+import { isCiVerifiedGeneratedPath, isMigrationSqlPath, pairMovedMigrations } from '@buildd/core/generated-artifacts';
 import { isReleaseBranchPr } from '@buildd/core/release-strategy';
 import type { Exec } from './kernel';
 import type { CompositionAttestation, CompositionConstituent, ConstituentEvidence, NovelDelta, RoundStatus, Verdict } from './types';
@@ -207,20 +207,15 @@ export function classifyRefreshMerge(t: RefreshMergeTrees): string[] {
  * hand-written step there is invisible to CI.
  */
 export function renumberedMigrations(t: RefreshMergeTrees): Set<string> {
-  const left = Object.keys(t.ours).filter((p) => isMigrationSqlPath(p) && t.merged[p] === undefined);
-  const arrived = Object.keys(t.merged)
-    .filter((p) => isMigrationSqlPath(p) && t.ours[p] === undefined && t.theirs[p] === undefined)
-    .sort();
-  const out = new Set<string>();
-  const used = new Set<string>();
-  for (const p of arrived) {
-    const q = left.find((c) => !used.has(c) && t.ours[c] === t.merged[p]);
-    if (!q) continue;
-    used.add(q);
-    out.add(p);
-    out.add(q);
-  }
-  return out;
+  const left = Object.fromEntries(
+    Object.keys(t.ours).filter((p) => isMigrationSqlPath(p) && t.merged[p] === undefined).map((p) => [p, t.ours[p]]),
+  );
+  const arrived = Object.fromEntries(
+    Object.keys(t.merged)
+      .filter((p) => isMigrationSqlPath(p) && t.ours[p] === undefined && t.theirs[p] === undefined)
+      .map((p) => [p, t.merged[p]]),
+  );
+  return pairMovedMigrations(left, arrived);
 }
 
 export interface ConstituentDelivery {

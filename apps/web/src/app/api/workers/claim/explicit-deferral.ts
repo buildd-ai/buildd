@@ -130,6 +130,13 @@ export function describeExplicitDeferral(
         detail: `${role ? `Its role '${role}'` : 'Its workspace'} declares env ${missing.length > 0 ? missing.join(', ') : 'vars'} that no secret supplies. Add a role_env_secret under the mapped label (or remove the declaration), and it is claimable on the next poll.`,
       };
     }
+    case 'delegation_unmet': {
+      const message = str(detail.message);
+      return {
+        code: reason,
+        detail: `It needs cross-workspace reach its token would not carry${message ? `: ${message}` : ''}. A person who reaches the workspace grants it with update_task { delegation } before the run starts, or a runner account that reaches it claims the task. It is re-checked on every claim; forcing would only start an agent that hits the same wall.`,
+      };
+    }
     case 'managed_concurrency': {
       const active = num(detail.active);
       const limit = num(detail.limit);
