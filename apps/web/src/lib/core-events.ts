@@ -372,7 +372,13 @@ export type CoreEvent =
    * and full scopes): the floor for module backstops whose webhook is lossy.
    * Subscribers must be bounded (the route has a 60s budget) and idempotent.
    */
-  | { type: 'sweep.pr_hourly'; at: Date };
+  | { type: 'sweep.pr_hourly'; at: Date }
+  /**
+   * A person's approval of a Living Spec revision committed (lib/specs/approval.ts),
+   * the confirmation link's included. Once per approval. The knowledge module
+   * indexes the approved text and its references (living-specs.md §8).
+   */
+  | { type: 'spec.approved'; specId: string; workspaceId: string; revision: number };
 
 /** The worker that owns a PR, as the webhook resolved it. */
 export interface PrOwnerFact {

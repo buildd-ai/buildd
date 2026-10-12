@@ -6,7 +6,7 @@ last_verified: 2026-10-02
 summary: Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
 domain: knowledge
 surfaces: [apps/web/src/app/api/knowledge/ingest-jobs/claim/route.ts, packages/core/knowledge-store/full-ingest.ts, apps/web/src/lib/knowledge-ingest.ts, apps/web/src/lib/knowledge-full-ingest-fallback.ts]
-related: [knowledge-store-retrieval, webhook-dataflow, external-cron-triggers]
+related: [knowledge-store-retrieval, webhook-dataflow, external-cron-triggers, living-specs]
 keywords: [knowledge_ingest_jobs, ingest-jobs/claim, sweep, skippedUnchanged, escalated, KNOWLEDGE_INGEST_JOBS, knowledge:ingest, file_hash]
 verified_by: [apps/web/src/lib/knowledge-ingest.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/files/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, apps/runner/__tests__/unit/knowledge-ingest-poller.test.ts, apps/web/src/lib/knowledge-full-ingest-fallback.test.ts, apps/web/src/app/api/cron/knowledge-ingest-fallback/route.test.ts, apps/web/src/lib/knowledge-ingest-stalls.test.ts, packages/core/__tests__/voyage-embedder-batching.test.ts]
 supersedes: []
@@ -51,6 +51,12 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
   `docs` chunks are written by `ingestFiles` under a job (`diff` in
   `executeDiffJob`, `full` in the `/files` route or the runner's local
   executor). There is no unauthenticated or job-less write path.
+- **The `spec` corpus is not only repo files.** Beside the repo specs the
+  runner's local executor ingests, `{ws}:spec` holds each approved Living Spec,
+  written at approval (not under a job) as `living_spec` chunks with no source
+  path (living-specs.md §8). Path-based pruning (`pruneOrphans`, which lists
+  only non-null paths) and the completion sweep (`code`/`docs` only) therefore
+  never remove them.
 - **Claim is a single atomic `UPDATE … WHERE status='queued' RETURNING`.** Two
   executors offering the same repo cannot both get the same job; the loser gets
   zero rows back and falls through to the next candidate rather than erroring.
