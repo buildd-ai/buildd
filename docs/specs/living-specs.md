@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx]
 supersedes: []
 ---
 # Living Specs
@@ -355,9 +355,8 @@ same page, without an agent in between.
   (surface-ia-home-missions-initiatives.md) and a spec belongs to one
   workspace, like the workspace's memory and schedules.
 - Who can see a spec on any of these pages is exactly who can read it over
-  `GET /api/specs/[id]` (`reach`, §4): another team's workspace or spec, or a
-  restricted workspace the person is not linked to, is a 404 and its title
-  never appears.
+  `GET /api/specs/[id]` from a dashboard session (`reach`, §4): another
+  team's workspace or spec is a 404 and its title never appears.
 - The list shows specs as a tree: a spec with a parent in the same workspace
   sits under it; a spec whose parent is not in the list sits at the top. Each
   row says in words its title, scope, where it stands ("approved at revision
@@ -401,9 +400,9 @@ same page, without an agent in between.
   `apps/web/src/components/SpecList.dom.test.tsx`).
 - AC-17: GIVEN a workspace with no specs WHEN its list renders THEN it says
   how specs are made and shows no count (`apps/web/src/components/SpecList.dom.test.tsx`).
-- AC-18: GIVEN a person of another team, or a member not linked to a
-  restricted workspace WHEN they open its spec list or one of its specs THEN
-  nothing about the spec is returned (`apps/web/tests/db/spec-pages.test.ts`).
+- AC-18: GIVEN a person of another team WHEN they open a workspace's spec
+  list or one of its specs THEN nothing about the spec is returned
+  (`apps/web/tests/db/spec-pages.test.ts`).
 - AC-19: GIVEN revision 1 approved and revision 2 a draft WHEN the spec page
   opens with no revision named THEN it reads revision 1 rendered and says
   revision 2 is waiting for approval; WHEN `?revision=2` THEN it reads revision
@@ -425,7 +424,9 @@ same page, without an agent in between.
 - `apps/web/src/app/app/(protected)/workspaces/[id]/specs/page.tsx` — the list
 - `apps/web/src/app/app/(protected)/specs/[specId]/page.tsx` — the spec page
 - `apps/web/src/components/SpecList.tsx` — `SpecList`
-- `apps/web/src/components/SpecPage.tsx` — `SpecPage`
+- `apps/web/src/components/SpecPage.tsx` — `SpecPage`, `readingLine`
+- `apps/web/src/components/SpecRevisionPanes.tsx` — `SpecRevisionPanes` (the Spec / Changes switch, shared with the confirm page)
+- `apps/web/src/lib/specs/repo-source.ts` — `linkedRepoFullName`
 
 **Not yet**:
 - The task page names the pinned revision but does not link to the spec page.
