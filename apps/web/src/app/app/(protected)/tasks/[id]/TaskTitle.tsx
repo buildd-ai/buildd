@@ -17,7 +17,7 @@ export default function TaskTitle({ title, className = '' }: { title: string; cl
         ref={ref as React.RefObject<HTMLHeadingElement>}
         data-testid="task-title"
         data-clamped={open ? 'false' : 'true'}
-        className={`text-heading font-semibold tracking-[-0.2px] break-words [overflow-wrap:anywhere] max-w-[760px] ${open ? '' : 'line-clamp-3 md:line-clamp-none'} ${className}`}
+        className={`text-heading font-semibold break-words [overflow-wrap:anywhere] max-w-[760px] ${open ? '' : 'line-clamp-3 md:line-clamp-none'} ${className}`}
       >
         {title}
       </h1>
