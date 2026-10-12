@@ -1,6 +1,8 @@
 /**
  * The model-providers fixture's lone variant: one OpenRouter team key, so the
  * page draws the one Used for line and no table. The full fixture draws the table.
+ * The stored-policy variant draws the key-rule line; the full one, with no
+ * policy stored, does not.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/dev/fixtures' });
@@ -23,7 +25,7 @@ const realFetch = window.fetch;
 let root: ReturnType<typeof createRoot>;
 let host: HTMLElement;
 
-async function mount(variant?: 'full' | 'lone') {
+async function mount(variant?: 'full' | 'lone' | 'stored-policy') {
   window.fetch = realFetch;
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -45,5 +47,12 @@ describe('ModelProvidersFixture', () => {
     await mount();
     expect(host.querySelector('[data-testid="used-for"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="provider-lone"]')).toBeNull();
+    expect(host.querySelector('[data-testid="credential-policy-line"]')).toBeNull();
+  });
+
+  it('stored-policy: a stored "team keys only" draws the key-rule line and its reset', async () => {
+    await mount('stored-policy');
+    expect(host.querySelector('[data-testid="credential-policy-line"]')?.textContent).toBe('This team uses team keys only.');
+    expect(host.querySelector('[data-testid="credential-policy-reset"]')).not.toBeNull();
   });
 });
