@@ -82,7 +82,8 @@ export async function assessMissionVisualImpact(missionId: string): Promise<Visu
   });
 
   let headSha: string | null = null;
-  let base = (ws.gitConfig as { defaultBranch?: string } | null)?.defaultBranch ?? null;
+  const configuredBase = (ws.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
+  let base = typeof configuredBase === 'string' ? configuredBase : null;
   if (mission.primaryPrNumber) {
     const [d] = await db
       .select({ currentHeadSha: workflowDeliveries.currentHeadSha, baseRef: workflowDeliveries.baseRef })
