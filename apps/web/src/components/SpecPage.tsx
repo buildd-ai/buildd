@@ -92,6 +92,44 @@ export default function SpecPage({ view }: { view: Ok }) {
   const numbers = view.revisions.map((r) => r.revision);
   const defaultFrom = spec.approvedRevision && spec.approvedRevision !== spec.headRevision ? spec.approvedRevision : Math.max(1, spec.headRevision - 1);
 
+  const focused = !!(view.review || view.compare);
+  const main = (
+    view.review ? (
+      <section className="flex flex-col gap-3" data-testid="spec-page-review-panel">
+        <h2 className="text-body font-semibold text-text-primary">
+          {view.review.replaces ? `Revision ${view.review.revision} replaces revision ${view.review.replaces}` : `Revision ${view.review.revision}, the first to be approved`}
+        </h2>
+        <SpecRevisionPanes
+          body={view.review.body}
+          hunks={view.review.hunks}
+          omittedLines={view.review.omittedLines}
+          sectionCount={view.review.sectionCount}
+          linesAdded={view.review.linesAdded}
+          linesRemoved={view.review.linesRemoved}
+          initial={view.review.replaces ? 'changes' : 'spec'}
+        />
+        <Approve specId={spec.id} revision={view.review.revision} expectedVersion={spec.version} />
+      </section>
+    ) : view.compare ? (
+      <section className="flex flex-col gap-3" data-testid="spec-page-compare-panel">
+        {'error' in view.compare ? (
+          <Notice tone="warn">{view.compare.error}</Notice>
+        ) : (
+          <>
+            <h2 className="text-body font-semibold text-text-primary">
+              Changes from revision {view.compare.from} to revision {view.compare.to}
+            </h2>
+            <SpecDiffView hunks={view.compare.hunks} omittedLines={view.compare.omittedLines} />
+          </>
+        )}
+      </section>
+    ) : (
+      <Card data-testid="spec-page-body">
+        <MarkdownContent content={view.body} images="link" />
+      </Card>
+    )
+  );
+
   return (
     <div className="flex flex-col gap-4">
       <header className="flex flex-col gap-1">
@@ -112,40 +150,7 @@ export default function SpecPage({ view }: { view: Ok }) {
         </div>
       ) : null}
 
-      {view.review ? (
-        <section className="flex flex-col gap-3" data-testid="spec-page-review-panel">
-          <h2 className="text-body font-semibold text-text-primary">
-            {view.review.replaces ? `Revision ${view.review.revision} replaces revision ${view.review.replaces}` : `Revision ${view.review.revision}, the first to be approved`}
-          </h2>
-          <SpecRevisionPanes
-            body={view.review.body}
-            hunks={view.review.hunks}
-            omittedLines={view.review.omittedLines}
-            sectionCount={view.review.sectionCount}
-            linesAdded={view.review.linesAdded}
-            linesRemoved={view.review.linesRemoved}
-            initial={view.review.replaces ? 'changes' : 'spec'}
-          />
-          <Approve specId={spec.id} revision={view.review.revision} expectedVersion={spec.version} />
-        </section>
-      ) : view.compare ? (
-        <section className="flex flex-col gap-3" data-testid="spec-page-compare-panel">
-          {'error' in view.compare ? (
-            <Notice tone="warn">{view.compare.error}</Notice>
-          ) : (
-            <>
-              <h2 className="text-body font-semibold text-text-primary">
-                Changes from revision {view.compare.from} to revision {view.compare.to}
-              </h2>
-              <SpecDiffView hunks={view.compare.hunks} omittedLines={view.compare.omittedLines} />
-            </>
-          )}
-        </section>
-      ) : (
-        <Card data-testid="spec-page-body">
-          <MarkdownContent content={view.body} images="link" />
-        </Card>
-      )}
+      {focused ? main : null}
 
       <Section title="Related">
         {view.parent ? (
@@ -204,6 +209,9 @@ export default function SpecPage({ view }: { view: Ok }) {
           ))}
         </ul>
       </Section>
+
+      {/* A long spec would push its history out of reach, so the body reads last. */}
+      {focused ? null : main}
     </div>
   );
 }

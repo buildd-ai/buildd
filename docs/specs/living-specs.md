@@ -432,6 +432,8 @@ same page, without an agent in between.
   revision being read and, when the head is newer than the approved
   revision, that revision M is waiting for approval. The body is that
   revision's text exactly, rendered as Markdown with images shown as links.
+  It comes after the related specs and the revision history, so a long spec
+  never pushes them out of reach.
 - The page lists every revision, newest first: its number, whether a person
   or an agent wrote it, its change summary, and who approved it and when, or
   nothing when it was never approved.
