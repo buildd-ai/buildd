@@ -622,6 +622,19 @@ notification text) follows the same rules as a PR lede:
     review internals belong on operator surfaces, not a member's Settings.
     Living Spec "Product voice and professional Settings copy" carries the
     same rules as requirements.
+16. **One fact per Settings description** (`conditional-policy`,
+    `trailing-filler`, `em-dash`). An index line or page lede is a single
+    sentence fragment, 14 words at most, ending in a full stop, with no
+    trailing filler ("and more", "etc."). It never conditions a setting on team
+    policy ("when the team lets…", "if admins allow…", "the team decides"):
+    state what the page manages and show the policy beside the control it
+    governs. No em dash. `settingsDescriptionProblems` in
+    `packages/core/copy-rules.ts` checks all of it for the Settings index.
+    Spec: `docs/specs/settings-copy.md`.
+
+    > Your own model keys, used when the team lets personal keys pay.
+    > **Manage your personal API keys.**
+
 15. **Change the flow before the words.** When a page needs explaining, it
     mirrors the data model. Collapse it: one row per thing the reader knows
     (Claude, not "Anthropic" plus "Claude subscription"), one input that
