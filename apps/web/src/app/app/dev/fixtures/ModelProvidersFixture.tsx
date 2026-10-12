@@ -12,6 +12,10 @@
  *
  * `?state=model-providers-lone` (variant "lone"): one OpenRouter team key and
  * nothing else, so Used for draws its one line instead of the table.
+ *
+ * `?state=model-providers-stored-policy` (variant "stored-policy"): the full
+ * page for a team that stored "team keys only" before the setting was removed,
+ * so Providers draws the key-rule line and its reset.
  */
 import { Suspense, useState } from 'react';
 import SettingsPage from '../../(protected)/settings/_components/SettingsPage';
@@ -85,7 +89,7 @@ const LONE_ROWS: FixtureRow[] = [
   { provider: 'openrouter', scope: 'team', last4: 'r7s8', lastVerifiedAt: ago(DAY) },
 ];
 
-export type ModelProvidersFixtureVariant = 'full' | 'lone';
+export type ModelProvidersFixtureVariant = 'full' | 'lone' | 'stored-policy';
 
 function explain(url: URL, rows: readonly FixtureRow[]): ExplainProviderResponse {
   const surface = url.searchParams.get('surface') as ExplainProviderResponse['surface'];
@@ -108,7 +112,7 @@ function installStub(variant: ModelProvidersFixtureVariant) {
   const real = window.fetch.bind(window);
   const lone = variant === 'lone';
   const rows = lone ? LONE_ROWS : ROWS;
-  let credentialPolicy: CredentialPolicyValue | null = null;
+  let credentialPolicy: CredentialPolicyValue | null = variant === 'stored-policy' ? 'team' : null;
   let assignments: Record<string, string> = {};
   window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.pathname : input.url;
