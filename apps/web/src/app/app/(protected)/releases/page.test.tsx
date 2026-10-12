@@ -168,3 +168,42 @@ describe('ReleasesPage release flow entry', () => {
     expect(await renderPage()).not.toContain('/app/releases/compose');
   });
 });
+
+describe('ReleasesPage ?state= fixtures', () => {
+  const renderState = async (state: string, nodeEnv = 'development') => {
+    const prev = process.env.NODE_ENV;
+    (process.env as Record<string, string>).NODE_ENV = nodeEnv;
+    try {
+      return renderToStaticMarkup(await ReleasesPage({ searchParams: Promise.resolve({ state }) }));
+    } finally {
+      (process.env as Record<string, string>).NODE_ENV = prev!;
+    }
+  };
+
+  it('candidates: a pending candidate as the next release, with the flow link, above the history', async () => {
+    findMany.mockClear();
+    const html = await renderState('candidates');
+    expect(findMany).not.toHaveBeenCalled();
+    expect(html).toContain('data-testid="next-release"');
+    expect(html).toContain('data-testid="next-release-compose"');
+    expect(html).toContain('Superseded');
+    expect(html).toContain('Degraded');
+    expect(count(html, 'data-testid="release-row"')).toBe(6);
+  });
+
+  it('history: no next release, the compose link sits in the header', async () => {
+    const html = await renderState('history');
+    expect(html).not.toContain('data-testid="next-release"');
+    expect(html).toContain('data-testid="releases-compose"');
+  });
+
+  it('multi-workspace: rows name their workspace', async () => {
+    expect(await renderState('multi-workspace')).toContain('Sample mobile app');
+  });
+
+  it('is ignored outside a dev server', async () => {
+    findMany.mockClear();
+    await renderState('candidates', 'production');
+    expect(findMany).toHaveBeenCalled();
+  });
+});

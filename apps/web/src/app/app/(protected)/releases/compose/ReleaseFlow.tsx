@@ -9,6 +9,7 @@ import PrimaryAction from '@/components/ui/PrimaryAction';
 import Section from '@/components/ui/Section';
 import { TonePill } from '@/components/ui/StatePill';
 import type { ReleaseFlowView } from '@/lib/release/compose-source';
+import type { ReleaseFlowFixture } from './compose-fixtures';
 import { checkTone, checkWord, criteriaText, FLOW_STEPS, recordSentence, stepIndex } from './flow-display';
 
 type Post = Record<string, unknown> & { action: string };
@@ -115,12 +116,15 @@ function Confirm({ text, action, pending, onConfirm, onCancel }: { text: string;
   );
 }
 
-export default function ReleaseFlow({ view }: { view: ReleaseFlowView }) {
+/** `fixture`: a `?state=` view (./compose-fixtures.ts). Seeds the reply or confirm card and never POSTs. */
+export default function ReleaseFlow({ view, fixture }: { view: ReleaseFlowView; fixture?: ReleaseFlowFixture }) {
   const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(() => new Set(view.defaultSelected));
   const [pending, setPending] = useState<string | null>(null);
-  const [reply, setReply] = useState<{ tone: NoticeTone; text: string; runUrl?: string | null } | null>(null);
-  const [confirming, setConfirming] = useState<{ text: string; action: string; post: Post } | null>(null);
+  const [reply, setReply] = useState<{ tone: NoticeTone; text: string; runUrl?: string | null } | null>(fixture?.reply ?? null);
+  const [confirming, setConfirming] = useState<{ text: string; action: string; post: Post } | null>(
+    fixture?.confirming ? { ...fixture.confirming, post: { action: 'fixture' } } : null,
+  );
 
   const c = view.composition;
   const cand = view.candidate;
@@ -138,6 +142,11 @@ export default function ReleaseFlow({ view }: { view: ReleaseFlowView }) {
   }
 
   async function send(post: Post, label: string) {
+    if (fixture) {
+      setConfirming(null);
+      setReply({ tone: 'info', text: 'Fixture view: nothing was sent.' });
+      return;
+    }
     setPending(label);
     setReply(null);
     try {

@@ -12,6 +12,7 @@ import { teamIdsWhere } from '@/lib/permissions';
 import { composeHref } from '@/lib/release/compose-href';
 import { loadFlowFor, resolveComposeTarget } from '@/lib/release/compose-runtime';
 import { resolveActiveTeamId } from '@/lib/team-access';
+import { composeFixture, resolveComposeFixtureState } from './compose-fixtures';
 import ReleaseFlow from './ReleaseFlow';
 
 export const dynamic = 'force-dynamic';
@@ -30,10 +31,18 @@ function Shell({ children }: { children: React.ReactNode }) {
  * (lib/release/compose-*.ts). Owners and admins only; reached from the
  * Releases page's Next release card and the Plan view's release cut line.
  */
-export default async function ComposeReleasePage({ searchParams }: { searchParams: Promise<{ workspace?: string }> }) {
-  const { workspace: wsParam } = await searchParams;
+export default async function ComposeReleasePage({ searchParams }: { searchParams: Promise<{ workspace?: string; state?: string | string[] }> }) {
+  const { workspace: wsParam, state } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
+
+  // `?state=` (dev server only) renders a static flow so the visual audit reaches every step; see ./compose-fixtures.ts.
+  const fixtureState = resolveComposeFixtureState(state);
+  if (fixtureState) {
+    const fixture = composeFixture(fixtureState);
+    if (fixture.kind === 'error') return <Shell><Notice tone="err">{fixture.message}</Notice></Shell>;
+    return <Shell><ReleaseFlow view={fixture.view} fixture={fixture.flowFixture} /></Shell>;
+  }
 
   const teamIds = await teamIdsWhere({ kind: 'user', userId: user.id }, 'manage_releases');
   if (teamIds.length === 0) {
