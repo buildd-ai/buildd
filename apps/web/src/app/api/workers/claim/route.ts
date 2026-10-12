@@ -102,6 +102,7 @@ import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
 import { attachQuestionGate } from './question-gate';
 import { attachRoleEnvSecrets, runRoleEnvPreFilter } from './role-env-injection';
+import { checkDelegationGate } from './delegation-gate';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
 import {
   attachArtifactReferences,
@@ -1257,6 +1258,7 @@ export async function POST(req: NextRequest) {
     codex_single_flight: 0,
     oauth_parallelism: 0,
     role_env_unsatisfied: 0,
+    delegation_unmet: 0,
     ordered_behind: 0,
     managed_concurrency: 0,
     managed_runner_hours: 0,
@@ -1670,6 +1672,13 @@ export async function POST(req: NextRequest) {
     if (connectorMismatchTaskIds.has(task.id)) { deferTask(task, 'connector_mismatch'); continue; }
     const roleEnvGap = roleEnvGaps.get(task.id);
     if (roleEnvGap) { deferTask(task, 'role_env_unsatisfied', { roleSlug: roleEnvGap.roleSlug, missing: roleEnvGap.missing }); continue; }
+    // Cross-workspace reach the token would not carry: held before any agent
+    // turn, never forced past (claim/delegation-gate.ts).
+    const delegationGap = await checkDelegationGate(task as any, account).catch((err) => {
+      console.warn(`[claim] delegation pre-flight failed for task ${task.id}; holding it:`, (err as Error)?.message ?? err);
+      return { gaps: [], detail: 'the delegation pre-flight could not run; it is retried on the next poll' };
+    });
+    if (delegationGap) { deferTask(task, 'delegation_unmet', { gaps: delegationGap.gaps, message: delegationGap.detail }); continue; }
 
     // Subject-liveness in-loop guard (defense-in-depth for race between the SQL
     // prefilter and per-task processing). The SQL condition above should already

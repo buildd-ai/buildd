@@ -9,10 +9,13 @@ import {
   type PullRequestMigrationFile,
 } from '@/lib/migration-safety';
 import { effectiveDeltaFiles } from '@/lib/integration-refresh';
+import { pairMovedMigrations } from '@buildd/core/generated-artifacts';
 
 interface GitHubPullRequestFile {
   filename: string;
   status?: string;
+  /** Set by GitHub on a `renamed` entry: the path the file had on the base. */
+  previous_filename?: string | null;
 }
 
 async function listAll(
@@ -73,6 +76,40 @@ async function resolveBaseSha(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Migrations a refresh PR only moved: a `removed` entry (or a `renamed`
+ * entry's previous path), read where the diff's base has it, paired one to
+ * one with an `added` (or `renamed`) entry holding the same bytes at the head.
+ * Returns both ends of each pair; an unreadable side never pairs, so the
+ * deletion stays lineage.
+ */
+async function renumberedInRefresh(
+  migrations: GitHubPullRequestFile[],
+  withContent: PullRequestMigrationFile[],
+  readOnBase: (path: string) => Promise<string | undefined>,
+): Promise<Set<string>> {
+  const left: Record<string, string | undefined> = {};
+  const arrived: Record<string, string | undefined> = {};
+  const renamedFrom = new Map<string, string>();
+  for (const file of migrations) {
+    const from = file.status === 'removed' ? file.filename
+      : file.status === 'renamed' && file.previous_filename && isGeneratedMigrationPath(file.previous_filename) ? file.previous_filename
+        : null;
+    if (from) left[from] = await readOnBase(from);
+    if (file.status === 'added' || file.status === 'renamed') {
+      arrived[file.filename] = withContent.find((f) => f.filename === file.filename)?.content;
+    }
+    if (file.status === 'renamed' && from) renamedFrom.set(file.filename, from);
+  }
+  const pairs = pairMovedMigrations(left, arrived);
+  // A rename that pairs with some other deletion instead of its own old path
+  // still rewrote that path: only count it when its own previous path paired.
+  for (const [to, from] of renamedFrom) {
+    if (pairs.has(to) && !pairs.has(from)) pairs.delete(to);
+  }
+  return pairs;
 }
 
 type InspectParams = Parameters<typeof inspectOnce>[0];
@@ -181,17 +218,12 @@ async function inspectOnce(params: {
   const allMigrationFiles = completeFiles.filter((file) =>
     isGeneratedMigrationPath(file.filename),
   );
+  const lineage = (reason: string): MigrationSafety => ({ safe: false, operationClass: 'CONTRACT', reason, kind: 'lineage' });
   // Deleting or renaming a migration rewrites lineage; no base comparison can
-  // make that inherited.
-  const removedMigration = allMigrationFiles.find((file) => file.status === 'removed');
-  if (removedMigration) {
-    return {
-      safe: false,
-      operationClass: 'CONTRACT',
-      reason: `deletes generated migration ${removedMigration.filename}`,
-      kind: 'lineage',
-    };
-  }
+  // make that inherited. Only a refresh PR can show a deletion that is a
+  // renumber (below), so anything else stops here without reading SQL.
+  const firstRemoved = allMigrationFiles.find((file) => file.status === 'removed');
+  if (firstRemoved && !params.deltaBase) return lineage(`deletes generated migration ${firstRemoved.filename}`);
   const touchesSchema = completeFiles.some(
     (file) => file.filename === 'packages/core/db/schema.ts',
   );
@@ -201,6 +233,7 @@ async function inspectOnce(params: {
     filename: file.filename,
   }));
   for (const migration of allMigrationFiles) {
+    if (migration.status === 'removed') continue;
     try {
       const target = filesWithContent.find((file) => file.filename === migration.filename)!;
       target.content = await readFileAtRef(
@@ -222,6 +255,19 @@ async function inspectOnce(params: {
       ? readFileAtRef(params.installationId, params.repoFullName, path, baseSha).catch(() => undefined)
       : Promise.resolve(undefined);
 
+  // An integration refresh whose merge moved the mission's own migration to a
+  // free index past trunk's (`bun run migrations:renumber`) shows a deletion
+  // paired one to one with an addition holding the same bytes. That is a
+  // renumber, the shape the review exemption skips (`renumberedMigrations`);
+  // the moved SQL is still classified below. Spec db-migration-gates.md
+  // "A renumber in a refresh PR is not lineage".
+  const removed = new Set(allMigrationFiles.filter((file) => file.status === 'removed').map((file) => file.filename));
+  const moved = params.deltaBase
+    ? await renumberedInRefresh(allMigrationFiles, filesWithContent, readOnBase)
+    : new Set<string>();
+  const removedMigration = allMigrationFiles.find((file) => file.status === 'removed' && !moved.has(file.filename));
+  if (removedMigration) return lineage(`deletes generated migration ${removedMigration.filename}`);
+
   const inherited = new Set<string>();
   for (const migration of allMigrationFiles) {
     if (migration.status !== 'added' && migration.status !== 'modified') continue;
@@ -231,23 +277,16 @@ async function inspectOnce(params: {
   }
 
   const changedExistingMigration = allMigrationFiles.find(
-    (file) => file.status !== 'added' && !inherited.has(file.filename),
+    (file) => file.status !== 'added' && !removed.has(file.filename) && !inherited.has(file.filename) && !moved.has(file.filename),
   );
-  if (changedExistingMigration) {
-    return {
-      safe: false,
-      operationClass: 'CONTRACT',
-      reason: `modifies existing migration ${changedExistingMigration.filename}`,
-      kind: 'lineage',
-    };
-  }
+  if (changedExistingMigration) return lineage(`modifies existing migration ${changedExistingMigration.filename}`);
 
   // Novel SQL must sort after everything already on the target, or drizzle
   // would apply it out of order there: after what this PR inherits, and after
   // what the base merged since the branch forked (a same-number migration the
   // branch never saw). Either one is a renumber, not a decision; destructive
   // SQL in the same PR still wins (see the end of this function).
-  const novel = allMigrationFiles.filter((file) => !inherited.has(file.filename));
+  const novel = allMigrationFiles.filter((file) => !removed.has(file.filename) && !inherited.has(file.filename));
   const highestInherited = Math.max(-1, ...[...inherited].map(numberOf));
   let baseCollision: MigrationSafety | null = null;
   const outOfOrder = novel.find((file) => numberOf(file.filename) <= highestInherited);
@@ -321,7 +360,7 @@ async function inspectOnce(params: {
   }
 
   const verdict = classifyPullRequestMigrations(
-    filesWithContent.filter((file) => !inherited.has(file.filename)),
+    filesWithContent.filter((file) => !inherited.has(file.filename) && !removed.has(file.filename)),
     openPullRequestMigrations,
     params.prNumber,
   );

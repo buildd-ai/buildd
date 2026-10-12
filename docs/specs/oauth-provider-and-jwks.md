@@ -128,12 +128,15 @@ system.
   `callbackUrl` set to the same authorize URL — the authorization request is
   never dropped, and no code is minted before a session exists.
 - A code MUST NOT be minted until the session user's workspace access is
-  re-checked against `teamMembers` at authorize time
-  (`workspacesForUser()`); a `workspace` param the user cannot reach returns
-  HTTP 403.
-- Every minted `oauthCodes` row MUST carry `(clientId, userId, workspaceId,
-  redirectUri, codeChallenge)`. There is no "all workspaces" code: the column
-  is `NOT NULL`.
+  re-checked against `teamMembers` at authorize time: for an older
+  per-workspace resource, `legacyWorkspaceForUser()` on the workspace the
+  resource names (a workspace the user cannot reach returns HTTP 403); for the
+  account level, the grant's workspaces (`validateApproval()`). Which consent a
+  request gets is decided by its `resource` (`classifyResource()`, see
+  auth-oauth-boundaries.md, "Resource routing, older addresses and sunset").
+- Every minted `oauthCodes` row MUST carry `(clientId, userId, redirectUri,
+  codeChallenge)` and exactly one of `workspaceId` (older per-workspace
+  address) or `grantId` (account level). There is no "all workspaces" code.
 - `GET` MUST NOT mint a code. With a valid request, a session and a reachable
   workspace it renders a consent page naming the client, the workspace, and
   the access the connection will have (the user's team role, via
@@ -174,10 +177,12 @@ system.
 **Code surface**:
 - Route: `apps/web/src/app/api/oauth/authorize/route.ts:83-176`
 - Redirect-URI matcher: same file `:23-51` — `isRegisteredRedirectUri()`
-- Access re-check: same file `:57-69` — `workspacesForUser()`
-- Consent page + decision: same file — `renderConsentPage()`, `POST`,
-  `verifyConsentToken()`, `isSameOriginPost()`
-- Post-approval interstitial: same file — `renderAuthorizedInterstitial()`
+- Access re-check: same file — `legacyWorkspaceForUser()`
+- Consent decision: same file — `POST`, `verifyConsentToken()`,
+  `isSameOriginPost()`; pages in `apps/web/src/lib/oauth/account-consent.ts` —
+  `renderLegacyConsentPage()`, `renderAccountConsentPage()`
+- Post-approval interstitials: `renderLegacyInterstitial()`,
+  `renderGrantInterstitial()` (same module)
 - Code persistence: `apps/web/src/lib/oauth/storage.ts:36-59` — `createAuthCode()`
 - Schema: `packages/core/db/schema.ts:2085-2099` — `oauthCodes`
 
