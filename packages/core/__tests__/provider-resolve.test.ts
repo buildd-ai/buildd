@@ -5,7 +5,7 @@
  * apps/web/tests/db/provider-resolve.test.ts.
  */
 import { describe, expect, it, mock } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '../db/sql-grouping';
 
 // Only the chat parity oracle (`resolveInferenceCredential`) touches these.
 let dbRows: unknown[] = [];
@@ -360,7 +360,7 @@ describe('why', () => {
 // ── SQL predicate shape (the behaviour is in the real-PG test) ──────────────
 
 describe('providerCredentialWhere', () => {
-  const dialect = new PgDialect();
+  const dialect = new GroupingNormalisedPgDialect();
   const render = (w: ReturnType<typeof providerCredentialWhere>) => dialect.sqlToQuery(w);
   const base = { teamId: 'T', workspaceId: W, accountId: null, requesterUserId: U, purposes: ['inference_key'], legacyAccountRows: false };
 

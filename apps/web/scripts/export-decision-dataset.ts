@@ -53,7 +53,7 @@ if (!process.env.DATABASE_URL) {
   process.exit(2);
 }
 // The neon HTTP driver directly: `@buildd/core/db` is server-only.
-const db = drizzle(neon(process.env.DATABASE_URL));
+const db = drizzle({ client: neon(process.env.DATABASE_URL) });
 
 const PAGE = 2000;
 

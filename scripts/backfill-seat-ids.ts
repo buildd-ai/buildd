@@ -42,7 +42,7 @@ function extractJwtSub(token: string): string | null {
 }
 
 const sql = neon(DATABASE_URL!);
-const db = drizzle(sql, { schema });
+const db = drizzle({ client: sql, schema });
 
 async function main() {
   console.log(`[backfill-seat-ids] mode=${DRY_RUN ? 'dry-run' : 'live'}`);
