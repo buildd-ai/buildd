@@ -44,6 +44,7 @@ import { githubApi } from '@/lib/github';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
+import { decideReadyToMerge, readyToMergeReason } from '@/lib/ready-to-merge';
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
@@ -1129,7 +1130,15 @@ function missionPrBody(opts: {
 }
 
 /** Outcome of {@link guardMissionPrMerge}. */
-export type MissionPrMergeGate = { blocks: false } | { blocks: true; reason: string };
+export type MissionPrMergeGate =
+  | { blocks: false }
+  | {
+      blocks: true;
+      reason: string;
+      /** Why, as codes (`ready-to-merge.ts`); doors that only show `reason` ignore it. */
+      codes?: string[];
+      nextActor?: 'system' | 'jev' | 'owner' | 'none';
+    };
 
 /** How many held items a refusal names before it summarises the rest. */
 const REFUSAL_NAME_LIMIT = 5;
@@ -1192,14 +1201,33 @@ export async function guardMissionPrMerge(
       `${work.unfinishedTaskCount} mission task(s) that have not opened a PR yet: ${named}`,
     );
   }
-  if (holders.length === 0) return { blocks: false };
+  const workHolder = holders.length === 0
+    ? null
+    : `This mission's work is not finished — ${holders.join('; and ')}. Merging the mission PR `
+      + `now would delete the integration branch out from under work that still needs it. `
+      + `Cancel the remaining task(s), or let them land, then merge.`;
 
+  // The same decision for every door. Opening the mission PR never comes through
+  // here, so reviewing the branch is still possible while this blocks landing it.
+  const visual = await import('@/lib/workflow/visual-review-state-load')
+    .then(m => m.getMissionVisualReviewState(task.missionId!))
+    .catch(err => {
+      console.error('[mission-pr] visual review state unreadable (refusing the merge):', err);
+      return null;
+    });
+  const decision = decideReadyToMerge({ kind: 'mission_integration_pr', workHolder, visual });
+  if (decision.scheduleVisualReview) {
+    // Whoever tried to land the branch also gets the review on its way; best-effort and idempotent.
+    void import('@/lib/workflow/visual-review-schedule-run')
+      .then(m => m.scheduleMissionVisualReview(task.missionId!))
+      .catch(err => console.error('[mission-pr] could not schedule the visual review:', err));
+  }
+  if (decision.ready) return { blocks: false };
   return {
     blocks: true,
-    reason:
-      `This mission's work is not finished — ${holders.join('; and ')}. Merging the mission PR `
-      + `now would delete the integration branch out from under work that still needs it. `
-      + `Cancel the remaining task(s), or let them land, then merge.`,
+    reason: readyToMergeReason(decision),
+    codes: decision.blockers.map(b => b.code),
+    nextActor: decision.blockers[0]?.nextActor,
   };
 }
 

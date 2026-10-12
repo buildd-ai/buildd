@@ -64,6 +64,15 @@ const mockReportMissionBranchUnresolved = mock(async (_input: any) => {});
 // delivery, so every legacy merge case below runs unchanged.
 const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
 const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+// The visual review half of the mission-PR gate (lib/ready-to-merge.ts). Default: passed on this head.
+let visualReviewOwed = false;
+mock.module('@/lib/workflow/visual-review-state-load', () => ({
+  getMissionVisualReviewState: async () => visualReviewOwed
+    ? { status: 'needed', pendingVerification: true, staleEvidence: false, nextActor: 'system', branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } } }
+    : { status: 'passed', pendingVerification: false, staleEvidence: false, nextActor: 'none', branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } } },
+}));
+mock.module('@/lib/workflow/visual-review-schedule-run', () => ({ scheduleMissionVisualReview: async () => null }));
+
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,
@@ -5206,6 +5215,25 @@ describe('PUT /api/github/pr', () => {
       expect(data.error).toContain('Task 2');
       expect(data.error).toContain('pending');
       expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('refuses to merge the mission PR while its visual review is owed, and merges nothing', async () => {
+      missionPrWorkerOk();
+      mockTasksFindMany.mockResolvedValue([
+        { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
+      ]);
+      mockWorkersFindMany.mockResolvedValue([
+        { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: BRANCH, mergedAt: new Date(), prLifecycleStatus: 'merged', startedAt: new Date(), createdAt: new Date() },
+      ]);
+      visualReviewOwed = true;
+      try {
+        const res = await put();
+        expect(res.status).toBe(409);
+        expect(JSON.stringify(await res.json())).toContain('visual review');
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      } finally {
+        visualReviewOwed = false;
+      }
     });
 
     it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {

@@ -1982,6 +1982,47 @@ head SHA, basis, confidence, structured reasons), distinct from a waiver, and
 holds only for the head SHA it was made on (`isImpactAssessmentCurrent`).
 `uiChangeFromImpact` maps it onto the state's `uiChange`.
 
+**Scheduling.** `planVisualReviewSchedule`
+(`apps/web/src/lib/workflow/visual-review-schedule.ts`, pure) decides what to do
+for a mission's integration branch head, and `scheduleMissionVisualReview`
+(`visual-review-schedule-run.ts`) executes it through the existing idempotent
+writer, `requestMissionSurfaceAudit(missionId, { headSha, round, reason })`. It
+runs from the `visual-review-schedule` cron (every 30 minutes) and from any merge
+door that is refused for an owed review. An audit task is stamped with the head
+it is for (`context.visualReview.headSha`); a queued audit stamped for an older
+head is re-stamped, a running one keeps its head. Rules: never file while an
+audit is queued or running; a pass on another commit, or an audit that recorded
+none, is stale evidence (`staleEvidence`, status `needed`) and re-files as the
+next round, up to the total round ceiling; a failed audit is a **system**
+failure and retries with 5 / 15 / 45 minute backoff, three attempts per head,
+then `blocked` with the owner as next actor; a named capture setup error
+(`protection_bypass_missing`, `app_auth_not_configured`, `preview_unavailable`)
+and a local executor go to the owner at once and are never retried; with no
+browser runner online the review is still filed (the next runner to connect
+takes it) and the state names the owner. A product finding is never a retry:
+it is a `[surface fix]`, and the fix merging moves the head, which re-files the
+review before the merge. Under `ask` and `off` nothing is filed.
+
+**Capture.** The review captures the integration branch by `capture_ref`
+(`visual-qa.yml`, dispatched from trunk) or its preview deployment; the page
+source result carries `captureHeadSha`, the commit that ref points at now, so an
+auditor can say when the branch moved past the commit its task names.
+
+**Ready to merge.** `decideReadyToMerge` (`apps/web/src/lib/ready-to-merge.ts`,
+pure) is the one decision for a mission's integration PR; `guardMissionPrMerge`
+builds its facts and every merge door already calls the guard (auto-merge,
+`merge_pr`, the dashboard merge button, the kernel landing lane;
+`ready-to-merge.test.ts` fails if a new door calls a merge primitive without
+it). It blocks while mission work is unfinished or the visual review is owed,
+stale, in findings, or blocked, and fails closed when the review state cannot be
+read. It never gates a task PR into the integration branch, never gates opening
+or reviewing the mission PR, and a direct-to-trunk mission has no integration PR
+to gate. CI, the code reviewer's verdict and the protected-path, migration,
+security and spend rails remain per-door rails that run for every PR; nothing
+here, Jev included, can authorize an irreversible merge or skip a mandatory
+check. An integration PR that already merged is `postMergeRecovery`: the review
+is filed as `post_merge_recovery` and never reported as pre-merge assurance.
+
 **Not yet wired.** The completion gate, the audit-creation hooks and the
 mission, Home and Health surfaces still read `autoSurfaceAudit` and the two
 older gates; moving them onto the canonical state and policy is follow-up work.

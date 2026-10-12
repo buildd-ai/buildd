@@ -21,6 +21,7 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { resolveVisualQaConfig } from '@buildd/core/visual-qa-page-source';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
+import { readAuditedSha } from '@/lib/workflow/visual-review-state';
 import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 
@@ -209,6 +210,20 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   }
 }
 
+/**
+ * What the automatic scheduler asks of `requestMissionSurfaceAudit`
+ * (workflow/visual-review-schedule.ts). A person's request passes none of it.
+ */
+export interface RequestSurfaceAuditOptions {
+  /** The integration branch head the review is for. Stamped on the task as `context.visualReview.headSha`. */
+  headSha?: string;
+  /** Round to file at (a re-review on a new head is the next round). Default 1. */
+  round?: number;
+  /** Why the scheduler filed it, recorded for the task page. */
+  reason?: 'first' | 'new_head' | 'retry' | 'post_merge_recovery';
+  attempt?: number;
+}
+
 export type RequestSurfaceAuditResult =
   | { ok: true; created: boolean; taskId: string; status: string }
   | { ok: false; reason: 'mission_not_found' | 'mission_closed' | 'no_workspace' };
@@ -237,7 +252,7 @@ export type SurfaceAuditPlan =
  * carry. `requestMissionSurfaceAudit` acts on this and the mission page's
  * Visual review sheet previews it, so the two cannot describe different audits.
  */
-export async function planMissionSurfaceAudit(missionId: string): Promise<SurfaceAuditPlan> {
+export async function planMissionSurfaceAudit(missionId: string, opts: RequestSurfaceAuditOptions = {}): Promise<SurfaceAuditPlan> {
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
     columns: {
@@ -251,10 +266,13 @@ export async function planMissionSurfaceAudit(missionId: string): Promise<Surfac
 
   const audits = await db.query.tasks.findMany({
     where: and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`)),
-    columns: { id: true, status: true },
+    columns: { id: true, status: true, context: true },
     orderBy: [desc(tasks.createdAt)],
   });
-  const live = audits.find(a => !finishedWithoutLooking(a.status));
+  // A finished audit is the answer only for the commit it looked at. Asked for a
+  // head, a completed audit stamped for another one is history, not a live review.
+  const live = audits.find(a => !finishedWithoutLooking(a.status)
+    && !(opts.headSha && a.status === 'completed' && readAuditedSha(a.context) !== opts.headSha.toLowerCase()));
   if (live) return { ok: true, mission, live: { id: live.id, status: live.status } };
 
   const [targetWorkspace, missionTasks] = await Promise.all([
@@ -288,27 +306,34 @@ export async function planMissionSurfaceAudit(missionId: string): Promise<Surfac
  * scoped to the files the mission actually changed (the completion gate's
  * diff read), because declared manifests are often the advisory wildcard.
  */
-export async function requestMissionSurfaceAudit(missionId: string): Promise<RequestSurfaceAuditResult> {
-  const plan = await planMissionSurfaceAudit(missionId);
+export async function requestMissionSurfaceAudit(missionId: string, opts: RequestSurfaceAuditOptions = {}): Promise<RequestSurfaceAuditResult> {
+  const plan = await planMissionSurfaceAudit(missionId, opts);
   if (!plan.ok) return plan;
   const { mission, live, targetWorkspace, builderIds, scopedPaths, requiredRoutes } = plan;
   if (live) return { ok: true, created: false, taskId: live.id, status: live.status };
 
+  const round = Math.max(1, opts.round ?? 1);
   const [auditTask] = await db.insert(tasks).values({
     workspaceId: targetWorkspace.id,
     missionId,
-    title: surfaceAuditTitle(mission.title),
+    title: surfaceAuditTitle(mission.title, round),
     description: buildSurfaceAuditDescription({
       missionTitle: mission.title,
       scopedPaths,
       requiredRoutes,
       visualQa: auditVisualQa(targetWorkspace),
-    }),
+    }) + (opts.headSha
+      ? `\n\nThis review is for commit \`${opts.headSha.slice(0, 12)}\` of the integration branch. If the branch has moved past it by the time you capture, say so in your report: a pass only counts for the commit it looked at, and buildd files the next review for the new head itself.`
+      : ''),
     taskClass: 'work',
     kind: 'observation',
     dependsOn: builderIds,
     outputRequirement: 'artifact_required',
-    context: { surfaceAuditTrigger: 'auto' },
+    context: {
+      surfaceAuditTrigger: 'auto',
+      ...(round > 1 ? { surfaceAuditRound: round } : {}),
+      ...(opts.headSha ? { visualReview: { headSha: opts.headSha.toLowerCase(), reason: opts.reason ?? null, attempt: opts.attempt ?? 1 } } : {}),
+    },
     roleSlug: VISUAL_AUDITOR_ROLE_SLUG,
   }).returning();
 

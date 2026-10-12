@@ -61,6 +61,13 @@ export interface VisualReviewStateInput {
   captureConfigError?: VisualReviewCaptureConfigError | null;
   /** Automatic retries left for a system failure. Absent = one. */
   autoRetriesLeft?: number;
+  /**
+   * The commit the latest audit looked at (`readAuditedSha`). Absent = the
+   * caller does not track evidence commits and nothing goes stale. Present
+   * (even null) with a known `branch.headSha`: a pass only holds for the same
+   * commit, and an audit that recorded none cannot prove it.
+   */
+  auditedSha?: string | null;
 }
 
 export interface MissionVisualReviewState {
@@ -71,6 +78,8 @@ export interface MissionVisualReviewState {
   blocksMerge: boolean;
   /** Required by policy and not yet passed or waived. */
   pendingVerification: boolean;
+  /** The audit passed on an older commit than the branch head now is: a new review is owed, the old pass is not evidence. */
+  staleEvidence: boolean;
   nextActor: VisualReviewNextActor;
   policy: Pick<ResolvedVisualReviewPolicy, 'mode' | 'origin' | 'waiverAllowed' | 'locked'>;
   scope: { screens: number | null; uiFiles: number; source: 'manifest' | 'diff' | null; workLanded: boolean };
@@ -127,6 +136,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
   let findings: MissionVisualReviewState['findings'];
   let blocked: MissionVisualReviewState['blocked'];
   let blockedActor: VisualReviewNextActor | null = null;
+  let staleEvidence = false;
 
   const hasAudit = !!audit && !(review && review.phase === 'off');
   if (waiverActive) {
@@ -155,6 +165,11 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
       };
       // Ambiguity is Jev's; the owner is not a routine reviewer.
       nextActor = findings.stage === 'fixing' ? 'system' : 'jev';
+    } else if (input.auditedSha !== undefined && input.uiChange.state !== 'no' && branch.headSha && input.auditedSha !== branch.headSha) {
+      // Same-commit evidence only: a pass on another commit (or on none we can name) is not a pass for this head.
+      staleEvidence = true;
+      status = 'needed';
+      nextActor = policy.mode === 'ask' ? 'owner' : 'system';
     } else {
       status = 'passed';
     }
@@ -178,6 +193,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     blocksCompletion: pendingVerification,
     blocksMerge: pendingVerification && !!pr && !merged && prStage !== 'closed',
     pendingVerification,
+    staleEvidence,
     nextActor: required || status === 'waived' || status === 'passed' ? nextActor : 'none',
     policy: { mode: policy.mode, origin: policy.origin, waiverAllowed: policy.waiverAllowed, locked: policy.locked },
     scope: {
@@ -218,4 +234,26 @@ export function integrationPrFromDeliveryState(
   const ready = deliveryState === 'APPROVED' || deliveryState === 'LANDING';
   const blocked = deliveryState === 'ESCALATED' || deliveryState === 'FAILED' || deliveryState === 'BLOCKED_ON_TRUNK';
   return { number, state: 'open', ready, blocked };
+}
+
+/** `context.visualReview.headSha`: the commit an audit was stamped to look at. Null when unstamped. */
+export function readAuditedSha(auditContext: unknown): string | null {
+  const vr = auditContext && typeof auditContext === 'object' && !Array.isArray(auditContext)
+    ? (auditContext as Record<string, unknown>).visualReview
+    : null;
+  const sha = vr && typeof vr === 'object' ? (vr as Record<string, unknown>).headSha : null;
+  return typeof sha === 'string' && /^[0-9a-f]{7,40}$/i.test(sha) ? sha.toLowerCase() : null;
+}
+
+const CAPTURE_CONFIG_ERRORS: readonly VisualReviewCaptureConfigError[] = ['protection_bypass_missing', 'app_auth_not_configured', 'preview_unavailable'];
+
+/**
+ * The capture setup error an audit reported, read from its failure text. Only a
+ * named code counts: a setup problem is the workspace's to fix and never worth
+ * an automatic retry, so a loose match that sent a transient error to the owner
+ * would be the worse mistake.
+ */
+export function captureConfigErrorFrom(text: unknown): VisualReviewCaptureConfigError | null {
+  const s = typeof text === 'string' ? text : text && typeof text === 'object' ? JSON.stringify(text) : '';
+  return CAPTURE_CONFIG_ERRORS.find(code => s.includes(code)) ?? null;
 }
