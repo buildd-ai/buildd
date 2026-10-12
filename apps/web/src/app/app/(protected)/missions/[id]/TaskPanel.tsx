@@ -328,6 +328,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         roleSlug={data.roleSlug}
         missionExecutor={data.missionExecutor ?? null}
         entitlementBlock={data.entitlementBlock ?? null}
+        taskTitle={data.title}
         onChanged={onChanged}
       />
 

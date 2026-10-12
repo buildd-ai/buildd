@@ -19,6 +19,10 @@ export type StoredPrFacts = {
   outcome?: PrOutcome | null;
   /** The canonical open-fix-attempt fact (lib/explain.ts's loadOpenAttempt) — already live, never re-derived here. */
   openAttempt?: OpenAttemptInfo | null;
+  /** The page's header already offers the PR's one action. */
+  hideAction?: boolean;
+  /** The status row already names and links this PR (PrCardProps.statedAbove). */
+  statedAbove?: boolean;
 };
 
 const toRun = (c: any): CiCheckRun => ({

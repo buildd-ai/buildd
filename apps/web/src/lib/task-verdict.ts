@@ -70,6 +70,11 @@ export interface VerdictInput {
    * updates the branch or merges): nothing waits on a person until it finishes.
    */
   deliveryActivity?: string | null;
+  /**
+   * How long the merged PR took from claim to merge ("2h 14m"). The status
+   * row is the one place a merged PR is stated, so it carries the time too.
+   */
+  claimToMerge?: string | null;
 }
 
 export interface TaskVerdict {
@@ -150,6 +155,15 @@ function blockedByChecks(input: VerdictInput, pr: NonNullable<VerdictInput['pr']
 }
 
 /**
+ * The status row already names and links this PR, so no other block on the
+ * page (the side panel's PR row, the PR card's header) states it again.
+ */
+export function verdictLinksPr(verdict: Pick<TaskVerdict, 'actions'> | null, prUrl: string | null | undefined): boolean {
+  if (!verdict || !prUrl) return false;
+  return verdict.actions.some(a => a.href === prUrl);
+}
+
+/**
  * The verdict, or null for a task with nothing to judge yet (pending, never
  * claimed). Pure.
  */
@@ -164,7 +178,7 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
       ...base,
       state: 'shipped',
       headline: input.inRelease ? `Shipped · PR #${pr.number} merged and released` : `Shipped · PR #${pr.number} merged`,
-      cause: null,
+      cause: input.claimToMerge ? `${input.claimToMerge} from claim to merge.` : null,
       actions: [link(`View PR #${pr.number}`, pr.url)],
       causeKey: 'shipped',
     };

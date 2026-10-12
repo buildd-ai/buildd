@@ -33,7 +33,10 @@
 import type {
   FailureIncidentRule,
   FailureIncidentSeverity,
+  WorkerExitCause,
 } from '@buildd/shared';
+import { FAILED_WORKER_STATUSES } from '@buildd/shared';
+import { isBookkeepingExit } from './worker-exit-taxonomy';
 import {
   detectFailurePatterns,
   FAILURE_PATTERN_DETECTOR_VERSION,
@@ -133,6 +136,49 @@ export function computeSweepFloors(watermark: string | null, now: string): Sweep
       SWEEP_LOOKBACK_MINUTES.failureRateRecent + SWEEP_LOOKBACK_MINUTES.failureRateBaseline,
     ),
   };
+}
+
+export interface FailureRateWorkerRow {
+  id: string;
+  status: string;
+  exitCause: WorkerExitCause | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+/**
+ * Failure rate over the workers that ENDED in `[since, until)`. Windowing on
+ * `createdAt` instead is survivor-biased on a short window: a worker created
+ * in the last hour that fails fast (a session-limit wall, an expired
+ * credential) is already terminal, while one that will succeed is still
+ * running and excluded as in-flight. The recent rate then reads as nearly all
+ * failures with no change in the fleet's actual behaviour, which is what paged
+ * "75% vs 3.4% baseline" while failure analytics read 6% for the same day.
+ * Bookkeeping exits leave both numerator and denominator, as in
+ * `failure-analytics.ts`, so the two readouts measure the same thing.
+ */
+export function tallyFailureRateWindow(
+  rows: readonly FailureRateWorkerRow[],
+  sinceIso: string,
+  untilIso: string,
+  inFlightStatuses: readonly string[],
+): { counts: { failed: number; total: number }; failures: Array<{ workerId: string; at: string }> } {
+  let total = 0;
+  let failed = 0;
+  const failures: Array<{ workerId: string; at: string }> = [];
+  for (const r of rows) {
+    if (inFlightStatuses.includes(r.status)) continue;
+    const endedAt = r.completedAt ?? r.createdAt;
+    if (endedAt < sinceIso || endedAt >= untilIso) continue;
+    const isFailure = (FAILED_WORKER_STATUSES as readonly string[]).includes(r.status);
+    if (isFailure && isBookkeepingExit(r.exitCause)) continue;
+    total++;
+    if (isFailure) {
+      failed++;
+      failures.push({ workerId: r.id, at: endedAt });
+    }
+  }
+  return { counts: { failed, total }, failures };
 }
 
 // ── Ports ────────────────────────────────────────────────────────────────────
@@ -566,10 +612,9 @@ const watermarkKey = (workspaceId: string) => `failure-sentinel-watermark:${work
 async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: string): Promise<SentinelFacts> {
   const { db } = await import('@buildd/core/db');
   const { workers, tasks, gateEvents } = await import('@buildd/core/db/schema');
-  const { and, eq, gte, lt, inArray, isNotNull, or, desc } = await import('drizzle-orm');
+  const { and, eq, gte, lt, inArray, isNotNull, isNull, or, desc } = await import('drizzle-orm');
   const { GATE_SLUGS } = await import('@buildd/core/gate-slugs');
   const { normalizeErrorSignature } = await import('./error-signature');
-  const { FAILED_WORKER_STATUSES } = await import('@buildd/shared');
   const { IN_FLIGHT_WORKER_STATUSES } = await import('./failure-analytics');
 
   // ── worker failures ────────────────────────────────────────────────────
@@ -797,27 +842,29 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
   }
 
   // ── failure rate: recent vs. baseline ──────────────────────────────────
-  const loadTerminalCounts = async (sinceIso: string, untilIso: string) => {
-    const rows = await db
-      .select({ id: workers.id, status: workers.status, createdAt: workers.createdAt })
-      .from(workers)
-      .where(and(eq(workers.workspaceId, workspaceId), gte(workers.createdAt, new Date(sinceIso)), lt(workers.createdAt, new Date(untilIso))))
-      .limit(SWEEP_MAX_ROWS);
-    let total = 0;
-    let failed = 0;
-    const failures: Array<{ workerId: string; at: string }> = [];
-    for (const r of rows) {
-      if ((IN_FLIGHT_WORKER_STATUSES as readonly string[]).includes(r.status)) continue;
-      total++;
-      if ((FAILED_WORKER_STATUSES as readonly string[]).includes(r.status)) {
-        failed++;
-        failures.push({ workerId: r.id, at: r.createdAt.toISOString() });
-      }
-    }
-    return { counts: { failed, total }, failures };
-  };
-  const recent = await loadTerminalCounts(floors.failureRateRecentSince, now);
-  const baseline = await loadTerminalCounts(floors.failureRateBaselineSince, floors.failureRateRecentSince);
+  // Both windows are keyed on when the worker ended — see tallyFailureRateWindow.
+  const rateSince = new Date(floors.failureRateBaselineSince);
+  const rateUntil = new Date(now);
+  const rateRows = (await db
+    .select({ id: workers.id, status: workers.status, exitCause: workers.exitCause, createdAt: workers.createdAt, completedAt: workers.completedAt })
+    .from(workers)
+    .where(and(
+      eq(workers.workspaceId, workspaceId),
+      or(
+        and(gte(workers.completedAt, rateSince), lt(workers.completedAt, rateUntil)),
+        and(isNull(workers.completedAt), gte(workers.createdAt, rateSince), lt(workers.createdAt, rateUntil)),
+      ),
+    ))
+    .limit(SWEEP_MAX_ROWS))
+    .map(r => ({
+      id: r.id,
+      status: r.status,
+      exitCause: r.exitCause,
+      createdAt: r.createdAt.toISOString(),
+      completedAt: r.completedAt ? r.completedAt.toISOString() : null,
+    }));
+  const recent = tallyFailureRateWindow(rateRows, floors.failureRateRecentSince, now, IN_FLIGHT_WORKER_STATUSES);
+  const baseline = tallyFailureRateWindow(rateRows, floors.failureRateBaselineSince, floors.failureRateRecentSince, IN_FLIGHT_WORKER_STATUSES);
 
   return {
     workspaceId,

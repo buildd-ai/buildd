@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { beginAdminRead } from '@/lib/admin/scope';
-import { loadInsightsBand } from '@/lib/admin/data';
+import { viewInsightsBand } from '@/lib/admin/tenant-privacy';
 import { parseBandFilter } from '@/components/insights/usage-model';
 
 /**
@@ -9,7 +9,7 @@ import { parseBandFilter } from '@/components/insights/usage-model';
  * The tasks behind one band of one Insights bucket. Query: band, from, to, at
  * (epoch ms, as the Insights chart links them; to - from is 7 or 30 days),
  * teamId?, workspaceId?. 400 without a valid band filter; 404 when the bucket
- * is outside the series.
+ * is outside the series. Lists the owner's own teams' tasks; the others are a count.
  */
 export async function GET(req: NextRequest) {
   const read = await beginAdminRead(req);
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
     to: p.get('to') ?? undefined, at: p.get('at') ?? undefined,
   });
   if (!filter) return NextResponse.json({ error: 'band, from, to and at are required (to - from is 7 or 30 days)' }, { status: 400 });
-  const data = await loadInsightsBand({ workspaceIds: read.workspaceIds, filter });
+  const data = await viewInsightsBand(read.viewer, filter);
   if (!data) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   return NextResponse.json({ teamId: read.scope.teamId, workspaceId: read.scope.workspaceId, ...data });
 }

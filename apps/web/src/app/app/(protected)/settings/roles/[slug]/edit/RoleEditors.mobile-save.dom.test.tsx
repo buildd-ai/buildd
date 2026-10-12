@@ -133,7 +133,7 @@ for (const e of editors) {
       type(nameInput(), 'Builder 2');
       expect(bar()!.textContent).toContain('Unsaved changes');
       expect(barButton().disabled).toBe(false);
-      expect(barButton().textContent).toBe('Save role');
+      expect(barButton().textContent).toBe('Save agent');
       expect(headerSave().disabled).toBe(false);
       expect(q('[data-testid="header-save-dirty"]')).toBeTruthy();
       expect(unloadIsGuarded()).toBe(true);
@@ -327,6 +327,6 @@ describe('scope changes count as unsaved changes', () => {
       <TeamRoleEditor role={skill as any} overrides={[]} workspaces={[{ id: 'ws-1', name: 'Example WS' }]} delegateOptions={[]} />,
     ));
     expect(container.textContent).not.toContain('Workspace overrides');
-    expect(container.textContent).toContain('Delete this role');
+    expect(container.textContent).toContain('Delete this agent');
   });
 });

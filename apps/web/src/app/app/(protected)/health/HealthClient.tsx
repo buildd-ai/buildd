@@ -247,12 +247,6 @@ const VIEW_TITLE: Record<HealthView, string> = {
 interface Props {
   /** Which page is rendering; defaults to every section. */
   page?: HealthView;
-  /**
-   * The viewer is a platform operator. Only they reach Failures (it moved to
-   * the admin app), so Overview links everyone else to where they act:
-   * the workspace's settings, or Activity's History.
-   */
-  operator?: boolean;
   /** Rendered under the page header (Runners: the workspace pause control). */
   top?: React.ReactNode;
   /** Worker rows whose PR the reconcile sweep gave up on — see OrphanedPrRow. */
@@ -333,7 +327,6 @@ export function HealthClient({
   runnerLanes = null,
   now,
   page = 'all',
-  operator = false,
   top = null,
 }: Props) {
   const show = (block: HealthBlock) => page === 'all' || VIEW_BLOCKS[page].has(block);
@@ -462,10 +455,8 @@ export function HealthClient({
 
   const failedSchedules = schedules.filter(isScheduleErrorLive);
   // Access problems stop runs before they start, so Overview counts them; the
-  // full list (with blocked actions) is on Failures, for the operator.
+  // full list (with blocked actions) is on Failures.
   const accessProblems = agentAccess?.grantProblems ?? [];
-  const failuresHref = operator ? '/app/health/failures' : '/app/tasks?view=history';
-  const accessHref = (workspaceId: string) => operator ? '/app/health/failures' : `/app/settings/workspace/${workspaceId}`;
   // On Overview the failures come from the merged failure groups (the same ones
   // the Problems row counts), so the status sentence and the list can't disagree.
   const overviewFailureGroups = page === 'overview' ? (failureGroupsView?.groups.length ?? 0) : 0;
@@ -674,7 +665,7 @@ export function HealthClient({
 
             {/* Schedules with errors */}
             {page === 'overview' && accessProblems.map((p) => (
-              <a key={`access-${p.workspaceId}-${p.reason}`} href={accessHref(p.workspaceId)} data-testid="problem-access" className="block px-4 py-3 hover:bg-surface-2">
+              <a key={`access-${p.workspaceId}-${p.reason}`} href="/app/health/failures" data-testid="problem-access" className="block px-4 py-3 hover:bg-surface-2">
                 <p className="text-sm font-medium text-text-primary">{p.workspaceName}: runs can&apos;t get access</p>
                 <p className="text-xs text-text-muted mt-0.5">{p.reason} ({p.count}×){p.fix ? `. ${p.fix}` : ''}</p>
               </a>
@@ -734,10 +725,9 @@ export function HealthClient({
               );
             })}
 
-            {/* Overview names what is failing in one row; the list is on Failures
-                for the operator, and the failed work in Activity for everyone. */}
+            {/* Overview names what is failing in one row; the list is on Failures. */}
             {page === 'overview' && failureGroupsView && failureGroupsView.groups.length > 0 && (
-              <a href={failuresHref} data-testid="problem-failures" className="flex items-baseline justify-between gap-3 px-4 py-3 hover:bg-surface-2">
+              <a href="/app/health/failures" data-testid="problem-failures" className="flex items-baseline justify-between gap-3 px-4 py-3 hover:bg-surface-2">
                 <span className="text-sm text-text-primary">{failureProblemLine(failureGroupsView, activeWindow)}</span>
                 <span aria-hidden="true" className="text-text-muted">›</span>
               </a>
@@ -1297,7 +1287,7 @@ function ConsumptionSection({
 
         {groups.length > 0 && (
           <div className="space-y-2 pt-3 border-t border-border-default">
-            <span className="text-xs text-text-secondary">By role</span>
+            <span className="text-xs text-text-secondary">By agent</span>
             {groups.slice(0, 5).map((g) => {
               const gIn = g.perTask.inputTokens;
               return (
@@ -1763,9 +1753,9 @@ function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: Fai
         <div className="flex items-baseline justify-between gap-2">
           <span
             className="text-sm text-text-secondary"
-            title="Tasks that ran with no role assigned. A routing-health signal. /app/team can't show it because its query filters roleSlug IS NOT NULL."
+            title="Tasks that ran with no agent assigned."
           >
-            {stats.unassigned} task{stats.unassigned === 1 ? '' : 's'} ran with no role ({window})
+            {stats.unassigned} task{stats.unassigned === 1 ? '' : 's'} ran with no agent ({window})
           </span>
         </div>
         <a
@@ -1773,7 +1763,7 @@ function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: Fai
           data-testid="per-role-link"
           className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-accent-text hover:underline"
         >
-          per role →
+          per agent →
         </a>
       </div>
     </div>
@@ -2182,7 +2172,7 @@ function FailureAnalyticsSection({
                 aria-expanded={showDetail}
                 className="text-xs text-text-muted hover:text-text-secondary transition-colors"
               >
-                {showDetail ? 'Hide breakdown' : 'Breakdown by role, workspace, repeat tasks'}
+                {showDetail ? 'Hide breakdown' : 'Breakdown by agent, workspace, repeat tasks'}
               </button>
 
               {showDetail && (
@@ -2190,7 +2180,7 @@ function FailureAnalyticsSection({
                   {byRole.length > 0 && (
                     <div className="space-y-1">
                       <span className="text-meta font-medium text-text-muted">
-                        By role
+                        By agent
                       </span>
                       {byRole.slice(0, 6).map((r) => (
                         <div key={r.roleSlug} className="flex items-center justify-between gap-2">

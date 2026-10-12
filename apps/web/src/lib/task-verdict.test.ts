@@ -6,6 +6,7 @@ import {
   parseStoredVerdictDecision,
   type StoredVerdictDecision,
   type VerdictInput,
+  verdictLinksPr,
 } from './task-verdict';
 
 const PR = { url: 'https://github.com/acme/app/pull/12', number: 12, lifecycle: 'ci_failed', merged: false };
@@ -49,6 +50,17 @@ describe('deriveTaskVerdict', () => {
     const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true } }))!;
     expect(v.state).toBe('shipped');
     expect(v.headline).toBe('Shipped · PR #12 merged');
+  });
+
+  // Surface audit (task 3c538a39): a merged PR was stated three times. The
+  // status row is the one place that names it, so it also carries the time.
+  it('merged → the status row carries the claim-to-merge time, in words', () => {
+    const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, claimToMerge: '2h 14m' }))!;
+    expect(v.headline).toBe('Shipped · PR #12 merged');
+    expect(v.cause).toBe('2h 14m from claim to merge.');
+    expect(verdictLinksPr(v, PR.url)).toBe(true);
+    expect(verdictLinksPr(v, 'https://github.com/acme/app/pull/13')).toBe(false);
+    expect(verdictLinksPr(null, PR.url)).toBe(false);
   });
 
   it('a retry dispatched while CI is still red is still blocked, never "handled"', () => {

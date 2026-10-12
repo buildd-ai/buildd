@@ -15,7 +15,9 @@ import { resolvePolicy } from '@/lib/merge-policy';
  */
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
+import { startDecisionReplayStore } from '@/lib/decision-replay-store';
 import { loadIncidentNeedsYou, loadIncidentVerdicts } from '@/lib/failure-incident-escalation';
+import { loadDecisionCollectionNeedsYou } from '@/lib/decision-collection-needs-you';
 import { loadAccessNeedsYou } from '@/lib/capability-grants-needs-you';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
@@ -25,6 +27,7 @@ import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
 import { missionSubscribers } from '@/lib/mission-subscribers';
 import { reviewSubscribers } from '@/lib/review-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
+import { specCheckSubscribers } from '@/lib/spec-check-subscribers';
 import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import type { ApprovedMergeRule } from '@/lib/workflow/delivery-view';
 import { approvedNeedsPerson } from '@/lib/merge-policy-approved';
@@ -51,8 +54,11 @@ import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 import { surfaceAuditSubscribers } from '@/lib/surface-audit-subscribers';
 import { taskEstimateExperimentSubscribers } from '@/lib/task-estimate-experiment-subscribers';
 import { failurePatternSubscribers } from '@/lib/failure-pattern-subscribers';
+import { overrideStartSubscribers } from '@/lib/override-start-decision';
 import { answerInChatHref } from '@/lib/chat/answer-link';
 import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
+import type { ClaimContextInjection } from '@/app/api/workers/claim/context-injection';
+import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-routes';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -69,6 +75,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...notificationSubscribers,
   // pr.ci_failed: the ledger records the red head before the CI-fix retry is asked.
   ...reviewerSubscribers,
+  // A PR head: spec criterion checks for it, after the reviewer reacts to the push.
+  ...specCheckSubscribers,
   ...roleSubscribers,
   ...connectorCatalogSubscribers,
   // A held release's outcome-analytics row, recorded when its CI resolves it.
@@ -79,6 +87,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...taskEstimateExperimentSubscribers,
   // task.terminal: the failure-pattern sweep for the workspace, after the evidence record is written.
   ...failurePatternSubscribers,
+  // task.override_started: the graded decision row for a forced start.
+  ...overrideStartSubscribers,
   // Last: the verdict recompute reads the evidence record the knowledge
   // module wrote and the CI/PR state the reviews module settled.
   ...verdictSubscribers,
@@ -166,6 +176,13 @@ export const INCIDENT_NEEDS_YOU = loadIncidentNeedsYou;
 export const INCIDENT_VERDICTS = loadIncidentVerdicts;
 
 /**
+ * The decision ledger's slot for Home (lib/decision-collection-needs-you.ts):
+ * decision features asked all day that never got a model answer, for the
+ * platform operator. Reads the ledger; no model call.
+ */
+export const DECISION_COLLECTION_NEEDS_YOU = loadDecisionCollectionNeedsYou;
+
+/**
  * The connectors module's slot for Home (lib/capability-grants-needs-you.ts):
  * pending capability requests the escalation gate gives to a person, for the
  * teams where the viewer can decide them. A fixed rule; no model call.
@@ -184,3 +201,17 @@ export const ANSWER_IN_CHAT = answerInChatHref;
  * action sheet (`?pr=<n>&t=<token>`, a landing alert's link) shows, as data.
  */
 export const PR_ACTION_SHEET = loadPrActionSheet;
+
+/**
+ * The visual-qa module's claim slot (app/api/workers/claim/visual-audit-routes.ts):
+ * a surface audit's prompt states the required routes completion will check,
+ * computed at claim from its current dependencies.
+ */
+export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = attachVisualAuditRoutes;
+
+/**
+ * The decisions module's boot slot (instrumentation.ts): installs the evidence
+ * backend store behind `@buildd/core/decision-replay`, so each decision keeps
+ * a replayable copy of its input. Without it capture is a no-op.
+ */
+export const DECISION_REPLAY_STORE = startDecisionReplayStore;

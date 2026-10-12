@@ -69,8 +69,8 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   list_workspaces: 'tasks:read',
   list_tasks: 'tasks:read', get_task: 'tasks:read', get_task_messages: 'tasks:read',
   create_task: 'tasks:write', update_task: 'tasks:write', correct_task_result: 'tasks:admin', approve_plan: 'tasks:admin', reject_plan: 'tasks:admin',
-  claim_task: 'workers:write', update_progress: 'workers:write', receive_messages: 'workers:write', complete_task: 'workers:write', get_page_source: 'workers:write', deploy: 'workers:write',
-  create_pr: 'tasks:write', record_pr_supersession: 'workers:write', send_agent_message: 'workers:admin',
+  claim_task: 'workers:write', update_progress: 'workers:write', receive_messages: 'workers:write', ask_human: 'workers:write', await_answer: 'workers:write', complete_task: 'workers:write', get_page_source: 'workers:write', deploy: 'workers:write',
+  create_pr: 'tasks:write', record_pr_supersession: 'workers:write', send_agent_message: 'workers:admin', answer_question: 'workers:admin',
   emit_event: 'tasks:write', query_events: 'tasks:read', post_note: 'tasks:write', suggest_schedule_update: 'workers:write',
   list_prs: 'tasks:read', get_pr: 'tasks:read', get_pr_review: 'tasks:read',
   merge_pr: 'tasks:write', close_pr: 'tasks:write', update_pr: 'tasks:write', request_pr_review: 'tasks:write',
@@ -87,6 +87,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   list_skills: 'tasks:read', get_skill: 'tasks:read', register_skill: 'skills:admin', update_skill: 'skills:admin', delete_skill: 'skills:admin',
   manage_workspaces: 'workspaces:admin', manage_watched_projects: 'workspaces:admin',
   manage_secrets: 'secrets', manage_providers: 'secrets', manage_model_tiers: 'admin', manage_evidence_backends: 'admin', manage_experiments: 'admin',
+  get_decision: 'admin', label_decision: 'admin',
   consolidate_knowledge: 'knowledge:admin', memory_delete: 'knowledge:admin',
 };
 
@@ -94,7 +95,7 @@ export function requiredScopeForAction(action: string, params: Record<string, un
   if (['manage_missions', 'manage_initiatives', 'manage_workspaces'].includes(action) && ['list', 'get', 'get_criteria_state'].includes(String(params.action))) return 'tasks:read';
   // Readiness is a read-only GET of /api/workspaces/[id]/readiness, which the route policy maps to tasks:read.
   if (action === 'manage_workspaces' && params.action === 'readiness') return 'tasks:read';
-  if (action === 'manage_specs' && ['list', 'get', 'outcome', 'read_ref'].includes(String(params.action))) return 'tasks:read';
+  if (action === 'manage_specs' && ['list', 'get', 'outcome', 'read_ref', 'diff'].includes(String(params.action))) return 'tasks:read';
   if (action === 'manage_experiments' && ['list', 'get', 'readout'].includes(String(params.action))) return 'analytics:read';
   return Object.hasOwn(ACTION_TOKEN_SCOPE, action) ? ACTION_TOKEN_SCOPE[action as BuilddAction] : null;
 }

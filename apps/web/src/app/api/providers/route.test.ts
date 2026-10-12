@@ -180,7 +180,7 @@ describe('GET /api/providers', () => {
     expect(JSON.stringify(body)).not.toContain('another-team');
   });
 
-  it('counts personal model keys across the team (never whose), for showing "Who pays"', async () => {
+  it('counts personal model keys across the team (never whose)', async () => {
     asMember();
     const { body } = await call(await GET(req('GET', '/api/providers')));
     // u-member's and u-other's personal Anthropic keys; the other team's row and the MCP secret don't count.
@@ -439,6 +439,17 @@ describe('DELETE /api/providers', () => {
   });
 });
 
+describe('GET /api/providers: workspaces with their own keys', () => {
+  it('names each workspace holding a model key of its own, never a personal row, and nothing to a task token', async () => {
+    asAdmin();
+    const { body } = await call(await GET(req('GET', '/api/providers')));
+    expect(body.workspacesWithKeys).toEqual(['ws-1']);
+    sessionUser = null;
+    const task = await call(await GET(req('GET', '/api/providers?workspaceId=ws-1', { bearer: 'bldt_task' })));
+    expect(task.body.workspacesWithKeys).toEqual([]);
+  });
+});
+
 // ── PATCH (policy) ───────────────────────────────────────────────────────────
 
 describe('PATCH /api/providers (credential policy)', () => {
@@ -456,6 +467,24 @@ describe('PATCH /api/providers (credential policy)', () => {
     expect((await call(await PATCH(req('PATCH', '/api/providers', { bearer: 'bld_worker', body: { credentialPolicy: 'team' } })))).status).toBe(403);
     expect((await call(await PATCH(req('PATCH', '/api/providers', { bearer: 'bldt_task', body: { credentialPolicy: 'team' } })))).status).toBe(403);
     expect(updates).toHaveLength(0);
+  });
+
+  it('null clears a stored policy back to the default (both columns read as unset)', async () => {
+    asAdmin();
+    const { status } = await call(await PATCH(req('PATCH', '/api/providers', { body: { credentialPolicy: null } })));
+    expect(status).toBe(200);
+    expect(updates[0]).toMatchObject({ credentialPolicy: null, inferenceKeyPolicy: 'team' });
+  });
+
+  it('a member cannot clear it either', async () => {
+    asMember();
+    expect((await call(await PATCH(req('PATCH', '/api/providers', { body: { credentialPolicy: null } })))).status).toBe(403);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('400s an unknown policy, and a missing one', async () => {
+    asAdmin();
+    expect((await call(await PATCH(req('PATCH', '/api/providers', { body: {} })))).status).toBe(400);
   });
 
   it('400s an unknown policy', async () => {

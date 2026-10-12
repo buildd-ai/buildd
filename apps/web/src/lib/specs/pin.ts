@@ -43,13 +43,16 @@ export async function pinSpecSource<C extends Ctx>(workspaceId: string, context:
   if (!rev) return { ok: false, status: 409, error: 'context.specSource.specRevisionId is not an approved revision of this spec' };
 
   // A repo commit the work also traces to (D-1), kept only when it is a SHA.
-  const { commitSha, ...rest } = src;
+  // Pin provenance is the server's: a revision the filer named is explicit
+  // and kept at claim; otherwise the first claim re-pins (lib/specs/claim-pin.ts).
+  const { commitSha, explicit: _explicit, pinnedAt: _pinnedAt, repinnedFrom: _repinnedFrom, ...rest } = src;
   const pinned = {
     ...rest,
     specId,
     specRevisionId: rev.id,
     revision: rev.revision,
     contentHash: rev.contentHash,
+    ...(typeof specRevisionId === 'string' ? { explicit: true } : {}),
     ...(typeof commitSha === 'string' && /^[0-9a-f]{7,40}$/i.test(commitSha) ? { commitSha } : {}),
   };
   return { ok: true, context: { ...(context as Record<string, unknown>), specSource: pinned } as unknown as C };

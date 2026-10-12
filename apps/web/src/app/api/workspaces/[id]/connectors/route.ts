@@ -7,7 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
-import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -133,7 +133,7 @@ export async function PATCH(
     if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     // manage_connectors in the workspace's team. API keys were already held
     // to admin in authenticateRequest.
-    if (!roleHas(access.role, 'manage_connectors', await getTeamPermissionOverrides(access.teamId))) {
+    if (!roleHas(access.role, 'manage_connectors')) {
       return NextResponse.json({ error: 'Requires team admin' }, { status: 403 });
     }
     teamId = access.teamId;

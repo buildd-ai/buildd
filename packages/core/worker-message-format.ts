@@ -132,6 +132,12 @@ export function formatWorkerMessages(messages: WorkerMessage[]): string {
       }
       case 'answer': {
         const t = typeof m.body?.text === 'string' ? m.body.text : JSON.stringify(m.body);
+        // A person answering this session's own question (/respond's
+        // interactive path), not another agent replying.
+        if (m.body?.source === 'human') {
+          const q = typeof m.body?.question === 'string' && m.body.question ? ` "${m.body.question}"` : '';
+          return `**HUMAN ANSWER** to your question${q}: ${t}\nCarry on with this answer.`;
+        }
         return `**AGENT MESSAGE** (answer, ${from}): ${t}`;
       }
       default:

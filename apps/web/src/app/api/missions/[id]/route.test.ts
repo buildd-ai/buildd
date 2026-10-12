@@ -241,6 +241,18 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// Target-workspace reach for a mission move (lib/workspace-access.ts, tested
+// on its own). Default: the caller reaches it and it is in the mission's team.
+const workspaceAccessCalls: Array<{ ref: string; caller: any; permission: any }> = [];
+let workspaceAccessResult: (ref: string) => any = (ref: string) => ({ ok: true, workspace: { id: ref, teamId: 'team-1' } });
+mock.module('@/lib/workspace-access', () => ({
+  resolveWorkspaceAccess: async (ref: string, caller: any, permission: any) => {
+    workspaceAccessCalls.push({ ref, caller, permission });
+    return workspaceAccessResult(ref);
+  },
+  listReachableWorkspaceIds: async () => [],
+}));
+
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
@@ -279,6 +291,8 @@ describe('PATCH /api/missions/[id]', () => {
     mockInitiativesFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1' });
+    workspaceAccessCalls.length = 0;
+    workspaceAccessResult = (ref: string) => ({ ok: true, workspace: { id: ref, teamId: 'team-1' } });
     updatedSetData = null;
     insertedScheduleValues = null;
     updatedScheduleData = null;
@@ -525,6 +539,69 @@ describe('PATCH /api/missions/[id]', () => {
 
     expect(updatedSetData).not.toBeNull();
     expect(updatedSetData.workspaceId).toBe('ws-new');
+  });
+
+  it('refuses to move a mission to a workspace the caller cannot write to', async () => {
+    workspaceAccessResult = () => ({ ok: false, reason: 'no_access', status: 403, error: 'No access to workspace "ws-x"' });
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ workspaceId: 'ws-x' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(403);
+    expect(updatedSetData).toBeNull();
+    expect(workspaceAccessCalls.at(-1)).toMatchObject({ ref: 'ws-x', permission: 'canCreate' });
+  });
+
+  it('refuses to move a mission to a workspace that does not exist', async () => {
+    workspaceAccessResult = () => ({ ok: false, reason: 'not_found', status: 404, error: 'No workspace found matching "ws-gone"' });
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ workspaceId: 'ws-gone' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(404);
+    expect(updatedSetData).toBeNull();
+  });
+
+  it('refuses to move a mission into another team, even one the caller belongs to', async () => {
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1', 'team-2']);
+    workspaceAccessResult = (ref: string) => ({ ok: true, workspace: { id: ref, teamId: 'team-2' } });
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ workspaceId: 'ws-other-team' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toContain('team');
+    expect(updatedSetData).toBeNull();
+  });
+
+  it('stores the resolved workspace id when the move names it by reference', async () => {
+    workspaceAccessResult = () => ({ ok: true, workspace: { id: 'ws-resolved', teamId: 'team-1' } });
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ workspaceId: 'owner/repo' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.workspaceId).toBe('ws-resolved');
+  });
+
+  it('does not re-check access when the workspace is unchanged', async () => {
+    workspaceAccessResult = () => ({ ok: false, reason: 'no_access', status: 403, error: 'nope' });
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ workspaceId: 'ws-1', title: 'Renamed' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(200);
   });
 
   it('clears workspaceId with null', async () => {

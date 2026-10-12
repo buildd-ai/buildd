@@ -1,7 +1,6 @@
 /**
  * Editing a team role, its workspace overrides and the Platform Operator grants
- * is manage_agent_roles (the roles routes refuse anyone else, with the team's
- * overrides applied). The settings page passes `canEdit`; without it the role
+ * is manage_agent_roles (the roles routes refuse anyone else). The settings page passes `canEdit`; without it the role
  * stays readable and nothing on it can be saved, deleted or added.
  */
 import { describe, expect, it, mock } from 'bun:test';
@@ -35,12 +34,12 @@ describe('TeamRoleEditor: member vs admin', () => {
   it('member: the role in a disabled fieldset, no save, delete or new override', () => {
     const html = render(false);
     expect(html).toContain('data-testid="role-read-only"');
-    expect(html).toContain('Admins can change this role.');
+    expect(html).toContain('Admins can change this agent.');
     expect(html).toMatch(/<fieldset[^>]*disabled=""/);
     expect(html).toContain('You build.');
     expect(html).not.toContain('data-testid="header-save"');
     expect(html).not.toContain('data-testid="mobile-save-bar"');
-    expect(html).not.toContain('Delete this role');
+    expect(html).not.toContain('Delete this agent');
     expect(html).not.toContain('+ Add override');
   });
 
@@ -49,7 +48,7 @@ describe('TeamRoleEditor: member vs admin', () => {
     expect(html).not.toContain('role-read-only');
     expect(html).not.toMatch(/<fieldset[^>]*disabled/);
     expect(html).toContain('data-testid="header-save"');
-    expect(html).toContain('Delete this role');
+    expect(html).toContain('Delete this agent');
     expect(html).toContain('+ Add override');
   });
 });

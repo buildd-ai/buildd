@@ -25,6 +25,20 @@ export function estimatesHeadline(overall: BacktestScore): Headline {
   return { lead: 'Many tasks ran past their estimate.', basis: `Only ${inTen} in 10 finished within the upper estimate. ${basis}` };
 }
 
+/**
+ * Cold-start caveat: how many scored estimates leaned mostly on other repos'
+ * history (the new-repo prior), and how they did. Null when none did.
+ */
+export function coldStartNote(readout: Pick<TaskEstimateReadout, 'bySource'>): string | null {
+  const prior = readout.bySource.find(g => g.key === 'prior')?.score;
+  if (!prior || prior.scored === 0) return null;
+  const n = `${prior.scored} ${prior.scored === 1 ? 'estimate' : 'estimates'}`;
+  if (prior.scored < MIN_SCORED_FOR_VERDICT || prior.withinP80 == null) {
+    return `${n} had little history in the repo to go on. Treat those as rough.`;
+  }
+  return `${n} had little history in the repo to go on: ${Math.round(prior.withinP80 * 10)} in 10 finished within the upper estimate, typically ${typicalLine(prior)}.`;
+}
+
 /** "on target", "about 1.5x longer than estimated" from median actual / p50. */
 export function typicalLine(score: BacktestScore): string {
   const r = score.medianRatio;

@@ -316,10 +316,15 @@ describe('DEFAULT_ROLES', () => {
       expect(planDefaultRoleResync([row({ metadata: {} })])).toHaveLength(1);
     });
 
-    it('never overwrites a row a team edited, one already current, or a non-system row', () => {
+    it('resyncs a workspace override (any source) that still holds exactly an older shipped text', () => {
+      expect(planDefaultRoleResync([row({ source: 'mcp', metadata: {} })])).toHaveLength(1);
+      expect(planDefaultRoleResync([row({ source: 'user', metadata: { defaultRoleVersion: auditor.version } })])).toHaveLength(1);
+    });
+
+    it('never overwrites a row a team edited, one already current, or a custom slug', () => {
+      expect(planDefaultRoleResync([row({ source: 'mcp', contentHash: 'edited' })])).toEqual([]);
       expect(planDefaultRoleResync([row({ contentHash: 'edited' })])).toEqual([]);
       expect(planDefaultRoleResync([row({ metadata: { defaultRoleVersion: auditor.version } })])).toEqual([]);
-      expect(planDefaultRoleResync([row({ source: 'user' })])).toEqual([]);
       expect(planDefaultRoleResync([row({ slug: 'custom-role' })])).toEqual([]);
     });
   });

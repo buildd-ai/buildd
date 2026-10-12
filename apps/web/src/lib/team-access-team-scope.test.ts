@@ -77,8 +77,9 @@ describe('verifyAccountWorkspaceAccess — open workspaces', () => {
 
 describe('team-wide admin-tier helpers are gone', () => {
   // Every team-scoped decision names its permission (can / teamIdsWhere in
-  // lib/permissions.ts), so a team's permission overrides apply to it. A
-  // hard-coded owner/admin helper would ignore them; none may come back.
+  // lib/permissions.ts), so the inventory in docs/specs/team-permissions.md
+  // stays complete. A hard-coded owner/admin helper would bypass it; none may
+  // come back.
   const removed = ['getUserAdmin', 'getCallerAdmin', 'canCallerAdmin'].map(p => `${p}${p.startsWith('can') ? 'Team' : 'TeamIds'}`);
 
   it('team-access no longer exports them', () => {
