@@ -26,7 +26,7 @@
         "agents": "0.27.0",
       },
       "devDependencies": {
-        "@cloudflare/workers-types": "5.20261009.1",
+        "@cloudflare/workers-types": "5.20261012.1",
         "wrangler": "4.149.0",
       },
     },
@@ -34,7 +34,7 @@
       "name": "@buildd/control-plane",
       "version": "0.0.0",
       "devDependencies": {
-        "@cloudflare/workers-types": "5.20261009.1",
+        "@cloudflare/workers-types": "5.20261012.1",
         "wrangler": "4.149.0",
       },
     },
@@ -45,7 +45,7 @@
         "@buildd/dispatch-contract": "workspace:*",
       },
       "devDependencies": {
-        "@cloudflare/workers-types": "5.20261009.1",
+        "@cloudflare/workers-types": "5.20261012.1",
         "wrangler": "4.149.0",
       },
     },
@@ -56,7 +56,7 @@
         "@builddai/ai-kit": "workspace:*",
       },
       "devDependencies": {
-        "@cloudflare/workers-types": "5.20261009.1",
+        "@cloudflare/workers-types": "5.20261012.1",
         "wrangler": "4.149.0",
       },
     },
@@ -64,7 +64,7 @@
       "name": "@buildd/responder",
       "version": "0.0.0",
       "dependencies": {
-        "@anthropic-ai/sdk": "^0.132.0",
+        "@anthropic-ai/sdk": "^0.133.0",
         "@neondatabase/serverless": "^1.0.0",
       },
       "devDependencies": {
@@ -74,7 +74,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.324.0",
+      "version": "0.327.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.290",
         "@buildd/core": "workspace:*",
@@ -94,7 +94,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.324.0",
+      "version": "0.327.0",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.65",
         "@ai-sdk/openai": "^4.0.78",
@@ -177,7 +177,7 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.324.0",
+      "version": "0.327.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.290",
         "@ast-grep/napi": "^0.45.0",
@@ -208,7 +208,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.324.0",
+      "version": "0.327.0",
       "devDependencies": {
         "typescript": "^6.0.0",
       },
@@ -255,7 +255,7 @@
 
     "@anthropic-ai/claude-agent-sdk-win32-x64": ["@anthropic-ai/claude-agent-sdk-win32-x64@0.3.290", "", { "os": "win32", "cpu": "x64" }, "sha512-mXgdB/OaZRAlt4E+cculWgEgmn5wAspzHO63ZfaSOVSuGJVDLBLBnwRDKkjI0cWCwAc17cetmu3TdNap/f0hxA=="],
 
-    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.132.1", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-Dg+Rd0effi+4FyNwgEx6JXl9COefsZ3C7BOPSKYIWboQOEIi9HXtu1WBdND0DIgMF7Qt1vuCSjsbs7sjUkzJuQ=="],
+    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.133.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-jlqUN8p8ESTJj+GJnA4KjzbEfF1waEoGzRT8jwytlYGFFgv+/DUQOxlYGvYw10UzhD1kwLqYzxvA3FrTB2YWuQ=="],
 
     "@ast-grep/napi": ["@ast-grep/napi@0.45.0", "", { "optionalDependencies": { "@ast-grep/napi-darwin-arm64": "0.45.0", "@ast-grep/napi-darwin-x64": "0.45.0", "@ast-grep/napi-linux-arm64-gnu": "0.45.0", "@ast-grep/napi-linux-arm64-musl": "0.45.0", "@ast-grep/napi-linux-x64-gnu": "0.45.0", "@ast-grep/napi-linux-x64-musl": "0.45.0", "@ast-grep/napi-win32-arm64-msvc": "0.45.0", "@ast-grep/napi-win32-ia32-msvc": "0.45.0", "@ast-grep/napi-win32-x64-msvc": "0.45.0" } }, "sha512-5dQqAVZeHfdQsXjH9FCn+A8a1tb+GVa3Asdq6cKP4l7O0KqH/gmWLswvSaPx7twWfpUwHtGpX7L9frPEAqfNng=="],
 
@@ -407,7 +407,7 @@
 
     "@cloudflare/workerd-windows-64": ["@cloudflare/workerd-windows-64@1.20261006.1", "", { "os": "win32", "cpu": "x64" }, "sha512-nWP0URNqOBN9fa/gZ7eh/w051DwjOXN8j4lDZDYVXyQPsux6sV3DfyYZT+CjR/rt9nKBSmJT9QE9/bWT18+84w=="],
 
-    "@cloudflare/workers-types": ["@cloudflare/workers-types@5.20261009.1", "", {}, "sha512-Oa/7pS2upeCKG0lEvPSGHLK8B8sx3lPanEaXDlOj13H6HfZV5agBeHq5A1VtJj+/x9dXuMJpHTg7U7kTYt4xDA=="],
+    "@cloudflare/workers-types": ["@cloudflare/workers-types@5.20261012.1", "", {}, "sha512-5Y0NrKXG9CZaNUZ6Dt3TLRE4UQe2/DGuxIhTEVYHUl0jAlv1TpQtI59YBAszRpSaZAMzbM8nqGc1n9Z2q4TVyA=="],
 
     "@cspotcode/source-map-support": ["@cspotcode/source-map-support@0.8.1", "", { "dependencies": { "@jridgewell/trace-mapping": "0.3.9" } }, "sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw=="],
 
