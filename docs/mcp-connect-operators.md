@@ -14,7 +14,7 @@ grants" through "Managing connections").
 | `GET /.well-known/oauth-protected-resource/api/mcp` | Protected-resource metadata (RFC 9728). `resource` is exactly `<issuer>/api/mcp`. |
 | `GET /.well-known/oauth-authorization-server` | Authorization-server metadata (RFC 8414). |
 | `POST /api/oauth/register` | Dynamic client registration (RFC 7591). Public clients only, no secret. |
-| `GET/POST /api/oauth/authorize` | Authorize + consent. `resource=<issuer>/api/mcp` selects the account-level consent page. |
+| `GET/POST /api/oauth/authorize` | Authorize + consent. No `resource` or `resource=<issuer>/api/mcp` gets the account consent page; an older `/api/mcp-oauth/<id>` resource gets consent for that one workspace; anything else is `invalid_target`. |
 | `POST /api/oauth/token` | Code exchange and refresh. |
 | `GET/PATCH/DELETE /api/mcp-grants[/id]` | Settings › Connected apps. Dashboard session only. |
 | `POST /api/mcp-oauth/<workspace-id>` | Legacy per-workspace endpoint. Deprecated, still served. |
@@ -145,12 +145,15 @@ the host. Use this checklist on a deployment you are about to ship.
 
 1. In the host, add a custom connector with the address `https://<host>/api/mcp`.
    No client id or secret.
-2. Start the sign-in. Expect the buildd consent page, not a per-workspace picker.
-   Check: the app name and the return address are the host's; your teams are
-   listed; **Agent working for you** is selected; **Acts as you** is disabled with
-   "This app did not ask to act as you".
-3. Tick a workspace in each of two teams. Approve. Expect to land back in the host
-   with the connector connected.
+2. Start the sign-in. Expect the buildd page "Authorize <host>" with "Choose the
+   teams and workspaces <host> can access." Check: ChatGPT and Claude are marked
+   verified, the return address is the host's; your teams are listed with each
+   workspace's repository and no internal workspace; there is no "Acts" choice
+   (an agent connection). If instead the page says the app "is using an older
+   buildd address", the connector was created with a per-workspace URL: remove
+   it and add `https://<host>/api/mcp`.
+3. Tick a workspace in each of two teams. Click **Allow access**. Expect to land
+   back in the host with the connector connected.
 4. Ask: "List my buildd workspaces." Expect both workspaces and nothing else.
 5. Ask it to list tasks in each workspace by name. Expect each workspace's own
    tasks.
@@ -164,24 +167,68 @@ the host. Use this checklist on a deployment you are about to ship.
    host to ask you to sign in again.
 
 For Claude Code, run the same steps after `buildd install --global --oauth`
-(acts as you: step 2 shows **Acts as you** selected, and step 7 succeeds) and
+(acts as you: step 2 shows **As you** selected, and step 7 succeeds) and
 after `buildd install --global --as-agent` (agent, as above).
+
+### Smoke-test status
+
+| Client | Canonical consent reached | Evidence |
+|---|---|---|
+| ChatGPT | **Pending.** Not yet run on a build with the resource routing. A report that ChatGPT showed the older picker matches a connector created with a per-workspace URL (ChatGPT sends the connector URL as `resource`). | none yet |
+| Claude | Pending on the same build. | none yet |
+| Claude Code (`buildd install --oauth`) | Covered by the live E2E against a production build; hosted run pending. | `apps/web/tests/integration/mcp-multi-workspace.test.ts` |
+
+Record a run here with the date, the build and what step 2 showed. Do not mark a
+client as passed without that.
 
 ## Per-workspace URLs: deprecation
 
-`/api/mcp-oauth/<workspace-id>` is **deprecated now; the removal date will be
-announced.** Until then it serves legacy tokens exactly as before. Each response
-carries `Deprecation: true`, `Link: <<issuer>/api/mcp>; rel="successor-version"`
-and a notice in the server instructions. A grant token is refused there, and a
-legacy token is refused on any other workspace's URL. Settings lists legacy
-connections separately with a hint to switch.
+`/api/mcp-oauth/<workspace-id>` is **deprecated**. It serves legacy tokens exactly
+as before. Each response carries `Deprecation: true`,
+`Link: <<issuer>/api/mcp>; rel="successor-version"` and a notice in the server
+instructions. A grant token is refused there, and a legacy token is refused on
+any other workspace's URL. Settings lists legacy connections separately with a
+hint to switch.
+
+New sign-ins at an older address still work, for that one workspace: the
+authorize endpoint reads the workspace from the `resource`, shows it by team and
+repository with the canonical address, and binds the code and token to it. It
+never offers another workspace there, never creates a grant, and never
+re-audiences the token. The token endpoint refuses a `resource` that does not
+match a code's binding (`invalid_target`); a workspace-bound refresh is not
+checked, so older connections keep refreshing.
+
+Sunset is by evidence, not date (spec: "Resource routing, older addresses and
+sunset"):
+
+1. Stop new older-address sign-ins once, for 30 days, no workspace-bound code
+   has gone to a client that has not also signed in at the account level, and
+   the smoke test above has passed on ChatGPT and Claude. Add a `Sunset` header
+   90 days out.
+2. Remove the endpoint no earlier than 90 days later (the refresh tokens'
+   absolute lifetime), with no live workspace-bound refresh token left and no
+   request to the endpoint for 14 days.
+
+Useful counts for step 1 (run against the production database):
+
+```sql
+-- workspace-bound codes in the last 30 days, by client
+SELECT c.client_name, count(*) FROM oauth_codes o
+JOIN oauth_clients c ON c.client_id = o.client_id
+WHERE o.workspace_id IS NOT NULL AND o.created_at > now() - interval '30 days'
+GROUP BY 1;
+-- live workspace-bound refresh tokens
+SELECT count(*) FROM oauth_refresh_tokens
+WHERE workspace_id IS NOT NULL AND revoked_at IS NULL AND expires_at > now();
+```
 
 ## Limitations and known issues
 
 - CIMD is not implemented. It needs an SSRF-safe fetch and cache, redirect
   checks against the fetched document, and an origin display on the consent page.
-- Registration is open, as MCP clients need. The consent page shows a
-  self-declared app name and the return host; it is not a verified identity.
+- Registration is open, as MCP clients need. Only ChatGPT (`chatgpt.com`) and
+  Claude (`claude.ai`, `claude.com`) are shown as verified, by their https
+  redirect host; every other app shows its self-declared name and return host.
 - Access tokens last one hour. Refresh tokens rotate on every use, are stored
   as SHA-256 hashes, and end 90 days after sign-in. Replaying a spent refresh
   token revokes its whole family.
