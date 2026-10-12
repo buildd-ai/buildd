@@ -226,14 +226,14 @@ export function RoleConnectorsSection({ teamId, workspaceId, workspaceName, role
         body: JSON.stringify(input),
       });
       const data = await res.json().catch(() => ({})) as { connector?: RoleConnector; error?: string };
-      if (!res.ok) throw new Error(data.error || "Couldn't add the connector");
+      if (!res.ok) throw new Error(data.error || "Could not add the connector");
       const created = data.connector;
       if (created?.id) {
         setConnectors(prev => (prev.some(c => c.id === created.id) ? prev : [...prev, created]));
         if (!value.includes(created.id)) onChange([...value, created.id]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't add the connector");
+      setError(err instanceof Error ? err.message : "Could not add the connector");
     } finally {
       setAdding(null);
     }
@@ -257,7 +257,7 @@ export function RoleConnectorsSection({ teamId, workspaceId, workspaceName, role
         </span>
       )}
     >
-      <p className="mb-2 text-sm text-text-muted">Team MCP servers this agent mounts when it runs.</p>
+      <p className="mb-2 text-sm text-text-muted">Team MCP servers available to this agent.</p>
       {error && <p role="alert" className="mb-2 text-sm text-status-error">{error}</p>}
       {browsing && !disabled && <RegistryBrowser onAdd={installConnector} addedNames={addedNames} adding={adding} />}
       {loading && <p className="text-sm text-text-muted">Loading connectors…</p>}
@@ -300,7 +300,7 @@ export function RoleConnectorsSection({ teamId, workspaceId, workspaceName, role
                 </label>
                 {on && notHere && (
                   <p className="ml-7 text-xs text-text-muted">
-                    Enable it for {workspaceName ?? 'this workspace'} in Settings › Apps to mount it there.
+                    Enable it for {workspaceName ?? 'this workspace'} in Settings › Apps to use it there.
                   </p>
                 )}
               </li>

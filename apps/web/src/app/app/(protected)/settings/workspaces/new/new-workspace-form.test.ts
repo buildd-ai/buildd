@@ -60,7 +60,7 @@ describe('createRepoNextStep: the Create new repo tab without GitHub says what t
     const step = createRepoNextStep({ githubConfigured: false, installationCount: 0 });
     expect(step).not.toBeNull();
     expect(step!.action).toBe('connect-existing');
-    expect(step!.label).toBe('Use Connect existing');
+    expect(step!.label).toBe('Connect existing repo');
     expect(step!.message).toContain('cannot create repositories');
   });
 

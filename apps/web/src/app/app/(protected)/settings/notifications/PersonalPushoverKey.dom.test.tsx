@@ -61,7 +61,7 @@ async function mount() {
 describe('Your Pushover key', () => {
   it('shows the channel row and an add button when no key is set', async () => {
     await mount();
-    expect(host.textContent).toContain('Pushover · yours');
+    expect(host.textContent).toContain('Pushover · personal');
     expect(host.querySelector('[data-testid="provider-key-health"]')?.textContent).toBe('Not connected');
     expect(button('Add your key')).toBeDefined();
   });
@@ -88,7 +88,7 @@ describe('Your Pushover key', () => {
     await mount();
     await click(button('Remove'));
     expect(host.textContent).toContain('still show in chat');
-    await click(button('Confirm remove'));
+    await click(button('Remove key'));
     expect(requests.some((r) => r.method === 'DELETE' && r.url === '/api/me/pushover?teamId=t-1')).toBe(true);
   });
 });

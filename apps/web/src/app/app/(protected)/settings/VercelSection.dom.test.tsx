@@ -36,7 +36,7 @@ describe('VercelSection', () => {
     await mount();
     const intro = [...host.querySelectorAll('p')].find((p) => p.textContent?.includes('vercel.com/account/tokens'));
     expect(intro).not.toBeUndefined();
-    expect(intro!.textContent).toBe('Create a token at vercel.com/account/tokens for prod health alerts.');
+    expect(intro!.textContent).toBe('Create a token at vercel.com/account/tokens for production health alerts.');
   });
 
   it('has exactly one primary action', async () => {

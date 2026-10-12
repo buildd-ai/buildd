@@ -27,11 +27,11 @@ export default function CiRetrySection({ workspaceId, initial, canEdit }: { work
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? 'Save failed');
+        throw new Error(data.error ?? 'Could not save. Try again.');
       }
     } catch (e) {
       setOn(!next);
-      setError(e instanceof Error ? e.message : 'Save failed');
+      setError(e instanceof Error ? e.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }

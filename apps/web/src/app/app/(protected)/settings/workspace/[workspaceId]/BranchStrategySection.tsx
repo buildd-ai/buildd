@@ -54,11 +54,11 @@ export default function BranchStrategySection({ workspaceId, effectiveBranchStra
         body: JSON.stringify({ branchStrategy: strategy }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save');
+      if (!res.ok) throw new Error(data.error || 'Could not save. Try again.');
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Failed to save');
+      setSaveError(err instanceof Error ? err.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }

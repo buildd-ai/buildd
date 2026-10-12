@@ -147,7 +147,7 @@ function PersonalSharingSection({
     if (busy) return;
     if (!(await confirm({
       title: 'Make this a team agent?',
-      message: 'It becomes the team\u2019s, with no owner, and admins manage it from then on. Its slug stays the same.',
+      message: 'Ownership moves to the team and team admins manage it. The slug does not change.',
       confirmLabel: 'Make team agent',
     }))) return;
     setBusy('promote');
@@ -201,8 +201,8 @@ function PersonalSharingSection({
             )}
             <p className="text-sm text-text-muted">
               {visibility === 'team'
-                ? 'Anyone in the team can run it. Only its owner and admins can change it.'
-                : 'Only its owner\u2019s tasks run it. Nobody else can see it.'}
+                ? 'Available to everyone on the team. Only its owner and admins can edit it.'
+                : 'Only its owner\u2019s tasks can use it. Hidden from the rest of the team.'}
             </p>
             {error && <Notice tone="err" data-testid="personal-share-error">{error}</Notice>}
             {info.canPromote && visibility === 'team' && (
@@ -216,7 +216,7 @@ function PersonalSharingSection({
                 >
                   {busy === 'promote' ? 'Making team agent\u2026' : 'Make team agent'}
                 </button>
-                <span className="text-sm text-text-muted">The team takes it over; the owner no longer manages it.</span>
+                <span className="text-sm text-text-muted">Transfers ownership to the team.</span>
               </div>
             )}
           </>
@@ -340,7 +340,7 @@ function WorkspaceOverrideEditor({
     try {
       await onUpdate(updates);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save');
+      setError(err instanceof Error ? err.message : 'Could not save the override.');
     } finally {
       setSaving(false);
     }
@@ -551,7 +551,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
       });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Failed to save');
+        throw new Error(data.error || 'Could not save the agent.');
       }
       // Baseline = what the server says it stored; fall back to what we sent.
       const data = await res.json().catch(() => null) as { skill?: Role } | null;
@@ -568,7 +568,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
       setTimeout(() => setSaved(false), 2000);
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save');
+      setError(err instanceof Error ? err.message : 'Could not save the agent.');
     } finally {
       setSaving(false);
     }
@@ -579,11 +579,11 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
     setDeleting(true);
     try {
       const res = await fetch(`/api/roles/${role.id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete');
+      if (!res.ok) throw new Error('Could not delete the agent.');
       router.push('/app/settings/agents');
       router.refresh();
     } catch {
-      setError('Failed to delete agent');
+      setError('Could not delete the agent.');
       setDeleting(false);
     }
   }
@@ -596,7 +596,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
     });
     if (!res.ok) {
       const data = await res.json();
-      throw new Error(data.error || 'Failed to update override');
+      throw new Error(data.error || 'Could not update the override.');
     }
     const data = await res.json();
     setOverrideList(prev => prev.map(o => o.id === overrideId ? data.skill : o));
@@ -621,13 +621,13 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
       });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Failed to create override');
+        throw new Error(data.error || 'Could not create the override.');
       }
       const data = await res.json();
       setOverrideList(prev => [...prev, data.skill]);
       setShowAddOverride(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create override');
+      setError(err instanceof Error ? err.message : 'Could not create the override.');
     } finally {
       setAddingOverride(false);
     }
@@ -698,7 +698,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 <p className="text-sm text-text-muted">
                   {isWorkspaceRole
                     ? 'Saving makes this the team default for every workspace.'
-                    : 'Every workspace in your team gets this agent by default. A workspace can add an override.'}
+                    : 'Available in every workspace on the team. A workspace can override it.'}
                 </p>
               )}
 
@@ -712,7 +712,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                   />
                   <p className="text-sm text-text-muted">
                     {isWorkspaceRole && targetWorkspaceId === role.workspaceId
-                      ? 'Only this workspace runs it.'
+                      ? 'Available only in this workspace.'
                       : 'Saving moves this agent to the selected workspace.'}
                     {!isWorkspaceRole && overrideList.length > 0 && (
                       <> {overrideList.length} workspace override{overrideList.length !== 1 ? 's' : ''} become standalone agents.</>
@@ -762,8 +762,8 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
               />
               <p className="mt-1 text-sm text-text-muted">
                 {routingDisabled
-                  ? 'Routing is turned off for this agent: tasks reach it only when they name it.'
-                  : `The work this agent should pick up, ${WHEN_TO_USE_MIN} to ${WHEN_TO_USE_MAX} characters. Tasks filed without an agent are matched against it; an agent left blank is never picked.`}
+                  ? 'Automatic routing is off. Tasks reach this agent only when they name it.'
+                  : `The work this agent handles, ${WHEN_TO_USE_MIN} to ${WHEN_TO_USE_MAX} characters. Tasks with no agent assigned are matched against it. An agent with this left empty is never matched.`}
               </p>
             </div>
 
@@ -778,7 +778,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
                 placeholder="Investigating without changing code (Researcher)"
               />
-              <p className="mt-1 text-sm text-text-muted">Optional. The nearest work that belongs to another agent, and which one.</p>
+              <p className="mt-1 text-sm text-text-muted">Optional. Similar work that belongs to another agent, and which agent.</p>
             </div>
 
             <div>
@@ -884,7 +884,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                   <span className="text-sm text-text-primary">Use for new tasks</span>
                 </label>
                 {!enabled && (
-                  <p className="ml-6 text-sm text-text-muted">Turned off: new runs don’t load it. Work already running carries on.</p>
+                  <p className="ml-6 text-sm text-text-muted">Turned off. New tasks don’t use this agent; tasks in progress continue.</p>
                 )}
               </div>
               <label className="flex min-h-11 cursor-pointer items-center gap-2 py-2">
@@ -950,7 +950,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         >
           <div className="space-y-4">
             <p className="text-sm text-text-muted">
-              A workspace can override single fields. The rest inherit the team default above.
+              A workspace can override individual fields. Other fields use the team default.
             </p>
 
             {canEdit && showAddOverride && availableForOverride.length > 0 && (
@@ -975,7 +975,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                   </button>
                 </div>
                 <p className="text-sm text-text-muted">
-                  The override starts as a copy of the team default. Change the fields you need for this workspace.
+                  The override starts as a copy of the team default.
                 </p>
               </div>
             )}

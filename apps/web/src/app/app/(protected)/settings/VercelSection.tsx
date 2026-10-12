@@ -57,7 +57,7 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
         setTokens(filtered);
       }
     } catch {
-      setMessage({ type: 'error', text: 'Failed to load tokens' });
+      setMessage({ type: 'error', text: 'Could not load Vercel tokens.' });
     } finally {
       setLoading(false);
     }
@@ -65,7 +65,7 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
 
   async function addToken() {
     if (!value.trim()) {
-      setMessage({ type: 'error', text: 'Paste a Vercel API token first' });
+      setMessage({ type: 'error', text: 'Enter a Vercel API token.' });
       return;
     }
     setBusy(true);
@@ -82,7 +82,7 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Failed to store token');
+      if (!res.ok) throw new Error(data.error ?? 'Could not save the token.');
       setLabel('');
       setValue('');
       setAddOpen(false);
@@ -90,24 +90,24 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
       setJustAdded(true);
       await load(selectedTeamId);
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Could not save the token.' });
     } finally {
       setBusy(false);
     }
   }
 
   async function deleteToken(id: string) {
-    if (!(await confirm({ title: 'Delete Vercel token?', message: 'Any watched project relying on it will need a replacement.', confirmLabel: 'Delete', variant: 'danger' }))) return;
+    if (!(await confirm({ title: 'Delete Vercel token?', message: 'Watched projects that use it need a new token.', confirmLabel: 'Delete', variant: 'danger' }))) return;
     setBusy(true);
     setMessage(null);
     try {
       const res = await fetch(`/api/secrets?id=${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed');
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Could not delete the token.');
       setJustAdded(false);
       await load(selectedTeamId);
       setMessage({ type: 'success', text: 'Deleted.' });
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Could not delete the token.' });
     } finally {
       setBusy(false);
     }
@@ -125,13 +125,13 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
           <a href="https://vercel.com/account/tokens" target="_blank" rel="noreferrer" className="underline">
             vercel.com/account/tokens
           </a>{' '}
-          for prod health alerts.
+          for production health alerts.
         </p>
 
         {justAdded && (
-          <Notice tone="ok" title="Token ready" action={{ label: 'Go to Health', href: '/app/health' }}>
+          <Notice tone="ok" title="Token saved" action={{ label: 'Go to Health', href: '/app/health' }}>
             <p className="text-sm text-text-secondary">
-              Attach it to a watched project in Health: set the Vercel project ID and pick this token.
+              To use it, open a watched project in Health, set its Vercel project ID and select this token.
             </p>
             <button onClick={() => setJustAdded(false)} className="btn btn-sm btn-quiet mt-1 !px-0">Dismiss</button>
           </Notice>
