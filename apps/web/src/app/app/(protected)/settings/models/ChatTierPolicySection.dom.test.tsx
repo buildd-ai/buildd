@@ -42,13 +42,12 @@ describe('ChatTierPolicySection', () => {
     expect(q('legacy-reset-notice')).toBeNull();
   });
 
-  it('explains a leftover reset once and turning it off writes only that flag', async () => {
+  it('a team with the old reset still on sees no notice about it: it is not a setting any more', async () => {
     team.chatCapNewSessionTier = true;
     await mount();
-    expect(q('legacy-reset-notice')!.textContent).toContain('People can pick a higher tier afterwards.');
-    await act(async () => { q('legacy-reset-off')!.click(); });
-    await flush();
-    expect(patches).toEqual([{ chatCapNewSessionTier: false }]);
+    expect(q('legacy-reset-notice')).toBeNull();
+    expect(q('legacy-reset-off')).toBeNull();
+    expect(host.textContent).not.toContain('reset');
   });
 
   it('warns when the starting tier is above the Chat maximum and disables it as an option', async () => {
@@ -60,12 +59,9 @@ describe('ChatTierPolicySection', () => {
     expect(opt.getAttribute('aria-disabled')).toBe('true');
   });
 
-  it('a member reads the starting tier and the reset as text, with no control', async () => {
-    team.chatCapNewSessionTier = true;
+  it('a member reads the starting tier as text, with no control', async () => {
     await mount(false);
-    expect(q('legacy-reset-off')).toBeNull();
     expect(q('chat-default-tier-value')!.textContent).toBe('premium');
-    expect(q('legacy-reset-notice')!.textContent).toContain('reset to it');
     expect(describeControls(host)).toEqual([]);
     expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this/);
   });

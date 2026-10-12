@@ -11,14 +11,15 @@ import { AUTOMATIC, loneProviderLine, usedForView } from './providers-view';
  * there is nothing to choose: one line says what it is used for. With two or
  * more, one picker per surface (`teams.provider_assignments`, PATCH
  * /api/providers/assignments); an option a surface cannot use is disabled with
- * what it needs. `decisions` is the decision model row, `extra` the Claude /
- * Codex switch, both drawn only in the table.
+ * what it needs. `decisions` is the decision model row (a platform operator's
+ * only; absent for everyone else), `extra` the Claude / Codex switch, both
+ * drawn only in the table.
  */
 export default function UsedForSection({ teamId, data, canManage, decisions, extra }: {
   teamId: string;
   data: ListProvidersResponse;
   canManage: boolean;
-  decisions: ReactNode;
+  decisions?: ReactNode;
   extra?: ReactNode;
 }) {
   const [assignments, setAssignments] = useState<ProviderAssignmentsResponse['assignments'] | null>(null);
@@ -76,7 +77,7 @@ export default function UsedForSection({ teamId, data, canManage, decisions, ext
             </dd>
           </div>
         ))}
-        <div className="py-2" data-testid="used-for-decisions">{decisions}</div>
+        {decisions && <div className="py-2" data-testid="used-for-decisions">{decisions}</div>}
       </dl>
       {err && <p role="alert" className="text-meta text-status-error mt-2">{err}</p>}
       {extra && <div className="mt-4">{extra}</div>}

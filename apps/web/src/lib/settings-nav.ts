@@ -77,7 +77,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'keys',
         label: 'Keys',
         href: '/app/settings/keys',
-        description: 'Your own model keys, used when the team lets personal keys pay.',
+        description: 'Your own model keys, and the highest tier your work may use.',
       },
       {
         id: 'notifications',

@@ -105,6 +105,6 @@ export async function authenticate(req: NextRequest) {
   if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
     return { error: NextResponse.json({ error: 'Admin token required' }, { status: 403 }) };
   }
-  return { user, apiAccount: apiAccount as { id: string; teamId?: string | null } | null };
+  return { user, apiAccount: apiAccount as { id: string; teamId?: string | null; level?: string | null; oauthUserId?: string | null } | null };
 }
 
