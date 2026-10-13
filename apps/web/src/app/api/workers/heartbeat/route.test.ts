@@ -1134,3 +1134,82 @@ describe('POST /api/workers/heartbeat — claim handoff acknowledgement', () => 
     expect((await res.json()).claimsReleased).toBe(0);
   });
 });
+
+describe('POST /api/workers/heartbeat — model auth source (docs/specs/runner-model-auth-source.md)', () => {
+  function captureUpsert() {
+    const captured: { values: any; set: any } = { values: null, set: null };
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        captured.values = vals;
+        return {
+          onConflictDoUpdate: mock((opts: any) => {
+            captured.set = opts.set;
+            return Promise.resolve();
+          }),
+        };
+      }),
+    });
+    return captured;
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsInsert.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+    mockHeartbeatsFindFirst.mockResolvedValue({ viewerToken: 'existing-token' });
+  });
+
+  it('AC-5: stores api_key and the mode on insert and on update', async () => {
+    const captured = captureUpsert();
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', modelAuthSource: 'api_key', modelAuthMode: 'auto' },
+    }));
+    expect(res.status).toBe(200);
+    expect(captured.values.modelAuthSource).toBe('api_key');
+    expect(captured.values.modelAuthMode).toBe('auto');
+    expect(captured.set.modelAuthSource).toBe('api_key');
+    expect(captured.set.modelAuthMode).toBe('auto');
+  });
+
+  it('AC-5: a later beat without the fields leaves the stored values alone', async () => {
+    const captured = captureUpsert();
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766' },
+    }));
+    expect(res.status).toBe(200);
+    expect('modelAuthSource' in captured.set).toBe(false);
+    expect('modelAuthMode' in captured.set).toBe(false);
+    expect(captured.values.modelAuthSource).toBeNull();
+    expect(captured.values.modelAuthMode).toBeNull();
+  });
+
+  it('AC-6: a token-shaped value is never stored and the beat still succeeds', async () => {
+    const captured = captureUpsert();
+    const tokenShaped = 'sk-ant-oat01-' + 'x'.repeat(40);
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', modelAuthSource: tokenShaped, modelAuthMode: { evil: true } },
+    }));
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(captured.values)).not.toContain(tokenShaped);
+    expect(JSON.stringify(captured.set)).not.toContain(tokenShaped);
+    expect(captured.values.modelAuthSource).toBeNull();
+    expect('modelAuthSource' in captured.set).toBe(false);
+    expect('modelAuthMode' in captured.set).toBe(false);
+  });
+
+  it('accepts every listed source', async () => {
+    for (const source of ['machine_token', 'machine_login', 'api_key', 'none']) {
+      const captured = captureUpsert();
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', modelAuthSource: source },
+      }));
+      expect(res.status).toBe(200);
+      expect(captured.set.modelAuthSource).toBe(source);
+    }
+  });
+});

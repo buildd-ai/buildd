@@ -1396,6 +1396,33 @@ export interface RunnerUpdateSnapshot {
   trackedBranch: string;
 }
 
+/**
+ * Which model login a runner's agents use, as the runner detects it on its own
+ * machine (docs/specs/runner-model-auth-source.md). A label only: the runner
+ * never sends the credential, and the server stores nothing but one of these
+ * words. Sent on every heartbeat as `modelAuthSource`.
+ */
+export const RUNNER_MODEL_AUTH_SOURCES = ['machine_token', 'machine_login', 'api_key', 'none'] as const;
+export type RunnerModelAuthSource = (typeof RUNNER_MODEL_AUTH_SOURCES)[number];
+
+/** The runner's configured preference for the machine login, sent as `modelAuthMode`. */
+export const RUNNER_MODEL_AUTH_MODES = ['auto', 'prefer', 'off'] as const;
+export type RunnerModelAuthMode = (typeof RUNNER_MODEL_AUTH_MODES)[number];
+
+export function isRunnerModelAuthSource(value: unknown): value is RunnerModelAuthSource {
+  return typeof value === 'string' && (RUNNER_MODEL_AUTH_SOURCES as readonly string[]).includes(value);
+}
+
+export function isRunnerModelAuthMode(value: unknown): value is RunnerModelAuthMode {
+  return typeof value === 'string' && (RUNNER_MODEL_AUTH_MODES as readonly string[]).includes(value);
+}
+
+/** The model-auth fields a runner adds to its heartbeat body. Both optional: older runners omit them. */
+export interface RunnerModelAuthHeartbeatFields {
+  modelAuthSource?: RunnerModelAuthSource;
+  modelAuthMode?: RunnerModelAuthMode;
+}
+
 // ============================================================================
 // API INPUT TYPES
 // ============================================================================

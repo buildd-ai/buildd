@@ -209,7 +209,7 @@ describe('HealthClient — pages', () => {
     expect(html).not.toContain('aria-label="Window"');
   });
 
-  it('Runners leads with what is running in words; the timeline and the slot history are behind disclosures', () => {
+  it('Runners leads with what is running in words, then the slot chart open; only the timeline is folded', () => {
     const fleet = {
       runners: [{ id: 'r1', name: 'atlas', slots: [{ lane: { bars: [{ id: 'b1', start: NOW - HOUR, end: NOW - 30 * 60_000, label: 'x', color: null, state: 'done' }] } }] }],
       live: 0, capacity: 1, window: { from: NOW - 2 * HOUR, to: NOW },
@@ -217,13 +217,17 @@ describe('HealthClient — pages', () => {
     const html = render({ ...everything, page: 'runners', runnerLanes: { fleet, idle: [], missions: {} } });
     const at = (id: string) => html.indexOf(`data-testid="${id}"`);
     expect(at('health-section-running-now')).toBeGreaterThan(-1);
-    expect(at('health-section-running-now')).toBeLessThan(at('health-section-lanes'));
-    expect(at('health-section-lanes')).toBeLessThan(at('health-section-slot-history'));
-    // The timeline is folded: its chart mounts only when opened.
+    // The slot chart (runner slots and interactive sessions) is on the page at
+    // first glance, not behind a disclosure.
+    expect(at('health-section-running-now')).toBeLessThan(at('health-section-slot-history'));
+    expect(has(html, 'health-section-occupancy')).toBe(true);
+    expect(html).not.toContain('Slot history over 24 hours');
+    // The per-slot timeline is the long diagnostic: still folded, its chart
+    // mounts only when opened.
+    expect(at('health-section-slot-history')).toBeLessThan(at('health-section-lanes'));
+    expect(html).toContain('Timeline: each slot over the last hours');
     expect(has(html, 'runner-lanes-chart')).toBe(false);
-    expect(at('health-section-slot-history')).toBeLessThan(at('health-section-runners'));
-    // Collapsed by default: the history chart mounts only when opened.
-    expect(has(html, 'health-section-occupancy')).toBe(false);
+    expect(at('health-section-lanes')).toBeLessThan(at('health-section-runners'));
   });
 
   it('a failing schedule on Overview links to where it is configured', () => {

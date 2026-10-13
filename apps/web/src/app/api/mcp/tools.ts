@@ -1,4 +1,4 @@
-import { hasTokenScope, requiredScopeForAction, type TokenScope } from '@buildd/core/token-scopes';
+import { hasTokenScope, requiredScopeForAction, scopesReachAction, type TokenScope } from '@buildd/core/token-scopes';
 /**
  * Tool descriptors advertised by the remote MCP server (ListTools).
  *
@@ -60,6 +60,7 @@ import {
   type McpToolGroup,
 } from "@buildd/core/mcp-tool-groups";
 import type { BuilddAction } from "@buildd/core/mcp-tools";
+import { guidanceTopicReply, guidanceTopicsText } from "@buildd/core/guidance-topics";
 
 export type McpAccountLevel = 'trigger' | 'worker' | 'admin';
 
@@ -121,12 +122,9 @@ export function actionsForLevel(accountLevel: McpAccountLevel, scopes?: readonly
 }
 
 function levelActions(accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
-  if (scopes != null) return allActionsList.filter(action => {
-    const required = requiredScopeForAction(action);
-    return (required != null && hasTokenScope(scopes, required)) ||
-      (action === 'manage_experiments' && hasTokenScope(scopes, 'analytics:read')) ||
-      (['manage_missions', 'manage_initiatives', 'manage_workspaces'].includes(action) && hasTokenScope(scopes, 'tasks:read'));
-  });
+  // Listed when any one of its sub-actions is permitted (scopesReachAction),
+  // the same gate handleBuilddAction applies per call.
+  if (scopes != null) return allActionsList.filter(action => scopesReachAction(scopes, action));
   return accountLevel === 'admin'
     ? [...allActionsList]
     : accountLevel === 'trigger'
@@ -137,6 +135,14 @@ function levelActions(accountLevel: McpAccountLevel, scopes?: readonly string[] 
 }
 
 export const HELP_ACTION = 'help';
+
+/**
+ * The group whose `help` types `topic` and that the instructions name for
+ * guidance. Every group answers help {topic}; only this one declares the field,
+ * since typing it on all nine would cost ~140 tokens of the 6k budget. Every
+ * level and the read-only grant are shown it.
+ */
+export const GUIDANCE_GROUP: McpToolGroup = 'tasks';
 
 /** The actions of `group` the level may call, in allActions order. */
 export function groupActionsForLevel(group: McpToolGroup, accountLevel: McpAccountLevel, scopes?: readonly string[] | null, reach: McpSessionReach = {}): string[] {
@@ -161,7 +167,7 @@ function actionsWithSubAction(group: McpToolGroup, value: string, accountLevel: 
 export function groupToolDefinition(group: McpToolGroup, actions: readonly string[]): object {
   const { listed, more } = splitListed(actions);
   const lines = listed.map(a => `- ${a} ${actionSignature(a)}: ${ACTION_SUMMARY[a as BuilddAction]}`);
-  lines.push(`- ${HELP_ACTION} {action}: docs for one action`);
+  lines.push(`- ${HELP_ACTION} {action?|topic?}: docs, or guidance`);
   if (more.length > 0) lines.push(`More: ${more.join(', ')} — call help {action} for docs.`);
   const withSub = listed.find(a => /\baction: [a-z_|]*\bupdate\b/.test(derivedSignature(a) ?? ''));
   return {
@@ -181,11 +187,18 @@ export function groupToolDefinition(group: McpToolGroup, actions: readonly strin
           // Only where some action has a sub-action selector of its own.
           ...(withSub ? { description: `A sub-action goes in params: {"action":"${withSub}","params":{"action":"update",...}}.` } : {}),
         },
-        params: mcpGroupParamsSchema(group, listed),
+        // `More:` actions too: a schema-constrained model fills only declared
+        // fields, so each needs at least its sub-action selector typed.
+        params: withGuidanceTopic(group, mcpGroupParamsSchema(group, listed, more)),
       },
       required: ["action"],
     },
   };
+}
+
+function withGuidanceTopic<T extends { properties: Record<string, Record<string, unknown>> }>(group: McpToolGroup, schema: T): T {
+  if (group !== GUIDANCE_GROUP) return schema;
+  return { ...schema, properties: { ...schema.properties, topic: { type: 'string', description: 'Guidance topic for help; help {} lists them' } } };
 }
 
 export type GroupToolCall =
@@ -207,10 +220,13 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
   const params = (args?.params && typeof args.params === 'object' ? args.params : rest) as Record<string, unknown>;
 
   if (action === HELP_ACTION) {
+    // Workflow guidance: read-only text, answered for every session.
+    if (params.topic !== undefined) return { kind: 'reply', ...guidanceTopicReply(params.topic) };
     const target = typeof params.action === 'string' ? params.action : '';
     const inGroup = groupActionsForLevel(group, accountLevel, scopes, reach);
     if (!target) {
-      return { kind: 'reply', isError: false, text: `${tool} actions: ${inGroup.join(', ')}. Call ${tool} with action "help" and params {"action": "<name>"} for one action's full docs.` };
+      const topics = guidanceTopicsText(t => `${tool} {"action":"help","params":{"topic":"${t}"}}`);
+      return { kind: 'reply', isError: false, text: `${tool} actions: ${inGroup.join(', ')}. Call ${tool} with action "help" and params {"action": "<name>"} for one action's full docs.\n\n${topics}` };
     }
     const help = actionHelp(target);
     if (!help) return { kind: 'reply', isError: true, text: `Unknown action "${target}".` };
@@ -246,17 +262,29 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
   return { kind: 'dispatch', action, params };
 }
 
+/**
+ * The first sentence of the instructions: some clients read only the first
+ * ~512 characters (Claude Code cuts at 2,048), so the guidance pointer leads.
+ */
+export function guidancePointer(accountLevel: McpAccountLevel, surface: McpToolSurface = 'groups', scopes?: readonly string[] | null, reach: McpSessionReach = {}): string {
+  const shown = MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel, scopes, reach).length > 0);
+  const tool = surface === 'legacy' ? 'buildd' : mcpGroupToolName(shown.includes(GUIDANCE_GROUP) ? GUIDANCE_GROUP : (shown[0] ?? GUIDANCE_GROUP));
+  return `Before acting on buildd tasks or Living Specs, call \`${tool}\` action "help", params {"topic":"living-specs"} ({} lists topics).`;
+}
+
 /** The server `instructions` block sent on initialize. */
 export function mcpServerInstructions(accountLevel: McpAccountLevel, surface: McpToolSurface = 'groups', scopes?: readonly string[] | null, reach: McpSessionReach = {}): string {
   const tools = surface === 'groups'
     ? `Tools: one per area, \`buildd_<group>\` (${MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel, scopes, reach).length > 0).join(', ')}); \`recall\` (read knowledge), \`learn\` (write knowledge). A group tool takes {action, params}; its description lists its common actions with their params (\`?\` = optional), and a \`More:\` line names the rest, called the same way. Action \`help\` with params {action} returns one action's full docs. workspaceId accepts a UUID, a repo name or owner/repo. Prompts that say \`buildd action=X\` mean: call X on the group tool that lists it. \`buildd_memory\` is deprecated.`
     : `Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated.`;
   const gated = surface === 'groups' ? 'which actions you can call' : 'which `buildd` actions you can call';
-  return `Buildd is a task coordination system for AI coding agents. ${tools}
+  return `${guidancePointer(accountLevel, surface, scopes, reach)}
+
+Buildd is a task coordination system for AI coding agents. ${tools}
 
 ${scopes != null ? `**Token scopes:** ${scopes.join(', ') || 'none'} — explicit capabilities replace legacy level permissions.` : `**Token level:** ${accountLevel} — gates ${gated} (trigger ⊂ worker ⊂ admin).`} A call outside your level returns \`{"error":"forbidden",...}\`, not an expired-token error.
 
-**Before your first task action**, load the buildd-mcp-consumer skill for the full workflow (claim → progress → PR → artifact → learn → complete), the blocked-vs-question rule, friction reporting, and branch strategy. No skill installed? Read the \`buildd://workspace/skills\` resource for the same content, or ask a human to install it.`;
+**Before your first task action**, load the buildd-mcp-consumer skill (claim → progress → PR → artifact → learn → complete, blocked-vs-question, friction, branch strategy). No skill installed? Read the \`buildd://workspace/skills\` resource.`;
 }
 
 /** The legacy one-tool `buildd`: every action the level may call, with the long docs inline. LEGACY: old-runner fallback only. */
@@ -274,8 +302,8 @@ function legacyBuilddTool(filteredActions: string[]): object {
         properties: {
           action: {
             type: "string" as const,
-            description: `Action to perform: ${filteredActions.join(", ")}`,
-            enum: filteredActions,
+            description: `Action to perform: ${filteredActions.join(", ")}, ${HELP_ACTION} (params {topic} for workflow guidance, {action} for one action's docs)`,
+            enum: [...filteredActions, HELP_ACTION],
           },
           params: {
             type: "object" as const,
