@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.332.0",
+  "version": "0.335.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -171,6 +171,8 @@
     "./task-estimate-actuals-source": "./task-estimate-actuals-source.ts",
     "./task-estimate-accuracy": "./task-estimate-accuracy.ts",
     "./task-estimate-accuracy-source": "./task-estimate-accuracy-source.ts",
+    "./task-estimate-operator": "./task-estimate-operator.ts",
+    "./task-estimate-operator-source": "./task-estimate-operator-source.ts",
     "./decision-ledger": "./decision-ledger.ts",
     "./decision-replay": "./decision-replay.ts",
     "./orchestration-decision-ledger": "./orchestration-decision-ledger.ts",
