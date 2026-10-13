@@ -14,7 +14,7 @@ import {
 describe('task-actions shared helpers', () => {
   describe('getGateReasonTitle', () => {
     it('uses the full-page wording for each gate', () => {
-      expect(getGateReasonTitle({ gateReason: 'mission_local' })).toBe('Running in a local session');
+      expect(getGateReasonTitle({ gateReason: 'mission_local' })).toBe('Runs from a local session');
       expect(getGateReasonTitle({ gateReason: 'mission_held' })).toBe('Blocked: parent mission is held');
       expect(getGateReasonTitle({ gateReason: 'unmerged_dep_pr' })).toBe('Blocked: dependency PR not merged');
       expect(getGateReasonTitle({ gateReason: 'mission_budget_exhausted' })).toBe('Blocked: mission budget exhausted');

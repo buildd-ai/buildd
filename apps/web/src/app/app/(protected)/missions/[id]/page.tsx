@@ -99,6 +99,7 @@ import {
 } from '@/lib/mission-integration-pr';
 import { explainMission } from '@/lib/explain';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
+import { missionOpenQuestions } from '@/lib/open-ask';
 import { loadDependencyRows } from '@/lib/dependency-rows';
 import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
@@ -433,6 +434,7 @@ export default async function MissionDetailPage({
     criteriaGate,
     criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
     hasPendingDeliverableWork,
+    openQuestions: missionOpenQuestions(mission.tasks || []),
   });
   const displayState = missionAnswer?.displayState ?? fallbackView!.displayState;
   const stateChip = missionAnswer?.chip ?? fallbackView!.chip;

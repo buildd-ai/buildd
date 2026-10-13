@@ -87,7 +87,7 @@ describe('Part 2 — guidance survives a wrong state read', () => {
     const merge = factOfKind(view.outstanding, 'merge');
     if (merge.kind !== 'merge') throw new Error('unreachable');
     expect(merge.missionPr).toBe(true);
-    expect(view.situation.headline).toBe('Running (1 agent). Mission PR #4242 ready to merge.');
+    expect(view.situation.headline).toBe('1 task in progress. Mission PR #4242 ready to merge.');
     expect(view.situation.nextAction).toContain('Merge the mission PR');
   });
 
@@ -240,7 +240,7 @@ describe('genuinely mid-flight with nothing outstanding', () => {
     expect(view.outstanding).toEqual([]);
     expect(view.situation.focus).toBeNull();
     expect(view.situation.nextAction).toBeNull();
-    expect(view.situation.headline).toBe('Running: 3 agents in flight, nothing outstanding.');
+    expect(view.situation.headline).toBe('3 tasks in progress.');
   });
 
   it('says so plainly when idle, rather than falling back to a menu', () => {
@@ -248,7 +248,7 @@ describe('genuinely mid-flight with nothing outstanding', () => {
 
     expect(view.kind).toBe('idle');
     expect(view.situation.nextAction).toBeNull();
-    expect(view.situation.headline).toBe('No source reports outstanding work.');
+    expect(view.situation.headline).toBe('Nothing is waiting.');
   });
 
   it('reports nothing outstanding for a completed mission', () => {
@@ -259,7 +259,7 @@ describe('genuinely mid-flight with nothing outstanding', () => {
 
     expect(view.kind).toBe('complete');
     expect(view.outstanding).toEqual([]);
-    expect(view.situation.headline).toBe('Complete. Nothing outstanding.');
+    expect(view.situation.headline).toBe('Complete.');
   });
 });
 

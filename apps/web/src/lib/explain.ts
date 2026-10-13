@@ -20,6 +20,7 @@
  * the five underlying derivations. This module does not decide what a state is;
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
+import { isOpenAsk, missionOpenQuestions } from './open-ask';
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
 import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
@@ -195,6 +196,7 @@ type LoadedTask = {
     observedTouches: string[] | null;
     error: string | null;
     startedAt: Date | null;
+    waitingFor?: unknown;
     supersededByPrNumber: number | null;
     supersededByPrUrl: string | null;
     supersededReason: string | null;
@@ -224,6 +226,8 @@ const WORKER_WITH = {
     updatedAt: true, completedAt: true,
     supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
     abandonedAt: true, abandonedReason: true, supersessionScan: true,
+    // A worker parked on a question: what it asked (`missionOpenQuestions`).
+    waitingFor: true,
   },
   orderBy: sqlOrderBy([desc(workers.startedAt)]),
 };
@@ -251,6 +255,11 @@ async function missingBrowserFor(rows: LoadedTask[], workspaceId: string | null,
 /** True when a worker in a live status is on this row — the per-task half of `activeAgents`. */
 function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boolean {
   return (t.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status));
+}
+
+/** True when this row's worker is parked on a question for a person. */
+function hasOpenAsk(t: { status: string; workers?: Array<{ status: string }> | null }): boolean {
+  return (t.workers ?? []).some(w => isOpenAsk(t.status, w.status));
 }
 
 /** The canonical "is a fix attempt open on this task" descriptor — see mission-state-view.ts rule 6½. */
@@ -552,6 +561,7 @@ async function viewForMission(missionId: string): Promise<{
       id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t),
       ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
     })),
+    openQuestions: missionOpenQuestions(loaded),
     localStrand: strand
       ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: String(m.status), workspaceId: (m.workspaceId as string | null) ?? null }) }
       : null,
@@ -586,6 +596,7 @@ async function viewForMission(missionId: string): Promise<{
         title: t.title,
         status: t.status,
         live: hasLiveWorker(t),
+        waiting: hasOpenAsk(t),
         runnerClaimable: !!(t.context as Record<string, unknown> | null)?.reviewerFor,
         missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
         waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
@@ -911,6 +922,7 @@ async function viewForTask(taskId: string): Promise<{
     health,
     progress: terminal ? 100 : undefined,
     openTasks,
+    openQuestions: missionOpenQuestions(family),
     failedTasks: failedTasks.map(t => ({
       id: t.id,
       title: t.title,
@@ -946,7 +958,7 @@ async function viewForTask(taskId: string): Promise<{
     workspaceId: task.workspaceId ?? null,
     missionId: task.missionId ?? null,
     answerExtras: {
-      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)), missingBrowser: missingBrowser && family.some(f => f.id === t.id && f.roleSlug === VISUAL_AUDITOR_ROLE_SLUG) })),
+      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)), waiting: family.some(f => f.id === t.id && hasOpenAsk(f)), missingBrowser: missingBrowser && family.some(f => f.id === t.id && f.roleSlug === VISUAL_AUDITOR_ROLE_SLUG) })),
       failedTasks: failedTasks.map(t => ({
         id: t.id,
         title: t.title,
