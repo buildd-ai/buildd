@@ -1,6 +1,6 @@
 /**
  * POST /api/admin/operator: one owner recovery action (operator-recovery spec
- * §7.2, buildd-admin). The route has already passed `requirePlatformOwner`.
+ * §7.2, operator console). The route has already passed `requirePlatformOwner`.
  *
  * In order: parse (closed capability set `orq-cap-v1`, closed params, a
  * required reason) → re-observe the target through the recovery families →

@@ -1288,7 +1288,7 @@ stale-worker reaper. They add no lifecycle writer of their own.
 
 ## 19. Operator controls on the loop (operator-recovery B2)
 
-The platform owner's controls (operator-recovery spec in buildd-admin, §7.2,
+The platform owner's controls (operator console operator-recovery spec, §7.2,
 §8 and §9; task `c5e732b0`) act on this loop. They add no state value, no
 writer and no notifier. The contract changes are additive (`v` stays 1).
 

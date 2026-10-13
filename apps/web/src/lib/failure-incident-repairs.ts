@@ -1,6 +1,6 @@
 /**
  * The repair allowlist `RepairKind` and its approved runbooks
- * (operator-recovery spec §9.2–§9.4, buildd-admin).
+ * (operator-recovery spec §9.2–§9.4, operator console).
  *
  * Each repair names the existing writer it runs, the precondition that must
  * hold on FRESH facts before it runs, and the verify predicate that decides,
@@ -16,7 +16,7 @@
  *
  * Pure, except `loadRepairFacts`, `dbCausePeers` and the writers at the bottom.
  */
-import type { FailureIncidentRule, FailureIncidentSeverity, FailureRecoveryRef } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, type FailureIncidentRule, type FailureIncidentSeverity, type FailureRecoveryRef } from '@buildd/shared';
 import { MAX_DELIVERY_ATTEMPTS } from '@buildd/dispatch-contract';
 import type { RecoveryRepairAction } from './failure-incident-recovery';
 import type { RepairKind } from './failure-incident-recovery-events';
@@ -98,7 +98,8 @@ export interface RepairSpec {
 
 const PENDING = 'pending';
 const LANDED_BLOCKER = new Set(['merged', 'closed', 'completed', 'cancelled', 'failed', 'released']);
-const DEAD_FIX = new Set(['failed', 'cancelled']);
+/** A fix task that ended without landing: terminal, but not completed. */
+const DEAD_FIX = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'completed'));
 /** stale-workers MAX_INFRA_RETRIES (pinned by the unit test; that module pulls the DB in). */
 export const MAX_INFRA_RETRIES = 3;
 

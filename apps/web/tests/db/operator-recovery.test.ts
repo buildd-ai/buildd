@@ -1,5 +1,5 @@
 /**
- * Operator recovery on real Postgres (buildd-admin operator-recovery spec §11:
+ * Operator recovery on real Postgres (operator-recovery spec §11:
  * F-1, F-2, F-3, F-5, F-6, F-10, F-12, F-13).
  *
  * The owner's action path is the production one: `handleOperatorRecoveryAction`

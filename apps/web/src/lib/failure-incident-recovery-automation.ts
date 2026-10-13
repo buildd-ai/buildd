@@ -1,6 +1,6 @@
 /**
  * Operator recovery automation: the kill switch, pause scopes and policy
- * (operator-recovery spec §8.3, §8.4, §9.5, buildd-admin).
+ * (operator-recovery spec §8.3, §8.4, §9.5, operator console).
  *
  * Stored in `system_cache`:
  *  - `operator-recovery:pause:platform`, `:pause:rule:<rule>`,

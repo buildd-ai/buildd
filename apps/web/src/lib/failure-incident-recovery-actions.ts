@@ -1,6 +1,6 @@
 /**
  * Recovery actions: one validator and one action service for every principal
- * (operator-recovery spec §7.2, §8.1, §8.2, buildd-admin; FIR §9).
+ * (operator-recovery spec §7.2, §8.1, §8.2, operator console; FIR §9).
  *
  *  - `parseAdminRecoveryAction`: the closed capability set `orq-cap-v1`, its
  *    closed params and the required reason. Anything else is a 400.
