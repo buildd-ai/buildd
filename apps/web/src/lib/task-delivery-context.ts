@@ -12,6 +12,7 @@ import type { ReviewFindings } from './task-checks';
 import { readableTaskResult } from './task-result';
 import { getDeliveryViewsForTasks } from './workflow/delivery-view';
 import type { DeliveryView } from './workflow/projections';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface TaskDeliveryContext {
   view: DeliveryView | null;
@@ -32,7 +33,7 @@ export async function loadTaskDeliveryContext(taskId: string): Promise<TaskDeliv
   let deliverableTitle: string | null = null;
   let findingsUnavailable = false;
   try {
-    const rows = await db.query.tasks.findMany({ where: inArray(tasks.id, ids), columns: { id: true, title: true, result: true, status: true } });
+    const rows = await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, ids)), columns: { id: true, title: true, result: true, status: true } });
     for (const r of rows) {
       if (r.id === view.ownerTaskId) deliverableTitle = r.title;
       if (!reviewerIds.includes(r.id)) continue;

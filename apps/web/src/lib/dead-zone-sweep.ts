@@ -48,6 +48,7 @@ import {
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Pure predicates ───────────────────────────────────────────────────────────
 
@@ -139,13 +140,13 @@ export interface DeadZoneSweepResult {
 export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSweepResult> {
   // Find workers with open PRs
   const candidates = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       workspaceId ? eq(workers.workspaceId, workspaceId) : undefined,
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
       sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged', 'unresolvable')`,
       isNotNull(workers.taskId),
-    ),
+    )),
     columns: {
       id: true,
       taskId: true,
@@ -203,7 +204,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
 
   for (const [wsId, wsWorkers] of byWorkspace) {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, wsId),
+      where: sqlWhere(eq(workspaces.id, wsId)),
       columns: { id: true, repo: true, name: true, gitConfig: true, webhookConfig: true, githubInstallationId: true, githubRepoId: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });
@@ -340,12 +341,12 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
 
         // Count conflict retry tasks for this PR (active and completed)
         const allRetries = await db.query.tasks.findMany({
-          where: and(
+          where: sqlWhere(and(
             eq(tasks.workspaceId, wsId),
             eq(tasks.conflictRetryPrNumber, worker.prNumber),
-          ),
+          )),
           columns: { id: true, status: true },
-          orderBy: [desc(tasks.createdAt)],
+          orderBy: sqlOrderBy([desc(tasks.createdAt)]),
         });
 
         const activeRetryCount = allRetries.filter((t) =>

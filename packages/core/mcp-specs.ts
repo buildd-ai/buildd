@@ -48,6 +48,18 @@ function apiError(err: unknown): { status: number; body: Record<string, unknown>
   }
 }
 
+type DuplicateCheckView =
+  | { ran: true; warnings: Array<{ specId: string; title: string; relation: string; p: number }> }
+  | { ran: false; reason: string };
+
+/** What the duplicate check found, for the create reply. Empty when it found nothing. */
+const duplicateText = (d: DuplicateCheckView | null): string => {
+  if (!d) return '';
+  if (!d.ran) return `\nDuplicate check did not run: ${d.reason}.`;
+  if (!d.warnings.length) return '';
+  return `\nOverlaps with approved specs (check the shared criteria; consider a common parent):\n${d.warnings.map((w) => `  ${w.title} (${w.specId}): ${w.relation}, p ${w.p.toFixed(2)}`).join('\n')}`;
+};
+
 const need = (v: unknown, name: string): string => {
   if (typeof v !== 'string' || !v.trim()) throw new Error(`${name} is required`);
   return v.trim();
@@ -67,7 +79,8 @@ export function outcomeText(o: Outcome): string {
   return [`Governed outcome: ${o.outcome.toUpperCase()} against spec revision ${o.revision}, head ${head}. ${o.reason}.`, ...rows].join('\n');
 }
 
-export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null): Promise<ToolResult> {
+export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null, appBase = 'https://buildd.dev'): Promise<ToolResult> {
+  const specUrl = (id: string) => `${appBase.replace(/\/+$/, '')}/app/specs/${encodeURIComponent(id)}`;
   const op = params.action as SpecOp;
   if (!op || !(SPEC_OPS as readonly string[]).includes(op)) throw new Error(`action must be one of: ${SPEC_OPS.join(', ')}`);
 
@@ -82,16 +95,18 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'create_draft': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId, title: need(params.title, 'title'), body: need(params.body, 'body (the spec text, Markdown)') };
-      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause'] as const) if (params[k] !== undefined) payload[k] = params[k];
       let spec;
+      let duplicateCheck: DuplicateCheckView | null = null;
+      let suggestedParent: { specId: string; title: string; reason: string } | null = null;
       try {
-        ({ spec } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
+        ({ spec, duplicateCheck, suggestedParent } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
       } catch (err) {
         const e = apiError(err);
-        if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        if (e?.status === 400 || e?.status === 502 || (e?.status === 409 && e.body?.code === 'spec_duplicate')) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
-      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}. A person approves it (submit / approve from their own session).`);
+      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}\nSpec URL: ${specUrl(spec.id)}\nA person approves it (submit / approve from their own session).${duplicateText(duplicateCheck)}${suggestedParent ? `\nSuggested parent: "${suggestedParent.title}" (${suggestedParent.specId}), ${suggestedParent.reason.charAt(0).toLowerCase()}${suggestedParent.reason.slice(1)}. Set it with manage_specs action=relate { specId, parentSpecId }.` : ''}`);
     }
 
     case 'get': {
@@ -108,9 +123,13 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         : `(${body.length} characters, not inlined. Read it in parts: get_artifact { artifactId: "${s.bodyArtifactId}", revision: ${view.revision.artifactRevision}, view: "outline" }, then view "section" or "grep".)`;
       return text([
         line(s).slice(2),
+        `Spec URL: ${specUrl(s.id)}`,
         `Showing revision ${view.revision.revision} (sha256 ${view.revision.contentHash}). Revise with expectedVersion ${s.version}.`,
         reqs.length ? `Requirement ids: ${reqs.join(', ')}` : 'Requirement ids: none',
         `Revisions:\n${history}`,
+        ...(view.revision.design
+          ? [`Design: ${view.revision.design.kind} ${view.revision.design.ref} at version ${view.revision.design.version}${view.revision.design.screens?.length ? ` (screens: ${view.revision.design.screens.map((x: { id: string }) => x.id).join(', ')})` : ''}${view.revision.design.kind === 'artifact' ? `; read it with get_artifact { artifactId: "${view.revision.design.ref}", revision: ${view.revision.design.version} }` : ''}`]
+          : []),
         ...(view.revision.repoRefs?.length
           ? [`Repo specs cited (read one with manage_specs action=read_ref { specId, path }):\n${(view.revision.repoRefs as Array<{ path: string; commitSha: string }>).map((r) => `  ${r.path} @ ${r.commitSha}`).join('\n')}`]
           : []),
@@ -128,11 +147,12 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       const payload: Record<string, unknown> = { expectedVersion: params.expectedVersion, ...target, body: target ? params.body : need(params.body, 'body') };
       if (params.changeSummary !== undefined) payload.changeSummary = params.changeSummary;
       if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
+      if (params.design !== undefined) payload.design = params.design;
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
-        if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.`);
+        if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
         const what = target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
-        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).`);
+        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}`);
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
@@ -154,11 +174,11 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}/${op}`, { method: 'POST', body: JSON.stringify(payload) });
         if (op === 'approve' && r.pending) {
-          return text(`Not approved yet: approving a spec is the person's own decision, so it waits for them to confirm it on buildd.dev.\nConfirm revision ${r.pending.revision} of "${r.spec.title}": ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.`);
+          return text(`Not approved yet: approving a spec is the person's own decision, so it waits for them to confirm it on buildd.dev.\nConfirm revision ${r.pending.revision} of "${r.spec.title}": ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
         }
         return text(op === 'approve'
-          ? `Approved: revision ${r.revision.revision} of "${r.spec.title}" is now in force (sha256 ${r.revision.contentHash}). Version ${r.spec.version}.`
-          : `Submitted: "${r.spec.title}" revision ${r.spec.headRevision} is in review. Version ${r.spec.version}.`);
+          ? `Approved: revision ${r.revision.revision} of "${r.spec.title}" is now in force (sha256 ${r.revision.contentHash}). Version ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`
+          : `Submitted: "${r.spec.title}" revision ${r.spec.headRevision} is in review. Version ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 403) return errorResult(String(e.body?.error ?? 'Only a person decides on a spec.'));
@@ -174,6 +194,13 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       try {
         const r = op === 'outcome'
           ? await api(path)
+          : params.checker === 'visual'
+          ? await api(path, { method: 'POST', body: JSON.stringify({
+            checker: 'visual', criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), capturedSha: need(params.capturedSha, 'capturedSha'),
+            ...(params.screenshotIds !== undefined ? { screenshotIds: params.screenshotIds } : {}),
+            ...(params.designShotIds !== undefined ? { designShotIds: params.designShotIds } : {}),
+            ...(params.observed !== undefined ? { observed: params.observed } : {}),
+          }) })
           : await api(path, { method: 'POST', body: JSON.stringify({
             criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), headSha: need(params.headSha, 'headSha'),
             ...(params.evidenceRefs !== undefined ? { evidenceRefs: params.evidenceRefs } : {}),

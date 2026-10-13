@@ -3,6 +3,7 @@ import {
   classifyPullRequestMigrations,
   getMigrationNumber,
   isGeneratedMigrationPath,
+  isLegacyMigrationPath,
   type MigrationCollision,
   type MigrationSafety,
   type OpenPullRequestMigration,
@@ -126,20 +127,28 @@ export async function inspectPullRequestMigrations(params: InspectParams): Promi
   return inspectOnce(params);
 }
 
-/** Numbered migration filenames in `dir` at `ref`; null when the listing can't be read. */
+/**
+ * What the drizzle dir holds at `ref`: legacy numbered files and drizzle v1
+ * migration folders. Null when the listing can't be read.
+ */
 async function migrationNamesAt(
   installationId: number,
   repoFullName: string,
   dir: string,
   ref: string,
-): Promise<string[] | null> {
+): Promise<{ legacy: string[]; v1Folders: string[] } | null> {
   try {
     const encodedDir = dir.split('/').map(encodeURIComponent).join('/');
     const data = await githubApi(installationId, `/repos/${repoFullName}/contents/${encodedDir}?ref=${encodeURIComponent(ref)}`);
     if (!Array.isArray(data)) return null;
-    return data
-      .map((entry: { name?: unknown }) => (typeof entry?.name === 'string' ? entry.name : ''))
-      .filter((name) => /^\d{4}_[^/]+\.sql$/.test(name));
+    const entries = data.map((entry: { name?: unknown; type?: unknown }) => ({
+      name: typeof entry?.name === 'string' ? entry.name : '',
+      type: typeof entry?.type === 'string' ? entry.type : '',
+    }));
+    return {
+      legacy: entries.map((e) => e.name).filter((name) => /^\d{4}_[^/]+\.sql$/.test(name)),
+      v1Folders: entries.filter((e) => e.type === 'dir' && /^\d{14}_[^/]+$/.test(e.name)).map((e) => e.name),
+    };
   } catch {
     return null;
   }
@@ -256,7 +265,7 @@ async function inspectOnce(params: {
       : Promise.resolve(undefined);
 
   // An integration refresh whose merge moved the mission's own migration to a
-  // free index past trunk's (`bun run migrations:renumber`) shows a deletion
+  // free index past trunk's (`bun run migrations:regenerate`, legacy layout only) shows a deletion
   // paired one to one with an addition holding the same bytes. That is a
   // renumber, the shape the review exemption skips (`renumberedMigrations`);
   // the moved SQL is still classified below. Spec db-migration-gates.md
@@ -287,9 +296,13 @@ async function inspectOnce(params: {
   // branch never saw). Either one is a renumber, not a decision; destructive
   // SQL in the same PR still wins (see the end of this function).
   const novel = allMigrationFiles.filter((file) => !removed.has(file.filename) && !inherited.has(file.filename));
-  const highestInherited = Math.max(-1, ...[...inherited].map(numberOf));
+  // Slots only exist in the legacy layout. A v1 migration is a timestamped
+  // folder two branches cannot both take, so it is never ordered against a
+  // slot; it goes through the SQL classifier alone.
+  const novelLegacy = novel.filter((file) => isLegacyMigrationPath(file.filename));
+  const highestInherited = Math.max(-1, ...[...inherited].filter(isLegacyMigrationPath).map(numberOf));
   let baseCollision: MigrationSafety | null = null;
-  const outOfOrder = novel.find((file) => numberOf(file.filename) <= highestInherited);
+  const outOfOrder = novelLegacy.find((file) => numberOf(file.filename) <= highestInherited);
   if (outOfOrder) {
     const highest = [...inherited].find((path) => numberOf(path) === highestInherited)!;
     baseCollision = behindBase(
@@ -297,14 +310,25 @@ async function inspectOnce(params: {
       basenameOf(highest),
       `migration ${outOfOrder.filename} is ordered before migrations already on the base`,
     );
-  } else if (baseSha && novel.length > 0) {
+  } else if (baseSha && novelLegacy.length > 0) {
     // An unreadable listing skips this check, as before it existed; the
     // journal conflict on merge stays the backstop.
-    const dir = novel[0].filename.split('/').slice(0, -1).join('/');
-    const names = await migrationNamesAt(params.installationId, params.repoFullName, dir, baseSha);
+    const dir = novelLegacy[0].filename.split('/').slice(0, -1).join('/');
+    const listing = await migrationNamesAt(params.installationId, params.repoFullName, dir, baseSha);
+    const names = listing?.legacy ?? null;
     const highestOnBase = Math.max(-1, ...(names ?? []).map(numberOf));
-    const behind = novel.find((file) => numberOf(file.filename) <= highestOnBase);
-    if (names && behind) {
+    const behind = novelLegacy.find((file) => numberOf(file.filename) <= highestOnBase);
+    if (listing && listing.v1Folders.length > 0) {
+      // A numbered file over a v1 base is never read there: its DDL would be
+      // silently skipped with the deploy green (the 0067 class). Fail closed;
+      // the repair is to regenerate with the base's own drizzle-kit.
+      const own = novelLegacy[0];
+      baseCollision = behindBase(
+        own.filename,
+        listing.v1Folders[listing.v1Folders.length - 1]!,
+        `legacy migration ${basenameOf(own.filename)} is in a repo whose base uses drizzle v1 migration folders, where a numbered file is never read: merge the base and run bun run migrations:regenerate`,
+      );
+    } else if (names && behind) {
       const taken = names.find((name) => numberOf(name) === numberOf(behind.filename))
         ?? names.find((name) => numberOf(name) === highestOnBase)!;
       baseCollision = behindBase(
@@ -376,5 +400,64 @@ async function inspectOnce(params: {
       .sort((a, b) => a.prNumber - b.prNumber)[0];
     if (ahead) baseCollision.collision.queuedBehind = ahead.prNumber;
   }
-  return baseCollision ?? verdict;
+  if (baseCollision || !verdict.safe) return baseCollision ?? verdict;
+  // Last: the verdict is otherwise safe, so the only thing left to prove is
+  // that the commute check CI ran still describes this base.
+  const novelV1 = novel.map((file) => file.filename).filter((name) => name.endsWith('/migration.sql'));
+  if (baseSha && novelV1.length > 0) {
+    const stale = await staleSnapshotParent(params, novelV1, baseSha);
+    if (stale) return stale;
+  }
+  return verdict;
+}
+
+/**
+ * The stale-parent rule (spec db-migration-gates.md). `drizzle-kit check` proves
+ * two snapshots commute only for the base a PR was tested against. If the PR's
+ * new snapshots name a parent that is no longer a leaf of the base, a sibling
+ * landed since, and the earlier green never saw it. Drizzle v1 only; a snapshot
+ * that cannot be read leaves the rule off (CI's commute check is the backstop).
+ */
+async function staleSnapshotParent(
+  params: { installationId: number; repoFullName: string; headSha: string },
+  novelV1: readonly string[],
+  baseSha: string,
+): Promise<MigrationSafety | null> {
+  const readSnapshot = async (path: string, ref: string) => {
+    try {
+      const parsed = JSON.parse((await readFileAtRef(params.installationId, params.repoFullName, path, ref)) ?? '');
+      return typeof parsed?.id === 'string' && Array.isArray(parsed.prevIds)
+        ? { id: parsed.id as string, prevIds: parsed.prevIds.filter((v: unknown): v is string => typeof v === 'string') }
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const dir = novelV1[0]!.split('/').slice(0, -2).join('/');
+  const own = await Promise.all(novelV1.map((p) => readSnapshot(p.replace(/migration\.sql$/, 'snapshot.json'), params.headSha)));
+  if (own.some((s) => !s)) return null;
+  const ownIds = new Set(own.map((s) => s!.id));
+  const parents = [...new Set(own.flatMap((s) => s!.prevIds).filter((id) => !ownIds.has(id)))];
+  if (parents.length === 0) return null;
+
+  const listing = await migrationNamesAt(params.installationId, params.repoFullName, dir, baseSha);
+  if (!listing) return null;
+  // The newest few base folders are enough to find the leaf: a chain's tip is its newest folder.
+  const recent = [...listing.v1Folders].sort().slice(-5);
+  const baseSnaps = (await Promise.all(recent.map((f) => readSnapshot(`${dir}/${f}/snapshot.json`, baseSha)))).filter(
+    (s): s is { id: string; prevIds: string[] } => !!s,
+  );
+  if (baseSnaps.length === 0) return null;
+  const referenced = new Set(baseSnaps.flatMap((s) => s.prevIds));
+  const leaves = new Set(baseSnaps.filter((s) => !referenced.has(s.id)).map((s) => s.id));
+  const stale = parents.filter((id) => !leaves.has(id));
+  if (stale.length === 0) return null;
+  return {
+    safe: false,
+    operationClass: 'CONTRACT',
+    kind: 'stale_parent',
+    reason:
+      `migration snapshot parent is no longer a leaf of the base: a migration landed since CI ran, so the earlier ` +
+      `green never tested the two together. CI must run again on a fresh base, needs rebase onto base branch`,
+  };
 }

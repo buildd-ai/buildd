@@ -71,6 +71,7 @@ import {
   type RepeatedChoiceResult,
   type TreeCandidateResult,
 } from './manifest-prediction';
+import { sqlWhere } from './db/relational-sql';
 
 const CAPABILITY = 'orchestration_manifest' as const;
 
@@ -198,14 +199,14 @@ export function createTreeCandidateAdapter(deps: TreeCandidateAdapterDeps): Tree
 const SERVER_TREE_CACHE = new Map<string, readonly string[]>();
 
 async function resolveServerRepo(workspaceId: string, signal?: AbortSignal): Promise<TreeRepoAccess | null> {
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)) });
   if (!workspace?.githubInstallationId) return null;
   let repo = workspace.repo ?? null;
   if (workspace.githubRepoId) {
-    const linked = await db.query.githubRepos.findFirst({ where: eq(githubRepos.id, workspace.githubRepoId) });
+    const linked = await db.query.githubRepos.findFirst({ where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)) });
     repo = linked?.fullName ?? repo;
   }
-  const installation = await db.query.githubInstallations.findFirst({ where: eq(githubInstallations.id, workspace.githubInstallationId) });
+  const installation = await db.query.githubInstallations.findFirst({ where: sqlWhere(eq(githubInstallations.id, workspace.githubInstallationId)) });
   if (!repo || !installation) return null;
   const token = await getInstallationToken(installation.installationId);
   return {

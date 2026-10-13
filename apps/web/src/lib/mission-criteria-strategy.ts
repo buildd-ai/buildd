@@ -3,6 +3,7 @@ import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import type { CriteriaGrader } from '@buildd/shared';
 import { asCriteriaGrader } from './mission-criteria-grader';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Prose criterion grader ────────────────────────────────────────────────────
 
@@ -17,7 +18,7 @@ import { asCriteriaGrader } from './mission-criteria-grader';
 export async function resolveWorkspaceCriteriaGrader(workspaceId?: string | null): Promise<CriteriaGrader | null> {
   if (!workspaceId) return null;
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { gitConfig: true },
   });
   return asCriteriaGrader((ws?.gitConfig as Record<string, unknown> | null | undefined)?.criteriaGrader);

@@ -9,6 +9,19 @@ surfaces: [packages/core/decision-model.ts, packages/core/decision-client.ts, pa
 related: [decision-kinds, orchestration-decisions-shadow, settings-models]
 keywords: [decision model, jev, clef, clef flash, threshold, calibration, top p, margin, wilson, comparison, replay, outcome, override, champion, challenger, optimizer, undo, signal collection]
 verified_by: []
+assertions:
+  - id: decision-model-lookup
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: decisionModelFor
+    path: packages/core/decision-model.ts
+  - id: decision-model-normalize
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: normalizeDecisionModel
+    path: packages/core/decision-model.ts
 ---
 
 # Decision Model Selection
@@ -62,6 +75,22 @@ and what has to be collected so the choice can be made on evidence.
 - **Data stays where the team allows.** A team's collected decisions are
   replayed to a model provider only if the team opted in to that provider
   receiving them.
+- **One bad set never sinks a run.** A labelled set that cannot load (an
+  unknown prompt id, a missing template variable) is skipped with its reason,
+  and the run completes on the rest. The result lists every set as ran or
+  skipped, so a missing set is never read as a missing difference.
+- **Synthetic sets are marked.** A threshold derived only from synthetic cases
+  is stored as synthetic and is derived again once collected cases for that
+  kind reach the minimum. A synthetic result never retires a measurement from
+  collected cases.
+- **Weighed by how often a kind fires.** Every comparison reports each kind's
+  recent volume and the share of it the current model acted on, so a gain is
+  read as decisions changed per day, not only as accuracy. The same pair
+  ranks where collection work goes first: high volume and a low graded share.
+- **Switching never goes silent.** When a person picks a default model, the
+  live kinds it has no measurement for are named where they pick it, in one
+  line ("Start or wait will follow the rule until this model is measured").
+  Picking a model never quietly turns live kinds into recording-only ones.
 
 ## Collecting signal
 
@@ -87,6 +116,25 @@ contract:
 - **Coverage is visible.** Feature health reports, per kind, how much is being
   collected (replay copies, graded decisions) before any accuracy figure, and a
   kind collecting nothing says so in words.
+- **A kind that never reaches a model is a defect, not a quiet kind.** If a
+  kind falls back before asking (for example role pick finding too few
+  candidates while the workspace has enough roles that say when to use them),
+  that fallback is counted apart from the rule's own decisions and raised.
+
+Where each kind's grade comes from. A kind with no source here records only
+until it gets one:
+
+| Kind | Outcome grade | Person's correction | Silent branch |
+|---|---|---|---|
+| Start or wait (`orchestration_claim`) | `labelDecisionOutcomes` | starting a held task | sample of starts with no overlap evidence |
+| Creation manifest (`orchestration_manifest`) | declared paths vs paths the task touched | editing the manifest | none |
+| Merge ordering (`orchestration_ordering`) | conflicts and refreshes after the chosen order | reordering | none |
+| Post-session triage | the analysis produced a finding that was acted on | a person asking for the analysis | sample of skipped sessions, analysed anyway |
+| Task verdict | merged PR vs reopened, reverted or corrected result | `correct_task_result` | none |
+| Strand choice | the chosen strand's task finished vs failed or was abandoned | a person moving the task | none |
+| Role pick (`task_role`) | the role's task finished without a role change | changing the role | none |
+| Task category | type of the merged PR's conventional title | changing the category | none |
+| Question and escalation gates | the question was answered vs dismissed or answered with the default | a person overriding the gate | sample of questions the gate let through |
 
 ## What the team sees
 
@@ -101,6 +149,20 @@ Flows, not explanations:
 Scores, thresholds, calibration and comparison runs, which span teams and
 models, are operator data and are not part of the team product.
 
+## When this lands, the older specs change
+
+Until then they describe the code as it is:
+
+- `orchestration-decisions-shadow`: hold/start applies a confident START from
+  any model with a stored threshold for that kind, not only from Jev
+  (`isJevModel`), and the threshold is the stored one, not
+  `CLAIM_HOLD_MIN_CONFIDENCE`.
+- `decision-kinds`: the measured-model check in a kind's apply step reads stored
+  measurements instead of a model list in code (`measuredModels`), and a
+  binding's threshold is a default that a stored measurement replaces.
+  `shadow` stays only as a rollback setting, never the state a new model starts
+  in.
+
 ## Acceptance criteria
 
 - AC-1: GIVEN a per-kind model and a different team default WHEN that kind is decided THEN the per-kind model is asked.
@@ -111,6 +173,11 @@ models, are operator data and are not part of the team product.
 - AC-6: GIVEN a switch the person undid WHEN the next scheduled comparison prefers the same challenger THEN the model is not switched while the pin holds.
 - AC-7: GIVEN a held task a person then starts anyway WHEN outcomes are read THEN the hold decision carries a human label marking it wrong.
 - AC-8: GIVEN a decision whose evidence window has not closed WHEN it is graded THEN it is unknown and is not counted as right or wrong.
+- AC-9: GIVEN a comparison over three labelled sets where one has an unknown prompt id WHEN it runs THEN it completes on the other two and lists the third as skipped with that reason.
+- AC-10: GIVEN a team switching its default to a model with no measurement for a live kind WHEN the person picks it THEN that kind is named as following the rule until measured.
+- AC-11: GIVEN post-session triage skipping a session WHEN that session falls in the sample THEN it is analysed anyway and the skip decision is graded from the result.
+- AC-12: GIVEN a workspace with at least two roles that say when to use them WHEN role pick falls back for too few candidates THEN the fallback is counted as a defect, not as a rule decision.
+- AC-13: GIVEN a threshold stored from synthetic cases only WHEN collected cases for that kind reach the minimum THEN the threshold is derived again from them.
 
 ## Out of scope
 

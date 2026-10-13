@@ -9,6 +9,7 @@ import { missions, missionNotes } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -46,7 +47,7 @@ export async function POST(
 
     // Verify mission exists and belongs to user's team (or open-access workspace)
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       columns: { id: true, teamId: true, workspaceId: true, orchestrationMode: true },
     });
 

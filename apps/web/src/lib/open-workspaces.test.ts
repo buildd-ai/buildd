@@ -4,7 +4,7 @@
  * would say nothing about what the WHERE asked for.
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 
 const mockWorkspacesFindMany = mock(async (_args: any) => [] as any[]);
 const mockWorkspacesFindFirst = mock(async (_args: any) => null as any);
@@ -21,7 +21,7 @@ mock.module('@buildd/core/db', () => ({
 
 const { openInTeams, listOpenWorkspaces, isOpenWithinTeams, workspaceOpenToCaller } = await import('./open-workspaces');
 
-const render = (w: any) => new PgDialect().sqlToQuery(w);
+const render = (w: any) => new GroupingNormalisedPgDialect().sqlToQuery(w);
 
 describe('openInTeams', () => {
   it('carries both the open mode and the owning-team clause', () => {

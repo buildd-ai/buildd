@@ -43,6 +43,7 @@ import {
 } from '@buildd/core/memory-retrieval';
 import type { DecisionReceipt } from '@builddai/ai-kit/decide';
 import { isStandardWorkspace } from './workspace-data-class';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type Schedule = (task: () => Promise<unknown>) => void;
 
@@ -183,7 +184,7 @@ const dbRelevanceShadowDeps: RelevanceShadowDeps = {
     const { db } = await import('@buildd/core/db');
     const { workspaces } = await import('@buildd/core/db/schema');
     const { eq } = await import('drizzle-orm');
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { dataClass: true, gitConfig: true } });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { dataClass: true, gitConfig: true } });
     return ws ? { dataClass: ws.dataClass, gitConfig: ws.gitConfig as { dataClass?: string } | null } : null;
   },
   async taskInWorkspace(taskId, workspaceId) {

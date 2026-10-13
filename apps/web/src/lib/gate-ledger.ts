@@ -21,6 +21,7 @@ import {
   type GateCallerOrigin,
   type RecordGateEventInput,
 } from '@buildd/core/gate-events';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export { GATE_SLUGS, gateFrictionSignature };
 export type { GateCallerOrigin };
@@ -141,7 +142,7 @@ export function fireGateEventForWorkspaceRef(
  */
 async function resolveWorkspaceIdForGate(ref: string): Promise<string | null> {
   const row = await db.query.workspaces.findFirst({
-    where: or(eq(workspaces.name, ref), eq(workspaces.repo, ref)),
+    where: sqlWhere(or(eq(workspaces.name, ref), eq(workspaces.repo, ref))),
     columns: { id: true },
   });
   return row?.id ?? null;

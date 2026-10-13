@@ -2,6 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import {
   REVERT_WINDOW_MS,
   diffChanges,
+  isDrizzleMetaFile,
+  isMigrationSql,
   isRefreshCommitMessage,
   labelMergeReadinessOutcome,
   normalizePatch,
@@ -205,5 +207,20 @@ describe('revertOutcome', () => {
     const now = new Date(mergedAt.getTime() + REVERT_WINDOW_MS + 1);
     expect(revertOutcome({ mergedAt, revertedAt: null, now })).toBe('not_reverted');
     expect(revertOutcome({ mergedAt, revertedAt: new Date(mergedAt.getTime() + 9 * day), now: new Date(mergedAt.getTime() + 10 * day) })).toBe('not_reverted');
+  });
+});
+
+describe('drizzle v1 folder paths', () => {
+  const dir = 'packages/core/drizzle/20261012120000_add_busy_since/';
+  it('a folder snapshot is a generated meta file that drops out of the diff; its migration.sql is migration SQL', () => {
+    expect(isDrizzleMetaFile(`${dir}snapshot.json`)).toBe(true);
+    expect(isDrizzleMetaFile(`${dir}migration.sql`)).toBe(false);
+    expect(isMigrationSql(`${dir}migration.sql`)).toBe(true);
+    expect(isMigrationSql(`${dir}snapshot.json`)).toBe(false);
+  });
+  it('the legacy shapes still match', () => {
+    expect(isDrizzleMetaFile('packages/core/drizzle/meta/_journal.json')).toBe(true);
+    expect(isDrizzleMetaFile('packages/core/drizzle/meta/0290_snapshot.json')).toBe(true);
+    expect(isMigrationSql('packages/core/drizzle/0290_fat_hemingway.sql')).toBe(true);
   });
 });

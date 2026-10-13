@@ -69,6 +69,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 import { POST } from './route';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const mockParams = Promise.resolve({ id: WORKER });
 
@@ -291,7 +292,7 @@ describe('POST /api/workers/[id]/evidence-upload-url', () => {
     await POST(req(ok), { params: mockParams });
     expect(mockWorkersFindFirst).toHaveBeenCalledTimes(1);
     const arg = (mockWorkersFindFirst.mock.calls[0] as any[])[0];
-    expect(arg.where).toEqual({ field: 'workers.id', value: WORKER, type: 'eq' });
+    expect(capturedWhere(arg.where)).toEqual({ field: 'workers.id', value: WORKER, type: 'eq' });
     expect(arg.with?.workspace).toBeDefined();
   });
 

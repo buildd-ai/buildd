@@ -28,6 +28,7 @@ import { hasCodexCredential } from './codex-credential';
 import { hasOpenAiApiKey } from './openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { effectiveBudgetResetAt, isBudgetExhausted } from './budget-errors';
+import { sqlOrderBy, sqlWhere, sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 export type PauseReason = 'budget' | 'auth';
 
@@ -113,8 +114,8 @@ export async function getActiveBackendPauses(scope: BackendScope): Promise<Map<A
   if (scope.teamId) {
     try {
       const rows = await db.query.backendPauses.findMany({
-        where: and(eq(backendPauses.teamId, scope.teamId), gt(backendPauses.resetsAt, now)),
-        orderBy: [desc(backendPauses.resetsAt)],
+        where: sqlWhere(and(eq(backendPauses.teamId, scope.teamId), gt(backendPauses.resetsAt, now))),
+        orderBy: sqlOrderBy([desc(backendPauses.resetsAt)]),
         columns: { backend: true, resetsAt: true, reason: true },
       });
       for (const row of rows) {
@@ -143,7 +144,7 @@ async function legacyClaudePauseResetsAt(scope: BackendScope, now: Date): Promis
   try {
     if (scope.tenantId && scope.teamId) {
       const row = await db.query.tenantBudgets.findFirst({
-        where: and(eq(tenantBudgets.tenantId, scope.tenantId), eq(tenantBudgets.teamId, scope.teamId)),
+        where: sqlWhere(and(eq(tenantBudgets.tenantId, scope.tenantId), eq(tenantBudgets.teamId, scope.teamId))),
         columns: { budgetResetsAt: true },
       });
       if (row?.budgetResetsAt && new Date(row.budgetResetsAt) > now) return new Date(row.budgetResetsAt);
@@ -151,7 +152,7 @@ async function legacyClaudePauseResetsAt(scope: BackendScope, now: Date): Promis
     }
     if (scope.accountId) {
       const row = await db.query.accounts.findFirst({
-        where: eq(accounts.id, scope.accountId),
+        where: sqlWhere(eq(accounts.id, scope.accountId)),
         columns: { budgetExhaustedAt: true, budgetResetsAt: true },
       });
       if (row?.budgetExhaustedAt && isBudgetExhausted(row.budgetExhaustedAt, row.budgetResetsAt, now)) {
@@ -246,7 +247,7 @@ export async function teamEnabledBackends(teamId?: string | null): Promise<Agent
   if (!teamId) return null;
   try {
     const team = await db.query.teams.findFirst({
-      where: (t, { eq: teq }) => teq(t.id, teamId),
+      where: { RAW: sqlWhereFn((t, { eq: teq }) => teq(t.id, teamId)) },
       columns: { enabledBackends: true },
     });
     const enabled = (team as { enabledBackends?: AgentBackend[] | null } | undefined)?.enabledBackends;

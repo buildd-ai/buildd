@@ -2,7 +2,7 @@
 title: MCP Action Contracts
 status: active
 owner: max
-last_verified: 2026-10-08
+last_verified: 2026-10-12
 summary: /api/mcp MUST serve the buildd_<group> action tools (legacy buildd only to runners predating them), recall and learn over stateless Streamable HTTP, Bearer-authenticate every call and gate actions by privilege.
 domain: mcp
 surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/app/api/github/pr/review/route.ts, apps/web/src/lib/pr-review-status.ts]
@@ -200,6 +200,7 @@ the result as plain text.
 - `workspaceId` accepts a UUID, a short repo name, or `owner/repo`.
 - `create_task.missionId` is auto-inherited from the calling worker's task when
   not explicitly provided.
+- `update_task.reserve` (boolean, sent on its own), `claim_task.waitSeconds` (0-45, needs `taskId`) and `create_task.claim` (boolean) are the session reservation surface; their contract is `local-agent-presence` → Reserving a waiting task. Each is rejected, never dropped, when malformed.
 - `register_skill` with `filePath` or `repo` params MUST return `isError: true`
   (no filesystem access in remote MCP).
 

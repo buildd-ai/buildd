@@ -19,6 +19,7 @@
 import { providerRejectionText } from '@buildd/core/decision-probe';
 import type { WaitingOnYouRawItem } from './action-queue';
 import { isPlatformOperatorCaller } from './admin/platform-operator-caller';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const DECISION_HEALTH_WINDOW_MS = 30 * 60 * 1000;
 export const DECISION_HEALTH_FAILING_SHARE = 0.9;
@@ -112,7 +113,7 @@ async function dbReadDecisionModel(teamId: string): Promise<unknown> {
   const [{ db }, { teams }, { eq }] = await Promise.all([
     import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm'),
   ]);
-  const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { decisionModel: true } });
+  const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { decisionModel: true } });
   return row?.decisionModel ?? null;
 }
 

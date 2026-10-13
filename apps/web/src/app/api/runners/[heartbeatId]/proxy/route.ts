@@ -5,6 +5,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ALLOWED_PATHS = ['doctor', 'history/stats', 'debug/claims'] as const;
 type AllowedPath = typeof ALLOWED_PATHS[number];
@@ -69,7 +70,7 @@ export async function GET(
   }
 
   const hb = await db.query.workerHeartbeats.findFirst({
-    where: eq(workerHeartbeats.id, heartbeatId),
+    where: sqlWhere(eq(workerHeartbeats.id, heartbeatId)),
     with: { account: { columns: { teamId: true } } },
   });
   if (!hb) return NextResponse.json({ error: 'Runner not found' }, { status: 404 });

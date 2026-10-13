@@ -248,7 +248,11 @@ export type EntityKind =
   | 'component'
   /** A Living Spec (key: spec id) and one of its revisions (key: `<specId>@<revision>`). */
   | 'spec'
-  | 'spec_revision';
+  | 'spec_revision'
+  /** One criterion (R-n / AC-n) of an approved revision (key: `<specId>@<revision>#<id>`). */
+  | 'spec_criterion'
+  /** A stored artifact, such as a spec's design (key: artifact id). */
+  | 'artifact';
 
 export interface EntityRef {
   kind: EntityKind;

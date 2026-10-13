@@ -21,6 +21,7 @@ import type { EffectHandler, EffectHandlers } from './effects';
 import { loadView, type Exec } from './kernel';
 import { prUrlOf } from './pr-fact-effects';
 import type { DeliverySnapshot } from './types';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -69,7 +70,7 @@ export const projectSupersession: EffectHandler = async (e) => {
 export const wakeMissionOnResolution: EffectHandler = async (e) => {
   const d = (await loadView({ deliveryId: e.deliveryId }, dbExec)).delivery;
   if (!d) return { outcome: 'skipped:no_delivery' };
-  const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId), columns: { missionId: true } });
+  const owner = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, d.ownerTaskId)), columns: { missionId: true } });
   if (!owner?.missionId) return { outcome: 'skipped:no_mission' };
   const { wakeMission } = await import('@/lib/mission-wake');
   const r = await wakeMission(owner.missionId, 'pr_resolved');
@@ -82,9 +83,9 @@ export const scanSupersession: EffectHandler = async (e) => {
   // Reopened, or already resolved by a person or an earlier scan: nothing to find.
   if (d.state !== 'CLOSED_UNMERGED') return { outcome: `skipped:state_${d.state}` };
   const w = await db.query.workers.findFirst({
-    where: prRows(d),
+    where: sqlWhere(prRows(d)),
     columns: { id: true },
-    orderBy: [desc(workers.createdAt)],
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
   if (!w) return { outcome: 'skipped:no_worker' };
   const { detectPrSupersession } = await import('@/lib/pr-supersession-detect');

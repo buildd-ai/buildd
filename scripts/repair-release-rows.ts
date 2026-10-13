@@ -122,7 +122,8 @@ async function main() {
   const { drizzle } = await import('drizzle-orm/neon-http');
   const { and, eq, or, like } = await import('drizzle-orm');
   const schema = await import('../packages/core/db/schema');
-  const db = drizzle(neon(DATABASE_URL), { schema });
+  const { relations } = await import('../packages/core/db/relations');
+  const db = drizzle({ client: neon(DATABASE_URL), relations });
   const { releases, workspaces, githubRepos } = schema;
 
   const rows = await db

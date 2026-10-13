@@ -1,5 +1,6 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { PgDialect, QueryBuilder } from 'drizzle-orm/pg-core';
+import { QueryBuilder } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 
 /**
  * The experiments predicates, rendered to SQL. The route tests mock this whole
@@ -16,7 +17,7 @@ mock.module('@buildd/core/model-routing-experiment-source', () => ({
 
 const store = await import('./experiments-store');
 
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 function render(fragment: any): { sql: string; params: unknown[] } {
   const q = dialect.sqlToQuery(fragment);
   return { sql: q.sql.replace(/\s+/g, ' ').trim().toLowerCase(), params: q.params };

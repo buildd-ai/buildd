@@ -4,6 +4,7 @@ import { eq, and } from 'drizzle-orm';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,7 +27,7 @@ export default async function WorkspaceSkillRedirect({
   if (!access) notFound();
 
   const skill = await db.query.workspaceSkills.findFirst({
-    where: and(eq(workspaceSkills.id, skillId), eq(workspaceSkills.workspaceId, id)),
+    where: sqlWhere(and(eq(workspaceSkills.id, skillId), eq(workspaceSkills.workspaceId, id))),
     columns: { slug: true },
   });
   if (skill) redirect(`/app/settings/agents/${encodeURIComponent(skill.slug)}`);

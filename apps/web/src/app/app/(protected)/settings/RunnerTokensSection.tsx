@@ -10,6 +10,8 @@ import ApiKeyModal from '@/components/ApiKeyModal';
 import SettingsSection from './SettingsSection';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import { StatusChip } from './_components/ConnectionRow';
+import { unlinkedTokensChip } from './_lib/unlinked-tokens';
+import { accountReachesWorkspace } from '@/lib/workspace-reach';
 import { groupRunnerTokens } from './_lib/runner-token-groups';
 import { shortAgo } from '@/lib/mission-list-card';
 import HostRunnerToggle from './HostRunnerToggle';
@@ -33,6 +35,7 @@ interface Account {
   budgetExhaustedAt: string | Date | null;
   budgetResetsAt: string | Date | null;
   team: { name: string } | null;
+  teamId?: string;
   accountWorkspaces?: { workspaceId: string }[];
   createdAt?: string | Date | null;
   /** Latest runner heartbeat on this token, ISO; absent when not seen recently. */
@@ -62,6 +65,8 @@ interface Workspace {
   id: string;
   name: string;
   repo: string | null;
+  teamId?: string;
+  accessMode?: string | null;
 }
 
 /** Where a new runner token is made: a sheet over Runners. */
@@ -136,6 +141,12 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
             const teamOpen = openTeams.has(group.team);
             const seen = seenLabel(group.lastSeenAt);
             const unlinked = group.tokens.filter((a) => a.accountWorkspaces && a.accountWorkspaces.length === 0).length;
+            // A token with no link still reaches its own team's open workspaces.
+            const groupTeamId = group.tokens[0]?.teamId;
+            const openWorkspaces = groupTeamId
+              ? workspaces.filter((w) => w.teamId && accountReachesWorkspace({ teamId: groupTeamId }, { teamId: w.teamId, accessMode: w.accessMode }, null)).length
+              : 0;
+            const chip = unlinkedTokensChip(unlinked, openWorkspaces);
             return (
               <div key={group.team} data-testid="token-group" data-open={teamOpen ? 'true' : 'false'}>
                 <button
@@ -146,7 +157,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                       <span className="text-sm font-semibold text-text-primary truncate">{group.team}</span>
-                      {unlinked > 0 && <StatusChip tone="warn">{unlinked} unlinked</StatusChip>}
+                      {chip && <StatusChip tone={chip.tone}>{chip.label}</StatusChip>}
                     </span>
                     <span className="mt-1 block truncate text-meta text-text-muted">
                       <span className="font-mono">{group.tokens.length}</span> token{group.tokens.length === 1 ? '' : 's'}{seen ? ` · ${seen}` : ''}
@@ -158,7 +169,8 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                   <div className="divide-y divide-border-default border-t border-border-default">
                     {group.tokens.map((account) => {
                       const isExpanded = expandedId === account.id;
-                      const hasWarning = account.accountWorkspaces && account.accountWorkspaces.length === 0;
+                      // Warn only when the token reaches nothing: no link and no open workspace.
+                      const hasWarning = account.accountWorkspaces && account.accountWorkspaces.length === 0 && chip?.tone === 'warn';
                       const canAdmin = account.canManageHostRunner === true;
                       const canDelete = (account.canDelete ?? canAdmin) === true;
 

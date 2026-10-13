@@ -41,6 +41,7 @@ import { prWorkerWhere } from './pr-worker-where';
 import { acquireLane, laneOutcome, resolveLandingLaneMode, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME } from './landing-lane';
 import type { DeliverySnapshot, AttemptSnapshot } from './types';
 import type { LivePr } from './commands';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 type Api = (installationId: number, path: string, init?: RequestInit) => Promise<unknown>;
@@ -58,9 +59,9 @@ const api = (): Api => deps.api ?? (githubApi as Api);
 
 async function prWorker(workspaceId: string, repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: prWorkerWhere(workspaceId, repoFullName, prNumber),
+    where: sqlWhere(prWorkerWhere(workspaceId, repoFullName, prNumber)),
     columns: { id: true, branch: true, prNumber: true },
-    orderBy: [desc(workers.createdAt)],
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
 }
 
@@ -147,7 +148,7 @@ const refreshBranch: EffectHandler = async (e) => {
     const view = await loadView({ deliveryId: e.deliveryId }, dbExec);
     const d = view.delivery;
     if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
-    const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId), columns: { context: true } });
+    const owner = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, d.ownerTaskId)), columns: { context: true } });
     if (isDependencyBotPrContext(owner?.context)) return { outcome: 'skipped:dependency_bot' };
     // Pinned to the head T26 judged stale; a head that moved since has its own facts.
     const head = String(e.payload.headSha ?? '');
@@ -164,7 +165,7 @@ const refreshBranch: EffectHandler = async (e) => {
   }
   const b = await boundAttempt(e, source);
   if ('outcome' in b) return b;
-  const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, b.d.ownerTaskId), columns: { id: true, missionId: true, context: true } });
+  const owner = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, b.d.ownerTaskId)), columns: { id: true, missionId: true, context: true } });
   // A dependency bot owns its branch: the platform never pushes to it (S27). A landing door reaches
   // here through T16 without the conflict doors' own check; no agent may push either, so a person lands it.
   if (isDependencyBotPrContext(owner?.context)) return mechanicalFailed(b, source, 'dependency_bot_pr: the platform does not push to a dependency bot\'s branch');
@@ -375,8 +376,8 @@ const dispatchConflictFix: EffectHandler = async (e) => {
   if (!owed.owed) return notNeeded(b, source, owed.reason ?? 'conflict_resolved');
 
   const [owner, workspace, prw] = await Promise.all([
-    db.query.tasks.findFirst({ where: eq(tasks.id, b.d.ownerTaskId) }),
-    db.query.workspaces.findFirst({ where: eq(workspaces.id, b.d.workspaceId) }),
+    db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, b.d.ownerTaskId)) }),
+    db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, b.d.workspaceId)) }),
     prWorker(b.d.workspaceId, b.d.repoFullName!, b.d.prNumber!),
   ]);
   if (!owner || !workspace || !prw?.branch) return { outcome: 'skipped:missing_context' };
@@ -430,7 +431,7 @@ const dispatchConflictFix: EffectHandler = async (e) => {
     deliveryRole: 'conflict_fix',
   } as never).onConflictDoNothing().returning();
   if (!row) {
-    const existing = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { id: true } });
+    const existing = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true } });
     if (!existing) throw new Error('conflict fix task not filed: another conflict retry still holds this PR head');
   }
   await dbExec(sql`-- workflow:link_attempt_task

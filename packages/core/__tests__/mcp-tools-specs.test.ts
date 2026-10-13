@@ -33,6 +33,29 @@ describe('manage_specs', () => {
     expect(r).toContain('Version: 1');
   });
 
+  it('create_draft and get return the spec page URL, from appBaseUrl when set and buildd.dev otherwise', async () => {
+    const run = async (action: string, c: ActionContext) => {
+      api.mockResolvedValueOnce(action === 'get'
+        ? { spec, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body: 'x', requirements: [], revisions: [] }
+        : { spec: { ...spec, version: 1 } });
+      return out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action, specId: SPEC, title: 'Checkout', body: 'R-1: x' }, c));
+    };
+    for (const action of ['create_draft', 'get']) {
+      expect(await run(action, ctx())).toContain(`Spec URL: https://buildd.dev/app/specs/${SPEC}`);
+      expect(await run(action, ctx({ appBaseUrl: 'https://app.example.test/' }))).toContain(`Spec URL: https://app.example.test/app/specs/${SPEC}`);
+    }
+  });
+
+  it('revise, submit and approve also return the spec page URL', async () => {
+    const url = `Spec URL: https://buildd.dev/app/specs/${SPEC}`;
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, body: 'n' }, ctx()))).toContain(url);
+    api.mockResolvedValueOnce({ spec, revision: { revision: 2 } });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'submit', specId: SPEC, expectedVersion: 2 }, ctx()))).toContain(url);
+    api.mockResolvedValueOnce({ spec, revision: { revision: 2, contentHash: 'abc' } });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, expectedVersion: 2, revision: 2 }, ctx()))).toContain(url);
+  });
+
   it('get inlines a short body with its requirement ids and history', async () => {
     api.mockResolvedValueOnce({ spec, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body: '# Checkout\nR-1: x', requirements: [{ id: 'R-1' }], revisions: [{ revision: 2, authorKind: 'agent', changeSummary: 'tighten' }, { revision: 1, authorKind: 'user' }] });
     const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'get', specId: SPEC, revision: 2 }, ctx()));
@@ -159,6 +182,26 @@ describe('manage_specs', () => {
     expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/outcomes/${TASK}`, 'POST', { criterionId: 'R-1', verdict: 'fail', headSha: HEAD, evidenceRefs: [{ kind: 'file', ref: 'a.ts:3' }] }]);
     expect(rec).toContain('Recorded fail on R-1');
     expect(rec).toContain('Governed outcome: FAIL');
+  });
+
+  it('create_draft passes the duplicate override and shows overlaps, a check that did not run, and a suggested parent', async () => {
+    api.mockResolvedValueOnce({ spec: { id: SPEC, title: 'Basket', version: 1, status: 'draft' }, duplicateCheck: { ran: true, warnings: [{ specId: 'cart-id', title: 'Cart', relation: 'overlap', p: 0.82 }] }, suggestedParent: { specId: 'shop-id', title: 'Shop', reason: 'Closest product by what it asks for' } });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'Basket', body: 'x', distinctBecause: 'B2B quotes, not the cart' }, ctx()));
+    expect(JSON.parse(api.mock.calls[0][1].body)).toMatchObject({ distinctBecause: 'B2B quotes, not the cart' });
+    expect(r).toContain('Cart (cart-id): overlap, p 0.82');
+    expect(r).toContain('Suggested parent: "Shop" (shop-id), closest product by what it asks for.');
+    api.mockResolvedValueOnce({ spec: { id: SPEC, title: 'B', version: 1, status: 'draft' }, duplicateCheck: { ran: false, reason: 'this team has no decision-model key' }, suggestedParent: null });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'B', body: 'x' }, ctx()))).toContain('Duplicate check did not run: this team has no decision-model key.');
+    api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"This spec looks like a duplicate of \\"Cart\\"","code":"spec_duplicate"}'));
+    const refused: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'C', body: 'x' }, ctx());
+    expect(refused.isError).toBe(true);
+  });
+
+  it('a visual verdict sends what the audit captured instead of a head', async () => {
+    api.mockResolvedValueOnce(outcome('unverified', 'AC-1 has no verdict'));
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', taskId: TASK, checker: 'visual', criterionId: 'AC-1', verdict: 'pass', capturedSha: HEAD, screenshotIds: ['s-1'], headSha: 'ignored' }, ctx());
+    const [endpoint, opts] = api.mock.calls[0];
+    expect([endpoint, JSON.parse(opts.body)]).toEqual([`/api/specs/outcomes/${TASK}`, { checker: 'visual', criterionId: 'AC-1', verdict: 'pass', capturedSha: HEAD, screenshotIds: ['s-1'] }]);
   });
 
   it('a refused verdict (a task grading itself) comes back as the route\'s error', async () => {

@@ -17,10 +17,15 @@ export type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'cred
  */
 export type TeamAlertEvent = NotifyEvent | 'needsAttention';
 
-/** Defaults match the previous always-on behaviour, but every event is now muteable. */
+/**
+ * Push what needs a person; routine per-task events are opt-in. Claimed and
+ * completed fire once per task each, which at fleet volume exhausted a team's
+ * whole monthly Pushover quota and left no room for the alerts that matter.
+ * The dashboard already shows them. Every event stays muteable.
+ */
 export const DEFAULT_NOTIFICATION_PREFERENCES: Record<NotifyEvent, boolean> = {
-  taskClaimed: true,
-  taskCompleted: true,
+  taskClaimed: false,
+  taskCompleted: false,
   taskFailed: true,
   credentialExpired: true,
   connectorBlocked: true,

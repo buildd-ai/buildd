@@ -2,13 +2,13 @@
 title: Local Agent Presence
 status: active
 owner: max
-last_verified: 2026-10-09
+last_verified: 2026-10-12
 summary: A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 domain: runners
 surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local-sessions/route.ts, packages/shared/src/local-session.ts, apps/runner/plugin/scripts/buildd-hook.mjs]
 related: [runner-liveness, mission-task-lifecycle]
 keywords: [receive_messages, turn boundary nudge, local_sessions, presence_tokens, presence token, bldp_, interactive session, presence, buildd plugin, agent plugin, hooks, SessionStart, SessionEnd, claude code, codex, cursor, buildd install, release slot]
-verified_by: [packages/core/__tests__/mcp-tools-receive-messages.test.ts, apps/web/src/lib/local-session.test.ts, packages/core/__tests__/model-prices.test.ts, apps/web/src/lib/presence-token.test.ts, apps/web/src/lib/presence-token-routes.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/local-sessions/workspaces/route.test.ts]
+verified_by: [packages/core/__tests__/mcp-tools-receive-messages.test.ts, apps/web/src/lib/local-session.test.ts, packages/core/__tests__/model-prices.test.ts, apps/web/src/lib/presence-token.test.ts, apps/web/src/lib/presence-token-routes.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/local-sessions/workspaces/route.test.ts, apps/web/src/app/api/workers/claim/held-gate.test.ts, apps/web/src/app/api/tasks/[id]/route.test.ts, packages/core/__tests__/mcp-tools-reserve-task.test.ts]
 assertions:
   - id: "presence-token-auth"
     type: "symbol"
@@ -105,6 +105,42 @@ become tracked work only through that session's own verified `claim_task`.
 - AC-6: WHEN `bind` names a runner worker or an `mcp-unverified` one THEN 409 `not_interactive`.
 
 **Code surface**: `local_sessions` and `local_session_workers` tables (`packages/core/db/schema.ts`), `bindInsertSql`, `boundWorkerTouchWhere`, `presenceTouchWhere` (`apps/web/src/lib/local-session.ts`).
+
+## Reserving a waiting task
+
+A session that wants to run a dependency-blocked task itself MUST be able to
+reserve it, so a runner cannot take it the moment it frees.
+
+- `update_task { taskId, reserve: true }` writes `context.reservedBy`
+  (`{ accountId, at, expiresAt }`, 20 minutes). Reserving again by the same
+  account renews it; `reserve: false` releases it. Another account's live
+  reservation is refused (409), a lapsed one is taken over. Only a **verified
+  interactive session** can hold one (the signed marker the MCP route adds, the same
+  check the claim route's pass-through uses): a request without it, a dashboard user
+  or a task token is refused 403, and `POST /api/tasks` with `reserve: true` is refused
+  before anything is filed, so a non-interactive caller cannot park a task from every claimer.
+- While live, runners and every other account skip the task; only the reserving
+  account's explicit `claim_task {taskId}` passes. Dependencies, holds and the
+  other claim gates still apply to that claim.
+- `claim_task { taskId, waitSeconds }` (at most 45) reserves the task, then
+  retries while the only blocker is `deps_blocked`, renewing the reservation
+  each poll. It returns the claim the moment the task frees, or the server's
+  reason with a note that the task is still reserved. The session is "told" by
+  that call returning: no hook or push delivers it, so a session wanting it
+  in the background runs the call as a background task.
+- `create_task { claim: true }` files the task already reserved
+  (`reserve: true` on `POST /api/tasks`; a `reservedBy` in the caller's own
+  `context` is dropped) and claims it by id in the same call, so no runner wins
+  the gap between create and claim.
+- Silence is the lapse rule: nothing renews a reservation but this session, so a
+  closed or quiet session returns the task to the runners within 20 minutes.
+
+Acceptance criteria:
+- AC-RV1: GIVEN a live reservation by account A WHEN a runner or account B claims the task THEN it is refused as `task_reserved`; WHEN A claims it THEN the claim proceeds.
+- AC-RV2: GIVEN a reservation whose `expiresAt` has passed THEN any claimant passes the gate.
+- AC-RV3: WHEN a reserved task is claimed THEN `reservedBy` is absent from the claimed task's context.
+- AC-RV4: WHEN `create_task` carries `claim: true` from a verified interactive session THEN the insert already carries the caller's reservation, and the claim follows by id; from any other caller it is refused 403 and nothing is filed.
+- AC-RV5: WHEN `claim_task` carries `waitSeconds` and the task is blocked only by dependencies THEN the call retries until it frees or the wait ends, and gives up at once on any other exclusion.
 
 ## Session end
 

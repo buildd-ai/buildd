@@ -8,6 +8,7 @@ import { getUserTeamIds, type TeamScopeCaller } from '@/lib/team-access';
 import { handleAccountAiBudgetPatch, type AccountBudgetDeps } from '@/lib/ai/account-budget';
 import { isUuid } from '@/lib/uuid';
 import { can } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const deps: AccountBudgetDeps = {
   async caller(req) {
@@ -23,7 +24,7 @@ const deps: AccountBudgetDeps = {
   },
   canAdminTeam: (caller: TeamScopeCaller, teamId: string) => can(caller, 'manage_ai_budget', teamId),
   async loadAccount(id) {
-    const row = await db.query.accounts.findFirst({ where: eq(accounts.id, id), columns: { id: true, teamId: true } });
+    const row = await db.query.accounts.findFirst({ where: sqlWhere(eq(accounts.id, id)), columns: { id: true, teamId: true } });
     return row ?? null;
   },
   async setBudget(id, usd) {

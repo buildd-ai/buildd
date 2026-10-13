@@ -32,6 +32,7 @@ import {
   type AnswerPathDecision,
 } from '@/lib/answer-resume';
 import { preflightBackendCredential } from '@/lib/answer-credential-preflight';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/workers/[id]/respond - Answer a worker's question.
 //
@@ -74,7 +75,7 @@ export async function POST(
 
   // Load worker with its task
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     with: { workspace: true, task: true, account: true },
   });
 
@@ -685,7 +686,7 @@ async function respondByContinuation(args: {
  * card shows the answer rather than an error.
  */
 async function alreadyAnsweredReply(workerId: string) {
-  const fresh = await db.query.workers.findFirst({ where: eq(workers.id, workerId) }).catch(() => null);
+  const fresh = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, workerId)) }).catch(() => null);
   return NextResponse.json(
     {
       error: 'Question was already answered',
@@ -702,7 +703,7 @@ async function readRecordedAnswer(worker: { status: string | null; instructionHi
     let continuationContext: unknown = null;
     if (worker.status === 'superseded' && worker.continuationTaskId) {
       const next = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.continuationTaskId),
+        where: sqlWhere(eq(tasks.id, worker.continuationTaskId)),
         columns: { context: true },
       });
       continuationContext = next?.context ?? null;

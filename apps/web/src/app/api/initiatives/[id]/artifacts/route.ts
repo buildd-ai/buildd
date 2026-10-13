@@ -11,12 +11,13 @@ import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
 import { upsertedContent } from '@/lib/artifact-upsert-content';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 /** Load the initiative and enforce access; returns the row or a NextResponse error. */
 async function loadInitiative(id: string, teamIds: string[], accountId?: string | null) {
   const initiative = await db.query.initiatives.findFirst({
-    where: eq(initiatives.id, id),
+    where: sqlWhere(eq(initiatives.id, id)),
     columns: { id: true, teamId: true, workspaceId: true },
   });
   if (!initiative) return { error: NextResponse.json({ error: 'Initiative not found' }, { status: 404 }) };
@@ -63,7 +64,7 @@ export async function GET(
 
   // Child mission ids for the rollup.
   const childMissions = await db.query.missions.findMany({
-    where: eq(missions.initiativeId, id),
+    where: sqlWhere(eq(missions.initiativeId, id)),
     columns: { id: true },
   });
   const missionIds = childMissions.map((m) => m.id);
@@ -72,7 +73,7 @@ export async function GET(
     ? or(eq(artifacts.initiativeId, id), inArray(artifacts.missionId, missionIds))
     : eq(artifacts.initiativeId, id);
 
-  const rows = await db.query.artifacts.findMany({ where: filter });
+  const rows = await db.query.artifacts.findMany({ where: sqlWhere(filter) });
   // Child missions may sit in other workspaces; a task token sees only its own.
   const rolledUp = apiAccount?.taskScope ? rows.filter(a => taskScopeAllowsWorkspace(apiAccount, a.workspaceId)) : rows;
 
@@ -141,10 +142,10 @@ export async function POST(
   // Upsert by (workspaceId, key) if key provided and the initiative is workspace-scoped.
   if (key && typeof key === 'string' && initiative!.workspaceId) {
     const existing = await db.query.artifacts.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(artifacts.workspaceId, initiative!.workspaceId),
         eq(artifacts.key, key),
-      ),
+      )),
     });
     // A key is unique per workspace: a task token may take over only this
     // initiative's own initiative-level artifact.

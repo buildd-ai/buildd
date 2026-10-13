@@ -29,6 +29,7 @@ import { teamMembers, teams, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { isSystemWorkspace } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -88,16 +89,16 @@ export function isRegisteredRedirectUri(registeredUris: string[], requestedUri: 
 async function legacyWorkspaceForUser(userId: string, workspaceId: string) {
   if (!isUuid(workspaceId)) return null;
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true, name: true, repo: true, teamId: true },
   });
   if (!ws) return null;
   const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, ws.teamId)),
+    where: sqlWhere(and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, ws.teamId))),
     columns: { role: true },
   });
   if (!membership) return null;
-  const team = await db.query.teams.findFirst({ where: eq(teams.id, ws.teamId), columns: { name: true } });
+  const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, ws.teamId)), columns: { name: true } });
   return {
     id: ws.id,
     name: ws.name,

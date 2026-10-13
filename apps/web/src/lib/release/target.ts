@@ -8,6 +8,7 @@ import { workspaces, githubRepos } from '@buildd/core/db/schema';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { resolveWorkspace, type WorkspaceScope } from '@/lib/workspace-resolver';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface ReleaseTarget {
   workspaceId: string;
@@ -48,14 +49,14 @@ export async function resolveReleaseTarget(params: {
 
   if (params.workspaceId) {
     workspaceRow = isInternal
-      ? await db.query.workspaces.findFirst({ where: eq(workspaces.id, params.workspaceId) })
+      ? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, params.workspaceId)) })
       : (await resolveWorkspace(params.workspaceId, scope as WorkspaceScope)) ?? undefined;
     if (!workspaceRow) return { ok: false, status: 404, error: `Workspace ${params.workspaceId} not found` };
     if (!workspaceRow.githubRepoId) {
       return { ok: false, status: 400, error: 'Workspace has no linked GitHub repo' };
     }
     repoRow = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, workspaceRow.githubRepoId),
+      where: sqlWhere(eq(githubRepos.id, workspaceRow.githubRepoId)),
       with: { installation: true },
     });
   } else if (params.repo) {
@@ -66,15 +67,15 @@ export async function resolveReleaseTarget(params: {
     // Several githubRepos rows can share a fullName (one per installation), so
     // match the workspace against all of them — but only in the scope's teams.
     const candidates = await db.query.githubRepos.findMany({
-      where: eq(githubRepos.fullName, params.repo),
+      where: sqlWhere(eq(githubRepos.fullName, params.repo)),
       with: { installation: true },
     });
     if (candidates.length === 0) return { ok: false, status: 404, error: `No linked repo found for ${params.repo}` };
     const found = await db.query.workspaces.findFirst({
-      where: and(
+      where: sqlWhere(and(
         inArray(workspaces.githubRepoId, candidates.map(r => r.id)),
         teamIds ? inArray(workspaces.teamId, teamIds) : undefined,
-      ),
+      )),
     });
     if (!found) return { ok: false, status: 404, error: `No workspace linked to repo ${params.repo}` };
     workspaceRow = found;

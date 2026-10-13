@@ -12,6 +12,7 @@ import { parseModelRoutingConfig } from '@buildd/core/model-routing-experiment';
 import { canViewExperiment, isExperimentOperator, toExperimentDTO, type TeamRole } from './experiments';
 import { listTeamExperiments } from './experiments-store';
 import type { HealthExperiments } from './health-experiments-shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 /** At most this many are shown; the ordering below keeps live ones in. */
@@ -20,7 +21,7 @@ const MAX_ITEMS = 10;
 /** `operator`: the viewer is a buildd platform operator (lib/platform-operator.ts). */
 export async function loadHealthExperiments(teamId: string, userId: string, operator: boolean): Promise<HealthExperiments | null> {
   const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)),
+    where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId))),
     columns: { role: true },
   });
   const role = (membership?.role as TeamRole | undefined) ?? null;

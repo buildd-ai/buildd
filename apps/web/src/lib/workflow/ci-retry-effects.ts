@@ -27,14 +27,15 @@ import type { EffectHandler, EffectHandlers } from './effects';
 import { applyCommand, loadView, type Exec } from './kernel';
 import { ingestFact } from './facts';
 import { githubReader, workspaceRepo } from './github-facts';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
 async function prWorker(workspaceId: string, repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: prWorkerWhere(workspaceId, repoFullName, prNumber),
+    where: sqlWhere(prWorkerWhere(workspaceId, repoFullName, prNumber)),
     columns: { id: true, branch: true, prUrl: true, prNumber: true },
-    orderBy: [desc(workers.createdAt)],
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
 }
 
@@ -75,8 +76,8 @@ const dispatchCiFix: EffectHandler = async (e) => {
   }
 
   const [owner, workspace, prw] = await Promise.all([
-    db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId) }),
-    db.query.workspaces.findFirst({ where: eq(workspaces.id, d.workspaceId) }),
+    db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, d.ownerTaskId)) }),
+    db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, d.workspaceId)) }),
     prWorker(d.workspaceId, d.repoFullName, d.prNumber),
   ]);
   if (!owner || !workspace) return { outcome: 'skipped:missing_context' };
@@ -136,7 +137,7 @@ const dispatchCiFix: EffectHandler = async (e) => {
   if (!row) {
     // Either an earlier run filed it (crash before the link) or another index refused it
     // (a legacy CI retry still pending on this PR): link only a task that exists.
-    const existing = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { id: true } });
+    const existing = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true } });
     if (!existing) throw new Error('CI fix task not filed: another CI retry is still pending on this PR');
   }
   await dbExec(sql`-- workflow:link_attempt_task
@@ -169,7 +170,7 @@ const escalateCiExhaustion: EffectHandler = async (e) => {
   if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
   const repo = await workspaceRepo(d.workspaceId);
   if (!repo) return { outcome: 'skipped:no_installation' };
-  const owner = await db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId), columns: { id: true, title: true, workspaceId: true, missionId: true, result: true } });
+  const owner = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, d.ownerTaskId)), columns: { id: true, title: true, workspaceId: true, missionId: true, result: true } });
   if (!owner) return { outcome: 'skipped:no_owner' };
   const spent = Number(e.payload.attempts ?? 0);
   const max = Number(e.payload.max ?? spent);

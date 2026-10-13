@@ -22,6 +22,7 @@ import { and, eq, inArray, like, sql } from 'drizzle-orm';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/surface-audit';
 import { DEP_SATISFYING_STATUSES } from '@/lib/dep-gate-contract';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Drop `taskId` from the dependsOn of every not-yet-started surface audit in
@@ -48,7 +49,7 @@ export async function detachTaskFromMissionSurfaceAudits(missionId: string, task
 export async function missionMemberIds(missionId: string, ids: readonly string[]): Promise<string[]> {
   if (ids.length === 0) return [];
   const rows = await db.query.tasks.findMany({
-    where: and(eq(tasks.missionId, missionId), inArray(tasks.id, [...ids])),
+    where: sqlWhere(and(eq(tasks.missionId, missionId), inArray(tasks.id, [...ids]))),
     columns: { id: true },
   });
   const members = new Set(rows.map(r => r.id));
@@ -64,11 +65,11 @@ export async function onTaskLeftMission(missionId: string, taskId: string): Prom
   const auditIds = await detachTaskFromMissionSurfaceAudits(missionId, taskId);
   const woken: string[] = [];
   for (const auditId of auditIds) {
-    const audit = await db.query.tasks.findFirst({ where: eq(tasks.id, auditId), columns: { id: true, dependsOn: true } });
+    const audit = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, auditId)), columns: { id: true, dependsOn: true } });
     const deps = Array.isArray(audit?.dependsOn) ? (audit!.dependsOn as string[]) : [];
     const rows = deps.length > 0
       ? await db.query.tasks.findMany({
-          where: and(eq(tasks.missionId, missionId), inArray(tasks.id, deps)),
+          where: sqlWhere(and(eq(tasks.missionId, missionId), inArray(tasks.id, deps))),
           columns: { id: true, status: true },
         })
       : [];

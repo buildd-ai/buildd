@@ -82,6 +82,8 @@ export const ANSWER_PATH_REASONS = {
     'the interactive session that asked has ended or stopped checking in, so nobody was there to receive the answer',
   interactive_session_stopped_polling:
     'the interactive session that asked stopped waiting for the answer (its terminal likely closed), so nobody was there to receive it',
+  interactive_answer_not_read:
+    'the answer was sent back to the interactive session, but the session went quiet without reading it',
 } as const;
 
 /**
@@ -99,6 +101,20 @@ export const ANSWER_PATH_REASONS = {
  * hours.
  */
 export const INTERACTIVE_SESSION_POLL_STALE_MS = 5 * 60 * 1000;
+
+/**
+ * How long an answer sent back to an interactive session may sit unread while
+ * the session shows no sign of life, before it goes to a follow-up task.
+ *
+ * Measured from the worker's last activity (`updatedAt`: the answer itself, an
+ * update_progress, a plugin presence touch), not from the answer alone, so a
+ * session that is busy and checking in is never overtaken. A session waiting
+ * correctly reads the answer within seconds (waitCommand exits, await_answer
+ * reads it). 15 minutes is 3x the poll staleness above and over the ~3 minute
+ * update_progress cadence: only a session that died, or ended its turn without
+ * waiting, is still quiet by then.
+ */
+export const INTERACTIVE_ANSWER_READ_DEADLINE_MS = 15 * 60 * 1000;
 
 export type AnswerPathReason = keyof typeof ANSWER_PATH_REASONS;
 

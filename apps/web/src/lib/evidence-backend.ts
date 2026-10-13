@@ -30,6 +30,7 @@ import { recordCredentialAuthSuccess } from './credential-health';
 import { getDefaultStorageClient, isStorageConfigured } from './storage';
 import { assertNormalizedObjectKey, buildEvidenceProbeKey } from './storage-keys';
 import { validatePublicEndpoint, type ResolveHost } from './public-endpoint';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const EVIDENCE_CREDENTIAL_PURPOSE = 'evidence_storage_credential' as const;
 
@@ -145,7 +146,7 @@ export async function describeEvidenceBackend(row: EvidenceBackendRow, source: E
 async function credentialProblem(row: EvidenceBackendRow): Promise<string | null> {
   if (!row.credentialSecretId) return 'no credential is set for this backend';
   const secret = await db.query.secrets.findFirst({
-    where: eq(secrets.id, row.credentialSecretId),
+    where: sqlWhere(eq(secrets.id, row.credentialSecretId)),
     columns: { id: true, teamId: true, purpose: true },
   });
   if (!secret) return 'the credential for this backend no longer exists';
@@ -160,13 +161,13 @@ async function credentialProblem(row: EvidenceBackendRow): Promise<string | null
  */
 export async function resolveEvidenceBackend(workspaceId: string): Promise<ResolvedEvidenceBackend> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true, teamId: true },
   });
   if (!ws) return bucketDefault('buildd_default', null, null);
 
   const rows = ((await db.query.evidenceBackends.findMany({
-    where: and(eq(evidenceBackends.teamId, ws.teamId), or(eq(evidenceBackends.workspaceId, ws.id), isNull(evidenceBackends.workspaceId))),
+    where: sqlWhere(and(eq(evidenceBackends.teamId, ws.teamId), or(eq(evidenceBackends.workspaceId, ws.id), isNull(evidenceBackends.workspaceId)))),
   })) as EvidenceBackendRow[]).filter(r => r.teamId === ws.teamId);
 
   const own = rows.filter(r => r.workspaceId === ws.id).sort(newest)[0];
@@ -223,7 +224,7 @@ export function parseEvidenceCredentials(raw: unknown): EvidenceCredentials | nu
 async function loadCredentials(row: EvidenceBackendRow): Promise<EvidenceCredentials> {
   if (!row.credentialSecretId) throw new Error('no credential is set for this backend');
   const secret = await db.query.secrets.findFirst({
-    where: eq(secrets.id, row.credentialSecretId),
+    where: sqlWhere(eq(secrets.id, row.credentialSecretId)),
     columns: { id: true, teamId: true, purpose: true, encryptedValue: true },
   });
   if (!secret) throw new Error('the credential for this backend no longer exists');
@@ -290,7 +291,7 @@ export async function generateEvidenceUploadUrl(
   if (!backend.backendId) {
     client = getDefaultStorageClient();
   } else {
-    const row = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, backend.backendId) });
+    const row = await db.query.evidenceBackends.findFirst({ where: sqlWhere(eq(evidenceBackends.id, backend.backendId)) });
     if (!row) throw new Error('backend not found');
     client = await getEvidenceS3Client(row as EvidenceBackendRow, opts);
   }
@@ -471,7 +472,7 @@ export async function verifyEvidenceBackend(backendId: string, opts: VerifyOptio
 
   let row: EvidenceBackendRow | undefined;
   try {
-    row = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, backendId) });
+    row = await db.query.evidenceBackends.findFirst({ where: sqlWhere(eq(evidenceBackends.id, backendId)) });
   } catch (err) {
     return fail(`could not load the backend: ${err instanceof Error ? err.message : 'unknown error'}`.slice(0, 300));
   }

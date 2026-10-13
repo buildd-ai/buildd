@@ -66,6 +66,7 @@ import { hasBypassFlag, BYPASS_DEPS_GATE_KEY } from '@/lib/bypass-flags';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { missionNotHeld, missionNotLocal, taskNotHeld } from '@/app/api/workers/claim/held-gate';
 import { RUNNER_RECENTLY_SEEN_MS, isOnceRunnerUrl } from '@buildd/shared';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * How long a live fleet may hold claimable work without starting anything.
@@ -170,7 +171,7 @@ export function heartbeatHasSpareCapacity(hb: { localUiUrl: string; activeWorker
 async function liveAccounts(now: Date): Promise<Map<string, LiveAccount>> {
   const cutoff = new Date(now.getTime() - HEARTBEAT_FRESH_MS);
   const rows = await db.query.workerHeartbeats.findMany({
-    where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
+    where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
     columns: {
       accountId: true,
       localUiUrl: true,
@@ -257,7 +258,7 @@ async function claimablePendingTasks(now: Date): Promise<PendingRow[]> {
   const cutoff = new Date(now.getTime() - FLEET_IDLE_THRESHOLD_MS);
 
   const rows = (await db.query.tasks.findMany({
-    where: claimablePendingWhere(cutoff),
+    where: sqlWhere(claimablePendingWhere(cutoff)),
     columns: {
       id: true,
       workspaceId: true,
@@ -269,7 +270,7 @@ async function claimablePendingTasks(now: Date): Promise<PendingRow[]> {
       // real freeze.
       context: true,
     },
-    orderBy: asc(tasks.createdAt),
+    orderBy: sqlOrderBy(asc(tasks.createdAt)),
     limit: MAX_PENDING_SCAN,
   })) as unknown as PendingRow[];
 
@@ -295,17 +296,17 @@ async function claimablePendingTasks(now: Date): Promise<PendingRow[]> {
   if (depIds.length === 0) return waited;
 
   const depRows = (await db.query.tasks.findMany({
-    where: inArray(tasks.id, depIds),
+    where: sqlWhere(inArray(tasks.id, depIds)),
     columns: { id: true, status: true },
   })) as unknown as Array<{ id: string; status: string }>;
   const depStatus = new Map(depRows.map(d => [d.id, d.status]));
 
   const depPrRows = (await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.taskId, depIds),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
-    ),
+    )),
     columns: { taskId: true, prLifecycleStatus: true },
   })) as unknown as Array<{ taskId: string | null; prLifecycleStatus: string | null }>;
   const depWithOpenPr = new Set(
@@ -349,7 +350,7 @@ async function claimableWorkspacesByAccount(
   if (workspaceIds.length === 0) return { open, granted, names };
 
   const wsRows = (await db.query.workspaces.findMany({
-    where: inArray(workspaces.id, workspaceIds),
+    where: sqlWhere(inArray(workspaces.id, workspaceIds)),
     columns: { id: true, name: true, teamId: true, accessMode: true },
   })) as unknown as Array<{ id: string; name: string | null; teamId: string | null; accessMode: string | null }>;
   for (const ws of wsRows) {
@@ -358,7 +359,7 @@ async function claimableWorkspacesByAccount(
   }
 
   const linkRows = (await db.query.accountWorkspaces.findMany({
-    where: inArray(accountWorkspaces.accountId, accountIds),
+    where: sqlWhere(inArray(accountWorkspaces.accountId, accountIds)),
     columns: { accountId: true, workspaceId: true, canClaim: true },
   })) as unknown as Array<{ accountId: string; workspaceId: string; canClaim: boolean }>;
   for (const link of linkRows) {
@@ -377,9 +378,9 @@ async function lastWorkerStart(accountId: string): Promise<Date | null> {
     // isNotNull is load-bearing, not decoration: Postgres orders DESC as NULLS
     // FIRST, so a single unstarted worker row would otherwise come back as the
     // "most recent start" and read as null → a false "never started".
-    where: and(eq(workers.accountId, accountId), isNotNull(workers.startedAt)),
+    where: sqlWhere(and(eq(workers.accountId, accountId), isNotNull(workers.startedAt))),
     columns: { startedAt: true },
-    orderBy: desc(workers.startedAt),
+    orderBy: sqlOrderBy(desc(workers.startedAt)),
     limit: 1,
   })) as unknown as Array<{ startedAt: Date | string | null }>;
 

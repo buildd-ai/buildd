@@ -24,6 +24,7 @@ import {
   loadInsights, loadInsightsBand, loadOperatorData, loadUsage, type InsightsBandFilter,
 } from './data';
 import type { AdminScope } from './scope';
+import type { RootCauseRecord } from '@buildd/shared';
 
 export interface AdminViewer {
   /** The teams the owner is a member of, by name. */
@@ -83,7 +84,7 @@ async function splitRead<T>(v: ScopedViewer, read: (workspaceIds: string[]) => P
   return { all, own };
 }
 
-/** Echoed on every scoped read so the admin app can say detail is limited. */
+/** Echoed on every scoped read so a client can say detail is limited. */
 const detailNote = (v: ScopedViewer) => ({ detailLimitedToOwnTeams: v.otherTeams });
 
 // ── Views ─────────────────────────────────────────────────────────────────────
@@ -208,4 +209,21 @@ export function viewExperiment(v: AdminViewer, row: ExperimentRow) {
   if (v.ownTeamIds.has(row.teamId)) return dto;
   const tag = pseudonym(row.id);
   return { ...dto, key: `experiment-${tag}`, title: `Experiment ${tag}`, hypothesis: null, decision: null, config: null };
+}
+
+/**
+ * A root cause as the owner may see it. Every team's record keeps its key,
+ * classification, capability and times: all platform-derived, nothing a team
+ * wrote. Another team's affected tasks are a count only, like every other
+ * drilldown here.
+ */
+export function viewRootCause(v: AdminViewer, r: RootCauseRecord) {
+  const own = v.ownTeamIds.has(r.teamId);
+  return {
+    ...r,
+    own,
+    team: teamName(v, r.teamId),
+    affectedTaskIds: own ? r.affectedTaskIds : [],
+    affectedTaskCount: r.affectedTaskIds.length,
+  };
 }

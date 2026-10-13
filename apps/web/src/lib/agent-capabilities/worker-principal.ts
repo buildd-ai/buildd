@@ -14,10 +14,11 @@ import {
   hasClaimAuthority,
   isLiveWorkerStatus,
 } from './principal';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function loadWorker(workerId: string) {
   return db.query.workers.findFirst({
-    where: eq(workers.id, workerId),
+    where: sqlWhere(eq(workers.id, workerId)),
     columns: { id: true, taskId: true, workspaceId: true, accountId: true, status: true },
     with: {
       workspace: {

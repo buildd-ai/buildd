@@ -23,6 +23,7 @@ import type { EscalationVerdict } from '@buildd/core/escalation-gate';
 import { gateEscalations, type EscalationGateDeps } from '@/lib/escalation-gate-check';
 import { escalationGateReadDeps } from '@/lib/escalation-decision';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 type WorkspacePolicyRow = Parameters<typeof resolvePolicy>[0] & { id: string; name: string; teamId?: string | null; dataClass?: string | null };
 
@@ -30,14 +31,14 @@ export type OpenPrWorker = Awaited<ReturnType<typeof loadOpenPrWorkers>>[number]
 
 function loadOpenPrWorkers(wsIds: string[], opts: { workerIds?: string[]; prNumbers?: number[] }) {
   return db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, wsIds),
       ...(opts.workerIds ? [inArray(workers.id, opts.workerIds)] : []),
       ...(opts.prNumbers ? [inArray(workers.prNumber, opts.prNumbers)] : []),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
       sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged', 'unresolvable')`,
-    ),
+    )),
     columns: {
       id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true,
       // prBaseRef: where the PR points; a mission-branch PR is not a human's to merge.
@@ -94,15 +95,15 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
   const reviewerLiveMap = new Map<string, { reviewerWorkerId: string; reviewerRoleSlug: string | null }>();
   if (openTaskIds.length > 0) {
     const reviewerTasksWithWorkers = await db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(tasks.workspaceId, wsIds),
         eq(tasks.category, 'review'),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-      ),
+      )),
       columns: { id: true, context: true, roleSlug: true },
       with: {
         workers: {
-          where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+          where: sqlWhere(inArray(workers.status, [...LIVE_WORKER_STATUSES])),
           columns: { id: true, status: true },
           limit: 1,
         },
@@ -128,10 +129,10 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
   // Find reviewer_escalated and reviewer_approved notes for these tasks
   const allReviewerNotes = openTaskIds.length > 0
     ? await db.query.missionNotes.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(missionNotes.taskId, openTaskIds),
           inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
-        ),
+        )),
         columns: {
           taskId: true,
           type: true,
@@ -151,7 +152,7 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
   // Load workspace gitConfigs for policy detection
   const uniqueWsIds = [...new Set(openPrWorkers.map(w => w.workspaceId))];
   const workspaceRows = await db.query.workspaces.findMany({
-    where: inArray(workspaces.id, uniqueWsIds),
+    where: sqlWhere(inArray(workspaces.id, uniqueWsIds)),
     columns: { id: true, name: true, gitConfig: true, teamId: true, dataClass: true },
   });
   const wsMap = new Map(workspaceRows.map(ws => [ws.id, ws]));
@@ -166,12 +167,12 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
   const conflictRetryMap = new Map<string, { taskId: string; iteration: number }>();
   if (openPrWorkers.length > 0) {
     const conflictRetryTasks = await db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(tasks.workspaceId, wsIds),
         sql`${tasks.creationSource} = 'conflict'`,
         isNotNull(tasks.conflictRetryPrNumber),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-      ),
+      )),
       columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true },
     });
     for (const t of conflictRetryTasks) {
@@ -199,12 +200,12 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
   if (terminalConflictWorkers.length > 0) {
     const tcPrNumbers = terminalConflictWorkers.map(w => w.prNumber).filter(Boolean) as number[];
     const allRetries = await db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(tasks.workspaceId, wsIds),
         inArray(tasks.conflictRetryPrNumber, tcPrNumbers),
-      ),
+      )),
       columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, status: true },
-      orderBy: [desc(tasks.createdAt)],
+      orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     });
 
     for (const w of terminalConflictWorkers) {

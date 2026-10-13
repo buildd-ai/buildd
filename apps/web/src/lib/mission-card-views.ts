@@ -21,6 +21,7 @@ import {
 } from './mission-card-view';
 import type { MissionOrigin } from './mission-task-href';
 import type { DeliveryView } from './workflow/projections';
+import { sqlOrderByFn } from '@buildd/core/db/relational-sql';
 
 /** Task columns a card reads (pulse, feed state, situation, health, schedule timing). */
 export const MISSION_CARD_TASK_COLUMNS = {
@@ -48,7 +49,7 @@ export const MISSION_CARD_WORKER_COLUMNS = {
 export const MISSION_CARD_WORKERS_WITH = {
   columns: MISSION_CARD_WORKER_COLUMNS,
   limit: 5,
-  orderBy: (w: any, { desc }: any) => [desc(w.startedAt), desc(w.updatedAt)],
+  orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt), desc(w.updatedAt)]),
 } as const;
 
 /** Most cards one surface builds in a request. Home shows active + ≤ 3 scheduled. */

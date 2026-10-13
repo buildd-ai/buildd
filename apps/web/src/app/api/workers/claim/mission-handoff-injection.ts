@@ -14,6 +14,7 @@ import { eq, inArray, and, not, sql } from 'drizzle-orm';
 import type { ClaimTasksResponse, TaskHandoff } from '@buildd/shared';
 import type { TaskResult } from '@buildd/shared';
 import { appendContextBlock, type ContextBlockSink } from './context-injection';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The claimed-task rows this block looks tasks up in. */
 type ClaimedTask = { id: string; missionId?: string | null };
@@ -140,7 +141,7 @@ export async function attachMissionHandoff(
   try {
     // Batch-fetch dependency tasks (status, result, missionId, missionPhaseLabel, pathManifest)
     const depTaskRows = await db.query.tasks.findMany({
-      where: inArray(tasks.id, Array.from(allDepIds)),
+      where: sqlWhere(inArray(tasks.id, Array.from(allDepIds))),
       columns: {
         id: true,
         title: true,
@@ -183,7 +184,7 @@ export async function attachMissionHandoff(
     const missionMap = new Map();
     if (missionIds.size > 0) {
       const missionRows = await db.query.missions.findMany({
-        where: inArray(missions.id, Array.from(missionIds)),
+        where: sqlWhere(inArray(missions.id, Array.from(missionIds))),
         columns: { id: true, title: true, goalCriteriaState: true, missionPhaseLabel: true },
       });
       for (const m of missionRows) {
@@ -192,18 +193,18 @@ export async function attachMissionHandoff(
 
       // Batch-fetch artifacts and mission notes once per distinct mission
       const artifactRows = await db.query.artifacts.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(artifacts.missionId, Array.from(missionIds)),
           eq(artifacts.type, 'link'), // Authoritative artifacts marked as type 'link'
-        ),
+        )),
         columns: { missionId: true, title: true, key: true },
       });
 
       const notesRows = await db.query.missionNotes.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(missionNotes.missionId, Array.from(missionIds)),
           inArray(missionNotes.type, ['decision', 'question']),
-        ),
+        )),
         columns: { missionId: true, type: true, title: true, body: true },
       });
 

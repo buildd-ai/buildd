@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, pathClaims, workers, initiatives, teams } from '@buildd/core/db/schema';
 import { eq, and, ne, isNull, isNotNull, sql, desc } from 'drizzle-orm';
 import { computeInitiativeProgress, type MissionStatus } from '@buildd/core/mission-helpers';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -407,7 +408,7 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
       // Progress is missions done over missions, the same rule the dashboard
       // uses (`computeInitiativeProgress`). One relational query.
       const row = await db.query.initiatives.findFirst({
-        where: eq(initiatives.id, initiativeId),
+        where: sqlWhere(eq(initiatives.id, initiativeId)),
         columns: { id: true, title: true, status: true, description: true },
         with: { missions: { columns: { status: true } } },
       });
@@ -428,7 +429,7 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
 
     async getBudgetLine(teamId) {
       const team = await db.query.teams.findFirst({
-        where: eq(teams.id, teamId),
+        where: sqlWhere(eq(teams.id, teamId)),
         columns: {
           monthlyBudgetUsd: true,
           monthlyCostUsd: true,

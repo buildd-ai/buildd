@@ -14,6 +14,7 @@ import MemberRepoAccessNotice from '@/components/MemberRepoAccessNotice';
 import { memberHasRepoAccess } from '@/lib/member-repo-access';
 import { ARTIFACT_TYPE_LABELS, isArtifactType, type ArtifactTypeValue } from '@buildd/shared';
 import { displayTaskTitle } from '@/lib/task-title';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,7 +72,7 @@ export default async function ArtifactDetailPage({
   }
 
   const artifact = await db.query.artifacts.findFirst({
-    where: eq(artifacts.id, id),
+    where: sqlWhere(eq(artifacts.id, id)),
     with: {
       worker: {
         with: {

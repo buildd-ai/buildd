@@ -41,6 +41,7 @@ import type { UnrecognizedModelReason } from './model-capability-requirements';
 import { getModelCertifications } from './model-certification-store';
 import { pickPolicyTierModel } from './model-upgrade-policy';
 import { loadUpgradePolicy } from './model-upgrade-policy-store';
+import { sqlWhere } from './db/relational-sql';
 
 /** Maps the model-router's legacy alias vocabulary to the new tier vocabulary. */
 export function mapRouterAlias(alias: string): Tier {
@@ -216,7 +217,7 @@ async function loadTeamRows(teamId: string): Promise<RegistryRow[] | null> {
   if (cached && now - cached.loadedAt < CACHE_TTL_MS) return cached.rows;
   try {
     const rows = await db.query.modelTierRegistry.findMany({
-      where: eq(modelTierRegistry.teamId, teamId),
+      where: sqlWhere(eq(modelTierRegistry.teamId, teamId)),
     });
     cache.set(teamId, { rows, loadedAt: now });
     return rows;

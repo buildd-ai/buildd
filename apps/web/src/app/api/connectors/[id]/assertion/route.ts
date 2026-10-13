@@ -18,6 +18,7 @@ import { Redis } from '@upstash/redis';
 import { getIssuer } from '@/lib/oauth/config';
 import { isUuid } from '@/lib/uuid';
 import { checkConnectorBlocked, blockedBody } from '@/lib/connector-access-policy';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ---------------------------------------------------------------------------
 // Rate limiting via Redis (degrades to allow if Redis unavailable)
@@ -81,7 +82,7 @@ export async function POST(
 
   // ── Validate worker belongs to this account and task ─────────────────────
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, workerId),
+    where: sqlWhere(eq(workers.id, workerId)),
     columns: { id: true, accountId: true, taskId: true, workspaceId: true, status: true },
   });
 
@@ -102,7 +103,7 @@ export async function POST(
 
   // ── Load task to get accountId and workspaceId ────────────────────────────
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, workspaceId: true },
   });
 
@@ -112,7 +113,7 @@ export async function POST(
 
   // ── Load connector ────────────────────────────────────────────────────────
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, connectorId),
+    where: sqlWhere(eq(connectors.id, connectorId)),
     columns: {
       id: true,
       teamId: true,
@@ -137,12 +138,12 @@ export async function POST(
   // agent tool-use boundary, re-check the catalog policy: blocking the entry
   // mid-session stops new assertions without touching the connector.
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, task.workspaceId),
+    where: sqlWhere(eq(workspaces.id, task.workspaceId)),
     columns: { teamId: true },
   });
   const consumingTeamId = ws?.teamId ?? null;
   const visible = !!consumingTeamId && (connector.teamId === consumingTeamId || !!(await db.query.connectorShares.findFirst({
-    where: and(eq(connectorShares.connectorId, connectorId), eq(connectorShares.sharedWithTeamId, consumingTeamId)),
+    where: sqlWhere(and(eq(connectorShares.connectorId, connectorId), eq(connectorShares.sharedWithTeamId, consumingTeamId))),
     columns: { connectorId: true },
   })));
   if (!visible) {
@@ -158,10 +159,10 @@ export async function POST(
   // Consistent with the claim route: a missing row is treated as enabled
   // (explicitly disabled = cwRow.enabled === false).
   const cwRow = await db.query.connectorWorkspaces.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(connectorWorkspaces.connectorId, connectorId),
       eq(connectorWorkspaces.workspaceId, task.workspaceId),
-    ),
+    )),
     columns: { enabled: true },
   });
 

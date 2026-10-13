@@ -14,10 +14,11 @@
  * an agent grant on that workspace. A mocked `db` would hide the WHERE
  * clauses that decide this, so it runs on real rows.
  */
-import { afterEach, beforeAll, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeAll, describe, expect, mock, setDefaultTimeout, test } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { and, eq, sql } from 'drizzle-orm';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const realAuthHelpers = await import('../../src/lib/auth-helpers');
 mock.module('../../src/lib/auth-helpers', () => ({ ...realAuthHelpers, getCurrentUser: async () => null }));
@@ -40,6 +41,10 @@ const claimRoute = await import('../../src/app/api/workers/claim/route');
 const mineRoute = await import('../../src/app/api/workers/mine/route');
 const workerRoute = await import('../../src/app/api/workers/[id]/route');
 const prRoute = await import('../../src/app/api/github/pr/route');
+
+// The first case pays for the cold path (first connection, first claim, lazy
+// module loads) and has timed out at bun's 5s default on a loaded CI runner.
+setDefaultTimeout(30_000);
 
 beforeAll(() => assertDbConfigured());
 afterEach(() => clearAccountCache());
@@ -108,7 +113,7 @@ async function claimAs(s: S, c: Conn) {
   const body = (await res.json()) as { workers?: Array<{ id: string; taskId: string }> };
   const claimed = body.workers?.find((w) => w.taskId === taskId);
   if (!claimed) throw new Error(`claim took nothing: ${JSON.stringify(body)}`);
-  const row = await db.query.workers.findFirst({ where: eq(workers.id, claimed.id), with: { workspace: true, task: true } });
+  const row = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, claimed.id)), with: { workspace: true, task: true } });
   if (!row) throw new Error('claimed worker missing');
   return row;
 }
@@ -138,7 +143,7 @@ describe('an agent connection\'s claim is recorded against its user', () => {
       INSERT INTO workers (workspace_id, account_id, task_id, name, runner, branch, status)
       VALUES (${s.workspaceId}::uuid, ${s.sharedAccountId}::uuid, ${taskId}::uuid, ${`w-${rand()}`}, 'runner', ${`b-${rand()}`}, 'running')
       RETURNING id`);
-    const w = await db.query.workers.findFirst({ where: eq(workers.id, row.id) });
+    const w = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, row.id)) });
     expect(callerOwnsWorker(await session(s, s.agentA), w!)).toBe(false);
   });
 });
@@ -165,13 +170,13 @@ describe('only the claimer\'s connection sees and acts as the worker', () => {
     expect((await workerRoute.GET(req(s, s.agentB, path), params)).status).toBe(403);
     expect((await workerRoute.PATCH(req(s, s.agentB, path, { method: 'PATCH', body: { status: 'running', progress: 10 } }), params)).status).toBe(403);
     expect((await workerRoute.PATCH(req(s, s.agentB, path, { method: 'PATCH', body: { status: 'completed', summary: 'x' } }), params)).status).toBe(403);
-    const after = await db.query.workers.findFirst({ where: eq(workers.id, w.id), columns: { status: true } });
+    const after = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, w.id)), columns: { status: true } });
     expect(after?.status).toBe(w.status);
 
     expect((await workerRoute.GET(req(s, s.agentA, path), params)).status).toBe(200);
     const ok = await workerRoute.PATCH(req(s, s.agentA, path, { method: 'PATCH', body: { status: 'running', progress: 10 } }), params);
     expect(ok.status).toBe(200);
-    const running = await db.query.workers.findFirst({ where: eq(workers.id, w.id), columns: { status: true } });
+    const running = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, w.id)), columns: { status: true } });
     expect(running?.status).toBe('running');
   });
 
@@ -190,7 +195,7 @@ describe('only the claimer\'s connection acts on the worker\'s PR as its owner',
     const s = await setup();
     const w = await claimAs(s, s.agentA);
     await q(sql`UPDATE workers SET pr_number = 41, pr_url = 'https://github.com/org/repo/pull/41' WHERE id = ${w.id}::uuid`);
-    const withPr = (await db.query.workers.findFirst({ where: eq(workers.id, w.id), with: { workspace: true, task: true } }))!;
+    const withPr = (await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, w.id)), with: { workspace: true, task: true } }))!;
     const a = await session(s, s.agentA);
     const b = await session(s, s.agentB);
 

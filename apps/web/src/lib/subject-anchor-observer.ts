@@ -18,6 +18,7 @@ import {
 } from '@buildd/core/subject-anchor-extractor';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { trackEvent } from '@/lib/axiom';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ACTIVE_TASK_STATUSES = OPEN_TASK_STATUSES;
 
@@ -63,15 +64,15 @@ export async function prepareSubjectFiling(input: PrepareSubjectFilingInput) {
   } | undefined;
   try {
     match = await db.query.tasks.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.workspaceId, input.workspaceId),
         inArray(tasks.status, [...ACTIVE_TASK_STATUSES]),
         identity,
-      ),
+      )),
       // title/description are selected so a caller that acts on the verdict can
       // return the canonical task without a second round-trip.
       columns: { id: true, creationSource: true, title: true, description: true },
-      orderBy: (t, { desc }) => [desc(t.createdAt)],
+      orderBy: sqlOrderByFn((t, { desc }) => [desc(t.createdAt)]),
     });
   } catch (error) {
     console.error('[subject-anchor] failed to query observed match:', error);

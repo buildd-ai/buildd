@@ -38,7 +38,7 @@ import {
   isMissionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
-import { isReleaseBranchPr } from '@buildd/core/release-strategy';
+import { classifyReleasePr } from '@buildd/core/release-candidate';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
@@ -50,6 +50,7 @@ import { dispatchStaleApprovalReReview } from '@/lib/stale-approval-re-review';
 import type { DispatchConflictRetryResult } from '@/lib/conflict-retry';
 import { refreshCause } from '@/lib/refresh-cause';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The base-freshness refusal below: behind the base but not conflicting.
@@ -155,7 +156,7 @@ async function fetchLiveChangedFilenames(
  *  - whether `opts.bound` may permit an unattended merge (below).
  *
  * `opts.releaseConfig` is the workspace's release config, read for the same
- * AGGREGATE LINE THRESHOLD decision via `isReleaseBranchPr`: a PR from the
+ * AGGREGATE LINE THRESHOLD decision via `classifyReleasePr` (legacy release branch or trusted frozen candidate): a PR from the
  * configured release branch into the configured prod branch (e.g. dev → main)
  * is a rollup of every commit since the last release, each of which was
  * already size-gated on its own way into the release branch — re-applying the
@@ -393,8 +394,10 @@ export async function evaluateAutoMergeSafety(
   // check below. The bound also requires a verified base ref.
   let prData: {
     mergeable_state?: string;
-    head?: { ref?: string | null; sha?: string | null };
-    base?: { ref?: string | null };
+    head?: { ref?: string | null; sha?: string | null; repo?: { full_name?: string | null } | null };
+    base?: { ref?: string | null; repo?: { full_name?: string | null } | null };
+    user?: { login?: string | null } | null;
+    body?: string | null;
   } | null = null;
   let prReadError: unknown = null;
   try {
@@ -433,14 +436,20 @@ export async function evaluateAutoMergeSafety(
       mission: opts?.mission ?? null,
     });
 
-    // Is this the workspace's release-branch → prod-branch PR (e.g. dev → main)?
-    // Unlike the mission check above, this compares BOTH refs — a release PR's
-    // own head and base are both configured (releaseBranch, prodBranch), so
-    // there is no single trunk-base assumption to lean on.
-    const isReleasePr = isReleaseBranchPr(opts?.releaseConfig ?? null, {
+    // Is this the workspace's release PR into the prod branch? Either the
+    // legacy fixed one (releaseBranch → prodBranch, e.g. dev → main), or a
+    // frozen candidate (e.g. release/v1.2.3 → main) that proves it was opened
+    // by the configured release workflow at the head its metadata records.
+    // A candidate-shaped branch that cannot prove that keeps the cap.
+    const isReleasePr = classifyReleasePr(opts?.releaseConfig ?? null, {
       headRef: prData?.head?.ref ?? null,
       baseRef: prData?.base?.ref ?? null,
-    });
+      headSha: prData?.head?.sha ?? null,
+      author: prData?.user?.login ?? null,
+      headRepoFullName: prData?.head?.repo?.full_name ?? null,
+      baseRepoFullName: prData?.base?.repo?.full_name ?? null,
+      body: prData?.body ?? null,
+    }).kind !== 'none';
 
     const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
     const sourceFiles = files.filter(
@@ -746,7 +755,7 @@ export async function tryAutoMergeWorkerPr(params: {
     // Non-conflict or disabled auto-resolve — notify the mission feed
     if (worker.taskId) {
       const task = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { missionId: true, title: true },
       });
       if (task?.missionId) {
@@ -839,7 +848,7 @@ export async function tryAutoMergeWorkerPr(params: {
   // the integration branch is still open, since merging deletes that branch.
   const mergingTask = worker.taskId
     ? await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
       })
     : null;
@@ -1067,7 +1076,7 @@ async function refreshDeltaBaseForTask(
 ): Promise<string | null> {
   if (!taskId) return null;
   try {
-    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } });
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });
     return refreshDeltaBase(task?.context, gitConfig);
   } catch {
     return null;
@@ -1086,7 +1095,7 @@ async function loadTaskMergeFields(
   if (!taskId) return { mission: null, requiresReview: false };
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { id: true, requiresReview: true },
       with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
     });
@@ -1100,7 +1109,7 @@ async function loadTaskMergeFields(
 
 async function resolveWorkspaceId(taskId: string): Promise<string | null> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { workspaceId: true },
   });
   return task?.workspaceId ?? null;
@@ -1123,7 +1132,7 @@ export async function escalateConflictExhaustion(
   headSha: string,
 ): Promise<void> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, context: true },
   });
   if (!task) return;
@@ -1203,7 +1212,7 @@ export async function escalateReviewerExhaustion(
   lastFeedback: string | null | undefined,
 ): Promise<void> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, context: true },
   });
   if (!task) return;
@@ -1290,7 +1299,7 @@ export async function escalateReviewContractFailure(params: {
   const { taskId, repoFullName, prNumber, headSha, installationId } = params;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, workspaceId: true },
   });
   if (!task) return;
@@ -1376,11 +1385,11 @@ export async function hasActiveReviewerFixTask(
   prNumber: number,
 ): Promise<boolean> {
   const existing = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.reviewerRetryPrNumber, prNumber),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-    ),
+    )),
     columns: { id: true },
   });
   return existing != null;

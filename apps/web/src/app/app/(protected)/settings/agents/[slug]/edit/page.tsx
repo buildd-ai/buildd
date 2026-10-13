@@ -11,6 +11,7 @@ import { personalRoleAccess } from '@/lib/personal-roles-shared';
 import { buildDelegateOptions } from '@/lib/delegate-options';
 import { DEFAULT_ROLES, seedDefaultRolesForTeam } from '@/lib/default-roles';
 import { TeamRoleEditor } from './TeamRoleEditor';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,7 +36,7 @@ export default async function TeamRoleSettingsPage({
   // Visible to the viewer, from their own teams: their own personal roles,
   // teammates' shared ones, never another member's private one.
   const delegateRows = () => db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.isRole, true),
       eq(workspaceSkills.enabled, true),
       or(
@@ -50,7 +51,7 @@ export default async function TeamRoleSettingsPage({
           ),
         ),
       ),
-    ),
+    )),
     columns: { slug: true, name: true, workspaceId: true },
   });
 
@@ -59,16 +60,16 @@ export default async function TeamRoleSettingsPage({
   // /api/roles/[id], which takes workspace rows too. Several workspaces may
   // each hold a role with the slug, so `?id=` picks one.
   const findWorkspaceRole = (id?: string) => wsIds.length === 0 ? undefined : db.query.workspaceSkills.findFirst({
-    where: and(
+    where: sqlWhere(and(
       id ? eq(workspaceSkills.id, id) : eq(workspaceSkills.slug, slug),
       eq(workspaceSkills.isRole, true),
       inArray(workspaceSkills.workspaceId, wsIds),
-    ),
+    )),
   });
   const renderWorkspaceRole = async (wsRole: NonNullable<Awaited<ReturnType<typeof findWorkspaceRole>>>) => {
     const [canEdit, workspaceList, allRoles] = await Promise.all([
       can({ kind: 'user', userId: user.id }, 'manage_agent_roles', wsRole.teamId).catch(() => false),
-      db.query.workspaces.findMany({ where: inArray(workspaces.id, wsIds), columns: { id: true, name: true } }),
+      db.query.workspaces.findMany({ where: sqlWhere(inArray(workspaces.id, wsIds)), columns: { id: true, name: true } }),
       delegateRows(),
     ]);
     // Read-only is the role's own page: its values, with no controls.
@@ -98,7 +99,7 @@ export default async function TeamRoleSettingsPage({
     const canManageRoles = await can({ kind: 'user', userId: user.id }, 'manage_agent_roles', personal.teamId).catch(() => false);
     const access = personalRoleAccess({ isOwner, visibility: personal.visibility, canManageRoles });
     const owner = isOwner ? null : await db.query.users.findFirst({
-      where: eq(users.id, personal.ownerUserId!),
+      where: sqlWhere(eq(users.id, personal.ownerUserId!)),
       columns: { name: true, email: true },
     });
     const delegateOptions = buildDelegateOptions(await delegateRows(), slug, new Map());
@@ -123,13 +124,13 @@ export default async function TeamRoleSettingsPage({
 
   // Find the team-level role by slug
   const findTeamRole = () => db.query.workspaceSkills.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.slug, slug),
       isNull(workspaceSkills.workspaceId),
       // A team role, not a personal row that happens to share the slug.
       isNull(workspaceSkills.ownerUserId),
       inArray(workspaceSkills.teamId, teamIds),
-    ),
+    )),
   });
   let teamRole = await findTeamRole();
 
@@ -166,18 +167,18 @@ export default async function TeamRoleSettingsPage({
   // Get all workspace overrides for this role
   const overrides = wsIds.length > 0
     ? await db.query.workspaceSkills.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(workspaceSkills.teamId, teamRole.teamId),
           eq(workspaceSkills.slug, slug),
           inArray(workspaceSkills.workspaceId, wsIds),
-        ),
+        )),
       })
     : [];
 
   // Get workspace name map
   const workspaceList = wsIds.length > 0
     ? await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
+        where: sqlWhere(inArray(workspaces.id, wsIds)),
         columns: { id: true, name: true },
       })
     : [];

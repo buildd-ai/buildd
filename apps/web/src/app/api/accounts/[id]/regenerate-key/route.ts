@@ -8,6 +8,7 @@ import { hashApiKey, extractApiKeyPrefix, invalidateAccountCacheByHash } from '@
 import { getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 function generateApiKey(): string {
@@ -43,7 +44,7 @@ export async function POST(
 
     // Verify the account exists and belongs to one of the user's teams
     const account = await db.query.accounts.findFirst({
-      where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+      where: sqlWhere(and(eq(accounts.id, id), inArray(accounts.teamId, teamIds))),
     });
 
     if (!account) {

@@ -1710,6 +1710,33 @@ describe('advanceGatedReleaseOnPrMerge', () => {
     expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
   });
 
+  it('frozen candidate: release/v1.2.3 merging ships the cut row only; a dev commit after the cut stays in flight', async () => {
+    setupGatedWorkflowDispatchWorkspace({
+      candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+    });
+    // Newest first: a release dispatched after the cut (dev moved on), then the cut's own row.
+    mockDbSelectReleases.mockResolvedValue([
+      { id: 'release-after-cut', headSha: 'dev-after-cut' },
+      { id: 'release-cut', headSha: 'dev-at-cut' },
+    ]);
+    // The candidate head is dev@cut + one version commit: it contains the cut, not what came later.
+    compareReturns({ 'dev-after-cut': 'diverged', 'dev-at-cut': 'ahead' });
+    mockDbUpdateReturning.mockResolvedValueOnce([{ id: 'release-cut' }]);
+
+    await advanceGatedReleaseOnPrMerge({ ...MERGE, prHeadSha: 'candidate-sha', prTitle: 'Release v1.2.3' });
+
+    expect(mockDbUpdateSet).toHaveBeenCalledTimes(1);
+    const setValues = mockDbUpdateSet.mock.calls[0]?.[0] as any;
+    expect(setValues.state).toBe('deploying');
+    // Deployment identity: the row now names the merge commit production must run.
+    expect(setValues.headSha).toBe('merge-sha');
+    expect(renderWhere(mockDbUpdateWhere.mock.calls[0]?.[0]).params[0]).toBe('release-cut');
+    // Nothing healthy yet: verification of the deployed sha owns that.
+    expect(setValues.healthyAt).toBeUndefined();
+    // The later row was neither advanced, superseded nor shadowed by an external row.
+    expect(mockDbInsert).not.toHaveBeenCalled();
+  });
+
   it('scopes the in-flight lookup to this workspace and the in-flight gated states', async () => {
     setupGatedWorkflowDispatchWorkspace();
     await advanceGatedReleaseOnPrMerge(MERGE);

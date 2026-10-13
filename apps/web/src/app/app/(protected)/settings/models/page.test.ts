@@ -10,8 +10,9 @@ const client = await Bun.file(new URL('../providers/ModelProvidersClient.tsx', i
 
 describe('Settings → Models page', () => {
   it('orders the sections Providers, Used for, Tiers and has no sign-ins or Routing section', () => {
-    expect(client.indexOf('title="Providers"')).toBeGreaterThan(-1);
-    expect(client.indexOf('title="Providers"')).toBeLessThan(client.indexOf('<UsedForSection'));
+    // "Providers", or "Providers · <team>" for someone in several teams.
+    expect(client.indexOf('title={providersTitle(data)}')).toBeGreaterThan(-1);
+    expect(client.indexOf('title={providersTitle(data)}')).toBeLessThan(client.indexOf('<UsedForSection'));
     expect(client).not.toContain('title="Routing"');
     const at = (s: string) => page.indexOf(s);
     expect(page).not.toContain('title="Runner sign-ins"');

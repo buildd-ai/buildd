@@ -33,6 +33,7 @@ import { resolveReReviewPlan } from '@/lib/pr-re-review';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { requestReview as requestKernelReview } from '@/lib/workflow/seam';
 import { workspaceRepo } from '@/lib/workflow/github-facts';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function POST(
   req: NextRequest,
@@ -121,7 +122,7 @@ export async function POST(
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, worker.workspaceId),
+    where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
     with: { githubRepo: { with: { installation: true } } },
   });
   const installationId = (workspace as any)?.githubRepo?.installation?.installationId;
@@ -132,7 +133,7 @@ export async function POST(
 
   const mission = originalTask.missionId
     ? await db.query.missions.findFirst({
-        where: eq(missions.id, originalTask.missionId),
+        where: sqlWhere(eq(missions.id, originalTask.missionId)),
         columns: { mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true },
       })
     : null;
