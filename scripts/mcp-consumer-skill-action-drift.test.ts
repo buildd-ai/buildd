@@ -45,7 +45,7 @@ const mcpToolsSource = readFileSync(join(repoRoot, 'packages/core/mcp-tools.ts')
 const mcpSpecsSource = readFileSync(join(repoRoot, 'packages/core/mcp-specs.ts'), 'utf8');
 
 const GUIDANCE_DIR = 'packages/core/mcp-guidance';
-const GUIDANCE_FILES = readdirSync(join(repoRoot, GUIDANCE_DIR)).filter(f => f.endsWith('.md')).sort();
+const GUIDANCE_FILES = readdirSync(join(repoRoot, GUIDANCE_DIR)).filter(f => f.endsWith('.md') && f !== 'README.md').sort();
 
 /**
  * Guidance topics this task ships. Each must exist (an empty directory would
