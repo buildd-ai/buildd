@@ -72,12 +72,12 @@ describe('detectModelAuthSource', () => {
     expect(detectModelAuthSource({ env: { ANTHROPIC_API_KEY: FAKE_KEY }, home, ...linux }).source).toBe('machine_login');
   });
 
-  test('BUILDD_HOST_SEAT=off with a login is not machine_login (AC-4)', () => {
+  test('BUILDD_HOST_SEAT=off still reports a claude login: it reaches the agent through HOME (AC-4)', () => {
     const home = tmpHome({ credentials: login });
-    const none = detectModelAuthSource({ env: { BUILDD_HOST_SEAT: 'off' }, home, ...linux });
-    expect(none).toEqual({ source: 'none', mode: 'off' });
-    const keyed = detectModelAuthSource({ env: { BUILDD_HOST_SEAT: 'off', ANTHROPIC_API_KEY: FAKE_KEY }, home, ...linux });
-    expect(keyed).toEqual({ source: 'api_key', mode: 'off' });
+    const r = detectModelAuthSource({ env: { BUILDD_HOST_SEAT: 'off', CLAUDE_CODE_OAUTH_TOKEN: FAKE_TOKEN }, home, ...linux });
+    expect(r).toEqual({ source: 'machine_login', mode: 'off' });
+    const mac = detectModelAuthSource({ env: { BUILDD_HOST_SEAT: 'off' }, home: tmpHome(), platform: 'darwin', macKeychainHasLogin: () => true });
+    expect(mac).toEqual({ source: 'machine_login', mode: 'off' });
   });
 
   test('BUILDD_HOST_SEAT=off also stops the env token from counting', () => {

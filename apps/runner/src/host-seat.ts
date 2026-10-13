@@ -187,7 +187,11 @@ export interface ModelAuthReport {
 export function detectModelAuthSource(probe: HostSeatProbe = {}): ModelAuthReport {
   const env = probe.env ?? process.env;
   const mode = hostSeatMode(env);
-  const seat = detectHostSeat({ ...probe, env });
+  // `off` withholds only the env token (applyHostSeatPolicy deletes it); a
+  // `claude login` still reaches the agent through HOME, so it still counts.
+  const seat = mode === 'off'
+    ? detectHostSeat({ ...probe, env: { ...env, [HOST_SEAT_ENV]: 'auto', [HOST_SEAT_TOKEN_VAR]: '' } })
+    : detectHostSeat({ ...probe, env });
   if (seat === 'env') return { source: 'machine_token', mode };
   if (seat === 'login') return { source: 'machine_login', mode };
   const has = (name: string) => (env[name] ?? '').trim().length > 0;
