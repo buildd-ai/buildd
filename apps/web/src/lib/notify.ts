@@ -26,6 +26,7 @@ import {
   type TeamChannel,
   type PushoverChannel,
 } from './notify-rules';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Pure routing rules live in ./notify-rules (no DB) for unit-testability.
 export {
@@ -53,13 +54,13 @@ export interface NotifyPayload {
  */
 export async function getTeamChannel(teamId: string): Promise<TeamChannel> {
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, teamId),
       isNull(secrets.accountId),
       isNull(secrets.workspaceId),
       // Never a person's own row (pushover_personal): team alerts use the team channel only.
       isNull(secrets.userId),
-    ),
+    )),
     columns: { purpose: true, encryptedValue: true },
   });
 
@@ -106,7 +107,7 @@ function safeDecrypt(value: string): string | null {
 /** Load a team's event preferences, falling back to defaults when no row exists. */
 export async function getTeamPreferences(teamId: string): Promise<Record<NotifyEvent, boolean>> {
   const row = await db.query.notificationPreferences.findFirst({
-    where: eq(notificationPreferences.teamId, teamId),
+    where: sqlWhere(eq(notificationPreferences.teamId, teamId)),
     columns: { taskClaimed: true, taskCompleted: true, taskFailed: true, credentialExpired: true, connectorBlocked: true, artifactReady: true },
   });
   if (!row) return { ...DEFAULT_NOTIFICATION_PREFERENCES };
@@ -204,22 +205,22 @@ export interface AlertSubject {
 }
 
 async function taskWorkspace(taskId: string): Promise<string | null> {
-  const t = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { workspaceId: true } });
+  const t = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { workspaceId: true } });
   return t?.workspaceId ?? null;
 }
 
 async function resolveSubjectTeam(subject: AlertSubject): Promise<string | null> {
   if (subject.teamId) return subject.teamId;
   if (subject.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, subject.workspaceId), columns: { teamId: true } });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, subject.workspaceId)), columns: { teamId: true } });
     return ws?.teamId ?? null;
   }
   if (subject.missionId) {
-    const m = await db.query.missions.findFirst({ where: eq(missions.id, subject.missionId), columns: { teamId: true } });
+    const m = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, subject.missionId)), columns: { teamId: true } });
     return m?.teamId ?? null;
   }
   if (subject.taskId) {
-    const t = await db.query.tasks.findFirst({ where: eq(tasks.id, subject.taskId), columns: { workspaceId: true } });
+    const t = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, subject.taskId)), columns: { workspaceId: true } });
     return t?.workspaceId ? resolveSubjectTeam({ workspaceId: t.workspaceId }) : null;
   }
   return null;

@@ -1,77 +1,67 @@
 /**
  * View model for Health > Estimates: the readout (packages/core
- * task-estimate-accuracy.ts) in the words a person reads. Pure and client-safe.
+ * task-estimate-accuracy.ts) as the one accuracy line a team reads
+ * (docs/specs/task-estimates.md, "Team surface"). Pure and client-safe.
+ *
+ * The per-kind, per-area and per-source breakdowns, tokens and the chart are
+ * operator detail and are not rendered here; the team API still returns them.
  */
-import type { TaskEstimateReadout } from '@buildd/core/task-estimate-accuracy';
+import type { GroupScore, TaskEstimateReadout } from '@buildd/core/task-estimate-accuracy';
 
 type BacktestScore = TaskEstimateReadout['overall'];
 
-export interface ScatterPoint { estimate: number; actual: number }
-
+/** Below this many scored tasks no rate is shown, rounded or otherwise. */
 export const MIN_SCORED_FOR_VERDICT = 10;
 
-export interface Headline { lead: string; basis: string | null }
+/** Sources that mean the repo had little history to go on. */
+const LIMITED_HISTORY_SOURCES = ['prior', 'default'];
 
-/** The result first. Below the minimum it says so rather than guessing. */
-export function estimatesHeadline(overall: BacktestScore): Headline {
+export interface EstimatesReadoutView {
+  lead: string;
+  sample: string | null;
+  typical: string | null;
+  limitedHistory: string | null;
+}
+
+export function estimatesReadout(readout: Pick<TaskEstimateReadout, 'overall' | 'bySource'>): EstimatesReadoutView {
+  const { overall } = readout;
+  const limitedHistory = limitedHistoryLine(readout.bySource);
   if (overall.scored < MIN_SCORED_FOR_VERDICT || overall.withinP80 == null) {
-    return { lead: 'Not enough finished tasks to judge the estimates.', basis: overall.scored > 0 ? `Based on ${overall.scored} ${overall.scored === 1 ? 'task' : 'tasks'} so far.` : null };
+    return {
+      lead: 'Not enough finished tasks to assess estimates.',
+      sample: overall.scored > 0 ? `${overall.scored} finished so far.` : null,
+      typical: null,
+      limitedHistory,
+    };
   }
-  const inTen = Math.round(overall.withinP80 * 10);
-  const basis = `Based on ${overall.scored} tasks.`;
-  if (overall.withinP80 >= 0.7) {
-    return { lead: inTen >= 10 ? 'Almost every task finished within estimate.' : 'Most tasks finished within estimate.', basis: `${inTen} in 10 finished within the upper estimate. ${basis}` };
-  }
-  return { lead: 'Many tasks ran past their estimate.', basis: `Only ${inTen} in 10 finished within the upper estimate. ${basis}` };
+  return {
+    lead: `${inTen(overall.withinP80)} in 10 tasks finished within the upper estimate.`,
+    sample: `Across ${overall.scored} finished tasks.`,
+    typical: typicalBiasLine(overall),
+    limitedHistory,
+  };
 }
 
-/**
- * Cold-start caveat: how many scored estimates leaned mostly on other repos'
- * history (the new-repo prior), and how they did. Null when none did.
- */
-export function coldStartNote(readout: Pick<TaskEstimateReadout, 'bySource'>): string | null {
-  const prior = readout.bySource.find(g => g.key === 'prior')?.score;
-  if (!prior || prior.scored === 0) return null;
-  const n = `${prior.scored} ${prior.scored === 1 ? 'estimate' : 'estimates'}`;
-  if (prior.scored < MIN_SCORED_FOR_VERDICT || prior.withinP80 == null) {
-    return `${n} had little history in the repo to go on. Treat those as rough.`;
-  }
-  return `${n} had little history in the repo to go on: ${Math.round(prior.withinP80 * 10)} in 10 finished within the upper estimate, typically ${typicalLine(prior)}.`;
+/** A share as "X in 10". Never rounds up to 10 or down to 0 unless every or no task did. */
+export function inTen(share: number): number {
+  const x = Math.round(share * 10);
+  if (share < 1 && x >= 10) return 9;
+  if (share > 0 && x <= 0) return 1;
+  return x;
 }
 
-/** "on target", "about 1.5x longer than estimated" from median actual / p50. */
-export function typicalLine(score: BacktestScore): string {
+/** The typical overrun or underrun (median actual / p50), only when it is outside 0.85 to 1.15. */
+export function typicalBiasLine(score: BacktestScore): string | null {
   const r = score.medianRatio;
-  if (r == null) return 'n/a';
-  if (r >= 0.85 && r <= 1.15) return 'on target';
+  if (r == null || r <= 0 || (r >= 0.85 && r <= 1.15)) return null;
   const x = r > 1 ? r : 1 / r;
-  return `${x >= 10 ? Math.round(x) : x.toFixed(1)}x ${r > 1 ? 'longer' : 'shorter'}`;
+  return `Typically ran ${x >= 10 ? Math.round(x) : x.toFixed(1)}x ${r > 1 ? 'longer' : 'shorter'} than estimated.`;
 }
 
-export const pct = (v: number | null) => (v == null ? 'n/a' : `${Math.round(v * 100)}%`);
-
-const SOURCE_LABEL: Record<string, string> = {
-  neighbours: 'Similar tasks', clusters: 'Same area', prior: 'New-repo prior', default: 'No evidence',
-};
-export const sourceLabel = (k: string) => SOURCE_LABEL[k] ?? k;
-
-/** Log-scale position in [0,1] of v within [lo, hi]. */
-export function logPos(v: number, lo: number, hi: number): number {
-  const a = Math.log(Math.max(v, lo));
-  return (a - Math.log(lo)) / (Math.log(hi) - Math.log(lo) || 1);
-}
-
-/** Axis bounds that hold every point on a log scale, as round minute values. */
-export function scatterBounds(points: readonly ScatterPoint[]): { lo: number; hi: number } {
-  if (points.length === 0) return { lo: 1, hi: 100 };
-  const vals = points.flatMap(p => [p.estimate, p.actual]).filter(v => v > 0);
-  const lo = Math.max(1, Math.floor(Math.min(...vals)));
-  const hi = Math.max(lo * 10, Math.ceil(Math.max(...vals)));
-  return { lo, hi };
-}
-
-/** The p80 band's width as a multiple of the p50, the median across rows. */
-export function medianBandRatio(rows: ReadonlyArray<{ p50: number; p80: number }>): number {
-  const rs = rows.filter(r => r.p50 > 0 && r.p80 >= r.p50).map(r => r.p80 / r.p50).sort((a, b) => a - b);
-  return rs.length ? rs[Math.floor(rs.length / 2)] : 1.5;
+/** How many scored estimates leaned mostly on the new-repo prior or on no evidence. A count, never a rate. */
+export function limitedHistoryLine(bySource: readonly GroupScore[]): string | null {
+  const n = bySource
+    .filter(g => LIMITED_HISTORY_SOURCES.includes(g.key))
+    .reduce((sum, g) => sum + g.score.scored, 0);
+  return n > 0 ? `${n} of these had little history in the repo to go on.` : null;
 }

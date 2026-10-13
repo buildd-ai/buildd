@@ -24,6 +24,7 @@ import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/missi
 import { readAuditedSha } from '@/lib/workflow/visual-review-state';
 import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface EnsureSurfaceAuditParams {
   missionId: string;
@@ -87,7 +88,7 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   if (isTrunkRefreshTask(createdTask)) return;
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, title: true, autoSurfaceAudit: true, teamId: true },
   });
   if (!mission || mission.autoSurfaceAudit === false) return;
@@ -99,12 +100,12 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   // Newest first: after a waiting-input retry clone or a later round there is
   // more than one audit, and the one that matters is the latest.
   const existingAudit = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`),
-    ),
+    )),
     columns: { id: true, title: true, status: true, dependsOn: true, context: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
 
   if (existingAudit && isSurfaceFixTask(createdTask.title)) {
@@ -138,13 +139,13 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     // routes, and its retry clone inherits the edge.
     const roundOne = surfaceAuditRound(existingAudit) > 1
       ? await db.query.tasks.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(tasks.missionId, missionId),
             like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`),
             notLike(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}round %`),
-          ),
+          )),
           columns: { id: true, title: true, status: true, dependsOn: true, context: true },
-          orderBy: [desc(tasks.createdAt)],
+          orderBy: sqlOrderBy([desc(tasks.createdAt)]),
         })
       : existingAudit;
     if (!roundOne) return;
@@ -166,10 +167,10 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   if (!touchesUiSurface(createdTask.pathManifest)) return;
 
   const builderTasks = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       eq(tasks.taskClass, 'work'),
-    ),
+    )),
     columns: { id: true, title: true, pathManifest: true, context: true },
   });
   const nonAuditBuilderTasks = builderTasks.filter(t => !isSurfaceAuditTask(t.title) && !isTrunkRefreshTask(t));
@@ -254,7 +255,7 @@ export type SurfaceAuditPlan =
  */
 export async function planMissionSurfaceAudit(missionId: string, opts: RequestSurfaceAuditOptions = {}): Promise<SurfaceAuditPlan> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: {
       id: true, title: true, status: true, workspaceId: true, autoSurfaceAudit: true,
       workingBranch: true, integrationBranchEnabled: true, executor: true,
@@ -265,9 +266,9 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
   if (!mission.workspaceId) return { ok: false, reason: 'no_workspace' };
 
   const audits = await db.query.tasks.findMany({
-    where: and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`)),
+    where: sqlWhere(and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`))),
     columns: { id: true, status: true, context: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
   // A finished audit is the answer only for the commit it looked at. Asked for a
   // head, a completed audit stamped for another one is history, not a live review.
@@ -276,7 +277,7 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
   if (live) return { ok: true, mission, live: { id: live.id, status: live.status } };
 
   const [targetWorkspace, missionTasks] = await Promise.all([
-    db.query.workspaces.findFirst({ where: eq(workspaces.id, mission.workspaceId) }),
+    db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)) }),
     loadSurfaceAuditGateTasks(missionId),
   ]);
   if (!targetWorkspace) return { ok: false, reason: 'no_workspace' };
@@ -419,11 +420,11 @@ async function followUpSurfaceFix(opts: {
   if (plan.action === 'escalate') {
     // One question per mission while it is open: a round files several fixes.
     const existing = await db.query.missionNotes.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(missionNotes.missionId, missionId),
         eq(missionNotes.title, SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE),
         eq(missionNotes.status, 'open'),
-      ),
+      )),
       columns: { id: true },
     });
     if (existing) return;
@@ -507,9 +508,9 @@ export async function detachFixFromPendingAudit(opts: {
 }): Promise<DetachFixResult> {
   const { missionId, fixTaskId, route } = opts;
   const audit = await db.query.tasks.findFirst({
-    where: and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`)),
+    where: sqlWhere(and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`))),
     columns: { id: true, title: true, status: true, dependsOn: true, context: true, workspaceId: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
   if (!audit || audit.status !== 'pending') return { action: 'none' };
   const deps = Array.isArray(audit.dependsOn) ? (audit.dependsOn as string[]) : [];
@@ -532,7 +533,7 @@ export async function detachFixFromPendingAudit(opts: {
   let nextRoutes = routes;
   if (route && routes.includes(route)) {
     const others = remaining.length > 0
-      ? await db.query.tasks.findMany({ where: inArray(tasks.id, remaining), columns: { id: true, title: true } })
+      ? await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, remaining)), columns: { id: true, title: true } })
       : [];
     if (!others.some(t => surfaceFixRoute(t.title) === route)) nextRoutes = routes.filter(r => r !== route);
   }

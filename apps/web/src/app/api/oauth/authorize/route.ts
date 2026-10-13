@@ -6,22 +6,30 @@ import { getAccountResourceUrl, getIssuer, getJwtSecret } from '@/lib/oauth/conf
 import { levelForTeamRole } from '@/lib/oauth/session-level';
 import {
   applyNav,
+  classifyResource,
+  clientIdentity,
   grantedScopeString,
   initialConsentState,
-  isAccountResource,
   parseRequestedAccess,
+  pickerTeams,
   readConsentForm,
   renderAccountConsentPage,
   renderGrantInterstitial,
+  renderLegacyConsentPage,
+  renderLegacyInterstitial,
   validateApproval,
+  type ClientIdentity,
   type ConsentState,
   type ConsentTeam,
 } from '@/lib/oauth/account-consent';
 import { createGrant } from '@/lib/mcp-grants';
 import { consentTeamsForUser } from '@/lib/mcp-grant-admin';
 import { db } from '@buildd/core/db';
-import { teamMembers, workspaces } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { teamMembers, teams, workspaces } from '@buildd/core/db/schema';
+import { and, eq } from 'drizzle-orm';
+import { isSystemWorkspace } from '@buildd/shared';
+import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,24 +83,30 @@ export function isRegisteredRedirectUri(registeredUris: string[], requestedUri: 
 }
 
 /**
- * Returns workspaces the user can access through team membership, with the
- * user's role on each workspace's team. Used for the workspace picker and to
- * state on the consent page what access the connection will have.
+ * The one workspace an older per-workspace address names, when the user is on
+ * its team now, with what the legacy consent page shows about it.
  */
-async function workspacesForUser(userId: string) {
-  const memberships = await db.query.teamMembers.findMany({
-    where: eq(teamMembers.userId, userId),
-    columns: { teamId: true, role: true },
+async function legacyWorkspaceForUser(userId: string, workspaceId: string) {
+  if (!isUuid(workspaceId)) return null;
+  const ws = await db.query.workspaces.findFirst({
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
+    columns: { id: true, name: true, repo: true, teamId: true },
   });
-  const roleByTeam = new Map(memberships.map((m) => [m.teamId, m.role as string | null | undefined]));
-  const teamIds = memberships.map((m) => m.teamId);
-  if (teamIds.length === 0) return [];
-  const rows = await db.query.workspaces.findMany({
-    where: inArray(workspaces.teamId, teamIds),
-    columns: { id: true, name: true, teamId: true },
-    orderBy: (w, { asc }) => [asc(w.name)],
+  if (!ws) return null;
+  const membership = await db.query.teamMembers.findFirst({
+    where: sqlWhere(and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, ws.teamId))),
+    columns: { role: true },
   });
-  return rows.map((w) => ({ ...w, role: roleByTeam.get(w.teamId) ?? null }));
+  if (!membership) return null;
+  const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, ws.teamId)), columns: { name: true } });
+  return {
+    id: ws.id,
+    name: ws.name,
+    repo: ws.repo ?? null,
+    system: isSystemWorkspace(ws.name),
+    teamName: team?.name ?? '',
+    role: (membership.role as string | null | undefined) ?? null,
+  };
 }
 
 /** The authorize parameters, read from the GET query or the consent POST body. */
@@ -231,28 +245,28 @@ const HTML_HEADERS = {
  *   1. Validate client_id + redirect_uri (must match registered values)
  *   2. Validate PKCE params (S256 only — plain forbidden by OAuth 2.1)
  *   3. Require a logged-in NextAuth session; redirect to signin if absent
- *   4. Require a workspace param. If absent, render a workspace picker.
- *   5. Verify the user has access to the chosen workspace
- *   6. Render a consent page: client, workspace, and the access the
- *      connection will have (the user's team role). No code is issued.
- *
- * Account-level connection (`resource=<issuer>/api/mcp`, RFC 8707): steps 4-6
- * become the account consent page (lib/oauth/account-consent.ts): the user's
- * teams with their workspaces, the kind of connection (agent by default,
- * person only if the client asked with `buildd:act-as-person`) and read/write.
- * Approving creates an MCP grant and a code bound to it, not to a workspace.
+ *   4. Classify the RFC 8707 `resource` (classifyResource):
+ *      - none or `<issuer>/api/mcp`: the account consent page
+ *        (lib/oauth/account-consent.ts): the user's teams and workspaces,
+ *        internal workspaces left out (pickerTeams), the kind of connection
+ *        and read/write. This is the default for every new connection.
+ *      - `<issuer>/api/mcp-oauth/<workspace>`: an older per-workspace
+ *        address. Consent for that one workspace only, plus the address
+ *        that reaches several. The token stays bound to that workspace.
+ *      - anything else: `invalid_target` back to the client.
+ *   No code is issued on GET.
  *
  * POST (the consent form):
- *   7. Same-origin + consent token bound to the user and every parameter
- *   8. Deny → redirect back with access_denied
- *   9. Approve → mint a one-shot auth code keyed to (clientId, userId,
- *      workspaceId) and hand it back to the client.
+ *   5. Same-origin + consent token bound to the user and every parameter
+ *   6. Deny → redirect back with access_denied
+ *   7. Approve → re-check against current membership, then a one-shot code
+ *      bound to a new grant (account) or to the one workspace (legacy).
  */
 export async function GET(req: NextRequest) {
   const p = readParams(req.nextUrl.searchParams);
   const checked = await validateRequest(p);
   if (!checked.ok) return checked.response;
-  const { client, clientId } = checked.v;
+  const { client, clientId, redirectUri } = checked.v;
 
   const session = await auth();
   const userId = session?.user?.id;
@@ -263,56 +277,44 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(signinUrl);
   }
 
-  if (isAccountResource(p.resource, getAccountResourceUrl())) {
-    const consentTeams = await consentTeamsForUser(userId);
-    if (consentTeams.length === 0) {
-      return plainError('no workspaces available for this account — sign in to buildd and create one first', 403);
+  const target = classifyResource(p.resource, getAccountResourceUrl());
+  if (target.kind === 'unknown') return redirectWithError(redirectUri, 'invalid_target', p.state);
+  const identity = clientIdentity(client.clientName ?? clientId, redirectUri);
+
+  if (target.kind === 'legacy') {
+    if (p.workspaceId && p.workspaceId !== target.workspaceId) {
+      return plainError('the workspace does not match the address this app connected to', 400);
     }
-    const requested = parseRequestedAccess(p.scope);
-    return accountConsentResponse({
-      clientName: client.clientName ?? clientId,
-      redirectUri: checked.v.redirectUri,
-      params: p,
-      userId,
-      teams: consentTeams,
-      state: initialConsentState(consentTeams, requested, p.workspaceId),
-      requested,
-    });
+    const ws = await legacyWorkspaceForUser(userId, target.workspaceId);
+    if (!ws) return plainError('you do not have access to that workspace', 403);
+    return new NextResponse(
+      renderLegacyConsentPage({
+        clientName: identity.name,
+        clientVerified: identity.verified,
+        redirectHost: redirectHostOf(redirectUri),
+        hidden: hiddenFields(p, createConsentToken(userId, p)),
+        workspace: { name: ws.name, teamName: ws.teamName, repo: ws.repo, system: ws.system },
+        level: levelForTeamRole(ws.role),
+        canonicalUrl: getAccountResourceUrl(),
+      }),
+      { status: 200, headers: HTML_HEADERS },
+    );
   }
 
-  // Workspace selection: when omitted, show a picker that links back here with ?workspace=<id>.
-  if (!p.workspaceId) {
-    const available = await workspacesForUser(userId);
-    if (available.length === 0) {
-      return plainError(
-        'no workspaces available for this account — sign in to buildd and create one first',
-        403,
-      );
-    }
-    return new NextResponse(renderWorkspacePicker(req, available, client.clientName ?? clientId), {
-      status: 200,
-      headers: HTML_HEADERS,
-    });
+  const consentTeams = pickerTeams(await consentTeamsForUser(userId), p.workspaceId);
+  if (consentTeams.length === 0) {
+    return plainError('no workspaces available for this account — sign in to buildd and create one first', 403);
   }
-
-  // Verify access to the chosen workspace.
-  const allowed = await workspacesForUser(userId);
-  const chosen = allowed.find((w) => w.id === p.workspaceId);
-  if (!chosen) {
-    return plainError('you do not have access to that workspace', 403);
-  }
-
-  return new NextResponse(
-    renderConsentPage({
-      clientName: client.clientName ?? clientId,
-      workspaceName: chosen.name,
-      level: levelForTeamRole(chosen.role),
-      redirectUri: checked.v.redirectUri,
-      params: p,
-      consentToken: createConsentToken(userId, p),
-    }),
-    { status: 200, headers: HTML_HEADERS },
-  );
+  const requested = parseRequestedAccess(p.scope);
+  return accountConsentResponse({
+    identity,
+    redirectUri,
+    params: p,
+    userId,
+    teams: consentTeams,
+    state: initialConsentState(consentTeams, requested, p.workspaceId),
+    requested,
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -336,8 +338,12 @@ export async function POST(req: NextRequest) {
     return plainError('consent expired or invalid — start the connection again', 403);
   }
 
-  if (isAccountResource(p.resource, getAccountResourceUrl())) {
-    return accountConsentPost({ form, p, userId, clientId, clientName: client.clientName ?? clientId, redirectUri, codeChallenge });
+  const target = classifyResource(p.resource, getAccountResourceUrl());
+  if (target.kind === 'unknown') return redirectWithError(redirectUri, 'invalid_target', p.state, 303);
+  const identity = clientIdentity(client.clientName ?? clientId, redirectUri);
+
+  if (target.kind !== 'legacy') {
+    return accountConsentPost({ form, p, userId, clientId, identity, redirectUri, codeChallenge });
   }
 
   if (form.get('decision') !== 'approve') {
@@ -345,16 +351,17 @@ export async function POST(req: NextRequest) {
   }
 
   // Re-check access at approval time; membership may have changed since GET.
-  const allowed = p.workspaceId ? await workspacesForUser(userId) : [];
-  const chosen = allowed.find((w) => w.id === p.workspaceId);
-  if (!chosen || !p.workspaceId) {
-    return plainError('you do not have access to that workspace', 403);
+  // The workspace comes from the resource, never from a form field.
+  if (p.workspaceId && p.workspaceId !== target.workspaceId) {
+    return plainError('the workspace does not match the address this app connected to', 400);
   }
+  const ws = await legacyWorkspaceForUser(userId, target.workspaceId);
+  if (!ws) return plainError('you do not have access to that workspace', 403);
 
   const code = await createAuthCode({
     clientId,
     userId,
-    workspaceId: p.workspaceId,
+    workspaceId: ws.id,
     redirectUri,
     codeChallenge,
     codeChallengeMethod: p.codeChallengeMethod,
@@ -365,15 +372,17 @@ export async function POST(req: NextRequest) {
   cbUrl.searchParams.set('code', code);
   if (p.state) cbUrl.searchParams.set('state', p.state);
 
-  // Brief confirmation interstitial before redirecting back to the OAuth
-  // client, so the user sees which workspace the connection is scoped to.
-  //
-  // The page auto-redirects via meta refresh after 1s, with a visible fallback
-  // link. The URL is deliberately never inlined into a <script>: JSON.stringify
-  // does not neutralise a script-closing sequence, and the URL parser preserves
-  // raw angle brackets in the opaque path of a non-special scheme.
+  // Brief confirmation before redirecting back to the OAuth client. The page
+  // auto-redirects via meta refresh after 1s, with a visible fallback link.
+  // The URL is deliberately never inlined into a <script>: JSON.stringify
+  // does not neutralise a script-closing sequence, and the URL parser
+  // preserves raw angle brackets in the opaque path of a non-special scheme.
   return new NextResponse(
-    renderAuthorizedInterstitial(chosen.name, cbUrl.toString(), client.clientName ?? clientId),
+    renderLegacyInterstitial({
+      clientName: identity.name,
+      redirectUrl: cbUrl.toString(),
+      workspaceName: ws.system ? 'Organizer' : ws.name,
+    }),
     { status: 200, headers: HTML_HEADERS },
   );
 }
@@ -387,8 +396,8 @@ function redirectHostOf(redirectUri: string): string {
   }
 }
 
-/** The authorize parameters carried through the account consent form. */
-function accountHiddenFields(p: AuthorizeParams, consentToken: string): Array<[string, string | null]> {
+/** The authorize parameters carried through either consent form. */
+function hiddenFields(p: AuthorizeParams, consentToken: string): Array<[string, string | null]> {
   return [
     ['response_type', p.responseType],
     ['client_id', p.clientId],
@@ -404,7 +413,7 @@ function accountHiddenFields(p: AuthorizeParams, consentToken: string): Array<[s
 }
 
 function accountConsentResponse(args: {
-  clientName: string;
+  identity: ClientIdentity;
   redirectUri: string;
   params: AuthorizeParams;
   userId: string;
@@ -415,9 +424,10 @@ function accountConsentResponse(args: {
   status?: number;
 }) {
   const html = renderAccountConsentPage({
-    clientName: args.clientName,
+    clientName: args.identity.name,
+    clientVerified: args.identity.verified,
     redirectHost: redirectHostOf(args.redirectUri),
-    hidden: accountHiddenFields(args.params, createConsentToken(args.userId, args.params)),
+    hidden: hiddenFields(args.params, createConsentToken(args.userId, args.params)),
     teams: args.teams,
     state: args.state,
     requested: args.requested,
@@ -430,15 +440,16 @@ function accountConsentResponse(args: {
  * The account consent form, after the same-origin and consent-token checks.
  * Cancel returns access_denied; a page action (search, page, select all)
  * re-renders with the carried selection; Approve re-validates the selection,
- * the kind and the permissions against the user's teams now and what the
- * client asked for, then creates the grant and a code bound to it.
+ * the kind and the permissions against the user's teams now (the same picker
+ * set the page offered) and what the client asked for, then creates the grant
+ * and a code bound to it.
  */
 async function accountConsentPost(args: {
   form: URLSearchParams;
   p: AuthorizeParams;
   userId: string;
   clientId: string;
-  clientName: string;
+  identity: ClientIdentity;
   redirectUri: string;
   codeChallenge: string;
 }) {
@@ -446,10 +457,10 @@ async function accountConsentPost(args: {
   const decision = form.get('decision');
   if (decision === 'deny') return redirectWithError(redirectUri, 'access_denied', p.state, 303);
 
-  const consentTeams = await consentTeamsForUser(userId);
+  const consentTeams = pickerTeams(await consentTeamsForUser(userId), p.workspaceId);
   const requested = parseRequestedAccess(p.scope);
   const page = (state: ConsentState, error?: string, status?: number) => accountConsentResponse({
-    clientName: args.clientName, redirectUri, params: p, userId, teams: consentTeams, state, requested, error, status,
+    identity: args.identity, redirectUri, params: p, userId, teams: consentTeams, state, requested, error, status,
   });
 
   if (decision !== 'approve') {
@@ -490,202 +501,11 @@ async function accountConsentPost(args: {
   if (p.state) cbUrl.searchParams.set('state', p.state);
   return new NextResponse(
     renderGrantInterstitial({
-      clientName: args.clientName,
+      clientName: args.identity.name,
       redirectUrl: cbUrl.toString(),
       workspaceCount: check.workspaceIds.length,
       actsAs: check.actsAs,
     }),
     { status: 200, headers: HTML_HEADERS },
   );
-}
-
-const ACCESS_DESCRIPTIONS: Record<'admin' | 'worker', { label: string; detail: string }> = {
-  admin: {
-    label: 'Admin',
-    detail: 'Everything you can do as a team admin here, including schedules, missions, secrets and workspace settings.',
-  },
-  worker: {
-    label: 'Member',
-    detail: 'Task work: read, create, claim and update tasks, artifacts and pull requests. Admin actions are not available.',
-  },
-};
-
-/**
- * Consent page. A plain HTML form POSTing back to this endpoint with the
- * original parameters and the consent token; nothing is issued until the
- * user clicks Approve. Every value is HTML-escaped; no inline script.
- */
-function renderConsentPage(args: {
-  clientName: string;
-  workspaceName: string;
-  level: 'admin' | 'worker';
-  redirectUri: string;
-  params: AuthorizeParams;
-  consentToken: string;
-}): string {
-  const { params: p } = args;
-  const hidden: Array<[string, string | null]> = [
-    ['response_type', p.responseType],
-    ['client_id', p.clientId],
-    ['redirect_uri', p.redirectUri],
-    ['code_challenge', p.codeChallenge],
-    ['code_challenge_method', p.codeChallengeMethod],
-    ['state', p.state],
-    ['scope', p.scope],
-    ['workspace', p.workspaceId],
-    ['resource', p.resource],
-    ['csrf_token', args.consentToken],
-  ];
-  const inputs = hidden
-    .filter(([, v]) => v !== null)
-    .map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v as string)}">`)
-    .join('\n');
-  const access = ACCESS_DESCRIPTIONS[args.level];
-  let redirectHost = args.redirectUri;
-  try {
-    const u = new URL(args.redirectUri);
-    redirectHost = u.host || u.protocol;
-  } catch {
-    // keep the raw value; it is escaped below
-  }
-  const safeClient = escapeHtml(args.clientName);
-  const safeWs = escapeHtml(args.workspaceName);
-
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Authorize ${safeClient}</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #fafafa; margin: 0; padding: 2rem; }
-  .wrap { max-width: 480px; margin: 2rem auto 0; }
-  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
-  dl { background: #171717; border: 1px solid #262626; border-radius: 0.5rem; padding: 1rem; margin: 0 0 1.5rem; }
-  dt { color: #a3a3a3; font-size: 0.8rem; margin-top: 0.75rem; }
-  dt:first-child { margin-top: 0; }
-  dd { margin: 0.25rem 0 0; }
-  .detail { color: #a3a3a3; font-size: 0.875rem; margin-top: 0.25rem; line-height: 1.4; }
-  .actions { display: flex; gap: 0.75rem; }
-  button { flex: 1; padding: 0.75rem; border-radius: 0.5rem; font-size: 1rem; cursor: pointer; border: 1px solid #262626; }
-  .approve { background: #fafafa; color: #0a0a0a; }
-  .deny { background: #171717; color: #fafafa; }
-</style>
-</head>
-<body>
-<div class="wrap">
-<h1>Allow ${safeClient} to access buildd?</h1>
-<dl>
-  <dt>Application</dt><dd>${safeClient}</dd>
-  <dt>Workspace</dt><dd>${safeWs}</dd>
-  <dt>Access</dt><dd data-access-level="${args.level}">${access.label} (your team role)<div class="detail">${escapeHtml(access.detail)}</div></dd>
-  <dt>Returns to</dt><dd>${escapeHtml(redirectHost)}</dd>
-</dl>
-<form method="post" action="/api/oauth/authorize">
-${inputs}
-<div class="actions">
-  <button class="deny" type="submit" name="decision" value="deny">Cancel</button>
-  <button class="approve" type="submit" name="decision" value="approve">Approve</button>
-</div>
-</form>
-</div>
-</body>
-</html>`;
-}
-
-/**
- * Minimal HTML workspace picker — keeps the OAuth flow self-contained, no
- * React/client component round-trip. Each button submits the same authorize
- * URL with workspace=<id> appended. Inline styles only; no asset deps.
- */
-function renderWorkspacePicker(
-  req: NextRequest,
-  available: Array<{ id: string; name: string }>,
-  clientName: string,
-): string {
-  const baseUrl = req.nextUrl.pathname + req.nextUrl.search;
-  const items = available
-    .map((w) => {
-      const url = `${baseUrl}${req.nextUrl.search.includes('?') ? '&' : '?'}workspace=${encodeURIComponent(w.id)}`;
-      return `<a class="ws" href="${url}"><div class="name">${escapeHtml(w.name)}</div><div class="id">${escapeHtml(w.id)}</div></a>`;
-    })
-    .join('');
-
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Authorize ${escapeHtml(clientName)}</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #fafafa; margin: 0; padding: 2rem; }
-  .wrap { max-width: 480px; margin: 0 auto; }
-  h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
-  p { color: #a3a3a3; margin: 0 0 1.5rem; line-height: 1.5; }
-  .ws { display: block; padding: 1rem; background: #171717; border: 1px solid #262626; border-radius: 0.5rem; margin-bottom: 0.5rem; text-decoration: none; color: #fafafa; transition: background 0.1s; }
-  .ws:hover { background: #1f1f1f; }
-  .name { font-weight: 500; }
-  .id { font-family: monospace; font-size: 0.75rem; color: #737373; margin-top: 0.25rem; }
-</style>
-</head>
-<body>
-<div class="wrap">
-<h1>Authorize ${escapeHtml(clientName)}</h1>
-<p>Pick the buildd workspace this connection should have access to. The connector will be scoped to this workspace only — to expose another workspace, add it as a separate connector.</p>
-${items}
-</div>
-</body>
-</html>`;
-}
-
-/**
- * Confirmation page rendered after the user approves and before the OAuth
- * code-redirect fires. Two paths complete the redirect, both of which put
- * the URL in an HTML context that escapeHtml fully neutralises:
- *   - <meta http-equiv="refresh"> (works without JS, ~1s delay)
- *   - a visible <a> for users the meta refresh doesn't move
- * The redirect URL must NOT be inlined into a <script>: it is client-controlled
- * (registered redirect_uri) and JSON.stringify does not escape `</script>`.
- */
-function renderAuthorizedInterstitial(
-  workspaceName: string,
-  redirectUrl: string,
-  clientName: string,
-): string {
-  const safeWs = escapeHtml(workspaceName);
-  const safeClient = escapeHtml(clientName);
-  const safeUrl = escapeHtml(redirectUrl);
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Connected to ${safeWs}</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="1;url=${safeUrl}">
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #fafafa; margin: 0; padding: 2rem; }
-  .wrap { max-width: 480px; margin: 4rem auto 0; text-align: center; }
-  .check { font-size: 3rem; color: #22c55e; line-height: 1; margin-bottom: 1rem; }
-  h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
-  .ws { font-size: 1.5rem; font-weight: 600; color: #fafafa; margin: 0.5rem 0 1.5rem; }
-  p { color: #a3a3a3; margin: 0 0 1.5rem; line-height: 1.5; }
-  .hint { color: #737373; font-size: 0.875rem; margin-top: 2rem; }
-  a { color: #60a5fa; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-</style>
-</head>
-<body>
-<div class="wrap">
-<div class="check">✓</div>
-<h1>Authorized ${safeClient}</h1>
-<div class="ws">${safeWs}</div>
-<p>This connector is scoped to <strong>${safeWs}</strong> only. To use another workspace, add it as a separate connector.</p>
-<p class="hint">Redirecting you back… or <a href="${safeUrl}">continue now</a>.</p>
-</div>
-</body>
-</html>`;
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }

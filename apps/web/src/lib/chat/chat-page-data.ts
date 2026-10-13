@@ -10,6 +10,7 @@ import { missions, tasks, workers, workspaces, workspaceSkills } from '@buildd/c
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import type { ChatAgent } from '@/components/chat/ChatFeed';
 import type { ContextMission, ContextNeedsYou } from '@/components/chat/ChatContextPanel';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface ChatPageContext {
   agent: ChatAgent;
@@ -27,9 +28,9 @@ const DEFAULT_AGENT: ChatAgent = { name: 'buildd', color: null };
 async function loadOrganizer(teamId: string, wsIds: string[]): Promise<ChatAgent> {
   const role = await db.query.workspaceSkills.findFirst({
     // Roles are team-level (seedDefaultRolesForTeam) or per workspace.
-    where: wsIds.length > 0
+    where: sqlWhere(wsIds.length > 0
       ? and(or(eq(workspaceSkills.teamId, teamId), inArray(workspaceSkills.workspaceId, wsIds)), eq(workspaceSkills.slug, 'organizer'))
-      : and(eq(workspaceSkills.teamId, teamId), eq(workspaceSkills.slug, 'organizer')),
+      : and(eq(workspaceSkills.teamId, teamId), eq(workspaceSkills.slug, 'organizer'))),
     columns: { color: true },
   }).catch(() => null);
   return { name: 'buildd', color: role?.color ?? null };
@@ -62,9 +63,9 @@ export async function loadChatPageContext(input: { teamId: string; wsIds: string
   const [role, missionRows, waiting, liveRows, capacity] = await Promise.all([
     loadOrganizer(teamId, wsIds),
     db.query.missions.findMany({
-      where: and(eq(missions.teamId, teamId), inArray(missions.status, ['active', 'paused'])),
+      where: sqlWhere(and(eq(missions.teamId, teamId), inArray(missions.status, ['active', 'paused']))),
       columns: { id: true, title: true, status: true, conversationId: true },
-      orderBy: [desc(missions.updatedAt)],
+      orderBy: sqlOrderBy([desc(missions.updatedAt)]),
       limit: 4,
     }).catch(() => []),
     db

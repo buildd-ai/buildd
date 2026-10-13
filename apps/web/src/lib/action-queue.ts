@@ -884,12 +884,17 @@ export function buildFailedTaskItems(
      * responsible admin instead of on everyone, once per task. Omitted: none.
      */
     githubAccessFixableWorkspaceIds?: ReadonlySet<string>;
+    /**
+     * Tasks an active root cause already explains (lib/service-status-loader.ts):
+     * they are linked from that one status and get no card of their own.
+     */
+    linkedTaskIds?: ReadonlySet<string>;
   } = {},
 ): WaitingOnYouRawItem[] {
   const items: WaitingOnYouRawItem[] = [];
   const accessWaiting = new Map<string, { first: FailedTaskCandidate; repo: string | null; count: number }>();
   for (const c of candidates) {
-    if (c.status !== 'failed') continue;
+    if (c.status !== 'failed' || opts.linkedTaskIds?.has(c.taskId)) continue;
     const block = readGithubAccessBlock(c.context);
     if (block && !block.resumedAt && c.workspaceId) {
       if (!opts.githubAccessFixableWorkspaceIds?.has(c.workspaceId)) continue;

@@ -12,6 +12,7 @@ import { priceFromCatalog } from '@buildd/core/model-catalog';
 import { isWeightLevel, suggestWeight, type WeightLevel } from '@buildd/core/tier-weights';
 import { tierPoolAccess } from '@/lib/tier-pool-access';
 import { buildTierPoolRows, type TierPoolsResponse } from '@/lib/tier-pools-view';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * GET /api/model-tiers/pools?teamId= — every tier's arms, traffic and stats,
@@ -118,10 +119,10 @@ export async function POST(req: NextRequest) {
  */
 async function pinIncumbent(teamId: string, tier: Tier, provider: string, model: string): Promise<void> {
   const existing = await db.query.modelTierRegistry.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(modelTierRegistry.teamId, teamId), eq(modelTierRegistry.tier, tier),
       isNull(modelTierRegistry.workspaceId), isNull(modelTierRegistry.surface),
-    ),
+    )),
     columns: { id: true },
   });
   if (!existing) {

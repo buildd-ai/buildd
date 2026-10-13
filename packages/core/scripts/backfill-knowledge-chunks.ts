@@ -19,6 +19,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { MemoryStore } from '../memory-store';
 import { PgVectorStore, buildNamespace } from '../knowledge-store/pg-vector-store';
 import { getVoyageEmbedder } from '../knowledge-store/voyage-embedder';
+import { sqlWhere } from '../db/relational-sql';
 
 const BATCH_SIZE = 20;
 
@@ -69,12 +70,12 @@ async function backfillTeam(
 /** Resolve a CLI arg that may be a workspaceId or a teamId into a teamId. */
 async function resolveTeamId(arg: string): Promise<string | null> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, arg),
+    where: sqlWhere(eq(workspaces.id, arg)),
     columns: { teamId: true },
   });
   if (ws?.teamId) return ws.teamId;
   const team = await db.query.teams.findFirst({
-    where: eq(teams.id, arg),
+    where: sqlWhere(eq(teams.id, arg)),
     columns: { id: true },
   });
   return team?.id ?? null;

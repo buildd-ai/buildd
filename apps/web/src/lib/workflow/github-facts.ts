@@ -12,6 +12,7 @@ import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, listAllCheckRuns } from '@/li
 import type { LivePr } from './commands';
 import type { GithubFactReader } from './facts';
 import type { BaseDeltaFact } from './base-delta';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 interface GithubPull {
   state?: string;
@@ -190,7 +191,7 @@ export interface WorkspaceRepo {
 
 export async function workspaceRepo(workspaceId: string): Promise<WorkspaceRepo | null> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true, gitConfig: true },
     with: { githubRepo: { columns: { fullName: true }, with: { installation: { columns: { installationId: true } } } } },
   });

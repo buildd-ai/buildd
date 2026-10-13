@@ -54,6 +54,7 @@ const KIND_LABELS = {
   'buildd.scout_probe_selection': 'Scout probe pick',
   'buildd.visual_impact': 'Visual impact',
   'buildd.early_release': 'Early release',
+  'buildd.spec_duplicate': 'Spec duplicates',
 } as const;
 
 export type DecisionModelKind = keyof typeof KIND_LABELS;

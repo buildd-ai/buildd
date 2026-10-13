@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { canManageTeamConnectors } from '@/lib/connector-team-auth';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -55,7 +56,7 @@ async function requireOwnerAdmin(
 
   const teamIds = auth.type === 'api' ? [auth.account.teamId] : await getUserTeamIds(auth.user.id);
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, id),
+    where: sqlWhere(eq(connectors.id, id)),
   });
   if (!connector || !teamIds.includes(connector.teamId)) {
     return { error: NextResponse.json({ error: 'Connector not found' }, { status: 404 }) };
@@ -83,13 +84,13 @@ export async function GET(
 
   try {
     const shares = await db.query.connectorShares.findMany({
-      where: eq(connectorShares.connectorId, id),
+      where: sqlWhere(eq(connectorShares.connectorId, id)),
     });
 
     const nameMap = new Map<string, string>();
     if (shares.length > 0) {
       const teamRows = await db.query.teams.findMany({
-        where: inArray(teams.id, shares.map(s => s.sharedWithTeamId)),
+        where: sqlWhere(inArray(teams.id, shares.map(s => s.sharedWithTeamId))),
         columns: { id: true, name: true },
       });
       for (const t of teamRows) nameMap.set(t.id, t.name);
@@ -157,10 +158,10 @@ export async function POST(
   try {
     // Idempotent: re-granting an existing share returns it unchanged.
     const existing = await db.query.connectorShares.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(connectorShares.connectorId, id),
         eq(connectorShares.sharedWithTeamId, targetTeamId),
-      ),
+      )),
     });
     if (existing) {
       return NextResponse.json({ share: existing });

@@ -11,6 +11,7 @@
 import 'server-only';
 import { and, eq, isNotNull, notInArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { requestMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { loadBrowserRunnerHeartbeats } from '@/lib/runner-heartbeats';
@@ -29,7 +30,7 @@ export interface ScheduleOutcome {
 
 export async function scheduleMissionVisualReview(missionId: string, now = Date.now()): Promise<ScheduleOutcome | null> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, status: true, workspaceId: true, executor: true },
   });
   if (!mission || !mission.workspaceId || mission.status === 'completed' || mission.status === 'archived') return null;
@@ -51,7 +52,7 @@ export async function scheduleMissionVisualReview(missionId: string, now = Date.
 
   const [audits, ws] = await Promise.all([
     loadMissionAuditLedger(missionId),
-    db.query.workspaces.findFirst({ where: eq(workspaces.id, mission.workspaceId) }),
+    db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)) }),
   ]);
   const hbs = ws ? await loadBrowserRunnerHeartbeats(ws, now).catch(() => null) : null;
 
@@ -65,7 +66,7 @@ export async function scheduleMissionVisualReview(missionId: string, now = Date.
   });
 
   if (plan.action === 'restamp') {
-    const row = await db.query.tasks.findFirst({ where: eq(tasks.id, plan.auditId), columns: { context: true } });
+    const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, plan.auditId)), columns: { context: true } });
     const ctx = row?.context && typeof row.context === 'object' && !Array.isArray(row.context) ? row.context as Record<string, unknown> : {};
     // Atomic on status: an audit claimed in the meantime keeps the head it started on.
     await db.update(tasks)

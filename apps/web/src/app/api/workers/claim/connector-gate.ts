@@ -18,6 +18,7 @@ import {
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Typed connector failure taxonomy ─────────────────────────────────────────
 
@@ -87,12 +88,12 @@ export async function checkConnectorRouting(
   opts: ConnectorRoutingOpts = {},
 ): Promise<ConnectorFailure[] | null> {
   const roleRows = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.slug, roleSlug),
       eq(workspaceSkills.isRole, true),
       eq(workspaceSkills.enabled, true),
       roleRowsInScope({ teamId, workspaceId }),
-    ),
+    )),
     columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
   });
 
@@ -105,25 +106,25 @@ export async function checkConnectorRouting(
   if (refs.length === 0) return null;
 
   const connectorRows = await db.query.connectors.findMany({
-    where: inArray(connectors.id, refs),
+    where: sqlWhere(inArray(connectors.id, refs)),
     columns: { id: true, teamId: true, name: true, authMode: true, transport: true, url: true, envMapping: true },
   });
   const connectorById = new Map(connectorRows.map(c => [c.id, c]));
 
   const shareRows = await db.query.connectorShares.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(connectorShares.sharedWithTeamId, teamId),
       inArray(connectorShares.connectorId, refs),
-    ),
+    )),
     columns: { connectorId: true },
   });
   const sharedIds = new Set(shareRows.map(s => s.connectorId));
 
   const cwRows = await db.query.connectorWorkspaces.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(connectorWorkspaces.workspaceId, workspaceId),
       inArray(connectorWorkspaces.connectorId, refs),
-    ),
+    )),
     columns: { connectorId: true, enabled: true },
   });
   const cwEnabled = new Map<string, boolean>();
@@ -181,7 +182,7 @@ export async function checkConnectorRouting(
     if (authConnectors.length > 0) {
       const ownerTeamIds = [...new Set(authConnectors.map(c => c.teamId))];
       const secretRows = await db.query.secrets.findMany({
-        where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential', label: authConnectors.map(c => c.id) }),
+        where: sqlWhere(teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential', label: authConnectors.map(c => c.id) })),
         columns: { id: true, label: true, tokenExpiresAt: true, lastRefreshedAt: true },
       });
       const secretByConnId = new Map(secretRows.filter(s => s.label).map(s => [s.label!, s]));
@@ -238,7 +239,7 @@ export async function checkConnectorRouting(
 
       if (envLabels.length > 0) {
         const envSecretRows = await db.query.secrets.findMany({
-          where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_credential', label: envLabels }),
+          where: sqlWhere(teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_credential', label: envLabels })),
           columns: { id: true, label: true, teamId: true },
         });
         const envSecretByTeamLabel = new Map(
@@ -331,12 +332,12 @@ export async function findAlternativeRole(
 ): Promise<string | null> {
   const requesterUserId = await requesterThunk(opts)();
   const siblingRows = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.isRole, true),
       eq(workspaceSkills.enabled, true),
       ne(workspaceSkills.slug, blockedRoleSlug),
       roleRowsVisibleTo({ teamId, workspaceId, requesterUserId }),
-    ),
+    )),
     columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
   });
 

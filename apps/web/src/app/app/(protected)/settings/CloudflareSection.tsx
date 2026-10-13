@@ -77,13 +77,13 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
     try {
       const res = await fetch(`/api/secrets/${id}/verify`, { method: 'POST' });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Verify failed');
+      if (!res.ok) throw new Error(data.error ?? 'Verification failed.');
       setCapabilities((data.capabilities ?? null) as CloudflareCapabilities | null);
       setMessage(data.verified
         ? { type: 'success', text: `Verified: ${data.tokenKind === 'account' ? 'account' : 'user'} token, active.` }
         : { type: 'error', text: `Cloudflare rejected the token: ${data.error ?? 'unknown error'}` });
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Verify failed' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Verification failed.' });
     } finally {
       setBusy(false);
       await reload();
@@ -92,7 +92,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
 
   async function save() {
     if (!apiToken.trim() || !accountId.trim()) {
-      setMessage({ type: 'error', text: 'Paste the API token and the account ID' });
+      setMessage({ type: 'error', text: 'Enter the API token and account ID.' });
       return;
     }
     setBusy(true);
@@ -109,14 +109,14 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
         body: JSON.stringify({ value, purpose: 'cloudflare_token', label: 'Cloudflare API token', teamId: selectedTeamId }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Failed to store token');
+      if (!res.ok) throw new Error(data.error ?? 'Could not save the token.');
       resetForm();
       setReplacing(false);
       setBusy(false);
       // Check it straight away so a typo shows up now, not at deploy time.
       await verify(data.id, true);
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Could not save the token.' });
       setBusy(false);
     }
   }
@@ -124,7 +124,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
   async function remove(id: string) {
     if (!(await confirm({
       title: 'Delete the Cloudflare token?',
-      message: 'A deployed cloud runner keeps running. Redeploying it will need a new token.',
+      message: 'A deployed cloud runner keeps running. Redeploying requires a new token.',
       confirmLabel: 'Delete',
       variant: 'danger',
     }))) return;
@@ -132,11 +132,11 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
     setMessage(null);
     try {
       const res = await fetch(`/api/secrets?id=${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed');
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Could not delete the token.');
       await reload();
       setMessage({ type: 'success', text: 'Deleted.' });
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Could not delete the token.' });
     } finally {
       setBusy(false);
     }

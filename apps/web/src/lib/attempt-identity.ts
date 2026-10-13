@@ -22,6 +22,7 @@ import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { normalizeTaskKind } from '@buildd/core/model-router';
 import { inheritTaskDelegation, type TaskDelegation } from '@buildd/core/token-delegation';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type TaskRow = typeof tasks.$inferSelect;
 
@@ -70,7 +71,7 @@ export function attemptIdentityFrom(parent: AttemptParent | null | undefined): A
 export async function inheritAttemptIdentity(parentTaskId: string | null | undefined): Promise<AttemptIdentity> {
   if (!parentTaskId) return attemptIdentityFrom(null);
   const parent = await db.query.tasks.findFirst({
-    where: eq(tasks.id, parentTaskId),
+    where: sqlWhere(eq(tasks.id, parentTaskId)),
     columns: {
       backend: true,
       roleSlug: true,

@@ -9,6 +9,7 @@ import { memoryProjectKey } from './project-scope';
 import { MemoryStore } from './memory-store';
 import type { MemoryHitScope } from './memory-hit-scope';
 import { isMemoryCandidateWritesEnabled } from './memory-candidates';
+import { sqlWhere } from './db/relational-sql';
 
 type ScopeRow = { id: string; teamId: string; repo: string | null; name: string; dataClass: string | null };
 
@@ -41,7 +42,7 @@ function splitScopeRows(rows: ScopeRow[], workspaceId: string): { ws: ScopeRow |
 
 async function loadScopeRows(workspaceId: string, teamId: string): Promise<ScopeRow[]> {
   return (await db.query.workspaces.findMany({
-    where: memoryScopeWorkspacesWhere(workspaceId, teamId),
+    where: sqlWhere(memoryScopeWorkspacesWhere(workspaceId, teamId)),
     columns: SCOPE_COLUMNS,
   })) as ScopeRow[];
 }
@@ -59,12 +60,12 @@ export async function resolveMemoryProjectKey(
     // Two lookups here, unlike resolveMemoryHitScope below: this runs once per
     // MCP connection, not per claimed task, so it is not on the claim path.
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: SCOPE_COLUMNS,
     });
     if (!ws) return null;
     const sensitive = await db.query.workspaces.findMany({
-      where: and(eq(workspaces.teamId, ws.teamId), eq(workspaces.dataClass, 'sensitive')),
+      where: sqlWhere(and(eq(workspaces.teamId, ws.teamId), eq(workspaces.dataClass, 'sensitive'))),
       columns: SCOPE_COLUMNS,
     });
     return memoryProjectKey(ws, sensitive);
@@ -109,7 +110,7 @@ export async function resolveMemoryCandidateWrites(workspaceId: string | null | 
   if (!workspaceId) return false;
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { gitConfig: true },
     });
     return isMemoryCandidateWritesEnabled(ws?.gitConfig);

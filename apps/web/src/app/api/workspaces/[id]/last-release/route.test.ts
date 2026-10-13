@@ -146,6 +146,16 @@ describe('GET /api/workspaces/[id]/last-release', () => {
     expect(data.lastRelease.taskId).toBe('task-0');
   });
 
+  // Settings spec R-9: skipped releases fold away on the page, so the read
+  // reaches far enough back to still find five that ran.
+  it('reads 20 recent releases so skipped ones do not crowd out the rest', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindMany.mockResolvedValue([]);
+    await GET(new NextRequest('http://localhost:3000/api/workspaces/ws-1/last-release'), { params: mockParams });
+    const opts = (mockTasksFindMany.mock.calls.at(-1) as unknown as [{ limit: number }])[0];
+    expect(opts.limit).toBe(20);
+  });
+
   it('OAuth token with matching team can read', async () => {
     mockAuthenticateApiKey.mockImplementation((key: string) => {
       if (key.startsWith('eyJ')) return { id: 'acc-1', level: 'admin', teamId: 'team-1', authType: 'oauth' };

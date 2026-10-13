@@ -170,3 +170,33 @@ describe('RunnerTokensSection: a member without manage_team_keys', () => {
     expect(labels).toContain('button "Delete"');
   });
 });
+
+// Settings spec R-11: the chip says what an unlinked token reaches (its team's
+// open workspaces) in neutral tone, and warns only when that is nothing.
+describe('RunnerTokensSection unlinked chip', () => {
+  async function mountWith(workspaces: Array<{ id: string; name: string; repo: null; teamId: string; accessMode: string }>) {
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <RunnerTokensSection
+          accounts={[{ ...account, team: { name: 'Platform' }, teamId: 't1', accountWorkspaces: [] }]}
+          workspaces={workspaces}
+        />,
+      );
+    });
+  }
+
+  it('reads as open workspaces only when the team has one', async () => {
+    await mountWith([{ id: 'w1', name: 'api', repo: null, teamId: 't1', accessMode: 'open' }]);
+    expect(host.textContent).toContain('1 on open workspaces only');
+    expect(host.textContent).not.toContain('unlinked');
+    expect(host.textContent).not.toContain('reaches no workspace');
+  });
+
+  it('warns when the team has no open workspace', async () => {
+    await mountWith([{ id: 'w1', name: 'api', repo: null, teamId: 't1', accessMode: 'restricted' }]);
+    expect(host.textContent).toContain('1 reaches no workspace');
+  });
+});

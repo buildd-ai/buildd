@@ -147,7 +147,7 @@ describe('TeamGrid', () => {
     it('no New role at all when the viewer holds neither permission', () => {
       const html = render({ canCreatePersonalRole: false, canCreateTeamRole: false });
       expect(html).not.toContain('New agent');
-      expect(html).not.toContain('Just for me');
+      expect(html).not.toContain('New personal agent');
     });
 
     it('an admin gets the plain New role link (the form offers both kinds)', () => {

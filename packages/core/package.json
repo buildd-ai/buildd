@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.326.0",
+  "version": "0.335.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -171,6 +171,8 @@
     "./task-estimate-actuals-source": "./task-estimate-actuals-source.ts",
     "./task-estimate-accuracy": "./task-estimate-accuracy.ts",
     "./task-estimate-accuracy-source": "./task-estimate-accuracy-source.ts",
+    "./task-estimate-operator": "./task-estimate-operator.ts",
+    "./task-estimate-operator-source": "./task-estimate-operator-source.ts",
     "./decision-ledger": "./decision-ledger.ts",
     "./decision-replay": "./decision-replay.ts",
     "./orchestration-decision-ledger": "./orchestration-decision-ledger.ts",
@@ -180,6 +182,7 @@
     "./decision-dataset": "./decision-dataset.ts",
     "./decision-feature-health": "./decision-feature-health.ts",
     "./decision-outcomes": "./decision-outcomes.ts",
+    "./decision-outcome-graders": "./decision-outcome-graders.ts",
     "./merge-readiness-outcome": "./merge-readiness-outcome.ts",
     "./decision-readout": "./decision-readout.ts",
     "./decision-readout-source": "./decision-readout-source.ts",
@@ -235,6 +238,9 @@
     "./spec-discrepancy-ledger": "./spec-discrepancy-ledger.ts",
     "./spec-doc-fix": "./spec-doc-fix.ts",
     "./release-strategy": "./release-strategy.ts",
+    "./release-candidate": "./release-candidate.ts",
+    "./release-compose": "./release-compose.ts",
+    "./release-config-shape": "./release-config-shape.ts",
     "./branch-strategy": "./branch-strategy.ts",
     "./knowledge-store": "./knowledge-store/index.ts",
     "./knowledge-store/edge-builder": "./knowledge-store/edge-builder.ts",
@@ -314,22 +320,23 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.290",
-    "@ast-grep/napi": "^0.45.0",
-    "@builddai/ai-kit": "workspace:*",
+    "@ast-grep/napi": "^0.50.0",
     "@buildd/dispatch-contract": "workspace:*",
     "@buildd/shared": "workspace:*",
+    "@buildd/spec-contract": "workspace:*",
+    "@builddai/ai-kit": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
     "@openai/codex-sdk": "^0.162.0",
     "@opentelemetry/api": "^1.9.0",
     "@typesafe-ai/sdk": "0.6.0",
     "dotenv": "^18.0.0",
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "1.0.0-rc.4",
     "server-only": "^0.0.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "drizzle-kit": "^0.31.0",
+    "drizzle-kit": "1.0.0-rc.4",
     "typescript": "^6.0.0"
   },
   "license": "FSL-1.1-ALv2"

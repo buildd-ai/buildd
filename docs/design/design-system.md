@@ -607,10 +607,45 @@ notification text) follows the same rules as a PR lede:
     chosen. Pick one to…".
 11. **Say it once** (`duplicate-explanation`). A sentence rendered twice in
     one file, on a card and again in its disclosure, counts.
-12. **Change the flow before the words.** When a page needs explaining, it
+13. **People and accounts pay, keys don't** (`object-pays`). "Used when the
+    team lets personal keys pay" was the Settings → Keys line; it reads
+    **Manage your personal API keys.** Say who is billed (you, the team, a
+    provider account), and only beside the control where that decides
+    something, never on an index line.
+14. **Settings reads like a service, not a narrator.** An index line is one
+    short phrase naming what the page manages ("Configure team agents,
+    models and tools."). No "the team decides", "chat follows", "just for
+    me". An error says what failed and what to do: "Could not save. Try
+    again." A read-only page states who manages it once
+    (`TEAM_MANAGED_LINE`). Keep real limits as short facts beside the control
+    ("Requires a linked GitHub repository."). Platform readiness and
+    review internals belong on operator surfaces, not a member's Settings.
+    Living Spec "Product voice and professional Settings copy" carries the
+    same rules as requirements.
+16. **One fact per Settings description** (`conditional-policy`,
+    `trailing-filler`, `em-dash`). An index line or page lede is a single
+    sentence fragment, 14 words at most, ending in a full stop, with no
+    trailing filler ("and more", "etc."). It never conditions a setting on team
+    policy ("when the team lets…", "if admins allow…", "the team decides"):
+    state what the page manages and show the policy beside the control it
+    governs. No em dash. `settingsDescriptionProblems` in
+    `packages/core/copy-rules.ts` checks all of it for the Settings index.
+    Spec: `docs/specs/settings-copy.md`.
+
+    > Your own model keys, used when the team lets personal keys pay.
+    > **Manage your personal API keys.**
+
+15. **Change the flow before the words.** When a page needs explaining, it
     mirrors the data model. Collapse it: one row per thing the reader knows
     (Claude, not "Anthropic" plus "Claude subscription"), one input that
     works out what was pasted, a control hidden until it can matter.
+13. **One name per thing.** **Role** is a person's team role (owner, admin,
+    member); an agent persona (`isRole` skill) is an **agent**, on the Agents
+    page. The planning agent is the **organizer**, never "planner". The
+    machine that runs work is a **runner**, never "worker". No buildd-internal
+    branch or deploy names ("dev", "main") in a customer's copy. Status
+    labels are sentence case. UI strings kept in `lib/` are checked too: mark
+    the module `// @ui-copy` and `copy:check` scans it.
 
 ---
 

@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 import { drizzle } from 'drizzle-orm/neon-http';
 import { neon } from '@neondatabase/serverless';
-import * as schema from '@buildd/core/db/schema';
+import { relations } from '@buildd/core/db/relations';
 import { reviewArtifactScope, workspaceArtifactScope } from './artifact-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * SQL-level tests for the artifact scoping predicates.
@@ -14,7 +16,7 @@ import { reviewArtifactScope, workspaceArtifactScope } from './artifact-scope';
  * (the usual shortcut) makes every WHERE clause unobservable — which is
  * exactly how the worker-only artifact scope survived unnoticed.
  */
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 
 function render(fragment: any): { sql: string; params: unknown[] } {
   const q = dialect.sqlToQuery(fragment);
@@ -60,9 +62,9 @@ describe('workspaceArtifactScope — tenancy', () => {
     // `select "artifacts"."id" from "workers" where "artifacts"."workspace_id" ...`
     // — a correlated self-reference that silently matched no legacy row.
     // Render through a real (never-executed) relational query to observe it.
-    const qdb = drizzle(neon('postgres://u:p@localhost/db'), { schema });
+    const qdb = drizzle({ client: neon('postgres://u:p@localhost/db'), relations });
     const q = qdb.query.artifacts
-      .findMany({ where: workspaceArtifactScope(['ws-mine']), limit: 1 })
+      .findMany({ where: sqlWhere(workspaceArtifactScope(['ws-mine'])), limit: 1 })
       .toSQL();
     const rendered = q.sql.replace(/\s+/g, ' ').toLowerCase();
     expect(rendered).toContain('from "workers" where "workers"."workspace_id" in');

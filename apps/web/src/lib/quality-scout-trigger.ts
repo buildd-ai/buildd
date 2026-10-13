@@ -78,6 +78,7 @@ import {
   type ScoutRunOutcome,
   type ScoutRunRequest,
 } from './quality-scout-run';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -770,7 +771,7 @@ export async function serverHeadSha(ws: ScoutWorkspace, ref: string): Promise<st
 
 export async function loadScoutWorkspace(id: string): Promise<ScoutWorkspace | null> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { id: true, teamId: true, gitConfig: true, configStatus: true, releaseConfig: true },
     with: { githubRepo: { with: { installation: true } } },
   });

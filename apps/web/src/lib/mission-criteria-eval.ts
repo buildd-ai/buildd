@@ -21,6 +21,7 @@ import { openMissionIntegrationPr } from './mission-pr';
 import { withDeliveryShip } from '@buildd/core/pr-shipped';
 import { deliveryShipsForPrs, shipKey } from '@/lib/workflow/delivery-ship';
 import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Producer of goal-criteria verdicts.
@@ -256,7 +257,7 @@ export async function evaluateCriteriaNow(
   },
 ): Promise<GoalCriteriaState | null> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: {
       id: true,
       title: true,
@@ -319,7 +320,7 @@ export async function evaluateCriteriaNow(
 
   // ── Evidence assembly ──────────────────────────────────────────────────────
   const missionTasks = await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: {
       id: true, status: true, kind: true, title: true, mode: true,
       taskClass: true, creationSource: true, category: true, result: true, createdAt: true,
@@ -343,7 +344,7 @@ export async function evaluateCriteriaNow(
   if (missionTasks.length > 0) {
     const taskIds = missionTasks.map(t => t.id);
     missionWorkers = await db.query.workers.findMany({
-      where: inArray(workers.taskId, taskIds),
+      where: sqlWhere(inArray(workers.taskId, taskIds)),
       // `prBaseRef` is what separates "merged into the mission's integration
       // branch" from "merged into trunk". Null is unknown, never trunk.
       // `prNumber` joins a stored reviewer finding to the PR it was made on.
@@ -359,7 +360,7 @@ export async function evaluateCriteriaNow(
   const ships = await deliveryShipsForPrs(missionWorkers);
 
   const missionArtifacts = await db.query.artifacts.findMany({
-    where: eq(artifacts.missionId, missionId),
+    where: sqlWhere(eq(artifacts.missionId, missionId)),
     columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
   });
 
@@ -736,7 +737,7 @@ export async function ensureCriteriaVerdict(
   opts: { trigger?: string; force?: boolean } = {},
 ): Promise<GoalCriteriaState | null> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, goalCriteria: true, goalCriteriaState: true, autoVerify: true },
   });
   if (!mission) return null;

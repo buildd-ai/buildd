@@ -16,6 +16,7 @@ import { gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt } from 'drizzle-orm';
 import { GATE_SLUGS } from './gate-ledger';
 import type { MissionStateInput } from './mission-state-view';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * How recently the loop must have refused a task for the refusal to still be an
@@ -48,13 +49,13 @@ export type MissionDeferral = NonNullable<MissionStateInput['deferrals']>[number
 export async function loadMissionClaimDeferrals(missionId: string): Promise<MissionDeferral[]> {
   const since = new Date(Date.now() - DEFERRAL_FRESHNESS_MS);
   const rows = await db.query.gateEvents.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(gateEvents.missionId, missionId),
       eq(gateEvents.gate, GATE_SLUGS.CLAIM_LOOP_DEFERRAL),
       eq(gateEvents.outcome, 'deferred'),
       gt(gateEvents.occurredAt, since),
-    ),
-    orderBy: [desc(gateEvents.occurredAt)],
+    )),
+    orderBy: sqlOrderBy([desc(gateEvents.occurredAt)]),
     limit: DEFERRAL_ROW_LIMIT,
     columns: { taskId: true, reason: true, detail: true },
   });

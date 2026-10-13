@@ -44,8 +44,10 @@ import { loadFlowSeries, loadFlowUsage } from '@/lib/insights-flow-query';
 import type { FlowWindow } from '@/lib/insights-flow';
 import { BAND_LABEL, tasksInBand, type BandKey } from '@/components/insights/flow-chart-model';
 import { loadAgentAccessReport } from '@/lib/agent-capabilities/access-log';
+import { fetchOperatorEstimateCounts, fetchOperatorEstimateRows, OPERATOR_ROW_LIMIT } from '@buildd/core/task-estimate-operator-source';
 import type { DecisionFeatureCount, DecisionHealthRow } from './decision-features';
 import type { AdminScope, AdminWindow } from './scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export { applyExperimentUpdate, findOtherRunning };
 
@@ -55,12 +57,12 @@ export { applyExperimentUpdate, findOtherRunning };
 export async function resolveScopeWorkspaces(scope: AdminScope): Promise<{ workspaces: { id: string; teamId: string }[] } | null> {
   const columns = { id: workspaces.id, teamId: workspaces.teamId };
   if (scope.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, scope.workspaceId), columns: { id: true, teamId: true } });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, scope.workspaceId)), columns: { id: true, teamId: true } });
     if (!ws || (scope.teamId && ws.teamId !== scope.teamId)) return null;
     return { workspaces: [ws] };
   }
   if (scope.teamId) {
-    const team = await db.query.teams.findFirst({ where: eq(teams.id, scope.teamId), columns: { id: true } });
+    const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, scope.teamId)), columns: { id: true } });
     if (!team) return null;
     return { workspaces: await db.select(columns).from(workspaces).where(eq(workspaces.teamId, scope.teamId)) };
   }
@@ -383,7 +385,7 @@ export async function loadInsightsBand(opts: { workspaceIds: string[]; filter: I
   const ids = tasksInBand(series, index, filter.band).map(t => t.key).filter(key => !key.startsWith('worker:'));
   const start = filter.band === 'released' || filter.band === 'lost' ? filter.from : bucket.start;
   const rows = ids.length === 0 || workspaceIds.length === 0 ? [] : await db.query.tasks.findMany({
-    where: and(inArray(tasks.id, ids.slice(0, 5000)), inArray(tasks.workspaceId, workspaceIds)),
+    where: sqlWhere(and(inArray(tasks.id, ids.slice(0, 5000)), inArray(tasks.workspaceId, workspaceIds))),
     columns: { id: true, title: true, status: true, workspaceId: true, updatedAt: true },
     with: { mission: { columns: { title: true } } },
   });
@@ -408,9 +410,27 @@ export async function loadAgentAccess(opts: { workspaceIds: string[]; windowHour
   return loadAgentAccessReport(opts.workspaceIds, opts.windowHours);
 }
 
+// ── Estimates ─────────────────────────────────────────────────────────────────
+
+/**
+ * Insights → Estimation's input: the window's frozen estimates with their
+ * actuals (row-capped), the coverage counts (aggregated in the query) and the
+ * names of the workspaces in scope, which the view keeps for own teams only.
+ */
+export async function loadEstimates(opts: { workspaceIds: string[]; since: Date; estimatorVersion: string | null }) {
+  const [{ rows, truncated }, counts, names] = await Promise.all([
+    fetchOperatorEstimateRows(opts),
+    fetchOperatorEstimateCounts(opts),
+    opts.workspaceIds.length
+      ? db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(inArray(workspaces.id, opts.workspaceIds))
+      : Promise.resolve([]),
+  ]);
+  return { rows, truncated, rowLimit: OPERATOR_ROW_LIMIT, counts, workspaceNames: Object.fromEntries(names.map(w => [w.id, w.name])) as Record<string, string> };
+}
+
 // ── Names and readouts ────────────────────────────────────────────────────────
 
-/** Every team and its workspaces, by name: the admin app shows names, never ids. */
+/** Every team and its workspaces, by name: operator clients show names, never ids. */
 export async function listTeamsWithWorkspaces(): Promise<{ id: string; name: string; workspaces: { id: string; name: string }[] }[]> {
   const [teamRows, workspaceRows] = await Promise.all([
     db.select({ id: teams.id, name: teams.name }).from(teams).orderBy(teams.name),

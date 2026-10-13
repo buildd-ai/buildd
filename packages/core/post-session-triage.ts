@@ -177,3 +177,59 @@ export function resolveTriageOutcome(triage: PostSessionTriageRecord, finalDecis
     rule,
   };
 }
+
+// ── Skip sampling ───────────────────────────────────────────────────────────
+
+/**
+ * An `analyse` is graded by the analysis that follows it; a `skip` never is,
+ * so how many skips should have been analysed (the miss rate) is unknown. A
+ * small random sample of skips is analysed anyway and labelled the same way.
+ * The skip still stands: `finalDecision` stays `skip`, nothing is filed from
+ * a sampled run, and the flag on the triage record (`provenance.sampled`)
+ * keeps it out of every selected/acted count.
+ */
+export const SKIP_SAMPLE_DEFAULT_RATE = 0.03;
+export const SKIP_SAMPLE_DEFAULT_DAILY_CAP = 20;
+
+export interface SkipSampleConfig {
+  /** Share of eligible skips analysed, 0..1. 0 turns sampling off. */
+  rate: number;
+  /** Sampled runs per UTC day, across the deployment. */
+  dailyCap: number;
+}
+
+/** `POST_SESSION_SKIP_SAMPLE_RATE` / `POST_SESSION_SKIP_SAMPLE_DAILY_CAP`; an unreadable value keeps the default. */
+export function resolveSkipSampleConfig(env: Record<string, string | undefined>): SkipSampleConfig {
+  const rate = Number(env.POST_SESSION_SKIP_SAMPLE_RATE);
+  const cap = Number(env.POST_SESSION_SKIP_SAMPLE_DAILY_CAP);
+  return {
+    rate: env.POST_SESSION_SKIP_SAMPLE_RATE?.trim() && Number.isFinite(rate) && rate >= 0 && rate <= 1 ? rate : SKIP_SAMPLE_DEFAULT_RATE,
+    dailyCap: env.POST_SESSION_SKIP_SAMPLE_DAILY_CAP?.trim() && Number.isInteger(cap) && cap >= 0 ? cap : SKIP_SAMPLE_DEFAULT_DAILY_CAP,
+  };
+}
+
+/** True when the run was a skip sent to analysis only to measure the miss rate. */
+export function isSampledSkip(triage: PostSessionTriageRecord | null | undefined): boolean {
+  return triage?.provenance?.sampled === true;
+}
+
+/** The sample rate a sampled run was drawn at; null when it was not sampled. */
+export function sampledSkipRate(triage: PostSessionTriageRecord | null | undefined): number | null {
+  const r = triage?.provenance?.sampleRate;
+  return isSampledSkip(triage) && typeof r === 'number' ? r : null;
+}
+
+/** Flags a skip outcome as sampled. The decision itself is unchanged. */
+export function markSampledSkip(outcome: TriageOutcome, rate: number): TriageOutcome {
+  return { ...outcome, triage: { ...outcome.triage, provenance: { ...outcome.triage.provenance, sampled: true, sampleRate: rate } } };
+}
+
+/** The run state a triage outcome settles into: analysis takes selected and sampled runs. */
+export function triagedRunState(outcome: Pick<TriageOutcome, 'finalDecision' | 'triage'>): 'triaged' | 'skipped' {
+  return outcome.finalDecision === 'analyse' || isSampledSkip(outcome.triage) ? 'triaged' : 'skipped';
+}
+
+/** Start of the UTC day `now` falls in: the cap's window. */
+export function utcDayStart(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}

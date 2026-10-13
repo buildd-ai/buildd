@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import Lede from '@/components/ui/Lede';
-import type { SpecListItem } from '@/lib/specs/page-view';
+import { specGroups, type SpecListItem } from '@/lib/specs/page-view';
 
 function Row({ item }: { item: SpecListItem }) {
   return (
@@ -29,9 +29,10 @@ function Row({ item }: { item: SpecListItem }) {
 }
 
 /**
- * A workspace's specs as a tree (living-specs.md §9): each row says in words
- * what it is, where it stands and whether a revision waits for approval. No
- * counts; an empty workspace says how specs get made.
+ * A workspace's specs as a tree (living-specs.md §9), grouped under each
+ * product or area at the top, with the rest Unfiled (§14): each row says in
+ * words what it is, where it stands and whether a revision waits for
+ * approval. No counts; an empty workspace says how specs get made.
  */
 export default function SpecList({ specs }: { specs: SpecListItem[] }) {
   if (specs.length === 0) {
@@ -43,9 +44,25 @@ export default function SpecList({ specs }: { specs: SpecListItem[] }) {
       </Lede>
     );
   }
+  const groups = specGroups(specs);
   return (
-    <ul className="flex flex-col" data-testid="spec-list">
-      {specs.map((s) => <Row key={s.id} item={s} />)}
-    </ul>
+    <div className="flex flex-col gap-6" data-testid="spec-list">
+      {groups.map((g) => g.kind === 'area' ? (
+        <section key={g.head.id} data-testid="spec-list-group" data-group={g.head.id}>
+          <h2 className="section-label px-2 text-text-muted">{g.head.scope === 'product' ? 'Product' : 'Area'}</h2>
+          <ul className="mt-1 flex flex-col">
+            <Row item={g.head} />
+          </ul>
+        </section>
+      ) : (
+        <section key="unfiled" data-testid="spec-list-group" data-group="unfiled">
+          <h2 className="section-label px-2 text-text-muted">Unfiled</h2>
+          <p className="px-2 text-meta text-text-muted">Specs with no product or area above them.</p>
+          <ul className="mt-1 flex flex-col">
+            {g.specs.map((s) => <Row key={s.id} item={s} />)}
+          </ul>
+        </section>
+      ))}
+    </div>
   );
 }

@@ -29,6 +29,7 @@ import {
   missionBranchUnresolvedReason,
   type MissionBranchUnresolvedInput,
 } from '@buildd/core/mission-branch-trace';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export { resolveMissionRepoWorkspaceId };
 
@@ -106,7 +107,7 @@ export async function ensureMissionIntegrationBranch(
   },
 ): Promise<EnsureIntegrationBranchResult> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { workingBranch: true, integrationBranchEnabled: true, workspaceId: true },
   });
   if (!mission) return { ok: false, reason: 'no_repo', detail: 'mission not found' };
@@ -136,7 +137,7 @@ export async function ensureMissionIntegrationBranch(
     return { ok: false, reason: 'no_repo', detail: resolved.detail };
   }
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, resolved.workspaceId),
+    where: sqlWhere(eq(workspaces.id, resolved.workspaceId)),
     columns: { githubRepoId: true, githubInstallationId: true, gitConfig: true },
   });
   if (!workspace?.githubRepoId || !workspace.githubInstallationId) {
@@ -144,7 +145,7 @@ export async function ensureMissionIntegrationBranch(
   }
 
   const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.id, workspace.githubRepoId),
+    where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
     columns: { fullName: true, defaultBranch: true },
     with: { installation: { columns: { installationId: true } } },
   });

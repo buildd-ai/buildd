@@ -110,6 +110,17 @@ describe('readInteractiveAnswer', () => {
     expect(s).toMatchObject({ state: 'not_waiting', reasonCode: 'session_ended', continuationTaskId: 'task-2' });
   });
 
+  // The unread-answer sweep moved the answer to a follow-up task. A session
+  // that comes back must stop, not act on the answer alongside the follow-up.
+  it('an answer handed to a follow-up task is not returned to a returning session', () => {
+    const a = answered({ queued: true });
+    const s = readInteractiveAnswer({
+      ...a,
+      worker: { ...a.worker, status: 'superseded', continuationTaskId: 'task-2' },
+    });
+    expect(s).toMatchObject({ state: 'not_waiting', reasonCode: 'session_ended', continuationTaskId: 'task-2' });
+  });
+
   it('a failed worker (question expired) has ended', () => {
     const s = readInteractiveAnswer({ worker: { ...parked, status: 'failed' }, taskContext: {} });
     expect(s).toMatchObject({ state: 'not_waiting', reasonCode: 'session_ended' });

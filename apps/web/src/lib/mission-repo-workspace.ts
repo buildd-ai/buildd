@@ -7,6 +7,7 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Which workspace's repo a mission's integration branch lives in.
@@ -33,7 +34,7 @@ export async function resolveMissionRepoWorkspaceId(args: {
   if (args.missionWorkspaceId) return { workspaceId: args.missionWorkspaceId };
   if (args.hintWorkspaceId) return { workspaceId: args.hintWorkspaceId };
   const rows = ((await db.query.tasks.findMany({
-    where: eq(tasks.missionId, args.missionId),
+    where: sqlWhere(eq(tasks.missionId, args.missionId)),
     columns: { workspaceId: true },
   })) ?? []) as Array<{ workspaceId: string | null }>;
   const distinct = [...new Set(rows.map(r => r.workspaceId).filter((w): w is string => !!w))];

@@ -145,7 +145,7 @@ let shouldFindManyReject = false;
 let tasksFindManyWhereCalls: any[] = [];
 const mockTasksFindManyForExecutorChange = mock(async (options?: any) => {
   if (options && options.where) {
-    tasksFindManyWhereCalls.push(options.where);
+    tasksFindManyWhereCalls.push(capturedWhere(options.where));
   }
   if (shouldFindManyReject) {
     throw new Error('tasks.findMany failed');
@@ -274,6 +274,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { GET, PATCH } from './route';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const makeParams = (id: string) => Promise.resolve({ id });
 

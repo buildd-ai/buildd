@@ -11,6 +11,7 @@ import { fetchLinearProgress, parseLinearUrl } from '@/lib/work-tracker';
 import type { TrackerProgressResponse } from '@/lib/tracker-progress-types';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Check if a mission is accessible: team match OR open-access workspace. */
 async function hasMissionAccess(
@@ -111,7 +112,7 @@ export async function GET(
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       columns: { id: true, teamId: true, workspaceId: true },
     });
 
@@ -123,7 +124,7 @@ export async function GET(
     let connectorId: string | null = null;
     if (mission.workspaceId) {
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
+        where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
         columns: { workTrackerConfig: true },
       });
       if (ws?.workTrackerConfig?.provider === 'linear') {

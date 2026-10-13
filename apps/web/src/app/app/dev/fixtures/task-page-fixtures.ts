@@ -14,13 +14,13 @@ import { deriveTaskVerdict, type TaskVerdict, type VerdictInput } from '@/lib/ta
 import { buildTaskShippedView, type TaskShippedView } from '../../(protected)/tasks/[id]/task-shipped-header';
 import { headerLifecycle } from '../../(protected)/tasks/[id]/task-header';
 import type { StateKey } from '@/components/ui/states';
-import type { ReadableResult } from '@/lib/task-result';
+import type { ReviewFindings } from '@/lib/task-checks';
 
-export const TASK_PAGE_CASES = ['review-approved', 'branch-refresh', 'repair', 'merged', 'failed', 'needs-human'] as const;
+export const TASK_PAGE_CASES = ['review-pending', 'review-approved', 'branch-refresh', 'repair', 'merged', 'failed', 'needs-human'] as const;
 export type TaskPageCase = typeof TASK_PAGE_CASES[number];
 
 export const parseTaskPageCase = (v: string | null): TaskPageCase =>
-  (TASK_PAGE_CASES as readonly string[]).includes(v ?? '') ? v as TaskPageCase : 'review-approved';
+  (TASK_PAGE_CASES as readonly string[]).includes(v ?? '') ? v as TaskPageCase : 'review-pending';
 
 const HEAD_A = 'a1b2c3d4e5f6';
 const HEAD_B = 'f6e5d4c3b2a1';
@@ -42,17 +42,23 @@ const A = (o: Partial<AttemptSnapshot>): AttemptSnapshot => ({
 });
 
 const APPROVED_ROUND = R({});
+/** The reported screen's shape: a long conventional-commit PR title on a reviewer run (illustrative text). */
+const LONG_PR_TITLE = 'fix(migrations): the merge-safety inspector treats a refresh PR\'s migration renumber as a renumber, not lineage tampering';
 const REVIEW_SUMMARY = 'The change does what the task asks: both PRs land and the stuck escalation clears.\n\nTests cover the refresh hold and the stale escalation. No blocking findings.';
 
 export interface TaskPageFixture {
   title: string;
+  /** An attempt's deliverable: its title (kept in the link's accessible name) and PR. */
   subjectLink: string | null;
+  /** The run's task status, for the header pill. */
+  taskStatus: string;
   track: { state: StateKey; phrase: string | null } | null;
-  verdict: TaskVerdict;
+  /** Null while the run has not finished: the header pill carries the state. */
+  verdict: TaskVerdict | null;
   checks: TaskChecks;
   view: DeliveryView;
   shipped: TaskShippedView | null;
-  findings: Map<string, Pick<ReadableResult, 'prose' | 'verdict'>>;
+  findings: Map<string, ReviewFindings>;
   currentTaskId: string;
 }
 
@@ -68,14 +74,30 @@ export function taskPageFixture(c: TaskPageCase): TaskPageFixture {
   let delivery: DeliverySnapshot;
   let rounds: RoundSnapshot[] = [APPROVED_ROUND];
   let attempts: AttemptSnapshot[] = [];
-  let verdict: TaskVerdict;
+  let verdict: TaskVerdict | null;
   let shipped: TaskShippedView | null = null;
   let currentTaskId = 'deliverable';
   let subjectLink: string | null = null;
   let title = 'Finish landing the recovery fixes';
+  let taskStatus = 'completed';
+  let findings = new Map<string, ReviewFindings>([
+    ['review-1', { prose: REVIEW_SUMMARY, verdict: 'approve', status: 'completed' }],
+    ['review-0', { prose: 'The refresh path still labels itself a repair.', verdict: 'request-changes', status: 'completed' }],
+  ]);
   const pr = { url: PR_URL, number: 1234, lifecycle: 'ci_green', merged: false };
 
   switch (c) {
+    case 'review-pending':
+      // The reviewer run itself, queued: round 1 on the current head, CI still running.
+      delivery = D({ state: 'AWAITING_REVIEW', ci: 'pending', ciHeadSha: HEAD_B });
+      rounds = [R({ status: 'queued', verdict: null, effectiveVerdict: null })];
+      currentTaskId = 'review-1';
+      taskStatus = 'pending';
+      subjectLink = LONG_PR_TITLE;
+      title = `PR #1234: ${LONG_PR_TITLE}`;
+      verdict = deriveTaskVerdict(verdictInput({ taskStatus: 'pending', pr: { ...pr, lifecycle: 'ci_pending' } }));
+      findings = new Map([['review-1', { prose: null, verdict: null, status: 'pending' }]]);
+      break;
     case 'review-approved':
       delivery = D({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: [HEAD_B], ci: 'green', ciHeadSha: HEAD_B });
       currentTaskId = 'review-1';
@@ -129,12 +151,13 @@ export function taskPageFixture(c: TaskPageCase): TaskPageFixture {
   return {
     title,
     subjectLink,
+    taskStatus,
     track: headerLifecycle(view),
     verdict,
     checks: deriveTaskChecks(view),
     view,
     shipped,
-    findings: new Map([['review-1', { prose: REVIEW_SUMMARY, verdict: 'approve' }], ['review-0', { prose: 'The refresh path still labels itself a repair.', verdict: 'request-changes' }]]),
+    findings,
     currentTaskId,
   };
 }

@@ -27,6 +27,7 @@ import {
   type ModelCertification,
   type ProbeReport,
 } from './model-certification';
+import { sqlWhere } from './db/relational-sql';
 
 export const CERT_KEY_PREFIX = 'model_cert:';
 const CACHE_TTL_MS = 60 * 1000;
@@ -60,7 +61,7 @@ export async function getModelCertifications(): Promise<Map<string, ModelCertifi
 }
 
 async function readOne(model: string): Promise<ModelCertification | null> {
-  const row = await db.query.systemCache.findFirst({ where: eq(systemCache.key, CERT_KEY_PREFIX + model) });
+  const row = await db.query.systemCache.findFirst({ where: sqlWhere(eq(systemCache.key, CERT_KEY_PREFIX + model)) });
   return (row?.value as ModelCertification | undefined) ?? null;
 }
 

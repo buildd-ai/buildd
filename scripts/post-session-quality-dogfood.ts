@@ -20,6 +20,7 @@
 
 import { POST_SESSION_POLICY_VERSION, resolvePostSessionQualityMode } from '../packages/core/post-session-quality';
 import { TRIAGE_UNAVAILABLE } from '../packages/core/post-session-triage';
+import { sqlWhere } from '../packages/core/db/relational-sql';
 
 export interface DogfoodRun {
   id: string;
@@ -161,10 +162,11 @@ async function main(): Promise<number> {
   const { drizzle } = await import('drizzle-orm/neon-http');
   const { and, eq } = await import('drizzle-orm');
   const schema = await import('../packages/core/db/schema');
-  const db = drizzle(neon(DATABASE_URL), { schema });
+  const { relations } = await import('../packages/core/db/relations');
+  const db = drizzle({ client: neon(DATABASE_URL), relations });
   const { postSessionRuns: r, postSessionFindings: f, workspaces } = schema;
 
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { id: true, gitConfig: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { id: true, gitConfig: true } });
   if (!ws) {
     console.error(`ERROR: workspace ${workspaceId} not found`);
     return 2;

@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { teamMembers } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { INITIATIVE_STATUSES, isInitiativeStatus, type InitiativeStatus } from './initiative-view';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Validation for the human-set initiative fields, shared by POST
@@ -31,7 +32,7 @@ export async function parseOwnerUserId(value: unknown, teamId: string): Promise<
   if (value === null) return { ok: true, value: null };
   if (typeof value !== 'string' || value.length === 0) return { ok: false, error: 'ownerUserId must be a user id or null' };
   const member = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, value)),
+    where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, value))),
     columns: { userId: true },
   });
   return member ? { ok: true, value } : { ok: false, error: "ownerUserId must be a member of the initiative's team" };

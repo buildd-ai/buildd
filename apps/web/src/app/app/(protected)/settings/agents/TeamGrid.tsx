@@ -154,14 +154,14 @@ function PersonalRolesSections({ roles, canCreate }: { roles: PersonalRoleEntry[
           title="Mine"
           count={mine.length > 0 ? mine.length : undefined}
           action={canCreate && mine.length > 0
-            ? <Link href={NEW_PERSONAL_ROLE} className="btn btn-sm h-11 md:h-6">Just for me</Link>
+            ? <Link href={NEW_PERSONAL_ROLE} className="btn btn-sm h-11 md:h-6">New personal agent</Link>
             : undefined}
         >
           <div data-testid="team-mine-section">
             {mine.length === 0 ? (
               <p className="text-sm text-text-muted">
-                Agents only you run, shared with the team when ready.{' '}
-                <Link href={NEW_PERSONAL_ROLE} className="font-medium text-text-primary underline underline-offset-2">Just for me</Link>
+                Agents only you can use, until you share them with the team.{' '}
+                <Link href={NEW_PERSONAL_ROLE} className="font-medium text-text-primary underline underline-offset-2">New personal agent</Link>
               </p>
             ) : (
               <div className={ROWS}>

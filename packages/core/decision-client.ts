@@ -88,6 +88,7 @@ import { effectiveKeyPolicy, type InferenceKeyPolicy } from './inference-key-pol
 import { decisionModelFor, isClefModel, normalizeDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelRoute, type DecisionModelSetting } from './decision-model';
 import { entitlements, isBillingEnforced, type EntitlementTeam } from './entitlements';
 import { loadTeamEntitlements } from './billing-limits';
+import { sqlWhere } from './db/relational-sql';
 
 // The question/answer types, request and response validation, `gateChoice` and
 // the transport live in `@builddai/ai-kit/decide` (knowledge-base: buildd/design/shared-ai-kit.md
@@ -282,7 +283,7 @@ async function loadTeamDecisionSettings(teamId: string, capability: InferenceCap
     if (team === undefined) {
       const { db } = await import('./db');
       team = await db.query.teams.findFirst({
-        where: eq(teams.id, teamId),
+        where: sqlWhere(eq(teams.id, teamId)),
         columns: { inferenceFeatureModes: true, enabledDecisionShadows: true, decisionModel: true, inferenceKeyPolicy: true, credentialPolicy: true, plan: true, paidSeats: true },
       }) ?? null;
     }

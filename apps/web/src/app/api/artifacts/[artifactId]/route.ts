@@ -17,6 +17,7 @@ import { SPEC_BODY_WRITE_REFUSED, specIdForBodyArtifact } from '@/lib/specs/body
 import { recordArtifactRead } from '@/lib/artifact-reads';
 import { finalizeArtifactUpload } from '@/lib/artifact-upload';
 import { ArtifactReadError, parseReadSelector, readArtifactBody, returnedChars, type ArtifactReadSelector } from '@buildd/core/artifact-read';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // PATCH metadata semantics and the in-SQL merge: lib/artifact-metadata-merge.ts.
 
@@ -46,7 +47,7 @@ export async function GET(
   }
 
   const artifact = await db.query.artifacts.findFirst({
-    where: eq(artifacts.id, artifactId),
+    where: sqlWhere(eq(artifacts.id, artifactId)),
     with: { worker: true },
   });
 
@@ -221,7 +222,7 @@ export async function PATCH(
 
   // Find artifact and verify ownership via worker -> account
   const artifact = await db.query.artifacts.findFirst({
-    where: eq(artifacts.id, artifactId),
+    where: sqlWhere(eq(artifacts.id, artifactId)),
     with: { worker: true },
   });
 

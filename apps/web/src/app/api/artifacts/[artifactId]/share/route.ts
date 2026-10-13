@@ -9,6 +9,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { appBaseUrl } from '@/lib/app-url';
 import { isAuditScreenshot } from '@/lib/artifact-prominence';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Authorize a request against an artifact for share (make public / revoke) actions.
@@ -63,7 +64,7 @@ export async function POST(
   }
 
   const artifact = await db.query.artifacts.findFirst({
-    where: eq(artifacts.id, artifactId),
+    where: sqlWhere(eq(artifacts.id, artifactId)),
     with: { worker: true },
   });
 
@@ -105,7 +106,7 @@ export async function DELETE(
   }
 
   const artifact = await db.query.artifacts.findFirst({
-    where: eq(artifacts.id, artifactId),
+    where: sqlWhere(eq(artifacts.id, artifactId)),
     with: { worker: true },
   });
 

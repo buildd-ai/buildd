@@ -15,6 +15,7 @@ import {
   artifacts, watchedProjects, oauthRefreshTokens, migrationLog, githubInstallations,
 } from '@buildd/core/db/schema';
 import { eq, and, isNull, sql, inArray } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ─── Dispositions ────────────────────────────────────────────────────────────
 
@@ -160,15 +161,15 @@ export async function collectMigrationSnapshot(
   destinationTeamId: string,
 ): Promise<MigrationSnapshot | null> {
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true, name: true, teamId: true, githubInstallationId: true },
   });
   if (!workspace) return null;
   const sourceTeamId = workspace.teamId;
 
   const [sourceTeam, destinationTeam] = await Promise.all([
-    db.query.teams.findFirst({ where: eq(teams.id, sourceTeamId), columns: { id: true, name: true } }),
-    db.query.teams.findFirst({ where: eq(teams.id, destinationTeamId), columns: { id: true, name: true } }),
+    db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, sourceTeamId)), columns: { id: true, name: true } }),
+    db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, destinationTeamId)), columns: { id: true, name: true } }),
   ]);
   if (!destinationTeam) return null;
 
@@ -185,11 +186,11 @@ export async function collectMigrationSnapshot(
     count(oauthRefreshTokens, and(eq(oauthRefreshTokens.workspaceId, workspaceId), isNull(oauthRefreshTokens.revokedAt))),
     count(missions, and(eq(missions.teamId, sourceTeamId), isNull(missions.workspaceId))),
     count(workspaceSkills, and(eq(workspaceSkills.teamId, sourceTeamId), isNull(workspaceSkills.workspaceId))),
-    db.query.taskSchedules.findMany({ where: eq(taskSchedules.workspaceId, workspaceId), columns: { name: true, cronExpression: true } }),
-    db.query.missions.findMany({ where: eq(missions.workspaceId, workspaceId), columns: { id: true, title: true, status: true, dependsOnMissionId: true } }),
-    db.query.workspaceSkills.findMany({ where: and(eq(workspaceSkills.workspaceId, workspaceId), eq(workspaceSkills.isRole, true)), columns: { slug: true, name: true, canDelegateTo: true } }),
-    db.query.workspaceSkills.findMany({ where: and(eq(workspaceSkills.teamId, destinationTeamId), isNull(workspaceSkills.workspaceId)), columns: { slug: true } }),
-    db.query.secrets.findMany({ where: eq(secrets.workspaceId, workspaceId), columns: { purpose: true, label: true } }),
+    db.query.taskSchedules.findMany({ where: sqlWhere(eq(taskSchedules.workspaceId, workspaceId)), columns: { name: true, cronExpression: true } }),
+    db.query.missions.findMany({ where: sqlWhere(eq(missions.workspaceId, workspaceId)), columns: { id: true, title: true, status: true, dependsOnMissionId: true } }),
+    db.query.workspaceSkills.findMany({ where: sqlWhere(and(eq(workspaceSkills.workspaceId, workspaceId), eq(workspaceSkills.isRole, true))), columns: { slug: true, name: true, canDelegateTo: true } }),
+    db.query.workspaceSkills.findMany({ where: sqlWhere(and(eq(workspaceSkills.teamId, destinationTeamId), isNull(workspaceSkills.workspaceId))), columns: { slug: true } }),
+    db.query.secrets.findMany({ where: sqlWhere(eq(secrets.workspaceId, workspaceId)), columns: { purpose: true, label: true } }),
     db.select({ id: connectors.id, name: connectors.name, authMode: connectors.authMode })
       .from(connectorWorkspaces)
       .innerJoin(connectors, eq(connectors.id, connectorWorkspaces.connectorId))
@@ -203,7 +204,7 @@ export async function collectMigrationSnapshot(
     // installation reference, so a valid installation stays valid for the destination team.
     workspace.githubInstallationId
       ? db.query.githubInstallations.findFirst({
-          where: eq(githubInstallations.id, workspace.githubInstallationId),
+          where: sqlWhere(eq(githubInstallations.id, workspace.githubInstallationId)),
           columns: { id: true, suspendedAt: true },
         })
       : Promise.resolve(null),
@@ -483,7 +484,7 @@ async function runPhaseWork(opts: ExecuteMigrationOpts, phase: MigrationPhase): 
         .returning({ id: workspaces.id });
       if (moved.length === 0) {
         // Idempotent: fine if already at destination (repair / retry); else a concurrent move won.
-        const current = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } });
+        const current = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { teamId: true } });
         if (current?.teamId !== destinationTeamId) throw new Error('workspace_team_conflict');
         return { alreadyMoved: true };
       }
@@ -549,7 +550,7 @@ export async function executeMigrationPhases(opts: ExecuteMigrationOpts): Promis
 
   for (const phase of MIGRATION_PHASES) {
     const existing = await db.query.migrationLog.findFirst({
-      where: and(eq(migrationLog.runId, opts.runId), eq(migrationLog.phase, phase)),
+      where: sqlWhere(and(eq(migrationLog.runId, opts.runId), eq(migrationLog.phase, phase))),
       columns: { status: true, detail: true },
     });
     if (existing?.status === 'completed') {

@@ -18,6 +18,7 @@ import { and, eq } from 'drizzle-orm';
 import { parsePolicyRule, policyScopeKey, MAX_GRANT_TTL_SECONDS } from '@/lib/capability-grants';
 import { loadPolicyRules } from '@/lib/capability-grants-store';
 import { MANAGE_FORBIDDEN, resolveCapabilityAdminCaller } from '@/lib/capability-grants-auth';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -59,7 +60,7 @@ export async function PUT(req: NextRequest) {
 
   // A workspace-scoped rule must name one of this team's workspaces.
   if (rule.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, rule.workspaceId), columns: { teamId: true } });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, rule.workspaceId)), columns: { teamId: true } });
     if (!ws || ws.teamId !== caller.teamId) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 

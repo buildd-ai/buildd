@@ -119,7 +119,14 @@ mock.module('@/lib/admin/data', () => ({
   loadAgentAccess: async (opts: any) => { insightCalls.push(opts); return { windowHours: opts.windowHours, granted: 3, refusals: [], grantProblems: [] }; },
   listTeamsWithWorkspaces: async () => [{ id: TEAM, name: 'Team A', workspaces: [{ id: WS, name: 'repo-a' }] }],
   loadExperimentReadout: async (row: any) => ({ policyVersion: row.policyVersion, readout: { verdict: 'insufficient_n', arms: [] }, health: [] }),
+  loadEstimates: async (opts: any) => {
+    estimateCalls.push(opts);
+    if (estimatesFail) throw new Error('db down: SELECT secret');
+    return { rows: [], truncated: false, rowLimit: 5000, counts: { workTasks: 0, estimatedByVersion: {}, written: 0 }, workspaceNames: {} };
+  },
 }));
+const estimateCalls: any[] = [];
+let estimatesFail = false;
 const insightCalls: any[] = [];
 
 const routes = {
@@ -142,6 +149,7 @@ const routes = {
   readout: await import('./experiments/[id]/readout/route'),
   growth: await import('./growth/route'),
   measurements: await import('./decisions/measurements/route'),
+  estimates: await import('./estimates/route'),
 };
 
 const req = (path: string, method = 'GET', body?: unknown) => new NextRequest(`http://localhost:3000/api/admin/${path}`, {
@@ -174,6 +182,7 @@ const calls: Call[] = [
   { name: 'GET growth', call: () => routes.growth.GET(req('growth')) },
   { name: 'GET decisions/measurements', call: () => routes.measurements.GET(req('decisions/measurements')) },
   { name: 'POST decisions/measurements', call: () => routes.measurements.POST(req('decisions/measurements', 'POST', MEASUREMENT)) },
+  { name: 'GET estimates', call: () => routes.estimates.GET(req('estimates')) },
 ];
 
 beforeEach(() => {
@@ -182,6 +191,8 @@ beforeEach(() => {
   writes.length = 0;
   scopes.length = 0;
   insightCalls.length = 0;
+  estimateCalls.length = 0;
+  estimatesFail = false;
   storedModes = new Map();
   modeWrites.length = 0;
   storedMeasurements = [];
@@ -232,6 +243,34 @@ describe('scope', () => {
   it('passes the window and filters through to the loader', async () => {
     await routes.dispatch.GET(req(`dispatch-health?teamId=${TEAM}&window=30d`));
     expect(scopes[0]).toMatchObject({ teamId: TEAM, workspaceId: null, window: '30d' });
+  });
+});
+
+describe('GET estimates', () => {
+  it('is one report per estimator version with the gate apart from live figures', async () => {
+    const body = await (await routes.estimates.GET(req(`estimates?window=30d&teamId=${TEAM}`))).json();
+    expect(body).toMatchObject({ schemaVersion: 1, window: '30d', teamId: TEAM, version: null, truncated: false });
+    expect(body.live.map((l: any) => l.estimatorVersion)).toEqual([body.runningVersion]);
+    expect(body.live[0].overall).toMatchObject({ n: 0, sufficient: false, withinP80: null });
+    // The pinned verdict is read, never changed: blend-v1 is no-go with prior_only and cold_start failing.
+    expect(body.backtest.find((b: any) => b.estimatorVersion === 'blend-v1')).toMatchObject({ verdict: 'no_go', failing: ['prior_only', 'cold_start'] });
+    expect(body.runtime.failed).toEqual({ status: 'not_instrumented' });
+    expect(estimateCalls[0]).toMatchObject({ workspaceIds: [WS], estimatorVersion: null });
+  });
+
+  it('passes a version filter through and refuses a malformed one', async () => {
+    await routes.estimates.GET(req('estimates?version=blend-v2'));
+    expect(estimateCalls[0].estimatorVersion).toBe('blend-v2');
+    expect((await routes.estimates.GET(req('estimates?version=%27%3Bdrop'))).status).toBe(400);
+    expect((await routes.estimates.GET(req('estimates?window=90d'))).status).toBe(400);
+    expect(estimateCalls).toHaveLength(1);
+  });
+
+  it('a failed read is a 500 without the error text', async () => {
+    estimatesFail = true;
+    const res = await routes.estimates.GET(req('estimates'));
+    expect(res.status).toBe(500);
+    expect(JSON.stringify(await res.json())).not.toContain('secret');
   });
 });
 
@@ -463,7 +502,7 @@ describe('GET agent-access', () => {
   });
 });
 
-describe('names and readouts for the admin app', () => {
+describe('names and readouts for platform-owner API clients', () => {
   it('lists every team with its workspaces by name', async () => {
     const res = await routes.teams.GET(req('teams'));
     expect(res.status).toBe(200);

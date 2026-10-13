@@ -11,6 +11,7 @@ import type { MissionNoteAuthorType, MissionNoteStatus, MissionNoteType } from '
 import { isUuid } from '@/lib/uuid';
 import { disposeQuestionNote, gatedNoteResponse } from '@/lib/note-question-disposition';
 import { RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const VALID_TYPES: MissionNoteType[] = ['decision', 'question', 'warning', 'suggestion', 'update'];
 const VALID_AUTHOR_TYPES: MissionNoteAuthorType[] = ['agent', 'user', 'system'];
@@ -18,7 +19,7 @@ const VALID_STATUSES: MissionNoteStatus[] = ['open', 'answered', 'dismissed'];
 
 async function resolveTaskAccess(id: string, user: Awaited<ReturnType<typeof getCurrentUser>>, apiAccount: { id: string } | null) {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, id),
+    where: sqlWhere(eq(tasks.id, id)),
     columns: { id: true, workspaceId: true, missionId: true },
   });
   if (!task) return null;
@@ -50,8 +51,8 @@ export async function GET(
   if (!task) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 
   const notes = await db.query.missionNotes.findMany({
-    where: eq(missionNotes.taskId, id),
-    orderBy: [asc(missionNotes.createdAt)],
+    where: sqlWhere(eq(missionNotes.taskId, id)),
+    orderBy: sqlOrderBy([asc(missionNotes.createdAt)]),
     limit: 100,
   });
 
@@ -117,7 +118,7 @@ export async function POST(
       : (type === 'question' ? 'open' : 'answered');
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, task.workspaceId),
+    where: sqlWhere(eq(workspaces.id, task.workspaceId)),
     columns: { dataClass: true },
   });
   const effectiveBody =

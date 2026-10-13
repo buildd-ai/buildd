@@ -139,6 +139,7 @@ describe('every merge door consults the mission gate', () => {
       'lib/workflow/pr-landing-effects.ts', // the kernel's merge_call, reached only through landPr
       'lib/workflow/landing.ts', 'lib/workflow/seam.ts',
       'lib/release-executor.ts', // dev -> main release PRs, not a mission integration PR
+      'lib/release/compose-runtime.ts', // binds the release executor's merge; dev -> main release PRs only
       'app/api/github/webhook/route.ts', // release-pr ci-success only
       ...doors.map(d => d[1]),
     ]);

@@ -356,6 +356,11 @@ export function selectAffected(input: {
       return { kind: 'ALL', reason: `${file} changed (affects how every test is resolved, loaded or selected)` };
     }
     if (preloads.has(file)) return { kind: 'ALL', reason: `${file} changed (loaded by every test process)` };
+    // A migration is read as a whole tree (the drift gate, the baseline, the
+    // schema and backfill corpus tests), and under drizzle v1 each one is its own
+    // folder, a path no test names. Naming the directory was how a new migration
+    // used to find them; it no longer can.
+    if (file.startsWith('packages/core/drizzle/')) return { kind: 'ALL', reason: `${file} changed (the migrations tree is read whole by the drift, baseline and corpus tests)` };
     if (basename(file) === 'package.json') {
       const why = packageJsonResolutionChange(repo.read(file), repo.readBase(file));
       if (why) return { kind: 'ALL', reason: `${file}: ${why} (changes module resolution)` };

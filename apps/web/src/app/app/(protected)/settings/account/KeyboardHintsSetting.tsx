@@ -34,7 +34,7 @@ export default function KeyboardHintsSetting({ initial }: { initial: boolean }) 
       router.refresh();
     } catch {
       setOn(before);
-      setError("Couldn't save that. Try again.");
+      setError("Could not save. Try again.");
     } finally {
       setBusy(false);
     }
@@ -45,7 +45,7 @@ export default function KeyboardHintsSetting({ initial }: { initial: boolean }) 
       <div className="flex min-h-14 items-start gap-4 border-y border-border-default py-2.5">
         <div className="min-w-0 flex-1">
           <p id="keyboard-hints-label" className="text-sm font-medium text-text-primary">Show keyboard hints</p>
-          <p className="text-sm text-text-secondary">For example 1 and 2 on a question, Esc to close.</p>
+          <p className="text-sm text-text-secondary">Shows shortcut keys, such as 1 and 2 on a question and Esc to close.</p>
           {error && <p role="alert" className="mt-1 text-sm text-status-error">{error}</p>}
         </div>
         <Switch

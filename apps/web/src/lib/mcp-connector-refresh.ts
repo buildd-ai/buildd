@@ -14,6 +14,7 @@ import { connectors, secrets } from '@buildd/core/db/schema';
 import { decrypt, encrypt } from '@buildd/core/secrets';
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const PURPOSE = 'mcp_connector_credential' as const;
 
@@ -68,7 +69,7 @@ export async function refreshMcpConnectorCredential(secretId: string): Promise<M
 
   if (!claimed) {
     const exists = await db.query.secrets.findFirst({
-      where: teamCredentialWhere({ purpose: PURPOSE }, eq(secrets.id, secretId)),
+      where: sqlWhere(teamCredentialWhere({ purpose: PURPOSE }, eq(secrets.id, secretId))),
       columns: { id: true },
     });
     return exists ? 'locked' : 'no_credential';
@@ -83,7 +84,7 @@ export async function refreshMcpConnectorCredential(secretId: string): Promise<M
   if (!connectorId) return 'no_credential';
 
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, connectorId),
+    where: sqlWhere(eq(connectors.id, connectorId)),
     columns: {
       authMode: true,
       discoveredMetadata: true,

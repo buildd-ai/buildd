@@ -119,6 +119,7 @@ describe('classifyExplicitTaskExclusion', () => {
     const cases: Array<[keyof ExplicitTaskProbe['gates'], string]> = [
       ['activeWorker', 'active_worker'],
       ['taskHeld', 'task_held'],
+      ['taskReserved', 'task_reserved'],
       ['missionHeld', 'mission_held'],
       ['missionLocal', 'mission_local'],
       ['deps', 'deps_blocked'],

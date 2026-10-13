@@ -2,7 +2,7 @@
 title: Claim Ordering (Batch Planner)
 status: active
 owner: max
-last_verified: 2026-10-04
+last_verified: 2026-10-12
 summary: The claim route MUST order auto-claims through planClaimBatch only when a workspace opts in, MUST never co-schedule across a hard edge, and MUST use predicted scope only above pinned, evidence-backed thresholds.
 domain: tasks
 surfaces: [packages/core/claim-planner.ts, apps/web/src/app/api/workers/claim/claim-plan-input.ts, apps/web/src/app/api/workers/claim/claim-plan-store.ts, apps/web/src/app/api/workers/claim/route.ts]
@@ -75,6 +75,7 @@ smaller-first ordering.
 - With null thresholds, predicted scope is ignored entirely.
 - `CLAIM_PLANNER_CALIBRATION.thresholds` is non-null only together with a `readoutRef`, a `measuredOn` identity and verdict `eligible_for_gated`.
 - An explicit `taskId` claim (including every force claim) never goes through the planner.
+- A task another account has reserved (`context.reservedBy`, live) is excluded by the claim query before any planner input is built, so it is never a candidate; see `local-agent-presence` → Reserving a waiting task.
 - A gated START (live since task 7eb191b9) is one more gate on each pick: it can only relax an advisory deferral the pick reaches, so `apply` keeps its order.
 
 **Acceptance criteria**:

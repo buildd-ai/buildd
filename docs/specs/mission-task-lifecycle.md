@@ -377,6 +377,16 @@ stalled a whole workspace.
   `continue` plus a `deferrals` counter, retried next poll — never as a stored
   `dependsOn` edge, which waits for `completed` + PR `merged`.
 
+- **CG-7 (a reservation is a lease, not a lock)**: a session MAY reserve one
+  waiting task (`update_task reserve`, or `create_task claim`, which files it
+  already reserved). While the reservation is live, runners and every other
+  account's claim MUST skip the task, and the reserving account's own explicit
+  `claim_task {taskId}` passes. It MUST lapse by itself at `expiresAt` with no
+  sweep, MUST be cleared when the task is claimed (so a re-queue is not held from
+  runners), and is never lifted by an admin force claim. It is a claim exclusion
+  (`task_reserved`), not a coordination `WaitingKind`: the task page does not
+  yet name it.
+
 **Gate inventory** (`gateReason` → class):
 
 | gateReason | Clears by | Class |
@@ -385,6 +395,8 @@ stalled a whole workspace.
 | `dep_missing` / `dep_failed` / `unmerged_dep_pr` | upstream terminal state | policy, forceable |
 | `mission_held` | arming the mission | policy, forceable |
 | `mission_local` | a verified interactive session's explicit claim, or `executor: 'runner'` | policy, forceable |
+| `task_held` | a person resumes the task (`context.heldBy`) | hold, never forced |
+| `task_reserved` | the reserving session claims it, releases it, or the reservation lapses (`context.reservedBy`, 20 minutes, renewed by that session) | hold, never forced |
 | `mission_budget_exhausted` | raising the mission budget | policy, forceable |
 | `subject_dead` | never (terminal) | policy, forceable |¹
 | `workspace_cap_reached` | drain | policy, forceable |
@@ -476,8 +488,9 @@ hold:
   as well as the hold. An admin `claim_task force: true` lifts it too.
 - **LX-5**: display. A local mission is active work: chip `LOCAL`, list status
   `Local`, grouped with running missions, never HELD / "arm to start" and never
-  STALLED / "dispatch a worker". A queued task reads "Waiting for a local
-  session to claim …", and `/api/cron/queue-stall` does not report it.
+  STALLED / "dispatch a worker". A queued task reads "Ready to start from a
+  local session", claimed work reads "1 task in progress in a local session",
+  and `/api/cron/queue-stall` does not report it.
 
 - **LX-6**: stranded. A local, unheld mission is *stranded* when it holds a
   claimable task (pending, every dependency met by the claim gate's own rule,
@@ -526,6 +539,18 @@ hold:
   on a non-local mission still does **not** lift this gate (deliberate — see
   the force-claim comment block in `claim/route.ts`), and a runner poll or
   unverified caller against a local mission's task is still deferred by it.
+- **LX-11**: an open question is the person's move (any executor). A worker
+  parked on a question (`waiting_input`: a runner agent's AskUserQuestion or a
+  local session's `ask_human`) still counts as live, so `missionOpenQuestions`
+  (`apps/web/src/lib/open-ask.ts`) hands the asking tasks to
+  `deriveMissionStateView` as `openQuestions`. It outranks the live-worker
+  rule: kind `awaiting_decision` (NEEDS YOU), focus `human_decision` with
+  `question`, headline "Needs input: <question>" ("N tasks need input" for
+  several), next action "Answer it on the task page to continue.", and the
+  causal line names the question, never "a worker is running it". The chip
+  keeps saying who runs the work (`LOCAL` / `RUNNING`). Held still wins; a
+  failed deliverable still leads the headline. The Board counts the same task
+  in Needs you (`deriveFeedTaskState`, `isOpenAsk`).
 
 Use `executor: 'local'` for work someone runs locally. `startMode: 'held'` is a
 pause: it also blocks the interactive claim, so it was never a fit for that.

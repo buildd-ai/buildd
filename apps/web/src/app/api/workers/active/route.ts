@@ -13,6 +13,7 @@ import { getDeployIdentity } from '@/lib/deploy-identity';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
 import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
 import { CAPABILITY_BROWSER, RUNNER_STALE_CUTOFF_MS, isOnceRunnerUrl, runnerFleetIdentity } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // "Not dead" window (2.5× the poll cycle): a runner listed here may be quiet,
 // but has not been presumed dead. Presence is judged separately below with
@@ -82,7 +83,7 @@ async function getWorkspaceIdsAndNames(
     const [linkedWs, openWs] = await Promise.all([
       linkedWsIds.length > 0
         ? db.query.workspaces.findMany({
-            where: inArray(workspaces.id, linkedWsIds),
+            where: sqlWhere(inArray(workspaces.id, linkedWsIds)),
             columns: CALLER_WS_COLUMNS,
           })
         : Promise.resolve([]),
@@ -93,7 +94,7 @@ async function getWorkspaceIdsAndNames(
     const teamWsIds = await getUserWorkspaceIds(auth.user.id);
     rows = teamWsIds.length > 0
       ? (await db.query.workspaces.findMany({
-          where: inArray(workspaces.id, teamWsIds),
+          where: sqlWhere(inArray(workspaces.id, teamWsIds)),
           columns: CALLER_WS_COLUMNS,
         })) as CallerWorkspace[]
       : [];
@@ -125,7 +126,7 @@ export async function GET(req: NextRequest) {
     // Find heartbeats that are recent (within last 2 minutes)
     const cutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
     const heartbeats = await db.query.workerHeartbeats.findMany({
-      where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
+      where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
       with: {
         account: {
           columns: { id: true, name: true, maxConcurrentWorkers: true, teamId: true },
@@ -144,10 +145,10 @@ export async function GET(req: NextRequest) {
     const onceKey = (accountId: string, url: string) => `${accountId}\n${url}`;
     if (accountIds.length > 0) {
       const activeWorkerRecords = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(workers.accountId, accountIds),
           inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-        ),
+        )),
         columns: { accountId: true, localUiUrl: true, status: true, waitingFor: true, parkedUntil: true },
       });
       for (const w of activeWorkerRecords as Array<{ accountId: string | null; localUiUrl?: string | null; status?: string; waitingFor?: { type?: string } | null; parkedUntil?: Date | null }>) {
@@ -256,7 +257,7 @@ export async function GET(req: NextRequest) {
     const now = Date.now();
     if (askedWorkspaceId) {
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, askedWorkspaceId),
+        where: sqlWhere(eq(workspaces.id, askedWorkspaceId)),
         columns: { id: true, teamId: true, accessMode: true, gitConfig: true, webhookConfig: true },
       });
       const { loadBrowserRunnerHeartbeats } = await import('@/lib/runner-heartbeats');

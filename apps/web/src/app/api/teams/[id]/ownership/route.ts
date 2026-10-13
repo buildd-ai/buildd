@@ -6,6 +6,7 @@ import { requireSessionUser } from '@/lib/auth-helpers';
 import { roleHas } from '@/lib/permissions';
 import { isUuid } from '@/lib/uuid';
 import { clampCreatorKeys } from '@/lib/creator-key-clamp';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/teams/[id]/ownership { userId } — hand ownership to an existing
@@ -35,7 +36,7 @@ export async function POST(
 
   try {
     const membership = await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, user.id)),
+      where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, user.id))),
     });
 
     if (!membership || !roleHas(membership.role, 'assign_team_owner')) {
@@ -56,7 +57,7 @@ export async function POST(
     }
 
     const team = await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       columns: { slug: true },
     });
     if (!team) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
@@ -65,7 +66,7 @@ export async function POST(
     }
 
     const target = await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, targetUserId)),
+      where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, targetUserId))),
     });
     if (!target) {
       return NextResponse.json({ error: 'Member not found' }, { status: 404 });

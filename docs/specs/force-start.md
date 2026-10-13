@@ -2,7 +2,7 @@
 title: Force Start Past a Coordination Wait
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 summary: A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
 domain: tasks
 surfaces: [apps/web/src/app/api/tasks/[id]/start/route.ts, packages/core/waiting-reason.ts, apps/web/src/lib/force-start.ts, apps/web/src/lib/coordination-probe.ts]
@@ -69,6 +69,7 @@ producer, `lib/coordination-probe.ts`, read by `/start` and `GET /api/tasks/[id]
 | local-session mission | `mission_local` | yes | `bypassHeldGate` (the claim's local prefilter) |
 | declared `dependsOn` | `dep_declared` | **never** | — |
 | capability, budget pause, seats, provider, task hold, unknown | various | **never** | the blocker's own fix action |
+| session reservation (`context.reservedBy`) | none: a claim exclusion `task_reserved`, not a `WaitingKind` | **never** | the reserving session claims or releases it, or it lapses |
 
 Dependency edges and soft overlaps are fed from what `explain` already reports
 (`loadTaskCoordinationHolds` → `buildCoordinationHolds`); whether an edge still holds is the

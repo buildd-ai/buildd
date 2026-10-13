@@ -9,6 +9,7 @@ import { getUserTeamIds } from '@/lib/team-access';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { isUuid } from '@/lib/uuid';
 import { canManageTeamConnectors } from '@/lib/connector-team-auth';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -63,7 +64,7 @@ export async function POST(
 
   const teamIds = auth.type === 'api' ? [auth.account.teamId] : await getUserTeamIds(auth.user.id);
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, id),
+    where: sqlWhere(eq(connectors.id, id)),
   });
   if (!connector || !teamIds.includes(connector.teamId)) {
     return NextResponse.json({ error: 'Connector not found' }, { status: 404 });
@@ -100,7 +101,7 @@ export async function POST(
   try {
     // (teamId, name) uniqueness would be violated in the target team (§1 AC-4).
     const collision = await db.query.connectors.findFirst({
-      where: and(eq(connectors.teamId, targetTeamId), eq(connectors.name, connector.name)),
+      where: sqlWhere(and(eq(connectors.teamId, targetTeamId), eq(connectors.name, connector.name))),
     });
     if (collision) {
       return NextResponse.json({ error: 'connector_name_taken' }, { status: 409 });
@@ -136,11 +137,11 @@ export async function POST(
       if (labels.length > 0) {
         const [oldRows, newRows] = await Promise.all([
           db.query.secrets.findMany({
-            where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_credential', label: labels }),
+            where: sqlWhere(teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_credential', label: labels })),
             columns: { label: true, encryptedValue: true, tokenExpiresAt: true },
           }),
           db.query.secrets.findMany({
-            where: teamCredentialWhere({ teamId: targetTeamId, purpose: 'mcp_credential', label: labels }),
+            where: sqlWhere(teamCredentialWhere({ teamId: targetTeamId, purpose: 'mcp_credential', label: labels })),
             columns: { label: true },
           }),
         ]);

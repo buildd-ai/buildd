@@ -25,6 +25,7 @@ import { loadVisualReview } from '@/lib/visual-review-load';
 import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
 import { presentVisualReview, visualReviewStateLine } from '@/lib/workflow/visual-review-presentation';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const notFound = () => NextResponse.json({ error: 'Mission not found' }, { status: 404 });
 
@@ -48,7 +49,7 @@ export async function GET(
 
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, id),
+    where: sqlWhere(eq(missions.id, id)),
     columns: { id: true, teamId: true, workspaceId: true },
   });
   if (!mission || !teamIds.includes(mission.teamId)) return notFound();

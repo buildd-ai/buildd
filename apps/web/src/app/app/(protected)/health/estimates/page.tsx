@@ -12,9 +12,8 @@ import { EstimatesOff } from './EstimatesOff';
 import { fetchLiveEstimateRows } from '@buildd/core/task-estimate-accuracy-source';
 import { computeTaskEstimateReadout } from '@buildd/core/task-estimate-accuracy';
 import { EstimatesClient } from './EstimatesClient';
-import {
-  FIXTURE_EMPTY_READOUT, FIXTURE_POINTS, FIXTURE_READOUT, isEstimatesFixtureState,
-} from './estimates-fixtures';
+import { FIXTURE_READOUTS, isEstimatesFixtureState } from './estimates-fixtures';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,7 +28,7 @@ function LoadError() {
 /** Whether the viewer may switch the team's features (Settings › Features). A failed read is "no". */
 async function canManageTeam(userId: string, teamId: string): Promise<boolean> {
   const m = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)),
+    where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId))),
     columns: { role: true },
   }).catch(() => null);
   return !!m && roleHas(m.role, 'manage_team_settings');
@@ -44,7 +43,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** `/app/health/estimates`: how close the frozen task estimates were to what the work took. */
+/** `/app/health/estimates`: how often finished tasks landed within their upper estimate. */
 export default async function HealthEstimatesPage({ searchParams }: { searchParams?: Promise<{ state?: string }> }) {
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
@@ -56,9 +55,7 @@ export default async function HealthEstimatesPage({ searchParams }: { searchPara
     if (fixture === 'off-admin' || fixture === 'off-member') {
       return <Shell><EstimatesOff canManage={fixture === 'off-admin'} /></Shell>;
     }
-    return fixture === 'enabled-empty'
-      ? <EstimatesClient readout={FIXTURE_EMPTY_READOUT} points={[]} />
-      : <EstimatesClient readout={FIXTURE_READOUT} points={FIXTURE_POINTS} />;
+    return <EstimatesClient readout={FIXTURE_READOUTS[fixture]} canManage />;
   }
 
   const cookieStore = await cookies();
@@ -88,7 +85,5 @@ export default async function HealthEstimatesPage({ searchParams }: { searchPara
     return null;
   });
   if (!rows) return <Shell><LoadError /></Shell>;
-  const readout = computeTaskEstimateReadout(rows);
-  const points = rows.map(r => ({ estimate: r.p50Minutes, actual: r.actualMinutes, p80: r.p80Minutes }));
-  return <EstimatesClient readout={readout} points={points} />;
+  return <EstimatesClient readout={computeTaskEstimateReadout(rows)} canManage={await canManageTeam(user.id, teamId)} />;
 }

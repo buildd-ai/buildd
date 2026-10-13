@@ -194,7 +194,7 @@ export function canvasHero(input: { pulse: CanvasPulse | null | undefined; name:
     overline,
     mood,
     hero: pulse.needsYouCapped ? 'Several to review.' : `${WORDS[n] ?? n} to review.`,
-    sub: pulse.needsYouCapped ? `“${first}” and more` : `“${first}” and ${n - 1} more`,
+    sub: pulse.needsYouCapped ? `“${first}” and others` : `“${first}” and ${n - 1} more`,
   };
 }
 

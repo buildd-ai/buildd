@@ -22,8 +22,11 @@ export const DRIZZLE_META_DIR = 'packages/core/drizzle/meta/';
 /** Lowered by `bun run design:check --update`; CI checks counts against it, not equality. */
 export const DESIGN_CHECK_BASELINE_PATH = 'scripts/design-check.baseline.json';
 
+/** A drizzle v1 folder's snapshot: regenerated in full, like the legacy meta files. */
+const V1_SNAPSHOT_PATH = /^packages\/core\/drizzle\/\d{14}_[^/]+\/snapshot\.json$/;
+
 export function isCiVerifiedGeneratedPath(path: string): boolean {
-  return path === SPECS_INDEX_PATH || path.startsWith(DRIZZLE_META_DIR);
+  return path === SPECS_INDEX_PATH || path.startsWith(DRIZZLE_META_DIR) || V1_SNAPSHOT_PATH.test(path);
 }
 
 export function isMigrationSqlPath(path: string): boolean {

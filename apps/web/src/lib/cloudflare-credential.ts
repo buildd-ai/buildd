@@ -17,6 +17,7 @@ import {
   type CloudflareVerifyResult,
   type FetchLike,
 } from './cloudflare-credential-shared';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export * from './cloudflare-credential-shared';
 
@@ -25,13 +26,13 @@ export * from './cloudflare-credential-shared';
 /** The team's team-wide Cloudflare credential row, newest first. */
 export async function findCloudflareSecret(teamId: string) {
   return db.query.secrets.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, teamId),
       eq(secrets.purpose, CLOUDFLARE_PURPOSE),
       isNull(secrets.workspaceId),
       isNull(secrets.userId),
-    ),
-    orderBy: desc(secrets.updatedAt),
+    )),
+    orderBy: sqlOrderBy(desc(secrets.updatedAt)),
     columns: {
       id: true, teamId: true, label: true, encryptedValue: true, healthStatus: true,
       lastVerifiedAt: true, lastVerificationError: true, createdAt: true, updatedAt: true,
@@ -56,7 +57,7 @@ export function decodeCloudflareValue(encryptedValue: string): CloudflareCredent
  */
 export async function verifyCloudflareCredential(secretId: string, fetchImpl: FetchLike = fetch): Promise<CloudflareVerifyResult> {
   const row = await db.query.secrets.findFirst({
-    where: and(eq(secrets.id, secretId), eq(secrets.purpose, CLOUDFLARE_PURPOSE)),
+    where: sqlWhere(and(eq(secrets.id, secretId), eq(secrets.purpose, CLOUDFLARE_PURPOSE))),
     columns: { encryptedValue: true },
   });
   if (!row) return { verified: false, error: 'Credential not found' };

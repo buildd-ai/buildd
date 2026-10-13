@@ -36,6 +36,7 @@ import {
 import { isGrantClaims, type AnyAccessTokenClaims } from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
 import { normalizedRepoSql } from './repo-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type { McpGrantActsAs, McpGrantScope };
 
@@ -226,12 +227,12 @@ export async function resolveLegacyGrant(userId: string, workspaceId: string, cl
   const implicit = { grantId: null, userId, clientId, actsAs: 'person' as const, scopes: [...GRANT_SCOPES] };
   // The same two lookups the per-workspace connection always made.
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   if (!workspace) return { ...implicit, workspaces: [] };
   const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, workspace.teamId), eq(teamMembers.userId, userId)),
+    where: sqlWhere(and(eq(teamMembers.teamId, workspace.teamId), eq(teamMembers.userId, userId))),
     columns: { role: true },
   });
   if (!membership) return { ...implicit, workspaces: [] };

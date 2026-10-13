@@ -72,6 +72,7 @@ import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 /**
@@ -118,7 +119,7 @@ async function requestIntegrationBranchReview(params: {
 
     const mission = params.task.missionId
       ? await db.query.missions.findFirst({
-          where: eq(missions.id, params.task.missionId),
+          where: sqlWhere(eq(missions.id, params.task.missionId)),
           columns: RESOLVE_POLICY_MISSION_COLUMNS,
         })
       : null;
@@ -258,7 +259,7 @@ function refusePrOwnership(
  */
 async function fetchOtherHeadHolders(workspaceId: string, selfWorkerId: string, head: string): Promise<InteractiveHeadHolder[]> {
   const rows = await db.query.workers.findMany({
-    where: and(eq(workers.branch, head), eq(workers.workspaceId, workspaceId), ne(workers.id, selfWorkerId)),
+    where: sqlWhere(and(eq(workers.branch, head), eq(workers.workspaceId, workspaceId), ne(workers.id, selfWorkerId))),
     columns: { id: true, taskId: true, status: true, prUrl: true },
   });
   return rows.map(r => ({ workerId: r.id, taskId: r.taskId, status: r.status, hasPr: r.prUrl != null }));
@@ -307,7 +308,7 @@ export async function POST(req: NextRequest) {
 
     // Get the worker with its workspace and task
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
+      where: sqlWhere(eq(workers.id, workerId)),
       with: { workspace: true, task: true },
     });
 
@@ -339,7 +340,7 @@ export async function POST(req: NextRequest) {
     // such a mission (and for a task with no mission at all).
     const mission = worker.task?.missionId
       ? await db.query.missions.findFirst({
-          where: eq(missions.id, worker.task.missionId),
+          where: sqlWhere(eq(missions.id, worker.task.missionId)),
           // Superset of what the base guard needs: the merge-policy columns let
           // the response's `autoMergeEnabled` come from resolvePolicy below.
           columns: RESOLVE_POLICY_MISSION_COLUMNS,
@@ -435,7 +436,7 @@ export async function POST(req: NextRequest) {
       if (ownershipApplies(prAccess.actor, account)) {
         const ownRepo = worker.workspace?.githubRepoId
           ? await db.query.githubRepos.findFirst({
-              where: eq(githubRepos.id, worker.workspace.githubRepoId),
+              where: sqlWhere(eq(githubRepos.id, worker.workspace.githubRepoId)),
               with: { installation: true },
             })
           : undefined;
@@ -502,7 +503,7 @@ export async function POST(req: NextRequest) {
         let observedBase: string | null = typeof base === 'string' ? base : null;
         if (prNumber && worker.workspace?.githubRepoId) {
           adoptRepo = await db.query.githubRepos.findFirst({
-            where: eq(githubRepos.id, worker.workspace.githubRepoId),
+            where: sqlWhere(eq(githubRepos.id, worker.workspace.githubRepoId)),
             with: { installation: true },
           });
           if (adoptRepo?.installation && existingPrUrl.includes(`/${adoptRepo.fullName}/pull/`)) {
@@ -603,11 +604,11 @@ export async function POST(req: NextRequest) {
     // authoritative either way.
     if (worker.taskId) {
       const siblingWorkerWithPr = await db.query.workers.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.taskId, worker.taskId),
           isNotNull(workers.prUrl),
           isNotNull(workers.prNumber),
-        ),
+        )),
         columns: { prUrl: true, prNumber: true, id: true, branch: true, prBaseRef: true, mergedAt: true, prLifecycleStatus: true },
       });
       if (
@@ -1428,7 +1429,7 @@ export async function PATCH(req: NextRequest) {
     let worker: any;
     if (workerId) {
       worker = await db.query.workers.findFirst({
-        where: eq(workers.id, workerId),
+        where: sqlWhere(eq(workers.id, workerId)),
         with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
       });
       if (!worker) {
@@ -1687,11 +1688,11 @@ function mergePrKernelResponse(k: KernelLanding, pr: { prNumber: number; prUrl: 
 async function prOwnerTaskContext(workspaceId: string, prNumber: number): Promise<unknown> {
   try {
     const owners = await db.query.workers.findMany({
-      where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber), isNotNull(workers.taskId)),
+      where: sqlWhere(and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber), isNotNull(workers.taskId))),
       columns: { taskId: true },
     });
     for (const owner of owners) {
-      const task = await db.query.tasks.findFirst({ where: eq(tasks.id, owner.taskId!), columns: { context: true } });
+      const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, owner.taskId!)), columns: { context: true } });
       if (integrationRefreshOf(task?.context)) return task!.context;
     }
     return null;
@@ -1726,7 +1727,7 @@ export async function PUT(req: NextRequest) {
 
     if (workerId) {
       worker = await db.query.workers.findFirst({
-        where: eq(workers.id, workerId),
+        where: sqlWhere(eq(workers.id, workerId)),
         with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
       });
       if (!worker) {
@@ -1813,7 +1814,7 @@ export async function PUT(req: NextRequest) {
         // The calling run's own task: its token's task, or the worker it names.
         const callerTaskId = account.taskScope?.taskId ?? (workerId ? worker.taskId ?? null : null);
         const callerTask = callerTaskId
-          ? await db.query.tasks.findFirst({ where: eq(tasks.id, callerTaskId), columns: { id: true, context: true } })
+          ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, callerTaskId)), columns: { id: true, context: true } })
           : null;
         const granted = grantAllows(callerTask?.context, prNumber, requestedOverrides.kinds);
         if (!granted.ok) {
@@ -1960,13 +1961,13 @@ export async function PUT(req: NextRequest) {
     if (!force) {
       const task = worker.taskId
         ? await db.query.tasks.findFirst({
-            where: eq(tasks.id, worker.taskId),
+            where: sqlWhere(eq(tasks.id, worker.taskId)),
             columns: { id: true, requiresReview: true, missionId: true, context: true },
           })
         : null;
       const mission = task?.missionId
         ? await db.query.missions.findFirst({
-            where: eq(missions.id, task.missionId),
+            where: sqlWhere(eq(missions.id, task.missionId)),
             columns: RESOLVE_POLICY_MISSION_COLUMNS,
           })
         : null;
@@ -2202,7 +2203,7 @@ export async function PUT(req: NextRequest) {
     // the review policy `force` exists to bypass.
     const mergingTask = worker.taskId
       ? await db.query.tasks.findFirst({
-          where: eq(tasks.id, worker.taskId),
+          where: sqlWhere(eq(tasks.id, worker.taskId)),
           columns: { id: true, title: true, taskClass: true, missionId: true },
         })
       : null;
@@ -2444,7 +2445,7 @@ export async function GET(req: NextRequest) {
 
     if (workerId) {
       worker = await db.query.workers.findFirst({
-        where: eq(workers.id, workerId),
+        where: sqlWhere(eq(workers.id, workerId)),
         with: { workspace: true },
       });
       if (!worker) {

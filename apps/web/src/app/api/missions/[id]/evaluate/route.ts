@@ -10,6 +10,7 @@ import { evaluateCriteriaNow, ON_DEMAND_NOTE_TITLE } from '@/lib/mission-criteri
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const RATE_LIMIT_PER_HOUR = 6;
 
@@ -70,7 +71,7 @@ export async function POST(
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       columns: { id: true, teamId: true, workspaceId: true, goalCriteria: true },
     });
 
@@ -166,7 +167,7 @@ export async function GET(
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       columns: { id: true, teamId: true, workspaceId: true, goalCriteria: true, goalCriteriaState: true },
     });
 

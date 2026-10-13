@@ -43,11 +43,11 @@ export default function YourTeams({ teams, currentTeamId, userId }: { teams: You
       const res = await fetch(`/api/teams/${team.id}/members/${userId}`, { method: 'DELETE' });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(data.error || 'Failed to leave team');
+        throw new Error(data.error || "Could not leave the team.");
       }
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to leave team');
+      setError(err instanceof Error ? err.message : "Could not leave the team.");
     } finally {
       setLeaving(null);
     }

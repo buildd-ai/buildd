@@ -27,6 +27,7 @@ import SettingsSection from '../../SettingsSection';
 import { moveTargets } from '../../workspaces/rows';
 import { WorkspaceHealthCard } from './WorkspaceHealthCard';
 import { readinessNotices } from './readiness-notices';
+import { SectionIndex } from './SectionIndex';
 import { ReadinessCard } from './ReadinessCard';
 import { RepoAccessCard } from './RepoAccessCard';
 import { GitConfigForm } from './GitConfigForm';
@@ -48,6 +49,7 @@ import PauseStartsSection from './PauseStartsSection';
 import { isPaused } from '@/lib/workspace-pause';
 import WorkTrackerSection from './WorkTrackerSection';
 import DeleteWorkspaceButton from './DeleteWorkspaceButton';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,6 +57,8 @@ const SUGGESTION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Hairline-divided rows inside one group; each row component carries its own py-4. */
 const ROWS = 'divide-y divide-border-default';
+/** Room for the sticky section index when a link jumps here. */
+const JUMP = 'scroll-mt-14';
 
 /**
  * Everything about one workspace, in one place: readiness, repository,
@@ -76,7 +80,7 @@ export default async function WorkspaceSettingsPage({
   if (!access) notFound();
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: {
       id: true,
       name: true,
@@ -99,19 +103,19 @@ export default async function WorkspaceSettingsPage({
 
   // Roles a reviewer can be picked from (skills with isRole = true).
   const roles = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.workspaceId, workspaceId),
       eq(workspaceSkills.isRole, true),
-    ),
+    )),
     columns: { slug: true, name: true },
   });
 
   // Missions with their own merge policy.
   const missionsWithOverrides = await db.query.missions.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(missions.workspaceId, workspaceId),
       isNotNull(missions.mergePolicy),
-    ),
+    )),
     columns: { id: true, title: true, mergePolicy: true },
   });
 
@@ -179,6 +183,18 @@ export default async function WorkspaceSettingsPage({
     }),
   });
 
+  const showReadiness = notices.health.length > 0 || Boolean(notices.readiness) || Boolean(notices.repoAccess);
+  const sections = [
+    ...(showReadiness ? [{ id: 'readiness', label: 'Readiness' }] : []),
+    { id: 'repository', label: 'Repository' },
+    { id: 'agents', label: 'Agents' },
+    { id: 'delivery', label: 'Delivery' },
+    { id: 'where-work-runs', label: 'Where work runs' },
+    { id: 'models', label: 'Models' },
+    { id: 'integrations', label: 'Integrations' },
+    ...(moveTeams || canDelete ? [{ id: 'danger-zone', label: 'Danger zone' }] : []),
+  ];
+
   return (
     <SettingsPage
       title={workspace.name}
@@ -190,12 +206,14 @@ export default async function WorkspaceSettingsPage({
             ? <span className="font-mono text-text-primary break-all">{workspace.repo}</span>
             : 'No repository linked.'}
           {/* The phone header says "Workspaces"; the h1 and repo carry it there. */}
-          <span className="hidden md:inline">{' '}How agents work in this workspace: git, merging, releases and where tasks run.</span>
+          <span className="hidden md:inline">{' '}Git, merging, releases and where tasks run.</span>
         </>
       }
     >
-      {(notices.health.length > 0 || notices.readiness || notices.repoAccess) && (
-        <Section title="Readiness" id="readiness">
+      <SectionIndex sections={sections} />
+
+      {showReadiness && (
+        <Section title="Readiness" id="readiness" className={JUMP}>
           <div className={ROWS}>
             {notices.health.length > 0 && (
               <WorkspaceHealthCard
@@ -215,9 +233,10 @@ export default async function WorkspaceSettingsPage({
         </Section>
       )}
 
-      <Section title="Repository" id="repository">
+      <Section title="Repository" id="repository" className={JUMP}>
         <div className={ROWS}>
           <GitConfigForm
+            part="repository"
             workspaceId={workspace.id}
             workspaceName={workspace.name}
             initialConfig={gitConfig}
@@ -233,7 +252,17 @@ export default async function WorkspaceSettingsPage({
         </div>
       </Section>
 
-      <Section title="Delivery" id="delivery">
+      <Section title="Agents" id="agents" className={JUMP}>
+        <GitConfigForm
+          part="agents"
+          workspaceId={workspace.id}
+          workspaceName={workspace.name}
+          initialConfig={gitConfig}
+          canEdit={canManageSettings}
+        />
+      </Section>
+
+      <Section title="Delivery" id="delivery" className={JUMP}>
         <div className={ROWS}>
           <MergePolicyEditor
             workspaceId={workspaceId}
@@ -251,7 +280,6 @@ export default async function WorkspaceSettingsPage({
             defaultBranch={gitConfig?.defaultBranch || 'main'}
             canEdit={canManageSettings}
           />
-          <FreshContainerSection workspaceId={workspace.id} initial={gitConfig?.warmHandover === 'off'} canEdit={canManageSettings} />
           <CiRetrySection
             workspaceId={workspace.id}
             initial={gitConfig?.enforceGreenCI === true}
@@ -284,7 +312,7 @@ export default async function WorkspaceSettingsPage({
         </div>
       </Section>
 
-      <Section title="Where work runs" id="where-work-runs">
+      <Section title="Where work runs" id="where-work-runs" className={JUMP}>
         <div className={ROWS}>
           <ExecutorSection
             workspaceId={workspace.id}
@@ -304,6 +332,9 @@ export default async function WorkspaceSettingsPage({
               canEdit={canManageSettings}
             />
           )}
+          {executor.executor !== 'host' && (
+            <FreshContainerSection workspaceId={workspace.id} initial={gitConfig?.warmHandover === 'off'} canEdit={canManageSettings} />
+          )}
           <ConcurrencySection
             workspaceId={workspace.id}
             initialMaxConcurrentTasks={workspace.maxConcurrentTasks}
@@ -315,15 +346,17 @@ export default async function WorkspaceSettingsPage({
             canEdit={canManageSettings}
           />
           <p className="py-4 last:pb-0 text-xs text-text-secondary" data-testid="workspace-runners-pointer">
-            Runners and their sign-ins are set up in{' '}
-            <Link href="/app/settings/runners" className="text-text-primary underline">Settings › Runners</Link>.
+            Manage runners in{' '}
+            <Link href={`/app/settings/runners?team=${encodeURIComponent(workspace.teamId)}`} className="text-text-primary underline">Settings › Runners</Link>.
           </p>
         </div>
       </Section>
 
-      <WorkspaceModels workspaceId={workspace.id} teamId={workspace.teamId} />
+      <div id="models" className={JUMP}>
+        <WorkspaceModels workspaceId={workspace.id} teamId={workspace.teamId} />
+      </div>
 
-      <Section title="Integrations" id="integrations">
+      <Section title="Integrations" id="integrations" className={JUMP}>
         <WorkTrackerSection
           workspaceId={workspace.id}
           initialWorkTrackerConfig={workspace.workTrackerConfig as WorkspaceWorkTrackerConfig | null}
@@ -341,7 +374,7 @@ export default async function WorkspaceSettingsPage({
               <div className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium text-text-primary">Move to another team</h3>
-                  <p className="text-xs text-text-secondary mt-0.5">Hands this workspace to a team you manage.</p>
+                  <p className="text-xs text-text-secondary mt-0.5">Transfers this workspace to another team you manage.</p>
                 </div>
                 <MoveToTeamButton
                   workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}

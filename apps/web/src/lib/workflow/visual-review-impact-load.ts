@@ -8,6 +8,7 @@
 import 'server-only';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { missions, workflowDeliveries, workspaces } from '@buildd/core/db/schema';
 import { visualReviewPolicyOf } from '@buildd/shared';
 import { runBuilddDecision } from '@buildd/core/decision-policy';
@@ -66,12 +67,12 @@ export function createBuilddImpactDecider(scope: { teamId: string; workspaceId: 
 /** Assess a mission's integration branch at its current head. Null when the mission or its workspace is gone. */
 export async function assessMissionVisualImpact(missionId: string): Promise<VisualImpactAssessment | null> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, workspaceId: true, autoSurfaceAudit: true, workingBranch: true, primaryPrNumber: true },
   });
   if (!mission?.workspaceId) return null;
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, mission.workspaceId),
+    where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
     columns: { teamId: true, gitConfig: true },
   });
   if (!ws) return null;

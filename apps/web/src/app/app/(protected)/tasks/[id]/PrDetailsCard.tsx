@@ -5,6 +5,7 @@ import { githubApi } from '@/lib/github';
 import PrCard, { type CiCheckRun, type PrOutcome } from '@/components/task/PrCard';
 import type { OpenAttemptInfo } from '@/lib/explain';
 import type { PrDisplayState } from '@/lib/pr-presentation';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type StoredPrFacts = {
   prUrl: string;
@@ -66,7 +67,7 @@ export default async function PrDetailsCard({
 }: StoredPrFacts & { workspaceId: string }) {
   try {
     const wsWithInstall = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       with: {
         githubInstallation: { columns: { installationId: true } },
         githubRepo: { columns: { fullName: true } },

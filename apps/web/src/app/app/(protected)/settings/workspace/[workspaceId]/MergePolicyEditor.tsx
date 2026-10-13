@@ -13,6 +13,7 @@ import Segmented from '@/components/ui/Segmented';
 import { TonePill } from '@/components/ui/StatePill';
 import type { StateTone } from '@/components/ui/states';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 interface Role {
   slug: string;
@@ -146,7 +147,12 @@ export default function MergePolicyEditor({
     return p;
   }
 
+  const { dirty, snapshot, markSaved } = useDirtyState(buildPolicy());
+  useWarnOnUnload(canEdit && dirty);
+
   async function save() {
+    if (!dirty) return;
+    const submitted = snapshot;
     setSaving(true);
     setMsg(null);
     try {
@@ -158,13 +164,14 @@ export default function MergePolicyEditor({
       });
       if (res.ok) {
         setPolicy(built);
+        markSaved(submitted);
         setMsg({ type: 'success', text: 'Merge policy saved.' });
       } else {
         const err = await res.json().catch(() => ({}));
-        setMsg({ type: 'error', text: (err as any).error || 'Save failed.' });
+        setMsg({ type: 'error', text: (err as any).error || 'Could not save the merge policy. Try again.' });
       }
     } catch {
-      setMsg({ type: 'error', text: 'Network error.' });
+      setMsg({ type: 'error', text: 'Network error. Try again.' });
     } finally {
       setSaving(false);
     }
@@ -362,7 +369,7 @@ export default function MergePolicyEditor({
           <span className="text-sm text-text-muted">minutes</span>
         </div>
         <p className="text-xs text-text-muted">
-          Pushover alert after this long. Default 30 min for review, 5 min for auto.
+          Pushover alert when a PR waits this long. Defaults: 30 min for review, 5 min for auto.
         </p>
       </div>
       </div>
@@ -372,7 +379,7 @@ export default function MergePolicyEditor({
         <button
           type="button"
           onClick={save}
-          disabled={saving}
+          disabled={saving || !dirty}
           className="btn min-h-11"
         >
           {saving ? 'Saving…' : 'Save'}
@@ -389,7 +396,7 @@ export default function MergePolicyEditor({
         <div className="space-y-2">
           <div>
             <h4 className="text-sm font-medium text-text-primary">Mission overrides</h4>
-            <p className="mt-0.5 text-xs text-text-muted">These missions use a different merge policy than the workspace default.</p>
+            <p className="mt-0.5 text-xs text-text-muted">Missions with their own merge policy.</p>
           </div>
           <ul className="divide-y divide-border-default border-y border-border-default">
             {missionOverrides.map(m => (
@@ -511,6 +518,9 @@ export function DetectedPathsSection({
   );
 }
 
+/** Flagged paths listed before "Show all". */
+const SUGGESTIONS_SHOWN = 5;
+
 /**
  * Paths a reviewed PR touched that look risky but no class covers. Recorded by
  * the reviewer dispatch, so this is detection, not typing: each one comes from
@@ -532,7 +542,10 @@ export function PolicySuggestionsSection({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
   if (suggestions.length === 0) return null;
+  const visible = showAll ? suggestions : suggestions.slice(0, SUGGESTIONS_SHOWN);
+  const classCount = new Set(suggestions.map(s => s.class)).size;
 
   async function add(chosen: PolicySuggestion[]) {
     setBusy(true);
@@ -550,7 +563,7 @@ export function PolicySuggestionsSection({
       }
       onApplied();
     } catch {
-      setError('Network error.');
+      setError('Network error. Try again.');
     } finally {
       setBusy(false);
     }
@@ -561,7 +574,9 @@ export function PolicySuggestionsSection({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h4 className="text-sm font-medium text-text-primary">Flagged in review</h4>
-          <p className="mt-0.5 text-xs text-text-muted">Risky paths recent PRs touched that no class covers.</p>
+          <p className="mt-0.5 text-xs text-text-muted">
+            {suggestions.length} {suggestions.length === 1 ? 'path' : 'paths'} in {classCount} {classCount === 1 ? 'class' : 'classes'}. Recent PRs changed these risky paths and no class covers them.
+          </p>
         </div>
         {canEdit && suggestions.length > 1 && (
           <button type="button" className="btn min-h-11 shrink-0 self-start" disabled={busy} onClick={() => void add(suggestions)}>
@@ -569,8 +584,10 @@ export function PolicySuggestionsSection({
           </button>
         )}
       </div>
+      {/* A member sees the summary line only (settings spec R-8). */}
+      {canEdit && (<>
       <ul className="divide-y divide-border-default border-y border-border-default">
-        {suggestions.map(s => (
+        {visible.map(s => (
           <li key={s.path} className="flex items-center justify-between gap-3 py-2">
             <div className="min-w-0">
               <p className="font-mono text-xs text-text-primary break-all">{s.path}</p>
@@ -590,6 +607,18 @@ export function PolicySuggestionsSection({
           </li>
         ))}
       </ul>
+      {!showAll && suggestions.length > SUGGESTIONS_SHOWN && (
+        <button
+          type="button"
+          aria-expanded={false}
+          data-testid="merge-policy-suggestions-show-all"
+          className="btn btn-quiet min-h-11 md:min-h-0"
+          onClick={() => setShowAll(true)}
+        >
+          Show all {suggestions.length}
+        </button>
+      )}
+      </>)}
       {error && <p className="text-xs text-status-error">{error}</p>}
     </div>
   );

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { useOptimisticApprove } from '@/components/useOptimisticApprove';
 import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
@@ -12,6 +13,7 @@ import { Select } from '@/components/ui/Select';
 import MarkdownContent from '@/components/MarkdownContent';
 import SpecDiffView from '@/components/SpecDiffView';
 import SpecRevisionPanes from '@/components/SpecRevisionPanes';
+import SpecComments from '@/components/SpecComments';
 import type { SpecPageView } from '@/lib/specs/page-view';
 
 type Ok = Extract<SpecPageView, { state: 'ok' }>;
@@ -28,35 +30,27 @@ export function readingLine(v: Pick<Ok, 'reading' | 'waiting' | 'spec'>): string
 
 function Approve({ specId, revision, expectedVersion }: { specId: string; revision: number; expectedVersion: number }) {
   const router = useRouter();
-  const [pending, setPending] = useState(false);
-  const [result, setResult] = useState<{ tone: 'ok' | 'err' | 'warn'; text: string } | null>(null);
-  async function approve() {
-    setPending(true);
-    try {
-      const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ revision, expectedVersion }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      if (res.ok) {
-        setResult({ tone: 'ok', text: `Approved. Revision ${revision} is in force.` });
-        router.refresh();
-      } else {
-        setResult({ tone: res.status === 409 ? 'warn' : 'err', text: body.error ?? 'Approval failed.' });
-      }
-    } catch {
-      setResult({ tone: 'err', text: 'Approval failed. Try again.' });
-    } finally {
-      setPending(false);
-    }
-  }
-  if (result) return <Notice tone={result.tone} data-testid="spec-page-approve-result">{result.text}</Notice>;
+  const approvedText = `Approved. Revision ${revision} is in force.`;
+  const { shown, retry, approve } = useOptimisticApprove(async () => {
+    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ revision, expectedVersion }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    if (res.ok) return { tone: 'ok', text: approvedText };
+    return { tone: res.status === 409 ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
+  }, approvedText, () => router.refresh());
   return (
-    <div>
-      <PrimaryAction onClick={approve} pending={pending} fullWidthOnMobile data-testid="spec-page-approve">
-        Approve revision {revision}
-      </PrimaryAction>
+    <div className="flex flex-col gap-3">
+      {shown ? <Notice tone={shown.tone} data-testid="spec-page-approve-result">{shown.text}</Notice> : null}
+      {!shown || retry ? (
+        <div>
+          <PrimaryAction onClick={approve} fullWidthOnMobile data-testid="spec-page-approve">
+            Approve revision {revision}
+          </PrimaryAction>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -97,8 +91,10 @@ export default function SpecPage({ view }: { view: Ok }) {
     view.review ? (
       <section className="flex flex-col gap-3" data-testid="spec-page-review-panel">
         <h2 className="text-body font-semibold text-text-primary">
-          {view.review.replaces ? `Revision ${view.review.revision} replaces revision ${view.review.replaces}` : `Revision ${view.review.revision}, the first to be approved`}
+          {view.review.replaces ? `Revision ${view.review.revision} replaces revision ${view.review.replaces}` : `Revision ${view.review.revision} (nothing approved yet)`}
         </h2>
+        {/* The action sits where the reader pressed Review, above the text it approves. */}
+        <Approve specId={spec.id} revision={view.review.revision} expectedVersion={spec.version} />
         <SpecRevisionPanes
           body={view.review.body}
           hunks={view.review.hunks}
@@ -108,7 +104,6 @@ export default function SpecPage({ view }: { view: Ok }) {
           linesRemoved={view.review.linesRemoved}
           initial={view.review.replaces ? 'changes' : 'spec'}
         />
-        <Approve specId={spec.id} revision={view.review.revision} expectedVersion={spec.version} />
       </section>
     ) : view.compare ? (
       <section className="flex flex-col gap-3" data-testid="spec-page-compare-panel">
@@ -125,7 +120,7 @@ export default function SpecPage({ view }: { view: Ok }) {
       </section>
     ) : (
       <Card data-testid="spec-page-body">
-        <MarkdownContent content={view.body} images="link" />
+        <MarkdownContent content={view.body} images="link" surface="spec" />
       </Card>
     )
   );
@@ -170,6 +165,38 @@ export default function SpecPage({ view }: { view: Ok }) {
             </ul>
           </div>
         ) : null}
+        {view.nearby.length ? (
+          <div data-testid="spec-page-nearby">
+            <p className="text-body text-text-secondary">Nearby specs, found from their text and their work:</p>
+            <ul className="mt-1 flex flex-col">
+              {view.nearby.map((n) => (
+                <li key={n.specId} className="flex min-h-11 flex-col justify-center py-1" data-testid="spec-page-nearby-item" data-kind={n.kind}>
+                  <Link href={`/app/specs/${n.specId}`} className="text-body text-text-primary underline [overflow-wrap:anywhere]">{n.title}</Link>
+                  <span className="text-meta text-text-muted">{n.reason}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {view.design ? (
+          <div data-testid="spec-page-design">
+            <p className="text-body text-text-secondary">
+              Built to the design{' '}
+              {view.design.href
+                ? <a href={view.design.href} className="text-text-primary underline">{view.design.label}</a>
+                : <span className="text-text-primary">{view.design.label}</span>}
+              , version {view.design.version}.
+            </p>
+            {view.design.screens.length ? (
+              <p className="text-meta text-text-secondary">Screens: {view.design.screens.join(', ')}</p>
+            ) : null}
+            {view.design.changedSince ? (
+              <p className="text-body text-status-warning" data-testid="spec-page-design-changed">
+                The design changed since approval: it is at version {view.design.changedSince.current}, and revision {view.reading.revision} was approved with version {view.design.changedSince.pinned}.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         {view.repoRefs.length ? (
           <div data-testid="spec-page-repo-refs">
             <p className="text-body text-text-secondary">Repo specs revision {view.reading.revision} cites:</p>
@@ -184,6 +211,17 @@ export default function SpecPage({ view }: { view: Ok }) {
             </ul>
           </div>
         ) : null}
+      </Section>
+
+      <Section title="Comments">
+        <SpecComments
+          specId={spec.id}
+          revision={view.reading.revision}
+          comments={view.comments}
+          anchors={view.commentAnchors}
+          canComment={view.canComment}
+          canResolve={view.canComment}
+        />
       </Section>
 
       <Section title="Revisions">

@@ -17,6 +17,7 @@ import type { TaskResult } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { githubApi } from './github';
 import { insertPrOwnerWorker, type AdoptablePr, type PrMergeState } from './pr-review-request';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const PR_URL = /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)(?:[/?#].*)?$/i;
 
@@ -63,7 +64,7 @@ export async function resolveWorkspaceGithubRepo(workspace: {
 }): Promise<{ fullName: string; installationId: number } | null> {
   if (!workspace.githubRepoId || !workspace.githubInstallationId) return null;
   const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.id, workspace.githubRepoId),
+    where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
     with: { installation: true },
   });
   if (!repo?.installation) return null;
@@ -107,7 +108,7 @@ export async function attachPrToTask(params: {
   }
 
   const owner = await db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, task.workspaceId), eq(workers.prNumber, prNumber)),
+    where: sqlWhere(and(eq(workers.workspaceId, task.workspaceId), eq(workers.prNumber, prNumber))),
     columns: { id: true, taskId: true, prUrl: true, runner: true },
     with: { task: { columns: { taskClass: true, context: true } } },
   });

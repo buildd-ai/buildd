@@ -21,6 +21,7 @@ import {
   type ActivityNow, type ActivityTaskInput, type Episode,
 } from '@/lib/activity-delivery';
 import type { LocalHold } from '@/lib/local-session-display';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface ActivityTaskRow {
   id: string;
@@ -112,16 +113,16 @@ export async function loadActivity(input: {
 
   const [workerRows, missionRows] = await Promise.all([
     ids.length === 0 ? [] : db.query.workers.findMany({
-      where: inArray(workers.taskId, ids),
+      where: sqlWhere(inArray(workers.taskId, ids)),
       columns: {
         id: true, taskId: true, status: true, name: true, startedAt: true, completedAt: true, updatedAt: true,
         prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true,
         abandonedAt: true, lastCommitSha: true, waitingFor: true,
       },
-      orderBy: [desc(workers.startedAt)],
+      orderBy: sqlOrderBy([desc(workers.startedAt)]),
     }),
     missionIds.length === 0 ? [] : db.query.missions.findMany({
-      where: and(inArray(missions.id, missionIds), ne(missions.status, 'completed')),
+      where: sqlWhere(and(inArray(missions.id, missionIds), ne(missions.status, 'completed'))),
       columns: { id: true, title: true, status: true, isHeld: true, integrationBranchEnabled: true },
       with: {
         tasks: {
@@ -130,7 +131,7 @@ export async function loadActivity(input: {
             workers: {
               columns: { status: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true },
               limit: 5,
-              orderBy: (w: any, { desc: d }: any) => [d(w.startedAt), d(w.updatedAt)],
+              orderBy: sqlOrderByFn((w: any, { desc: d }: any) => [d(w.startedAt), d(w.updatedAt)]),
             },
           },
         },

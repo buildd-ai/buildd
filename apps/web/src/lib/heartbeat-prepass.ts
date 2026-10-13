@@ -6,6 +6,7 @@ import { isMissionBlocked } from './mission-dependency';
 import { extractResetTime, SESSION_WINDOW_MS, WEEKLY_WINDOW_MS } from '@buildd/core/reset-time';
 import { CLAUDE_WEEKLY_LIMIT_PATTERN } from '@buildd/core/budget-error-classifier';
 import { NON_TERMINAL_STATUSES, classifySingleTaskWait, classifyMissionWait, type WaitClassifiableTask, type MissionWaitResult } from './mission-wait';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export { QUEUED_ATTEMPT_GRACE_MS, classifyMissionWait, type WaitClassifiableTask, type MissionWaitResult } from './mission-wait';
 
@@ -126,7 +127,7 @@ async function loadHeartbeatMissionState(missionId: string): Promise<{
 }> {
   const [allTasks, artifactCountResult, noteCountResult] = await Promise.all([
     db.query.tasks.findMany({
-      where: eq(tasks.missionId, missionId),
+      where: sqlWhere(eq(tasks.missionId, missionId)),
       columns: {
         status: true, title: true, mode: true, result: true,
         taskClass: true, context: true, startAt: true, loopConfig: true, loopState: true,

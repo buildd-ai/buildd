@@ -8,6 +8,7 @@ import {
   touchesUiSurface,
 } from '@buildd/core/surface-audit';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The completion side of the per-mission surface audit.
@@ -46,7 +47,7 @@ function isAuditTask(t: SurfaceAuditGateTask): boolean {
 /** Only a person (or an outside caller on their behalf) waives; an in-task agent or the engine never does. */
 async function hasWaiver(missionId: string): Promise<boolean> {
   const notes = await db.query.missionNotes.findMany({
-    where: and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE)),
+    where: sqlWhere(and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE))),
     columns: { authorType: true, body: true },
     limit: 20,
   });
@@ -61,9 +62,9 @@ export async function loadSurfaceAuditWaiver(
   missionId: string,
 ): Promise<{ reason: string; actorLabel: string | null; at: string } | null> {
   const notes = await db.query.missionNotes.findMany({
-    where: and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE)),
+    where: sqlWhere(and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE))),
     columns: { authorType: true, body: true, actorLabel: true, createdAt: true },
-    orderBy: [desc(missionNotes.createdAt)],
+    orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
     limit: 20,
   });
   const latest = notes
@@ -75,7 +76,7 @@ export async function loadSurfaceAuditWaiver(
 
 export async function repoFor(workspaceId: string): Promise<{ installationId: number; fullName: string } | null> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true },
     with: {
       githubRepo: {
@@ -157,10 +158,10 @@ export async function evaluateSurfaceAuditGate(
 /** The mission's tasks in the shape the gate reads, for callers that do not already hold them. */
 export async function loadSurfaceAuditGateTasks(missionId: string): Promise<SurfaceAuditGateTask[]> {
   return db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: { id: true, title: true, status: true, taskClass: true, roleSlug: true, workspaceId: true, pathManifest: true },
     with: {
-      workers: { columns: { prNumber: true }, orderBy: (w, { desc: d }) => [d(w.startedAt)], limit: 1 },
+      workers: { columns: { prNumber: true }, orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]), limit: 1 },
     },
   });
 }
