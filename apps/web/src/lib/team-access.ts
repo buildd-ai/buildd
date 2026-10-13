@@ -413,6 +413,8 @@ export type UserTeam = {
   slug: string;
   role: string;
   memberCount: number;
+  /** Owners on the team, for the last-owner rule on Leave. Absent when the count failed. */
+  ownerCount?: number;
 };
 
 /**
@@ -434,17 +436,20 @@ export const getUserTeamsWithDetails = cache(async (userId: string): Promise<Use
   const memberTeamIds = validMemberships.map(m => m.teamId);
 
   let countMap = new Map<string, number>();
+  let ownerMap = new Map<string, number>();
   try {
     const memberCounts = await db
       .select({
         teamId: teamMembers.teamId,
         count: sql<number>`count(*)::int`,
+        owners: sql<number>`count(*) filter (where ${teamMembers.role} = 'owner')::int`,
       })
       .from(teamMembers)
       .where(inArray(teamMembers.teamId, memberTeamIds))
       .groupBy(teamMembers.teamId);
 
     countMap = new Map(memberCounts.map(mc => [mc.teamId, mc.count]));
+    ownerMap = new Map(memberCounts.map(mc => [mc.teamId, mc.owners]));
   } catch {
     // Member counts are non-critical, default to 1
   }
@@ -457,6 +462,7 @@ export const getUserTeamsWithDetails = cache(async (userId: string): Promise<Use
       slug: m.team.slug,
       role: m.role,
       memberCount: countMap.get(m.teamId) || 1,
+      ownerCount: ownerMap.get(m.teamId),
     }));
 });
 

@@ -125,6 +125,26 @@ it('serves an authenticated worker key scoped to analytics:read', async () => {
   expect((await GET(request)).status).toBe(200);
 });
 
+// Reading the ledger is the team's own data, not platform tuning: a team
+// admin (or an admin-level runner key) that is no platform operator still
+// reads its own team's ledger, and only its own. Grading stays operator-only
+// (decisions/[id]/label/route.test.ts).
+it("a team admin key that is no platform operator reads its own team's ledger, and not another team's", async () => {
+  account.mockResolvedValue({ id: 'team-account', level: 'admin', scopes: null, teamId: 'team' });
+  const own = new NextRequest('http://localhost/api/decisions?workspaceId=ws&capability=task_role_shadow', { headers: { authorization: 'Bearer bld_admin' } });
+  expect((await GET(own)).status).toBe(200);
+  expect(ledger).toHaveBeenCalledTimes(1);
+  ledger.mockClear();
+  const other = new NextRequest('http://localhost/api/decisions?workspaceId=ws-other-team&capability=task_role_shadow', { headers: { authorization: 'Bearer bld_admin' } });
+  expect((await GET(other)).status).toBe(404);
+  expect(ledger).not.toHaveBeenCalled();
+});
+
+it("a signed-in team admin reads their own team's feature health", async () => {
+  user.mockResolvedValue({ id: 'admin-user' });
+  expect((await GET(req('?workspaceId=ws&features=1'))).status).toBe(200);
+});
+
 it('denies a token without analytics:read', async () => {
   account.mockResolvedValue({ id: 'ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team' });
   const request = new NextRequest('http://localhost/api/decisions?workspaceId=ws', { headers: { authorization: 'Bearer bld_ci' } });

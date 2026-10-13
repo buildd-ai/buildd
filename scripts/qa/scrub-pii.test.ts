@@ -186,6 +186,10 @@ const SAFE: Record<string, string[]> = {
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',
     'conflict_retry_head_sha', 'reviewer_retry_head_sha', 'depends_on', 'predicted_model',
     'loop_state', 'subject_head_sha',
+    // TaskDelegation (packages/core/token-delegation.ts): workspace ids,
+    // fixed-vocabulary capabilities, granting user/account ids, timestamps and
+    // capability-grant ids. Same shape as task_schedules.delegation.
+    'delegation',
     'category_decision', // { v, source, keyword, jev, confidence, skipped?, at }: labels, numbers, a version, a timestamp
     // StoredVerdictDecision (lib/task-verdict.ts): fixed-vocabulary labels, a
     // hash, row ids, a model id, a timestamp, and a cause key naming CI checks.
@@ -343,6 +347,32 @@ describe('scrub-pii.sql covers the schema', () => {
     expect(re.test(`${MISSION_PR_TASK_PREFIX}Task 12: lorem ipsum`)).toBe(true);
     expect(re.test('Task 12: lorem ipsum')).toBe(true);
     expect(re.test('Ship mission: Real mission title')).toBe(false);
+  });
+
+  // `hasMemberScopedDeps` recognises surface audits by their title prefix.
+  // A scrub that loses the prefix makes platform operator missions appear
+  // as needing a decision on the clone when they actually don't.
+  test('tasks.title keeps the [surface audit] prefix, and the guard accepts it', () => {
+    const titleExpr = cov.assignments.find(a => a.table === 'tasks' && a.column === 'title')?.expr ?? '';
+    expect(titleExpr).toContain("[surface audit]");
+    expect(titleExpr).toContain("LIKE '[surface audit] %'");
+    const guard = readFileSync(join(__dirname, 'scrub-guard.sql'), 'utf8');
+    const pattern = /\('tasks', 'title', '([^']*)'\)/.exec(guard)?.[1];
+    expect(pattern).toBeDefined();
+    const re = new RegExp(pattern!);
+    expect(re.test('[surface audit] Task 12: lorem ipsum')).toBe(true);
+    expect(re.test('[surface audit] round 1: Task 12: lorem ipsum')).toBe(true);
+    expect(re.test('[surface audit] round 2: Task 12: lorem ipsum')).toBe(true);
+    expect(re.test('[surface audit] Real audit name')).toBe(false);
+    expect(re.test('Task 12: lorem ipsum')).toBe(true);
+  });
+
+  // ': ' starts at position(': '); the kept prefix ends AFTER the space (+1) and the
+  // rewritten remainder starts one past it (+2). Off by one leaks the first real character.
+  test('surface-audit round prefix keeps exactly "round N: " and rewrites the rest', () => {
+    const titleExpr = cov.assignments.find(a => a.table === 'tasks' && a.column === 'title')?.expr ?? '';
+    expect(titleExpr).toContain("substring(t.title, 1, position(': ' in t.title) + 1)");
+    expect(titleExpr).toContain("substr(t.title, position(': ' in t.title) + 2)");
   });
 
   // `hasMemberScopedDeps` recognises surface audits by their title prefix.

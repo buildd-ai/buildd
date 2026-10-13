@@ -1,9 +1,9 @@
 /**
  * Role slugs that a static route already owns.
  *
- * `/app/settings/roles/[slug]` resolves a *role* — `settings/roles/[slug]/page.tsx`
+ * `/app/settings/agents/[slug]` resolves a *role* — `settings/agents/[slug]/page.tsx`
  * looks the slug up in `workspaceSkills` where `isRole` — and
- * `/app/settings/roles/new` is a static
+ * `/app/settings/agents/new` is a static
  * segment beside it holding the New Role form. Next.js matches static segments
  * first, so a role slugged "new" would never reach its own page: it would
  * render the creation form instead, with no error to explain why.

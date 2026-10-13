@@ -74,7 +74,7 @@ function SessionRow({ s, now }: { s: LocalSessionView; now: number }) {
             </Disclosure>
           )}
           {s.workerLive && (
-            <span className="text-meta text-text-muted">Runs on your machine. Buildd can release its slot, not close it.</span>
+            <span className="text-meta text-text-muted">Runs on your machine. buildd can release its slot, not close it.</span>
           )}
         </div>
       )}

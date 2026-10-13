@@ -152,7 +152,7 @@ export default function MissionDecisionSheet({
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setFixError(plainCriteriaError(body.error ?? `Could not save criterion (HTTP ${res.status})`).text);
+        setFixError(plainCriteriaError(body.error ?? 'Couldn’t save the criterion. Try again.').text);
         return;
       }
       // The owner should see the new verdict in this same interaction — the
@@ -181,7 +181,7 @@ export default function MissionDecisionSheet({
         // The server's wording for a missing audit is written for an agent; a person gets the visual audit actions.
         setWaiveError(body.code === 'surface_audit_missing'
           ? 'The visual audit needs a decision first. Use the visual audit actions above.'
-          : body.error ?? `Could not complete mission (HTTP ${res.status})`);
+          : body.error ?? 'Couldn’t complete the mission. Try again.');
         return;
       }
       router.refresh();
@@ -229,7 +229,7 @@ export default function MissionDecisionSheet({
         const body = await res.json().catch(() => ({}));
         setAuditError(typeof body.error === 'string' && body.code !== 'surface_audit_missing'
           ? body.error
-          : `Could not save the waiver (HTTP ${res.status}). Nothing was recorded.`);
+          : 'Couldn’t save the waiver. Try again.');
         return;
       }
       // Shown only now: a refused request records nothing, so the screen never claims it did.

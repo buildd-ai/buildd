@@ -32,7 +32,7 @@ async function render(props: Partial<Parameters<typeof TaskEstimatesFeature>[0]>
   document.body.appendChild(host);
   root = createRoot(host);
   await act(async () => {
-    root.render(<TaskEstimatesFeature teamId={TEAM} initial={OFF_DEFAULT} canManage defaultOffReason="Not on by default yet." {...props} />);
+    root.render(<TaskEstimatesFeature teamId={TEAM} initial={OFF_DEFAULT} canManage {...props} />);
   });
 }
 
@@ -68,12 +68,15 @@ describe('TaskEstimatesFeature', () => {
     expect(q('task-estimates-state')!.textContent).toBe('On, turned on by your team');
   });
 
-  it('says why it is not on by default, and says nothing once it is', async () => {
+  it('shows only this team\'s state: nothing about other teams or the rollout', async () => {
+    for (const initial of [OFF_DEFAULT, { enabled: false, source: 'team' as const, defaultOn: true }]) {
+      await render({ initial });
+      const text = q('feature-task-estimates')!.textContent ?? '';
+      expect(text).not.toMatch(/other teams/i);
+      expect(text).not.toMatch(/not on by default|not been checked|accuracy check/i);
+      act(() => root.unmount()); host.remove();
+    }
     await render();
-    expect(q('task-estimates-default-reason')!.textContent).toContain('Not on by default yet.');
-    act(() => root.unmount()); host.remove();
-    await render({ defaultOffReason: null, initial: { enabled: true, source: 'default', defaultOn: true } });
-    expect(q('task-estimates-default-reason')).toBeNull();
   });
 
   it('says it is a forecast, not a scheduler', async () => {
@@ -84,7 +87,7 @@ describe('TaskEstimatesFeature', () => {
 
 describe('taskEstimatesStatusLine', () => {
   it('names an explicit opt-out against an on default', () => {
-    expect(taskEstimatesStatusLine({ enabled: false, source: 'team', defaultOn: true })).toContain('turned off by your team');
-    expect(taskEstimatesStatusLine({ enabled: true, source: 'default', defaultOn: true })).toBe('On (the default)');
+    expect(taskEstimatesStatusLine({ enabled: false, source: 'team' })).toBe('Off, turned off by your team');
+    expect(taskEstimatesStatusLine({ enabled: true, source: 'default' })).toBe('On (the default)');
   });
 });

@@ -9039,6 +9039,33 @@ describe('PATCH /api/workers/[id]', () => {
       expect(arg).not.toHaveProperty('summary');
     });
 
+    it('approve on an integration-refresh PR: the verdict-time inspector judges the trunk delta, like pre-flight', async () => {
+      // Without deltaBase the inspector read the PR diff against the mission
+      // branch, where a renumbered mission migration shows as deleted, and
+      // escalated a refresh the reviewer had approved (task 87c7e48d).
+      setupReviewerTaskCompletion('approve');
+      const reviewerTask = mockTasksFindFirst.getMockImplementation()!;
+      mockTasksFindFirst.mockImplementation((opts_?: any) => {
+        const cols = Object.keys(opts_?.columns ?? {});
+        if (cols.length === 1 && cols[0] === 'context') {
+          return Promise.resolve({ context: { requireMergeCommit: true, refreshTrunk: 'dev' } });
+        }
+        return reviewerTask(opts_);
+      });
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
+      expect((mockInspectPullRequestMigrations.mock.calls[0] as any[])[0]).toMatchObject({ prNumber: 42, headSha: 'abc123', deltaBase: 'dev' });
+    });
+
+    it('approve on an ordinary PR: the verdict-time inspector gets no deltaBase', async () => {
+      setupReviewerTaskCompletion('approve');
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+      expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
+      expect((mockInspectPullRequestMigrations.mock.calls[0] as any[])[0]).not.toHaveProperty('deltaBase');
+    });
+
     it('approve: honours a server override — escalates, does not merge, and says why', async () => {
       setupReviewerTaskCompletion('approve');
       mockEnforceServerSideEscalation.mockImplementation(() => ({

@@ -75,7 +75,7 @@ export function AgentsPanel({ model, occupancy, idle = [], idPrefix = 'home' }: 
           })}
         </ul>
       )}
-      {model.total > 0 && model.lines.length === 0 && <p className="mt-3 text-meta text-text-muted">Every slot is free.</p>}
+      {model.total > 0 && model.lines.length === 0 && <p className="mt-3 text-meta text-text-muted">No agents running.</p>}
     </section>
   );
 }

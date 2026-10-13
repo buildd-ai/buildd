@@ -132,7 +132,7 @@ export function VisualReviewSheetBody({ missionId, onClose }: { missionId: strin
     <div className="flex min-w-0 flex-col gap-4" data-testid="visual-review-start">
       {!requested && !existing && (
         <p className="text-body text-text-secondary">
-          Buildd opens the screens this mission changed at phone and desktop width, takes screenshots, and asks you about anything that looks wrong.
+          buildd opens the screens this mission changed at phone and desktop width, takes screenshots, and asks you about anything that looks wrong.
         </p>
       )}
 

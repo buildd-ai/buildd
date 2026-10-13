@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * Dollar figures for agent work are estimates, never invoices.
  *
@@ -12,7 +13,7 @@
  */
 
 export const ESTIMATED_COST_TITLE =
-  'Estimated at API list price. On a subscription (OAuth) seat this is a list-price equivalent, not a charge.';
+  'Estimated at API list price. On a subscription you aren’t billed this amount.';
 
 export function formatEstimatedUsd(usd: number | string | null | undefined, digits = 2): string {
   const n = typeof usd === 'string' ? parseFloat(usd) : usd;

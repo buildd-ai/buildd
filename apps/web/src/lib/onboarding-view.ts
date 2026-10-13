@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * Dashboard view rules for workspace onboarding (docs/design/workspace-onboarding.md §1).
  *
@@ -54,7 +55,7 @@ export const NEXT_STEP_COPY: Record<WorkspaceReadinessNextStep, { title: string;
   },
   'review-policy': {
     title: 'Review the merge policy',
-    body: 'Buildd detected which paths are risky. Confirm the proposed policy before workers open PRs.',
+    body: 'buildd detected which paths are risky. Confirm the proposed policy before agents open PRs.',
   },
   'propose-fixes': {
     title: 'Propose changes',

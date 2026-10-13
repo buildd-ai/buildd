@@ -59,7 +59,7 @@ export default function MemberRepoAccessSection({ workspaceId, mode, repoFullNam
           <p className="text-xs text-text-secondary">
             {on
               ? `Members must have read access to ${repoFullName ?? 'the linked repository'} on GitHub to see code, create tasks or chat about this workspace. API keys and runners are not affected.`
-              : 'Off: every team member can see everything Buildd can see in this repository.'}
+              : 'Off: every team member can see everything buildd can see in this repository.'}
           </p>
           {canManage && !repoFullName && !on && (
             <p className="text-xs text-text-muted">Link a GitHub repository to this workspace to turn this on.</p>

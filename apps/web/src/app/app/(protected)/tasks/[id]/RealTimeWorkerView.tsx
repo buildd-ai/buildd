@@ -411,7 +411,7 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
     return (
       <div data-testid="worker-view" data-state="platform-owned" className="space-y-5">
         <div data-testid="worker-platform-owned-banner" className="border border-border-strong px-4 py-3">
-          <p className="font-mono text-[11px] text-text-muted">Buildd is handling this</p>
+          <p className="font-mono text-[11px] text-text-muted">buildd is handling this</p>
           <p className="mt-1 text-sm font-semibold text-text-primary">{delivery.headline}</p>
           {delivery.detail && <p className="mt-1 text-sm text-text-secondary">{delivery.detail}</p>}
         </div>
