@@ -253,3 +253,24 @@ describe('rawWorkerSerialisations (the guard itself)', () => {
   for (const s of flagged) it(`flags ${s}`, () => expect(rawWorkerSerialisations(s)).not.toEqual([]));
   for (const s of clean) it(`allows ${s}`, () => expect(rawWorkerSerialisations(s)).toEqual([]));
 });
+
+describe('WORKER_FIELD_VISIBILITY source', () => {
+  // A duplicate key in an object literal is TS1117, but apps/runner has no
+  // gated tsc step, so only this test catches one. At runtime the last write
+  // wins and Object.keys() dedupes, so no behavioural test can see it.
+  it('declares each key exactly once', () => {
+    const src = readFileSync(join(SRC, 'public-worker.ts'), 'utf8');
+    const start = src.indexOf('export const WORKER_FIELD_VISIBILITY');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const open = src.indexOf('= {', start);
+    const close = src.indexOf('\n};', open);
+    expect(open).toBeGreaterThan(start);
+    expect(close).toBeGreaterThan(open);
+    const body = src.slice(open + 3, close);
+    const keys = [...body.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*:/gm)].map((m) => m[1]);
+    expect(keys.length).toBeGreaterThan(10);
+    const seen = new Set<string>();
+    const dupes = keys.filter((k) => (seen.has(k) ? true : (seen.add(k), false)));
+    expect(dupes).toEqual([]);
+  });
+});

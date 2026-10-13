@@ -2,16 +2,17 @@
 
 import Link from 'next/link';
 import { useNeedsInput } from './NeedsInputProvider';
-import { missionTaskHref } from '@/lib/mission-task-href';
+import { taskAnswerHref } from '@/lib/mission-task-href';
 import { bannerTasks, useBannerHidden, useHiddenNeedsInput, usePhoneBannerHidden } from '@/lib/needs-input-hidden';
 import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
 
 /**
- * A waiting task opens as the sheet over its mission, so answering it leaves
- * you where the task lives; a task with no mission opens its own page.
+ * A waiting task opens on its own page, answer focused: the page is the full
+ * answering experience (the question, each option and what it leads to, the
+ * own-words box). A mission task keeps its way back to the mission.
  */
 export function needsInputTaskHref(task: { id: string; missionId?: string | null }): string {
-  return missionTaskHref({ missionId: task.missionId ?? null, taskId: task.id, mode: 'sheet' });
+  return taskAnswerHref({ taskId: task.id, missionId: task.missionId ?? null });
 }
 
 export default function NeedsInputBanner() {
@@ -34,6 +35,7 @@ export default function NeedsInputBanner() {
   const firstTask = tasks[0];
   // The sentence every page shows, not the raw "feat(scope): …" title.
   const firstName = taskHeading(firstTask, null).heading;
+  const firstQuestion = firstTask.waitingFor?.prompt?.trim() || null;
 
   return (
     <div
@@ -45,20 +47,33 @@ export default function NeedsInputBanner() {
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-warning opacity-75" />
           <span className="relative inline-flex rounded-full h-2 w-2 bg-status-warning" />
         </span>
-        <span className="text-status-warning font-medium">
+        <span className="min-w-0 truncate text-status-warning font-medium">
           {count === 1 ? (
-            <>
-              <Link
-                href={needsInputTaskHref(firstTask)}
-                className="underline underline-offset-2 hover:text-status-warning/80"
-              >
-                {firstName}
-              </Link>
-              {' '}needs input
-            </>
+            firstQuestion ? (
+              // The question itself leads; the task it is about follows, quiet.
+              <>
+                <Link
+                  href={needsInputTaskHref(firstTask)}
+                  className="underline underline-offset-2 hover:text-status-warning/80"
+                >
+                  {firstQuestion}
+                </Link>
+                <span className="text-status-warning/70">{` · ${firstName}`}</span>
+              </>
+            ) : (
+              <>
+                <Link
+                  href={needsInputTaskHref(firstTask)}
+                  className="underline underline-offset-2 hover:text-status-warning/80"
+                >
+                  {firstName}
+                </Link>
+                {' '}is waiting for your answer
+              </>
+            )
           ) : (
             <>
-              {count} tasks need input
+              {count} questions for you
               {': '}
               <Link
                 href={needsInputTaskHref(firstTask)}

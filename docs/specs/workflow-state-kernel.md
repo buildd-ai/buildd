@@ -2,13 +2,13 @@
 title: Workflow State Kernel
 status: draft
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-13
 summary: One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/workflow/landing.ts]
-related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
-keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/generated-artifacts.test.ts, apps/web/tests/db/workflow-scenarios-repeat.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/lib/ci-verdict.test.ts, apps/web/tests/db/workflow-probe-github.test.ts, apps/web/tests/db/workflow-probe-concurrency.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/review-request-authority.test.ts, apps/web/tests/db/review-provenance.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/lib/pr-list.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, packages/core/__tests__/workflow-write-sites.test.ts, apps/web/tests/db/workflow-scenarios-treadmill.test.ts, apps/web/src/lib/workflow/base-delta.test.ts, apps/web/tests/db/workflow-scenarios-lane.test.ts, apps/web/src/lib/repair-completion.test.ts, apps/web/src/lib/mission-state-view.landing.test.ts, apps/web/src/lib/pr-predecessors.test.ts, apps/web/src/lib/retry-pr-supersession.test.ts, apps/web/src/lib/migration-inspector.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/runner/__tests__/unit/worktree-mission-integration-guard.test.ts, apps/runner/__tests__/unit/worktree-base-branch.test.ts, packages/core/__tests__/repair-target.test.ts, apps/web/src/lib/workflow/coordination-owner-review.test.ts]
+related: [workflow-kernel-library, mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
+keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites, review composition, durable findings, merge doors, landing authority, merged over open findings]
+verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/generated-artifacts.test.ts, apps/web/tests/db/workflow-scenarios-repeat.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, packages/workflow-kernel/src/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/lib/ci-verdict.test.ts, apps/web/tests/db/workflow-probe-github.test.ts, apps/web/tests/db/workflow-probe-concurrency.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/review-request-authority.test.ts, apps/web/tests/db/review-provenance.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/lib/pr-list.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, packages/core/__tests__/workflow-write-sites.test.ts, apps/web/tests/db/workflow-scenarios-treadmill.test.ts, apps/web/src/lib/workflow/base-delta.test.ts, apps/web/tests/db/workflow-scenarios-lane.test.ts, apps/web/src/lib/repair-completion.test.ts, apps/web/src/lib/mission-state-view.landing.test.ts, apps/web/src/lib/pr-predecessors.test.ts, apps/web/src/lib/retry-pr-supersession.test.ts, apps/web/src/lib/migration-inspector.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/runner/__tests__/unit/worktree-mission-integration-guard.test.ts, apps/runner/__tests__/unit/worktree-base-branch.test.ts, packages/core/__tests__/repair-target.test.ts, apps/web/src/lib/workflow/coordination-owner-review.test.ts]
 supersedes: []
 ---
 
@@ -62,7 +62,9 @@ board and Landed strip, the mission feed, the task page's PR tile, card and
 shipped header, explain's state chain, history and `because[]`, and the chat
 tile, dock and PR object all read `getDeliveryView`, and the duplicate PR-state
 maps are deleted (§13.9). §13.1–§13.9 list what landed and the deviations; §14
-the cutover and the kill switch.
+the cutover and the kill switch. **§13.13 is a contract with its implementation
+pending**: review composition, durable findings, repair builders and one landing
+authority at every merge door (AC-20 to AC-37), written against PR #4686.
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
 pull request, exactly one row (the *delivery*) records where the work stands. That row
@@ -852,6 +854,8 @@ between "merge accepted" and "`task.pr_merged` emitted" loses the effect.
 
 ### 10.3 Delivery and leases
 
+> Amended 2026-10-13 by `workflow-kernel-library.md` §3: in production the drain runs only on the execution control plane, never inline in a Vercel request or from a Vercel cron.
+
 Mirror `task_dispatch_outbox` (`packages/core/dispatch-outbox.ts`, `dispatch-authority.ts`):
 claim due rows with `FOR UPDATE SKIP LOCKED` in one CTE, set `status='delivering'` and
 `attempt_count+1`; a `delivering` row older than the lease (120s) is claimable again.
@@ -912,6 +916,8 @@ as a deferral with its reason (and rendered, §12.1) instead of vanishing.
 ---
 
 ## 11. Reconciliation
+
+> Amended 2026-10-13 by `workflow-kernel-library.md` §1 and §3: the floor runs on the control plane, and page renders never write.
 
 Reconcilers exist because webhooks are lost, reordered and unretried
 (`webhook/route.ts` documents that App webhooks are not redelivered; `X-GitHub-Delivery`
@@ -2199,6 +2205,8 @@ cycle. Each conflict therefore spends budget until it escalates.
 
 ### 13.12 Review, refresh and landing while an owner keeps running (edc02148)
 
+> Amended 2026-10-13 by `workflow-kernel-library.md` §3: these rules run on the execution control plane, not `apps/web`.
+
 PR #4413 sat open for half an hour with green CI and, once asked, an approval. Its owner was a
 coordination task that stayed assigned after `create_pr` to watch other PRs. So the delivery
 stayed `WORKING`, and no reviewer was asked until a person called `request_pr_review`. The
@@ -2306,7 +2314,197 @@ exit" and "review, refresh and landing while a coordination owner keeps running"
 `pr-landing.test.ts` "a REPAIRING delivery: the door re-drives its due repair";
 `facts.test.ts` "carryForwardReading"; `coordination-owner-review.test.ts`.
 
+---
+
+### 13.13 Integration reviews, durable findings, repair builders and landing authority (#4686)
+
+**Status: contract written, implementation pending.** Every rule below is the target.
+Where the code differs today, the rule says so under "Today". AC-20 to AC-37 (§19) are
+the checks the follow-up tasks link their tests to. Until a rule's test exists and
+passes, the rule is not a claim about the code.
+
+**The incident.** A mission integration PR into trunk was owned by the mission's
+`bookkeeping` task (`openMissionIntegrationPr`, `mission-pr.ts`). No delivery was ever
+opened for it, so the legacy authority handled it end to end. Evidence: the landing row
+was written by `guardReviewVerdict`, a kernel PR skips that gate, and a zero-diff fix
+completed even though `fixCompletionGate` would refuse one. The sequence:
+
+1. The landing door found the PR green with no review on file and requested one
+   (`pr_landing` deferred).
+2. Reviewer `c487c022` asked for changes: two copy findings, each tied to a file and
+   line, at the PR's head. GitHub refuses `REQUEST_CHANGES` from a PR's own author, and
+   the buildd App had opened this PR, so `postPrReview` posted the verdict as a
+   `COMMENTED` review (own-PR fallback, `lib/github.ts`).
+3. The legacy fix `8eedeae9` (`workers/[id]/route.ts`, reviewer-outcome handler) copied
+   the owner's description verbatim, including "It performs no work of its own". It got
+   no builder role and no `repairTarget`. It made zero edits and reported no work, and
+   nothing refused that: no completion gate covers a legacy review fix.
+4. The next push was a person's merge of trunk into the mission branch. It was not a
+   fix. Re-review `5d910273` found both findings still unaddressed and again posted as
+   `COMMENTED`.
+5. The landing door refused the PR on the outstanding verdict (`pr_landing`
+   `stranded`). **The buildd gate held.**
+6. A person's own GitHub account then merged the PR. The committer was GitHub's
+   `web-flow` and the merge carried no app attribution. Every buildd door merges with
+   the installation token, which GitHub attributes to the App's bot, so this was a
+   **manual merge outside buildd** (GitHub UI or a personal-token CLI). After the merge,
+   `measureMergeAgainstReview` wrote one `review_verdict` `bypassed` row. Nothing else
+   recorded the bypass: no finding record, no task, no note.
+7. `get_pr` printed "Reviews: none". Its summary keeps only GitHub `APPROVED` /
+   `CHANGES_REQUESTED` reviews, so it drops `COMMENTED` and never reads buildd's own
+   verdict.
+
+Both findings are still on trunk.
+
+**COMMENTED does not explain it on its own.** Trunk has no required review and no
+required check that carries buildd's verdict, and admins are not bound. So a genuine
+`CHANGES_REQUESTED` review would not have stopped this merge either. The verdict lived
+only in buildd's rows, and nothing projected it onto the one surface GitHub enforces. The
+gap is "landing authority stops at buildd's own doors", not "the review was the wrong
+type".
+
+#### Rules
+
+1. **Review composition reuses evidence and never invents approval.** An integration,
+   release or refresh PR reuses each constituent's head-bound review (§5.9). Only the
+   novel or uncovered delta is reviewed. An `unverifiable` composition, or one whose
+   constituents cannot all be proved, means a full review. It is never approval. A
+   constituent counts only when its *latest* decided round at the cited head is
+   `approve` and its delivery is not `CHANGES_REQUESTED`/`ESCALATED` at that head. An
+   approve round that a later request-changes round superseded at the same head does
+   not count.
+   *Today:* `coveringRound` (`review-composition.ts`) and `verifyCompositionAttestation`
+   (`reducer.ts`) accept any decided approve round at the head and ignore later rounds.
+   A mission integration PR with no delivery gets no composition at all and is
+   reviewed whole.
+2. **Findings are durable.** A request-changes verdict creates findings, one per
+   distinct issue, each pinned to the round, head, path and line it was raised on.
+   A finding stays open across later pushes, CI results, base refreshes,
+   composition, re-review rounds that do not re-read its path, and replacement of the
+   owner task or worker. It closes only when one of these happens:
+   - a later round at a head that contains the change explicitly resolves it;
+   - a person waives it (recorded with who and why);
+   - the PR closes unmerged (the finding moves to the superseding PR, if any).
+
+   An open finding blocks landing at every door (rule 6).
+   *Today:* findings exist only as prose in the reviewer's result and the activity
+   comment. The gate reads only the newest round's verdict, so a later approve
+   (including a delta approve that never read the path) clears every earlier finding.
+3. **A repair is an executable builder pinned to the exact target.** A review fix,
+   whether kernel `dispatch_fix` or legacy, carries all of the following:
+   - its own description: the open findings, verbatim, as its task. The owner's
+     description appears only as background, and a `bookkeeping` or `coordination`
+     owner's "performs no work" text is never copied;
+   - a builder role;
+   - `repairTarget: { prNumber, headRef, headSha, baseRef }` (§13.11 rule 1), so it
+     resumes the PR head even when that head is a mission branch far ahead of trunk.
+
+   *Today:* both paths copy `owner.description` (`review-effects.ts` `dispatch_fix`,
+   `workers/[id]/route.ts`). Neither stamps `repairTarget`, and the fix inherits the
+   owner's null role.
+4. **Completion evidence has three separate states.** A task ending is not a repair
+   published, and a repair published is not a finding resolved. A review fix completes
+   only on one of these:
+   - a push to the PR head that changes at least one path named by an open finding
+     (or a path the reviewer's feedback names);
+   - a verified no-op: a live read showing the finding's text or condition is already
+     absent at the current head, recorded as evidence.
+
+   A zero diff, a diff that touches none of the findings' paths, or a head that moved
+   only because of a refresh or someone else's push keeps the blocker. The task fails
+   and spends the attempt budget. Reporting success does not stop that.
+   *Today:* the kernel's `fixCompletionGate` refuses only an unmoved head, and any
+   moved head passes, including a trunk refresh credited to the fix by §6.9. Legacy
+   review fixes have no completion gate.
+5. **A refresh push is not a fix.** A push whose only new content is a merge of the
+   base, or the platform's own `refresh_branch`, starts a delta round scoped to what
+   the merge decided (§5.9 refresh). It never counts as the fix attempt's output and
+   never closes a finding.
+6. **One landing authority, at every merge door, checked when the merge runs.** Every
+   path that can merge a PR asks one question before the `PUT .../merge` call: is the
+   PR covered at this exact head, with no open finding and no unresolved
+   request-changes or escalation? The paths are each door, the sweep, the kernel's
+   `merge_call` effect, a policy-rule merge and the release executors, and the door
+   inventory below lists them. The `merge_call` effect asks again when it runs, not
+   only at T15. A verdict or finding recorded while the delivery is `APPROVED` or
+   `LANDING` moves it out of landing (`CHANGES_REQUESTED`). A rule can never turn a
+   request-changes into approval. `PolicyMergeApproved` may lift a policy escalation.
+   It may not lift `review_exhausted` while a finding is open. Only a person's
+   recorded override (dashboard, §7 `bypass`) passes an open finding.
+   *Today:* see the door inventory. The release executors and compose release do not
+   consult the gate. `merge_pr` `force` with an admin token skips it for a non-kernel
+   PR. `tryAutoMergeWorkerPr` skips it when it cannot resolve a workspace. The kernel
+   does not recheck a review at `merge_call`, and `ReviewVerdictRecorded` outside
+   `AWAITING_REVIEW` is `stale`. `PolicyMergeApproved` lifts `review_exhausted`.
+7. **buildd's verdict reaches GitHub as something GitHub enforces.** While a finding is
+   open, buildd publishes a failing commit status (or check run) at the PR head that
+   names the open findings. Workspaces can make that status required on trunk. A
+   `COMMENTED` review is **never** approval and never clears anything (it already is
+   not; `readGithubApproval` skips it). The own-PR fallback stays, because GitHub
+   refuses the alternative, but it can no longer be the only signal.
+   *Today:* no status or check carries the verdict. Trunk protection can only see CI.
+8. **Projections read canonical delivery state.** `get_pr`, `get_pr_review`, explain,
+   the activity comment and the task page report the reviews, open findings and
+   landing blockers that the delivery (or, for a legacy PR, the reviewer rows plus
+   findings) records. They never report only GitHub's review states. "Reviews: none"
+   with an open request-changes is a defect.
+   *Today:* `get_pr`'s summary reads GitHub reviews only (`api/github/pr/route.ts`) and
+   drops `COMMENTED`.
+9. **Recovery, idempotency and retry exhaustion.** Each finding has one fix lineage.
+   Re-dispatch for the same `(finding set, head)` is single-flight. A fix attempt that
+   fails rule 4 counts against the round budget (`max_rounds`). At exhaustion the
+   delivery is `ESCALATED(review_exhausted)` with the open findings attached, and a
+   person is notified. Nothing merges it unattended (rule 6). A replay of any effect
+   at the same head and version is a no-op.
+10. **An external merge records the truth and approves nothing.** When GitHub reports
+    a merge buildd did not make while findings were open, the delivery becomes
+    `MERGED` (T17 accepts any non-terminal state). The record says `merged over open
+    findings`, with the merge actor and path as GitHub reported them (app bot versus a
+    person's account, committer), and every open finding stays open and attached to
+    the merged PR. A follow-up fix task is filed against trunk for those findings, and
+    a person is notified. The merge is never counted as an approval, a resolution or
+    a waiver.
+    *Today:* a `review_verdict` `bypassed` ledger row only (`review-subscribers.ts`).
+
+#### Merge door inventory
+
+Read from the code at this section's commit. Line numbers drift, so re-grep the
+symbol. Every REST merge goes through `mergePullRequest` (`lib/github.ts`, pinned with
+`sha`) except where noted. No GraphQL merge, no `enablePullRequestAutoMerge` and no
+workflow `gh pr merge` exists.
+
+| # | Door | Merge call | Reached from | Review gate today |
+|---|---|---|---|---|
+| D1 | Kernel `merge_call` effect | `workflow/pr-landing-effects.ts` `mergeCall` | T15 `LandingRequested` (`reducer.ts`), drained by `landThroughKernel` (`workflow/landing.ts`) and the cron drain | kernel state at T15 only. At run time it checks `LANDING` + head, and no review recheck |
+| D2 | `landPr` | `lib/pr-landing.ts` (legacy `mergePullRequest`, else `landThroughKernel`) | `check_suite` webhook, `PUT /api/github/pr`, dashboard route, reviewer approve (`workers/[id]`), surface wake, landing sweep (`pr-landing-sweep-deps.ts`, cron `pr-reconcile`) | `guardReviewVerdict` (legacy PR), kernel `APPROVED` (kernel PR) |
+| D3 | Landing sweep, kernel arm | via D2 → D1 | `listApprovedKernelPrs` (`workflow/landing.ts`) | kernel `APPROVED`, including composition and `policy_rule` approvals |
+| D4 | `tryAutoMergeWorkerPr` | `lib/auto-merge.ts` | `check_suite` webhook (shadow/off), `maybeAutoMergeNoCiPr`, reviewer approve, surface wake | `guardReviewVerdict`, **skipped when no workspace id resolves** |
+| D5 | `PUT /api/github/pr` (MCP `merge_pr`) | `app/api/github/pr/route.ts` | MCP `merge_pr` (`packages/core/mcp-tools.ts`) | `landPr` in enforce. Otherwise `guardReviewVerdict`, **skipped entirely by admin `force`** |
+| D6 | `POST /api/prs/[prNumber]/merge` (dashboard, chat `merge_pr`, compose include) | `app/api/prs/[prNumber]/merge/route.ts` | dashboard, chat registry, `release/compose-runtime.ts` | `landPr` in enforce, otherwise `guardReviewVerdict`. A person may override |
+| D7 | Release PR on green CI | `app/api/github/webhook/route.ts` `handleReleasePrCiSuccess` | `check_suite` success | `guardReviewVerdict` (legacy rows). **No kernel check** |
+| D8 | `executeRelease`, release-PR path | `lib/release-executor.ts` (direct `githubApi` PUT, **no `sha` pin**) | worker completion (`release-completion-policy.ts`), mission release | **none** |
+| D9 | `executeRelease`, `mergeIntoProd` | `lib/release-executor.ts` `mergeIntoProd` (squash, **no `sha` pin**) | same, `every_merge` strategy | **none** |
+| D10 | Compose release | `release/compose-actions.ts` → `release/compose-runtime.ts` `mergePr` | `api/releases/compose` | GitHub reviews at the candidate SHA only (`packages/core/release-compose.ts`). No buildd verdict |
+| D11 | Policy-rule merge | `workflow/seam.ts` `policyMergeThroughKernel` → `PolicyMergeApproved` → D3/D1 | escalation gate `policy_merge` (`packages/core/escalation-gate.ts`, `merge-policy-rule-executor.ts`) | creates the approval. Lifts `review_exhausted`. Mission ship PRs are excluded |
+| D12 | Manual merge on GitHub | — | a person's account, UI or CLI | **none: nothing buildd publishes is required** (rule 7). This is the #4686 door |
+| D13 | Agent self-merge | — | local runner Bash (only `gh pr merge` denied, `apps/runner/src/pr-mutation-enforcement.ts`), cloud runner egress (REST and GraphQL merge blocked, `apps/cloud-runner/src/outbound.ts`) | deny lists, not a gate |
+
+Branch-to-branch merges that do not go through a PR (`release-executor.ts` `POST
+/merges`, `mission-branch-refresh.ts`, `scripts/sync-dev.sh`, `release-refresh.yml`)
+are not landing doors. They move a base, and §5.9 refresh composition reviews what that
+merge decided.
+
+**Which already use the kernel gate:** D1 (as T15), D2 and D3 for a kernel-owned PR,
+D4–D6 via T15 for a kernel-owned PR after their own legacy gate, and D11 (but it
+manufactures the approval). D7–D10 and D12 never consult the kernel. A mission
+integration PR, as in #4686, has no delivery at all, so it gets no kernel gate from any
+door.
+
+Regressions (to be written by the follow-up tasks): AC-20 to AC-37.
+
 ## 14. Migration plan: no two authorities, ever
+
+> Amended 2026-10-13 by `workflow-kernel-library.md` §3: the kill switch and cutover are per host mode; in production the kernel runs only on the control plane.
 
 **Principle.** Authority is assigned per field family, in order, and each slice ends
 with the previous authority for that family *deleted*, not shadowed. A "shadow" that
@@ -2477,8 +2675,8 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 
 | # | Scenario | Asserts | Target test file(s) |
 |---|---|---|---|
-| S1 | Fix ends with a local commit, GitHub head unchanged (#3754) | completion gate 400 `delivery_not_advanced`; with worker gone → `AWAITING_PUSH` + `push_recovery`; no round 2; no `fix_ended`-then-review | `apps/web/src/lib/workflow/reducer.test.ts` (new), `apps/web/src/app/api/workers/[id]/route.test.ts` |
-| S2 | Approve at `H0`, non-equivalent push to `H1` | `APPROVED → AWAITING_REVIEW`, delta round 2 dispatched **on the push**, not at merge time | `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/src/lib/reviewer-subscribers.test.ts` (new: the module has no test file today; its re-dispatch cases live in the webhook route test), `apps/web/src/lib/review-verdict-gate.test.ts` |
+| S1 | Fix ends with a local commit, GitHub head unchanged (#3754) | completion gate 400 `delivery_not_advanced`; with worker gone → `AWAITING_PUSH` + `push_recovery`; no round 2; no `fix_ended`-then-review | `packages/workflow-kernel/src/reducer.test.ts` (new), `apps/web/src/app/api/workers/[id]/route.test.ts` |
+| S2 | Approve at `H0`, non-equivalent push to `H1` | `APPROVED → AWAITING_REVIEW`, delta round 2 dispatched **on the push**, not at merge time | `packages/workflow-kernel/src/reducer.test.ts`, `apps/web/src/lib/reviewer-subscribers.test.ts` (new: the module has no test file today; its re-dispatch cases live in the webhook route test), `apps/web/src/lib/review-verdict-gate.test.ts` |
 | S3 | Approve at `H0`, head moves by platform refresh (content-equivalent) | `approved_heads` appended once; concurrent double call appends once; a composition approval carries the same way (`composition_heads`); a newer reviewer row at another head does not decide it; `own_refresh` when the previous head is a `refresh_branch` pin; `equivalentHeadShas` projected only after the transition | `apps/web/src/lib/approval-carry-forward.test.ts`, reducer test, `apps/web/tests/db/workflow-matrix.test.ts` (T13 describe, S32/T13), `apps/web/tests/db/workflow-seam.test.ts` |
 | S4 | Late verdict for a superseded head | stored on its round, no state change, no `post_review`, no merge | reducer test; `apps/web/src/app/api/workers/[id]/route.test.ts` |
 | S5 | Duplicate webhook delivery and duplicate reviewer PATCH | `duplicate`; effects not doubled | reducer test; `apps/web/src/app/api/github/webhook/route.test.ts` |
@@ -2500,21 +2698,21 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S21 | Authorization matrix (§17.1) | owner, caller-names-PR, sibling, other workspace, human | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/app/api/github/pr/review/route.test.ts`, `apps/web/src/lib/task-token-auth.test.ts` |
 | S22 | Kill switch | with `workflowKernel=false` a delivery is released to legacy (sticky), no new one opens, and a PR with no delivery is untouched by every seam function; the string `"false"` reads the same in TypeScript and SQL; a queued `merge_call` never merges or refreshes after the switch; the trunk sweep decides nothing; a PR released before its first round gets legacy's first review | `apps/web/tests/db/workflow-seam.test.ts`, `apps/web/tests/db/workflow-probe-killswitch.test.ts`, `bun run test` |
 | S23 | CI provenance (audit): worker pushes under the owner's git identity; worker pushes under the bot identity; a person pushes | the first two are attributed by SHA set and consume a ledger row; the third is `foreign_push` and consumes none; the cap bounds dispatches in all three; manual "Fix CI" uses the configured cap | `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts`, reducer test (replaces the author-string cases around `isBuilddWorkerCommit`) |
-| S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries; a second incident on a base whose fix is open joins that fixer (one task, in either drain order), and a red after recovery files a new one | `apps/web/src/lib/workflow/trunk.test.ts`, `apps/web/src/lib/ci-failure-retry.wake.test.ts`, `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries; a second incident on a base whose fix is open joins that fixer (one task, in either drain order), and a red after recovery files a new one | `apps/web/src/lib/workflow/trunk.test.ts`, `apps/web/src/lib/ci-failure-retry.wake.test.ts`, `packages/workflow-kernel/src/reducer.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S25 | Stale dispatch: target merged / approved / CI green / conflict resolved between trigger and dispatch, and between dispatch and claim | ledger row `skipped`, no task (or task cancelled as skipped, not failed); replay is a no-op; reason recorded | `apps/web/src/lib/workflow/effects.test.ts` (new), `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/ci-failure-retry.test.ts` |
 | S26 | Comment as projection: concurrent renders, lost-update race (a `reviewing` write racing the merge), entries after merge, duplicate sticky comments, PR with no comment, CI red while approved | final comment equals a fresh render of canonical state; `Merged` stays the headline; one comment; created for every bound PR; "Approved" never heads a `REPAIRING` delivery | `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/workflow/pr-activity-render.test.ts`, `apps/web/src/lib/workflow/pr-activity-effects.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S27 | Mechanical versus agent repair | behind-only conflict and byte-identical renumber complete with no task; textual conflict and non-identical renumber escalate to an agent attempt; false collision from a lagging mission branch is not a collision; dependency-bot PRs are never pushed to | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/migration-collision-retry.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
 | S28 | Ledger separation | CI, review, conflict, migration, trunk families count independently; a reviewer spawned on a CI-fix task does not inherit the CI count; infra requeues change no ledger; `attemptView` is 1-based and identical in comment, title and `explain` | reducer test; `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/explain.test.ts` |
 | S29 | Reviewer prose or no verdict | round fails (T27, reason `prose_verdict` / `no_verdict` / `infra`; a reviewer interrupt is `human_takeover` and escalates at once), re-queued at the same head without a new round number, then `ESCALATED(review_unavailable)`; prose is never applied as approve or request-changes; no legacy requeue and no legacy `reviewer_escalated` note beside it | `apps/web/src/lib/reviewer-output.test.ts`, `apps/web/src/app/api/workers/[id]/route.test.ts`, `apps/web/src/app/api/workers/[id]/interrupt/route.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S30 | Runner hand-off failures (no confirmed outcome, commits but no PR, uncommitted changes) | `AttemptEnded(unproven)` → `AWAITING_PUSH` or requeue; never `completed` delivery | `apps/runner/__tests__/unit/` (new case beside the existing completion tests), `apps/web/src/app/api/workers/[id]/route.test.ts` |
-| S35 | Replacement chains read current, not FAILED | a superseded predecessor attempt stays auditable but the delivery and mission situation project the current attempt; owner of next move is canonical | `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
-| S37 | Conflict remediation already exists | a conflicted PR with a valid pending/stalled conflict-fix task re-dispatches or repairs it instead of filing a second; the recovery effect is keyed by delivery + remediation family; UI says "Conflict fix stalled" vs "Resolve conflicts" | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S35 | Replacement chains read current, not FAILED | a superseded predecessor attempt stays auditable but the delivery and mission situation project the current attempt; owner of next move is canonical | `packages/workflow-kernel/src/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S37 | Conflict remediation already exists | a conflicted PR with a valid pending/stalled conflict-fix task re-dispatches or repairs it instead of filing a second; the recovery effect is keyed by delivery + remediation family; UI says "Conflict fix stalled" vs "Resolve conflicts" | `apps/web/src/lib/conflict-retry.test.ts`, `packages/workflow-kernel/src/projections.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S31 | Preflight | `create_pr` refuses a body the CI scan would reject, with the reason; runner preflight failure keeps the attempt open; CI miss is tagged `preflight_miss` | `apps/web/src/app/api/github/pr/route.test.ts`, `scripts/check-no-prod-data-local.test.ts` |
-| S32 | Release PR composed only of reviewed constituents | composition attestation accepted (`approval_basis = composition`, head in `composition_heads` only); CI still gates; no second reviewer or human escalation; idempotent under duplicate delivery | `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/src/lib/workflow/review-composition.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S32 | Release PR composed only of reviewed constituents | composition attestation accepted (`approval_basis = composition`, head in `composition_heads` only); CI still gates; no second reviewer or human escalation; idempotent under duplicate delivery | `packages/workflow-kernel/src/reducer.test.ts`, `apps/web/src/lib/workflow/review-composition.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S33 | Release PR plus a release-only novel delta (conflict resolution, changed migration or generated output) | prior verdicts cover only mapped constituents; a delta round scoped to the novel paths; can still need a human | as S32 |
 | S34 | Stale constituent review, head mismatch, missing equivalence proof, incomplete set | composition proof fails closed; the release PR borrows nothing; ordinary PRs stay exact-head bound | as S32 |
 | S38 | Mission branch refresh PR (trunk merged into the integration branch by the refresh conflict task) | trunk commits proven as constituents against their trunk PRs; the merge read from whole trees; only paths the merge decided are novel, a dropped trunk change included; CI-regenerated files left out; nothing novel → `approval_basis = composition`, no reviewer; a migration renumbered unchanged is not novel, one edited in the merge is; real code → delta round scoped to it; unreadable tree → full review; the same PR without the refresh context stays ordinary | `apps/web/src/lib/workflow/review-composition.test.ts`, `apps/web/src/lib/workflow/review-effects.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` (S38), `packages/core/__tests__/generated-artifacts.test.ts` |
-| S36 | Needs You reads the kernel, not a raw worker status | Home/task surfaces project the owner of the next move; a recoverable blocker stays platform-owned; failure evidence preserved | `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.test.tsx`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S36 | Needs You reads the kernel, not a raw worker status | Home/task surfaces project the owner of the next move; a recoverable blocker stays platform-owned; failure evidence preserved | `packages/workflow-kernel/src/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.test.tsx`, `apps/web/tests/db/workflow-matrix.test.ts` |
 
 **The live matrix.** `apps/web/tests/db/workflow-matrix.test.ts` (`bun run test:db`) carries
 every S-number: a passing case drives the seam and the real review-loop effect handlers on
@@ -2625,9 +2823,10 @@ by the workers route test.
   `size`, `freshness`) keep working only from T15's override door and are written to
   `bypass`, which the ledger already counts.
 - `release-executor.ts` merges (two direct `PUT .../merge` calls that skip
-  `mergePullRequest` and every rail) are **intentionally out of scope** for the
-  kernel's first slices (§17.6); they are release PRs, not task deliveries, and are
-  called out so no one assumes the kernel gates them.
+  `mergePullRequest` and every rail) were out of scope for the kernel's first
+  slices (§17.6). §13.13 rule 6 brings them into scope **for the review gate
+  only**: they keep their release semantics, but no door may merge over an open
+  finding. Implementation pending (doors D8–D10).
 - `landing.mode` (`off|shadow|enforce`) keeps its meaning; `shadow` still computes and
   records without acting. The kernel flag is separate (`workflowKernel`).
 - Merge idempotency: the `sha` pin is the only merge-side idempotency GitHub gives;
@@ -2682,7 +2881,8 @@ are unchanged and the kernel only *records* the mismatch as a fact
 
 ### 17.6 Intentionally out of scope
 
-Release PRs and `release-executor.ts`; `missions.status` authority; task claim gates
+Release PRs and `release-executor.ts`, except the review gate every merge door
+must ask (§13.13 rule 6); `missions.status` authority; task claim gates
 and dependency resolution (`task-dependencies.ts` keeps its rules; it reads the
 projection); credentials; dispatch outbox (separate table, same pattern); Linear/issue
 webhooks; knowledge ingestion; CI log retrieval; agent prompts.
@@ -2817,7 +3017,8 @@ write `prLastVerifiedAt`; owner lookup by `(workspaceId, prNumber)` without repo
 |---|---|---|
 | Merge API wrapper `lib/github.ts:184` `mergePullRequest` | writes nothing | effect handler (`merge_call`) |
 | Doors: `lib/auto-merge.ts:777` `tryAutoMergeWorkerPr`; `lib/pr-landing.ts:882` `landPr`; `app/api/prs/[prNumber]/merge/route.ts:566`; `app/api/github/pr/route.ts:1956`; `webhook/route.ts:1466` (release PR) | five merge doors | first four migrate to T15/T16; release PR door out of scope |
-| `lib/release-executor.ts:188,857` | direct merge of release PRs | intentionally out of scope |
+| `lib/release-executor.ts:188,857` | direct merge of release PRs | out of scope except the review gate (§13.13 D8–D9, pending) |
+| All merge doors, current | — | see the §13.13 door inventory (D1–D13), which supersedes the line numbers in this table |
 | `landPr` callers: merge route `:375`, `PUT /api/github/pr :1704`, webhook `:527`, `WID:5121`, `surface-ordering-wake.ts:84`, `pr-landing-sweep-deps.ts:199`; `tryAutoMergeWorkerPr` callers: webhook `:587,600,1372`, `WID:5142,5170`, `surface-ordering-wake.ts:110` | entry points | migrate (become `LandingRequested` callers) |
 | `lib/pr-landing-marker.ts`, `pr-landing-handoff.ts`, `pr-landing-sweep*.ts`, `pr-landing-alert*.ts`, `pr-landing-ownership.ts`, `pr-landing-metrics.ts` | landing bookkeeping and sweep | migrate (decision data → delivery; sweep → effect re-enqueue; metrics read transitions) |
 | `lib/base-refresh.ts:425`, `pr-branch-update.ts`, `conflict-retry.ts`, `dead-zone-sweep.ts` | refresh/conflict repair | migrate (`refresh_branch`, T12) |
@@ -2911,7 +3112,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 - AC-4: GIVEN two writers apply a transition at the same `version` THEN exactly one is `applied` and the other is `stale` carrying the current state, version, head and round.
 - AC-5: GIVEN a reviewer verdict whose round head differs from `current_head_sha` THEN the verdict is stored, no GitHub review is posted for it, no merge starts, and the state is unchanged.
 - AC-6: GIVEN any transition THEN its follow-up effect rows exist if and only if the transition committed.
-- AC-7: GIVEN a reconciler run THEN no `workflow_deliveries.state` or guarded column is written outside `apps/web/src/lib/workflow/` (checked by the write-site guard test).
+- AC-7 (amended by `workflow-kernel-library.md` §1 and §2: the guarded path also covers the kernel package): GIVEN a reconciler run THEN no `workflow_deliveries.state` or guarded column is written outside `apps/web/src/lib/workflow/` (checked by the write-site guard test).
 - AC-8: GIVEN `PrMerged` WHEN any later `synchronize`, `check_suite` or `opened` fact arrives THEN the delivery stays `MERGED` and no fact-cache column regresses.
 - AC-9: GIVEN `SupersessionRecorded` for a delivery not in `CLOSED_UNMERGED`, or whose target PR is not merged THEN it is rejected, and an existing edge is never overwritten.
 - AC-10: GIVEN a task with a delivery WHEN the reaper or cleanup finds its worker dead with only local commits THEN `tasks.status` is not set to `completed`, and the delivery is `AWAITING_PUSH`.
@@ -2924,6 +3125,27 @@ is a site to tick off in the Phase 2 PR that moves it.
 - AC-17: GIVEN concurrent `render_activity` runs THEN the comment converges to a render of the latest delivery version, `Merged` is the headline of a merged delivery whatever is appended later, and exactly one comment exists.
 - AC-18: GIVEN a behind-only branch or a byte-identical migration renumber THEN it completes as a mechanical attempt with no agent task and consumes no agent budget; GIVEN a textual conflict or a non-identical renumber THEN an agent attempt is allocated.
 - AC-19: GIVEN a reviewer ends with prose and no structured verdict THEN the round is `failed` (T27), never approved, and the delivery is `ESCALATED(review_unavailable)` once the bounded retry is spent.
+
+§13.13 criteria. Their implementation is pending: each is unmet until a test cites its ID.
+
+- AC-20 (composition reuse): GIVEN an integration PR whose every constituent's latest decided round at its merged head is `approve` and the composition is `tree_equal` with no novel delta WHEN review is requested THEN the delivery is `APPROVED` with `approval_basis = composition` and no reviewer task is created.
+- AC-21 (novel delta only): GIVEN the same PR with a novel delta on paths P THEN exactly one `delta` round is created and its scope is P.
+- AC-22 (unknown composition is not approval): GIVEN a composition `unverifiable`, or a constituent with no decided round, THEN the delivery is not `APPROVED` and a full-scope round is queued.
+- AC-23 (superseded constituent approval): GIVEN a constituent whose approve round at head H was followed by a request-changes round at H THEN the attestation is `rejected` and the composed PR is not `APPROVED`.
+- AC-24 (findings survive): GIVEN a request-changes round with two findings WHEN any of a refresh push, green CI, a composition attestation, a delta approve whose scope excludes the findings' paths, or an owner-task replacement occurs THEN both findings are still open and every merge door refuses.
+- AC-25 (explicit resolution): GIVEN an open finding WHEN a later round at a head containing a change to its path marks it resolved, or a person records a waiver with a reason THEN it is closed with that evidence, and no other event closes it.
+- AC-26 (repair is a builder): GIVEN a review fix dispatched for a PR owned by a `bookkeeping` or `coordination` task THEN the fix task's description contains the open findings, does not contain the owner's description text, has a builder role and carries `repairTarget` with the PR's `headRef`, `headSha` and `baseRef`.
+- AC-27 (zero diff keeps the blocker): GIVEN a review fix that ends `success` with zero diff, or a diff touching none of the findings' paths THEN its completion is refused, the attempt counts against `max_rounds` and the findings stay open.
+- AC-28 (refresh is not a fix): GIVEN a running review fix WHEN the PR head moves by a merge of the base only THEN the push is not credited to the fix, the fix cannot complete on it, and a refresh-scoped delta round is queued.
+- AC-29 (verified no-op): GIVEN a review fix whose live read shows each finding's condition absent at the current head THEN it completes as `no_repair_needed` with that read recorded as evidence, and the findings close citing it.
+- AC-30 (every door asks): GIVEN an open finding on PR N at head H WHEN a merge is attempted through each of D1–D11 (§13.13 door inventory) THEN no `PUT .../merge` call is made and a `review_verdict` refusal row names the door.
+- AC-31 (recheck at execution): GIVEN a delivery in `LANDING` with a queued `merge_call` WHEN a request-changes verdict or new finding is recorded before the effect runs THEN the effect makes no merge call and the delivery is `CHANGES_REQUESTED`.
+- AC-32 (no rule overrides a finding): GIVEN `ESCALATED(review_exhausted)` with an open finding WHEN `PolicyMergeApproved` is applied THEN it is `rejected` and the state is unchanged.
+- AC-33 (admin force does not pass a finding): GIVEN an open finding WHEN `PUT /api/github/pr` is called with `force: true` and an admin token THEN the merge is refused; only the dashboard route's recorded person override passes it.
+- AC-34 (COMMENTED is never approval): GIVEN only `COMMENTED` GitHub reviews at the head, including buildd's own-PR fallback THEN no gate, projection or composition treats the PR as approved.
+- AC-35 (verdict visible to GitHub): GIVEN an open finding at head H THEN a failing commit status (or check run) at H names the open findings, and it turns success only when no finding is open.
+- AC-36 (projections from canonical state): GIVEN a PR with an open request-changes verdict posted as `COMMENTED` WHEN `get_pr` and `get_pr_review` are read THEN both report changes requested and list the open findings, never "Reviews: none".
+- AC-37 (external merge with open findings): GIVEN open findings WHEN GitHub reports the PR merged by an actor that is not the App THEN the delivery is `MERGED` with `merged_over_open_findings` and the actor recorded, the findings stay open and are re-filed as one fix task against trunk, a person is notified, and nothing counts the merge as an approval or waiver.
 
 ## 20. Open questions
 
@@ -2954,6 +3176,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 
 - Existing, to be migrated or wrapped: `apps/web/src/app/api/workers/[id]/route.ts`, `apps/web/src/app/api/github/webhook/route.ts`, `apps/web/src/app/api/github/pr/route.ts`, `apps/web/src/app/api/github/pr/review/route.ts`, `apps/web/src/app/api/github/pr/supersede/route.ts`, `apps/web/src/lib/pr-landing.ts`, `apps/web/src/lib/auto-merge.ts`, `apps/web/src/lib/pr-review-status.ts`, `apps/web/src/lib/review-verdict-gate.ts`, `apps/web/src/lib/reviewer.ts`, `apps/web/src/lib/pr-activity-comment.ts`, `apps/web/src/lib/pr-presentation.ts`, `apps/web/src/lib/mission-completion.ts`, `packages/core/pr-shipped.ts`, `packages/core/db/schema.ts`.
 - PR recovery (§13.11): `packages/core/repair-target.ts`, `apps/runner/src/worktree-utils.ts`, `apps/runner/src/git-operations.ts`, `apps/web/src/lib/repair-completion.ts`, `apps/web/src/lib/landing-blocker.ts`, `apps/web/src/lib/pr-predecessors.ts`, `apps/web/src/lib/retry-pr-supersession.ts`, `apps/web/src/lib/attempt-lineage.ts`.
+- Review findings and landing authority (§13.13): `apps/web/src/lib/review-verdict-gate.ts`, `apps/web/src/lib/review-subscribers.ts`, `apps/web/src/lib/workflow/review-composition.ts`, `apps/web/src/lib/workflow/review-effects.ts`, `apps/web/src/lib/workflow/pr-landing-effects.ts`, `apps/web/src/lib/workflow/landing.ts`, `apps/web/src/lib/release-executor.ts`, `apps/web/src/lib/release/compose-runtime.ts`, `packages/core/release-compose.ts`, `packages/core/escalation-gate.ts`, `apps/web/src/lib/mission-pr.ts`.
 - Pattern sources: `packages/core/dispatch-outbox.ts`, `apps/web/src/lib/dispatch-authority.ts`, `packages/core/gate-events.ts`.
 - Wired in Slice A part 1: `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/prs/[prNumber]/re-review/route.ts`, `apps/web/src/app/api/cron/pr-reconcile/route.ts`, `apps/web/src/lib/reviewer-subscribers.ts`.
 - New (Phase 2): `apps/web/src/lib/workflow/*` (the route seam is `seam.ts`; landing is `landing.ts` and `pr-landing-effects.ts`; a closed PR's resolution is `supersession-effects.ts`; mission completion's input is `delivery-ship.ts`), `apps/web/src/lib/pr-merged-work.ts`, `packages/core/__tests__/workflow-write-sites.test.ts`, `apps/web/tests/db/workflow-seam.test.ts`.

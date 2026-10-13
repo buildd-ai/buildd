@@ -69,7 +69,19 @@ describe('deriveMissionStateView — blocked by task', () => {
     const waiting = gated(view);
     if (waiting.kind !== 'task') throw new Error('unreachable');
     expect(waiting.count).toBe(2);
-    expect(waiting.label).toContain('2 pending');
+    // Plain words, not raw statuses: "2 queued", never "2 pending" or "task(s)".
+    expect(waiting.label).toBe('No agent is working on 2 open tasks: 2 queued');
+  });
+
+  // Regression (owner report): "2 deliverable task(s) still open (1 pending, 1 assigned)".
+  it('with an agent working, says what is still open in plain words', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      activeAgents: 1,
+      completion: { ok: false, code: 'pending_deliverables', reason: '', pendingDeliverables: 2, pendingByStatus: { pending: 1, assigned: 1 } },
+    });
+    const waiting = view.outstanding.find(f => f.kind === 'task') ?? gated(view);
+    expect(waiting.label).toBe('2 tasks still open: 1 queued, 1 picked up');
   });
 
   it('consumes deriveTaskHealthSignal, not a reimplementation of it', () => {
@@ -735,6 +747,25 @@ describe('deriveMissionStateView — surface audit missing', () => {
       expect(view.waitingOn?.label).toBe('Waiting: the visual check is running');
       expect(JSON.stringify(view)).not.toMatch(/waive|surfaceAuditWaiver|\[surface audit\]/i);
     }
+  });
+
+  // task e7285dc4: the completion gate itself says who acts, so every surface
+  // reading the decision (not only explain) shows a system wait under automatic.
+  it('is a system wait when the completion gate filed the audit itself', () => {
+    const filed = {
+      ...refusal,
+      reason: 'This mission changed UI and no surface audit has passed yet. buildd files it itself; the mission completes when it passes.',
+      surfaceAuditActor: 'system' as const,
+    };
+    const view = deriveMissionStateView({ ...base, completion: filed });
+    expect(view.kind).not.toBe('awaiting_decision');
+    expect(view.waitingOn?.kind).toBe('self_resolving_wait');
+    expect(JSON.stringify(view)).not.toMatch(/waive|surfaceAuditWaiver/i);
+  });
+
+  it('the gate naming the owner keeps the owner decision', () => {
+    const view = deriveMissionStateView({ ...base, completion: { ...refusal, surfaceAuditActor: 'owner' as const } });
+    expect(view.kind).toBe('awaiting_decision');
   });
 
   it('stays an owner decision only when the review itself names the owner', () => {

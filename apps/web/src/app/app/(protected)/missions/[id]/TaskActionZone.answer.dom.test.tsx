@@ -4,12 +4,14 @@
  * fetch, so the old `router.refresh()` changed nothing), and the second tap
  * came back "already answered" as an error.
  *
- * - the tapped chip is pending and every control is disabled while in flight;
+ * - it is the task page's own question card (QuestionHero, feed density), not
+ *   a second answer box: the same options, the same own-words field;
+ * - the tapped option is pending and every control is disabled while in flight;
  *   a second tap does not post again;
  * - success collapses into the recorded answer at once, and it survives the
  *   refetch that drops the question; it clears when the agent moves on;
  * - an already-answered reply renders as recorded, never as an error;
- * - a real failure is an inline error with Retry, and the chips come back.
+ * - a real failure is an inline error, and the options come back to tap again.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/missions/m1' });
@@ -74,7 +76,7 @@ function render(over: Partial<Props> = {}) {
 }
 
 const q = (sel: string) => container.querySelector(sel) as HTMLElement | null;
-const chips = () => [...container.querySelectorAll('[data-testid="respond-option"]')] as HTMLButtonElement[];
+const chips = () => [...container.querySelectorAll('[data-testid="question-option"]')] as HTMLButtonElement[];
 
 async function respond(status: number, body: unknown) {
   await act(async () => {
@@ -84,6 +86,17 @@ async function respond(status: number, body: unknown) {
 }
 
 describe('TaskActionZone answering a question', () => {
+  // Regression (owner report): the sheet drew its own small answer box (chips,
+  // "Type your response...") while the task page drew the question card.
+  it('renders the task page question card, not a second answer box', () => {
+    render();
+    expect(q('[data-testid="task-sheet-question"]')?.dataset.density).toBe('feed');
+    expect(q('[data-testid="worker-needs-input-prompt"]')?.textContent).toBe('Park or ship?');
+    expect(chips().map(c => c.textContent)).toEqual(OPTIONS.map(o => `Alternative${o}`));
+    expect((container.querySelector('input[type="text"]') as HTMLInputElement).placeholder).toBe('Or answer in your own words…');
+    expect(container.textContent).not.toMatch(/Needs input|Type your response/);
+  });
+
   it('shows the tapped chip pending, disables everything, and posts once', () => {
     render();
     act(() => { chips()[0].click(); });
@@ -125,7 +138,7 @@ describe('TaskActionZone answering a question', () => {
     const recorded = q('[data-testid="answer-recorded"]');
     expect(recorded?.dataset.outcome).toBe('already_answered');
     expect(recorded?.textContent).toContain('You answered: Park and wait (recommended)');
-    expect(q('[data-testid="respond-error"]')).toBeNull();
+    expect(q('[data-testid="worker-answer-error"]')).toBeNull();
     expect(container.textContent).not.toMatch(/error|failed/i);
   });
 
@@ -145,16 +158,15 @@ describe('TaskActionZone answering a question', () => {
     expect(q('[data-testid="answer-recorded"]')?.textContent).toContain('Answer sent, waiting for the agent');
   });
 
-  it('shows a real failure inline with Retry and re-enables the chips', async () => {
+  it('shows a real failure inline and gives the options back to tap again', async () => {
     render();
     act(() => { chips()[0].click(); });
     await respond(500, { error: 'Failed to record response' });
 
-    expect(q('[data-testid="respond-error"]')?.textContent).toContain('Failed to record response');
+    expect(q('[data-testid="worker-answer-error"]')?.textContent).toContain('Failed to record response');
     expect(chips().every(c => !c.disabled)).toBe(true);
 
-    const retry = [...container.querySelectorAll('button')].find(b => b.textContent === 'Retry')!;
-    act(() => { retry.click(); });
+    act(() => { chips()[0].click(); });
     expect(posts).toEqual(['/api/workers/w1/respond', '/api/workers/w1/respond']);
     expect(chips()[0].dataset.pending).toBe('true');
   });

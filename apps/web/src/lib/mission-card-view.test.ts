@@ -220,7 +220,7 @@ describe('buildMissionCardView', () => {
     expect(buildMissionCardView(row, { from: 'home', now: NOW }).caption).toBe('0/2 · 2 live');
   });
 
-  it('primary line: the top NEEDS YOU task, opened as the sheet over the mission', () => {
+  it('primary line: the top NEEDS YOU task; a question opens its task page to answer it', () => {
     const row = mission({
       tasks: [
         task('run', { status: 'in_progress', workers: [{ status: 'running', startedAt: new Date(NOW - 60_000) }] }),
@@ -230,7 +230,7 @@ describe('buildMissionCardView', () => {
     const view = buildMissionCardView(row, { from: 'home', now: NOW });
     expect(view.primary).toEqual({
       kind: 'needs_you', taskId: 'ask', label: 'Answer: Lease shadow mode',
-      href: '/app/missions/m1?from=home&task=ask',
+      href: '/app/tasks/ask?from=mission&missionId=m1&respond=1',
     });
   });
 

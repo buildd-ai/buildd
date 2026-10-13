@@ -24,6 +24,7 @@ import { taskPageHref } from '@/lib/mission-task-href';
 import { CHANNEL_PREFIX, getPusherClient, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import { subscribeCatchUp } from '@/lib/app-freshness';
 import TaskActionZone from './TaskActionZone';
+import CollapsibleDescription from '@/app/app/(protected)/tasks/[id]/CollapsibleDescription';
 import type { EntitlementBlock } from '@buildd/shared';
 import type { WaitingFor } from '@buildd/shared';
 
@@ -361,8 +362,11 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
       )}
 
       {/* ── Details ── */}
+      {/* The task page's own description: markdown, clamped with Show more. */}
       {data.description && (
-        <p className="line-clamp-4 text-[13px] leading-relaxed text-text-secondary">{data.description}</p>
+        <div data-testid="task-sheet-description">
+          <CollapsibleDescription content={data.description} />
+        </div>
       )}
 
       {/* Worker stats — the run's shape once it's not live (live view owns these) */}

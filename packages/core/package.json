@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.336.0",
+  "version": "0.337.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -18,6 +18,8 @@
     "./token-scopes": "./token-scopes.ts",
     "./mcp-tools": "./mcp-tools.ts",
     "./mcp-tool-groups": "./mcp-tool-groups.ts",
+    "./mcp-sub-actions": "./mcp-sub-actions.ts",
+    "./guidance-topics": "./guidance-topics.ts",
     "./prior-work-render": "./prior-work-render.ts",
     "./model-aliases": "./model-aliases.ts",
     "./model-thinking": "./model-thinking.ts",

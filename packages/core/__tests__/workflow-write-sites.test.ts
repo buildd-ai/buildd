@@ -1,7 +1,8 @@
 /**
  * Write-site guard for the workflow state kernel
  * (docs/specs/workflow-state-kernel.md §7.6, S14, AC-7): only
- * apps/web/src/lib/workflow/ touches the workflow_* tables and
+ * the kernel (apps/web/src/lib/workflow/ and its pure core,
+ * packages/workflow-kernel/src/) touches the workflow_* tables and
  * trunk_incidents. Everything else reaches them through `ingestFact` /
  * `applyCommand`, so no sweep, route or reaper can assign delivery state.
  *
@@ -27,6 +28,10 @@ const isTest = (f: string) => /\.test\.tsx?$/.test(f) || /__tests__\//.test(f) |
 const files = tracked.filter((f) => !isTest(f));
 
 const KERNEL_DIR = 'apps/web/src/lib/workflow/';
+/** The kernel's pure core (docs/specs/workflow-kernel-library.md §2), re-exported by shims under KERNEL_DIR. */
+const KERNEL_PACKAGE_DIR = 'packages/workflow-kernel/src/';
+const KERNEL_DIRS = [KERNEL_DIR, KERNEL_PACKAGE_DIR];
+const inKernel = (f: string) => KERNEL_DIRS.some((dir) => f.startsWith(dir));
 /** Slice F: empty. A module outside the kernel that needs a kernel table goes through the kernel. */
 const ALLOWED = new Set<string>();
 
@@ -48,10 +53,14 @@ const ALLOWED = new Set<string>();
 // The visual-review trio is the merge gate's and cron's way in: `visual-review-state` is pure,
 // `visual-review-state-load` only SELECTs the integration PR's delivery row (head SHA, state), and
 // `visual-review-schedule-run` files audit tasks, never a delivery state. `visual-review-presentation`
-// and `visual-review-diagnostics` are pure readings of that state (copy, redaction) with no I/O; `visual-review-policy` is pure config resolution.
-const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'base-delta', 'visual-review-state', 'visual-review-state-load', 'visual-review-schedule-run', 'visual-review-presentation', 'visual-review-diagnostics', 'visual-review-policy']);
+// and `visual-review-diagnostics` are pure readings of that state (copy, redaction) with no I/O; `visual-review-policy` is pure config resolution; `visual-review-impact` is the pure
+// impact classifier the mission completion gate also asks (the decider is injected; no I/O, no kernel table).
+// `pr-display` is the package's PR vocabulary (two types, no code): `pr-presentation` re-exports it so there is one definition.
+const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'base-delta', 'visual-review-state', 'visual-review-state-load', 'visual-review-schedule-run', 'visual-review-presentation', 'visual-review-diagnostics', 'visual-review-policy', 'visual-review-impact', 'pr-display']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
-const KERNEL_IMPORT = /(?:from\s+|import\()\s*['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow)\/([a-z-]+)['"]/g;
+// The package is matched too: importing `@buildd/workflow-kernel/reducer` is importing the reducer, and its
+// root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.
+const KERNEL_IMPORT = /(?:from\s+|import\()\s*['"](?:(?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow|@buildd\/workflow-kernel)\/([a-z][a-z/-]*)|@buildd\/workflow-kernel()(?=['"]))['"]/g;
 
 const TABLES = 'workflow_deliveries|workflow_review_rounds|workflow_facts|workflow_transitions|workflow_effects|workflow_attempts|trunk_incidents';
 const SYMBOLS = 'workflowDeliveries|workflowReviewRounds|workflowFacts|workflowTransitions|workflowEffects|workflowAttempts|trunkIncidents';
@@ -70,6 +79,7 @@ describe('workflow kernel tables have one writer', () => {
   it('scans a real tree that contains the kernel and the schema', () => {
     expect(files.length).toBeGreaterThan(500);
     expect(files).toContain(`${KERNEL_DIR}kernel.ts`);
+    expect(files).toContain(`${KERNEL_PACKAGE_DIR}reducer.ts`);
     expect(files).toContain('packages/core/db/schema.ts');
   });
 
@@ -78,21 +88,22 @@ describe('workflow kernel tables have one writer', () => {
   });
 
   it('no deployed module outside apps/web/src/lib/workflow/ reads or writes a kernel table in SQL', () => {
-    const offenders = files.filter((f) => !f.startsWith(KERNEL_DIR) && !ALLOWED.has(f) && SQL_ACCESS.test(code(f)));
+    const offenders = files.filter((f) => !inKernel(f) && !ALLOWED.has(f) && SQL_ACCESS.test(code(f)));
     expect(offenders).toEqual([]);
   });
 
   it('no deployed module outside apps/web/src/lib/workflow/ queries the Drizzle table objects', () => {
-    const offenders = files.filter((f) => !f.startsWith(KERNEL_DIR) && !ALLOWED.has(f) && DRIZZLE_ACCESS.test(code(f)));
+    const offenders = files.filter((f) => !inKernel(f) && !ALLOWED.has(f) && DRIZZLE_ACCESS.test(code(f)));
     expect(offenders).toEqual([]);
   });
 
   it('S14: outside the kernel, only its route API, kill switch and live reader are imported', () => {
     const offenders: string[] = [];
     for (const f of files) {
-      if (f.startsWith(KERNEL_DIR) || ALLOWED.has(f) || !f.startsWith('apps/web/src/')) continue;
+      if (inKernel(f) || ALLOWED.has(f) || !f.startsWith('apps/web/src/')) continue;
       for (const m of code(f).matchAll(KERNEL_IMPORT)) {
-        if (!KERNEL_ENTRY_POINTS.has(m[1]) && f !== COMPOSITION_ROOT) offenders.push(`${f} → workflow/${m[1]}`);
+        const mod = m[1] || 'index';
+        if (!KERNEL_ENTRY_POINTS.has(mod) && f !== COMPOSITION_ROOT) offenders.push(`${f} → workflow/${mod}`);
       }
     }
     expect(offenders).toEqual([]);
@@ -102,6 +113,10 @@ describe('workflow kernel tables have one writer', () => {
     const hits = files.filter((f) => f.startsWith('apps/web/src/app/api/') && [...code(f).matchAll(KERNEL_IMPORT)].some((m) => m[1] === 'seam'));
     expect(hits.length).toBeGreaterThan(0);
     expect([...`import { reduce } from '@/lib/workflow/reducer';`.matchAll(KERNEL_IMPORT)].map((m) => m[1])).toEqual(['reducer']);
+    expect([...`import { reduce } from '@buildd/workflow-kernel/reducer';`.matchAll(KERNEL_IMPORT)].map((m) => m[1])).toEqual(['reducer']);
+    expect([...`import { reduce } from '@buildd/workflow-kernel';`.matchAll(KERNEL_IMPORT)].map((m) => m[1] || 'index')).toEqual(['index']);
+    // A deep path is seen whole, so it can never slip past as an unmatched import.
+    expect([...`import { h } from '@buildd/workflow-kernel/conformance/harness';`.matchAll(KERNEL_IMPORT)].map((m) => m[1])).toEqual(['conformance/harness']);
   });
 
   it('the guard can fail: it sees the kernel itself, and every access shape', () => {

@@ -651,6 +651,8 @@ export interface MissionCompletionSummary {
   visualReviewHold?: { cells: number; roundCapOpen: boolean; enforced: boolean } | null;
   /** The rendered UI files behind `surface_audit_missing`. */
   surfaceAuditPaths?: string[];
+  /** Who clears `surface_audit_missing`, as the completion gate decided it (policy, executor, prior audits). */
+  surfaceAuditActor?: 'system' | 'owner';
 }
 
 // ─── The situation line ───────────────────────────────────────────────────────
@@ -954,7 +956,8 @@ function resolve(input: MissionStateInput): Resolution {
   }
 
   // 9¾. The mission changed UI and nothing has looked at it
-  //     (`surface_audit_missing`). The owner either runs the audit or waives it.
+  //     (`surface_audit_missing`). Under `automatic` / `strict` the system files
+  //     and runs the audit (a wait); otherwise the owner runs or waives it.
   const surface = surfaceAuditFact(input);
   if (surface) return surface;
 
@@ -990,7 +993,8 @@ function questionFact(input: MissionStateInput): Resolution | null {
     waitingOn: {
       kind: 'human_decision',
       tone: 'warning',
-      label: qs.length > 1 ? `${qs.length} tasks need input` : prompt ? `Needs input: ${clip(prompt)}` : 'A task needs input',
+      // The question itself leads; several are counted in words.
+      label: qs.length > 1 ? `${qs.length} questions for you` : prompt ? clip(prompt) : 'An agent is waiting for your answer',
       detail: prompt,
       question: {
         count: qs.length,
@@ -1402,7 +1406,8 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       acc[t.status] = (acc[t.status] ?? 0) + 1;
       return acc;
     }, {});
-  const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${s}`).join(', ');
+  const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${OPEN_STATUS_LABEL[s] ?? s.replace(/_/g, ' ')}`).join(', ');
+  const tasksWord = pendingCount === 1 ? '1 task' : `${pendingCount} tasks`;
 
   // Never cite a row that is only waiting on its dependency: it cannot be
   // claimed, so it is not what is holding the mission. Claimable rows lead;
@@ -1440,11 +1445,11 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       tone: live ? 'neutral' : 'warning',
       label: live
         ? breakdown
-          ? `${pendingCount} deliverable task(s) still open (${breakdown})`
-          : `${pendingCount} deliverable task(s) still open`
+          ? `${tasksWord} still open: ${breakdown}`
+          : `${tasksWord} still open`
         : breakdown
-          ? `${pendingCount} task(s) open with no live worker (${breakdown})`
-          : `${pendingCount} task(s) open with no live worker`,
+          ? `No agent is working on ${pendingCount === 1 ? 'the 1 open task' : `${pendingCount} open tasks`}: ${breakdown}`
+          : `No agent is working on ${pendingCount === 1 ? 'the 1 open task' : `${pendingCount} open tasks`}`,
       count: pendingCount,
       taskIds: citedIds,
       byStatus,
@@ -1457,7 +1462,7 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
 
 const OPEN_STATUS_LABEL: Record<string, string> = {
   pending: 'queued',
-  assigned: 'claimed',
+  assigned: 'picked up',
   in_progress: 'running',
 };
 
@@ -1539,7 +1544,11 @@ function visualReviewFact(input: MissionStateInput): Resolution | null {
 /** Rule 9¾ — completion refused for want of a surface audit on a UI change. */
 function surfaceAuditFact(input: MissionStateInput): Resolution | null {
   if (input.completion?.code !== 'surface_audit_missing') return null;
-  if (input.visualReviewActor && input.visualReviewActor !== 'owner') {
+  // Either reading may name the system; either naming the owner keeps it the owner's.
+  const gateActor = input.completion.surfaceAuditActor;
+  const reviewActor = input.visualReviewActor;
+  const systemActs = gateActor !== 'owner' && reviewActor !== 'owner' && (gateActor === 'system' || !!reviewActor);
+  if (systemActs) {
     return {
       kind: 'waiting',
       waitingOn: {

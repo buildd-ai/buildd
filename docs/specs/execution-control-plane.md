@@ -6,7 +6,7 @@ last_verified: 2026-10-11
 summary: Authorized execution (claims, heartbeats, results, webhooks, Dispatch callbacks) MUST keep moving while the web app is down, served by a separate Worker running the same handlers.
 domain: tasks
 surfaces: [apps/control-plane/src/index.ts, apps/control-plane/src/router.ts, apps/control-plane/src/next-server-shim.ts, apps/control-plane/wrangler.jsonc]
-related: [workflow-state-kernel, task-dispatch-authority, artifacts-and-sharing]
+related: [workflow-state-kernel, workflow-kernel-library, task-dispatch-authority, artifacts-and-sharing]
 keywords: [control plane, extraction, cloudflare worker, web outage, execution path, ownership boundary, living specs, kernel, dispatch, cutover]
 verified_by: [packages/core/__tests__/state-ownership.test.ts, apps/control-plane/src/index.test.ts, apps/web/src/app/api/deploy-identity/route.test.ts, apps/web/src/lib/release-health-watcher.test.ts]
 supersedes: []
@@ -37,6 +37,8 @@ machine. This supersedes the earlier "one control plane inside Next.js" default
 | Runners (apps/runner, apps/cloud-runner) | execution | declares an outcome verified |
 
 ## 1. Same handlers, second host
+
+> Amended 2026-10-13 by `workflow-kernel-library.md` §3: the Worker becomes the only host of kernel commands, the effect drain and the floor; Vercel doors submit commands to it.
 
 **Capability statement**: The execution path MUST be served by the same route
 handlers on both hosts, so the control plane is a deployment boundary, not a

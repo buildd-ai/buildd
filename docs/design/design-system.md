@@ -576,10 +576,15 @@ notification text) follows the same rules as a PR lede:
    placeholder; render nothing or a muted value instead
    (`scripts/no-em-dash-copy.test.ts`, `docs/design/derived-metric-availability.md`).
 6. **State words come from one vocabulary.** A status reads the same on every
-   surface (`STATUS_PILL`'s labels in `components/ui/states.ts`). A task an
-   agent can't continue without you reads **Needs input**, never "Waiting on
-   you"; a PR you can merge reads **Ready to merge**. Name what is needed, not
-   the person. The Home **Needs you** section heading is the one exception.
+   surface (`STATUS_PILL`'s labels in `components/ui/states.ts`). A PR you
+   can merge reads **Ready to merge**.
+   An agent's question is said in words, not labelled: the question itself is
+   the heading ("Tabs or spaces?"), with **Waiting for your answer** only where
+   something must be said and the question is not on screen. Counts are words
+   ("2 questions for you", "1 waiting on you"), never a label beside a number.
+   "Needs input" and "Needs you" are label-speak; don't add them. Answering a
+   question always opens the task page (`taskAnswerHref`), never the mission
+   sheet.
 7. **The UI doesn't explain itself.** Would GitHub, Linear or Claude Code say
    it? A setting gets a label and at most one fact the label can't carry. No
    page blurb restating the title ("Where run evidence is kept"), no "yet" on
