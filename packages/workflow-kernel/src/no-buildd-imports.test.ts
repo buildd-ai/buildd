@@ -14,17 +14,21 @@ const PKG = 'packages/workflow-kernel';
 
 /** Every module specifier a file names: static, side-effect, re-export, dynamic and require. */
 const SPECIFIER = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\(\s*)['"]([^'"]+)['"]/g;
-/** Specifiers that are never allowed, wherever the file sits. */
-const FORBIDDEN = /^(?:@buildd\/|@builddai\/|drizzle-orm(?:\/|$)|@neondatabase\/|@\/|next(?:\/|$)|node:)/;
-
-/** The import a file at `file` may not make, or null when it stays inside the package. */
+/**
+ * Allowlist, not denylist: a file may import only a relative path that stays
+ * inside the package, or `bun:test` from a test file. Everything else is an
+ * offender: a buildd package, a database driver, the app alias, Next.js, a Node
+ * built-in with or without the `node:` prefix (`crypto`, `fs`), and any bare
+ * npm package, which would resolve from the shared node_modules even though
+ * the package declares no dependency.
+ */
 function offendingImport(file: string, spec: string): string | null {
-  if (FORBIDDEN.test(spec)) return spec;
   if (spec.startsWith('.')) {
     const resolved = posix.normalize(posix.join(dirname(file), spec));
-    if (resolved !== PKG && !resolved.startsWith(`${PKG}/`)) return spec;
+    return resolved === PKG || resolved.startsWith(`${PKG}/`) ? null : spec;
   }
-  return null;
+  if (spec === 'bun:test' && /\.test\.tsx?$/.test(file)) return null;
+  return spec;
 }
 
 function offendersIn(file: string, text: string): string[] {
@@ -55,7 +59,12 @@ describe('the workflow kernel imports nothing from buildd', () => {
     // Inside the package is fine, including a subdirectory reaching back up.
     expect(offendersIn(at, `import { reduce } from './reducer';`)).toEqual([]);
     expect(offendersIn(`${PKG}/src/conformance/harness.ts`, `import { reduce } from '../reducer';`)).toEqual([]);
-    expect(offendersIn(at, `import { describe } from 'bun:test';`)).toEqual([]);
+    expect(offendersIn(`${PKG}/src/reducer.test.ts`, `import { describe } from 'bun:test';`)).toEqual([]);
+    // Bare built-ins and undeclared npm packages are offenders too.
+    expect(offendersIn(at, `import { randomUUID } from 'crypto';`)).toEqual([`${at} → crypto`]);
+    expect(offendersIn(at, `import { readFileSync } from 'fs';`)).toHaveLength(1);
+    expect(offendersIn(at, `import { z } from 'zod';`)).toEqual([`${at} → zod`]);
+    expect(offendersIn(at, `import { describe } from 'bun:test';`)).toHaveLength(1);
   });
 
   it('scans a non-empty set', () => {
@@ -64,7 +73,7 @@ describe('the workflow kernel imports nothing from buildd', () => {
     expect(files).toContain(`${PKG}/src/conformance/conformance.test.ts`);
   });
 
-  it('no tracked file imports a buildd package, a database driver, Next.js, a Node built-in or a path outside the package', () => {
+  it('no tracked file imports anything but a path inside the package (and bun:test in tests)', () => {
     const offenders = sources().flatMap((p) => offendersIn(p, readFileSync(join(REPO, p), 'utf8')));
     expect(offenders).toEqual([]);
   });
