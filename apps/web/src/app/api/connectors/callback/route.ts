@@ -16,6 +16,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { canManageTeamConnectors } from '@/lib/connector-team-auth';
 import { checkConnectorBlocked } from '@/lib/connector-access-policy';
 import { scheduleAuthedIconRefresh } from '@/lib/connector-icon-refresh';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -67,7 +68,7 @@ export async function GET(req: NextRequest) {
 
   // Load connector row
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, connectorId),
+    where: sqlWhere(eq(connectors.id, connectorId)),
   });
 
   if (!connector) {
@@ -167,7 +168,7 @@ export async function GET(req: NextRequest) {
 
   // Upsert secret: find existing by (teamId, purpose, label) then update or insert
   const existingSecret = await db.query.secrets.findFirst({
-    where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: connectorId }),
+    where: sqlWhere(teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: connectorId })),
     columns: { id: true },
   });
 

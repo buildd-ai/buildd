@@ -18,6 +18,7 @@ import { criterionFingerprint } from '@buildd/core/mission-helpers';
 import { GATE_SLUGS } from '@buildd/core/gate-slugs';
 import type { MemorySearchResult, SaveMemoryInput, UpdateMemoryInput } from '@buildd/core/memory-store';
 import { ACCEPTED_FINGERPRINT_TAG_PREFIX, acceptedPatternMemory } from './goal-criteria-rubric';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface CompletedMissionFacts {
   id: string;
@@ -74,7 +75,7 @@ async function defaultLoadMission(missionId: string): Promise<CompletedMissionFa
     import('drizzle-orm'),
   ]);
   const row = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, teamId: true, workspaceId: true, status: true, goalCriteria: true, goalCriteriaState: true, criteriaEscalatedAt: true },
   });
   return row ?? null;

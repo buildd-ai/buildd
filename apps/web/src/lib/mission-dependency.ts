@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers } from '@buildd/core/db/schema';
 import { eq, and, or, ne, isNull, isNotNull, inArray, count } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type MissionForBlockCheck = {
   id: string;
@@ -36,7 +37,7 @@ export async function isMissionBlocked(
   }
 
   const upstream = await db.query.missions.findFirst({
-    where: eq(missions.id, mission.dependsOnMissionId),
+    where: sqlWhere(eq(missions.id, mission.dependsOnMissionId)),
     columns: { id: true, title: true, status: true },
   });
 
@@ -87,7 +88,7 @@ export async function wouldCreateCycle(
     visited.add(currentId);
 
     const node: { id: string; dependsOnMissionId: string | null } | undefined = await db.query.missions.findFirst({
-      where: eq(missions.id, currentId),
+      where: sqlWhere(eq(missions.id, currentId)),
       columns: { id: true, dependsOnMissionId: true },
     });
 
@@ -165,10 +166,10 @@ export async function checkAndUnblockDependentMissions(
   deps?: { wake?: (missionId: string, reason: 'dependency_met') => Promise<unknown> },
 ): Promise<string[]> {
   const dependents = await db.query.missions.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(missions.dependsOnMissionId, upstreamMissionId),
       isNull(missions.dependencyMetAt),
-    ),
+    )),
     columns: { id: true, gateCondition: true },
   });
 

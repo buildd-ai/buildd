@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isBackendConfigured, type BackendScope } from '@/lib/backend-failover';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * GET /api/workspaces/[id]/backends
@@ -56,7 +57,7 @@ export async function GET(
 
   try {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { id: true, teamId: true },
     });
 

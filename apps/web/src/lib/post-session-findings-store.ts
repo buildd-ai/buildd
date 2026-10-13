@@ -30,6 +30,7 @@ import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { and, asc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import type { PostSessionFindingStore, StoredFinding } from './post-session-findings';
 import { WORKSPACE_NOT_OFF } from './post-session-mode-sql';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type FindingRow = typeof postSessionFindings.$inferSelect;
 
@@ -190,9 +191,9 @@ export const postSessionFindingStore: PostSessionFindingStore = {
   },
 
   async dispatchTask(taskId) {
-    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)) });
     if (!task) return;
-    const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, task.workspaceId) });
+    const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, task.workspaceId)) });
     if (!workspace) return;
     const { announceTaskCreated, wakeTask } = await import('./dispatch-authority');
     await announceTaskCreated(task, workspace);

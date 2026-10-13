@@ -70,8 +70,8 @@ export function callerOwnsWorker(
   worker: {
     accountId: string | null;
     taskId: string | null;
-    workspaceId?: string | null;
-    claimedByUserId?: string | null;
+    workspaceId: string | null;
+    claimedByUserId: string | null;
   },
 ): boolean {
   if (!account.id || !worker.accountId || worker.accountId !== account.id) return false;

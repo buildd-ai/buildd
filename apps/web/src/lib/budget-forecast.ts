@@ -9,6 +9,7 @@ import {
   type BudgetConfidence,
 } from '@buildd/core/oauth-budget';
 import { loadOauthEpisodes, measureOauthWindow } from '@/lib/oauth-budget-window';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -250,7 +251,7 @@ export async function getBudgetForecast(
   const [teamRow, oauthAccounts, missionRows, tenantRow, recentWorkerRows, codexPauseRow] = await Promise.all([
     // Team monthly budget
     db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       columns: {
         monthlyBudgetUsd: true,
         monthlyCostUsd: true,
@@ -260,10 +261,10 @@ export async function getBudgetForecast(
 
     // OAuth accounts for this team (seat-based)
     db.query.accounts.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(accounts.teamId, teamId),
         eq(accounts.authType, 'oauth'),
-      ),
+      )),
       columns: { id: true, name: true, seatId: true, budgetResetsAt: true },
     }).catch(() => [] as OauthAccountRow[]),
 
@@ -274,7 +275,7 @@ export async function getBudgetForecast(
     // paused is kept because the mission can be resumed; budget_exhausted is kept because
     // the row is still informative headroom context and may transition back on budget reset.
     db.query.missions.findMany({
-      where: and(
+      where: sqlWhere(and(
         scopedWsIds.length > 0
           ? or(
               inArray(missions.workspaceId, scopedWsIds),
@@ -283,7 +284,7 @@ export async function getBudgetForecast(
           : and(isNull(missions.workspaceId), eq(missions.teamId, teamId)),
         isNotNull(missions.costBudgetUsd),
         inArray(missions.status, [...ACTIVE_MISSION_STATUSES]),
-      ),
+      )),
       columns: {
         id: true,
         title: true,
@@ -296,8 +297,8 @@ export async function getBudgetForecast(
 
     // Dispatch-tenant Claude budget exhaustion (a Claude pool, not Codex)
     db.query.tenantBudgets.findFirst({
-      where: eq(tenantBudgets.teamId, teamId),
-      orderBy: [desc(tenantBudgets.updatedAt)],
+      where: sqlWhere(eq(tenantBudgets.teamId, teamId)),
+      orderBy: sqlOrderBy([desc(tenantBudgets.updatedAt)]),
       columns: {
         budgetExhaustedAt: true,
         budgetResetsAt: true,
@@ -323,8 +324,8 @@ export async function getBudgetForecast(
     // Codex provider wall — newest codex pause for the team. Provider pools
     // are team-wide, so this is not scoped by workspace.
     db.query.backendPauses.findFirst({
-      where: and(eq(backendPauses.teamId, teamId), eq(backendPauses.backend, 'codex')),
-      orderBy: [desc(backendPauses.resetsAt)],
+      where: sqlWhere(and(eq(backendPauses.teamId, teamId), eq(backendPauses.backend, 'codex'))),
+      orderBy: sqlOrderBy([desc(backendPauses.resetsAt)]),
       columns: { resetsAt: true, createdAt: true, reason: true },
     }).catch(() => null),
   ]);

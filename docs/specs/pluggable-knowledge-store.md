@@ -9,6 +9,13 @@ surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowl
 related: [knowledge-store-retrieval, knowledge-ingest-pipeline, byo-evidence-storage]
 keywords: [turbopuffer, pgvector, index backend, dual-write, shadow read, outbox, dataClass, iterative_scan, recall@40, KNOWLEDGE_STORE]
 supersedes: []
+assertions:
+  - id: pg-vector-default-store
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: PgVectorStore
+    path: packages/core/knowledge-store/pg-vector-store.ts
 ---
 # Pluggable Knowledge Store
 

@@ -1,5 +1,5 @@
 /**
- * The admin app's Usage page names the most expensive tasks. The usage rollup
+ * An operator usage view names the most expensive tasks. The usage rollup
  * (lib/usage-stats.ts) aggregates per group, not per task, so this ranks the
  * same scanned worker rows by task.
  */

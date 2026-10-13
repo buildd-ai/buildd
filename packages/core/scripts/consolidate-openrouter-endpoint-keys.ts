@@ -47,6 +47,7 @@ import {
   serializeAgentEndpoint,
   type AgentEndpointBlob,
 } from '../agent-endpoint';
+import { sqlWhere } from '../db/relational-sql';
 
 export const OPENROUTER_LABEL = 'openrouter' as const;
 /** The canonical OpenRouter key purpose (the registry's `openrouter` api_key storage). */
@@ -140,12 +141,12 @@ async function createStoredKey(row: EndpointRow, key: string): Promise<boolean> 
 export async function consolidateOpenRouterEndpointKeys(opts: { apply: boolean; teamId?: string | null }): Promise<ConsolidationCounts> {
   const counts = emptyCounts();
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.purpose, AGENT_ENDPOINT_PURPOSE),
       isNull(secrets.accountId),
       isNull(secrets.userId),
       ...(opts.teamId ? [eq(secrets.teamId, opts.teamId)] : []),
-    ),
+    )),
     columns: { id: true, teamId: true, workspaceId: true, accountId: true, userId: true, purpose: true, encryptedValue: true },
   });
 

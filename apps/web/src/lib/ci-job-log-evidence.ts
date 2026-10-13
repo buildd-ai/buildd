@@ -21,6 +21,7 @@ import type { S3Client } from '@aws-sdk/client-s3';
 import { createSecretRedactor } from '@buildd/core/redaction';
 import type { ResolvedEvidenceBackend } from './evidence-backend';
 import { buildEvidenceObjectKey } from './storage-keys';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface CiJobLogEvidenceInput {
   installationId: number;
@@ -232,7 +233,7 @@ const defaultDeps: CiJobLogEvidenceDeps = {
     const { db } = await import('@buildd/core/db');
     const { evidenceBackends } = await import('@buildd/core/db/schema');
     const { eq } = await import('drizzle-orm');
-    const row = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, backend.backendId) });
+    const row = await db.query.evidenceBackends.findFirst({ where: sqlWhere(eq(evidenceBackends.id, backend.backendId)) });
     if (!row) throw new Error('the evidence backend no longer exists');
     return getEvidenceS3Client(row);
   },
@@ -241,7 +242,7 @@ const defaultDeps: CiJobLogEvidenceDeps = {
     const { workspaces } = await import('@buildd/core/db/schema');
     const { eq } = await import('drizzle-orm');
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { dataClass: true },
     });
     return ws ?? null;
@@ -255,7 +256,7 @@ const defaultDeps: CiJobLogEvidenceDeps = {
     for (let i = 0; i < MAX_LINEAGE_DEPTH && !seen.has(current); i++) {
       seen.add(current);
       const t = await db.query.tasks.findFirst({
-        where: eq(tasks.id, current),
+        where: sqlWhere(eq(tasks.id, current)),
         columns: { parentTaskId: true },
       });
       if (!t?.parentTaskId) break;

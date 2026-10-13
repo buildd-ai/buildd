@@ -127,6 +127,10 @@ Why: buildd sessions have dedicated coordination tools that are the single sourc
   cadence. Unanswered, the
   question expires (24 h, 4 h in a mission) and the task fails without a
   runner retry. A soft question stays a non-blocking `post_note` (next bullet).
+  With the buildd agent plugin, `AskUserQuestion` in such a session is
+  refused with a pointer to `ask_human`: ask there instead, and also write the
+  question in your reply. A person at the terminal may answer by typing; that
+  withdraws the buildd question, so use the typed answer.
 - **Soft question you can proceed under a default for:** `buildd
   action=post_note` with `type=question` and `defaultChoice` set to what you
   chose. Non-blocking — work continues immediately. State the assumption and

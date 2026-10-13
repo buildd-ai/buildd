@@ -5,6 +5,7 @@ import { encrypt } from '@buildd/core/secrets';
 import { discoverOAuthMetadata, registerClient, getCallbackUrl, ClientRegistrationRejectedError } from '@/lib/mcp-oauth';
 import { resolveConnectorIconData } from '@/lib/connector-icon';
 import { normalizeConnectorUrl, catalogEntryForUrl, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface OAuthSetup {
   /** What discovery concluded. 'none' = the server answered without auth. */
@@ -69,7 +70,7 @@ type ConnectorRow = typeof connectors.$inferSelect;
  * never makes a duplicate.
  */
 export async function ensureCatalogConnector(teamId: string, entry: ResolvedCatalogEntry, origin: string): Promise<ConnectorRow> {
-  const owned = await db.query.connectors.findMany({ where: eq(connectors.teamId, teamId) });
+  const owned = await db.query.connectors.findMany({ where: sqlWhere(eq(connectors.teamId, teamId)) });
   const target = normalizeConnectorUrl(entry.url);
   const existing = owned.find(c => normalizeConnectorUrl(c.url) === target) ?? owned.find(c => c.name === entry.name);
   if (existing) return existing;
@@ -95,7 +96,7 @@ export async function ensureCatalogConnector(teamId: string, entry: ResolvedCata
   }).onConflictDoNothing().returning();
   if (created) return created;
   // Lost a race on (teamId, name): the winner's row is the one to use.
-  const winner = await db.query.connectors.findFirst({ where: and(eq(connectors.teamId, teamId), eq(connectors.name, entry.name)) });
+  const winner = await db.query.connectors.findFirst({ where: sqlWhere(and(eq(connectors.teamId, teamId), eq(connectors.name, entry.name))) });
   if (!winner) throw new Error(`connector for catalog entry ${entry.slug} vanished`);
   return winner;
 }
@@ -114,7 +115,7 @@ export async function enableConnectorInWorkspaces(connectorId: string, workspace
 /** Preinstall one entry for a team: connector row + enabled in every team workspace. */
 export async function preinstallForTeam(teamId: string, entry: ResolvedCatalogEntry, origin: string): Promise<ConnectorRow> {
   const connector = await ensureCatalogConnector(teamId, entry, origin);
-  const teamWorkspaces = await db.query.workspaces.findMany({ where: eq(workspaces.teamId, teamId), columns: { id: true } });
+  const teamWorkspaces = await db.query.workspaces.findMany({ where: sqlWhere(eq(workspaces.teamId, teamId)), columns: { id: true } });
   await enableConnectorInWorkspaces(connector.id, teamWorkspaces.map(w => w.id));
   return connector;
 }

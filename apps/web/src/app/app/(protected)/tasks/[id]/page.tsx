@@ -69,6 +69,7 @@ import { deriveTaskOrigin } from '@/lib/task-origin';
 import { originLinkCards } from './origin-links';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
+import { livingSpecLoad } from '@/lib/specs/task-view';
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
@@ -126,6 +127,7 @@ import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -167,7 +169,7 @@ export default async function TaskDetailPage({
 
   // Get task with workspace (for ownership check) and relationships
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, id),
+    where: sqlWhere(eq(tasks.id, id)),
     with: {
       workspace: true,
       // Explicit allowlist, like every sibling relation in this shape: the two
@@ -179,7 +181,7 @@ export default async function TaskDetailPage({
       },
       parentTask: { columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true } },
       // taskClass/mode/title tell a subtask from an attempt at this task (D9).
-      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true, createdAt: true }, orderBy: [asc(tasks.createdAt), asc(tasks.id)] },
+      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true, createdAt: true }, orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]) },
       // Provenance (U6): who created this task and by what mechanism. The
       // creating worker has no page of its own, so we carry its task instead.
       creatorAccount: { columns: { id: true, name: true } },
@@ -234,7 +236,7 @@ export default async function TaskDetailPage({
     // Dependency tasks, if dependsOn has entries
     depTaskIds.length > 0
       ? db.query.tasks.findMany({
-          where: inArray(tasks.id, depTaskIds),
+          where: sqlWhere(inArray(tasks.id, depTaskIds)),
           columns: { id: true, title: true, status: true, result: true },
           with: {
             workers: {
@@ -242,15 +244,15 @@ export default async function TaskDetailPage({
               // Every worker, newest first — NOT limit 1. The gate asks whether
               // ANY worker holds an open PR, the same read the list and the
               // claim route make; the newest alone hid an older open PR.
-              orderBy: [desc(workers.createdAt), desc(workers.id)],
+              orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
             },
           },
         })
       : Promise.resolve([]),
     // Workers for this task
     db.query.workers.findMany({
-      where: eq(workers.taskId, id),
-      orderBy: [desc(workers.createdAt), desc(workers.id)],
+      where: sqlWhere(eq(workers.taskId, id)),
+      orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
       with: { account: { columns: { name: true } } },
     }),
     // Mission context bar (W6): the mission row and its tasks' light columns —
@@ -258,7 +260,7 @@ export default async function TaskDetailPage({
     // content — fed through the builders every mission surface shares.
     task.missionId
       ? db.query.missions.findFirst({
-          where: eq(missions.id, task.missionId),
+          where: sqlWhere(eq(missions.id, task.missionId)),
           columns: {
             id: true, title: true, status: true, orchestrationMode: true, dependsOnMissionId: true,
             dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true,
@@ -283,8 +285,8 @@ export default async function TaskDetailPage({
       return Promise.all([
         taskEstimatesEnabled(teamId),
         db.query.taskEstimates.findFirst({
-          where: eq(taskEstimates.taskId, id),
-          orderBy: desc(taskEstimates.createdAt),
+          where: sqlWhere(eq(taskEstimates.taskId, id)),
+          orderBy: sqlOrderBy(desc(taskEstimates.createdAt)),
         }),
       ]).then(([enabled, row]) => (enabled ? row ?? null : null));
     })(),
@@ -313,7 +315,7 @@ export default async function TaskDetailPage({
     const latestWorker = taskWorkers[0];
     if (latestWorker?.prNumber && !latestWorker?.mergedAt && latestWorker?.prUrl) {
       const wsWithInstall = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, task.workspaceId),
+        where: sqlWhere(eq(workspaces.id, task.workspaceId)),
         columns: {},
         with: { githubInstallation: { columns: { installationId: true } } },
       });
@@ -359,19 +361,19 @@ export default async function TaskDetailPage({
   // Cloud runs only: its time on the hosted runner, all attempts. Started
   // here, awaited below, so it adds no round trip of its own.
   const hostedRunnerUsagePromise = taskHostedRunnerUsage(id).catch(() => null);
-  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
+  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw, livingSpec] = await Promise.all([
     prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
     taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     // Artifacts for all workers on this task
     workerIds.length > 0
-      ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
+      ? db.query.artifacts.findMany({ where: sqlWhere(inArray(artifacts.workerId, workerIds)) })
       : Promise.resolve([]),
     // Agent error traces (pattern-matched failures from tool output).
     // Captured by the runner's error-trace-scanner — see apps/runner/src/error-trace-scanner.ts.
     // Cap to most recent 50 here; full list available via /api/tasks/[id]/error-traces.
     db.query.workerErrorTraces.findMany({
-      where: eq(workerErrorTraces.taskId, id),
-      orderBy: [desc(workerErrorTraces.ts)],
+      where: sqlWhere(eq(workerErrorTraces.taskId, id)),
+      orderBy: sqlOrderBy([desc(workerErrorTraces.ts)]),
       limit: 50,
     }),
     (async () => {
@@ -402,22 +404,22 @@ export default async function TaskDetailPage({
     // failure excerpt, on the same branch. They make "How it landed".
     prWorker?.prNumber
       ? db.query.tasks.findMany({
-          where: and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha)),
+          where: sqlWhere(and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha))),
           columns: { id: true, status: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
           with: {
             // Full rows, same shape as taskWorkers: Worker history lists them.
             workers: {
-              orderBy: [desc(workers.createdAt), desc(workers.id)],
+              orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
               with: { account: { columns: { name: true } } },
             },
           },
-          orderBy: [asc(tasks.createdAt), asc(tasks.id)],
+          orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]),
         })
       : Promise.resolve([]),
     // What this task unblocks, once it has landed.
     task.status === 'completed'
       ? db.query.tasks.findMany({
-          where: and(eq(tasks.workspaceId, task.workspaceId), sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`),
+          where: sqlWhere(and(eq(tasks.workspaceId, task.workspaceId), sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`)),
           columns: { id: true, title: true, label: true, status: true },
           limit: 6,
         })
@@ -449,6 +451,8 @@ export default async function TaskDetailPage({
     // Worker vs verification failure. Costs no query unless the task failed;
     // joined here rather than awaited after the phase is derived.
     loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
+    // The Living Spec the task is pinned to, with its outcome. No query unless it names one.
+    livingSpecLoad(task.id, task.context),
   ]);
   // CI-retry attempts numbered by (createdAt, id): "attempt N" never swaps.
   const ciAttemptTasks = oldestFirst(ciAttemptRows, compareTasksChrono)
@@ -547,9 +551,9 @@ export default async function TaskDetailPage({
 
   if (planParentId) {
     const chainBase = await db.query.tasks.findMany({
-      where: eq(tasks.parentTaskId, planParentId),
+      where: sqlWhere(eq(tasks.parentTaskId, planParentId)),
       columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true },
-      orderBy: [asc(tasks.createdAt), asc(tasks.id)],
+      orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]),
     });
 
     if (chainBase.length > 0) {
@@ -569,9 +573,9 @@ export default async function TaskDetailPage({
 
       const chainWorkers = chainIds.length > 0
         ? await db.query.workers.findMany({
-            where: inArray(workers.taskId, chainIds),
+            where: sqlWhere(inArray(workers.taskId, chainIds)),
             columns: { id: true, taskId: true, prUrl: true, prNumber: true, turns: true, branch: true, status: true, mergedAt: true, prLifecycleStatus: true, runner: true, localUiUrl: true },
-            orderBy: [desc(workers.createdAt), desc(workers.id)],
+            orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
           })
         : [];
       const latestWorker = new Map<string, typeof chainWorkers[0]>();
@@ -582,7 +586,7 @@ export default async function TaskDetailPage({
       const chainWorkerIds = [...latestWorker.values()].map(w => w.id);
       const chainArts = chainWorkerIds.length > 0
         ? await db.query.artifacts.findMany({
-            where: and(inArray(artifacts.workerId, chainWorkerIds), ne(artifacts.type, 'impl_plan')),
+            where: sqlWhere(and(inArray(artifacts.workerId, chainWorkerIds), ne(artifacts.type, 'impl_plan'))),
             columns: { id: true, workerId: true, type: true, title: true },
           })
         : [];
@@ -617,11 +621,11 @@ export default async function TaskDetailPage({
       const slugs = [...new Set(planChain.map(t => t.roleSlug).filter(Boolean))] as string[];
       if (slugs.length > 0) {
         const roles = await db.query.workspaceSkills.findMany({
-          where: and(
+          where: sqlWhere(and(
             eq(workspaceSkills.workspaceId, task.workspaceId),
             eq(workspaceSkills.isRole, true),
             inArray(workspaceSkills.slug, slugs),
-          ),
+          )),
           columns: { slug: true, name: true, color: true },
         });
         roles.forEach(r => roleMap.set(r.slug, { name: r.name, color: r.color }));
@@ -2122,7 +2126,7 @@ export default async function TaskDetailPage({
             </SideDescription>
           )}
 
-          <SpecSourceBlock specSource={specSource} />
+          <SpecSourceBlock specSource={specSource} living={livingSpec} />
 
           {dependentTasks.length > 0 && (
             <section data-testid="task-unblocked">

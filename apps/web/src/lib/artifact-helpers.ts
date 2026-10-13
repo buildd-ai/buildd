@@ -4,6 +4,7 @@ import { artifacts } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export function generateShareToken(): string {
   return randomBytes(24).toString('base64url');
@@ -77,10 +78,10 @@ export async function upsertAutoArtifact(params: UpsertAutoArtifactParams): Prom
 
   try {
     const existing = await db.query.artifacts.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(artifacts.workspaceId, workspaceId),
         eq(artifacts.key, key),
-      ),
+      )),
     });
 
     let result: any;

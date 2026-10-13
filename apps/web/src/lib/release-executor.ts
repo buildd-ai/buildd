@@ -16,6 +16,7 @@ import {
   commitContains,
   resolveShippedVersion,
 } from '@/lib/release/gated-merge';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export { versionFromReleasePrTitle } from '@/lib/release/gated-merge';
 
@@ -633,17 +634,17 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
   // Fetch task release flag and worker PR info
   const [task, worker, workspace] = await Promise.all([
     db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { release: true, missionId: true },
       // Option A′ — see the integration-branch refusal below.
       with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
     }),
     db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
+      where: sqlWhere(eq(workers.id, workerId)),
       columns: { branch: true, prNumber: true, prUrl: true, prBaseRef: true },
     }),
     db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { releaseConfig: true, githubRepoId: true, name: true, gitConfig: true },
     }),
   ]);
@@ -774,7 +775,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
   // Get GitHub repo for this workspace (needed for both releaseBranch and worker-branch paths)
   const repo = workspace?.githubRepoId
     ? await db.query.githubRepos.findFirst({
-        where: eq(githubRepos.id, workspace.githubRepoId),
+        where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
         with: { installation: true },
       })
     : null;

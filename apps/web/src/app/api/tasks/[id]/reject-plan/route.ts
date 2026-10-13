@@ -9,6 +9,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isUuid } from '@/lib/uuid';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/tasks/[id]/reject-plan - Reject a planning task's plan and create a revised planning task
 export async function POST(
@@ -33,7 +34,7 @@ export async function POST(
 
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
+      where: sqlWhere(eq(tasks.id, id)),
       with: { workspace: true },
     });
 

@@ -53,6 +53,14 @@ export interface LocalSessionEvent {
    */
   busy?: boolean;
   /**
+   * touch: a person typed a prompt into the session (UserPromptSubmit, not a
+   * background task's wake-up). Decided on the machine from the prompt, which
+   * is never sent. Withdraws an open ask_human question of a held worker: the
+   * person is at the terminal and answers there
+   * (docs/specs/terminal-question-redirect.md).
+   */
+  prompted?: boolean;
+  /**
    * start: the client session id this one continues in the same process (a
    * `/clear`). The claims that session held move to this one, so the cleared
    * conversation keeps them alive. Only a session of the same owner and client
@@ -114,7 +122,7 @@ export interface LocalSessionUsage {
 export const LOCAL_SESSION_COST_BASES = ['real', 'virtual', 'unknown'] as const;
 export type LocalSessionCostBasis = (typeof LOCAL_SESSION_COST_BASES)[number];
 
-/** What the event endpoint answers. Hooks only read `pendingInstructions`. */
+/** What the event endpoint answers. Hooks only read `pendingInstructions` and `askVia`. */
 export interface LocalSessionEventResult {
   ok: true;
   sessionId: string | null;
@@ -126,6 +134,12 @@ export interface LocalSessionEventResult {
    * which is the existing delivery path; the text itself never rides here.
    */
   pendingInstructions: boolean;
+  /**
+   * The held interactive worker a question should be asked through
+   * (`ask_human`), when the session holds a live one: the plugin redirects the
+   * terminal-only AskUserQuestion there. Null when it holds none.
+   */
+  askVia?: { workerId: string } | null;
   /** What the event did, for the hook's own debug log. */
   outcome: string;
 }
@@ -140,7 +154,7 @@ export const LOCAL_SESSION_TOUCH_THROTTLE_MS = 60_000;
 const MAX_ID = 200;
 const MAX_VERSION = 64;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ALLOWED_KEYS = new Set(['event', 'client', 'clientSessionId', 'clientVersion', 'repo', 'interactive', 'workerId', 'reason', 'usage', 'busy', 'continuesSessionId']);
+const ALLOWED_KEYS = new Set(['event', 'client', 'clientSessionId', 'clientVersion', 'repo', 'interactive', 'workerId', 'reason', 'usage', 'busy', 'prompted', 'continuesSessionId']);
 const USAGE_KEYS = new Set(['workers', 'costBasis']);
 const WORKER_USAGE_KEYS = new Set(['workerId', 'models', 'toolCalls', 'toolCounts', 'subagents', 'firstAt', 'lastAt']);
 /** Same rule as the hook's TOOL_NAME_RE. */
@@ -270,6 +284,10 @@ export function parseLocalSessionEvent(body: unknown): ParsedLocalSessionEvent {
     if (b.event !== 'touch') return { ok: false, error: 'busy is only accepted on touch' };
     if (typeof b.busy !== 'boolean') return { ok: false, error: 'busy must be a boolean' };
   }
+  if (b.prompted !== undefined) {
+    if (b.event !== 'touch') return { ok: false, error: 'prompted is only accepted on touch' };
+    if (typeof b.prompted !== 'boolean') return { ok: false, error: 'prompted must be a boolean' };
+  }
   if (b.continuesSessionId !== undefined) {
     if (b.event !== 'start') return { ok: false, error: 'continuesSessionId is only accepted on start' };
     if (typeof b.continuesSessionId !== 'string' || !b.continuesSessionId.trim() || b.continuesSessionId.length > MAX_ID) {
@@ -297,6 +315,7 @@ export function parseLocalSessionEvent(body: unknown): ParsedLocalSessionEvent {
       ...(b.event === 'end' ? { reason: (b.reason as LocalSessionEndReason | undefined) ?? 'other' } : {}),
       ...(usage ? { usage } : {}),
       ...(b.busy !== undefined ? { busy: b.busy as boolean } : {}),
+      ...(b.prompted === true ? { prompted: true } : {}),
       ...(b.continuesSessionId !== undefined && (b.continuesSessionId as string).trim() !== (b.clientSessionId as string).trim()
         ? { continuesSessionId: (b.continuesSessionId as string).trim() }
         : {}),

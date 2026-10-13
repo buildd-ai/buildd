@@ -25,6 +25,7 @@ import {
   VISUAL_REVIEW_MOMENT_KEYS, roundMomentFor, visualReviewEventData, visualReviewEventText,
   type VisualReviewMoment, type VisualReviewMomentKey,
 } from './visual-review-text';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 function missionObjectRef(mission: { id: string; title: string; workspaceId: string | null }): BuilddObjectRef {
   return {
@@ -35,12 +36,12 @@ function missionObjectRef(mission: { id: string; title: string; workspaceId: str
 
 async function conversationForTask(taskId: string) {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, title: true, missionId: true, workspaceId: true, result: true, roleSlug: true, context: true },
   });
   if (!task?.missionId) return null;
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, task.missionId),
+    where: sqlWhere(eq(missions.id, task.missionId)),
     columns: { id: true, title: true, conversationId: true, workspaceId: true },
   });
   if (!mission?.conversationId) return null;
@@ -155,7 +156,7 @@ export async function postVisualReviewEvent(input: {
 }): Promise<boolean> {
   try {
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, input.missionId),
+      where: sqlWhere(eq(missions.id, input.missionId)),
       columns: { id: true, title: true, conversationId: true, workspaceId: true },
     });
     if (!mission?.conversationId) return false;
@@ -191,7 +192,7 @@ export async function postVisualReviewEvent(input: {
 export async function postVisualAuditRoundEvent(input: { taskId: string; missionId: string; round?: number }): Promise<boolean> {
   try {
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, input.missionId),
+      where: sqlWhere(eq(missions.id, input.missionId)),
       columns: { id: true, conversationId: true, workspaceId: true },
     });
     if (!mission?.conversationId) return false;

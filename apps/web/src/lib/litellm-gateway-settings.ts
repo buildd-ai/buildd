@@ -14,6 +14,7 @@ import {
   LITELLM_LABEL, gatewayUrlProblem, normalizeGatewayUrl, parseGateway, serializeGateway, verifyGateway,
 } from '@buildd/core/litellm-gateway';
 import { sanitizeProviderKey } from './provider-keys';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface MaskedGateway {
   baseURL: string;
@@ -35,7 +36,7 @@ const teamRow = (teamId: string) => and(
 
 export async function getTeamGateway(teamId: string): Promise<MaskedGateway | null> {
   const row = await db.query.secrets.findFirst({
-    where: teamRow(teamId),
+    where: sqlWhere(teamRow(teamId)),
     columns: { encryptedValue: true, healthStatus: true, lastVerificationError: true, updatedAt: true },
   });
   if (!row) return null;

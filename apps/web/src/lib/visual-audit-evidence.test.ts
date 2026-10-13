@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 
 // Only the DB handle and storage are mocked. drizzle-orm and the schema stay
 // real so the loader's predicates can be rendered to SQL and asserted: a
@@ -27,7 +27,7 @@ const {
   eligibleFixTaskIds,
 } = await import('./visual-audit-evidence');
 
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 const render = (where: any) => {
   const q = dialect.sqlToQuery(where);
   return { sql: q.sql, params: q.params };

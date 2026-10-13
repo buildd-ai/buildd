@@ -285,10 +285,12 @@ export default function TeamDetailClient({
             <label htmlFor="team-name" className="mb-1.5 block text-sm font-medium text-text-primary">Team name</label>
             <input id="team-name" type="text" value={editName} onChange={(e) => setEditName(e.target.value)} className={input} />
           </div>
-          <div>
-            <label htmlFor="team-slug" className="mb-1.5 block text-sm font-medium text-text-primary">Slug</label>
-            <input id="team-slug" type="text" value={editSlug} onChange={(e) => setEditSlug(e.target.value)} className={`${input} font-mono`} />
-          </div>
+          {!isPersonal && (
+            <div>
+              <label htmlFor="team-slug" className="mb-1.5 block text-sm font-medium text-text-primary">Slug</label>
+              <input id="team-slug" type="text" value={editSlug} onChange={(e) => setEditSlug(e.target.value)} className={`${input} font-mono`} />
+            </div>
+          )}
           <div className="flex gap-2">
             <button onClick={handleSaveEdit} disabled={saving} className="btn">
               {saving ? 'Saving…' : 'Save'}
@@ -313,7 +315,8 @@ export default function TeamDetailClient({
               {isPersonal && <TonePill tone="q">Personal</TonePill>}
             </div>
             <p className="text-sm text-text-muted">
-              <span className="font-mono text-meta">{team.slug}</span> · Created {new Date(team.createdAt).toLocaleDateString()}
+              {/* A personal team's slug is an internal id; only a shared team's is the team's own. */}
+              {!isPersonal && <><span className="font-mono text-meta">{team.slug}</span> · </>}Created {new Date(team.createdAt).toLocaleDateString()}
             </p>
           </div>
           {canEditTeam && (

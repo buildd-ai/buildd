@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const saved = {
   NODE_ENV: process.env.NODE_ENV,
@@ -136,7 +137,7 @@ describe('GET — production', () => {
     expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-a', 'ws-a');
     // The connection query is filtered to THIS workspace, not merely run after an access check.
     expect(mockConnectionsFindMany).toHaveBeenCalledTimes(1);
-    expect((mockConnectionsFindMany.mock.calls[0] as any[])[0].where).toEqual({
+    expect(capturedWhere((mockConnectionsFindMany.mock.calls[0] as any[])[0].where)).toEqual({
       field: 'workspaceId',
       value: 'ws-a',
       type: 'eq',

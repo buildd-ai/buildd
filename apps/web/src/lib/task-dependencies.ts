@@ -14,6 +14,7 @@ import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 import { isBookkeeping } from '@buildd/core/mission-helpers';
 import type { PathDeclaration } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Result of interpreting `structuredOutput.plan`. Organizer heartbeats
@@ -130,7 +131,7 @@ export async function resolveCompletedTask(
 ): Promise<void> {
   // Check if the completed task's parent has all children done
   const completedTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, completedTaskId),
+    where: sqlWhere(eq(tasks.id, completedTaskId)),
     columns: { parentTaskId: true },
   });
 
@@ -140,7 +141,7 @@ export async function resolveCompletedTask(
 
   // Check if task is a planning task that needs mission-level handling
   const completedTaskFull = await db.query.tasks.findFirst({
-    where: eq(tasks.id, completedTaskId),
+    where: sqlWhere(eq(tasks.id, completedTaskId)),
     columns: { mode: true, missionId: true, status: true, context: true },
   });
 
@@ -159,7 +160,7 @@ export async function resolveCompletedTask(
     } else {
       // Completed planning task — auto-approve plan if present in structuredOutput
       const taskWithResult = await db.query.tasks.findFirst({
-        where: eq(tasks.id, completedTaskId),
+        where: sqlWhere(eq(tasks.id, completedTaskId)),
         columns: { result: true },
       });
       const result = taskWithResult?.result as Record<string, unknown> | null;
@@ -272,10 +273,10 @@ export async function resolveCompletedTask(
   // Check if this is a completed evaluation task — handle verdict
   if (completedTaskFull?.missionId) {
     const missionRecord = await db.query.missions.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(missions.id, completedTaskFull.missionId),
         eq(missions.lastEvaluationTaskId, completedTaskId),
-      ),
+      )),
       columns: { id: true },
     });
     if (missionRecord) {
@@ -340,7 +341,7 @@ export async function resolveCompletedTask(
 async function supersedeRetriesOfMergedTask(taskId: string, workspaceId: string): Promise<void> {
   try {
     const merged = await db.query.workers.findFirst({
-      where: and(eq(workers.taskId, taskId), isNotNull(workers.mergedAt)),
+      where: sqlWhere(and(eq(workers.taskId, taskId), isNotNull(workers.mergedAt))),
       columns: { prNumber: true },
     });
     if (!merged) return;
@@ -361,7 +362,7 @@ async function checkChildrenCompleted(
   parentTaskId: string
 ): Promise<void> {
   const children = await db.query.tasks.findMany({
-    where: eq(tasks.parentTaskId, parentTaskId),
+    where: sqlWhere(eq(tasks.parentTaskId, parentTaskId)),
     columns: { id: true, status: true, workspaceId: true, title: true, result: true, taskClass: true },
   });
 
@@ -401,7 +402,7 @@ async function maybeCreateAggregationTask(
 ): Promise<void> {
   // Fetch parent to check if it's a planning task
   const parent = await db.query.tasks.findFirst({
-    where: eq(tasks.id, parentTaskId),
+    where: sqlWhere(eq(tasks.id, parentTaskId)),
     columns: {
       id: true, mode: true, title: true, workspaceId: true, missionId: true, roleSlug: true,
       // Who the plan is for (resolveTaskRequesterUserId): the aggregator is too.
@@ -414,7 +415,7 @@ async function maybeCreateAggregationTask(
   // Skip if the parent's mission is already completed
   if (parent.missionId) {
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, parent.missionId),
+      where: sqlWhere(eq(missions.id, parent.missionId)),
       columns: { id: true, status: true },
     });
     if (mission?.status === 'completed') return;
@@ -621,7 +622,7 @@ export async function checkDependsOnResolved(
       )];
       if (uniqueWsIds.length > 0) {
         const wsRecords = await db.query.workspaces.findMany({
-          where: inArray(workspaces.id, uniqueWsIds),
+          where: sqlWhere(inArray(workspaces.id, uniqueWsIds)),
           columns: { id: true },
           with: { githubInstallation: { columns: { installationId: true } } },
         });
@@ -744,7 +745,7 @@ async function cascadeDependencyFailure(
 
   // Fetch the failed task's title for a meaningful error message
   const failedTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, failedTaskId),
+    where: sqlWhere(eq(tasks.id, failedTaskId)),
     columns: { title: true },
   });
   const failedTitle = failedTask?.title || failedTaskId;

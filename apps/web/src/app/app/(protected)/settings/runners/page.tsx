@@ -14,6 +14,8 @@ import SignInsAnchorRedirect from './SignInsAnchorRedirect';
 import NewRunnerTokenSheet from './NewRunnerTokenSheet';
 import { permsInAnyTeam, teamIdsHolding } from '../_lib/settings-permissions';
 import { settingsReadOnly } from '@/lib/settings-nav';
+import TeamSwitcher from '../_components/TeamSwitcher';
+import { pickShownTeam } from '../_lib/shown-team';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,16 +28,18 @@ const SIGN_INS_HREF = '/app/settings/models#sign-ins';
  * Settings → Runners. Fleet first (what runs your tasks), then connections
  * (the Cloudflare account cloud runs use, and a pointer to the sign-ins on
  * Models), then runner tokens (how a runner reaches buildd). `?new=1` opens the
- * New runner token sheet over it.
+ * New runner token sheet over it. Shows the active team, or `?team=<id>` when
+ * it names one of the person's teams (the workspace page links here that way).
  */
 export default async function RunnersSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ new?: string | string[] }>;
+  searchParams: Promise<{ new?: string | string[]; team?: string | string[] }>;
 }) {
-  const { new: newParam } = await searchParams;
+  const { new: newParam, team: teamParam } = await searchParams;
   const { user, teams, currentTeamId, currentTeam, workspaces, permsByTeam } = await loadSettingsContext();
-  const teamId = currentTeamId ?? teams[0]?.id ?? null;
+  const shown = pickShownTeam(teams, teamParam, currentTeam) ?? teams[0] ?? null;
+  const teamId = shown?.id ?? currentTeamId ?? null;
   const teamWsIds = workspaces.filter((w) => w.teamId === teamId).map((w) => w.id);
   const [accounts, fleet, hasSignIn] = await Promise.all([
     loadRunnerAccounts(teams.map((t) => t.id)),
@@ -66,9 +70,16 @@ export default async function RunnersSettingsPage({
     <SettingsPage title="Runners" readOnly={settingsReadOnly('runners', permsInAnyTeam(permsByTeam))}>
       <SignInsAnchorRedirect />
       {newParam === '1' && <NewRunnerTokenSheet />}
+      {shown && (
+        <TeamSwitcher
+          shown={shown}
+          others={teams.filter((t) => t.id !== shown.id)}
+          basePath="/app/settings/runners"
+        />
+      )}
       <FleetOverview
         fleet={fleet}
-        teamName={teams.length > 1 ? (currentTeam?.name ?? null) : null}
+        teamName={teams.length > 1 ? (shown?.name ?? null) : null}
         cloud={teamId ? <CloudRunnerRow teamId={teamId} canManage={cloudflareTeamIds.includes(teamId)} /> : undefined}
       />
       <SettingsSection title="Connections" bare>

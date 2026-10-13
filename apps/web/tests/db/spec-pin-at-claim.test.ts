@@ -156,3 +156,29 @@ describe('no approved revision', () => {
     expect(r.reason).toMatch(/not found/);
   });
 });
+
+describe('a task scoped to some criteria', () => {
+  test('re-pins to N+1 when N+1 still has every criterion it answers for, keeping its scope', async () => {
+    const s = await approvedSpec();
+    const task = await fileTask({ specSource: { specId: s.specId, criteria: ['R-1'] } });
+    const revN1 = await s.approveN1();
+    const r = await repinSpecAtClaim({ ...task, workspaceId: wsA });
+    expect(r.specSource).toMatchObject({ specRevisionId: revN1, revision: 2, criteria: ['R-1'], pinnedAt: 'claim' });
+  });
+
+  test('keeps N when N+1 no longer has a criterion it answers for, and says which', async () => {
+    const d = await createSpecDraft(user(member), { workspaceId: wsA, title: `Scoped ${rand()}`, body: BODY_N1 });
+    if (!d.ok) throw new Error(d.error);
+    const a = await approveSpecRevision(user(admin), d.spec.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok) throw new Error(a.error);
+    const task = await fileTask({ specSource: { specId: d.spec.id, criteria: ['R-2'] } });
+    const r2 = await reviseSpecDraft(user(member), d.spec.id, { expectedVersion: a.spec.version, body: BODY_N });
+    if (!r2.ok) throw new Error(r2.error);
+    const a2 = await approveSpecRevision(user(admin), d.spec.id, { revision: 2, expectedVersion: r2.spec.version });
+    if (!a2.ok) throw new Error(a2.error);
+    const r = await repinSpecAtClaim({ ...task, workspaceId: wsA });
+    expect(r.specSource).toBeNull();
+    expect(r.reason).toContain('no longer has R-2');
+  });
+});
+

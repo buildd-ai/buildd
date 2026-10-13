@@ -9,6 +9,7 @@ import {
   type OauthEpisode,
   type OauthWindowUsage,
 } from '@buildd/core/oauth-budget';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Server-side measurement for OAuth budget pacing. Three callers need the same
@@ -69,8 +70,8 @@ export async function loadOauthEpisodes(
   now = new Date(),
 ): Promise<Array<OauthEpisode & { resetsAt: Date | null }>> {
   const rows = await db.query.oauthBudgetEpisodes.findMany({
-    where: inArray(oauthBudgetEpisodes.accountId, accountIds),
-    orderBy: (t, { desc }) => [desc(t.exhaustedAt)],
+    where: sqlWhere(inArray(oauthBudgetEpisodes.accountId, accountIds)),
+    orderBy: sqlOrderByFn((t, { desc }) => [desc(t.exhaustedAt)]),
     limit,
     columns: {
       exhaustedAt: true, resetsAt: true, workerCount: true, turns: true,

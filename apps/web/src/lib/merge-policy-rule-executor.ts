@@ -15,6 +15,7 @@ import type { EscalationAction } from '@buildd/core/escalation-gate';
 import type { MergePolicy } from '@buildd/shared';
 import type { GatedSubject } from './escalation-gate-check';
 import { parseMergePolicyRead } from './merge-policy';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface RuleExecutorDeps {
   loadPolicy?: (workspaceId: string) => Promise<Pick<MergePolicy, 'tier' | 'agentReview'> | null>;
@@ -28,7 +29,7 @@ export function policyAllowsRuleMerge(policy: Pick<MergePolicy, 'tier' | 'agentR
 }
 
 async function defaultLoadPolicy(workspaceId: string): Promise<Pick<MergePolicy, 'tier' | 'agentReview'> | null> {
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { gitConfig: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { gitConfig: true } });
   if (!ws) return null;
   return parseMergePolicyRead((ws.gitConfig as { mergePolicy?: unknown } | null)?.mergePolicy);
 }

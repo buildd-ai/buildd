@@ -5,6 +5,7 @@ import { and, eq } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { resolveConnectorTeam, forbidden } from '@/lib/connector-team-auth';
 import { parseCatalogEntryInput, verifyCatalogServer } from '@/lib/connector-catalog-input';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const notFound = () => NextResponse.json({ error: 'Catalog entry not found' }, { status: 404 });
 
@@ -30,7 +31,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (typeof enabled === 'boolean') patch.enabled = enabled;
 
   const where = and(eq(connectorCatalogEntries.id, id), eq(connectorCatalogEntries.teamId, caller.teamId));
-  const current = await db.query.connectorCatalogEntries.findFirst({ where });
+  const current = await db.query.connectorCatalogEntries.findFirst({ where: sqlWhere(where) });
   if (!current) return notFound();
   if (patch.url || patch.authMode) {
     const verified = await verifyCatalogServer({

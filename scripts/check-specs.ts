@@ -125,7 +125,6 @@ export const VERIFIED_BY_DEBT = new Set([
   'mcp-connectors-and-roles',
   'mission-task-lifecycle',
   'provider-failover',
-  'release-flow',
   'runner-liveness',
   'scheduled-task-merge-policy',
   'subject-anchor-liveness',

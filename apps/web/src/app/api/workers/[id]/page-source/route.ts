@@ -27,6 +27,7 @@ import { callerOwnsWorker } from '@/lib/worker-owner';
 import { isUuid } from '@/lib/uuid';
 import { githubApi } from '@/lib/github';
 import { resolvePageSource } from '@/lib/visual-qa-page-source';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -42,7 +43,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!isUuid(id)) return notFound();
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true },
   });
   if (!worker || !callerOwnsWorker(account, worker)) return notFound();
@@ -50,17 +51,17 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // The capture ref follows the mission's PR base (docs/design/visual-qa-auditor.md,
   // "Page source"), so the worker's mission's integration fields are needed.
   const task = worker.taskId
-    ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { missionId: true } })
+    ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, worker.taskId)), columns: { missionId: true } })
     : null;
   const mission = task?.missionId
     ? await db.query.missions.findFirst({
-        where: eq(missions.id, task.missionId),
+        where: sqlWhere(eq(missions.id, task.missionId)),
         columns: { workingBranch: true, integrationBranchEnabled: true },
       })
     : null;
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, worker.workspaceId),
+    where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
     columns: { id: true, gitConfig: true },
     with: {
       githubRepo: {

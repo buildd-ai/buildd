@@ -12,6 +12,7 @@
 import { db } from '@buildd/core/db';
 import { githubRepos, missions, releases, releaseTasks, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, eq, gte, inArray, desc } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface ListReleasesParams {
   workspaceId: string;
@@ -112,7 +113,7 @@ export interface ReleaseTaskEdge {
 /** Fetches a release row plus its attributed task edges. Returns null if the release doesn't exist. */
 export async function getReleaseWithTaskEdges(releaseId: string) {
   const release = await db.query.releases.findFirst({
-    where: eq(releases.id, releaseId),
+    where: sqlWhere(eq(releases.id, releaseId)),
   });
   if (!release) return null;
 

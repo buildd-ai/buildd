@@ -20,6 +20,28 @@ describe('modelInputs', () => {
   });
 });
 
+describe('modelInputs from the catalog', () => {
+  const entry = (openRouterId: string, inputModalities?: string[]) => ({
+    id: openRouterId.split('/')[1], canonicalId: null, openRouterId, provider: 'other' as const, displayName: openRouterId,
+    contextLength: 1_000_000, created: 1, input: 0.1, output: 0.4, cacheRead: 0, cacheWrite: 0, ...(inputModalities ? { inputModalities } : {}),
+  });
+
+  it('a model the catalog says reads images takes them, whatever its family', () => {
+    const catalog = [entry('deepseek/deepseek-v4.1-flash', ['text', 'image']), entry('x-ai/grok-4.7', ['text', 'image', 'file'])];
+    expect(modelInputs('openrouter', 'deepseek/deepseek-v4.1-flash', catalog)).toEqual({ images: true, pdf: false });
+    expect(modelInputs('openrouter', 'x-ai/grok-4.7', catalog)).toEqual({ images: true, pdf: true });
+  });
+
+  it('the catalog saying text only wins over the family map', () => {
+    expect(modelInputs('openrouter', 'google/gemini-3-flash', [entry('google/gemini-3-flash', ['text'])])).toEqual({ images: false, pdf: false });
+  });
+
+  it('a model the catalog does not describe falls back to the map', () => {
+    expect(modelInputs('openrouter', 'deepseek/deepseek-v4', [entry('deepseek/deepseek-v4')])).toEqual({ images: false, pdf: false });
+    expect(modelInputs('anthropic', 'claude-sonnet-5', [])).toEqual({ images: true, pdf: true });
+  });
+});
+
 describe('modelFileParts', () => {
   it('an image goes to a model that takes images as file input, the original bytes inline', async () => {
     const parts = await modelFileParts([ref({})], { images: true, pdf: false }, read);

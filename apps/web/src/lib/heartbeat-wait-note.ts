@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missionNotes } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // One durable note per mission, not one per heartbeat cycle — same "post once,
 // update in place" pattern as mission-run.ts's INTEGRATION_BRANCH_NOTE_TITLE.
@@ -27,11 +28,11 @@ export async function recordHeartbeatWaitNote(
 ): Promise<void> {
   const body = noteBody(reason, waitUntil);
   const existing = await db.query.missionNotes.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(missionNotes.missionId, missionId),
       inArray(missionNotes.title, WAIT_NOTE_TITLES),
       eq(missionNotes.status, 'open'),
-    ),
+    )),
     columns: { id: true, body: true },
   });
 

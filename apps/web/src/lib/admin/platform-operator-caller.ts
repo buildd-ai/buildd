@@ -21,6 +21,7 @@ import { db } from '@buildd/core/db';
 import { users } from '@buildd/core/db/schema';
 import { isPlatformOperator } from '@/lib/platform-operator';
 import { isPlatformAdminAccount } from '@/lib/platform-admin';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface OperatorCandidateAccount {
   id: string;
@@ -32,7 +33,7 @@ export interface OperatorCandidateAccount {
 /** Whether the person with this user id is a platform operator. */
 export async function isPlatformOperatorUserId(userId: string | null | undefined): Promise<boolean> {
   if (!userId) return false;
-  const user = await db.query.users.findFirst({ where: eq(users.id, userId), columns: { email: true } });
+  const user = await db.query.users.findFirst({ where: sqlWhere(eq(users.id, userId)), columns: { email: true } });
   return isPlatformOperator(user);
 }
 

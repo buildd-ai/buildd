@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { probeCoordination } from '@/lib/coordination-probe';
 import { blockingReasons, coordinationHoldBody, readForceStart } from '@buildd/core/waiting-reason';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * GET /api/tasks/[id]/waiting
@@ -37,7 +38,7 @@ export async function GET(
   }
 
   const { id: taskId } = await params;
-  const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
+  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)) });
   if (!task) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
   const allowed = userId
     ? await verifyWorkspaceAccess(userId, task.workspaceId)

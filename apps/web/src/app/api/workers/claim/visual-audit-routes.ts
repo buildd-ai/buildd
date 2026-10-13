@@ -14,6 +14,7 @@ import { tasks } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
 import { auditRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { appendContextBlock } from './context-injection';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const VISUAL_AUDIT_ROUTES_CONTEXT_KEY = 'visualAuditRequiredRoutes';
 
@@ -39,7 +40,7 @@ export async function attachVisualAuditRoutes(
     try {
       const deps = Array.isArray(task.dependsOn) ? (task.dependsOn as string[]) : [];
       const depRows = deps.length > 0
-        ? await db.query.tasks.findMany({ where: inArray(tasks.id, deps), columns: { pathManifest: true, title: true, context: true } })
+        ? await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, deps)), columns: { pathManifest: true, title: true, context: true } })
         : [];
       const routes = auditRequiredRoutes({ context: task.context }, depRows);
       const block = renderVisualAuditRoutes(routes);

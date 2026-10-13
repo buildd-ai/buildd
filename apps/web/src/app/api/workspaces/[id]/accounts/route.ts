@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 const ADMIN_ONLY = 'Only team owners and admins can change which accounts a workspace is connected to.';
@@ -33,7 +34,7 @@ export async function GET(
 
   try {
     const connections = await db.query.accountWorkspaces.findMany({
-      where: eq(accountWorkspaces.workspaceId, id),
+      where: sqlWhere(eq(accountWorkspaces.workspaceId, id)),
       with: {
         account: true,
       },
@@ -88,7 +89,7 @@ export async function POST(
 
     // Verify workspace exists
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
     });
 
     if (!workspace) {
@@ -97,7 +98,7 @@ export async function POST(
 
     // Verify account exists
     const account = await db.query.accounts.findFirst({
-      where: eq(accounts.id, accountId),
+      where: sqlWhere(eq(accounts.id, accountId)),
     });
 
     // An account from another team is reported as missing, not forbidden.
@@ -107,10 +108,10 @@ export async function POST(
 
     // Check if connection already exists
     const existing = await db.query.accountWorkspaces.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(accountWorkspaces.accountId, accountId),
         eq(accountWorkspaces.workspaceId, workspaceId)
-      ),
+      )),
     });
 
     if (existing) {

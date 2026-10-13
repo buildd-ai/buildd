@@ -10,6 +10,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/missions/[id]/notes/[noteId]/reply — reply to a specific note
 export async function POST(
@@ -40,7 +41,7 @@ export async function POST(
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, id),
+    where: sqlWhere(eq(missions.id, id)),
     columns: { id: true, teamId: true, workspaceId: true },
   });
 
@@ -59,10 +60,10 @@ export async function POST(
   try {
     // Verify the parent note exists and belongs to this mission
     const parentNote = await db.query.missionNotes.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(missionNotes.id, noteId),
         eq(missionNotes.missionId, id),
-      ),
+      )),
     });
 
     if (!parentNote) {

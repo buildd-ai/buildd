@@ -5,6 +5,7 @@ import { eq, desc, isNotNull, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * GET /api/workspaces/[id]/last-release
@@ -43,7 +44,7 @@ export async function GET(
         }
         if (apiAccount) {
             const ws = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
+                where: sqlWhere(eq(workspaces.id, id)),
                 columns: { teamId: true },
             });
             // Same check as PATCH /api/workspaces/[id]: the key's own team only;
@@ -57,10 +58,10 @@ export async function GET(
         // updatedAt is set when a task transitions to completed/failed, so it
         // approximates completion time without requiring a worker join.
         const recentReleases = await db.query.tasks.findMany({
-            where: and(
+            where: sqlWhere(and(
                 eq(tasks.workspaceId, id),
                 isNotNull(tasks.releaseResult),
-            ),
+            )),
             columns: {
                 id: true,
                 title: true,
@@ -69,8 +70,10 @@ export async function GET(
                 updatedAt: true,
                 result: true,
             },
-            orderBy: [desc(tasks.updatedAt)],
-            limit: 5,
+            orderBy: sqlOrderBy([desc(tasks.updatedAt)]),
+            // The page folds skipped releases away and lists five that ran,
+            // so read far enough back to find them.
+            limit: 20,
         });
 
         const lastRelease = recentReleases[0] ?? null;

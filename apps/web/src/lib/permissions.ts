@@ -38,6 +38,7 @@ import {
   type TeamRole,
   type TeamScopeCaller,
 } from './permission-registry';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export {
   API_KEY_LEVELS,
@@ -64,11 +65,11 @@ export {
 export const getUserTeamRoles = cache(async (userId: string): Promise<Map<string, TeamRole | string>> => {
   const [memberships, personalTeam] = await Promise.all([
     db.query.teamMembers.findMany({
-      where: eq(schema.teamMembers.userId, userId),
+      where: sqlWhere(eq(schema.teamMembers.userId, userId)),
       columns: { teamId: true, role: true },
     }),
     db.query.teams.findFirst({
-      where: eq(schema.teams.slug, `personal-${userId}`),
+      where: sqlWhere(eq(schema.teams.slug, `personal-${userId}`)),
       columns: { id: true },
     }),
   ]);

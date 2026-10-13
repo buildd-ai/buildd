@@ -241,14 +241,14 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
     case 'blocked':
       return null;
     case 'waiting': return t.waitingFor?.prompt ?? 'Needs input.';
-    case 'running': return t.currentAction ?? `Running${t.runner ? ` on ${t.runner}` : ''}.`;
+    case 'running': return t.currentAction ?? `In progress${t.runner ? ` on ${t.runner}` : ''}.`;
     case 'review': return 'PR open, awaiting merge.';
     case 'ci_failed': return 'CI failed on its PR.';
     case 'fixing': return 'A fix attempt is working on its red PR.';
     case 'failed': return 'The last attempt failed.';
     case 'ready':
       return executor === 'local'
-        ? "Waiting for a local session to claim it. Runners never pick up this mission's tasks."
+        ? 'Ready to start. Claim it from a local session.'
         : 'Ready · next free slot.';
   }
 }

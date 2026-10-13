@@ -58,7 +58,7 @@ describe('dependency blocking — tasks/[id]/page.tsx reads every dep worker', (
   // only the newest worker hid an older worker's open PR, so the page said
   // "All dependencies resolved" while the claim gate and the list said BLOCKED.
   const depQuery = pageSource.slice(
-    pageSource.indexOf('where: inArray(tasks.id, depTaskIds)'),
+    pageSource.indexOf('inArray(tasks.id, depTaskIds)'),
     pageSource.indexOf('// Workers for this task'),
   );
 
@@ -234,16 +234,17 @@ describe('a sign-in failure reads in plain words — tasks/[id]/page.tsx', () =>
 // active, PR worker, attempt numbering) never flip.
 describe('deterministic attempt order — tasks/[id]/page.tsx', () => {
   it('never orders workers by createdAt without an id tiebreak', () => {
-    expect(pageSource).not.toMatch(/orderBy:\s*desc\(workers\.createdAt\)\s*[,}]/);
-    expect(pageSource).not.toMatch(/orderBy:\s*\[\s*desc\(workers\.createdAt\)\s*\]/);
-    const withTiebreak = pageSource.match(/orderBy:\s*\[desc\(workers\.createdAt\), desc\(workers\.id\)\]/g) ?? [];
+    // `(sqlOrderBy\()?`: the same ordering, before and after the relational-query move.
+    expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?desc\(workers\.createdAt\)\)?\s*[,}]/);
+    expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?\[\s*desc\(workers\.createdAt\)\s*\]/);
+    const withTiebreak = pageSource.match(/orderBy:\s*(sqlOrderBy\()?\[desc\(workers\.createdAt\), desc\(workers\.id\)\]/g) ?? [];
     // Four reads: the PR-fact refresh no longer re-fetches workers inline (it runs in after()).
     expect(withTiebreak.length).toBeGreaterThanOrEqual(4);
   });
 
   it('never orders tasks by createdAt without an id tiebreak', () => {
-    expect(pageSource).not.toMatch(/orderBy:\s*asc\(tasks\.createdAt\)\s*[,}]/);
-    expect(pageSource).toMatch(/subTasks:\s*\{\s*columns:\s*\{[^}]*\},\s*orderBy:\s*\[asc\(tasks\.createdAt\), asc\(tasks\.id\)\]/);
+    expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?asc\(tasks\.createdAt\)\)?\s*[,}]/);
+    expect(pageSource).toMatch(/subTasks:\s*\{\s*columns:\s*\{[^}]*\},\s*orderBy:\s*(sqlOrderBy\()?\[asc\(tasks\.createdAt\), asc\(tasks\.id\)\]/);
   });
 
   it('picks latest / active / PR worker from the shared comparator, not from row order', () => {

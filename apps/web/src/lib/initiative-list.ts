@@ -9,6 +9,7 @@ import {
   type InitiativeProgress,
   type MissionSegment,
 } from '@buildd/core/mission-helpers';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * One enriched initiative for the rail/list surfaces. Deliberately light: a
@@ -60,8 +61,8 @@ export async function loadInitiativeList(opts: {
   if (workspaceIdFilter) where = and(where, eq(initiatives.workspaceId, workspaceIdFilter))!;
 
   const results = await db.query.initiatives.findMany({
-    where,
-    orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
+    where: sqlWhere(where),
+    orderBy: sqlOrderBy([desc(initiatives.priority), desc(initiatives.createdAt)]),
     columns: { id: true, title: true, description: true, status: true, priority: true, workspaceId: true, ownerUserId: true, targetDate: true, createdAt: true },
     with: {
       workspace: { columns: { id: true, name: true } },

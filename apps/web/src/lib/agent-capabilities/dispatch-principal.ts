@@ -19,10 +19,11 @@ import {
   hasClaimAuthority,
   ownLiveWorkers,
 } from './principal';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function loadTask(taskId: string) {
   return db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, workspaceId: true, backend: true, context: true },
     with: {
       workspace: {
@@ -85,7 +86,7 @@ export async function resolveDispatchPrincipal(
   const { task, workspace: ws } = resolved;
 
   const rows = await db.query.workers.findMany({
-    where: and(eq(workers.taskId, input.taskId), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+    where: sqlWhere(and(eq(workers.taskId, input.taskId), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
     columns: { id: true, accountId: true, workspaceId: true, status: true, taskId: true, branch: true },
   });
   const mine = ownLiveWorkers(rows, { taskId: input.taskId, workspaceId: ws.id, accountId: account.id, workerId: input.workerId });

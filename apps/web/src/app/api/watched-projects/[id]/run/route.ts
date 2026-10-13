@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { runWatcherForProject } from '@/lib/health-watcher';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -14,7 +15,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: `Invalid watched project id: expected a UUID, got "${id}".` }, { status: 404 });
   }
   const row = await db.query.watchedProjects.findFirst({
-    where: eq(watchedProjects.id, id),
+    where: sqlWhere(eq(watchedProjects.id, id)),
   });
   if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 

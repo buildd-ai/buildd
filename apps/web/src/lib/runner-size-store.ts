@@ -8,6 +8,7 @@ import { artifacts, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, like, sql } from 'drizzle-orm';
 import { isRunnerSize, type RunnerSize } from '@buildd/shared';
 import { RECENT_REPORTS, resolveRunnerSize, type RunnerSizeDecision, type RunnerSizeDerived } from './runner-size';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Mirrors RUN_REPORT_KEY_PREFIX in apps/cloud-runner/src/run-report.ts. */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -59,7 +60,7 @@ export async function resolveWorkspaceRunnerSize(
  */
 export async function runnerSizeOfWorker(workspaceId: string, workerId: string): Promise<RunnerSize | null> {
   const row = await db.query.artifacts.findFirst({
-    where: and(eq(artifacts.workspaceId, workspaceId), eq(artifacts.key, `${RUN_REPORT_KEY_PREFIX}:${workerId}`)),
+    where: sqlWhere(and(eq(artifacts.workspaceId, workspaceId), eq(artifacts.key, `${RUN_REPORT_KEY_PREFIX}:${workerId}`))),
     columns: { metadata: true },
   });
   const size = (row?.metadata as { report?: { runnerSize?: { size?: unknown } } } | null)?.report?.runnerSize?.size;

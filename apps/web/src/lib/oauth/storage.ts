@@ -9,6 +9,7 @@ import {
   REFRESH_TOKEN_BYTES,
   REFRESH_TOKEN_TTL_SECONDS,
 } from './config';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 function randomToken(bytes: number): string {
   return randomBytes(bytes).toString('base64url');
@@ -257,12 +258,12 @@ export async function consumeRefreshToken(args: {
 /** True when the user has a team_members row on the workspace's team. */
 export async function userHasWorkspaceMembership(userId: string, workspaceId: string): Promise<boolean> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   if (!ws) return false;
   const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, ws.teamId), eq(teamMembers.userId, userId)),
+    where: sqlWhere(and(eq(teamMembers.teamId, ws.teamId), eq(teamMembers.userId, userId))),
     columns: { role: true },
   });
   return !!membership;

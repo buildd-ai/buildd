@@ -109,6 +109,18 @@ function attended(client, env) {
   return !(typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' && env.CLAUDE_CODE_ENTRYPOINT.startsWith('sdk'));
 }
 
+/**
+ * Whether a UserPromptSubmit is a person typing. Claude Code also fires it to
+ * wake the model when a background command finishes, with a synthetic prompt
+ * that opens `<task-notification>` and no other field to tell the two apart
+ * (docs/specs/terminal-question-redirect.md). The prompt is read here and
+ * never sent.
+ */
+function personTyped(client, prompt) {
+  return client === 'claude' && typeof prompt === 'string' && prompt.trim() !== ''
+    && !prompt.trimStart().startsWith('<task-notification>');
+}
+
 function normalizeClaudeLike(client, p, env) {
   const clientSessionId = typeof p.session_id === 'string' ? p.session_id : null;
   if (!clientSessionId) return null;
@@ -122,7 +134,11 @@ function normalizeClaudeLike(client, p, env) {
       // Every event that can create the presence carries the flag: a session
       // outside a workspace repo sends no start, so its first event is a bind
       // (or a touch healing a missed start). A prompt starts a turn: `busy`.
-      return { ...base, event: 'touch', busy: true, interactive: attended(client, env) };
+      // A person typing (`prompted`) answers an open ask_human question at the
+      // terminal, so that touch is never throttled.
+      return personTyped(client, p.prompt)
+        ? { ...base, event: 'touch', busy: true, interactive: attended(client, env), prompted: true, force: true }
+        : { ...base, event: 'touch', busy: true, interactive: attended(client, env) };
     // A tool is about to run. A long command fires nothing until it returns,
     // so the session says it is inside a turn first; buildd keeps its claims
     // while it is (up to a hard backstop). Only a flip is sent at once.
@@ -390,6 +406,7 @@ export function buildBody(client, n, repo, usage = null) {
     ...(n.event === 'bind' ? { workerId: n.workerId } : {}),
     ...(n.event === 'end' ? { reason: n.reason } : {}),
     ...(n.event === 'touch' && typeof n.busy === 'boolean' ? { busy: n.busy } : {}),
+    ...(n.event === 'touch' && n.prompted === true ? { prompted: true } : {}),
     ...(n.event === 'start' && n.continuesSessionId ? { continuesSessionId: n.continuesSessionId } : {}),
     ...(usage && (n.event === 'touch' || n.event === 'end') ? { usage } : {}),
   };
@@ -652,7 +669,24 @@ export function collectUsage(prev, transcriptPath, claims, claimedAt) {
  * turn (Stop: block once so the agent collects it before stopping, never
  * again while `stop_hook_active`, so it cannot loop). Cursor stays queued-only.
  */
-export function hookOutput(client, hookEventName, result, payload = null) {
+/**
+ * Why AskUserQuestion was refused, for the model: ask through buildd instead,
+ * and keep the terminal a place to answer. docs/specs/terminal-question-redirect.md
+ */
+export function askRedirectReason(workerId) {
+  return `This session is working buildd task worker ${workerId.slice(0, 8)}, so ask through buildd, where the person can answer from any device: `
+    + `call buildd ask_human { workerId: "${workerId}", question, options } with the same question and its options as options (one question per call), `
+    + `then run the waitCommand it returns as a Bash command with run_in_background: true and read the answer with await_answer { waitSeconds: 0 } when it exits. `
+    + `Also write the question in your reply, so a person at this terminal can answer by typing; if they do, use that answer (buildd withdraws the open question).`;
+}
+
+export function hookOutput(client, hookEventName, result, payload = null, mode = null) {
+  // The AskUserQuestion entry (ask mode) prints a deny or nothing at all.
+  if (mode === 'ask') {
+    const workerId = result?.askVia?.workerId;
+    if (client !== 'claude' || hookEventName !== 'PreToolUse' || typeof workerId !== 'string' || !UUID_RE.test(workerId)) return '';
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: askRedirectReason(workerId) } });
+  }
   if (client === 'cursor') return hookEventName === 'sessionStart' ? '{}' : '';
   if (!result?.pendingInstructions) return '';
   const nudge = `Buildd has an unread message for the task this session claimed${typeof result.taskId === 'string' ? ` (${result.taskId.slice(0, 8)})` : ''}. Call buildd receive_messages to read it.`;
@@ -680,11 +714,18 @@ async function readStdin() {
   });
 }
 
-export async function run({ client, stdin, env = process.env, fetchImpl = globalThis.fetch, now = Date.now() }) {
+export async function run({ client, stdin, env = process.env, fetchImpl = globalThis.fetch, now = Date.now(), mode = null }) {
   if (env.BUILDD_HOOKS_DISABLED === '1') return { sent: false, why: 'disabled', output: '' };
   let payload;
   try { payload = JSON.parse(stdin || '{}'); } catch { return { sent: false, why: 'bad_payload', output: '' }; }
   const hookEventName = payload?.hook_event_name;
+  // Ask mode: the synchronous AskUserQuestion entry. It only ever redirects
+  // the terminal question of a session holding a claim, and fails open
+  // (prints nothing) on anything else. docs/specs/terminal-question-redirect.md
+  const ask = mode === 'ask';
+  if (ask && (client !== 'claude' || hookEventName !== 'PreToolUse' || payload?.tool_name !== 'AskUserQuestion' || env.BUILDD_ASK_IN_TERMINAL === '1')) {
+    return { sent: false, why: 'ask_not_applicable', output: '' };
+  }
   const n = normalizeHookEvent(client, payload, env);
   if (!n) return { sent: false, why: 'ignored', output: hookOutput(client, hookEventName, null) };
   const auth = resolveAuth(env);
@@ -706,6 +747,11 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
         ...(prev.usage && !state.usage ? { usage: prev.usage } : {}),
       };
     }
+  }
+  if (ask) {
+    if (!state.claims || Object.keys(state.claims).length === 0) return { sent: false, why: 'no_claim', output: '' };
+    // The deny hangs on buildd's answer, so this touch always goes.
+    n.force = true;
   }
   if (shouldSkip(n.event, state, now, n.force === true || busyFlips(n, state))) return { sent: false, why: 'throttled', output: hookOutput(client, hookEventName, null) };
 
@@ -777,14 +823,14 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
   if (n.event === 'end' && n.reason === 'clear' && Object.keys(claims).length > 0) {
     writeClearHandoff(env, client, n.cwd, n.clientSessionId, now);
   }
-  return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result, payload) };
+  return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result, payload, ask ? 'ask' : null) };
 }
 
 async function main() {
   const client = process.argv[2];
   try {
     const stdin = await readStdin();
-    const r = await run({ client, stdin });
+    const r = await run({ client, stdin, mode: process.argv[3] === 'ask' ? 'ask' : null });
     if (r.output) process.stdout.write(r.output);
     debug(r.why ?? (r.ok ? 'ok' : 'failed'), r.body?.event ?? '');
   } catch (err) {

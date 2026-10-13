@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '../db/sql-grouping';
 
 /**
  * Admin writes for tier pools. Each traffic change must be ONE statement that
@@ -20,7 +20,7 @@ mock.module('../db/client', () => ({
 }));
 
 const admin = await import('../tier-pool-admin');
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 const render = (q: any) => {
   const r = dialect.sqlToQuery(q);
   return { sql: r.sql.replace(/\s+/g, ' ').trim(), params: r.params };
