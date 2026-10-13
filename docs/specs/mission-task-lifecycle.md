@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-13
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -1999,7 +1999,8 @@ then `blocked` with the owner as next actor; a named capture setup error
 (`protection_bypass_missing`, `app_auth_not_configured`, `preview_unavailable`)
 and a local executor go to the owner at once and are never retried; with no
 browser runner online the review is still filed (the next runner to connect
-takes it) and the state names the owner. A product finding is never a retry:
+takes it) and reads as "Waiting for a browser", a system wait that raises no
+Needs You and no "Report a Buildd problem" (see Known limits). A product finding is never a retry:
 it is a `[surface fix]`, and the fix merging moves the head, which re-files the
 review before the merge. Under `ask` and `off` nothing is filed.
 
@@ -2050,7 +2051,34 @@ stage from phases, audit tasks or changed-file lists.
   offered only beside a real owner decision where the policy allows it, never
   under `strict`.
 
+**Verified end to end.** `workflow/visual-review-flow.test.ts`, over the
+in-memory mission in `visual-review-flow.fake-db.ts`, drives one mission's life
+through the production chain (impact, state, schedule, ready-to-merge,
+presentation) for: a no-render diff skipping automatically; a stylesheet, token,
+route screen or risky flow always owing a review without asking Jev; an
+ambiguous change going to Jev and failing safe; review before the integration
+PR merges; a finding repaired and re-reviewed on the fixed commit; a changed
+head invalidating the pass; bounded retries then the owner; strict, automatic,
+ask and off with team, workspace and mission inheritance and the legacy
+`autoSurfaceAudit` mapping; the completion record; post-merge recovery; no
+Needs You from an ordinary review; task PRs unaffected; feature vs
+direct-to-trunk. `ready-to-merge.test.ts` pins that every merge door calls the
+guard.
+
+**Known limits.**
+- The end-to-end suite covers the pure chain. The SQL and GitHub loaders
+  (`visual-review-state-load.ts`, `visual-review-impact-load.ts`) and
+  `guardMissionPrMerge`'s wiring are covered by their own tests, not by it.
+- A direct-to-trunk mission has no integration head, so it is never assessed
+  and its canonical state stays `optional`; its completion is held only by the
+  older surface-audit gate.
+- "No browser runner" has no timer: the review waits in the queue indefinitely
+  and the state never escalates to the owner on its own (retries only count
+  failed audits).
+- Under `ask` the scheduler files nothing, so a mission waits on the owner's
+  Run with no timer.
+
 **Not yet wired.** The completion gate and the audit-creation hooks still read
 `autoSurfaceAudit` and the two older gates; moving them onto the canonical state
 and policy is follow-up work. The waiver note does not yet store the policy in
-effect when it was written; the record shows the policy resolved now.
+effect when it was written; the record shows the policy resolved now. The audit-creation hook (`ensureMissionSurfaceAudit`) honours only `autoSurfaceAudit = false`, so a workspace-level `off` does not stop it filing an audit at task creation; the scheduler and the merge gate do honour `off`.

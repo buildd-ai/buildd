@@ -150,6 +150,10 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
         owner, needsYou: true, canWaive: state.policy.waiverAllowed, problem: 'system', report: REPORT,
       };
     }
+    // Nothing failed and nothing retries: the review is queued and the next browser runner to connect takes it.
+    if (state.blocked.cause === 'no_browser_runner') {
+      return { ...quiet, ...common, stage: 'blocked', tone: 'info', label: copy.label, detail: `${copy.detail} It starts when one connects.`, showPanel: true, problem: 'system' };
+    }
     return {
       ...quiet, ...common, stage: 'blocked', tone: 'info', label: 'Retrying the visual check',
       detail: 'Something on our side failed. It tries again automatically.', showPanel: true, problem: 'system', report: REPORT,
