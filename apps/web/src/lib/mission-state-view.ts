@@ -651,6 +651,8 @@ export interface MissionCompletionSummary {
   visualReviewHold?: { cells: number; roundCapOpen: boolean; enforced: boolean } | null;
   /** The rendered UI files behind `surface_audit_missing`. */
   surfaceAuditPaths?: string[];
+  /** Who clears `surface_audit_missing`, as the completion gate decided it (policy, executor, prior audits). */
+  surfaceAuditActor?: 'system' | 'owner';
 }
 
 // ─── The situation line ───────────────────────────────────────────────────────
@@ -954,7 +956,8 @@ function resolve(input: MissionStateInput): Resolution {
   }
 
   // 9¾. The mission changed UI and nothing has looked at it
-  //     (`surface_audit_missing`). The owner either runs the audit or waives it.
+  //     (`surface_audit_missing`). Under `automatic` / `strict` the system files
+  //     and runs the audit (a wait); otherwise the owner runs or waives it.
   const surface = surfaceAuditFact(input);
   if (surface) return surface;
 
@@ -1539,7 +1542,11 @@ function visualReviewFact(input: MissionStateInput): Resolution | null {
 /** Rule 9¾ — completion refused for want of a surface audit on a UI change. */
 function surfaceAuditFact(input: MissionStateInput): Resolution | null {
   if (input.completion?.code !== 'surface_audit_missing') return null;
-  if (input.visualReviewActor && input.visualReviewActor !== 'owner') {
+  // Either reading may name the system; either naming the owner keeps it the owner's.
+  const gateActor = input.completion.surfaceAuditActor;
+  const reviewActor = input.visualReviewActor;
+  const systemActs = gateActor !== 'owner' && reviewActor !== 'owner' && (gateActor === 'system' || !!reviewActor);
+  if (systemActs) {
     return {
       kind: 'waiting',
       waitingOn: {
