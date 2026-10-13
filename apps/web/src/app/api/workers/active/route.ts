@@ -237,6 +237,8 @@ export async function GET(req: NextRequest) {
           // instead of something inferred from boot age.
           updateAvailableSince: hb.updateAvailableSince ?? null,
           trackedBranch: hb.trackedBranch || null,
+          // Which model login the runner reported (a label, never a credential).
+          modelAuthSource: hb.modelAuthSource ?? null,
           // Only meaningful for a `main`-tracking runner (Vercel deploys from
           // `main` only) with both sides known; otherwise null, not a guess.
           upToDateWithDeployed: hb.trackedBranch === 'main' && hb.diskCommit && deployedSha

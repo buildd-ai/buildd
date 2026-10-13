@@ -3232,6 +3232,11 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.
   trackedBranch: text('tracked_branch'),
+  // Which model login this runner's agents use, as the runner reports it
+  // (docs/specs/runner-model-auth-source.md). A label from a fixed list, never
+  // a credential; null = not reported (older runner).
+  modelAuthSource: text('model_auth_source').$type<'machine_token' | 'machine_login' | 'api_key' | 'none'>(),
+  modelAuthMode: text('model_auth_mode').$type<'auto' | 'prefer' | 'off'>(),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
