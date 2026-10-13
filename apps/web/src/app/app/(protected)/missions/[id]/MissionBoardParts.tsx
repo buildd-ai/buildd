@@ -2,11 +2,9 @@
 
 /**
  * Pieces the mission Board and Lanes share: the live overlay, the clock, the
- * scope chip, the runner avatar, a criterion box, the landed meter and the
- * inline answer to a waiting agent's question.
+ * scope chip, the runner avatar, a criterion box and the landed meter.
  */
-import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
 import { runnerInitial } from '@/lib/runner-display';
 import { BOARD_LANDED, type BoardCriterion, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
@@ -14,8 +12,6 @@ import {
   stripKeyTarget, stripTick, stripTone, type StripMark, type StripSlot, type StripState, type StripTone,
 } from '@/lib/mission-task-strip';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
-import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
-import { answerOutcomeLines } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
 
 // ── Time ─────────────────────────────────────────────────────────────────────
 
@@ -414,89 +410,4 @@ export interface BoardLinkContext {
 /** The task sheet link: a real href, opened by TaskPanelWrapper's `data-task-id` handler. */
 export function taskSheetHref(ctx: BoardLinkContext, taskId: string): string {
   return missionTaskHref({ missionId: ctx.missionId, taskId, from: ctx.from ?? null, initiativeId: ctx.initiativeId ?? null, mode: 'sheet' });
-}
-
-// ── Answering a waiting agent ────────────────────────────────────────────────
-
-/**
- * Inline answer buttons for a waiting agent: one per option (the first is
- * primary), then `Reply…` for a free-text answer. Posts to the same respond
- * endpoint the task page uses, which resumes or continues the session.
- */
-export function AnswerButtons({ workerId, options, compact = false }: { workerId: string | null; options: readonly string[]; compact?: boolean }) {
-  const router = useRouter();
-  const [replying, setReplying] = useState(false);
-  const [text, setText] = useState('');
-  const [lastTried, setLastTried] = useState<string | null>(null);
-  const onAnswered = useCallback(() => router.refresh(), [router]);
-  const { submit, sending, outcome, error } = useAnswerSubmit({ workerId, resetKey: workerId ?? '', onAnswered });
-
-  function send(message: string) {
-    setLastTried(message.trim());
-    void submit(message);
-  }
-
-  if (outcome) {
-    const lines = answerOutcomeLines(outcome);
-    return (
-      <p data-testid="board-answer-sent" data-outcome={outcome.kind} className="font-mono text-[12px] text-status-success [overflow-wrap:anywhere]">
-        {`✓ ${lines.headline}`}
-        {lines.detail && <span className="block text-text-secondary">{lines.detail}</span>}
-        <span className="block text-text-muted">Answer sent, waiting for the agent</span>
-      </p>
-    );
-  }
-
-  const btn = `inline-flex ${compact ? 'h-[30px] px-3 text-[12px]' : 'h-8 px-3.5 text-[12.5px]'} items-center border-[1.5px] font-mono font-semibold disabled:opacity-50`;
-  return (
-    <div className="flex min-w-0 flex-col gap-2">
-      <div data-testid="board-answer-options" className="flex flex-wrap items-center gap-1.5">
-        {options.map((o, i) => (
-          <button
-            key={o}
-            type="button"
-            disabled={sending !== null}
-            onClick={() => send(o)}
-            className={`${btn} ${i === 0 ? 'border-accent bg-accent text-white hover:bg-primary-hover' : 'border-border-strong bg-surface-3 text-text-primary hover:bg-surface-4'}`}
-          >
-            {sending === o.trim() ? 'Sending…' : shortOption(o)}
-          </button>
-        ))}
-        {!replying && (
-          <button type="button" onClick={() => setReplying(true)} className={`${btn} border-[var(--fleet-border-mid)] bg-transparent text-text-primary hover:bg-surface-3`}>
-            Reply…
-          </button>
-        )}
-      </div>
-      {replying && (
-        <form
-          className="flex gap-1.5"
-          onSubmit={e => { e.preventDefault(); send(text); }}
-        >
-          <input
-            autoFocus
-            value={text}
-            onChange={e => setText(e.target.value)}
-            placeholder="Your answer…"
-            className="min-w-0 flex-1 border border-border-default bg-surface-1 px-2.5 py-1.5 font-mono text-base md:text-[12px] text-text-primary placeholder:text-text-muted focus:border-primary"
-          />
-          <button type="submit" disabled={!text.trim() || sending !== null} className={`${btn} border-border-strong bg-surface-3 text-text-primary`}>{sending !== null && sending === text.trim() ? 'Sending…' : 'Send'}</button>
-        </form>
-      )}
-      {error && (
-        <p className="font-mono text-[12px] text-status-error">
-          {error.message}
-          {lastTried && sending === null && (
-            <>{' '}<button type="button" onClick={() => send(lastTried)} className="underline hover:no-underline">Retry</button></>
-          )}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/** "Per line — match Stripe" → "Per line": the button says the choice; the prompt says why. */
-export function shortOption(o: string): string {
-  const cut = o.split(/\s[—–-]\s/)[0].trim();
-  return cut.length >= 2 ? cut : o;
 }

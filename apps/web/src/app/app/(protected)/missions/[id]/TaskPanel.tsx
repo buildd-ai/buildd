@@ -27,6 +27,7 @@ import TaskActionZone from './TaskActionZone';
 import CollapsibleDescription from '@/app/app/(protected)/tasks/[id]/CollapsibleDescription';
 import type { EntitlementBlock } from '@buildd/shared';
 import type { WaitingFor } from '@buildd/shared';
+import type { QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
 export interface TaskPanelData {
   id: string;
@@ -89,6 +90,11 @@ export interface TaskPanelData {
   } | null;
   /** A visual-audit task: its round and the mission's review model (the sheet's Tray). */
   visual?: { round: number; model: VisualReviewModel } | null;
+  /**
+   * The open question note recording the waiting worker's ask (the post_note
+   * path), as the task page links it. Absent from older responses.
+   */
+  questionNote?: QuestionNoteLike | null;
 }
 
 /** Records and Origin: what the task produced and where it came from (W4, U6). */
@@ -324,7 +330,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         lastError={data.lastError}
         failureKind={data.failureKind ?? null}
         auditTaskId={data.failureKind === 'verification' && isSurfaceAuditTask(data.title) ? data.id : null}
-        worker={w ? { id: w.id, waitingFor: w.waitingFor } : null}
+        worker={w ? { id: w.id, waitingFor: w.waitingFor, questionNote: data.questionNote ?? null } : null}
         historyHref={taskPageHref({ taskId: data.id, missionId: data.missionId })}
         roleSlug={data.roleSlug}
         missionExecutor={data.missionExecutor ?? null}
