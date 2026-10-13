@@ -159,7 +159,21 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   // Modules react (the knowledge index), after the response: the approval has
   // committed, and emit never throws, so nothing there undoes it.
   const workspaceId = after.workspaceId;
-  specApprovalDeps.afterResponse(() => emit({ type: 'spec.approved', specId, workspaceId, revision: n }));
+  // A native-sourced spec (§18, R-15) also gets its repo copy's PR written; a
+  // workspace that has not opted in gets nothing (fileSpecRepoCopy returns null, AC-78).
+  // After the index, in the same task: emit never throws, and the copy reads
+  // nothing the index writes, so the order only keeps one task per approval.
+  // Work built ahead of approval (§20, R-39): every provisional pin on this
+  // spec re-pins to n and is re-graded there, after the index (emit never
+  // throws) and before the repo copy, on its own: a repo copy that fails must
+  // not leave shipped work ungraded.
+  specApprovalDeps.afterResponse(async () => {
+    await emit({ type: 'spec.approved', specId, workspaceId, revision: n });
+    const { regradeProvisionalPins } = await import('./provisional');
+    await regradeProvisionalPins(specId, n).catch((e) => console.error(`[spec-approval] provisional re-grade for ${specId} failed:`, e));
+    const { fileSpecRepoCopy } = await import('./repo-copy');
+    await fileSpecRepoCopy(specId);
+  });
   return { ok: true, spec: after, revision };
 }
 

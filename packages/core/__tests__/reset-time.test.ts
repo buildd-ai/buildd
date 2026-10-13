@@ -188,6 +188,13 @@ describe('matchResetClause', () => {
     expect(matchResetClause('resets 3am (PST)')).toEqual({ time: '3am', timezone: 'PST' });
   });
 
+  it('captures the date of a weekly reset that names one', () => {
+    expect(matchResetClause("You've hit your weekly limit · resets Oct 16, 4am (UTC)"))
+      .toEqual({ time: '4am', timezone: 'UTC', date: { month: 9, day: 16 } });
+    expect(matchResetClause('resets Jan 2 11:30pm (UTC)'))
+      .toEqual({ time: '11:30pm', timezone: 'UTC', date: { month: 0, day: 2 } });
+  });
+
   it('is null when no reset clause is present', () => {
     expect(matchResetClause('hit your usage limit')).toBeNull();
     expect(matchResetClause('resets soon')).toBeNull();
@@ -235,5 +242,32 @@ describe('module boundary', () => {
     const now = at('12:00');
     expect(extractResetTime('resets 8:20pm (UTC)', { now })?.toISOString())
       .toBe('2026-01-13T20:20:00.000Z');
+  });
+});
+
+describe('extractResetTime with a dated reset', () => {
+  // Regression: "resets Oct 16, 4am (UTC)" matched no clause, so the worker
+  // route fell back to now + 5h and the runner burned a task every five hours
+  // until the weekly limit actually reset.
+  const error = "Claude Code returned an error result: You've hit your weekly limit · resets Oct 16, 4am (UTC)";
+
+  it('returns the stated date and time, days away', () => {
+    const now = new Date('2026-10-13T20:57:33.000Z');
+    expect(extractResetTime(error, { now })?.toISOString()).toBe('2026-10-16T04:00:00.000Z');
+  });
+
+  it('rolls into next year when the date already went by this year', () => {
+    const now = new Date('2026-12-30T10:00:00.000Z');
+    expect(extractResetTime('resets Jan 2, 4am (UTC)', { now })?.toISOString()).toBe('2027-01-02T04:00:00.000Z');
+  });
+
+  it('a dated reset that just passed reads as passed, not as next year', () => {
+    const now = new Date('2026-10-16T04:30:00.000Z');
+    expect(extractResetTime(error, { now })?.toISOString()).toBe('2026-10-16T04:00:00.000Z');
+  });
+
+  it('refuses a dated reset in a timezone it will not guess at', () => {
+    const now = new Date('2026-10-13T20:57:33.000Z');
+    expect(extractResetTime('resets Oct 16, 4am (PST)', { now })).toBeNull();
   });
 });

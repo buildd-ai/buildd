@@ -21,6 +21,10 @@
  * read_ref reads one of them at that commit, bounded, over
  * GET /api/specs/[id]/repo-ref.
  *
+ * attach_provisional pins finished tasks to the revision they were built
+ * against (POST /api/specs/[id]/provisional), so a later approval grades them:
+ * a person's or an admin token's act, never an agent run's.
+ *
  * diff (read-only) says what changed between two revisions, over
  * GET /api/specs/[id]/diff: sections added, removed and changed, then a capped
  * unified line diff of them.
@@ -79,6 +83,35 @@ export function outcomeText(o: Outcome): string {
   const head = o.currentHeadSha ? o.currentHeadSha.slice(0, 12) : 'no PR head yet';
   const rows = o.criteria.map((c) => `  ${c.criterionId}: ${c.verdict ?? 'no verdict'}${c.verdict && c.stale ? ` (on ${String(c.headSha).slice(0, 12)}, not the current head)` : ''}`);
   return [`Governed outcome: ${o.outcome.toUpperCase()} against spec revision ${o.revision}, head ${head}. ${o.reason}.`, ...rows].join('\n');
+}
+
+type OrganizeRow = { specId: string; title: string; p: number | null; answer?: string; newArea?: { title: string } };
+type OrganizeReply =
+  | { mode: 'taxonomy'; dryRun: true; specs: number; proposal: { product: { title: string }; areas: Array<{ key: string; title: string; charter: string; members: Array<{ specId: string; title: string }> }> } }
+  | { mode: 'taxonomy'; dryRun: false; product: { title: string } | null; created: Array<{ key: string; title: string; specId: string; filed: number }>; refused: Array<{ key: string; title: string; reason: string }> }
+  | { mode: 'sweep'; dryRun: boolean; scanned: number; remaining: number; skipped: number; classifier: string | null; groups: Array<{ label: string; area: { specId: string } | null; filed: OrganizeRow[]; suggested: OrganizeRow[] }> };
+
+const pText = (p: number | null) => (p === null ? '' : `, p ${p.toFixed(2)}`);
+
+/** An organize run in words: the proposal or the batch, grouped by area. */
+export function organizeText(r: OrganizeReply): string {
+  if (r.mode === 'taxonomy' && r.dryRun) {
+    const areas = r.proposal.areas.map((a) => `- ${a.title} [key ${a.key}] (${a.members.length} spec${a.members.length === 1 ? '' : 's'})\n  ${a.charter}\n${a.members.slice(0, 8).map((m) => `    · ${m.title} (${m.specId})`).join('\n')}${a.members.length > 8 ? `\n    · and ${a.members.length - 8} more` : ''}`);
+    return [`Proposed taxonomy for ${r.specs} spec(s) (nothing created): product "${r.proposal.product.title}" and ${r.proposal.areas.length} area(s).`, ...areas,
+      'Show it to a person. To create it: organize { dryRun: false }, optionally areas: [keys] for part of it and edits: { [key]: { title, charter } }.'].join('\n');
+  }
+  if (r.mode === 'taxonomy') {
+    return [`Taxonomy created${r.product ? ` under product "${r.product.title}"` : ''}:`, ...r.created.map((c) => `- ${c.title} (${c.specId}): ${c.filed} spec(s) filed`),
+      ...r.refused.map((x) => `- not created: ${x.title}: ${x.reason}`)].join('\n');
+  }
+  const head = `${r.dryRun ? 'Dry run (nothing written)' : 'Organized'}: ${r.scanned} unfiled spec(s) looked at${r.remaining ? `, ${r.remaining} left for the next run` : ''}${r.skipped ? `, ${r.skipped} already placed or reviewed` : ''}.`;
+  if (!r.groups.length) return `${head}${r.classifier ? `\nNo area answer: ${r.classifier}.` : ''}\nNothing to file or suggest.`;
+  const groups = r.groups.map((g) => [
+    `${g.label}${g.area ? ` (${g.area.specId})` : ''}:`,
+    ...g.filed.map((x) => `  filed${r.dryRun ? ' (would be)' : ''}: ${x.title} (${x.specId})${pText(x.p)}`),
+    ...g.suggested.map((x) => `  suggested: ${x.title} (${x.specId})${pText(x.p)}${x.newArea ? `, a new area like "${x.newArea.title}"` : ''}`),
+  ].join('\n'));
+  return [head, ...groups, r.classifier ? `Some answers fell back to similarity: ${r.classifier}.` : '', r.dryRun ? 'Run organize { dryRun: false } to apply it; every filing can be undone on the spec page.' : 'Each filing shows "Filed by buildd" with undo on its spec page.'].filter(Boolean).join('\n');
 }
 
 export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null, appBase = 'https://buildd.dev'): Promise<ToolResult> {
@@ -257,6 +290,28 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       return text(`Comments readable on revision ${r.revision}:\n${rows.map((c) => `  ${c.parentCommentId ? '  ↳ ' : ''}[${c.state}] ${c.anchor.kind === 'criterion' ? c.anchor.id : `"${c.anchor.label}"`} (r${c.madeOnRevision}, ${c.author.kind}, ${c.id}): ${c.body.length > 300 ? `${c.body.slice(0, 300)}…` : c.body}`).join('\n')}`);
     }
 
+    case 'metadata': {
+      // The metadata block (living-specs.md §18, R-31): read it, or change
+      // fields with a reason. Never a new revision; write access is enough.
+      const specId = need(params.specId, 'specId');
+      const path = `/api/specs/${encodeURIComponent(specId)}/metadata`;
+      if (params.changes === undefined) {
+        const r = await api(path);
+        const rows = (r.changes ?? []) as Array<{ field: string; previousValue: unknown; newValue: unknown; reason: string; changedByKind: string; createdAt: string }>;
+        return text([`Metadata: ${JSON.stringify(r.metadata ?? {})}`, ...rows.slice(0, 20).map((c) => `  ${c.createdAt.slice(0, 10)} ${c.field}: ${JSON.stringify(c.previousValue)} -> ${JSON.stringify(c.newValue)} (${c.changedByKind}: ${c.reason})`)].join('\n'));
+      }
+      try {
+        const r = await api(path, { method: 'PATCH', body: JSON.stringify({ changes: params.changes, reason: params.reason }) });
+        return text(r.changed?.length
+          ? `Metadata updated (${r.changed.join(', ')}). The version (${r.spec.version}) and the approved revision did not change; a native-sourced spec's repo copy PR is updated.`
+          : 'Nothing changed: the metadata already says that.');
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
     case 'read_ref': {
       const specId = need(params.specId, 'specId');
       const q = new URLSearchParams({ path: need(params.path, 'path') });
@@ -297,6 +352,39 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'attach_provisional': {
+      // Building ahead of approval (living-specs.md §20, R-43): a person's or an
+      // admin token's act; an agent run gets the route's 403, passed through.
+      const specId = need(params.specId, 'specId');
+      try {
+        const r = await api(`/api/specs/${encodeURIComponent(specId)}/provisional`, { method: 'POST', body: JSON.stringify({ revision: params.revision, taskIds: params.taskIds }) });
+        const rows = (r.results ?? []) as Array<{ taskId: string; attached: boolean; reason?: string }>;
+        const regraded = (r.regraded ?? []) as Array<{ taskId: string; to: number }>;
+        return text([
+          `Revision ${r.revision}${r.provisional ? ' (not approved: pinned provisionally, a later approval re-grades the work)' : ' (approved: pinned to it)'}:`,
+          ...rows.map((x) => `  ${x.taskId}: ${x.attached ? 'attached' : `not attached, ${x.reason ?? 'refused'}`}`),
+          ...(regraded.length ? [`Re-graded at once against approved revision ${regraded[0].to}: ${regraded.length} task(s).`] : []),
+        ].join('\n'));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 403, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'organize': {
+      if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
+      const payload: Record<string, unknown> = { workspaceId };
+      for (const k of ['dryRun', 'limit', 'areas', 'edits'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      try {
+        return text(organizeText(await api('/api/specs/organize', { method: 'POST', body: JSON.stringify(payload) })));
+      } catch (err) {
+        const e = apiError(err);
+        if (e?.status === 400 || e?.status === 409) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }

@@ -2,11 +2,11 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { specListView } from '@/lib/specs/page-view';
-import SpecList from '@/components/SpecList';
+import SpecIndex from '@/components/SpecIndex';
 
 export const dynamic = 'force-dynamic';
 
-/** A workspace's Living Specs as a tree (living-specs.md §9). Read-only. */
+/** A workspace's Living Specs: a cluster map above an outline by product and area (living-specs.md §19). */
 export default async function WorkspaceSpecsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const user = await getCurrentUser();
@@ -22,7 +22,7 @@ export default async function WorkspaceSpecsPage({ params }: { params: Promise<{
           </Link>
           <h1 className="text-xl font-semibold text-text-primary">Specs</h1>
         </header>
-        <SpecList specs={view.specs} />
+        <SpecIndex specs={view.index} options={{ now: view.now, proposals: view.proposals }} workspaceId={view.workspace.id} canAct={view.canAct} />
       </div>
     </main>
   );

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers, workerErrorTraces } from '@buildd/core/db/schema';
-import { eq, desc, inArray } from 'drizzle-orm';
+import { tasks, workers, workerErrorTraces, missionNotes } from '@buildd/core/db/schema';
+import { and, asc, eq, desc, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { isGateSatisfied } from '@/lib/task-presentation';
@@ -18,6 +18,7 @@ import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import type { WaitingFor } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { linkQuestionNote } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -233,6 +234,27 @@ export async function GET(
       ).length;
     }
 
+    // The open question note recording the same ask as the worker's
+    // waitingFor (the post_note path), linked as the task page links it. The
+    // sheet's question card leads with it and marks it answered alongside the
+    // worker. Read only while a question is waiting.
+    let questionNote: {
+      id: string; workerId: string | null; type: string; status: string;
+      title: string; body: string | null; defaultChoice: string | null; createdAt: Date | string | null;
+    } | null = null;
+    if (worker?.waitingFor) {
+      const openQuestions = await db.query.missionNotes.findMany({
+        where: sqlWhere(and(
+          eq(missionNotes.taskId, id),
+          eq(missionNotes.type, 'question'),
+          eq(missionNotes.status, 'open'),
+        )),
+        orderBy: sqlOrderBy(asc(missionNotes.createdAt)),
+        columns: { id: true, workerId: true, type: true, status: true, title: true, body: true, defaultChoice: true, createdAt: true },
+      });
+      questionNote = linkQuestionNote(openQuestions ?? [], worker.id);
+    }
+
     let failureKind: Awaited<ReturnType<typeof loadTaskFailureKind>> = null;
     try {
       failureKind = await loadTaskFailureKind(task);
@@ -287,6 +309,7 @@ export async function GET(
               : null,
           }
         : null,
+      questionNote,
       lastError: trace
         ? { excerpt: trace.excerpt, pattern: trace.pattern, ts: trace.ts }
         : null,

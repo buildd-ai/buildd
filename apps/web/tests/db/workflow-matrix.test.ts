@@ -176,16 +176,11 @@ mock.module('../../src/lib/ci-failure-retry', () => ({
 }));
 
 const seam = await import('../../src/lib/workflow/seam');
-const { reviewEffectHandlers: reviewOnly } = await import('../../src/lib/workflow/review-effects');
-const { withCiRetryEffects } = await import('../../src/lib/workflow/ci-retry-effects');
-const { withTrunkEffects } = await import('../../src/lib/workflow/ci-red-trunk-effects');
-const { withConflictEffects } = await import('../../src/lib/workflow/conflict-retry-effects');
 const { withPrFactEffects } = await import('../../src/lib/workflow/pr-fact-effects');
-const { withLandingEffects } = await import('../../src/lib/workflow/pr-landing-effects');
-const { withSupersessionEffects } = await import('../../src/lib/workflow/supersession-effects');
+const { workflowKernel } = await import('../../src/lib/workflow/kernel-ports');
 const { recordPrFact } = await import('@buildd/core/pr-facts');
-/** The composition root's set (apps/web/src/modules.ts): review loop, the CI family, the conflict/migration families, the trunk breaker, landing, a closed PR's resolution and the fact-cache projection. */
-const reviewEffectHandlers = withPrFactEffects(withSupersessionEffects(withLandingEffects(withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewOnly))))));
+/** Production's set, as seam.ts composes it: the package's handlers on buildd's ports, the families still in apps/web, and the fact-cache projection. */
+const reviewEffectHandlers = withPrFactEffects((await workflowKernel()).handlers);
 const { runEffects } = await import('../../src/lib/workflow/effects');
 const { applyCommand, loadView } = await import('../../src/lib/workflow/kernel');
 const { attemptView, headCoverage } = await import('../../src/lib/workflow/reducer');

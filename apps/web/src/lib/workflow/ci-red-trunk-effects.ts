@@ -1,7 +1,7 @@
 /**
  * Effect handlers of the trunk circuit breaker (docs/specs/workflow-state-kernel.md
  * §6.10, §10.2), reached only through the composition root
- * (`workflowEffectHandlers()` in apps/web/src/modules.ts).
+ * (`workflowHostEffectHandlers()` in apps/web/src/modules.ts).
  *
  *  - `dispatch_trunk_fix`: one open trunk-fix task per red base, not per
  *    incident. A base can hold several open incidents at once (one per

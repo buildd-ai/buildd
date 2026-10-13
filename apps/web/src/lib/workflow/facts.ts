@@ -13,7 +13,7 @@
  *
  * Routes reach this through seam.ts.
  */
-import type { BaseDeltaFact } from './base-delta';
+import type { GithubFactReader } from '@buildd/workflow-kernel/ports';
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { Command, LivePr } from './commands';
@@ -23,53 +23,8 @@ import type { CloseCause, CompositionAttestation, ConstituentEvidence, DeliveryS
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
-export interface GithubFactReader {
-  /** Live `GET /repos/{repo}/pulls/{n}`; null when it cannot be read. */
-  readPr(repoFullName: string, prNumber: number): Promise<LivePr | null>;
-  /** Compare API: is `ancestorSha` contained in `headSha`? */
-  contains?(repoFullName: string, ancestorSha: string, headSha: string): Promise<boolean>;
-  /**
-   * Is CI green on `headSha` now (every check suite completed, none failing)?
-   * null = unknown (still running, no suites, unreadable): never read as green.
-   */
-  ciGreen?(repoFullName: string, headSha: string): Promise<boolean | null>;
-  /**
-   * The check runs on `sha` (§6.10 signatures): the names of the failing ones,
-   * and whether every run has completed. null = unreadable.
-   */
-  checkRuns?(repoFullName: string, sha: string): Promise<{ complete: boolean; failing: string[] } | null>;
-  /** The head commit of branch `ref` now; null = unreadable. */
-  branchHead?(repoFullName: string, ref: string): Promise<string | null>;
-  /**
-   * Names of the checks and workflows that failed on `headSha` (§6.10: a CI
-   * failure a preflight would have caught is tagged `preflight_miss`).
-   * null = unreadable; never read as "nothing failed".
-   */
-  failingChecks?(repoFullName: string, headSha: string): Promise<string[] | null>;
-  /**
-   * §8.3 content-equivalence: does the PR carry the same change at `toSha` as
-   * at `fromSha`, each compared against `baseRef`? null = could not tell;
-   * never read as equivalent.
-   */
-  contentEquivalent?(repoFullName: string, baseRef: string, fromSha: string, toSha: string): Promise<boolean | null>;
-  /**
-   * A retarget's evidence (24e1cfad): is the PR's diff at `headSha` against `toBase` the same
-   * change as against `fromBase`? null = could not tell; never read as equivalent.
-   */
-  baseDiffEquivalent?(repoFullName: string, fromBase: string, toBase: string, headSha: string): Promise<boolean | null>;
-  /**
-   * Does branch `ref` exist in `repoFullName` now? A PR GitHub closed because
-   * its base branch was deleted is `CLOSED_UNMERGED(base_deleted)` (§4).
-   * null = unreadable; never read as "deleted".
-   */
-  branchExists?(repoFullName: string, ref: string): Promise<boolean | null>;
-  /**
-   * S15's base delta: the commits the base `baseRef` has that `headSha` does not,
-   * the files they changed, and the files the PR changes. A side that cannot be
-   * read or listed in full is null; never read as "nothing changed".
-   */
-  baseDelta?(repoFullName: string, prNumber: number, headSha: string, baseRef: string): Promise<BaseDeltaFact | null>;
-}
+/** The live reads the kernel acts on: the package's GitHub port (`@buildd/workflow-kernel/ports`). */
+export type { GithubFactReader } from '@buildd/workflow-kernel/ports';
 
 export type FactInput =
   | { kind: 'delivery_opened'; workspaceId: string; source: string; ownerTaskId: string; requiresPr: boolean; maxRounds?: number }

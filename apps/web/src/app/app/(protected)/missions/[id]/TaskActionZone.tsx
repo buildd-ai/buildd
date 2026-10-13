@@ -18,8 +18,8 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import QuestionHero from '@/app/app/(protected)/tasks/[id]/QuestionHero';
-import { unifyWorkerQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
+import TaskQuestion from '@/components/tasks/TaskQuestion';
+import type { QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import AnswerRecorded from '@/components/AnswerRecorded';
 import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import Spinner from '@/components/Spinner';
@@ -82,7 +82,12 @@ export interface TaskActionZoneProps {
   failureKind?: TaskFailureKind | null;
   /** Set when this task IS the surface audit: a verification failure then offers "Retry the audit". */
   auditTaskId?: string | null;
-  worker: { id: string; waitingFor: Pick<WaitingFor, 'prompt' | 'options' | 'context' | 'recommended' | 'where'> | null } | null;
+  worker: {
+    id: string;
+    waitingFor: Pick<WaitingFor, 'prompt' | 'options' | 'context' | 'recommended' | 'where'> | null;
+    /** The open question note recording the same ask: its headline leads, and an answer marks it. */
+    questionNote?: QuestionNoteLike | null;
+  } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
   roleSlug?: string | null;
@@ -236,18 +241,20 @@ export default function TaskActionZone({
       className="space-y-3 empty:hidden"
     >
       {/* A question → the task page's own question card, compact: the same
-          options, recommendation and own-words field, answered in place. */}
+          question (its note's headline too), options, recommendation and
+          own-words field, answered in place. */}
       {answer.outcome || answeredAwaitingAgent ? (
         <AnswerRecorded outcome={answer.outcome} awaitingAgent={!MOVED_ON.has(phase)} />
       ) : has('answer') && worker?.waitingFor && (
-        <QuestionHero
+        <TaskQuestion
           testId="task-sheet-question"
-          density="feed"
-          question={unifyWorkerQuestion(worker.waitingFor, null)}
-          askerLabel={`The ${(roleSlug || 'agent').toLowerCase()} asks`}
-          onAnswer={answer.submit}
-          sending={answer.sending}
-          error={answer.error && <>{answer.error.message}{answer.error.credentialRevoked ? ' Reconnect the credential, then try again.' : ' Tap an answer to try again.'}</>}
+          variant="compact"
+          taskId={taskId}
+          workerId={worker.id}
+          waitingFor={worker.waitingFor}
+          questionNote={worker.questionNote ?? null}
+          role={roleSlug}
+          answer={answer}
         />
       )}
 

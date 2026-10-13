@@ -12,6 +12,7 @@ import { resolveDesign } from './design';
 import { parseDuplicateOverride, type DuplicateCandidate, type DuplicateCheck } from './duplicates';
 import type { DuplicateCheckDeps } from '@/lib/spec-duplicate-decision';
 import { sameDesign } from '@buildd/spec-contract/design';
+import { recordManualPlacement } from './filings';
 
 /**
  * Living Specs store (G1): create a draft, revise it under a version check,
@@ -239,7 +240,9 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
  * workspace and must not be the spec or one of its descendants: one statement
  * walks the new parent's ancestors and writes only when the spec is not among
  * them, so a relate never closes a cycle. Structure, not body: the version
- * (the body's CAS token) does not move.
+ * (the body's CAS token) does not move. A placement by hand is recorded
+ * (§17, R-11): no organize run moves the spec again, and a filing buildd made
+ * carries the person's choice as an override on its ledger row.
  */
 export async function relateSpec(caller: SpecCaller, specId: string, input: { parentSpecId: unknown }): Promise<{ ok: true; spec: SpecRow } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
@@ -249,6 +252,7 @@ export async function relateSpec(caller: SpecCaller, specId: string, input: { pa
   if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
   if (parentSpecId === null) {
     const [cleared] = await db.update(specs).set({ parentSpecId: null, updatedAt: new Date() }).where(eq(specs.id, specId)).returning();
+    await recordManualPlacement({ workspaceId: spec.workspaceId, specId, previousParentId: spec.parentSpecId, parentSpecId: null, by: author(caller).label });
     return { ok: true, spec: cleared };
   }
   if (parentSpecId === specId) return fail(409, 'A spec cannot be its own parent');
@@ -269,6 +273,7 @@ export async function relateSpec(caller: SpecCaller, specId: string, input: { pa
     return fail(409, 'That parent is this spec or one of its descendants: the relation would form a cycle');
   }
   const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
+  await recordManualPlacement({ workspaceId: spec.workspaceId, specId, previousParentId: spec.parentSpecId, parentSpecId, by: author(caller).label });
   return { ok: true, spec: after };
 }
 

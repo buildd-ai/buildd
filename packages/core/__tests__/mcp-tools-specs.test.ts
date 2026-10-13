@@ -230,6 +230,19 @@ describe('manage_specs', () => {
     expect(r).toContain('advisory');
   });
 
+  it('attach_provisional POSTs the revision and tasks, lists each result, and passes an agent run\'s 403 through', async () => {
+    const T = '00000000-0000-4000-8000-0000000000d1';
+    api.mockResolvedValueOnce({ revision: 2, provisional: true, results: [{ taskId: T, attached: true }], regraded: [] });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'attach_provisional', specId: SPEC, revision: 2, taskIds: [T] }, ctx()));
+    expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual([`/api/specs/${SPEC}/provisional`, { revision: 2, taskIds: [T] }]);
+    expect(r).toContain(`${T}: attached`);
+    expect(r).toContain('provisionally');
+
+    api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"an agent run cannot attach work"}'));
+    const refused: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'attach_provisional', specId: SPEC, revision: 2, taskIds: [T] }, ctx());
+    expect([refused.isError, out(refused)]).toEqual([true, 'an agent run cannot attach work']);
+  });
+
   it('create_draft and revise pass repoRefs through; get lists the cited repo specs; a refused reference is the route error', async () => {
     const refs = [{ path: 'docs/specs/checkout.md', commitSha: 'c'.repeat(40) }];
     api.mockResolvedValueOnce({ spec: { ...spec, version: 1 } });
