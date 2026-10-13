@@ -26,6 +26,8 @@ import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
 import MissionNoticeSlot, { noticeNeedsPerson } from './MissionNoticeSlot';
+import MissionRecoveryNotice from '@/components/incidents/MissionRecoveryNotice';
+import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
@@ -69,6 +71,10 @@ import { MissionVisualReviewProvider } from './MissionVisualReview';
 import { MissionSurfaceAuditWaiverProvider } from './MissionSurfaceAuditWaiver';
 import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
+import MissionBranchPanel from './MissionBranchPanel';
+import MissionVisualRecord from './MissionVisualRecord';
+import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
+import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
 import MissionScreensRow from './MissionScreensRow';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection } from './MissionReleaseSection';
@@ -85,6 +91,7 @@ import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
+import { displayTaskTitle } from '@/lib/task-title';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { loadMissionCarryingReleaseId } from '@/lib/mission-carrying-release';
@@ -540,6 +547,14 @@ export default async function MissionDetailPage({
 
   const allWorkers = allTasks.flatMap(t => (t.workers || []) as any[]);
 
+  // Tasks held by a failure incident's recovery, read through the task adapter
+  // (failure-incident-recovery §16.4): the notice says what Buildd is doing.
+  const recoveryViews = await loadTaskRecoveryViewsForViewer(allTasks.map(t => t.id), { userId: user.id, teamId: mission.teamId ?? null });
+  const recoveryItems = allTasks.flatMap(t => {
+    const view = recoveryViews.get(t.id);
+    return view?.holdsCompletion ? [{ taskId: t.id, title: displayTaskTitle(t.title), view }] : [];
+  });
+
   // PRs with failing CI — surfaced in the all_prs_merged criterion panel (AC-3).
   // Derived from the same worker state the Activity chip reads (no extra GitHub call).
   const failingCiPrNumbers = allWorkers
@@ -606,7 +621,7 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver] = await Promise.all([
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver, visualReviewState] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -669,6 +684,11 @@ export default async function MissionDetailPage({
     // The person-set "Waive visual audit" record, if any. A failed read only
     // costs the record line; the waiver action stays.
     loadSurfaceAuditWaiver(id).catch(() => null),
+    // The one canonical visual-review state; every visual-review surface on this page reads it.
+    getMissionVisualReviewState(id).catch((err) => {
+      console.error('[mission-page] visual review state load failed', err);
+      return null;
+    }),
   ]);
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
@@ -712,9 +732,17 @@ export default async function MissionDetailPage({
     missionBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true,
     readonly: isTerminal,
   };
+  // The words, the stage and whether a person owes anything come from the canonical state.
+  // The waiver is offered only where the policy allows it beside a real owner decision
+  // (or to show a record that already exists); an automatic policy never asks for it.
+  const visualPresentation = visualReviewState
+    ? presentVisualReview(visualReviewState, { ownerMergesIntegration: effectivePolicy.tier === 'human' })
+    : null;
   const showAuditWaiver = !!surfaceAuditWaiver
-    || (mission.tasks ?? []).some(t => isSurfaceAuditTask(t.title ?? '') || t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
-    || (missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true);
+    || (visualPresentation
+      ? visualPresentation.canWaive
+      : (mission.tasks ?? []).some(t => isSurfaceAuditTask(t.title ?? '') || t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
+        || (missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true));
   const vs = boardVisual?.summary;
   const visualReview = vs
     ? {
@@ -733,6 +761,7 @@ export default async function MissionDetailPage({
     criteria: { total: criteriaTotal, passed: criteriaPassed, overall: missionCriteriaOverall },
     visual: visualReview,
     visualPhase: boardVisual,
+    visualReview: visualPresentation ?? undefined,
     // D6: this mission's own trunk merges, read against the release baseline.
     mergedAt: missionTrunkMergedAt(
       (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
@@ -962,6 +991,8 @@ export default async function MissionDetailPage({
         visual={boardVisual}
         readonly={isTerminal}
         auditWaiver={showAuditWaiver ? auditWaiverProps : null}
+        presentation={visualPresentation}
+        policyLocked={visualReviewState?.policy.locked === true}
       />
 
       {/* Organizer runs are in History › Everything, not repeated here. */}
@@ -1071,7 +1102,7 @@ export default async function MissionDetailPage({
   // The integration PR card and the review summary ride along on every layout.
   const quietState = ['running', 'active', 'complete'].includes(displayState);
   const budgetExhausted = budgetUsd != null && mission.status === 'budget_exhausted';
-  const boardNotice = quietState && !missionPrCard && !reviewSummary ? null : (
+  const boardNotice = quietState && !missionPrCard && !reviewSummary && recoveryItems.length === 0 ? null : (
     <MissionNoticeSlot
       needsYou={!quietState && noticeNeedsPerson({
         displayState,
@@ -1089,6 +1120,7 @@ export default async function MissionDetailPage({
       )}
       {!quietState && decisionBlock}
       {!quietState && budgetExhausted && budgetDetail}
+      {recoveryItems.length > 0 && <MissionRecoveryNotice items={recoveryItems} />}
       {missionPrCard}
       {reviewSummary}
     </MissionNoticeSlot>
@@ -1172,6 +1204,15 @@ export default async function MissionDetailPage({
       {/* The visual review, live: opens the review deck (or, before any
           screen, the phase and its actions). Any audit phase shows it. */}
       {boardVisual && <MissionScreensRow missionId={id} step={visualStep} />}
+      {visualPresentation && (
+        <MissionBranchPanel
+          missionId={id}
+          presentation={visualPresentation}
+          prUrl={missionIntegrationPr?.prUrl ?? null}
+          workspaceSettingsHref={mission.workspaceId ? `/app/settings/workspace/${mission.workspaceId}` : null}
+          readonly={isTerminal}
+        />
+      )}
       <MissionRecordsSheet
         missionId={id}
         baseUrl={baseUrl}
@@ -1196,6 +1237,7 @@ export default async function MissionDetailPage({
       activeMs={boardModel.activeMs}
     >
       {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
+      {isTerminal && visualPresentation?.record && <MissionVisualRecord record={visualPresentation.record} />}
       {content}
       <div data-testid="mission-board-footer" className="mt-10">
         {footerRows}

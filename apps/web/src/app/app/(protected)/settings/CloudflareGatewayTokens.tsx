@@ -17,12 +17,12 @@ interface Tokens { personal: Masked | null; team: Masked | null; canManageTeam: 
 
 async function errorText(res: Response): Promise<string> {
   const body = await res.json().catch(() => ({} as Record<string, unknown>));
-  return typeof body.error === 'string' ? body.error : "That didn’t go through. Try again.";
+  return typeof body.error === 'string' ? body.error : 'Request failed. Try again.';
 }
 
 const COPY: Record<Scope, { title: string; what: string }> = {
-  personal: { title: 'Your token', what: 'Decision calls made for you spend it, so Cloudflare shows your usage on its own.' },
-  team: { title: 'Agents token', what: 'Agents using the AI Gateway send it. Team decision calls spend it.' },
+  personal: { title: 'Your token', what: 'Used for decision calls made for you. Cloudflare reports its usage separately.' },
+  team: { title: 'Agents token', what: 'Used by agents that call the AI Gateway, and by team decision calls.' },
 };
 
 export default function CloudflareGatewayTokens({ teamId }: { teamId: string }) {
@@ -37,7 +37,7 @@ export default function CloudflareGatewayTokens({ teamId }: { teamId: string }) 
       if (!res.ok) throw new Error(await errorText(res));
       setTokens(await res.json() as Tokens);
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Could not load');
+      setMsg(e instanceof Error ? e.message : 'Could not load gateway tokens.');
     }
   }, [teamId]);
   useEffect(() => { void load(); }, [load]);
@@ -51,7 +51,7 @@ export default function CloudflareGatewayTokens({ teamId }: { teamId: string }) 
       if (!res.ok) throw new Error(await errorText(res));
       await load();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Could not create the token');
+      setMsg(e instanceof Error ? e.message : 'Could not create the token.');
     } finally {
       setBusy(null);
     }
@@ -60,7 +60,7 @@ export default function CloudflareGatewayTokens({ teamId }: { teamId: string }) 
   async function remove(scope: Scope) {
     if (!(await confirm({
       title: scope === 'personal' ? 'Revoke your token?' : 'Revoke the agents token?',
-      message: 'Cloudflare stops accepting it right away. Calls fall back to the team credential.',
+      message: 'Cloudflare rejects it immediately. Calls use the team credential instead.',
       confirmLabel: 'Revoke',
       variant: 'danger',
     }))) return;
@@ -70,7 +70,7 @@ export default function CloudflareGatewayTokens({ teamId }: { teamId: string }) 
       if (!res.ok) throw new Error(await errorText(res));
       await load();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Could not revoke the token');
+      setMsg(e instanceof Error ? e.message : 'Could not revoke the token.');
     } finally {
       setBusy(null);
     }
@@ -101,7 +101,7 @@ export default function CloudflareGatewayTokens({ teamId }: { teamId: string }) 
       <div>
         <p className="text-sm font-medium text-text-primary">Gateway tokens</p>
         <p className="text-xs text-text-muted">
-          Made with the team token, which needs Account API Tokens: Edit. They can only run models, expire after 90 days, and are revoked one at a time.
+          Created from the team token, which needs Account API Tokens: Edit. Gateway tokens can only run models, expire after 90 days and are revoked individually.
         </p>
       </div>
       {tokens === null && !msg && <p className="text-xs text-text-tertiary">Loading…</p>}

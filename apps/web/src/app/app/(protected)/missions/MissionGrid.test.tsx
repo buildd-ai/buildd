@@ -155,6 +155,13 @@ describe('MissionGrid portfolio', () => {
     expect(out).toContain('Recovering');
   });
 
+  it('a closed PR still being reconciled is In motion and reads Recovering, never Needs you', () => {
+    const out = renderToStaticMarkup(<MissionGrid rows={[row('m13', 'Reconciled mission', [landed('a'), reconciling('b')])]} slots={{ live: 0, max: 4 }} now={NOW} />);
+    expect(out).not.toContain('data-section="needs"');
+    expect(out).toMatch(/data-section="motion"[\s\S]*data-mission-id="m13"/);
+    expect(out).toContain('Recovering');
+  });
+
   it('says a needs-you mission\'s problem once: no second exception note under the row', () => {
     const r = rowHtml('m03');
     expect(r.match(/did not land|closed without merging/g)?.length ?? 0).toBeLessThanOrEqual(1);

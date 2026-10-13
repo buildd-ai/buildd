@@ -1678,7 +1678,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
     : <StatusChip tone="idle">Not connected</StatusChip>;
   const where = status?.scope === 'workspace' ? 'this workspace' : 'all workspaces';
   const meta = loading ? 'Checking…'
-    : allTeams ? `Applies to all ${teamTargets.length} teams you manage`
+    : allTeams ? `All ${teamTargets.length} teams you manage`
     : status?.connected ? `${status.accountId ? `${status.accountId} · ` : ''}${where}`
     : 'ChatGPT sign-in';
   const needsSignIn = !loading && !allTeams && !device && (!status?.connected || status.expired);

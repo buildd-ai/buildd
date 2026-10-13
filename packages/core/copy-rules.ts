@@ -24,7 +24,11 @@ export type CopyRuleId =
   | 'not-this-its-that'
   | 'internal-jargon'
   | 'warning-instead-of-default'
-  | 'duplicate-explanation';
+  | 'duplicate-explanation'
+  | 'object-pays'
+  | 'conditional-policy'
+  | 'trailing-filler'
+  | 'em-dash';
 
 export interface CopyRule {
   id: CopyRuleId;
@@ -139,6 +143,38 @@ export const COPY_RULES: CopyRule[] = [
     good: 'Team key',
   },
   {
+    id: 'object-pays',
+    name: 'A key or token pays',
+    test: re(/\b(?:keys?|tokens?|credentials?|subscriptions?)\s+(?:pays?|paid|paying|spends?|spending)\b/i),
+    why: 'Keys and tokens do not pay or spend; a person, the team or a provider account is billed. Name who, beside the control where it decides something.',
+    bad: 'Your own model keys, used when the team lets personal keys pay.',
+    good: 'Manage your personal API keys.',
+  },
+  {
+    id: 'conditional-policy',
+    name: 'Conditions a setting on team policy',
+    test: re(/\b(?:when|if|unless|once|while|as long as|provided)\s+(?:the\s+|your\s+)?(?:team|admins?|owners?|workspace)\s+(?:lets?|allows?|enables?|permits?|decides?|chooses?|sets?|requires?|turns? on)\b|\bthe team (?:decides|lets|allows|chooses)\b/i),
+    why: 'One fact per description. Hedging on what the team allows explains policy the reader cannot act on here. State what the page manages; show the policy beside the control it governs.',
+    bad: 'Your own model keys, used when the team lets personal keys pay.',
+    good: 'Manage your personal API keys.',
+  },
+  {
+    id: 'trailing-filler',
+    name: 'Trailing filler',
+    test: re(/(?:,\s*)?\b(?:etc\.?|and (?:more|so on|so forth|other things|anything else)|and the like|as needed|as required|and much more)\s*[.!]?\s*$/i),
+    why: 'A description names what the page holds and stops. A list that trails off is unfinished; name the items or drop the tail.',
+    bad: 'Manage repositories, delivery settings, and more.',
+    good: 'Manage repositories, delivery settings and merge policies.',
+  },
+  {
+    id: 'em-dash',
+    name: 'Em dash',
+    test: re(/\u2014/),
+    why: 'An em dash joins two thoughts the copy should have split or cut. Use a full stop or a colon, or render nothing for an unknown value.',
+    bad: 'Runners \u2014 tokens and cloud.',
+    good: 'Manage runner tokens and the cloud runner.',
+  },
+  {
     id: 'duplicate-explanation',
     name: 'Same explanation twice',
     test: () => false,
@@ -154,4 +190,21 @@ export function copyViolations(text: string): CopyRule[] {
   const t = text.replace(/\s+/g, ' ').trim();
   if (!t) return [];
   return COPY_RULES.filter((r) => r.test(t));
+}
+
+/** A Settings description is one fact in a short fragment. */
+export const SETTINGS_DESCRIPTION_MAX_WORDS = 14;
+
+/**
+ * Settings index descriptions and page ledes: every general rule plus the
+ * shape rules that only make sense for a one-line description. Returns
+ * human-readable problems; empty when the line is fine.
+ */
+export function settingsDescriptionProblems(text: string): string[] {
+  const t = text.replace(/\s+/g, ' ').trim();
+  const problems = copyViolations(t).map((r) => r.id as string);
+  if (/[.!?]\s+\S/.test(t)) problems.push('more-than-one-sentence');
+  if (t.split(' ').length > SETTINGS_DESCRIPTION_MAX_WORDS) problems.push('too-long');
+  if (!/[.]$/.test(t)) problems.push('missing-full-stop');
+  return problems;
 }

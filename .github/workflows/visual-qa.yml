@@ -174,6 +174,7 @@ jobs:
         run: bun install
 
       - name: Install Playwright + Chromium
+        id: browser_install
         # The repo's pinned Playwright, same as the runner (playwright-pin.ts).
         run: bun run --cwd apps/runner browser:install --with-deps
 
@@ -205,7 +206,8 @@ jobs:
           BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
           if [ -z "$BRANCH_ID" ] || [ "$BRANCH_ID" = "null" ]; then
             # Error fields only — never the full response, which can carry connection URIs.
-            echo "::error::Failed to create Neon branch: $(echo "$RESPONSE" | jq -c '{code, message}')"
+            mkdir -p /tmp/qa-errors
+            echo "::error::Failed to create Neon branch: $(echo "$RESPONSE" | jq -c '{code, message}')" | tee /tmp/qa-errors/clone.txt
             exit 1
           fi
           # Publish the id NOW: any later failure (bash -e) must still let the
@@ -231,7 +233,8 @@ jobs:
               "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints" || true)
             HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host // empty' 2>/dev/null || true)
             if [ -z "$HOST" ]; then
-              echo "::error::Could not determine Neon endpoint host for branch $BRANCH_ID"
+              mkdir -p /tmp/qa-errors
+              echo "::error::Could not determine Neon endpoint host for branch $BRANCH_ID" | tee /tmp/qa-errors/clone.txt
               exit 1
             fi
             CONNECTION_URI="postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require"
@@ -251,6 +254,7 @@ jobs:
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
 
       - name: Run migrations
+        id: migrate
         # On a prod clone the journal is usually current and bun db:migrate is a
         # no-op, or applies this branch's pending migrations. "already exists" is
         # treated as success: the schema is already correct.
@@ -265,6 +269,8 @@ jobs:
         # and the branch needs a reconciliation migration.
         run: |
           OUTPUT=$(cd packages/core && bun db:migrate 2>&1) && echo "$OUTPUT" || {
+            # For "Classify capture failure"; outside /tmp/qa, never uploaded.
+            mkdir -p /tmp/qa-errors && printf '%s\n' "$OUTPUT" > /tmp/qa-errors/migrate.txt
             if echo "$OUTPUT" | grep -q "already exists"; then
               echo "::warning::Migration warning (schema already applied): ${OUTPUT##*Migration failed: }"
               echo "$OUTPUT"
@@ -315,6 +321,7 @@ jobs:
           # `BEGIN` at column 0 too, so only `BEGIN;` names the transaction.
           if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -v known="$KNOWN" -v shape="$SHAPE" -f "$QA_HARNESS/scripts/qa/scrub-pii.sql" 2> scrub.err; then
             cat scrub.err >&2
+            mkdir -p /tmp/qa-errors && cp scrub.err /tmp/qa-errors/scrub.txt
             line=$(grep -oE 'scrub-pii\.sql:[0-9]+' scrub.err | head -1 | cut -d: -f2)
             stmt=""
             if [ -n "$line" ]; then
@@ -343,7 +350,11 @@ jobs:
             echo "::error::NO_PROD_DATA_IDENTIFIERS secret is not set; refusing to capture an unverified clone"
             exit 1
           fi
-          psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -f "$QA_HARNESS/scripts/qa/scrub-guard.sql"
+          if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -f "$QA_HARNESS/scripts/qa/scrub-guard.sql" 2> guard.err; then
+            cat guard.err >&2
+            mkdir -p /tmp/qa-errors && cp guard.err /tmp/qa-errors/guard.txt
+            exit 1
+          fi
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
           NO_PROD_DATA_IDENTIFIERS: ${{ secrets.NO_PROD_DATA_IDENTIFIERS }}
@@ -355,6 +366,7 @@ jobs:
       # DEV_USER_EMAIL points to the CI QA user we designated in the scrub step,
       # so getCurrentUser() resolves to their workspaces (real shape, placeholder text).
       - name: Start app
+        id: boot
         run: |
           cd apps/web
           bun dev > /tmp/app.log 2>&1 &
@@ -368,6 +380,8 @@ jobs:
             fi
             if [ "$i" -eq 24 ]; then
               echo "::error::App failed to start after 120s"
+              # A fixed line, not the app log: the log renders the prod clone.
+              mkdir -p /tmp/qa-errors && echo "App failed to start after 120s" > /tmp/qa-errors/boot.txt
               tail -50 /tmp/app.log | sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/<uuid>/g; s/PR #[0-9]+/PR #<n>/g' || true
               exit 1
             fi
@@ -392,6 +406,7 @@ jobs:
       # shots and must not get a green run with an empty artifact. The release-PR
       # path stays report-only.
       - name: Capture screenshots and a11y snapshots
+        id: capture
         continue-on-error: ${{ github.event_name != 'workflow_dispatch' }}
         timeout-minutes: 10
         run: bun "$QA_HARNESS/scripts/qa/capture.ts"
@@ -407,6 +422,28 @@ jobs:
           QA_THEME: ${{ inputs.theme }}
           QA_MISSION_ID: ${{ inputs.mission_id }}
           QA_TASK_ID: ${{ inputs.task_id }}
+
+      # --- Typed capture failure (docs/specs/failure-incident-recovery.md §16.5) ---
+      # Whatever failed (clone, migrations, scrub, guard, app boot, browser) is
+      # written as /tmp/qa/capture-failure.json: { ownership, component, step,
+      # errorSignature, runId, ref, headSha }. The auditor reports it; nobody is
+      # asked. Outcomes only go in: the steps context's outputs hold the clone's URL.
+      - name: Classify capture failure
+        if: always()
+        continue-on-error: true
+        run: QA_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)" bun "$QA_HARNESS/scripts/qa/capture-failure.ts"
+        env:
+          QA_OUTPUT: ${{ env.QA_OUTPUT }}
+          QA_ERRORS_DIR: /tmp/qa-errors
+          QA_RUN_ID: ${{ github.run_id }}
+          QA_REF: ${{ inputs.capture_ref || github.head_ref || github.ref_name }}
+          STEP_BROWSER_INSTALL: ${{ steps.browser_install.outcome }}
+          STEP_CLONE: ${{ steps.neon.outcome }}
+          STEP_MIGRATE: ${{ steps.migrate.outcome }}
+          STEP_SCRUB: ${{ steps.scrub.outcome }}
+          STEP_GUARD: ${{ steps.guard.outcome }}
+          STEP_BOOT: ${{ steps.boot.outcome }}
+          STEP_CAPTURE: ${{ steps.capture.outcome }}
 
       # --- Judge on the team's OAuth seat (no per-token API billing) ---
       # prepare → judge-input.json (routes + expectations); the action writes
@@ -484,6 +521,19 @@ jobs:
             /tmp/qa/report.md
           retention-days: 1
           if-no-files-found: warn
+
+      # The guard never passed, so nothing above was uploaded: publish the typed
+      # failure alone, under the same name, so the caller still learns what
+      # failed. Derived from this repo's own step names and normalized error
+      # text, never from rendered data.
+      - name: Upload capture failure (harness stage)
+        if: always() && steps.guard.outcome != 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-screenshots
+          path: /tmp/qa/capture-failure.json
+          retention-days: 1
+          if-no-files-found: ignore
 
       # --- Post PR comment + create report-only check run ---
       # Only when the judge ran — an unjudged dispatch has nothing to report —

@@ -55,12 +55,12 @@ export default function ExecutorSection({ workspaceId, explicit, effective, sour
         body: JSON.stringify({ gitConfig: { executor: next === 'auto' ? null : next } }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Failed to save');
+      if (!res.ok) throw new Error(data.error || 'Could not save. Try again.');
       // Clearing goes back to the derived value, which only the server knows:
       // the page re-renders it on the next load.
       if (next !== 'auto') setShown({ effective: next, source: 'explicit' });
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Failed to save');
+      setSaveError(err instanceof Error ? err.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }

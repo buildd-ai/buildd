@@ -1,7 +1,7 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, initiatives } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -30,7 +30,7 @@ import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabe
 import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { criteriaFingerprint } from '@/lib/criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
-import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
+import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError, visualReviewPolicyOf } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
@@ -327,6 +327,20 @@ export async function PATCH(
         return NextResponse.json({ error: 'Only a person can waive the surface audit; an in-task agent cannot' }, { status: 403 });
       }
       surfaceWaiverReason = surfaceAuditWaiver.trim();
+    }
+
+    // Strict Visual Review forbids skip/waive: no waiver and no opt-out of the audit.
+    if (surfaceWaiverReason !== null || autoSurfaceAudit === false) {
+      const policyWorkspaceId = workspaceId !== undefined ? workspaceId : existing.workspaceId;
+      const policyWs = policyWorkspaceId
+        ? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, policyWorkspaceId)), columns: { gitConfig: true } })
+        : null;
+      if (visualReviewPolicyOf(policyWs?.gitConfig) === 'strict') {
+        return NextResponse.json({
+          error: 'This workspace requires visual review (policy: strict). It cannot be skipped, waived or turned off for a mission.',
+          code: 'visual_review_policy_locked',
+        }, { status: 409 });
+      }
     }
 
     if (branchStrategy !== undefined && branchStrategy !== null && !isValidBranchStrategy(branchStrategy)) {

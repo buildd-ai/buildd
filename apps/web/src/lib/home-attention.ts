@@ -186,8 +186,11 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
     case 'STALE':
       return make({ label: 'check needed', tone: 'warning', title: subject, sentence: pr ? 'The last known tests and review are out of date. Check the PR before deciding.' : null, actionType: 'check', primary: { label: 'Check PR', href: pr ?? '' } });
     case 'INCIDENT':
-      // The stored escalation-gate verdict (lib/failure-incident-escalation.ts) put it here; its reason is the sentence.
-      return make({ label: 'incident', tone: 'error', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'View details', href: text(i.fixHref) ?? '' } });
+      // The shared projection (lib/incident-view.ts) put it here and wrote its sentence: one typed
+      // choice reads as a decision; a critical incident the owner is told about stays an incident.
+      return i.incidentDecision
+        ? make({ label: 'decision', tone: 'warning', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'Choose…', href: text(i.fixHref) ?? '' } })
+        : make({ label: 'incident', tone: 'error', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'View details', href: text(i.fixHref) ?? '' } });
     case 'ACCESS':
       // A pending capability request (lib/capability-grants-needs-you.ts): what was asked is the title,
       // who asked and why is the sentence. The card approves or denies in place; the link is the fallback.
@@ -200,15 +203,18 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
 }
 
 /** One owner decision per subject. PR identity includes the workspace because numbers are repository-local. */
-export function deriveHomeAttention({ queue, missions, questions, held, isActionable }: {
+export function deriveHomeAttention({ queue, missions, questions, held, isActionable, status = [] }: {
   /** Supplied by Home, where the action queue and core UI are composed. */
   isActionable: (chip: ActionQueueItem['chip']) => boolean;
   queue: readonly ActionQueueItem[];
   missions: readonly HomeMissionRow[];
   questions: readonly HomeQuestion[];
   held: readonly HomeHeldMission[];
+  /** Service-status cards, already only the action holder's (lib/service-status.ts `statusAttentionItems`). */
+  status?: readonly HomeAttentionItem[];
 }): HomeAttentionItem[] {
   const items = new Map<string, HomeAttentionItem>();
+  for (const s of status) items.set(s.key, s);
   for (const q of questions) {
     const key = `question:${q.taskId ?? q.workerId}`;
     items.set(key, { key, kind: 'question', label: 'needs input', tone: 'warning', title: q.question.headline, sentence: questionSentence(q), meta: q.label, href: q.href ?? '/app/activity', actionType: 'answer', owner: 'human', question: q });

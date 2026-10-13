@@ -72,7 +72,7 @@ export default function ChatTierPolicySection({ teamId, isAdmin }: { teamId: str
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
           <span className="min-w-0 flex-1">
             <span id="chat-default-tier-label" className="block text-sm font-semibold text-text-primary">Starting tier for new chats</span>
-            <span className="block text-meta text-text-muted">A default only. People can change the tier in a chat; the limit is Maximum allowed above.</span>
+            <span className="block text-meta text-text-muted">This is only the default. People can change the tier in a chat; the limit is Maximum allowed above.</span>
           </span>
           {!isAdmin ? (
             // Read-only: the value, no control (the page says who manages it).

@@ -861,6 +861,17 @@ mock.module('@/lib/sibling-conflict-probe-store', () => ({
   siblingProbeHeartbeat: async (input: any) => { siblingProbeCalls.push(input); return siblingProbeReply; },
 }));
 
+// Credential holds (failure-incident-recovery §18.3): the planner is real, the
+// writer and the credential lookup are recorded.
+import * as realRecoveryHold from '@/lib/task-recovery-hold';
+const mockHoldTaskForCredential = mock(async (input: any) => realRecoveryHold.planCredentialHold({ ...input, now: new Date().toISOString() }).hold);
+const mockResolveCredentialIdentity = mock(async (input: any) => ({ credentialKey: `account:${input.accountId}`, shared: false, label: 'the Claude login on runner "test"' }));
+mock.module('@/lib/task-recovery-hold', () => ({
+  ...realRecoveryHold,
+  holdTaskForCredential: mockHoldTaskForCredential,
+  resolveCredentialIdentity: mockResolveCredentialIdentity,
+}));
+
 import { GET, PATCH } from './route';
 import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -5898,6 +5909,57 @@ describe('PATCH /api/workers/[id]', () => {
         const accepted = await complete({ alreadyShippedIn: 3851, discardEdits: 'duplicate of tests already on dev' });
         expect(accepted.status).toBe(200);
         expect(capturedTaskSet?.result?.alreadyShippedIn?.prNumber).toBe(3851);
+      });
+
+      describe('mission-branch refresh already on the branch', () => {
+        const refreshTask = {
+          ...shippedTask,
+          context: {
+            baseBranch: 'buildd/mission-x', requireMergeCommit: true,
+            refreshTrunk: 'dev', refreshTrunkSha: 'abc1234', refreshMissionHeadSha: 'def5678',
+          },
+        };
+        const compare = (status: string) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+          if (path.includes('/pulls?head=')) return Promise.resolve([]);
+          if (path.includes('/compare/abc1234...')) return Promise.resolve({ status });
+          return Promise.resolve(null);
+        });
+
+        it('completes without a PR when the branch already contains the trunk sha', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          compare('ahead');
+          expect((await complete({})).status).toBe(200);
+        });
+
+        it('keeps the slashes in the branch name when comparing', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          mockGithubApi.mockClear();
+          compare('ahead');
+          await complete({});
+          const comparePaths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string).filter((p) => p.includes('/compare/'));
+          expect(comparePaths.length).toBeGreaterThan(0);
+          for (const p of comparePaths) {
+            expect(p).toContain('buildd/mission-x');
+            expect(p).not.toContain('%2F');
+          }
+        });
+
+        it('still refuses when the branch does not contain the trunk sha', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          compare('diverged');
+          expect((await complete({})).status).toBe(400);
+        });
+
+        it('own commits still need discardEdits', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 1 });
+          compare('identical');
+          expect((await complete({})).status).toBe(400);
+          expect((await complete({ discardEdits: 'merge already pushed to the branch' })).status).toBe(200);
+        });
       });
 
       it('the plain pr_required refusal points at alreadyShippedIn', async () => {
@@ -13989,6 +14051,8 @@ describe('PATCH /api/workers/[id]', () => {
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
       });
       mockHasCodexCredential.mockResolvedValue(false);
+      mockHoldTaskForCredential.mockClear();
+      mockResolveCredentialIdentity.mockClear();
     });
 
     it('flips task to Codex and requeues on auth failure when Codex credential is present', async () => {
@@ -14058,7 +14122,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
     });
 
-    it('fails normally when auth error occurs but no Codex credential is present', async () => {
+    it('holds the task for the credential when no other backend can carry it (no Codex credential)', async () => {
       const taskSetCalls: any[] = [];
       mockTasksUpdate.mockReturnValue({
         set: mock((vals: any) => {
@@ -14086,10 +14150,59 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
 
-      // Task must fail normally — no flip to Codex
+      // No flip to Codex, and not failed: held for the credential on its branch (§18.3, I-14).
       expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
-      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
-      expect(failedUpdate).toBeDefined();
+      expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
+      expect(mockHoldTaskForCredential).toHaveBeenCalledTimes(1);
+      const hold = (mockHoldTaskForCredential.mock.calls[0] as any[])[0];
+      expect(hold.taskId).toBe('task-1');
+      expect(hold.branch).toBe('buildd/task-1');
+      expect(hold.credential.credentialKey).toBe('account:account-1');
+    });
+
+    it('a 401 at session start ("OAuth access token is invalid") is auth_failure and is held, not failed (AC-18)', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => { taskSetCalls.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      const workerSets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((vals: any) => { workerSets.push(vals); return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) }; }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
+      mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth access token is invalid"}}' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(workerSets.some((u: any) => u.exitCause === 'auth_failure')).toBe(true);
+      expect(workerSets.some((u: any) => u.exitCause === 'code_failure')).toBe(false);
+      expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
+      expect(mockHoldTaskForCredential).toHaveBeenCalledTimes(1);
+      expect((mockResolveCredentialIdentity.mock.calls[0] as any[])[0]).toMatchObject({ accountId: 'account-1', authType: 'oauth' });
+    });
+
+    it('a cancelled task is not held', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => { taskSetCalls.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api_key', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
+      mockTasksFindFirst.mockResolvedValue({ ...makeClaudeTask(), status: 'cancelled' });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Invalid authentication credentials.' },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(mockHoldTaskForCredential).not.toHaveBeenCalled();
     });
 
     it('does not flip on a non-auth code failure', async () => {
@@ -14120,10 +14233,11 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
 
-      // No Codex flip — non-auth failure should fall through to normal failure
+      // No Codex flip — a genuine failure fails exactly as before (AC-24)
       expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
       const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
       expect(failedUpdate).toBeDefined();
+      expect(mockHoldTaskForCredential).not.toHaveBeenCalled();
     });
 
     it('does not flip again when authFailoverApplied is already set (ping-pong guard)', async () => {
@@ -14160,10 +14274,10 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
 
-      // Guard active — must NOT flip again
+      // Guard active — must NOT flip again; the task is held for the credential instead.
       expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
-      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
-      expect(failedUpdate).toBeDefined();
+      expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
+      expect(mockHoldTaskForCredential).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -142,7 +142,7 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.3"
 
       - name: Cut or amend the candidate
         id: cut

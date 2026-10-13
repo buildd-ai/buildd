@@ -19,8 +19,8 @@ import { formatVisualReview as formatShared, missionArtifacts, type VisualEviden
 const textOut = (text: string, isError = false) => ({ content: [{ type: 'text' as const, text }], ...(isError ? { isError } : {}) });
 
 /** The shared text (packages/core/visual-review-text.ts), chat audience: page links, no images. */
-export function formatVisualReview(model: VisualReviewModel, missionTitle: string | null, artifacts: VisualEvidenceArtifact[] | null = null): string {
-  return formatShared(model, missionTitle, { audience: 'chat', artifacts });
+export function formatVisualReview(model: VisualReviewModel, missionTitle: string | null, artifacts: VisualEvidenceArtifact[] | null = null, stateLine: string | null = null): string {
+  return formatShared(model, missionTitle, { audience: 'chat', artifacts, stateLine });
 }
 
 export async function runGetVisualReview(api: ApiFn, input: Record<string, unknown>) {
@@ -30,7 +30,7 @@ export async function runGetVisualReview(api: ApiFn, input: Record<string, unkno
   const mission = await api(`/api/missions/${id}`) as { title?: unknown; mission?: { title?: unknown } } | null;
   const title = typeof mission?.title === 'string' ? mission.title
     : typeof mission?.mission?.title === 'string' ? mission.mission.title : null;
-  const out = await api(`/api/missions/${id}/visual-review`) as { model?: VisualReviewModel } | null;
+  const out = await api(`/api/missions/${id}/visual-review`) as { model?: VisualReviewModel; state?: { line?: unknown } | null } | null;
   if (!out?.model) return textOut('Error: the visual review could not be read.', true);
-  return textOut(formatVisualReview(out.model, title, await missionArtifacts(api, id)));
+  return textOut(formatVisualReview(out.model, title, await missionArtifacts(api, id), typeof out.state?.line === 'string' ? out.state.line : null));
 }

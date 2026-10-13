@@ -19,17 +19,20 @@
     "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1
   },
   "warning-instead-of-default": {
-    "apps/web/src/app/app/(protected)/settings/runners/NewRunnerTokenSheet.tsx": 2,
     "apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx": 1
   },
+  "object-pays": {},
+  "conditional-policy": {},
+  "trailing-filler": {},
+  "em-dash": {},
   "duplicate-explanation": {
     "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionSurfaceAuditWaiver.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/AgentBackendsSection.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/HostRunnerToggle.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/integrations/_lib/storage-form.ts": 1,
     "apps/web/src/components/chat/DirectiveCard.tsx": 1,
     "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1
-  }
+  },
+  "conditional-policy": {},
+  "trailing-filler": {},
+  "em-dash": {}
 }

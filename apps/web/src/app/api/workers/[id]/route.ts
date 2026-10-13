@@ -7,6 +7,7 @@ import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/m
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
+import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
@@ -86,7 +87,8 @@ import { resolveDispatchedReview } from '@/lib/verdict-provenance';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
-import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
+import { classifyAuthErrorSeverity, type AuthErrorSeverity } from '@buildd/core/auth-error-classifier';
+import { holdTaskForCredential, resolveCredentialIdentity } from '@/lib/task-recovery-hold';
 import { recordRootCauseForOutcome } from '@/lib/root-cause-record';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
@@ -1492,6 +1494,10 @@ export async function PATCH(
   // Set by the pr_required gate when `alreadyShippedIn` names a PR GitHub
   // confirms merged; snapshotted onto tasks.result for audit.
   let alreadyShipped: { prNumber: number; prUrl: string } | null = null;
+  // Set by the pr_required gate when a mission-branch refresh task finds its
+  // integration branch already containing the trunk sha it was dispatched for
+  // (the merge was pushed straight to the branch, so no PR exists or can).
+  let refreshAlreadyLanded: { trunk: string; trunkSha: string; branch: string } | null = null;
   // Lifted out of the outputRequirement block below (which only runs when
   // outputReq !== 'none') so the planning-contract guard can see a PR that was
   // auto-detected from GitHub even on a task with no output requirement.
@@ -2205,6 +2211,25 @@ export async function PATCH(
         }
       }
 
+      // pr_required, refresh already landed: a mission-branch refresh whose
+      // merge reached the integration branch without a PR (pushed directly, so
+      // the worker branch equals the mission branch and no PR can be opened).
+      // Accepted on the same evidence buildd checks after a refresh merges:
+      // the dispatched trunk sha is an ancestor of the integration branch.
+      if (outputReq === 'pr_required' && !hasPR && !alreadyShipped && repoWithInstallation) {
+        const refresh = integrationRefreshOf(terminalTaskRow[0]?.context);
+        const refreshBranch = (terminalTaskRow[0]?.context as Record<string, unknown> | null | undefined)?.baseBranch;
+        if (refresh?.trunk && refresh.trunkSha && typeof refreshBranch === 'string' && refreshBranch) {
+          const contained = await isAncestor(
+            repoWithInstallation.installation.installationId,
+            repoWithInstallation.fullName,
+            refresh.trunkSha,
+            encodeRef(refreshBranch),
+          );
+          if (contained) refreshAlreadyLanded = { trunk: refresh.trunk, trunkSha: refresh.trunkSha, branch: refreshBranch };
+        }
+      }
+
       // Standing ask from the outputRequirement-rejection bug: a gate-rejected
       // completion used to discard the agent's summary/structuredOutput with
       // zero persistence — a 60-turn run's only record was a 400 in the
@@ -2312,7 +2337,7 @@ export async function PATCH(
         filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
         dirtyWorktree: effectiveDirtyWorktree,
         observedTouches: sessionObservedTouches,
-        hasPR: hasPR || !!alreadyShipped, mergedAt: worker.mergedAt, discardEdits,
+        hasPR: hasPR || !!alreadyShipped || !!refreshAlreadyLanded, mergedAt: worker.mergedAt, discardEdits,
         summary: body.summary, summarySource: body.summarySource,
       }) && !(await hasDeliverableArtifact(true))) {
         const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
@@ -2399,10 +2424,10 @@ export async function PATCH(
         // need the same explicit discard the `auto` arm asks for.
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
         const strandsOwnEdits = (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
-        if (!alreadyShipped || strandsOwnEdits) {
+        if ((!alreadyShipped && !refreshAlreadyLanded) || strandsOwnEdits) {
           const frictionSignature = await persistRejectedCompletionPayload('pr_required');
-          const error = alreadyShipped
-            ? `PR #${alreadyShipped.prNumber} is merged, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+          const error = alreadyShipped || refreshAlreadyLanded
+            ? `${alreadyShipped ? `PR #${alreadyShipped.prNumber} is merged` : `${refreshAlreadyLanded!.branch} already contains ${refreshAlreadyLanded!.trunk}`}, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
             : alreadyShippedRefusal
               ? `This task requires a pull request before completing. ${alreadyShippedRefusal}`
               : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
@@ -2421,7 +2446,9 @@ export async function PATCH(
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'accepted',
-          reason: 'completion accepted under pr_required: work already shipped in a merged PR',
+          reason: refreshAlreadyLanded
+            ? 'completion accepted under pr_required: mission branch already contains the refresh trunk sha'
+            : 'completion accepted under pr_required: work already shipped in a merged PR',
           workspaceId: worker.workspaceId,
           missionId: taskMissionId,
           taskId: worker.taskId,
@@ -2429,7 +2456,8 @@ export async function PATCH(
           callerOrigin: 'worker',
           detail: {
             outputRequirement: 'pr_required',
-            alreadyShippedIn: alreadyShipped.prNumber,
+            ...(alreadyShipped ? { alreadyShippedIn: alreadyShipped.prNumber } : {}),
+            ...(refreshAlreadyLanded ? { refreshAlreadyLanded } : {}),
             commits: effectiveCommits,
             dirtyWorktree: effectiveDirtyWorktree,
             ...(discardReason ? { discardEdits: discardReason.slice(0, 500) } : {}),
@@ -2840,6 +2868,8 @@ export async function PATCH(
       conditionUnmet: isCodexDeferral,
       serverRefused: isServerRefusal,
       outputGateRefused: isOutputGateRefusal,
+      // A rejected credential is the credential's failure (failure-incident-recovery §18.2).
+      authFailure: status === 'failed' && classifyAuthErrorSeverity(error ?? '') !== 'none',
     });
   }
   // A non-gate refusal is exempt from the task's retry budget, so record it —
@@ -3226,6 +3256,9 @@ export async function PATCH(
   // credentials are available, flip the task to Codex instead of permanently failing.
   // Uses the existing auth-error classifier — no new classifier needed.
   // Guard: context.authFailoverApplied prevents flip→fail→flip ping-pong (max 1 flip per chain).
+  // The auth class of this failure, for the credential hold below. 'none' unless set here.
+  let authSeverityForHold: AuthErrorSeverity = 'none';
+  let isCredentialHold = false;
   if (status === 'failed' && !isBudgetReset && !isCodexDeferral && worker.taskId) {
     const isCodeFailure = !isBudgetError && !isSandboxMountGap;
     if (isCodeFailure) {
@@ -3248,6 +3281,9 @@ export async function PATCH(
         }
       }
 
+      authSeverityForHold = authSeverity;
+      // Found only in the traces: still the credential's failure, not the work's.
+      if (authSeverity !== 'none' && updates.exitCause === 'code_failure') updates.exitCause = 'auth_failure';
       if (authSeverity !== 'none') {
         const authTask = await db.query.tasks.findFirst({
           where: sqlWhere(eq(tasks.id, worker.taskId)),
@@ -3319,6 +3355,48 @@ export async function PATCH(
           }
         }
       }
+    }
+  }
+
+  // Credential hold (failure-incident-recovery §18.3, I-14): an auth failure no
+  // other backend can carry is not the task's failure. Back to pending behind
+  // the probe floor, on the same branch, with the hold recorded; released as
+  // soon as the credential checks healthy (task-recovery-hold.ts, the
+  // infrastructure_failure incident). Never on a cancelled task.
+  if (status === 'failed' && authSeverityForHold !== 'none' && !isBudgetReset && !isCodexDeferral && worker.taskId) {
+    try {
+      const heldTask = await db.query.tasks.findFirst({
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
+        columns: { backend: true, workspaceId: true, context: true, status: true },
+        with: { workspace: { columns: { teamId: true } } },
+      });
+      if (heldTask && heldTask.status !== 'cancelled') {
+        const credential = await resolveCredentialIdentity({
+          accountId: account.id,
+          accountName: (account as { name?: string | null }).name ?? null,
+          authType: (account as { authType?: string | null }).authType ?? null,
+          teamId: (heldTask.workspace as { teamId?: string } | undefined)?.teamId ?? null,
+          workspaceId: heldTask.workspaceId ?? null,
+          backend: heldTask.backend ?? null,
+        });
+        const hold = await holdTaskForCredential({
+          taskId: worker.taskId,
+          context: (heldTask.context ?? {}) as Record<string, unknown>,
+          credential,
+          workerId: id,
+          branch: worker.branch ?? null,
+          lastCommitSha: worker.lastCommitSha ?? null,
+          error: error ?? null,
+        });
+        if (hold) {
+          isCredentialHold = true;
+          isBudgetReset = true; // the held-for-retry path: no task-status overwrite, no fail notification
+          console.log(`[workers PATCH] Task ${worker.taskId} held for ${credential.credentialKey} (attempt ${hold.attempts}${hold.exhausted ? ', exhausted' : ''})`);
+        }
+      }
+    } catch (err) {
+      // The hold is best-effort: on any error the task fails as it did before.
+      console.warn(`[workers PATCH] Credential hold failed for task ${worker.taskId}:`, err);
     }
   }
 
@@ -5117,7 +5195,9 @@ export async function PATCH(
     // Auth failover: signal backend change, not a budget pause
     const taskResetPayload = isAuthFailover
       ? { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', backend: 'codex' } }
-      : { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', budgetExhausted: true } };
+      : isCredentialHold
+        ? { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', credentialHold: true } }
+        : { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', budgetExhausted: true } };
     await triggerEvent(
       channels.workspace(worker.workspaceId),
       events.TASK_UPDATED,

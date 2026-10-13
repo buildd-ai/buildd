@@ -17,6 +17,8 @@ import { readGithubAccessBlock } from '@/lib/github-repo-access';
 import { getUserTeamRole, holdsInWorkspace, resolveActiveTeamScope } from '@/lib/team-access';
 import { teamHostedRunnerBanner } from '@/lib/hosted-runner-usage-store';
 import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
+import { EMPTY_SERVICE_STATUS, loadServiceStatus, type ServiceStatusView } from '@/lib/service-status-loader';
+import { ServiceStatusBanner } from '@/components/service-status/ServiceStatusList';
 import ModelUpgradeNotice from '@/components/models/ModelUpgradeNotice';
 import { roleHas as roleHasPermission } from '@/lib/permission-registry';
 import { rightNowState, recordBestEffort, homeAudience, type HomeAudience } from './home-view';
@@ -95,6 +97,7 @@ import { firstTaskState, gettingStartedChecklist, type FirstTaskState } from '@/
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // --- Helpers ---
@@ -151,6 +154,8 @@ export default async function HomePage({
   let hasAgentCredential: boolean | null = null;
   // Hosted runner allowance at 80% / used; null below that or without one.
   let hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null = null;
+  // The team's service status for this viewer: one read per render, never fatal.
+  let serviceStatus: ServiceStatusView = EMPTY_SERVICE_STATUS;
   // Team whose admin sees the stale/deprecated tier-model notice (fetched client-side).
   let modelUpgradeTeamId: string | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
@@ -308,13 +313,15 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, agentKey, hostedBanner] = await Promise.all([
+        const [role, chatAvail, agentKey, hostedBanner, status] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
           // A failed lookup reads as "has a key": never nag a working team.
           teamHasAgentCredential(activeTeamId).catch(() => true),
           teamHostedRunnerBanner(activeTeamId).catch(() => null),
+          loadServiceStatus({ userId: user.id, teamId: activeTeamId }),
         ]);
+        serviceStatus = status;
         hasAgentCredential = agentKey;
         hostedRunnerBanner = hostedBanner;
         if (roleHasPermission(role, 'manage_model_tiers')) modelUpgradeTeamId = activeTeamId;
@@ -1580,7 +1587,7 @@ export default async function HomePage({
             missionTitle: (t.mission as { title?: string } | null)?.title ?? null,
             workspaceId: t.workspaceId,
             context: t.context,
-          })), { githubAccessFixableWorkspaceIds }));
+          })), { githubAccessFixableWorkspaceIds, linkedTaskIds: serviceStatus.linkedTaskIds }));
 
           // 2. Unanswered worker questions (waiting_input with waitingFor set)
           const waitingInputWorkers = await db.query.workers.findMany({
@@ -1601,9 +1608,12 @@ export default async function HomePage({
             },
             limit: 5,
           });
+          // A question recovery superseded is the incident's, not the owner's (failure-incident-recovery §17.2).
+          const supersededQuestions = await loadSupersededQuestionTaskIds(waitingInputWorkers.map(w => w.taskId ?? ''));
           for (const w of waitingInputWorkers) {
             const wf = w.waitingFor as { type: string; prompt: string } | null;
             if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input') || !admitsToNeedsYou(wf, Date.now())) continue;
+            if (w.taskId && supersededQuestions.has(w.taskId)) continue;
             waitingOnYou.push({
               kind: 'answer',
               workerId: w.id,
@@ -2034,7 +2044,7 @@ export default async function HomePage({
   const agentsModel = fleetData ? buildAgentsModel(fleetData.fleet, renderNow, missionTitleById, ({ missionId, taskId }) => missionTaskHref({ missionId, taskId, from: 'home', mode: 'sheet' })) : null;
 
   // The one list of what needs you, at every width: the headline counts it.
-  const { items: attention, inProgress: reviewsInProgress } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
+  const { items: attention, inProgress: reviewsInProgress } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip, status: serviceStatus.needsYou });
   const counts = deliveryCounts({ missions: missionDeliveries, liveAgents: live, capacity: fleetData?.fleet.capacity ?? 0 });
   const deliveries = missionDeliveries.map(d => d.delivery);
   const milestones = selectHomeMilestones(deliveries);
@@ -2085,6 +2095,11 @@ export default async function HomePage({
       {hostedRunnerBanner && (
         <div className="mx-auto max-w-[1320px]">
           <HostedRunnerBanner level={hostedRunnerBanner.level} text={hostedRunnerBanner.text} />
+        </div>
+      )}
+      {serviceStatus.banner && (
+        <div className="mx-auto max-w-[1320px]">
+          <ServiceStatusBanner status={serviceStatus.banner} href="/app/health" />
         </div>
       )}
       {modelUpgradeTeamId && (

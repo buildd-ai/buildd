@@ -276,6 +276,16 @@ export const GATE_SLUGS = {
    * holds are the claim loop's `tier_policy` deferral, not this slug.
    */
   TIER_CEILING: 'tier_ceiling',
+  /**
+   * Failure incident recovery attempts (docs/specs/failure-incident-recovery.md
+   * §8; operator-recovery §4.2): one row per repair action key, written by
+   * `lib/failure-incident-recovery-events.ts`. `accepted` = the writer ran,
+   * `rejected` = it threw. `detail` is fixed-shape (`actionKey`, `incidentId`,
+   * `causeKey`, `capability`, `generation`, `attempt`, `subject`, `actor`,
+   * `verify`, `costUsd`); `detail.verify.passed` is filled in place by the
+   * re-check. The only gate pruned (180 days).
+   */
+  INCIDENT_RECOVERY: 'incident_recovery',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

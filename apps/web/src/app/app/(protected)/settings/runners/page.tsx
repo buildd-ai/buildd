@@ -14,7 +14,6 @@ import SignInsAnchorRedirect from './SignInsAnchorRedirect';
 import NewRunnerTokenSheet from './NewRunnerTokenSheet';
 import { permsInAnyTeam, teamIdsHolding } from '../_lib/settings-permissions';
 import { settingsReadOnly } from '@/lib/settings-nav';
-import TeamSwitcher from '../_components/TeamSwitcher';
 import { pickShownTeam } from '../_lib/shown-team';
 
 export const dynamic = 'force-dynamic';
@@ -70,13 +69,6 @@ export default async function RunnersSettingsPage({
     <SettingsPage title="Runners" readOnly={settingsReadOnly('runners', permsInAnyTeam(permsByTeam))}>
       <SignInsAnchorRedirect />
       {newParam === '1' && <NewRunnerTokenSheet />}
-      {shown && (
-        <TeamSwitcher
-          shown={shown}
-          others={teams.filter((t) => t.id !== shown.id)}
-          basePath="/app/settings/runners"
-        />
-      )}
       <FleetOverview
         fleet={fleet}
         teamName={teams.length > 1 ? (shown?.name ?? null) : null}
@@ -91,7 +83,7 @@ export default async function RunnersSettingsPage({
                 {hasSignIn === true && <StatusChip tone="ok">Connected</StatusChip>}
                 {hasSignIn === false && <StatusChip tone="idle">Not connected</StatusChip>}
               </span>
-              <span className="mt-1 block truncate text-meta text-text-muted">What your runners log in with</span>
+              <span className="mt-1 block truncate text-meta text-text-muted">Model accounts your runners use</span>
             </span>
             <Link href={SIGN_INS_HREF} className="btn btn-quiet shrink-0">Models ›</Link>
           </div>

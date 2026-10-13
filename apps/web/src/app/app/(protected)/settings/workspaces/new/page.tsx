@@ -210,7 +210,7 @@ export default function NewWorkspacePage() {
         });
         if (!repoRes.ok) {
           const err = await repoRes.json().catch(() => ({}));
-          throw new Error(err.hint ? `${err.error}. ${err.hint}` : err.error || 'Failed to create repository');
+          throw new Error(err.hint ? `${err.error}. ${err.hint}` : err.error || 'Could not create the repository. Try again.');
         }
 
         router.push(`/app/workspaces/${workspaceId}`);
@@ -257,7 +257,7 @@ export default function NewWorkspacePage() {
 
       if (errors.length > 0) {
         setBatchErrors(errors);
-        setError(`${errors.length} of ${selectedRepos.length} workspaces failed to create`);
+        setError(`Could not create ${errors.length} of ${selectedRepos.length} workspaces`);
         if (errors.length < selectedRepos.length) {
           // Some succeeded - navigate after a delay so user sees errors
           setTimeout(() => {
@@ -356,7 +356,7 @@ export default function NewWorkspacePage() {
   );
 
   return (
-    <SettingsPage title="New workspace" description="A workspace is where agents pick up work. Point it at a repository so they can open pull requests on it.">
+    <SettingsPage title="New workspace" description="Tasks, settings and an optional repository for one project.">
         <form onSubmit={handleSubmit} className="space-y-6">
           {error && (
             <Notice tone="err" title={error}>
@@ -424,7 +424,7 @@ export default function NewWorkspacePage() {
                 className={fieldClass}
               />
               <p className="text-xs text-text-muted mt-1">
-                {nameTouched ? 'You can rename it later.' : 'Filled in from the repository if you pick one.'}
+                {nameTouched ? 'Overrides the repository name.' : 'Defaults to the repository name.'}
               </p>
             </div>
           )}
@@ -495,7 +495,7 @@ export default function NewWorkspacePage() {
                   placeholder="org/repo or https://github.com/org/repo"
                   className={fieldClass}
                 />
-                <p className="text-xs text-text-muted mt-1">Optional. Agents clone this repo and open pull requests on it. Leave it empty to start without one.</p>
+                <p className="text-xs text-text-muted mt-1">Optional. Agents clone this repository and open pull requests on it.</p>
               </div>
 
               {githubConfigured && installations.length === 0 && (
@@ -599,7 +599,7 @@ export default function NewWorkspacePage() {
 
           <fieldset>
             <legend className="block text-sm font-medium mb-2">
-              Token access
+              Access
             </legend>
             <div className="space-y-2">
               <label className={optionClass(accessMode === 'open')}>

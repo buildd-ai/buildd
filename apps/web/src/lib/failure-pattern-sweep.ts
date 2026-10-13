@@ -36,30 +36,53 @@ import type {
   WorkerExitCause,
 } from '@buildd/shared';
 import { FAILED_WORKER_STATUSES } from '@buildd/shared';
-import { isBookkeepingExit } from './worker-exit-taxonomy';
+import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import {
   detectFailurePatterns,
   FAILURE_PATTERN_DETECTOR_VERSION,
-  pathOverlapIncidentCleared,
   type BlockerPrState,
   type IncidentCandidate,
   type PathOverlapObservation,
   type SentinelFacts,
+  type WorkerInfraFact,
 } from './failure-pattern-sentinel';
 import {
   createDbIncidentPort,
   recordIncidentCandidates,
-  updateIncidentState,
   type IncidentStorePort,
+  type StoredIncident,
   type UpsertIncidentResult,
 } from './failure-incident-store';
 import {
   actOnIncidentResults,
+  defaultIncidentSender,
+  formatIncidentAlert,
   type FixTaskPort,
   type IncidentActionResult,
+  type IncidentAlert,
   type IncidentAlertSender,
   type IncidentDecider,
 } from './failure-incident-actions';
+import {
+  assessDueIncidents,
+  assessIncident,
+  claimRecoveryLease,
+  productionOperatorRecoveryDeps,
+  productionRecoveryEffects,
+  readRecovery,
+  recoveryGenerationKey,
+  type AssessResult,
+  type RecoveryDeps,
+  type RecoveryEffects,
+  type RecoveryFamily,
+  type RecoverySource,
+} from './failure-incident-recovery';
+import { pathOverlapRecoveryFamily } from './failure-incident-recovery-path-overlap';
+import { createInfrastructureRecoveryFamily } from './failure-incident-recovery-infrastructure';
+import { dispatchRecoveryFamily } from './failure-incident-recovery-dispatch';
+import { readCredentialHold } from './task-recovery-hold';
+import { isBookkeepingExit, isInfrastructureExit } from './worker-exit-taxonomy';
+import { dbRecoveryEvents, pruneRecoveryEvents, writeSentinelLastRun, type SentinelLastRun } from './failure-incident-recovery-events';
 import { dbRootCauseStore, dbTeamOfWorkspace, recordPatternRootCauses, type RootCauseStorePort } from './root-cause-record';
 
 // ── Window math (pure) ──────────────────────────────────────────────────────
@@ -128,6 +151,8 @@ export interface FailureRateWorkerRow {
   exitCause: WorkerExitCause | null;
   createdAt: string;
   completedAt: string | null;
+  /** The worker's task status, when read; an infrastructure exit whose task recovered is not a failure. */
+  taskStatus?: string | null;
 }
 
 /**
@@ -156,6 +181,8 @@ export function tallyFailureRateWindow(
     if (endedAt < sinceIso || endedAt >= untilIso) continue;
     const isFailure = (FAILED_WORKER_STATUSES as readonly string[]).includes(r.status);
     if (isFailure && isBookkeepingExit(r.exitCause)) continue;
+    // Noise, not failure (§18.7): an infrastructure exit whose task recovered.
+    if (isInfrastructureExit(r.exitCause) && r.taskStatus != null && r.taskStatus !== 'failed') continue;
     total++;
     if (isFailure) {
       failed++;
@@ -173,10 +200,25 @@ export interface SweepDeps {
   setWatermark(workspaceId: string, at: string): Promise<void>;
   collectFacts(workspaceId: string, floors: SweepFloors, now: string): Promise<SentinelFacts>;
   /**
-   * Fresh task and PR state for the subjects of open path-overlap incidents.
-   * Absent: those incidents are never auto-resolved.
+   * The recovery layer (docs/specs/failure-incident-recovery.md): the families
+   * that assess their open incidents, and the existing writers their repairs
+   * go through. Absent: no incident is assessed, repaired or auto-resolved.
    */
-  observePathOverlapSubjects?(workspaceId: string, taskIds: string[], prNumbers: number[]): Promise<PathOverlapObservation>;
+  recovery?: {
+    families: ReadonlyArray<RecoveryFamily<any>>; effects: RecoveryEffects; claimLease?: RecoveryDeps['claimLease']; events?: RecoveryDeps['events'];
+    /** Pause/policy, cause peers and per-repair verify (operator-recovery, B2). Absent: FIR's defaults, nothing paused. */
+    operator?: Pick<RecoveryDeps, 'automation' | 'causePeers' | 'verifyRepair'>;
+  };
+  /** Persist the finished run (`system_cache` `failure-sentinel-last-run`) for the operator read model. Never throws. */
+  recordLastRun?(run: SentinelLastRun): Promise<void>;
+  /** Delete recovery attempt rows past their retention (180 days). Full sweeps only. Returns rows removed. */
+  pruneRecoveryEvents?(): Promise<number>;
+  /**
+   * The operator-recovery decisions (operator-recovery §6): ambiguous merges,
+   * repairs no runbook owns, priority advice, their outcome labels and the
+   * kinds' switch-off check. Full sweeps only. Never throws.
+   */
+  operatorDecisions?(): Promise<void>;
   /** Defaults (DB-backed) apply when omitted — see `recordIncidentCandidates` / `actOnIncidentResults`. */
   incidentPort?: IncidentStorePort;
   decide?: IncidentDecider | null;
@@ -206,6 +248,10 @@ export interface SweepRunCounters {
   incidentsUpdated: number;
   /** Incidents whose resolve check passed on facts read this sweep. */
   incidentsResolved: number;
+  /** Open incidents re-assessed on fresh facts (the backstop). */
+  incidentsAssessed: number;
+  /** Repairs the assessments ran. */
+  recoveryRepairs: number;
   duplicatesSuppressed: number;
   alertsSent: number;
   fixTasksFiled: number;
@@ -222,6 +268,8 @@ function emptyCounters(): SweepRunCounters {
     incidentsOpened: 0,
     incidentsUpdated: 0,
     incidentsResolved: 0,
+    incidentsAssessed: 0,
+    recoveryRepairs: 0,
     duplicatesSuppressed: 0,
     alertsSent: 0,
     fixTasksFiled: 0,
@@ -358,7 +406,7 @@ async function sweepOneWorkspace(
     }
   }
 
-  await reconcilePathOverlapIncidents(deps, workspaceId, now, new Set(candidates.map(c => c.signature)), counters);
+  await recoverOpenIncidents(deps, workspaceId, now, counters);
 
   // Advance the watermark even on a quiet sweep (no candidates): "nothing new"
   // is still progress, and the next run's floor should start from here.
@@ -397,44 +445,120 @@ async function recordRootCauses(
   }
 }
 
-// ── Reconcile: resolve what current facts say is over ───────────────────────
+// ── Recovery backstop: re-assess what is due, on fresh facts ────────────────
 
 /**
- * Resolve every open `path_overlap_stall` incident whose check passes on facts
- * read now (`pathOverlapIncidentCleared`): its blocker merged or closed, or
- * every task it names moved. This is the backstop for a missed merge event: no
- * webhook or wake has to have been seen. An incident its own rule reported in
- * this sweep is never resolved here. Resolve is the store's one lifecycle
- * write, so the row, its evidence and counts stay as history, and a fresh
- * occurrence reopens it (`mergeIncident`). Never throws.
+ * Re-assess every open incident of a family with recovery whose promised
+ * check is due or whose assessment is stale (failure-incident-recovery §8,
+ * §12(a) backstop). A new incident is assessed in the sweep that opened it.
+ * The assessment re-observes its facts, runs at most one repair through an
+ * existing writer and resolves only on a passing check; unknown evidence is
+ * inconclusive. Any change of assessment re-gates the incident. Never throws.
  */
-async function reconcilePathOverlapIncidents(
+async function recoverOpenIncidents(
   deps: SweepDeps,
   workspaceId: string,
   now: string,
-  liveSignatures: ReadonlySet<string>,
   counters: SweepRunCounters,
 ): Promise<void> {
-  if (!deps.observePathOverlapSubjects) return;
+  const recovery = deps.recovery;
+  if (!recovery) return;
   try {
     const port = deps.incidentPort ?? (await createDbIncidentPort());
     if (!port.listUnresolved) return;
-    const open = (await port.listUnresolved(workspaceId, 'path_overlap_stall')).filter(i => !liveSignatures.has(i.signature));
-    if (open.length === 0) return;
-    const taskIds = [...new Set(open.flatMap(i => i.affectedRefs.taskIds))];
-    const prNumbers = [...new Set(open.flatMap(i => i.affectedRefs.prNumbers))];
-    const obs = await deps.observePathOverlapSubjects(workspaceId, taskIds, prNumbers);
-    for (const incident of open) {
-      if (!pathOverlapIncidentCleared(incident, obs)) continue;
-      if (await updateIncidentState(port, incident.id, { type: 'resolve' }, { now })) counters.incidentsResolved++;
+    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease, events: recovery.events, ...recovery.operator, now: () => now };
+    for (const family of recovery.families) {
+      const open = await port.listUnresolved(workspaceId, family.rule);
+      const results = await assessDueIncidents(rdeps, open, 'backstop');
+      await afterAssessment(deps, results, counters);
     }
   } catch (err) {
     counters.runFailures++;
     await deps.reportOpsError(
-      `Failure Pattern Sentinel: path-overlap reconcile failed for workspace ${workspaceId}`,
+      `Failure Pattern Sentinel: incident recovery failed for workspace ${workspaceId}`,
       err instanceof Error ? err.message : String(err),
       'error',
     ).catch(() => {});
+  }
+}
+
+/** The page the gate reads for a re-gate: the incident, its severity, a dedupe key per (generation, state). */
+export function regateAlert(incident: StoredIncident): IncidentAlert {
+  const r = readRecovery(incident);
+  const { title, message } = formatIncidentAlert(incident, { severity: incident.severity, reason: 'opened' });
+  return {
+    incidentId: incident.id,
+    severity: incident.severity,
+    priority: incident.severity === 'critical' ? 1 : 0,
+    reason: 'opened',
+    title,
+    message,
+    dedupeKey: r ? `${recoveryGenerationKey(incident.id, r.generation)}:${r.state}` : `incident:${incident.id}:unassessed`,
+    incident,
+  };
+}
+
+/**
+ * Count, re-gate on any change of assessment (G4: the verdict is no longer
+ * rewritten only when a page is claimed), and tell the operator through the
+ * existing ops path when recovery needs one. The gate pages only when the
+ * new verdict is the person's, once per fingerprint.
+ */
+async function afterAssessment(deps: Pick<SweepDeps, 'send' | 'reportOpsError'>, results: ReadonlyArray<AssessResult>, counters?: SweepRunCounters): Promise<void> {
+  const send = deps.send ?? defaultIncidentSender();
+  for (const r of results) {
+    if (!r.incident || r.outcome === 'skipped' || r.outcome === 'contended') continue;
+    if (counters) {
+      counters.incidentsAssessed++;
+      if (r.repair) counters.recoveryRepairs++;
+      if (r.incident.status === 'resolved' && r.before?.status !== 'resolved') counters.incidentsResolved++;
+    }
+    if (!r.changed) continue;
+    const rec = readRecovery(r.incident);
+    const was = r.before ? readRecovery(r.before) : null;
+    // Once per generation (AC-15): a later change of evidence is not news to the operator.
+    const newlyOperator = !(was?.state === 'needs_operator' && was.generation === rec?.generation);
+    if (rec?.state === 'needs_operator' && rec.capabilityGap && newlyOperator) {
+      await deps.reportOpsError(
+        `Failure incident recovery needs an operator (${rec.capabilityGap.capability})`,
+        `incident ${r.incident.id.slice(0, 8)}: ${rec.capabilityGap.reason}`,
+        'warning',
+      ).catch(() => {});
+    }
+    try {
+      if (await send(regateAlert(r.incident))) { if (counters) counters.alertsSent++; }
+    } catch (err) {
+      console.error(`[failure-pattern-sweep] re-gate failed for incident ${r.incident.id}:`, err);
+    }
+  }
+}
+
+/**
+ * The merge hook (§12(a)): a PR landed, so re-assess at once every open
+ * incident that names it, instead of waiting for the backstop. Runs after
+ * `releaseAndNotify`, so a release the merge already did is seen, not
+ * repeated. Never throws.
+ */
+export async function reassessIncidentsNamingPr(
+  workspaceId: string,
+  prNumber: number,
+  source: RecoverySource = 'merge_hook',
+  deps: SweepDeps = productionSweepDeps(),
+): Promise<AssessResult[]> {
+  try {
+    const recovery = deps.recovery;
+    if (!recovery) return [];
+    const port = deps.incidentPort ?? (await createDbIncidentPort());
+    if (!port.listUnresolvedByPr) return [];
+    const named = await port.listUnresolvedByPr(workspaceId, prNumber);
+    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease, events: recovery.events, ...recovery.operator };
+    const results: AssessResult[] = [];
+    for (const incident of named) results.push(await assessIncident(rdeps, incident.id, source));
+    await afterAssessment(deps, results);
+    return results;
+  } catch (err) {
+    console.error(`[failure-pattern-sweep] re-assess for PR #${prNumber} failed:`, err);
+    return [];
   }
 }
 
@@ -506,6 +630,21 @@ export async function runFailurePatternSweep(deps: SweepDeps, opts: SweepOpts = 
   }
 
   counters.elapsedMs = Date.now() - start;
+  // Only a sweep over every workspace says the platform was looked at: a
+  // triggered one-workspace run must not hide a backstop that stopped.
+  if (!opts.workspaceIds) {
+    await deps.pruneRecoveryEvents?.().catch(err => console.error('[failure-pattern-sweep] recovery event prune failed:', err));
+    await deps.operatorDecisions?.().catch(err => console.error('[failure-pattern-sweep] operator decisions failed:', err));
+  }
+  if (!opts.workspaceIds) await deps.recordLastRun?.({
+    startedAt: new Date(start).toISOString(),
+    finishedAt: new Date().toISOString(),
+    full: true,
+    workspaces: workspaceIds.length,
+    runFailures: counters.runFailures,
+    incidentsAssessed: counters.incidentsAssessed,
+    recoveryRepairs: counters.recoveryRepairs,
+  }).catch(err => console.error('[failure-pattern-sweep] last-run record failed:', err));
   return counters;
 }
 
@@ -615,35 +754,68 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
     .orderBy(desc(gateEvents.occurredAt))
     .limit(SWEEP_MAX_ROWS);
 
-  const byTask = new Map<string, { firstDeferredAt: string; lastDeferredAt: string; blockingPrNumber: number | null }>();
+  // One entry per (task, blocker): an episode is per blocker (§5 rule 3), so
+  // a wait behind PR A never lends its age to PR B.
+  const byEpisode = new Map<string, { taskId: string; firstDeferredAt: string; lastDeferredAt: string; blockingPrNumber: number | null }>();
   for (const r of deferralRows) {
     if (!r.taskId) continue;
     const detail = (r.detail ?? {}) as Record<string, unknown>;
     const occurredIso = r.occurredAt.toISOString();
     const detailFirst = typeof detail.firstDeferredAt === 'string' ? detail.firstDeferredAt : occurredIso;
     const blockingPrNumber = typeof detail.prNumber === 'number' ? detail.prNumber : null;
-    const prior = byTask.get(r.taskId);
+    const blockerKey = blockingPrNumber !== null ? `pr:${blockingPrNumber}`
+      : typeof detail.blockingTaskId === 'string' ? `task:${detail.blockingTaskId}` : 'unknown';
+    const key = `${r.taskId}|${blockerKey}`;
+    const prior = byEpisode.get(key);
     if (!prior) {
-      byTask.set(r.taskId, { firstDeferredAt: detailFirst, lastDeferredAt: occurredIso, blockingPrNumber });
+      byEpisode.set(key, { taskId: r.taskId, firstDeferredAt: detailFirst, lastDeferredAt: occurredIso, blockingPrNumber });
     } else if (detailFirst < prior.firstDeferredAt) {
       prior.firstDeferredAt = detailFirst;
     }
   }
   const pathOverlapDeferrals: SentinelFacts['pathOverlapDeferrals'] = [];
-  if (byTask.size > 0) {
-    const taskIds = [...byTask.keys()];
-    const blockers = [...new Set([...byTask.values()].map(d => d.blockingPrNumber).filter((n): n is number => n !== null))];
+  if (byEpisode.size > 0) {
+    const taskIds = [...new Set([...byEpisode.values()].map(d => d.taskId))];
+    const blockers = [...new Set([...byEpisode.values()].map(d => d.blockingPrNumber).filter((n): n is number => n !== null))];
     const obs = await dbObservePathOverlapSubjects(workspaceId, taskIds, blockers);
-    for (const [taskId, d] of byTask) {
-      const workerAt = obs.tasks.get(taskId)?.lastWorkerAt ?? null;
+    // G2: a delivered wake is progress too, not only a worker starting.
+    const { taskDispatchOutbox } = await import('@buildd/core/db/schema');
+    const wakeRows = await db
+      .select({ taskId: taskDispatchOutbox.taskId, deliveredAt: taskDispatchOutbox.deliveredAt })
+      .from(taskDispatchOutbox)
+      .where(and(inArray(taskDispatchOutbox.taskId, taskIds), eq(taskDispatchOutbox.cause, 'path_claim.released'), isNotNull(taskDispatchOutbox.deliveredAt)))
+      .limit(SWEEP_MAX_ROWS);
+    const wokenAt = new Map<string, string>();
+    for (const w of wakeRows) {
+      const at = w.deliveredAt!.toISOString();
+      if (!wokenAt.has(w.taskId) || at > wokenAt.get(w.taskId)!) wokenAt.set(w.taskId, at);
+    }
+    // I-8: when each blocking PR came to exist (its first worker row).
+    const blockerBorn = new Map<number, string>();
+    if (blockers.length > 0) {
+      const born = await db
+        .select({ prNumber: workers.prNumber, createdAt: workers.createdAt })
+        .from(workers)
+        .where(and(eq(workers.workspaceId, workspaceId), inArray(workers.prNumber, blockers)));
+      for (const b of born) {
+        if (b.prNumber === null) continue;
+        const at = b.createdAt.toISOString();
+        if (!blockerBorn.has(b.prNumber) || at < blockerBorn.get(b.prNumber)!) blockerBorn.set(b.prNumber, at);
+      }
+    }
+    for (const d of byEpisode.values()) {
+      const workerAt = obs.tasks.get(d.taskId)?.lastWorkerAt ?? null;
+      const woken = wokenAt.get(d.taskId) ?? null;
+      const moved = [workerAt, woken].filter((x): x is string => !!x && x > d.firstDeferredAt).sort().pop() ?? null;
       pathOverlapDeferrals.push({
-        taskId,
+        taskId: d.taskId,
         blockingPrNumber: d.blockingPrNumber,
         firstDeferredAt: d.firstDeferredAt,
         lastDeferredAt: d.lastDeferredAt,
-        lastProgressAt: workerAt && workerAt > d.firstDeferredAt ? workerAt : null,
-        taskStatus: obs.tasks.get(taskId)?.status ?? null,
+        lastProgressAt: moved,
+        taskStatus: obs.tasks.get(d.taskId)?.status ?? null,
         blockerState: d.blockingPrNumber === null ? 'unknown' : obs.prs.get(d.blockingPrNumber) ?? 'unknown',
+        blockerCreatedAt: d.blockingPrNumber === null ? null : blockerBorn.get(d.blockingPrNumber) ?? null,
       });
     }
   }
@@ -731,13 +903,21 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
     }
   }
 
+  // ── worker infrastructure (failure-incident-recovery §18.4) ─────────────
+  const workerInfra = await dbCollectWorkerInfra(workspaceId, floors.failureRateBaselineSince);
+
+  // ── capture pipeline (§16.3), and the rollout of legacy questions (§16.4) ─
+  const { dbCollectCaptureFailures } = await import('./failure-incident-recovery-capture');
+  const captureFailures = await dbCollectCaptureFailures(workspaceId, floors.retrySince, now);
+
   // ── failure rate: recent vs. baseline ──────────────────────────────────
   // Both windows are keyed on when the worker ended — see tallyFailureRateWindow.
   const rateSince = new Date(floors.failureRateBaselineSince);
   const rateUntil = new Date(now);
   const rateRows = (await db
-    .select({ id: workers.id, status: workers.status, exitCause: workers.exitCause, createdAt: workers.createdAt, completedAt: workers.completedAt })
+    .select({ id: workers.id, status: workers.status, exitCause: workers.exitCause, createdAt: workers.createdAt, completedAt: workers.completedAt, taskStatus: tasks.status })
     .from(workers)
+    .leftJoin(tasks, eq(workers.taskId, tasks.id))
     .where(and(
       eq(workers.workspaceId, workspaceId),
       or(
@@ -752,6 +932,7 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
       exitCause: r.exitCause,
       createdAt: r.createdAt.toISOString(),
       completedAt: r.completedAt ? r.completedAt.toISOString() : null,
+      taskStatus: r.taskStatus,
     }));
   const recent = tallyFailureRateWindow(rateRows, floors.failureRateRecentSince, now, IN_FLIGHT_WORKER_STATUSES);
   const baseline = tallyFailureRateWindow(rateRows, floors.failureRateBaselineSince, floors.failureRateRecentSince, IN_FLIGHT_WORKER_STATUSES);
@@ -769,7 +950,82 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
     // until a real source lands, rather than inventing one from logs.
     providerAttributions: [],
     failureRate: { recent: recent.counts, baseline: baseline.counts, recentFailures: recent.failures },
+    workerInfra,
+    captureFailures,
   };
+}
+
+/**
+ * Pure. Whether one terminal worker counts in the failure-rate windows
+ * (failure-incident-recovery §18.7): a bookkeeping exit never does; an
+ * infrastructure exit (auth, lost session, released slot, wall) does only
+ * while its task is still `failed`. Every other terminal worker counts.
+ */
+export function countsTowardFailureRate(r: { exitCause: string | null; taskStatus: string | null }): boolean {
+  if (isBookkeepingExit(r.exitCause as WorkerExitCause | null)) return false;
+  if (isInfrastructureExit(r.exitCause) && r.taskStatus !== null && r.taskStatus !== 'failed') return false;
+  return true;
+}
+
+/**
+ * The tasks Buildd's own machinery is failing (§18.4): held for a rejected
+ * credential (`pending` with an active `credentialHold`), and stalled after
+ * their infra retries (`failed`, `infra_stalled`, updated since `sinceIso`),
+ * each with its last worker's friction signature.
+ */
+async function dbCollectWorkerInfra(workspaceId: string, sinceIso: string): Promise<WorkerInfraFact[]> {
+  const { db } = await import('@buildd/core/db');
+  const { tasks, workers } = await import('@buildd/core/db/schema');
+  const { and, desc, eq, gte, inArray, sql } = await import('drizzle-orm');
+  const { normalizeErrorSignature } = await import('./error-signature');
+  const out: WorkerInfraFact[] = [];
+
+  const held = await db
+    .select({ id: tasks.id, context: tasks.context })
+    .from(tasks)
+    .where(and(eq(tasks.workspaceId, workspaceId), eq(tasks.status, 'pending'), sql`${tasks.context} ? 'credentialHold'`))
+    .limit(SWEEP_MAX_ROWS);
+  for (const t of held) {
+    const h = readCredentialHold(t.context);
+    if (!h || h.releasedAt) continue;
+    out.push({ taskId: t.id, component: 'worker.auth', key: h.credentialKey, shared: h.shared, occurredAt: h.since, attempts: h.attempts, exhausted: h.exhausted, workerId: h.lastWorkerId ?? null });
+  }
+
+  const stalled = await db
+    .select({ id: tasks.id, context: tasks.context, updatedAt: tasks.updatedAt })
+    .from(tasks)
+    .where(and(
+      eq(tasks.workspaceId, workspaceId),
+      eq(tasks.status, 'failed'),
+      sql`${tasks.result}->>'errorType' = 'infra_stalled'`,
+      gte(tasks.updatedAt, new Date(sinceIso)),
+    ))
+    .limit(SWEEP_MAX_ROWS);
+  if (stalled.length > 0) {
+    const lastWorker = new Map<string, { id: string; error: string | null }>();
+    const rows = await db
+      .select({ id: workers.id, taskId: workers.taskId, error: workers.error })
+      .from(workers)
+      .where(inArray(workers.taskId, stalled.map(t => t.id)))
+      .orderBy(desc(workers.createdAt))
+      .limit(SWEEP_MAX_ROWS);
+    for (const w of rows) if (w.taskId && !lastWorker.has(w.taskId)) lastWorker.set(w.taskId, { id: w.id, error: w.error });
+    for (const t of stalled) {
+      const w = lastWorker.get(t.id);
+      const ctx = (t.context ?? {}) as Record<string, unknown>;
+      out.push({
+        taskId: t.id,
+        component: 'worker.session_lost',
+        // The friction slug, so one runner fault across tasks is one incident.
+        key: toFrictionSignature(normalizeErrorSignature(w?.error ?? 'session lost')),
+        occurredAt: t.updatedAt.toISOString(),
+        attempts: typeof ctx.infraRetryCount === 'number' ? ctx.infraRetryCount : 0,
+        exhausted: true,
+        workerId: w?.id ?? null,
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -858,7 +1114,17 @@ export function productionSweepDeps(): SweepDeps {
         });
     },
     collectFacts: dbCollectFacts,
-    observePathOverlapSubjects: dbObservePathOverlapSubjects,
+    recovery: {
+      families: [pathOverlapRecoveryFamily, createInfrastructureRecoveryFamily(), dispatchRecoveryFamily],
+      effects: productionRecoveryEffects(), claimLease: claimRecoveryLease, events: dbRecoveryEvents(), operator: productionOperatorRecoveryDeps(),
+    },
+    recordLastRun: writeSentinelLastRun,
+    pruneRecoveryEvents: () => pruneRecoveryEvents(),
+    async operatorDecisions() {
+      const [{ runOperatorRecoveryPass }, { productionOperatorPassDeps }] = await Promise.all([import('./operator-recovery-pass'), import('./operator-recovery-deps')]);
+      const r = await runOperatorRecoveryPass(await productionOperatorPassDeps());
+      if (r.asked || r.merged || r.repaired) console.log('[failure-pattern-sweep] operator decisions:', JSON.stringify(r));
+    },
     rootCauses: { store: dbRootCauseStore, teamOfWorkspace: dbTeamOfWorkspace },
     async reportOpsError(message, detail, severity) {
       const { reportOps } = await import('@buildd/core/report-ops');

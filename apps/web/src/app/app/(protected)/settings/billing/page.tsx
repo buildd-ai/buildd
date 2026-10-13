@@ -91,13 +91,13 @@ export default async function BillingSettingsPage({
 
       {billing && (teamRow && usage
         ? <PlanSections view={billingView(teamRow, usage)} teamId={currentTeam.id} canManage={canManageBilling} />
-        : <p className="text-sm text-text-secondary">Could not load billing.</p>)}
+        : <p className="text-sm text-text-secondary">Couldn&apos;t load billing.</p>)}
 
       <Section
         title="Your spend"
         action={<span className="text-xs text-text-muted">{timeZoneLabel(timeZone)}</span>}
       >
-        {spend ? <MySpend me={spend.me} /> : <p className="text-sm text-text-secondary">Could not load spend.</p>}
+        {spend ? <MySpend me={spend.me} /> : <p className="text-sm text-text-secondary">Couldn&apos;t load spend.</p>}
       </Section>
 
       {perms.view_team_usage && spend && spend.people.length > 1 && (
@@ -168,7 +168,7 @@ function PlanSections({ view, teamId, canManage }: {
                 </ul>
                 {canManage && (
                   plan === 'pro' && view.proBlocked
-                    ? <p className="text-meta text-text-muted">For one person. This team has more.</p>
+                    ? <p className="text-meta text-text-muted">Pro is for one member. This team has more.</p>
                     : <UpgradeButton teamId={teamId} plan={plan} seats={plan === 'team' ? view.used : undefined} primary={plan === 'team'} />
                 )}
               </li>

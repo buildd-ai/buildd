@@ -88,7 +88,7 @@ export async function runGetVisualReview(
     type MissionHead = { title?: unknown; status?: unknown; completedAt?: unknown };
     const mission = await api(`/api/missions/${id}`) as (MissionHead & { mission?: MissionHead }) | null;
     const m = mission?.mission ?? mission;
-    const out = await api(`/api/missions/${id}/visual-review`) as { model?: VisualReviewModel } | null;
+    const out = await api(`/api/missions/${id}/visual-review`) as { model?: VisualReviewModel; state?: { line?: unknown } | null } | null;
     if (!out?.model) return errorResult('The visual review could not be read.');
     const artifacts = await missionArtifacts(api, id);
     return text(formatVisualReview(out.model, typeof m?.title === 'string' ? m.title : null, {
@@ -99,6 +99,7 @@ export async function runGetVisualReview(
       missionCompletedAt: typeof m?.completedAt === 'string' ? m.completedAt : null,
       awaitingOnly: params.awaitingOnly === true,
       artifacts,
+      stateLine: typeof out.state?.line === 'string' ? out.state.line : null,
     }));
   }
 

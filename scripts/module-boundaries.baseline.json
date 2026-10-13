@@ -366,7 +366,8 @@
       "apps/web/src/lib/strand-choice-decision.ts": "jev-decisions",
       "apps/web/src/lib/surface-audit-advice.ts": "visual-qa",
       "apps/web/src/lib/task-category-decision.ts": "jev-decisions",
-      "apps/web/src/lib/task-role-decision.ts": "jev-decisions"
+      "apps/web/src/lib/task-role-decision.ts": "jev-decisions",
+      "packages/core/decision-kind-visual-impact.ts": "jev-decisions"
     },
     "apps/web/src/lib/prompt-fallback-alert.ts": {
       "apps/web/src/lib/pushover.ts": "notifications"
@@ -501,6 +502,7 @@
     },
     "packages/core/prompt-catalog.ts": {
       "packages/core/decision-kind-failure-incident-triage.ts": "jev-decisions",
+      "packages/core/decision-kind-operator-recovery.ts": "jev-decisions",
       "packages/core/decision-kind-post-session-triage.ts": "jev-decisions",
       "packages/core/decision-kind-scout-probe-selection.ts": "jev-decisions",
       "packages/core/escalation-gate-decision.ts": "jev-decisions",

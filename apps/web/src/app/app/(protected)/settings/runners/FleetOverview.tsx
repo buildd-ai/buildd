@@ -16,7 +16,7 @@ import SettingsSection from '../SettingsSection';
 import { StatusChip } from '../_components/ConnectionRow';
 
 const busyOn = (r: FleetRunner) => r.slots.filter(s => s.worker).length;
-const runs = (n: number) => `${n} run${n === 1 ? '' : 's'}`;
+const agents = (n: number) => `${n} agent${n === 1 ? '' : 's'}`;
 
 /**
  * "3 of 8 slots busy." / "No agents working. 8 slots free." plus "1 offline."
@@ -31,11 +31,10 @@ export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | 
   const stale = offline.reduce((n, r) => n + busyOn(r), 0);
   if (offline.length === fleet.runners.length) {
     if (stale === 0) return [{ text: 'All runners offline.' }];
-    const where = offline.length === 1 ? 'it at its' : 'them at their';
-    return [{ text: `All runners offline. ${runs(stale)} ${stale === 1 ? 'was' : 'were'} on ${where} last check-in.` }];
+    return [{ text: `All runners offline. ${agents(stale)} ${stale === 1 ? 'was' : 'were'} working at the last check-in.` }];
   }
   const tail: HeadlinePart[] = offline.length === 0 ? []
-    : [{ text: stale > 0 ? ` ${offline.length} offline, with ${runs(stale)} at ${offline.length === 1 ? 'its' : 'their'} last check-in.` : ` ${offline.length} offline.` }];
+    : [{ text: stale > 0 ? ` ${offline.length} offline, with ${agents(stale)} working at the last check-in.` : ` ${offline.length} offline.` }];
   if (busy > 0) return [{ text: `${busy} of ${fleet.capacity} slots busy.` }, ...tail];
   return [{ text: `No agents working. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...tail];
 }

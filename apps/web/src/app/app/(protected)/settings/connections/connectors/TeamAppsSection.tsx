@@ -375,7 +375,7 @@ function TeamAppRow({
       <ConnectorIcon name={app.name} iconUrl={app.iconUrl} size={20} />
       <span className="min-w-0 flex-1">
         <span className="block text-sm font-medium text-text-primary">{app.name}</span>
-        {meta && <span className="mt-0.5 block truncate text-meta text-text-muted">{meta}</span>}
+        {meta && <span className="mt-0.5 block line-clamp-2 text-meta text-text-muted">{meta}</span>}
       </span>
     </>
   );
