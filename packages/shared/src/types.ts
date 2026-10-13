@@ -934,6 +934,12 @@ export type WorkerExitCause =
   | 'code_failure'
   | 'budget_limited'
   | 'infra_failure'
+  /**
+   * The backend credential was rejected (401, expired or invalid login).
+   * Infrastructure, not the work: never charged against the task's retry
+   * budget; the task is held for the credential (failure-incident-recovery §18).
+   */
+  | 'auth_failure'
   /** Row created at claim, never started by any runner (over-claim artifact). */
   | 'never_started'
   /** Session started but streamed no output at all (0 turns, $0). */
@@ -4552,7 +4558,9 @@ export type FailureIncidentRule =
   | 'path_overlap_stall'
   | 'provider_attribution_mismatch'
   | 'failure_rate_spike'
-  | 'output_unmet_boundary';
+  | 'output_unmet_boundary'
+  /** Buildd's own machinery failed: a rejected credential, lost sessions, a capture step (failure-incident-recovery §16, §18). */
+  | 'infrastructure_failure';
 
 /** A pointer at an existing row — never a copy of it. */
 export interface FailureIncidentEvidenceRef {
@@ -4593,4 +4601,120 @@ export interface FailureIncident {
   linkedFixTaskId: string | null;
   acknowledgedAt: string | null;
   resolvedAt: string | null;
+  /** The recovery assessment (docs/specs/failure-incident-recovery.md §3). Null or absent: not assessed yet, reads as `observing`. */
+  recovery?: FailureIncidentRecovery | null;
+}
+
+// ── Failure incident recovery (docs/specs/failure-incident-recovery.md) ──────
+
+/** Where an incident's recovery stands. Mapped onto existing statuses and verdicts (§4); never a new `status`. */
+export type FailureRecoveryState =
+  | 'observing'
+  | 'recovering'
+  | 'waiting'
+  | 'needs_decision'
+  /** Recovery Buildd cannot run itself and no person's decision is needed: an operator must act (§16). */
+  | 'needs_operator'
+  | 'inconclusive'
+  | 'recovered';
+
+/** Who acts next. `operator`: the platform operator, for a capability gap no workspace person can close. */
+export type FailureRecoveryOwner = 'buildd' | 'operator' | 'person';
+
+/** Who owns the failure's cause (§16): decides whether a person is ever asked. */
+export type FailureCauseOwnership = 'workflow' | 'infrastructure' | 'person';
+
+/** The closed, versioned set of typed actions a decision can offer (§9). */
+export type FailureRecoveryCapability =
+  | 'dismiss'
+  | 'retry_recovery'
+  | 'cancel_attempt'
+  | 'narrow_subject_manifest'
+  | 'narrow_blocker_manifest'
+  | 'open_blocker';
+
+export interface FailureRecoveryRef {
+  kind: 'task' | 'pr' | 'worker' | 'mission';
+  id: string;
+}
+
+export interface FailureRecoveryBlocker {
+  kind: 'pr' | 'task' | 'lease';
+  id: string;
+  state: string;
+  observedAt: string;
+}
+
+export interface FailureRecoveryDecision {
+  question: string;
+  options: Array<{ capability: FailureRecoveryCapability; label: string; effect: string }>;
+  recommended: FailureRecoveryCapability;
+  /** The capability a person chose, once they did. */
+  chosen?: FailureRecoveryCapability;
+}
+
+/** One repair Buildd actually ran or tried. Kept as history (bounded, newest last). */
+export interface FailureRecoveryAttempt {
+  key: string;
+  action: string;
+  subject: FailureRecoveryRef;
+  at: string;
+  generation: number;
+}
+
+/** Recovery assessment, contract v1. Written only through the incident CAS on `version`. */
+export interface FailureIncidentRecovery {
+  v: 1;
+  /** Bumps on every change of cause, subject set or blocker set, and on reopen. */
+  generation: number;
+  cause: { reasonCode: string; rule: FailureIncidentRule; ownership: FailureCauseOwnership };
+  subjects: FailureRecoveryRef[];
+  blockers: FailureRecoveryBlocker[];
+  /** Path-overlap family only; [] when unknown. Bounded (≤ 20). */
+  overlappingPaths: string[];
+  observation: {
+    observedAt: string;
+    source: 'sweep' | 'merge_hook' | 'release_hook' | 'click' | 'backstop';
+    /** Hash of the facts read; same facts give the same revision. */
+    evidenceRevision: string;
+  };
+  /** This episode's start, not the incident's first sighting. */
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastProgressAt: string | null;
+  owner: FailureRecoveryOwner;
+  state: FailureRecoveryState;
+  /** What Buildd does next, or asks for. */
+  nextAction: { kind: string; label: string; key: string } | null;
+  /** Required unless `recovered`, person-owned, or operator-owned. */
+  nextCheckAt: string | null;
+  decision?: FailureRecoveryDecision;
+  /** Operator-owned recovery: the capability Buildd lacks to recover on its own. */
+  capabilityGap?: { capability: string; reason: string };
+  verification: { predicate: string; params: Record<string, unknown> };
+  /** `extended`: repairs the platform owner added to `limit` this generation (operator-recovery §8.1, at most 2). */
+  budget: { spent: number; limit: number; deadlineAt: string; spentKeys: string[]; extended?: number };
+  /** The repairs actually run, across generations (bounded). Never rewritten. */
+  attempts: FailureRecoveryAttempt[];
+  /**
+   * The cause this incident groups under (operator-recovery §4.2). Additive and
+   * optional: absent reads as unknown, and readers fall back to the rule key.
+   */
+  causeGroup?: FailureRecoveryCauseGroup;
+}
+
+/** Cause membership of one incident. A rule key always exists; operator and promoted model groupings override it. */
+export interface FailureRecoveryCauseGroup {
+  /** `c1:<20 hex>` (apps/web/src/lib/failure-incident-cause-key.ts). */
+  key: string;
+  source: 'rule' | 'model' | 'operator';
+  /** decision_records.id for `model`; the audit event id for `operator`. */
+  decisionId: string | null;
+  /** Model only. */
+  confidence: number | null;
+  assignedAt: string;
+  /** A newer causeKey this membership was merged into. */
+  supersededBy?: string;
+  /** The rule key when this membership was assigned: an override lapses once the rule key changes. */
+  ruleKey?: string;
 }

@@ -110,6 +110,7 @@ export const FEATURE_EFFECT: Record<InferenceCapability, DecisionFeatureEffect> 
   task_verdict: 'acts',
   early_release: 'acts',
   merge_readiness: 'advises',
+  operator_recovery: 'acts',
   spec_duplicate: 'acts',
   chat: 'interactive',
 };

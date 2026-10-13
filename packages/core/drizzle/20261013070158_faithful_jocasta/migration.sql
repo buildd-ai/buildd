@@ -1,0 +1,1 @@
+ALTER TABLE "failure_incidents" ADD COLUMN "recovery" jsonb;

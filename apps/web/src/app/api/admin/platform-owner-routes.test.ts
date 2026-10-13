@@ -17,6 +17,8 @@ mock.module('@/lib/admin/owner-gate', () => ({
 const audits: any[] = [];
 mock.module('@/lib/admin/audit', () => ({
   recordPlatformAdminAudit: async (event: any) => { audits.push(event); },
+  recordPlatformAdminAuditIntent: async (event: any) => { audits.push(event); return `audit-${audits.length}`; },
+  completePlatformAdminAudit: async () => true,
 }));
 
 // The owner's decision-feature switch: real planning and views, stubbed storage.
@@ -114,6 +116,12 @@ mock.module('@/lib/admin/data', () => ({
   loadGates: async () => ({ gates: { totals: { events: 5 }, gates: [] } }),
   loadFailures: async () => ({ analytics: { totals: { failed: 2 }, signatures: [], diedEarlySignatures: [], repeatFailureTasks: [], byWorkspace: [] }, family: null, stalledIngest: null }),
   loadOperatorData: async () => ({ orphanedPrs: [], subagentDelegation: null, errorPatterns: null }),
+  loadRecoveryQueue: async (opts: any) => {
+    recoveryCalls.push({ kind: 'queue', ...opts });
+    if (recoveryThrows) throw new Error('read failed');
+    return { v: 1, causes: [{ causeKey: CAUSE, impact: { teams: opts.platformWide ? [{ id: TEAM, name: 'Team A' }, { id: OTHER_TEAM, name: 'Team B' }] : [{ id: TEAM, name: 'Team A' }] } }], truncated: false };
+  },
+  loadRecoveryCause: async (opts: any) => { recoveryCalls.push({ kind: 'cause', ...opts }); return opts.causeKey === CAUSE ? { cause: { causeKey: CAUSE } } : null; },
   loadInsights: async (opts: any) => { insightCalls.push(opts); return { series: { buckets: [], tasks: [] }, usage: { rows: [] }, truncated: false }; },
   loadInsightsBand: async (opts: any) => { insightCalls.push(opts); return opts.filter.band === 'none' ? null : { label: 'Released', tasks: [{ id: 't1', title: 'Task 1', status: 'completed', workspaceId: WS }] }; },
   loadAgentAccess: async (opts: any) => { insightCalls.push(opts); return { windowHours: opts.windowHours, granted: 3, refusals: [], grantProblems: [] }; },
@@ -128,6 +136,10 @@ mock.module('@/lib/admin/data', () => ({
 const estimateCalls: any[] = [];
 let estimatesFail = false;
 const insightCalls: any[] = [];
+const recoveryCalls: any[] = [];
+let recoveryThrows = false;
+const CAUSE = 'c1:0123456789abcdef0123';
+const OTHER_TEAM = '55555555-5555-4555-8555-555555555555';
 
 const routes = {
   decisionFeatures: await import('./decisions/features/route'),
@@ -174,6 +186,10 @@ const calls: Call[] = [
   { name: 'GET gates', call: () => routes.gates.GET(req('gates')) },
   { name: 'GET failures', call: () => routes.failures.GET(req('failures')) },
   { name: 'GET operator', call: () => routes.operator.GET(req('operator')) },
+  { name: 'GET operator?recovery=1', call: () => routes.operator.GET(req('operator?recovery=1')) },
+  { name: 'GET operator?recoveryInclude=recovered', call: () => routes.operator.GET(req('operator?recovery=1&recoveryInclude=recovered')) },
+  { name: 'GET operator?recoveryCause', call: () => routes.operator.GET(req(`operator?recoveryCause=${CAUSE}`)) },
+  { name: 'GET operator?recoveryFilter', call: () => routes.operator.GET(req('operator?recovery=1&recoveryFilter=queue_age')) },
   { name: 'GET insights', call: () => routes.insights.GET(req('insights')) },
   { name: 'GET insights/tasks', call: () => routes.insightsTasks.GET(req('insights/tasks?band=released&from=1760000000000&to=1760604800000&at=1760300000000')) },
   { name: 'GET agent-access', call: () => routes.agentAccess.GET(req('agent-access')) },
@@ -191,6 +207,8 @@ beforeEach(() => {
   writes.length = 0;
   scopes.length = 0;
   insightCalls.length = 0;
+  recoveryCalls.length = 0;
+  recoveryThrows = false;
   estimateCalls.length = 0;
   estimatesFail = false;
   storedModes = new Map();
@@ -517,5 +535,77 @@ describe('names and readouts for platform-owner API clients', () => {
     expect(body.readout.verdict).toBe('insufficient_n');
     const missing = await routes.readout.GET(req('experiments/44444444-4444-4444-8444-444444444444/readout'), idCtx('44444444-4444-4444-8444-444444444444'));
     expect(missing.status).toBe(404);
+  });
+});
+
+describe('GET operator: the recovery queue (operator-recovery §7.1)', () => {
+  it('F-9: a non-owner gets 404 on every recovery param and nothing is read', async () => {
+    owner = false;
+    for (const q of ['recovery=1', `recoveryCause=${CAUSE}`, 'recoveryInclude=recovered', 'recoveryFilter=queue_age', `recovery=1&teamId=${TEAM}`]) {
+      const res = await routes.operator.GET(req(`operator?${q}`));
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(await res.json())).not.toContain('causeKey');
+    }
+    expect(recoveryCalls).toHaveLength(0);
+    expect(audits).toHaveLength(0);
+  });
+
+  it('without the params the response is unchanged', async () => {
+    const body = await (await routes.operator.GET(req('operator'))).json();
+    expect(body.recovery).toBeUndefined();
+    expect(body.recoveryCause).toBeUndefined();
+    expect(recoveryCalls).toHaveLength(0);
+  });
+
+  it('adds the panel and the drill-down, passing the window and options through', async () => {
+    const body = await (await routes.operator.GET(req(`operator?window=30d&recovery=1&recoveryInclude=recovered&recoveryFilter=reopened&recoveryCause=${CAUSE}`))).json();
+    expect(body.recovery.causes[0].causeKey).toBe(CAUSE);
+    expect(body.recoveryCause.cause.causeKey).toBe(CAUSE);
+    expect(recoveryCalls.find(c => c.kind === 'queue')).toMatchObject({ window: '30d', includeRecovered: true, filter: 'reopened', platformWide: true, workspaceIds: [WS] });
+  });
+
+  it('a scoped read is not platform-wide, so it never names another team', async () => {
+    const body = await (await routes.operator.GET(req(`operator?recovery=1&teamId=${TEAM}`))).json();
+    expect(recoveryCalls[0]).toMatchObject({ platformWide: false, workspaceIds: [WS] });
+    expect(JSON.stringify(body.recovery)).not.toContain(OTHER_TEAM);
+    expect(JSON.stringify(body.recovery)).not.toContain('Team B');
+    await routes.operator.GET(req(`operator?recovery=1&workspaceId=${WS}`));
+    expect(recoveryCalls[1].platformWide).toBe(false);
+  });
+
+  it('a failed panel read is null, not a 500', async () => {
+    recoveryThrows = true;
+    const res = await routes.operator.GET(req('operator?recovery=1'));
+    expect(res.status).toBe(200);
+    expect((await res.json()).recovery).toBeNull();
+  });
+
+  it('an unknown cause is null', async () => {
+    const body = await (await routes.operator.GET(req('operator?recoveryCause=c1:ffffffffffffffffffff'))).json();
+    expect(body.recoveryCause).toBeNull();
+  });
+
+  it('rejects a malformed cause key, filter or include', async () => {
+    expect((await routes.operator.GET(req('operator?recoveryCause=nope'))).status).toBe(400);
+    expect((await routes.operator.GET(req('operator?recovery=1&recoveryFilter=everything'))).status).toBe(400);
+    expect((await routes.operator.GET(req('operator?recoveryInclude=all'))).status).toBe(400);
+    expect(recoveryCalls).toHaveLength(0);
+  });
+});
+
+describe('POST operator: owner recovery actions (operator-recovery §7.2, F-9)', () => {
+  const action = {
+    capability: 'run_repair', target: { incidentId: '44444444-4444-4444-8444-444444444444', generation: 1 },
+    evidenceRevision: 'ev', params: { repair: 'wake_subject' }, reason: 'synthetic check',
+  };
+
+  it('a non-owner gets 404 and nothing is written or audited, whatever the body', async () => {
+    owner = false;
+    for (const b of [action, { capability: 'disable_trigger' }, null]) {
+      const res = await routes.operator.POST(req('operator', 'POST', b));
+      expect(res.status).toBe(404);
+    }
+    expect(audits).toHaveLength(0);
+    expect(writes).toHaveLength(0);
   });
 });

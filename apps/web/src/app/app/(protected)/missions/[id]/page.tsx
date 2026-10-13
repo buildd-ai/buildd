@@ -26,6 +26,8 @@ import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
 import MissionNoticeSlot, { noticeNeedsPerson } from './MissionNoticeSlot';
+import MissionRecoveryNotice from '@/components/incidents/MissionRecoveryNotice';
+import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
@@ -89,6 +91,7 @@ import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
+import { displayTaskTitle } from '@/lib/task-title';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { loadMissionCarryingReleaseId } from '@/lib/mission-carrying-release';
@@ -543,6 +546,14 @@ export default async function MissionDetailPage({
     : null;
 
   const allWorkers = allTasks.flatMap(t => (t.workers || []) as any[]);
+
+  // Tasks held by a failure incident's recovery, read through the task adapter
+  // (failure-incident-recovery §16.4): the notice says what Buildd is doing.
+  const recoveryViews = await loadTaskRecoveryViewsForViewer(allTasks.map(t => t.id), { userId: user.id, teamId: mission.teamId ?? null });
+  const recoveryItems = allTasks.flatMap(t => {
+    const view = recoveryViews.get(t.id);
+    return view?.holdsCompletion ? [{ taskId: t.id, title: displayTaskTitle(t.title), view }] : [];
+  });
 
   // PRs with failing CI — surfaced in the all_prs_merged criterion panel (AC-3).
   // Derived from the same worker state the Activity chip reads (no extra GitHub call).
@@ -1091,7 +1102,7 @@ export default async function MissionDetailPage({
   // The integration PR card and the review summary ride along on every layout.
   const quietState = ['running', 'active', 'complete'].includes(displayState);
   const budgetExhausted = budgetUsd != null && mission.status === 'budget_exhausted';
-  const boardNotice = quietState && !missionPrCard && !reviewSummary ? null : (
+  const boardNotice = quietState && !missionPrCard && !reviewSummary && recoveryItems.length === 0 ? null : (
     <MissionNoticeSlot
       needsYou={!quietState && noticeNeedsPerson({
         displayState,
@@ -1109,6 +1120,7 @@ export default async function MissionDetailPage({
       )}
       {!quietState && decisionBlock}
       {!quietState && budgetExhausted && budgetDetail}
+      {recoveryItems.length > 0 && <MissionRecoveryNotice items={recoveryItems} />}
       {missionPrCard}
       {reviewSummary}
     </MissionNoticeSlot>

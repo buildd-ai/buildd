@@ -2,11 +2,11 @@
 title: Task Dispatch Authority
 status: active
 owner: max
-last_verified: 2026-10-04
+last_verified: 2026-10-11
 summary: Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 domain: tasks
 surfaces: [apps/web/src/lib/dispatch-authority.ts, apps/web/src/lib/dispatch-adapters.ts, packages/core/dispatch-outbox.ts, packages/core/drizzle/20261006230118_baseline/migration.sql]
-related: [webhook-dataflow, mission-task-lifecycle, path-claim-ownership, runner-liveness, external-cron-triggers]
+related: [webhook-dataflow, mission-task-lifecycle, path-claim-ownership, runner-liveness, external-cron-triggers, failure-incident-recovery]
 keywords: [task_dispatch_outbox, wakeTask, task:assigned, dispatch-drain, not_before, start_at, outbox, wake, dispatchNewTask, dispatchRetriedTask, dispatch transport, handed_off, dispatch_transport, orphan reconcile, dispatchFallbackAt, callback rate limit, dispatch_health, unackedStale, dispatch alerts]
 verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/tests/db/reconciliation-disabled.test.ts, apps/web/tests/db/path-release.test.ts, apps/web/tests/db/dependency-wake.test.ts, apps/web/tests/db/retry-wake.test.ts, apps/web/tests/db/start-at-timer.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts, apps/web/tests/db/dispatch-handoff.test.ts, apps/web/src/lib/dispatch-resolve.test.ts, apps/web/src/lib/dispatch-transport.test.ts, apps/web/src/app/api/dispatch/v1/resolve/route.test.ts, apps/web/src/app/api/dispatch/v1/receipts/route.test.ts, packages/core/__tests__/dispatch-envelope.test.ts, packages/core/__tests__/dispatch-handoff-render.test.ts, apps/web/tests/db/dispatch-reconcile.test.ts, apps/web/src/lib/dispatch-reconcile.test.ts, apps/web/src/lib/dispatch-callback-auth.test.ts, apps/web/tests/db/dispatch-health.test.ts, apps/web/src/lib/dispatch-health.test.ts, apps/web/src/lib/dispatch-alerts.test.ts, apps/web/src/app/api/health/dispatch/route.test.ts, packages/core/__tests__/dispatch-health-report.test.ts]
 supersedes: []
@@ -566,3 +566,13 @@ policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
   through the outbox. See webhook-dataflow.
 - Dashboard realtime events (TASK_UPDATED, TASK_UNBLOCKED, path claim
   releases). They are UI and agent signals, not wakes.
+- Failure-incident recovery (failure-incident-recovery). Recovery is a client
+  of this authority, not a second one.
+  - A recovery wake is an ordinary outbox row with cause `path_claim.released`.
+  - The outbox's pending coalescing on (task, `dedupe_key`) only merges wakes
+    while a row is still pending.
+  - At-most-once per recovery action comes from the incident's own
+    compare-and-swap, not from the outbox.
+  - The claim route still decides every wake (invariant 5).
+  - The `incident` intent stays unregistered. Incident pages keep going
+    through the escalation gate's `notifyTeam`.

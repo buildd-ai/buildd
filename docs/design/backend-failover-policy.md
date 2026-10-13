@@ -1,11 +1,11 @@
 ---
 status: partially
 # Structural conformance only; passing does not certify every prose invariant.
-# failure-classification-contract intentionally fails: the packages/core two-arg
-# classifyFailure(error, pattern) contract this doc specifies was never built.
+# failure-classification-contract: the packages/core two-arg
+# classifyFailure(error, pattern) contract this doc specifies shipped with
+# failure-incident-recovery §18.2 (packages/core/failure-classification.ts).
 # apps/web/src/lib/failure-classifier.ts is a pre-existing, unrelated single-arg
-# classifier — it does not satisfy this assertion. Fix the assertion only once
-# the §1 primitive actually ships. select-failover, manual-provider-switch, and
+# classifier. select-failover, manual-provider-switch, and
 # backend-policy-tests pass because §§3/6 (bidirectional direction, manual
 # override) genuinely shipped, exactly as scoped — see "What Has Shipped" /
 # "What Has Not" below for the full picture. Per-assertion classification
@@ -38,6 +38,8 @@ assertions:
     type: "symbol"
     name: "classifyFailure"
     path: "packages/core/failure-classification.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "classifyFailure(error, pattern) shipped with failure-incident-recovery §18.2 (task 6bfc6293): §1's primitive exists. The doc stays 'partially' because per-workspace failover policy and a failoverHistory audit are still unbuilt (What Has Not), so this passing assertion is suppressed rather than redispatching a reconcile task; promote the doc once those land or are dropped."
 ---
 
 # backend-failover-policy

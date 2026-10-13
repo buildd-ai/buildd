@@ -55,6 +55,7 @@ import {
   type UpsertIncidentResult,
 } from './failure-incident-store';
 import { appBaseUrl } from './app-url';
+import { projectIncident, type IncidentVerdictView } from './incident-view';
 
 export type IncidentClassification = FailureIncidentTriageDecision;
 export type IncidentDecisionSource = 'rule' | 'model' | 'fallback';
@@ -247,6 +248,7 @@ const RULE_LABEL: Record<FailureIncidentRule, string> = {
   repeated_failure: 'Same failure across tasks',
   stranded_gate: 'Tasks stranded at a gate',
   path_overlap_stall: 'Path-overlap stall',
+  infrastructure_failure: 'Infrastructure failure',
   provider_attribution_mismatch: 'Provider attribution mismatch',
   failure_rate_spike: 'Failure-rate spike',
   output_unmet_boundary: 'Output unmet at one boundary',
@@ -279,18 +281,24 @@ function shortTime(iso: string): string {
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(iso) ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z` : iso;
 }
 
-/** Compact alert text. Structure only — see the file header. */
+/**
+ * Compact alert text. Structure only — see the file header. Its state line is
+ * the shared projection's (lib/incident-view.ts), under the verdict the gate
+ * made when it has one, so the push says what Home and the page say.
+ */
 export function formatIncidentAlert(
   incident: StoredIncident,
   plan: Pick<IncidentAlertPlan, 'severity' | 'reason'>,
-  opts: { baseUrl?: string } = {},
+  opts: { baseUrl?: string; verdict?: IncidentVerdictView | null; timeZone?: string } = {},
 ): { title: string; message: string } {
   const label = incidentRuleLabel(incident.rule);
   const title = `${plan.severity.toUpperCase()} incident ${REASON_TEXT[plan.reason ?? 'opened']}: ${label}`;
   const task = incident.affectedRefs?.taskIds?.[0];
   const pr = incident.affectedRefs?.prNumbers?.[0];
   const example = [task ? `task ${task.slice(0, 8)}` : null, pr !== undefined ? `PR #${pr}` : null].filter(Boolean).join(' · ');
+  const view = projectIncident(incident, opts.verdict ?? null, { timeZone: opts.timeZone });
   const lines = [
+    `${view.stateWord}: ${view.sentence.length > 220 ? `${view.sentence.slice(0, 219)}…` : view.sentence}`,
     `Impact: ${incident.occurrenceCount} occurrences across ${impactScope(incident)} ${SCOPE_UNIT[incident.rule] ?? 'tasks'}` +
       (incident.recurrenceCount > 0 ? `, recurred ${incident.recurrenceCount}x` : ''),
     `first ${shortTime(incident.firstSeenAt)} · last ${shortTime(incident.lastSeenAt)}`,
@@ -366,12 +374,17 @@ export type FixTaskSkipReason =
   | 'transient_or_budget'
   | 'no_workspace'
   | 'claimed_elsewhere'
-  | 'disabled';
+  | 'disabled'
+  /** The incident's own recovery repairs it (a credential is reconnected, not coded). */
+  | 'recovery_owned';
 
 export function shouldFileFixTask(
   incident: StoredIncident,
   triage: IncidentTriage,
 ): { file: true } | { file: false; reason: FixTaskSkipReason } {
+  // A rejected credential is repaired by reconnecting it, not by code: its
+  // incident's recovery owns it (failure-incident-recovery §18.4).
+  if (incident.rule === 'infrastructure_failure' && incident.signature.includes('|component=worker.auth|')) return { file: false, reason: 'recovery_owned' };
   if (triage.classification !== 'systemic_bug' && triage.classification !== 'page_now') return { file: false, reason: 'not_systemic' };
   if (triage.source === 'fallback') return { file: false, reason: 'decision_unavailable' };
   if (triage.source === 'model' && (triage.confidence ?? 0) < FIX_TASK_MIN_CONFIDENCE) return { file: false, reason: 'low_confidence' };

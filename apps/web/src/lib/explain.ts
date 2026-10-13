@@ -64,6 +64,7 @@ import {
   dispatchWakeLink,
   withDispatchLink,
   entitlementHoldLink,
+  taskRecoveryLink,
   type BaseSideMerge,
   type StateBecauseExtras,
   type ConflictSubject,
@@ -1029,10 +1030,11 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const gateHistory = gateRows.map(r => r.entry);
   const holds = await loadCoordination(task as any, gateRows).catch(() => [] as CoordinationHold[]);
   const coordLink = coordinationLink(holds, { taskId, workspaceId });
-  const because = withDispatchLink(
+  const recovery = taskRecoveryLink(task.status, task.context, { taskId, workspaceId });
+  const because = withDispatchLink(withDispatchLink(
     withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), wake), hold),
     coordLink as Parameters<typeof withDispatchLink>[1],
-  );
+  ), recovery);
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
     : [];

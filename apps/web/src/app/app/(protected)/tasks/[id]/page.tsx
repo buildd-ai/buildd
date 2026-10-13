@@ -1,4 +1,6 @@
 import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { cancellationLine } from '@/lib/task-cancellation';
+import { taskRecoverySentence } from '@/lib/task-recovery-hold';
 import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
@@ -129,6 +131,8 @@ import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
+import Notice from '@/components/ui/Notice';
+import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
@@ -212,7 +216,7 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
+  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat, taskRecoveryViews] = await Promise.all([
     // Open question notes scoped to this task (drives the "Waiting on you"
     // badge, and lets the live worker view show the note and the worker's
     // waitingFor as ONE question). A mission task's questions carry its
@@ -295,6 +299,8 @@ export default async function TaskDetailPage({
     // An answer link for a mission filed from the reader's own conversation
     // opens that conversation instead, when chat is on for them.
     focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
+    // A failure incident's recovery holding this task (failure-incident-recovery §16.4).
+    loadTaskRecoveryViewsForViewer([task.id], { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null }),
   ]);
   if (answerInChat) redirect(answerInChat);
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
@@ -649,7 +655,11 @@ export default async function TaskDetailPage({
   // Never revive an ended worker merely because it retained a question.
   const activeWorkerRow = !isTerminalTaskStatus(task.status)
     ? workerPicks.activeWorker : undefined;
-  const activeWorker = activeWorkerRow?.waitingFor && !isOpenAsk(task.status, activeWorkerRow.status)
+  // A task blocked by a failure incident reads the incident's recovery (failure-incident-recovery
+  // §16.4, §17.2): while recovery owns the next step, a question the worker asked about the same
+  // failure is stale, so its controls are not offered; history keeps it.
+  const taskRecovery = taskRecoveryViews.get(task.id) ?? null;
+  const activeWorker = activeWorkerRow?.waitingFor && (!isOpenAsk(task.status, activeWorkerRow.status) || taskRecovery?.supersedesQuestion)
     ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
 
   const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
@@ -717,6 +727,14 @@ export default async function TaskDetailPage({
   });
 
   const initiative = task.mission?.initiative ?? null;
+
+  // One plain line for why a task was cancelled, or what a held task waits on
+  // (failure-incident-recovery §18.5/§18.6): the same sentence explain gives.
+  const recoveryLine = task.status === 'cancelled'
+    ? cancellationLine(task.context)
+    : task.status === 'pending'
+      ? taskRecoverySentence(task.context, iso => `${iso.slice(11, 16)} UTC`)
+      : null;
 
 
   // Parse attachments from context — resolve R2 storage keys to presigned URLs
@@ -1518,6 +1536,9 @@ export default async function TaskDetailPage({
               title={deliverableLink.title ? displayTaskTitle(deliverableLink.title) : null}
             />
           )}
+          {recoveryLine && (
+            <p data-testid="task-recovery-line" className="mt-2 text-meta text-text-secondary [overflow-wrap:anywhere]">{recoveryLine}</p>
+          )}
           {/* The one track, in the delivery's words (task-page State mapping). A
               live run's own view leads with it, so it is drawn here only between runs. */}
           {headerTrack && !activeWorker && <Lifecycle state={headerTrack.state} phrase={headerTrack.phrase} className="mt-3" />}
@@ -1529,6 +1550,19 @@ export default async function TaskDetailPage({
             different things. The page alone adds runner targeting. An open
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
+        {taskRecovery?.holdsCompletion && (
+          <Notice
+            tone={taskRecovery.phase === 'unavailable' ? 'err' : taskRecovery.phase === 'decision' ? 'warn' : 'info'}
+            title={taskRecovery.stateWord}
+            action={{ label: 'Open incident', href: taskRecovery.href }}
+            className="mt-4"
+            data-testid="task-recovery-status"
+          >
+            <p>{taskRecovery.sentence}</p>
+            <p className="text-meta text-text-muted">Owner: {taskRecovery.ownerLabel}</p>
+          </Notice>
+        )}
+
         {verdict && (
           <TaskVerdictBlock verdict={verdict} displayStatus={displayStatus} />
         )}

@@ -87,7 +87,8 @@ import { resolveDispatchedReview } from '@/lib/verdict-provenance';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
-import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
+import { classifyAuthErrorSeverity, type AuthErrorSeverity } from '@buildd/core/auth-error-classifier';
+import { holdTaskForCredential, resolveCredentialIdentity } from '@/lib/task-recovery-hold';
 import { recordRootCauseForOutcome } from '@/lib/root-cause-record';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
@@ -2867,6 +2868,8 @@ export async function PATCH(
       conditionUnmet: isCodexDeferral,
       serverRefused: isServerRefusal,
       outputGateRefused: isOutputGateRefusal,
+      // A rejected credential is the credential's failure (failure-incident-recovery §18.2).
+      authFailure: status === 'failed' && classifyAuthErrorSeverity(error ?? '') !== 'none',
     });
   }
   // A non-gate refusal is exempt from the task's retry budget, so record it —
@@ -3253,6 +3256,9 @@ export async function PATCH(
   // credentials are available, flip the task to Codex instead of permanently failing.
   // Uses the existing auth-error classifier — no new classifier needed.
   // Guard: context.authFailoverApplied prevents flip→fail→flip ping-pong (max 1 flip per chain).
+  // The auth class of this failure, for the credential hold below. 'none' unless set here.
+  let authSeverityForHold: AuthErrorSeverity = 'none';
+  let isCredentialHold = false;
   if (status === 'failed' && !isBudgetReset && !isCodexDeferral && worker.taskId) {
     const isCodeFailure = !isBudgetError && !isSandboxMountGap;
     if (isCodeFailure) {
@@ -3275,6 +3281,9 @@ export async function PATCH(
         }
       }
 
+      authSeverityForHold = authSeverity;
+      // Found only in the traces: still the credential's failure, not the work's.
+      if (authSeverity !== 'none' && updates.exitCause === 'code_failure') updates.exitCause = 'auth_failure';
       if (authSeverity !== 'none') {
         const authTask = await db.query.tasks.findFirst({
           where: sqlWhere(eq(tasks.id, worker.taskId)),
@@ -3346,6 +3355,48 @@ export async function PATCH(
           }
         }
       }
+    }
+  }
+
+  // Credential hold (failure-incident-recovery §18.3, I-14): an auth failure no
+  // other backend can carry is not the task's failure. Back to pending behind
+  // the probe floor, on the same branch, with the hold recorded; released as
+  // soon as the credential checks healthy (task-recovery-hold.ts, the
+  // infrastructure_failure incident). Never on a cancelled task.
+  if (status === 'failed' && authSeverityForHold !== 'none' && !isBudgetReset && !isCodexDeferral && worker.taskId) {
+    try {
+      const heldTask = await db.query.tasks.findFirst({
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
+        columns: { backend: true, workspaceId: true, context: true, status: true },
+        with: { workspace: { columns: { teamId: true } } },
+      });
+      if (heldTask && heldTask.status !== 'cancelled') {
+        const credential = await resolveCredentialIdentity({
+          accountId: account.id,
+          accountName: (account as { name?: string | null }).name ?? null,
+          authType: (account as { authType?: string | null }).authType ?? null,
+          teamId: (heldTask.workspace as { teamId?: string } | undefined)?.teamId ?? null,
+          workspaceId: heldTask.workspaceId ?? null,
+          backend: heldTask.backend ?? null,
+        });
+        const hold = await holdTaskForCredential({
+          taskId: worker.taskId,
+          context: (heldTask.context ?? {}) as Record<string, unknown>,
+          credential,
+          workerId: id,
+          branch: worker.branch ?? null,
+          lastCommitSha: worker.lastCommitSha ?? null,
+          error: error ?? null,
+        });
+        if (hold) {
+          isCredentialHold = true;
+          isBudgetReset = true; // the held-for-retry path: no task-status overwrite, no fail notification
+          console.log(`[workers PATCH] Task ${worker.taskId} held for ${credential.credentialKey} (attempt ${hold.attempts}${hold.exhausted ? ', exhausted' : ''})`);
+        }
+      }
+    } catch (err) {
+      // The hold is best-effort: on any error the task fails as it did before.
+      console.warn(`[workers PATCH] Credential hold failed for task ${worker.taskId}:`, err);
     }
   }
 
@@ -5144,7 +5195,9 @@ export async function PATCH(
     // Auth failover: signal backend change, not a budget pause
     const taskResetPayload = isAuthFailover
       ? { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', backend: 'codex' } }
-      : { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', budgetExhausted: true } };
+      : isCredentialHold
+        ? { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', credentialHold: true } }
+        : { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', budgetExhausted: true } };
     await triggerEvent(
       channels.workspace(worker.workspaceId),
       events.TASK_UPDATED,

@@ -21,6 +21,7 @@ import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { wakeTasks } from '@/lib/dispatch-authority';
+import { releaseCredentialHolds } from '@/lib/task-recovery-hold';
 
 /** How far back a failed task can be to still count as a recoverable casualty. */
 export const RECOVERY_WINDOW_HOURS = 24;
@@ -31,6 +32,39 @@ export interface RequeueResult {
   requeued: string[];
   /** Failed auth-casualties found but skipped because the cap was hit. */
   skippedOverCap: number;
+  /** Tasks held for the credential (failure-incident-recovery §18.3) that this released. */
+  released: string[];
+}
+
+/** Release the team's credential holds; never throws into the requeue. */
+async function releaseTeamHolds(teamId: string): Promise<string[]> {
+  try {
+    return await releaseCredentialHolds({ teamId, by: 'credential.restored' });
+  } catch (err) {
+    console.error(`[credential-recovery] releasing held tasks for team ${teamId} failed:`, err);
+    return [];
+  }
+}
+
+/**
+ * The requeue writer for failed tasks: flip `failed` → `pending` so a runner
+ * re-claims, and wake them under `reason`. Guarded on status='failed', so a
+ * task that changed state between the caller's read and this write is not
+ * clobbered. Returns the ids actually flipped; only those are woken.
+ * Also the capture family's resume and retry (failure-incident-recovery §16.4).
+ */
+export async function requeueFailedTasks(taskIds: string[], reason: 'credential.restored' | 'task.requeued'): Promise<string[]> {
+  if (taskIds.length === 0) return [];
+  const flipped = await db
+    .update(tasks)
+    .set({ status: 'pending', updatedAt: new Date() })
+    .where(and(inArray(tasks.id, taskIds), eq(tasks.status, 'failed')))
+    .returning({ id: tasks.id });
+  const ids = flipped.map(r => r.id);
+  // The tasks trigger already made each flip durable; this labels the wake
+  // and kicks delivery.
+  if (ids.length > 0) await wakeTasks(ids, reason);
+  return ids;
 }
 
 /**
@@ -71,20 +105,12 @@ export async function requeueAuthFailedTasks(teamId: string): Promise<RequeueRes
     .filter(([, v]) => v.error != null && classifyAuthErrorSeverity(v.error) !== 'none')
     .map(([taskId]) => taskId);
 
-  if (candidates.length === 0) return { requeued: [], skippedOverCap: 0 };
+  if (candidates.length === 0) return { requeued: [], skippedOverCap: 0, released: await releaseTeamHolds(teamId) };
 
   const toRequeue = candidates.slice(0, MAX_REQUEUE);
   const skippedOverCap = candidates.length - toRequeue.length;
 
-  // Flip failed → pending so the runner re-claims. Guard on status='failed' so a
-  // task that changed state between the read and the write is not clobbered.
-  await db
-    .update(tasks)
-    .set({ status: 'pending', updatedAt: new Date() })
-    .where(and(inArray(tasks.id, toRequeue), eq(tasks.status, 'failed')));
-  // The tasks trigger already made each flip durable; this labels the wake
-  // and kicks delivery. A task the guard skipped is skipped again at delivery.
-  await wakeTasks(toRequeue, 'credential.restored');
+  await requeueFailedTasks(toRequeue, 'credential.restored');
 
   if (toRequeue.length > 0) {
     console.log(
@@ -93,5 +119,5 @@ export async function requeueAuthFailedTasks(teamId: string): Promise<RequeueRes
     );
   }
 
-  return { requeued: toRequeue, skippedOverCap };
+  return { requeued: toRequeue, skippedOverCap, released: await releaseTeamHolds(teamId) };
 }

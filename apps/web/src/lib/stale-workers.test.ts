@@ -270,6 +270,27 @@ describe('cleanupStuckWaitingInput', () => {
     expect(result.retriedTasks).toBe(0);
   });
 
+  it('superseded_by_recovery closes the named question now: worker and task failed, no clone, history kept (§16.4)', async () => {
+    const fresh = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes: far below any timeout
+    const question = { type: 'question', prompt: 'How should I proceed?' };
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w-audit', taskId: 'task-audit', accountId: 'account-1', status: 'waiting_input', updatedAt: fresh, waitingFor: question, task: { missionId: 'm-1' } },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-audit', workspaceId: 'ws-1', title: '[surface audit] x', description: '', context: {}, missionId: 'm-1' });
+    let workerSet: any = null;
+    mockWorkersUpdate.mockReturnValue({ set: mock((v: any) => { workerSet = v; return { where: mock(() => Promise.resolve()) }; }) });
+
+    const result = await cleanupStuckWaitingInput('account-1', { reason: 'superseded_by_recovery', workerIds: ['w-audit'] });
+
+    expect(result).toEqual({ failedWorkers: 1, retriedTasks: 0 });
+    expect(workerSet.status).toBe('failed');
+    expect(workerSet.error).toStartWith('superseded_by_recovery');
+    // The question stays on the row as history: never cleared.
+    expect('waitingFor' in workerSet).toBe(false);
+    expect(mockTasksUpdate).toHaveBeenCalledTimes(1);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+  });
+
   it('fails workers stuck in waiting_input for 24+ hours', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000); // 25 hours ago
     mockWorkersFindMany.mockResolvedValue([
@@ -1025,8 +1046,9 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     expect(taskSets.some(v => v.status === 'completed')).toBe(false);
     const requeue = taskSets.find(v => v.status === 'pending');
     expect(requeue).toBeDefined();
-    expect(requeue.startAt).toBeUndefined();
-    expect(requeue.context).toBeUndefined(); // no infraRetryCount charged
+    expect(requeue.startAt).toBeNull();
+    expect(requeue.context.infraRetryCount).toBe(0); // no infra retry charged
+    expect(requeue.context.resumeBranch).toBe('b');
     expect(mockWakeTask).toHaveBeenCalledWith('task-1', 'task.requeued');
   });
 
@@ -3466,4 +3488,48 @@ describe('cleanupUnreadInteractiveAnswers', () => {
 
     expect(capturedAccountsSet).not.toBeNull();
   });
+});
+
+// failure-incident-recovery §18.3 (I-15, AC-20): an interactive worker's task
+// goes back to pending for a session to re-claim — no floor, no charge, and
+// never `failed`, even at the infra cap.
+describe('resolveTasksOfReapedWorkers — interactive (local session) worker', () => {
+  const idle = { id: 'w-mcp', taskId: 'task-1', runner: 'mcp', prUrl: null, prNumber: null, commitCount: 2, branch: 'buildd/abc-fix', error: 'Interactive worker released: no MCP activity from its session for 2 hours (claim_task worker, not run by a runner)', startedAt: new Date() };
+  let taskUpdateSet: any;
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksUpdate.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReset();
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    taskUpdateSet = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWakeTask.mockClear();
+  });
+
+  for (const infraRetryCount of [0, 3]) {
+    it(`returns the task to pending on its branch, uncharged (infraRetryCount=${infraRetryCount})`, async () => {
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'w-mcp', exitCause: 'infra_failure' }]);
+      mockTasksFindFirst.mockResolvedValueOnce({
+        id: 'task-1', workspaceId: 'ws-1', status: 'in_progress', category: 'feature',
+        context: { infraRetryCount }, loopState: null, loopConfig: null, updatedAt: new Date(),
+      }).mockResolvedValue({ parentTaskId: null });
+      await resolveTasksOfReapedWorkers([idle], 'infra_failure');
+      expect(taskUpdateSet.status).toBe('pending');
+      expect(taskUpdateSet.startAt).toBeNull();
+      expect(taskUpdateSet.context.resumeBranch).toBe('buildd/abc-fix');
+      expect(taskUpdateSet.context.infraRetryCount).toBe(infraRetryCount);
+      expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued']]);
+    });
+  }
 });

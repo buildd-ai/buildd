@@ -20,3 +20,4 @@ export * from './derived-files';
 export * from './warm-handover';
 export * from './providers';
 export * from './model-tier-ceiling';
+export * from './operator-recovery';

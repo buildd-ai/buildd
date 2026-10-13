@@ -49,6 +49,7 @@ import {
 } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import {
@@ -502,6 +503,10 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
               console.error(`[pr-reconcile] checkDependsOnResolved failed for task ${worker.taskId}:`, err),
             );
           }
+          // A lost webhook also skipped the path-claim release (G6 in
+          // failure-incident-recovery): without it the PR's waiters wake only
+          // on the hourly lease sweep or their own next poll. Idempotent.
+          if (worker.taskId) await releaseAndNotify(worker.taskId, 'merged');
           // The fifth consumer of a merge event, and the one this route was
           // missing. The other four are above; see reconcileSubjectAnchors.
           result.subjectsReconciled += await reconcileSubjectAnchors(
