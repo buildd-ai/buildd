@@ -15,6 +15,7 @@ import { visualReviewPolicyOf } from '@buildd/shared';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { resolveVisualReviewPolicy } from './visual-review-policy';
+import { loadAutoImpactDecision } from './visual-review-auto-decision';
 import { autoRetriesLeft, type ScheduleAudit } from './visual-review-schedule';
 import {
   deriveMissionVisualReview,
@@ -53,12 +54,13 @@ export async function getMissionVisualReviewState(
   });
   if (!mission) return null;
 
-  const [ws, tasks, waiver] = await Promise.all([
+  const [ws, tasks, waiver, autoDecision] = await Promise.all([
     mission.workspaceId
       ? db.query.workspaces.findFirst({ where: eq(workspaces.id, mission.workspaceId), columns: { gitConfig: true, githubRepoId: true } })
       : Promise.resolve(undefined),
     loadSurfaceAuditGateTasks(missionId),
     loadSurfaceAuditWaiver(missionId),
+    loadAutoImpactDecision(missionId).catch(() => null),
   ]);
   const gitConfig = (ws?.gitConfig ?? null) as { defaultBranch?: string } | null;
   const policy = resolveVisualReviewPolicy({
@@ -72,7 +74,6 @@ export async function getMissionVisualReviewState(
     gate && gate.required ? { state: 'yes', source: gate.source, uiFiles: gate.uiPaths.length }
     : gate && gate.why === 'no_ui_change' ? { state: 'no', source: null, uiFiles: 0 }
     : { state: 'unknown', source: null, uiFiles: 0 };
-  const uiChange = opts.uiChange ?? gateUiChange;
 
   let integrationPr: VisualReviewStateInput['branch']['integrationPr'] = null;
   let headSha: string | null = null;
@@ -89,6 +90,11 @@ export async function getMissionVisualReviewState(
       base = d.baseRef ?? base;
     }
   }
+
+  // The logged no-impact decision stands only for the head it was made on.
+  const decidedNoImpact = !!autoDecision && !!headSha && autoDecision.headSha === headSha;
+  const uiChange: VisualReviewStateInput['uiChange'] =
+    opts.uiChange ?? (decidedNoImpact ? { state: 'no', source: 'diff', uiFiles: 0 } : gateUiChange);
 
   const uiBuilders = tasks.filter(t => t.taskClass === 'work' && t.roleSlug !== 'visual-auditor');
   const ledger = await loadMissionAuditLedger(missionId);
@@ -114,6 +120,7 @@ export async function getMissionVisualReviewState(
         }
       : null,
     waiver,
+    autoDecision: decidedNoImpact ? autoDecision : null,
     auditedSha: latestAudit ? latestAudit.headSha : null,
     autoRetriesLeft: autoRetriesLeft(failedOnHead),
     captureConfigError: latestAudit?.captureConfigError ?? null,

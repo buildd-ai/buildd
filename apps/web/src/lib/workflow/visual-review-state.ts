@@ -50,7 +50,7 @@ export interface VisualReviewStateInput {
     expected: number | null;
   } | null;
   /** The newest waiver a person recorded. */
-  waiver: { reason: string; actorLabel: string | null; at: string } | null;
+  waiver: { reason: string; actorLabel: string | null; at: string; policy?: string | null } | null;
   branch: {
     headSha: string | null;
     base: string | null;
@@ -68,6 +68,18 @@ export interface VisualReviewStateInput {
    * commit, and an audit that recorded none cannot prove it.
    */
   auditedSha?: string | null;
+  /**
+   * The logged "no visual impact" decision for the current head (rule, model or
+   * policy). It is the system's own call, so it is carried apart from a waiver,
+   * which is always a person's.
+   */
+  autoDecision?: AutoImpactDecision | null;
+}
+
+export interface AutoImpactDecision {
+  basis: 'rule' | 'model' | 'policy';
+  at: string;
+  headSha: string | null;
 }
 
 export interface MissionVisualReviewState {
@@ -86,7 +98,9 @@ export interface MissionVisualReviewState {
   progress?: { captured: number; expected: number | null };
   findings?: { issues: number; undecided: number; fixesOpen: number; stage: 'fixing' | 'needs_decision' };
   blocked?: { cause: VisualReviewBlockedCause; causeOwner: 'buildd' | 'workspace' | 'unknown'; autoRetriesLeft: number };
-  waiver?: { reason: string; actorLabel: string | null; at: string; supersededBy: string | null };
+  waiver?: { reason: string; actorLabel: string | null; at: string; policy?: string | null; supersededBy: string | null };
+  /** Set only while the review is not applicable and the system decided that: shown distinctly from `waiver`. */
+  autoDecision?: AutoImpactDecision;
   auditTaskId: string | null;
   branch: {
     headSha: string | null;
@@ -205,6 +219,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     ...(progress ? { progress } : {}),
     ...(findings ? { findings } : {}),
     ...(blocked ? { blocked } : {}),
+    ...(input.autoDecision && status === 'not_applicable' ? { autoDecision: input.autoDecision } : {}),
     ...(input.waiver && (waiverActive || waiverSuperseded)
       ? { waiver: { ...input.waiver, supersededBy: waiverActive ? null : (audit?.id ?? null) } }
       : {}),

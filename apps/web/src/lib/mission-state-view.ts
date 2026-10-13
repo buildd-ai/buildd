@@ -623,6 +623,8 @@ export interface MissionCompletionSummary {
   visualReviewHold?: { cells: number; roundCapOpen: boolean; enforced: boolean } | null;
   /** The rendered UI files behind `surface_audit_missing`. */
   surfaceAuditPaths?: string[];
+  /** With `surface_audit_missing`: the policy runs the review itself, so it is not an owner decision. */
+  surfaceAuditAutomatic?: boolean;
 }
 
 // ─── The situation line ───────────────────────────────────────────────────────
@@ -1471,6 +1473,22 @@ function visualReviewFact(input: MissionStateInput): Resolution | null {
 /** Rule 9¾ — completion refused for want of a surface audit on a UI change. */
 function surfaceAuditFact(input: MissionStateInput): Resolution | null {
   if (input.completion?.code !== 'surface_audit_missing') return null;
+  // Automatic and strict policies schedule the review themselves: changed UI
+  // alone is not a question for the owner, only a wait on the system.
+  if (input.completion.surfaceAuditAutomatic) {
+    return {
+      kind: 'waiting',
+      waitingOn: {
+        kind: 'self_resolving_wait',
+        tone: 'neutral',
+        label: 'Verifying the changed screens',
+        reason: 'visual review',
+        waitUntil: null,
+      },
+      displayState: 'active',
+      source: 'canCompleteMission',
+    };
+  }
   return {
     kind: 'awaiting_decision',
     waitingOn: {
@@ -1963,6 +1981,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       }
       return 'Decide this yourself; no automated step will clear it.';
     case 'self_resolving_wait':
+      if (waitingOn.reason === 'visual review') return 'The screens are checked automatically. Nothing is needed from you.';
       return waitingOn.waitUntil
         ? `Work resumes at ${waitingOn.waitUntil}.`
         : 'Work resumes when the wait ends.';

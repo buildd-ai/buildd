@@ -15,6 +15,7 @@ import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { requestMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { loadBrowserRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
+import { logAutoImpactDecision } from './visual-review-auto-decision';
 import { assessMissionVisualImpact } from './visual-review-impact-load';
 import { uiChangeFromImpact, type VisualImpactAssessment } from './visual-review-impact';
 import { planVisualReviewSchedule, type ScheduleAction } from './visual-review-schedule';
@@ -46,6 +47,9 @@ export async function scheduleMissionVisualReview(missionId: string, now = Date.
       console.error('[visual-review-schedule] impact assessment failed (treating as review_required):', err);
       return null;
     });
+    if (impact?.verdict === 'not_applicable') {
+      await logAutoImpactDecision(missionId, impact.basis === 'fail_safe' ? 'rule' : impact.basis, impact.headSha);
+    }
     if (impact) state = (await getMissionVisualReviewState(missionId, { uiChange: uiChangeFromImpact(impact, head) })) ?? state;
   }
 

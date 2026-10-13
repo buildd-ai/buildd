@@ -734,6 +734,13 @@ describe('deriveMissionStateView — surface audit missing', () => {
     expect(gated(deriveMissionStateView({ ...base, completion: refusal }))).not.toHaveProperty('surfaceAuditPaths');
   });
 
+  it('under an automatic policy it is a wait on the system, never an owner decision', () => {
+    const view = deriveMissionStateView({ ...base, completion: { ...refusal, surfaceAuditAutomatic: true } });
+    expect(view.kind).toBe('waiting');
+    expect(view.outstanding.some(f => f.kind === 'human_decision')).toBe(false);
+    expect(gated(view).label).toBe('Verifying the changed screens');
+  });
+
   it('still shows while a worker is running', () => {
     const view = deriveMissionStateView({ ...base, activeAgents: 1, completion: refusal });
     expect(view.kind).toBe('running');

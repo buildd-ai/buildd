@@ -131,7 +131,7 @@ function View({ params }: { params: MissionBoardVisualParams }) {
             <MissionScreensRow missionId={visual.missionId} step={visualStepOf(visual)} />
             <div className="border-t border-border-default py-4">
               <p className="section-label mb-2">Settings sheet (preview)</p>
-              <MissionVisualReviewSetting missionId={visual.missionId} initialEnabled visual={visual} />
+              <MissionVisualReviewSetting missionId={visual.missionId} initialEnabled />
             </div>
           </div>
         </MissionVisualReviewProvider>

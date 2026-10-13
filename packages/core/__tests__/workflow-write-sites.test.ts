@@ -47,8 +47,9 @@ const ALLOWED = new Set<string>();
 // landing door shares it with the reducer so the two cannot drift.
 // The visual-review trio is the merge gate's and cron's way in: `visual-review-state` is pure,
 // `visual-review-state-load` only SELECTs the integration PR's delivery row (head SHA, state), and
-// `visual-review-schedule-run` files audit tasks, never a delivery state.
-const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'base-delta', 'visual-review-state', 'visual-review-state-load', 'visual-review-schedule-run']);
+// `visual-review-schedule-run` files audit tasks, never a delivery state. `visual-review-copy` is pure
+// words and the owner-decision rule over that state, and `visual-review-policy` resolves a policy mode: neither does I/O.
+const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'base-delta', 'visual-review-state', 'visual-review-state-load', 'visual-review-schedule-run', 'visual-review-copy', 'visual-review-policy']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 const KERNEL_IMPORT = /(?:from\s+|import\()\s*['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow)\/([a-z-]+)['"]/g;
 

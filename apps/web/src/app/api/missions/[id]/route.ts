@@ -30,7 +30,8 @@ import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabe
 import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { criteriaFingerprint } from '@/lib/criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
-import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError, visualReviewPolicyOf } from '@buildd/shared';
+import { DEFAULT_VISUAL_REVIEW_POLICY, findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError, visualReviewPolicyOf, type VisualReviewPolicyMode } from '@buildd/shared';
+import { formatWaiverBody } from '@/lib/surface-audit-waiver-body';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
@@ -329,12 +330,14 @@ export async function PATCH(
     }
 
     // Strict Visual Review forbids skip/waive: no waiver and no opt-out of the audit.
+    let waiverPolicy: VisualReviewPolicyMode = DEFAULT_VISUAL_REVIEW_POLICY;
     if (surfaceWaiverReason !== null || autoSurfaceAudit === false) {
       const policyWorkspaceId = workspaceId !== undefined ? workspaceId : existing.workspaceId;
       const policyWs = policyWorkspaceId
         ? await db.query.workspaces.findFirst({ where: eq(workspaces.id, policyWorkspaceId), columns: { gitConfig: true } })
         : null;
-      if (visualReviewPolicyOf(policyWs?.gitConfig) === 'strict') {
+      waiverPolicy = visualReviewPolicyOf(policyWs?.gitConfig) ?? DEFAULT_VISUAL_REVIEW_POLICY;
+      if (waiverPolicy === 'strict') {
         return NextResponse.json({
           error: 'This workspace requires visual review (policy: strict). It cannot be skipped, waived or turned off for a mission.',
           code: 'visual_review_policy_locked',
@@ -809,7 +812,7 @@ export async function PATCH(
         missionId: id,
         type: 'update',
         title: SURFACE_AUDIT_WAIVER_NOTE_TITLE,
-        body: surfaceWaiverReason,
+        body: formatWaiverBody(surfaceWaiverReason, waiverPolicy),
         actor,
       });
     }
