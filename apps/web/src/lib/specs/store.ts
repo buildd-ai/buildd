@@ -45,7 +45,7 @@ export type SpecCaller =
   | { kind: 'account'; account: Extract<WorkspaceAccessCaller, { account: unknown }>['account'] & { taskScope?: { workspaceId: string } } };
 
 const accessCaller = (c: SpecCaller): WorkspaceAccessCaller => (c.kind === 'user' ? { userId: c.userId } : { account: c.account });
-const author = (c: SpecCaller) => (c.kind === 'user'
+export const author = (c: SpecCaller) => (c.kind === 'user'
   ? { authorKind: 'user' as const, authorId: c.userId, label: `user:${c.userId}` }
   : { authorKind: 'agent' as const, authorId: c.account.id, label: `account:${c.account.id}` });
 

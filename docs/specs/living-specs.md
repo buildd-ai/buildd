@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -839,8 +839,9 @@ stop a spec.
     answer is recorded in the decision ledger under subject `spec_pair`.
 - `duplicate` at p >= 0.9 (Jev: 106 of 106 right in the eval): a 409 with
   `code: spec_duplicate` and the `duplicates`, naming each spec, and nothing is
-  written. A model the kind was not measured on is recorded, never applied, so
-  it cannot block.
+  written. Measured models: Jev, Clef and Clef Flash (no false duplicate in
+  the eval; Clef Flash rarely reaches 0.9, so it mostly warns). Any other
+  model is recorded, never applied, so it cannot block.
 - Override: `supersedes` (a spec id in the same workspace) or
   `distinctBecause` (at least 10 characters). The spec is created and the
   override is recorded on each blocking judgement's ledger row as a human
@@ -975,4 +976,116 @@ data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
 **Not yet**:
 - `similar` is lexical wherever no embedder key is configured, and lexical
   scores are not comparable to cosine, so it has no floor there.
+
+## 15. Diagrams and tables
+
+**Capability statement**: A spec MUST be able to carry diagrams and tables
+that read well on every spec surface, with the source kept in the spec's own
+text, and criteria written in a table MUST count as criteria.
+
+**Invariants**:
+- Spec surfaces render with `MarkdownContent surface="spec"`: the spec page,
+  the rendered (Spec) view of the revision panes on the spec page and the
+  approval link page. Every other surface renders as before.
+- A fenced ```mermaid block draws as a diagram (`MermaidBlock`). The library
+  loads on the client only when a block is on the page, runs with
+  `securityLevel: 'strict'` and no HTML labels, and follows the app's light
+  or dark theme. Until it draws, the source shows as code; a block it cannot
+  draw shows its source and the reason. The block is the spec's text, so the
+  body, its hash and its diff are unchanged: changing one node is a changed
+  line in the diff.
+- A spec table has ruled cells and alternate row shading, and sits in a box
+  that scrolls sideways, so a wide table never widens the page.
+- A table row whose first cell is exactly an id (`R-n`, `AC-n`, `D-n`, `I-n`,
+  optionally bold) defines it (`requirementIds`,
+  packages/spec-contract/src/requirements.ts): its text is the row's other
+  non-empty cells joined by "; ". The first definition still wins, fenced
+  code is still skipped, and a `check:` line under the table belongs to the
+  last id row above it.
+
+**Acceptance criteria**:
+- AC-57: GIVEN a spec body with a mermaid block WHEN a spec surface renders
+  THEN the library is loaded once, configured strict, and draws the block's
+  source; until then the source shows
+  (`apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx`).
+- AC-58: GIVEN a block the library cannot draw THEN its source and the reason
+  show (`apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx`).
+- AC-59: GIVEN a non-spec surface, or a spec with no mermaid block, THEN the
+  library never loads (`apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx`).
+- AC-60: GIVEN a six-column table on a spec surface THEN it sits in a
+  sideways-scrolling box with ruled cells; elsewhere tables keep their look
+  (`apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx`).
+- AC-61: GIVEN a table whose first column holds `**R-1**` and `AC-2` THEN
+  both are criteria with the row's other cells as text, and a body without a
+  table parses as before (`packages/spec-contract/src/requirements.test.ts`,
+  `packages/spec-contract/src/check-lines.test.ts`).
+
+**Code surface**:
+- `apps/web/src/components/MermaidBlock.tsx` — `MermaidBlock`, `mermaidLoader`
+- `apps/web/src/components/MarkdownContent.tsx` — `MarkdownContent` (`surface`), `mermaidSource`
+- `packages/spec-contract/src/requirements.ts` — `requirementIds`, `tableRowId`
+
+**Not yet**:
+- The diff view (Changes) shows a diagram's source lines, not a drawing of
+  the before and after.
+- Diagrams are not drawn in chat or recall results, only on spec surfaces.
+
+## 16. Comments
+
+**Capability statement**: A person or an agent MUST be able to comment on one
+section or one criterion of a spec revision; the comment MUST stay readable
+from that revision, a later revision MUST show it open while the commented
+text is unchanged and outdated once it changed, only a person MAY resolve it,
+and a comment MUST never change the body, its hash or an approval.
+
+**Invariants**:
+- A comment (`spec_comments`, `apps/web/src/lib/specs/comments.ts`) anchors to
+  a criterion (`R-n`/`AC-n`, by id) or a section (by outline id or a heading
+  used once, as a section revise names it), on a revision (default the head).
+  It records the anchored text's sha256 and, for a section, its heading, which
+  is how a later revision finds it again (outline ids shift between revisions).
+  An anchor the revision does not have is a 400 and nothing is written.
+- Reading revision N lists the comments made on N or earlier, oldest first:
+  `resolved` once a person resolved it; else `open` when the anchor's text on
+  N hashes the same; else `outdated` (changed, or gone). A comment made on a
+  later revision is not shown on an earlier one.
+- Replies are one level deep: a reply to a reply joins the same thread.
+- Adding needs write access to the workspace, as an agent or a person.
+  Resolving needs a person with write access (`caller.kind === 'user'`): an
+  agent run or API key gets a 403. Resolving twice returns the first time.
+- Comments live in their own table and write nothing else: the spec's
+  version, head, approval and every revision's hash stay as they were.
+- Surfaces: `GET`/`POST /api/specs/[specId]/comments` (`?revision=N`),
+  `PATCH /api/specs/[specId]/comments/[commentId] { resolved: true }`; MCP
+  `manage_specs` actions `comment` and `comments` (no resolve); the spec page
+  lists the revision's comments grouped by criterion or section, with an add
+  action for writers and a resolve action for people.
+
+**Acceptance criteria**:
+- AC-62: GIVEN a comment on AC-2 of revision 1 WHEN revision 2 changes only
+  AC-1 THEN it reads open on revision 2; WHEN revision 3 changes AC-2 THEN it
+  reads outdated on revision 3 and still open on revision 1; the spec's
+  version, approval and hash did not move when it was added
+  (`apps/web/tests/db/spec-comments.test.ts`).
+- AC-63: GIVEN a section comment named by heading WHEN a later revision
+  changes that section THEN it reads outdated; GIVEN a comment made on
+  revision 3 WHEN revision 1 is read THEN it is not listed
+  (`apps/web/tests/db/spec-comments.test.ts`).
+- AC-64: GIVEN an agent WHEN it resolves a comment THEN 403; GIVEN a person
+  THEN it is resolved, and again returns the same time; an anchor not in the
+  revision or an empty body is a 400 (`apps/web/tests/db/spec-comments.test.ts`).
+- AC-65: GIVEN comments on a criterion and a section WHEN the spec page renders
+  THEN they group under each, with their state, resolve only on open thread
+  heads for a person, and no add action for a reader who cannot write
+  (`apps/web/src/components/SpecComments.dom.test.tsx`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/comments.ts` — `addSpecComment`, `listSpecComments`, `resolveSpecComment`, `locateAnchor`
+- `apps/web/src/app/api/specs/[specId]/comments/route.ts` — `GET`, `POST`
+- `apps/web/src/components/SpecComments.tsx` — `SpecComments`
+
+**Not yet**:
+- Comments show in their own section of the spec page, not inline under each
+  criterion in the rendered body.
+- No notification reaches the spec's owner or the comment's author on a reply.
 
