@@ -5874,6 +5874,13 @@ export const decisionModelMeasurements = pgTable('decision_model_measurements', 
   setByAccountId: uuid('set_by_account_id'),
   setAt: timestamp('set_at', { withTimezone: true }).defaultNow().notNull(),
   reason: text('reason'),
+  // Which number `threshold` is compared with (decision-model-measurements.ts
+  // `measuredSignal`). 'confidence' keeps the provider's confidence.
+  confidenceSource: text('confidence_source').notNull().default('confidence').$type<'confidence' | 'top_p' | 'margin' | 'calibrated_top_p'>(),
+  // Isotonic breakpoints { x, y } for 'calibrated_top_p'; null otherwise.
+  calibration: jsonb('calibration').$type<{ x: number[]; y: number[] }>(),
+  // Act on these labels only, each at its own threshold; null = every label at `threshold`.
+  labelThresholds: jsonb('label_thresholds').$type<Record<string, number>>(),
 }, (t) => ({
   kindModelIdx: uniqueIndex('decision_model_measurements_kind_model_idx').on(t.kind, t.model),
 }));

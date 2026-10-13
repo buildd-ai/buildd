@@ -151,6 +151,25 @@ describe('categorizeTask', () => {
     expect((await categorizeTask({ ...INPUT, stored: null }, { ...deps(qwen('feature', 0.99), stale, null), measurements: row('tc0') })).outcome).toBe('kept');
   });
 
+  it('a top p row gates on the chosen label\'s probability; a label it does not list is kept', async () => {
+    const rows = async () => [{
+      kind: 'task_category', model: 'clef', threshold: 0.6, precisionLower: 0.95, coverage: 0.5, n: 90, evalRunId: null,
+      measuredFingerprint: 'tc1', status: 'active' as const, setByAccountId: null, setAt: new Date(), reason: null,
+      confidenceSource: 'top_p' as const, labelThresholds: { feature: 0.6 },
+    }];
+    const clef = (c: string, p: number) => async () => ({
+      ...okResult(c, 0.99),
+      answers: { category: { type: 'choice' as const, choice: c, confidence: 0.99, probabilities: { [c]: p, other: 1 - p } } },
+      model: 'clef',
+    });
+    const hit = writer();
+    expect((await categorizeTask({ ...INPUT, stored: null }, { ...deps(clef('feature', 0.65), hit, null), measurements: rows })).outcome).toBe('applied');
+    const low = writer();
+    expect((await categorizeTask({ ...INPUT, stored: null }, { ...deps(clef('feature', 0.55), low, null), measurements: rows })).outcome).toBe('kept');
+    const unlisted = writer();
+    expect((await categorizeTask({ ...INPUT, stored: null }, { ...deps(clef('docs', 0.99), unlisted, null), measurements: rows })).outcome).toBe('kept');
+  });
+
   it('asks with a short deadline and the task text, and writes a confident fill with its provenance', async () => {
     const decide = mock(async () => okResult('docs', 0.93));
     const w = writer();

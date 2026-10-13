@@ -181,6 +181,21 @@ describe('runBuilddDecision', () => {
     }
   });
 
+  it('a row this path cannot read (another signal, or per-label thresholds) never acts on raw confidence', async () => {
+    const clef = { ok: true, apiKey: 'k', model: 'clef', endpoint: { kind: 'workers-ai', baseURL: 'https://api.cloudflare.com/client/v4/accounts/a/ai/run' } };
+    for (const extra of [{ confidenceSource: 'top_p' as const }, { labelThresholds: { run: 0.4 } }]) {
+      const h = harness({ access: clef, replies: [answer('run', 0.99, 'clef'), answer('skip', 0.5, 'acme/rich-1')] });
+      const r = await runBuilddDecision(kind, { features: feats() }, scope, {
+        ...h.deps,
+        measurements: async () => [{
+          kind: kind.kind, model: 'clef', threshold: 0.4, precisionLower: 0.95, coverage: 0.5, n: 80, evalRunId: 'run-1',
+          measuredFingerprint: kind.promptFingerprint, status: 'active', setByAccountId: null, setAt: new Date(), reason: null, ...extra,
+        }],
+      });
+      expect(r.attempts[0]).toMatchObject({ outcome: 'unmeasured', applied: false });
+    }
+  });
+
   it('Jev with no stored measurement keeps the kind\'s threshold; a stored one replaces it', async () => {
     const none = harness({ replies: [answer('run', 0.75, 'typesafe/jev-1.13-20260917'), answer('skip', 0.5, 'acme/rich-1')] });
     const kept = await runBuilddDecision(kind, { features: feats() }, scope, { ...none.deps, measurements: async () => [] });
