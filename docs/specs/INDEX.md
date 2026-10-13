@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (74)
+## Active (75)
 
 ### auth (9)
 
@@ -116,7 +116,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-07
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (17)
+### surfaces (18)
 
 - [Chat Stream Composition](./chat-stream-composition.md) · @max — verified 2026-10-10
   An assistant chat turn MUST render in fixed, keyed regions so streaming text, finished tools and loading cards never move, reparent or duplicate what is already on screen.
@@ -134,6 +134,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The mission Landed strip MUST place every dependency left of its dependents, give blocked, queued and ready distinct textures, and mark a selected cell's blockers or unblocked work on the existing tick row.
 - [QA Capture Interaction Steps](./qa-capture-steps.md) · @builder — verified 2026-10-05
   Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.
+- [Settings Audiences](./settings-audiences.md) · @max — verified 2026-10-12
+  Every setting MUST live on the page of whose it is (you, the team, one workspace), show a member one read-only line instead of controls, and never surface platform-operator machinery to a team.
 - [Settings Models Page](./settings-models.md) · @max — verified 2026-10-13
   Settings › Team › Models MUST show one provider list, use a lone provider for every surface it serves, offer per-surface choice only at two or more, and put a person's own key before the team's.
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-26

@@ -611,6 +611,13 @@ notification text) follows the same rules as a PR lede:
     mirrors the data model. Collapse it: one row per thing the reader knows
     (Claude, not "Anthropic" plus "Claude subscription"), one input that
     works out what was pasted, a control hidden until it can matter.
+13. **One name per thing.** **Role** is a person's team role (owner, admin,
+    member); an agent persona (`isRole` skill) is an **agent**, on the Agents
+    page. The planning agent is the **organizer**, never "planner". The
+    machine that runs work is a **runner**, never "worker". No buildd-internal
+    branch or deploy names ("dev", "main") in a customer's copy. Status
+    labels are sentence case. UI strings kept in `lib/` are checked too: mark
+    the module `// @ui-copy` and `copy:check` scans it.
 
 ---
 
