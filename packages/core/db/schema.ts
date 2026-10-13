@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -6734,3 +6734,43 @@ export const failureIncidents = pgTable('failure_incidents', {
 
 export type FailureIncidentRow = typeof failureIncidents.$inferSelect;
 export type NewFailureIncidentRow = typeof failureIncidents.$inferInsert;
+
+/**
+ * One root cause per team: what broke (a runner's credential, a provider key,
+ * a platform component), how it is classified, which work it hit, and whether
+ * a capability check has since verified it restored. Written by detection
+ * (apps/web/src/lib/root-cause-record.ts): the worker outcome path for runner
+ * credential failures and the failure-pattern sweep. Upsert is one atomic
+ * INSERT … ON CONFLICT on (team_id, key), so a repeat of a cleared cause
+ * reopens the same row. `verified_restored_at` is written only by a passing
+ * capability check, never by a person or a timer.
+ *
+ * Classification only. Operator state (severity, paging, acknowledgement, fix
+ * tasks, verdicts) does not belong here: operator tooling reads this table
+ * through the platform-owner API and keeps its own state elsewhere.
+ */
+export const rootCauses = pgTable('root_causes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  key: text('key').notNull(),
+  capabilityKind: text('capability_kind').notNull().$type<RootCauseCapabilityKind>(),
+  runnerId: uuid('runner_id').references(() => accounts.id, { onDelete: 'set null' }),
+  provider: text('provider'),
+  component: text('component'),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  classification: text('classification').notNull().$type<RootCauseClassification>(),
+  // Newest first, deduplicated, capped on write.
+  affectedTaskIds: uuid('affected_task_ids').array().notNull().default(sql`ARRAY[]::uuid[]`),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  verifiedRestoredAt: timestamp('verified_restored_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamKeyIdx: uniqueIndex('root_causes_team_key_idx').on(t.teamId, t.key),
+  runnerIdx: index('root_causes_runner_idx').on(t.runnerId),
+  lastSeenIdx: index('root_causes_last_seen_idx').on(t.lastSeenAt),
+}));
+
+export type RootCauseRow = typeof rootCauses.$inferSelect;
+export type NewRootCauseRow = typeof rootCauses.$inferInsert;

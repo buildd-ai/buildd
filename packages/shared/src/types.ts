@@ -4464,6 +4464,50 @@ export interface DerivedFileRule {
   strategy?: 'ours' | 'theirs';
 }
 
+// ── Root causes ─────────────────────────────────────────────────────────────
+// One row per root cause per team (`root_causes`), written by detection
+// (`apps/web/src/lib/root-cause-record.ts`) and served on the platform-owner
+// API. Classification only, never operator state: no severity, paging,
+// acknowledgement, fix task or verdict.
+
+/**
+ * Deterministic, from structured fields only. `credential_expired`: a runner's
+ * own subscription sign-in failed. `api_key_rejected`: a key-billed runner
+ * (self-hosted `api`, or any hosted runner) had its key refused; never a
+ * sign-in. `platform_managed`: buildd's own machinery, no one on the team holds
+ * the fix. `unknown`: a pattern with no established cause.
+ */
+export type RootCauseClassification = 'credential_expired' | 'api_key_rejected' | 'platform_managed' | 'unknown';
+
+/** What broke: one runner's credential, a provider key on a hosted runner, or a platform component. */
+export type RootCauseCapabilityKind = 'runner' | 'provider' | 'platform';
+
+export interface RootCauseCapability {
+  kind: RootCauseCapabilityKind;
+  /** The runner account the failing work ran on. */
+  runnerId: string | null;
+  /** Agent backend, e.g. `claude`, `codex`. */
+  provider: string | null;
+  /** Platform component, for `platform` causes. */
+  component: string | null;
+  /** The workspace a `platform` cause was seen in. */
+  workspaceId: string | null;
+}
+
+export interface RootCauseRecord {
+  /** Stable per team: a repeat of the same cause lands on the same record. */
+  key: string;
+  teamId: string;
+  capability: RootCauseCapability;
+  classification: RootCauseClassification;
+  /** Newest first, bounded. */
+  affectedTaskIds: string[];
+  firstSeenAt: string;
+  lastSeenAt: string;
+  /** Set only by a passing capability check on the affected runner/provider; null while active. */
+  verifiedRestoredAt: string | null;
+}
+
 // ── Failure Pattern Sentinel: durable incidents ─────────────────────────────
 // One row per stable systemic-failure pattern (`failure_incidents`), written by
 // `apps/web/src/lib/failure-incident-store.ts` from the candidates the pure
