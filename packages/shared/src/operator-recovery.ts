@@ -119,6 +119,8 @@ export type RecoveryPolicyView = {
   source: 'default' | 'stored';
   perRule: Record<string, { budgetLimit: number; backoffMinutes: number[]; episodeDeadlineHours: number; autoRepair: 'off' | 'shadow' | 'on' }>;
   model: { dailyUsd: number; dailyCalls: number; timeoutMs: number };
+  /** Per-RepairKind rollout (§9.5). Absent: a repair added by B2 is `shadow`, FIR's own repairs are `on`. */
+  perRepair?: Partial<Record<string, 'off' | 'shadow' | 'on'>>;
 };
 
 export type RecentlyRecoveredCause = Pick<RecoveryCauseRow, 'causeKey' | 'title' | 'impact'> & { recoveredAt: string; detectionToRecoveryMin: number };

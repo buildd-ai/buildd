@@ -17,6 +17,8 @@ mock.module('@/lib/admin/owner-gate', () => ({
 const audits: any[] = [];
 mock.module('@/lib/admin/audit', () => ({
   recordPlatformAdminAudit: async (event: any) => { audits.push(event); },
+  recordPlatformAdminAuditIntent: async (event: any) => { audits.push(event); return `audit-${audits.length}`; },
+  completePlatformAdminAudit: async () => true,
 }));
 
 // The owner's decision-feature switch: real planning and views, stubbed storage.
@@ -549,5 +551,22 @@ describe('GET operator: the recovery queue (operator-recovery §7.1)', () => {
     expect((await routes.operator.GET(req('operator?recovery=1&recoveryFilter=everything'))).status).toBe(400);
     expect((await routes.operator.GET(req('operator?recoveryInclude=all'))).status).toBe(400);
     expect(recoveryCalls).toHaveLength(0);
+  });
+});
+
+describe('POST operator: owner recovery actions (operator-recovery §7.2, F-9)', () => {
+  const action = {
+    capability: 'run_repair', target: { incidentId: '44444444-4444-4444-8444-444444444444', generation: 1 },
+    evidenceRevision: 'ev', params: { repair: 'wake_subject' }, reason: 'synthetic check',
+  };
+
+  it('a non-owner gets 404 and nothing is written or audited, whatever the body', async () => {
+    owner = false;
+    for (const b of [action, { capability: 'disable_trigger' }, null]) {
+      const res = await routes.operator.POST(req('operator', 'POST', b));
+      expect(res.status).toBe(404);
+    }
+    expect(audits).toHaveLength(0);
+    expect(writes).toHaveLength(0);
   });
 });

@@ -3,6 +3,7 @@ import { RECOVERY_FILTERS, type RecoveryFilter } from '@buildd/shared';
 import { beginAdminRead } from '@/lib/admin/scope';
 import { loadRecoveryCause, loadRecoveryQueue } from '@/lib/admin/data';
 import { viewOperator } from '@/lib/admin/tenant-privacy';
+import { requirePlatformOwner } from '@/lib/admin/owner-gate';
 
 const CAUSE_KEY_RE = /^c1:[0-9a-f]{20}$/;
 
@@ -56,4 +57,31 @@ export async function GET(req: NextRequest) {
     ...(recovery !== undefined ? { recovery } : {}),
     ...(recoveryCause !== undefined ? { recoveryCause } : {}),
   });
+}
+
+/**
+ * POST /api/admin/operator — platform owner only (404 otherwise, nothing
+ * written). One owner recovery action (operator-recovery spec §7.2): body
+ * `{ capability, target, evidenceRevision, params?, reason }`, header
+ * `X-Admin-Operator: <login>` recorded as the operator label (never trusted
+ * for authorization). 200 applied or duplicate; 409 stale, with the fresh row;
+ * 422 rejected (precondition, budget, paused, not_supported), with the fresh
+ * row; 400 for anything outside the closed set.
+ */
+export async function POST(req: NextRequest) {
+  const gate = await requirePlatformOwner(req);
+  if (gate.response) return gate.response;
+  const body = await req.json().catch(() => null);
+  const label = req.headers.get('x-admin-operator')?.trim() || null;
+  const operatorLabel = label && /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(label) ? label : null;
+  try {
+    const [{ handleOperatorRecoveryAction }, { productionOperatorActionDeps }] = await Promise.all([
+      import('./recovery-action'), import('./recovery-action-deps'),
+    ]);
+    const out = await handleOperatorRecoveryAction(await productionOperatorActionDeps(), { accountId: gate.account.id, operatorLabel }, body);
+    return NextResponse.json(out.body, { status: out.status });
+  } catch (err) {
+    console.error('[admin/operator] POST failed', err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: 'Internal error' }, { status: 500 });
+  }
 }

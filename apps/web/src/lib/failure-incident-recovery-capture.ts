@@ -30,6 +30,7 @@ import { captureFailureReasonCode, type CaptureFailureFact } from './failure-pat
 import { readRecovery, type RecoveryFamily, type RecoveryPolicyOutcome, type RecoveryVerdict } from './failure-incident-recovery';
 import type { StoredIncident } from './failure-incident-store';
 import { INCIDENT_RECOVERY_CONTEXT_KEY, readIncidentRecoveryRef, type IncidentRecoveryRef } from './incident-recovery-refs';
+import { RUNBOOKS, runbookFor } from './failure-incident-repairs';
 
 /** `context.captureFailureRollout`: what the rollout sweep found for a legacy audit question (§16.4). */
 export const CAPTURE_ROLLOUT_CONTEXT_KEY = 'captureFailureRollout';
@@ -83,8 +84,11 @@ export interface CaptureRecoveryFacts {
   component: CaptureFailureComponent | null;
   errorSignature: string | null;
   subjects: CaptureSubjectFacts[];
-  /** The incident's one fix task; `finishedAt` is set once it is terminal. */
-  fixTask: { id: string; status: string; finishedAt: string | null } | null;
+  /**
+   * The incident's one fix task; `finishedAt` is set once it is terminal.
+   * `prMerged`: its PR merged (null: not read). The scrub runbook waits on it.
+   */
+  fixTask: { id: string; status: string; finishedAt: string | null; prMerged?: boolean | null } | null;
   /** visual-qa.yml runs since the oldest floor; null when they could not be read (no evidence, never a pass). */
   runs: CaptureRunFact[] | null;
 }
@@ -174,6 +178,24 @@ export function evaluateCaptureFailure(incident: StoredIncident, facts: CaptureR
     });
   }
   if (!fixDone) return outcome({ kind: 'delegated', nextActionKind: 'fix_task_running', label: `Fix running for the capture's ${label} step.`, ref: fix.id });
+  // operator-recovery §9.3 `qa.scrub_immutable_violation`: the re-run waits for
+  // the fix's PR to merge, runs once, and a capture that fails again after it
+  // goes to the operator. The immutable-revision trigger is never touched.
+  if (runbookFor({ ...incident, causeCode: base.cause.reasonCode }) === 'qa.scrub_immutable_violation') {
+    const answer = RUNBOOKS['qa.scrub_immutable_violation']({
+      fix: { status: fix.status, prMerged: fix.prMerged ?? null },
+      // A capture that fails again after the merge is bounded by the generation's
+      // retry budget, which hands it to the operator (fallbackOperator).
+      captureFailedAfterFix: fix.prMerged ? false : null,
+      missionsWaiting: blocked.length,
+      rerunThisGeneration: false,
+    });
+    if (answer === 'wait') return outcome({ kind: 'wait', label: `Waiting for the ${label} fix's PR to merge before the audits re-run.` });
+    if (answer === 'escalate') return outcome({ kind: 'operator', ...gap });
+    if (answer === 'queue_fix') {
+      return outcome({ kind: 'repair', action: 'file_fix_task', subject: { kind: 'task', id: blocked[0].taskId }, once: true, label: `Buildd filed a fix for the capture's ${label} step.`, params: {} });
+    }
+  }
   const retry = blocked.filter(s => s.status === 'failed').map(s => s.taskId);
   // A legacy question is closed by the adapter first; its task is failed then.
   if (retry.length === 0) return outcome({ kind: 'wait', label: 'Closing the stale question before the capture is retried.' });
@@ -319,7 +341,13 @@ export async function dbObserveCaptureRecovery(incident: StoredIncident): Promis
   }
   if (fixId) {
     const row = await db.query.tasks.findFirst({ where: eq(tasks.id, fixId), columns: { id: true, status: true, updatedAt: true } });
-    if (row) fixTask = { id: row.id, status: row.status, finishedAt: isTerminalTaskStatus(row.status) ? row.updatedAt.toISOString() : null };
+    const fixWorkers = row ? await db.select({ mergedAt: workers.mergedAt, prLifecycleStatus: workers.prLifecycleStatus }).from(workers).where(eq(workers.taskId, row.id)).catch(() => null) : null;
+    if (row) {
+      fixTask = {
+        id: row.id, status: row.status, finishedAt: isTerminalTaskStatus(row.status) ? row.updatedAt.toISOString() : null,
+        prMerged: fixWorkers === null ? null : fixWorkers.some(w => !!w.mergedAt || w.prLifecycleStatus === 'merged'),
+      };
+    }
   }
 
   // Runs are only worth reading once there is a floor to be fresh after.

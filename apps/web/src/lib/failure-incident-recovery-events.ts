@@ -59,12 +59,20 @@ export interface RecoveryAttemptDetail {
   actor: string;
   verify: { predicate: string; passed: boolean | null; evidenceRevision: string };
   costUsd: number | null;
+  /** A repair run once for a shared cause (§9.1): every member incident and subject it covers. */
+  members?: { incidentIds: string[]; subjects: FailureRecoveryRef[] };
+  /** The approved runbook that chose it, when one did (§9.3). */
+  runbook?: string;
 }
 
 export interface RecoveryAttemptEvent {
   workspaceId: string | null;
-  /** `accepted`: the writer ran; `rejected`: it threw (a failed attempt, never retried silently). */
-  outcome: 'accepted' | 'rejected';
+  /**
+   * `accepted`: the writer ran; `rejected`: it threw (a failed attempt, never
+   * retried silently); `deferred`: a policy in shadow recorded what it would
+   * have run and ran nothing (§9.5; the gate vocabulary has no `shadow`).
+   */
+  outcome: 'accepted' | 'rejected' | 'deferred';
   detail: RecoveryAttemptDetail;
 }
 

@@ -11,6 +11,8 @@
 import type { FailureRecoveryCapability } from '@buildd/shared';
 import { applyIncidentAction, type IncidentStorePort, type StoredIncident } from '@/lib/failure-incident-store';
 import { projectIncident, type IncidentProjection, type IncidentVerdictView, type ProjectIncidentOpts } from '@/lib/incident-view';
+import { buildAutomationState } from '@/lib/failure-incident-recovery-automation';
+import { validateRecoveryAction } from '@/lib/failure-incident-recovery-actions';
 
 /** The closed, versioned capability set (§9). Anything else is a 400. */
 export const RECOVERY_CAPABILITIES: ReadonlySet<FailureRecoveryCapability> = new Set([
@@ -58,6 +60,24 @@ export async function applyIncidentCapability(
   if (!option) return { status: 409, body: { error: 'stale', reason: 'not_offered', projection } };
   if (option.mode !== 'post') {
     return { status: 422, body: { error: 'not_applied_here', href: option.href ?? null, reason: option.unavailableReason ?? null, projection } };
+  }
+  // The one validator every principal goes through (operator-recovery §8.2).
+  // FIR's own option set stays the precondition here; the validator adds the
+  // team principal's capability fence and its generation check.
+  if (fresh.recovery) {
+    const v = validateRecoveryAction(
+      { kind: 'team', accountId: null, userId: null },
+      {
+        capability: req.capability === 'dismiss' ? 'decide' : 'retry_recovery',
+        target: { incidentId: fresh.id, generation: projection.generation ?? 0 },
+        evidenceRevision: projection.evidenceRevision ?? 'none',
+        params: req.capability === 'dismiss' ? { capability: 'decide', option: 'dismiss' } : { capability: 'retry_recovery' },
+        reason: 'incident page',
+      },
+      { now: deps.now(), incident: fresh, members: [fresh], causeKey: null, automation: buildAutomationState([], new Date(deps.now())) },
+    );
+    if (v.result === 'stale') return { status: 409, body: { error: 'stale', reason: 'generation_changed', projection } };
+    if (v.result === 'not_supported') return { status: 409, body: { error: 'stale', reason: 'not_offered', projection } };
   }
 
   let after: StoredIncident | null = null;
