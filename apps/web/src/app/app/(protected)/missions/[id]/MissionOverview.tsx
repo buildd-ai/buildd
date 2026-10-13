@@ -26,7 +26,7 @@ import FocusCard from '@/components/ui/FocusCard';
 import TaskStrip from '@/components/ui/TaskStrip';
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import { boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { finishSettingTaskId, overviewCells, overviewCounts, overviewSelection } from '@/lib/mission-overview';
+import { finishSettingTaskId, overviewCells, overviewCounts, overviewSelection, railLines } from '@/lib/mission-overview';
 import { stepIndex, stripOrder, stripState } from '@/lib/mission-task-strip';
 import type { MissionExecutor } from '@/lib/task-actions';
 import { AskBanner, CompletionRecord, PlanningPlaceholder } from './MissionBoard';
@@ -73,6 +73,7 @@ function OverviewView({
   const select = useCallback((id: string) => store.select(id), [store]);
   const vm = review?.model ?? null;
   const needs = boardNeedsYouCount(model, vm);
+  const rail = railLines(model.live, needs);
   const unevaluated = model.complete && !model.criteriaEvaluated && model.criteria.length > 0;
 
   return (
@@ -107,12 +108,10 @@ function OverviewView({
               />
             )}
           </div>
-          <dl data-testid="overview-counts-rail" className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1.5 border-t border-[var(--line-soft)] pt-3 text-title">
-            <dt className="text-text-muted">Agents live</dt>
-            <dd className="font-mono tabular-nums" data-testid="rail-agents">{model.live}</dd>
-            <dt className={needs ? 'text-accent-text' : 'text-text-muted'}>Needs you</dt>
-            <dd className={`font-mono tabular-nums ${needs ? 'font-semibold text-accent-text' : ''}`} data-testid="rail-needs">{needs}</dd>
-          </dl>
+          <ul data-testid="overview-counts-rail" className="flex flex-col gap-1.5 border-t border-[var(--line-soft)] pt-3 text-title">
+            <li className="text-text-secondary" data-testid="rail-agents" data-count={model.live}>{rail.agents}</li>
+            <li className={needs ? 'font-semibold text-accent-text' : 'text-text-muted'} data-testid="rail-needs" data-count={needs}>{rail.needs}</li>
+          </ul>
         </aside>
       </div>
     </MissionStripContext.Provider>

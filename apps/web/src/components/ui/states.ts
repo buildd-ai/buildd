@@ -91,8 +91,9 @@ export const STATUS_PILL: Record<string, { state: StateKey; label: string }> = {
   running:        { state: 'running',    label: 'Running' },
   // A task row claimed and being worked (`tasks.status`); same word the task header uses.
   in_progress:    { state: 'running',    label: 'Running' },
-  waiting_input:  { state: 'needs_you',  label: 'Needs input' },
-  waiting_on_you: { state: 'needs_you',  label: 'Needs input' },
+  // Said in words, not a label: a parked agent is waiting for an answer.
+  waiting_input:  { state: 'needs_you',  label: 'Waiting for your answer' },
+  waiting_on_you: { state: 'needs_you',  label: 'Waiting for you' },
   // The subject-liveness claim gate excludes this task: no worker can ever
   // pick it up. See lib/subject-gate-contract.ts.
   subject_dead:   { state: 'not_landed', label: 'Superseded' },

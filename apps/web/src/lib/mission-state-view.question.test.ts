@@ -32,8 +32,9 @@ describe('deriveMissionStateView — an open question', () => {
     const view = deriveMissionStateView(local);
     expect(view.kind).toBe('awaiting_decision');
     expect(missionNeedsYou(view)).toBe(true);
-    expect(view.situation.headline).toBe(`Needs input: ${PROMPT}`);
-    expect(view.situation.headline).not.toMatch(/Running|agent|still open/);
+    // The question itself is the headline: no "Needs input" label in front.
+    expect(view.situation.headline).toBe(PROMPT);
+    expect(view.situation.headline).not.toMatch(/Running|agent|still open|Needs/);
     expect(view.situation.focus).toMatchObject({ kind: 'human_decision', question: { taskIds: ['t1'] } });
     expect(view.situation.nextAction).toBe('Answer it on the task page to continue.');
     // The chip still says who runs the work.
@@ -44,18 +45,18 @@ describe('deriveMissionStateView — an open question', () => {
     const view = deriveMissionStateView({ ...local, executor: 'runner' });
     expect(view.kind).toBe('awaiting_decision');
     expect(missionNeedsYou(view)).toBe(true);
-    expect(view.situation.headline).toBe(`Needs input: ${PROMPT}`);
+    expect(view.situation.headline).toBe(PROMPT);
   });
 
   it('several questions are counted, not quoted', () => {
     const view = deriveMissionStateView({ ...local, openQuestions: [ask, { taskId: 't2', title: 'Write docs', prompt: 'Which tone?' }] });
-    expect(view.situation.headline).toBe('2 tasks need input.');
+    expect(view.situation.headline).toBe('2 questions for you.');
     expect(view.situation.nextAction).toBe('Answer them on each task page to continue.');
   });
 
   it('a question with no prompt still says what is needed', () => {
     const view = deriveMissionStateView({ ...local, openQuestions: [{ ...ask, prompt: null }] });
-    expect(view.situation.headline).toBe('A task needs input.');
+    expect(view.situation.headline).toBe('An agent is waiting for your answer.');
   });
 
   it('held still outranks it, and a failure still leads', () => {
@@ -64,9 +65,12 @@ describe('deriveMissionStateView — an open question', () => {
     expect(failing.outstanding.map(f => f.kind)).toContain('human_decision');
   });
 
-  it('its one action opens the asking task to answer it', () => {
+  it('its one action opens the asking task page to answer it, never the in-page strip anchor', () => {
     const view = deriveMissionStateView(local);
-    expect(affordanceFor(view.situation.focus, { missionId: 'm' })).toMatchObject({ kind: 'internal', label: 'Answer the question', taskId: 't1' });
+    expect(affordanceFor(view.situation.focus, { missionId: 'm' })).toMatchObject({
+      kind: 'internal', label: 'Answer the question', taskId: 't1', navigate: true,
+      href: '/app/tasks/t1?from=mission&missionId=m&respond=1',
+    });
   });
 
   it('the cause line names the question, never a running worker', () => {
@@ -75,7 +79,7 @@ describe('deriveMissionStateView — an open question', () => {
       openTasks: [{ id: 't1', title: 'Import the fixtures', status: 'assigned', live: true, waiting: true }],
     });
     const text = chain.map(l => l.claim).join('\n');
-    expect(chain[0].claim).toBe(`"Import the fixtures" needs input: ${PROMPT}`);
+    expect(chain[0].claim).toBe(`"Import the fixtures" asks: ${PROMPT}`);
     expect(chain[0].refs.taskId).toBe('t1');
     expect(text).not.toMatch(/worker|is assigned/);
   });
@@ -102,6 +106,28 @@ describe('buildMissionBoard — an interactive session parked on a question', ()
     const m = buildMissionBoard({ tasks: [t], now, missionCreatedAt: now - 200_000, missionCompletedAt: null, missionStatus: 'active' } as never);
     expect(m.tasks.t1.status).toBe('waiting');
     expect(m.needsYou).toEqual(['t1']);
+    expect(boardNeedsYouCount(m, null)).toBe(1);
+  });
+
+  // Regression: the page reads workers ordered by startedAt DESC, where
+  // Postgres puts NULLs first, so a worker that never started (a reaped claim)
+  // sorted ahead of the session parked on the question. The situation block
+  // (missionOpenQuestions: any worker) said "Needs input", the rail said
+  // "Needs you 0". The asking worker is the task's worker, whatever the order.
+  it('counts it when a never-started worker sorts ahead of the asking one', () => {
+    const now = Date.UTC(2026, 0, 1, 12);
+    const row = {
+      id: 'c1', title: 'Continue: Import the fixtures', status: 'assigned', taskClass: 'work', parentTaskId: 'p1', createdAt: new Date(now - 120_000),
+      workers: [
+        { id: 'w0', status: 'failed', runner: 'mcp', startedAt: null, createdAt: new Date(now - 100_000), updatedAt: new Date(now - 95_000), waitingFor: null },
+        { id: 'w1', status: 'waiting_input', runner: 'mcp', startedAt: new Date(now - 90_000), createdAt: new Date(now - 90_000), updatedAt: new Date(now - 30_000), waitingFor: { type: 'question', prompt: PROMPT } },
+      ],
+    };
+    const parent = toBoardTaskInput({ id: 'p1', title: 'Import the fixtures', status: 'completed', taskClass: 'work', createdAt: new Date(now - 300_000), workers: [] });
+    const m = buildMissionBoard({ tasks: [parent, toBoardTaskInput(row)], now, missionCreatedAt: now - 400_000, missionCompletedAt: null, missionStatus: 'active' } as never);
+    expect(missionOpenQuestions([row]).map(q => q.taskId)).toEqual(['c1']);
+    expect(m.tasks.c1.status).toBe('waiting');
+    expect(m.tasks.c1.waitingFor?.prompt).toBe(PROMPT);
     expect(boardNeedsYouCount(m, null)).toBe(1);
   });
 });

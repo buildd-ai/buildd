@@ -7,6 +7,8 @@
  * row, so no live GitHub call is needed to decide whether a PR is safe to merge.
  */
 
+import type { PrDisplayState, PrSupersededBy } from '@buildd/workflow-kernel/pr-display';
+
 export interface PrLifecyclePresentation {
   label: string;
   /** Tailwind bg + text classes for the pill. */
@@ -36,9 +38,8 @@ export interface PrLifecyclePresentation {
  *   - mission feed (`mission-pulse.ts`): awaiting_ci/ci_running → checks_running
  *     (the platform owns the next step), ci_passed → open
  */
-export type PrDisplayState =
-  | 'merged' | 'closed' | 'unresolvable' | 'conflict'
-  | 'ci_failed' | 'ci_running' | 'ci_passed' | 'awaiting_ci' | 'open';
+// The type itself is the kernel package's (one definition); the mapping is here.
+export type { PrDisplayState };
 
 export function derivePrDisplayState(
   prLifecycleStatus: string | null | undefined,
@@ -91,8 +92,8 @@ export function prListStatus(s: PrDisplayState): PrListStatus | null {
   }
 }
 
-/** The supersession edge as the API reports it. */
-export interface PrSupersededBy { prNumber: number | null; url: string | null; reason: string | null }
+/** The supersession edge as the API reports it (defined in the kernel package). */
+export type { PrSupersededBy };
 
 /** What a delivery says about the PR's ending (`DeliveryView` carries it). */
 export interface DeliveryPrRecord {

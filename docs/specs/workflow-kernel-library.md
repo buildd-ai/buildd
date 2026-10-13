@@ -130,6 +130,7 @@ GitHub or Next.js.
     lineage; wake a task; cancel a task. The host maps this to its scheduler
     (in buildd: task insert plus `announceTaskCreated`).
   - Notify: a delivery's activity comment and team notifications.
+  - Decide: optional model-backed judgment at named decision points, below.
   - Policy: the per-workspace knobs the kernel reads (kill switch, landing
     lane mode, max rounds, max conflict iterations), passed in, never queried
     from a host table inside a kernel statement.
@@ -142,9 +143,24 @@ GitHub or Next.js.
   store and a fake GitHub with no buildd import. The same suite runs in
   apps/web against the Postgres adapter (`bun run test:db`), so a host
   adapter is proven by the suite, not by hand.
-- No model calls, prompts or decision policies in the package. Where the
-  kernel needs a judgment (a reviewer verdict, a decision-model START), it is a
-  fact the host supplies.
+- No model calls, prompts or decision policies in the package. Model-backed
+  judgment stays possible through the Decide port:
+  - Where the kernel needs a judgment (a reviewer verdict, whether a conflict
+    resolution is safe to take, which recovery to try, an escalation
+    recommendation), it either reads a fact the host supplied (a verdict from a
+    review round) or asks the host's decider at a named decision point:
+    NOT IMPLEMENTED, `decide(point, input)` returning a verdict, a confidence
+    and a reason, or no answer.
+  - Every decision point has a deterministic default in the package. No
+    decider, no answer, a timeout or an error takes the default, and the
+    fallback reason is recorded. A decider can never be required for the
+    kernel to make progress, and its answer never bypasses a gate (§4).
+  - The answer is recorded as a fact on the delivery (point, decider id,
+    verdict, confidence, reason) before the transition that uses it. Replay
+    and the conformance suite read the recorded fact and never call a
+    decider, so a delivery's history is deterministic.
+  - In buildd the decider is the decision-model layer (its ledger and
+    thresholds stay in the product); another host plugs its own or none.
 - The package's ports and records are versioned; a breaking change bumps the
   major and the conformance suite of the old major keeps running until no host
   uses it.
@@ -161,6 +177,14 @@ GitHub or Next.js.
 - AC-8 (failure): GIVEN an effect handler that calls a host module directly
   instead of a port WHEN the boundary test runs THEN it fails naming the
   import.
+- AC-27: GIVEN a decision point and a host decider that answers WHEN the
+  kernel reaches it THEN the answer is recorded as a fact with the decider id
+  before the transition that uses it.
+- AC-28: GIVEN a recorded decision fact WHEN the delivery is replayed THEN the
+  replay uses the recorded answer and calls no decider.
+- AC-29 (failure): GIVEN no decider, or a decider that errors or times out,
+  WHEN the kernel reaches a decision point THEN it takes the package default,
+  records the fallback reason, and the delivery still progresses.
 
 ## 3. One host
 
@@ -386,7 +410,7 @@ Each slice is one or more reviewed PRs to trunk, built locally (mission
 |---|---|---|---|
 | S0 | this spec, with #4693's amendments to `workflow-state-kernel.md` and `mission-task-lifecycle.md` | — | ed50e3b2, #4693 |
 | S1 | package with the pure modules, boundary test, in-memory store, conformance suite on the pure core; apps/web imports from it | AC-5, AC-6, AC-8 | — |
-| S2 | ports for store, GitHub, clock, work, notify, policy; effect handlers move into the package; Postgres adapter runs the suite | AC-7 | — |
+| S2 | ports for store, GitHub, clock, work, notify, policy, decide; effect handlers move into the package; Postgres adapter runs the suite | AC-7, AC-27–AC-29 | — |
 | S3 | single host: command endpoint, drain and floor on the control plane, Vercel doors submit commands; every merge door through the gate on review verdict, head and CI; release doors pinned; `buildd/landing` status | AC-9–AC-12, AC-14–AC-16 | cc59da33, 30a47173 |
 | S4 | one writer: lifecycle columns written only by kernel transitions; write-site guard; render write-through retired | AC-1–AC-4 | 459b58ed (projections half) |
 | S5 | findings model and pinned repair builders; the gate and status read open findings | AC-13, AC-17–AC-19 | 7d68f57d, 459b58ed |
