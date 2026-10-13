@@ -103,8 +103,7 @@ embedded by another product and its behaviour is proven without a database,
 GitHub or Next.js.
 
 **Invariants**:
-- Package: NOT IMPLEMENTED, `@buildd/workflow-kernel` at
-  `packages/workflow-kernel`, same shape as `@buildd/spec-contract`: source
+- Package: `@buildd/workflow-kernel` at `packages/workflow-kernel`, same shape as `@buildd/spec-contract`: source
   consumed directly, strict tsconfig, no `dependencies` or
   `peerDependencies`, WebCrypto not `node:crypto`, a boundary test that scans
   every tracked file for `@buildd/*`, `drizzle-orm`, `@neondatabase/*`, the
@@ -114,43 +113,76 @@ GitHub or Next.js.
   delivery display, landing-lane rules, trunk signature, review composition,
   the findings model (§5) and the epoch model (§6). The visual-review cluster
   is not kernel code and stays in apps/web.
-- Ports, each a TypeScript interface the host implements:
+- Ports, each a TypeScript interface the host implements
+  (`packages/workflow-kernel/src/ports.ts`, `PORTS_VERSION`; composed as
+  `KernelPorts`):
   - Store: the kernel's statements (transition CAS, fact insert, effect
     claim/ack/fail/park/renew, lane acquire/release, view load). The contract
     is one statement per transition; a uniqueness conflict means "lost the
-    race, re-read". The package ships the statement builders for Postgres
-    (today's `transitionSql` family) as data plus an in-memory store for
-    tests; drizzle stays in the host adapter.
-  - GitHub facts: today's `GithubFactReader`, plus the writes the effects need
-    (merge at a pinned head, post a review, publish a commit status, update a
-    comment, delete a branch).
+    race, re-read". `Store` is implemented by `MemoryStore`
+    (`src/memory/store.ts`) with the Postgres unique indexes, CAS guard,
+    outbox lease/fence and lane rules, and by buildd's `postgresStore`
+    (`apps/web/src/lib/workflow/postgres-store.ts`), which runs today's
+    statements (`transitionSql`, `claimDueEffectsSql`, `acquireLaneSql` and
+    their families, unchanged) and keeps drizzle in the host. The logic that
+    sequences them is the package's: `applyCommandOn`
+    (`src/command-runner.ts`), `drainEffects` (`src/effects.ts`),
+    `acquireLaneOn` / `settleLanesOn` (`src/landing-lane.ts`); apps/web's
+    `applyCommand`, `runEffects`, `acquireLane` and `settleLanes` delegate
+    to them with the Postgres store. NOT IMPLEMENTED: the ingest funnel
+    (`ingestFact`), authority resolution and the projections' SQL still
+    sequence their statements in apps/web.
+  - GitHub facts: `GithubFactReader` (now the package's; `facts.ts`
+    re-exports it), plus `GithubWrites`, the writes the effects need (merge
+    at a pinned head, post a review, publish a commit status, update a
+    comment, delete a branch). NOT IMPLEMENTED: a buildd adapter for
+    `GithubWrites`; the effect handlers still call `@/lib/github` directly.
   - Clock: `now()`; the in-memory store and the conformance suite use a
-    controllable clock. SQL `now()` stays inside the Postgres statements.
+    controllable clock (`controllableClock`, `src/memory/clock.ts`). SQL
+    `now()` stays inside the Postgres statements.
   - Work: file a task of a given role with a description, pinned target and
     lineage; wake a task; cancel a task. The host maps this to its scheduler
-    (in buildd: task insert plus `announceTaskCreated`).
-  - Notify: a delivery's activity comment and team notifications.
+    (in buildd: task insert plus `announceTaskCreated`). Port and
+    `RecordingWork` exist; NOT IMPLEMENTED: the buildd adapter.
+  - Notify: a delivery's activity comment and team notifications. Port and
+    `RecordingNotify` exist; NOT IMPLEMENTED: the buildd adapter.
   - Decide: optional model-backed judgment at named decision points, below.
   - Policy: the per-workspace knobs the kernel reads (kill switch, landing
     lane mode, max rounds, max conflict iterations), passed in, never queried
-    from a host table inside a kernel statement.
+    from a host table inside a kernel statement. Port (`KernelPolicy`) and
+    `staticPolicy` exist; NOT IMPLEMENTED: the Postgres claim and authority
+    statements still read the kill switch from `workspaces.git_config`
+    (`kernelOnSql`), and the lane mode and limits are still read by the
+    handlers.
 - Effect handlers in the package are written against these ports only. The
   host composes them with its adapters once, at startup, replacing the
-  `@/modules` slot (`workflowEffectHandlers`).
-- Conformance suite (NOT IMPLEMENTED: `packages/workflow-kernel/conformance`):
-  the §16 matrix and §15 replay of `workflow-state-kernel.md`, plus the
-  #3787, #4663/#4670, #4679 and #4686 sequences, run against the in-memory
-  store and a fake GitHub with no buildd import. The same suite runs in
-  apps/web against the Postgres adapter (`bun run test:db`), so a host
-  adapter is proven by the suite, not by hand.
+  `@/modules` slot (`workflowEffectHandlers`). NOT IMPLEMENTED: the handlers
+  (review, review hand-off, CI retry, CI-red trunk, conflict retry, landing,
+  supersession, PR activity) are still apps/web modules; the drain that runs
+  them is the package's.
+- Conformance suite: `CONFORMANCE_SCENARIOS`
+  (`packages/workflow-kernel/src/conformance/scenarios.ts`), host-independent
+  scenarios over a `ConformanceHost`, run on the in-memory store by
+  `src/conformance/conformance.test.ts` and on the Postgres store by
+  `apps/web/tests/db/workflow-kernel-conformance.test.ts` (`bun run
+  test:db`) with identical expectations, so a host adapter is proven by the
+  suite, not by hand. It covers the §16 S2, S5, S6 and S20 rows, the CAS and
+  open races, the #4679 and #4686 sequences, the outbox drain (ack, backoff,
+  §10.4 supersession, §14 kill switch), the landing lane and AC-27–AC-29.
+  NOT IMPLEMENTED: the rest of the §16 matrix, §15 replay, the #3787 and
+  #4663/#4670 sequences and a fake GitHub.
 - No model calls, prompts or decision policies in the package. Model-backed
   judgment stays possible through the Decide port:
   - Where the kernel needs a judgment (a reviewer verdict, whether a conflict
     resolution is safe to take, which recovery to try, an escalation
     recommendation), it either reads a fact the host supplied (a verdict from a
     review round) or asks the host's decider at a named decision point:
-    NOT IMPLEMENTED, `decide(point, input)` returning a verdict, a confidence
-    and a reason, or no answer.
+    `Decide.decide(point, input)` returning a verdict, a confidence and a
+    reason, or no answer (`src/ports.ts`), reached only through `decideAt` /
+    `decideAndRecord` (`src/decide.ts`), with a bounded timeout
+    (`DECIDE_TIMEOUT_MS`). The first point is `VISUAL_IMPACT_POINT` (default
+    `review_required`); NOT IMPLEMENTED: buildd's visual-impact classifier
+    still calls its decision model directly instead of through `decideAt`.
   - Every decision point has a deterministic default in the package. No
     decider, no answer, a timeout or an error takes the default, and the
     fallback reason is recorded. A decider can never be required for the
@@ -158,7 +190,11 @@ GitHub or Next.js.
   - The answer is recorded as a fact on the delivery (point, decider id,
     verdict, confidence, reason) before the transition that uses it. Replay
     and the conformance suite read the recorded fact and never call a
-    decider, so a delivery's history is deterministic.
+    decider, so a delivery's history is deterministic. The fact is a
+    `workflow_facts` row of kind `decision` keyed by `decisionFactKey`; the
+    transition that uses it passes it as `factId`, which links it.
+    `src/decide.test.ts` fails if the reducer, commands or projections import
+    `decide` or read a decision fact.
   - In buildd the decider is the decision-model layer (its ledger and
     thresholds stay in the product); another host plugs its own or none.
 - The package's ports and records are versioned; a breaking change bumps the
