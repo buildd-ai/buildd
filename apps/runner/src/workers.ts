@@ -1994,7 +1994,7 @@ export class WorkerManager {
 
     // Warn if no credentials found (but let SDK handle actual auth)
     if (!this.hasCredentials && !this.config.serverless) {
-      console.warn('No Claude credentials found - task may fail. Run `claude login` to authenticate.');
+      console.warn(`Model auth: ${describeModelAuthSource('none')} (the task fails unless its claim brings a credential)`);
     }
 
     // Claim from buildd first (pass taskId for targeted claiming). The claim
