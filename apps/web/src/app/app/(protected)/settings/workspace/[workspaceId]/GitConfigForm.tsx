@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { ReadOnlyFacts, type Fact } from './ReadOnlyFacts';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 interface GitConfig {
     defaultBranch: string;
@@ -88,9 +89,15 @@ interface Props {
     initialConfig?: GitConfig | null;
     /** Holds manage_workspace_settings. False: every setting as text, no controls. */
     canEdit: boolean;
+    /**
+     * Which half of gitConfig this form shows and saves: the repository's git
+     * workflow, or how agents run. Each saves on its own (the config route's
+     * `group`), so saving one never touches the other's fields.
+     */
+    part: 'repository' | 'agents';
 }
 
-export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEdit }: Props) {
+export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEdit, part }: Props) {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -132,8 +139,46 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
         initialConfig?.defaultBackend || 'default'
     );
 
+    const repositoryPayload = {
+        defaultBranch,
+        branchingStrategy,
+        branchPrefix: branchPrefix || undefined,
+        useBuildBranch,
+        commitStyle,
+        requiresPR,
+        targetBranch: targetBranch || undefined,
+        autoCreatePR,
+    };
+    const agentsPayload = {
+        agentInstructions: agentInstructions || undefined,
+        useClaudeMd,
+        bypassPermissions,
+        fallbackModel: fallbackModel.trim() || undefined,
+        sandbox: sandboxEnabled ? {
+            enabled: true,
+            autoAllowBashIfSandboxed: sandboxAutoAllowBash,
+            network: {
+                allowedDomains: sandboxAllowedDomains.split('\n').map(s => s.trim()).filter(Boolean),
+                allowLocalBinding: sandboxAllowLocalBinding,
+            },
+            excludedCommands: sandboxExcludedCommands.split('\n').map(s => s.trim()).filter(Boolean),
+        } : undefined,
+        debug,
+        debugFile: debugFile.trim() || undefined,
+        thinking: thinkingType === 'none' ? undefined
+            : thinkingType === 'enabled' ? { type: 'enabled' as const, budgetTokens: thinkingBudgetTokens }
+            : { type: thinkingType },
+        effort: effort === 'none' ? undefined : effort,
+        defaultBackend: defaultBackend === 'default' ? undefined : defaultBackend,
+    };
+    const payload = part === 'repository' ? repositoryPayload : agentsPayload;
+    const { dirty, snapshot, markSaved } = useDirtyState<Record<string, unknown>>(payload);
+    useWarnOnUnload(canEdit && dirty);
+
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
+        if (!dirty) return;
+        const submitted = snapshot;
         setSaving(true);
         setError(null);
         setSaved(false);
@@ -142,36 +187,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
             const res = await fetch(`/api/workspaces/${workspaceId}/config`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    defaultBranch,
-                    branchingStrategy,
-                    branchPrefix: branchPrefix || undefined,
-                    useBuildBranch,
-                    commitStyle,
-                    requiresPR,
-                    targetBranch: targetBranch || undefined,
-                    autoCreatePR,
-                    agentInstructions: agentInstructions || undefined,
-                    useClaudeMd,
-                    bypassPermissions,
-                    fallbackModel: fallbackModel.trim() || undefined,
-                    sandbox: sandboxEnabled ? {
-                        enabled: true,
-                        autoAllowBashIfSandboxed: sandboxAutoAllowBash,
-                        network: {
-                            allowedDomains: sandboxAllowedDomains.split('\n').map(s => s.trim()).filter(Boolean),
-                            allowLocalBinding: sandboxAllowLocalBinding,
-                        },
-                        excludedCommands: sandboxExcludedCommands.split('\n').map(s => s.trim()).filter(Boolean),
-                    } : undefined,
-                    debug,
-                    debugFile: debugFile.trim() || undefined,
-                    thinking: thinkingType === 'none' ? undefined
-                        : thinkingType === 'enabled' ? { type: 'enabled', budgetTokens: thinkingBudgetTokens }
-                        : { type: thinkingType },
-                    effort: effort === 'none' ? undefined : effort,
-                    defaultBackend: defaultBackend === 'default' ? undefined : defaultBackend,
-                }),
+                body: JSON.stringify({ group: part, ...payload }),
             });
 
             if (!res.ok) {
@@ -179,6 +195,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                 throw new Error(data.error || 'Failed to save');
             }
 
+            markSaved(submitted);
             setSaved(true);
             setTimeout(() => setSaved(false), 3000);
         } catch (err) {
@@ -205,12 +222,12 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
         const onOff = (v: boolean) => (v ? 'On' : 'Off');
         const mono = (v: string) => <span className="font-mono">{v}</span>;
         const lines = (v: string) => v.split('\n').map(l => l.trim()).filter(Boolean).join(', ') || 'None';
-        const groups: Array<{ title: string; facts: Fact[]; after?: React.ReactNode }> = [
+        const repositoryGroups: Array<{ title: string; facts: Fact[]; after?: React.ReactNode }> = [
             {
                 title: 'Branching',
                 facts: [
                     { label: 'Default branch', value: mono(defaultBranch) },
-                    { label: 'Branching strategy', value: optionLabel(BRANCHING_OPTIONS, branchingStrategy) },
+                    { label: 'Git workflow', value: optionLabel(BRANCHING_OPTIONS, branchingStrategy) },
                     { label: 'Branch prefix', value: branchPrefix ? mono(branchPrefix) : 'None' },
                     { label: 'buildd branch naming', value: onOff(useBuildBranch) },
                 ],
@@ -228,8 +245,10 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                 ],
                 after: mergingLine,
             },
+        ];
+        const agentGroups: Array<{ title: string; facts: Fact[]; after?: React.ReactNode }> = [
             {
-                title: 'Agent instructions',
+                title: 'Instructions and permissions',
                 facts: [
                     { label: 'Load CLAUDE.md from repository', value: onOff(useClaudeMd) },
                     {
@@ -240,10 +259,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                     },
                     { label: 'Bypass permission prompts', value: onOff(bypassPermissions) },
                 ],
-            },
-            {
-                title: 'Model settings',
-                facts: [{ label: 'Fallback model', value: fallbackModel ? mono(fallbackModel) : 'None' }],
             },
             {
                 title: 'Sandbox',
@@ -260,27 +275,24 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                 ],
             },
             {
-                title: 'Debug logging',
+                title: 'Model',
                 facts: [
-                    { label: 'SDK debug logging', value: onOff(debug) },
-                    { label: 'Debug log file', value: debugFile ? mono(debugFile) : 'None' },
-                ],
-            },
-            {
-                title: 'Thinking and effort',
-                facts: [
+                    { label: 'Agent backend', value: optionLabel(BACKEND_OPTIONS, defaultBackend) },
+                    { label: 'Fallback model', value: fallbackModel ? mono(fallbackModel) : 'None' },
                     { label: 'Thinking mode', value: optionLabel(THINKING_OPTIONS, thinkingType) },
                     ...(thinkingType === 'enabled' ? [{ label: 'Budget tokens', value: mono(String(thinkingBudgetTokens)) }] : []),
                     { label: 'Effort level', value: optionLabel(EFFORT_OPTIONS, effort) },
                 ],
             },
             {
-                title: 'Default agent',
+                title: 'Advanced',
                 facts: [
-                    { label: 'Agent', value: optionLabel(BACKEND_OPTIONS, defaultBackend) },
+                    { label: 'SDK debug logging', value: onOff(debug) },
+                    { label: 'Debug log file', value: debugFile ? mono(debugFile) : 'None' },
                 ],
             },
         ];
+        const groups = part === 'repository' ? repositoryGroups : agentGroups;
         return (
             <div className="py-4 first:pt-0 last:pb-0 divide-y divide-border-default" data-testid="git-config-read-only">
                 {groups.map(g => (
@@ -299,6 +311,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
             {/* Unconfigured status is reported by the Workspace health row above the form. */}
             <div className="divide-y divide-border-default">
 
+            {part === 'repository' && (<>
             {/* Branching Section */}
             <div className="py-4 first:pt-0">
                 <h3 className="text-sm font-medium text-text-primary mb-3">Branching</h3>
@@ -317,7 +330,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                     </div>
 
                     <div>
-                        <label className="block text-sm text-text-primary mb-1">Branching strategy</label>
+                        <label className="block text-sm text-text-primary mb-1">Git workflow</label>
                         <Select
                             value={branchingStrategy}
                             onChange={(v) => setBranchingStrategy(v as GitConfig['branchingStrategy'])}
@@ -420,9 +433,12 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                 </div>
             </div>
 
+            </>)}
+
+            {part === 'agents' && (<>
             {/* Agent Instructions Section */}
             <div className="py-4 first:pt-0">
-                <h3 className="text-sm font-medium text-text-primary mb-3">Agent instructions</h3>
+                <h3 className="text-sm font-medium text-text-primary mb-3">Instructions and permissions</h3>
 
                 <div className="space-y-4">
                     <div className="flex items-center gap-2">
@@ -464,30 +480,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                     <p className="text-xs text-text-muted -mt-2">
                         Agents run bash commands without asking. buildd still blocks dangerous commands such as sudo and rm -rf /.
                     </p>
-                </div>
-            </div>
-
-            {/* Model Settings Section */}
-            <div className="py-4 first:pt-0">
-                <h3 className="text-sm font-medium text-text-primary mb-3">Model settings</h3>
-
-                <div className="space-y-4">
-                    <div>
-                        <label className="block text-sm text-text-primary mb-1">
-                            Fallback model
-                            <span className="text-text-muted font-normal ml-1">(optional)</span>
-                        </label>
-                        <input
-                            type="text"
-                            value={fallbackModel}
-                            onChange={(e) => setFallbackModel(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default bg-surface-1 font-mono text-base md:text-sm"
-                            placeholder="A tier or a model name"
-                        />
-                        <p className="text-xs text-text-muted mt-1">
-                            Model to use when the primary model fails, such as on a rate limit. You can change this per task.
-                        </p>
-                    </div>
                 </div>
             </div>
 
@@ -579,53 +571,43 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                 </div>
             </div>
 
-            {/* Debug Logging Section */}
+            {/* Model */}
             <div className="py-4 first:pt-0">
-                <h3 className="text-sm font-medium text-text-primary mb-3">Debug logging</h3>
-
-                <div className="space-y-4">
-                    <div className="flex items-center gap-2">
-                        <input
-                            type="checkbox"
-                            id="debug"
-                            checked={debug}
-                            onChange={(e) => setDebug(e.target.checked)}
-                        />
-                        <label htmlFor="debug" className="text-sm">
-                            Write debug logs
-                        </label>
-                    </div>
-                    <p className="text-xs text-text-muted -mt-2">
-                        Writes detailed agent logs, for troubleshooting.
-                    </p>
-
-                    <div>
-                        <label className="block text-sm text-text-primary mb-1">
-                            Debug log file
-                            <span className="text-text-muted font-normal ml-1">(optional)</span>
-                        </label>
-                        <input
-                            type="text"
-                            value={debugFile}
-                            onChange={(e) => setDebugFile(e.target.value)}
-                            className="w-full px-3 py-2 border border-border-default bg-surface-1 font-mono text-base md:text-sm"
-                            placeholder="/tmp/buildd-debug.log"
-                        />
-                        <p className="text-xs text-text-muted mt-1">
-                            Writes the debug logs to this file.
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            {/* Thinking / Effort Section */}
-            <div className="py-4 first:pt-0">
-                <h3 className="text-sm font-medium text-text-primary mb-3">Thinking and effort</h3>
+                <h3 className="text-sm font-medium text-text-primary mb-3">Model</h3>
                 <p className="text-xs text-text-muted mb-4">
                     Some models don&apos;t support these options. Agents skip what their model can&apos;t use.
                 </p>
 
                 <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm text-text-primary mb-1">Agent backend</label>
+                        <Select
+                            value={defaultBackend}
+                            onChange={(v) => setDefaultBackend(v as typeof defaultBackend)}
+                            options={BACKEND_OPTIONS}
+                        />
+                        <p className="text-xs text-text-muted mt-1">
+                            Used for new tasks in this workspace unless a task or its agent sets one. Codex needs a connected ChatGPT or OpenAI account.
+                        </p>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm text-text-primary mb-1">
+                            Fallback model
+                            <span className="text-text-muted font-normal ml-1">(optional)</span>
+                        </label>
+                        <input
+                            type="text"
+                            value={fallbackModel}
+                            onChange={(e) => setFallbackModel(e.target.value)}
+                            className="w-full px-3 py-2 border border-border-default bg-surface-1 font-mono text-base md:text-sm"
+                            placeholder="A tier or a model name"
+                        />
+                        <p className="text-xs text-text-muted mt-1">
+                            Model to use when the primary model fails, such as on a rate limit. You can change this per task.
+                        </p>
+                    </div>
+
                     <div>
                         <label className="block text-sm text-text-primary mb-1">Thinking mode</label>
                         <Select
@@ -672,24 +654,46 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                 </div>
             </div>
 
-            {/* Default agent */}
-            <div className="py-4 first:pt-0">
-                <h3 className="text-sm font-medium text-text-primary mb-3">Default agent</h3>
+            {/* Advanced: closed by default */}
+            <details className="py-4 first:pt-0" data-testid="git-config-advanced">
+                <summary className="flex min-h-11 md:min-h-0 cursor-pointer items-center text-sm font-medium text-text-primary">Advanced</summary>
 
-                <div className="space-y-4">
+                <div className="space-y-4 mt-3">
+                    <div className="flex items-center gap-2">
+                        <input
+                            type="checkbox"
+                            id="debug"
+                            checked={debug}
+                            onChange={(e) => setDebug(e.target.checked)}
+                        />
+                        <label htmlFor="debug" className="text-sm">
+                            Write debug logs
+                        </label>
+                    </div>
+                    <p className="text-xs text-text-muted -mt-2">
+                        Writes detailed agent logs, for troubleshooting.
+                    </p>
+
                     <div>
-                        <label className="block text-sm text-text-primary mb-1">Agent</label>
-                        <Select
-                            value={defaultBackend}
-                            onChange={(v) => setDefaultBackend(v as typeof defaultBackend)}
-                            options={BACKEND_OPTIONS}
+                        <label className="block text-sm text-text-primary mb-1">
+                            Debug log file
+                            <span className="text-text-muted font-normal ml-1">(optional)</span>
+                        </label>
+                        <input
+                            type="text"
+                            value={debugFile}
+                            onChange={(e) => setDebugFile(e.target.value)}
+                            className="w-full px-3 py-2 border border-border-default bg-surface-1 font-mono text-base md:text-sm"
+                            placeholder="/tmp/buildd-debug.log"
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Used for new tasks in this workspace unless a task or its agent sets one. Codex needs a connected ChatGPT or OpenAI account.
+                            Writes the debug logs to this file.
                         </p>
                     </div>
                 </div>
-            </div>
+            </details>
+
+            </>)}
 
             </div>
 
@@ -697,10 +701,10 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
             <div className="flex flex-wrap items-center gap-4 pt-4">
                 <button
                     type="submit"
-                    disabled={saving}
+                    disabled={saving || !dirty}
                     className="btn min-h-11"
                 >
-                    {saving ? 'Saving…' : 'Save git settings'}
+                    {saving ? 'Saving…' : 'Save'}
                 </button>
 
                 {saved && (

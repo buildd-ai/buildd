@@ -256,6 +256,23 @@ export async function GET(
     }
 }
 
+/**
+ * The settings page's two gitConfig forms. With `group`, a save writes that
+ * group's fields and keeps the other group's as stored; without it, the body
+ * manages every field below (the older single form).
+ */
+const SAVE_GROUPS = {
+    repository: [
+        'defaultBranch', 'branchingStrategy', 'branchPrefix', 'useBuildBranch',
+        'commitStyle', 'commitPrefix', 'requiresPR', 'targetBranch', 'autoCreatePR',
+    ],
+    agents: [
+        'agentInstructions', 'useClaudeMd', 'bypassPermissions', 'sandbox',
+        'debug', 'debugFile', 'fallbackModel', 'thinking', 'effort', 'defaultBackend',
+    ],
+} as const satisfies Record<string, ReadonlyArray<keyof WorkspaceGitConfig>>;
+type SaveGroup = keyof typeof SAVE_GROUPS;
+
 // POST /api/workspaces/[id]/config - Save workspace git config and/or releaseConfig
 //
 // releaseConfig schema (WorkspaceReleaseConfig):
@@ -338,6 +355,13 @@ export async function POST(
         ) {
             return NextResponse.json(
                 { error: `Invalid criteriaGrader '${body.criteriaGrader}'. Valid: ${VALID_CRITERIA_GRADERS.join(', ')}` },
+                { status: 400 },
+            );
+        }
+
+        if (body.group !== undefined && !(body.group in SAVE_GROUPS)) {
+            return NextResponse.json(
+                { error: `Invalid group '${body.group}'. Valid: ${Object.keys(SAVE_GROUPS).join(', ')}` },
                 { status: 400 },
             );
         }
@@ -505,6 +529,21 @@ export async function POST(
                 );
             } else {
                 gitConfig.branchStrategy = body.branchStrategy as BranchStrategy;
+            }
+        }
+
+        // A grouped save (the settings page saves Repository and Agents apart)
+        // writes only its own group: every field of the other group goes back to
+        // what was stored, so its omission does not clear it.
+        if (body.group !== undefined) {
+            const own = SAVE_GROUPS[body.group as SaveGroup];
+            const written = gitConfig as unknown as Record<string, unknown>;
+            for (const keys of Object.values(SAVE_GROUPS)) {
+                if (keys === own) continue;
+                for (const key of keys) {
+                    if (key in previous) written[key] = previous[key];
+                    else delete written[key];
+                }
             }
         }
 

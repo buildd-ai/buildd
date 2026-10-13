@@ -5,6 +5,7 @@ import type { WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { Select } from '@/components/ui/Select';
 import { TonePill } from '@/components/ui/StatePill';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 interface Connector {
   id: string;
@@ -53,6 +54,11 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
   const [inboundLabel, setInboundLabel] = useState<string>(initialWorkTrackerConfig?.inboundLabel ?? '');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const { dirty, snapshot, markSaved } = useDirtyState({
+    selection,
+    inboundLabel: selection === GITHUB_APP ? inboundLabel.trim() : '',
+  });
+  useWarnOnUnload(canEdit && dirty);
 
   useEffect(() => {
     fetch(`/api/workspaces/${workspaceId}/connectors`)
@@ -67,6 +73,7 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
   }, [workspaceId]);
 
   async function save(body: unknown, successText: string) {
+    const submitted = snapshot;
     setSaving(true);
     setMessage(null);
     try {
@@ -81,6 +88,7 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
       }
       const data = await res.json();
       setConfig(data.workTrackerConfig ?? null);
+      markSaved(submitted);
       setMessage({ type: 'success', text: successText });
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to save' });
@@ -174,7 +182,7 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving}
+              disabled={saving || !dirty}
               className="btn min-h-11"
             >
               {saving ? 'Saving…' : 'Save'}

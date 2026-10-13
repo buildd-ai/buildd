@@ -12,7 +12,8 @@ const PAGE = readFileSync(join(import.meta.dir, 'page.tsx'), 'utf8');
 
 const GROUPS: Array<[string, string[]]> = [
   ['Readiness', ['<WorkspaceHealthCard', '<ReadinessCard', '<RepoAccessCard']],
-  ['Repository', ['<GitConfigForm', '<MemberRepoAccessSection']],
+  ['Repository', ['<GitConfigForm\n            part="repository"', '<MemberRepoAccessSection']],
+  ['Agents', ['<GitConfigForm\n          part="agents"']],
   ['Delivery', ['<MergePolicyEditor', '<BranchStrategySection', '<CiRetrySection', '<ReleaseSection', '<SubjectPolicySection']],
   ['Where work runs', ['<ExecutorSection', '<RunnerSizeSection', '<FreshContainerSection', '<ConcurrencySection', '<PauseStartsSection']],
   ['Integrations', ['<WorkTrackerSection']],
@@ -33,6 +34,27 @@ describe('workspace settings page', () => {
         expect(`${title} ${part}: ${at > -1 && at < end}`).toBe(`${title} ${part}: true`);
       }
     }
+  });
+
+  // Settings spec R-1 / AC-1: an index links to every section the page renders.
+  it('indexes every section, each link pointing at a rendered id', () => {
+    expect(PAGE).toContain('<SectionIndex sections={sections} />');
+    const indexed = [...PAGE.matchAll(/\{ id: '([a-z-]+)', label: '([^']+)' \}/g)].map((m) => [m[1], m[2]]);
+    const rendered = [...PAGE.matchAll(/<(?:Section|SettingsSection|div) title="([^"]+)" id="([a-z-]+)"|<div id="([a-z-]+)"/g)]
+      .map((m) => m[2] ?? m[3]);
+    expect(indexed.map(([id]) => id).sort()).toEqual([...new Set(rendered)].sort());
+    // The index comes before the first section.
+    expect(PAGE.indexOf('<SectionIndex')).toBeLessThan(PAGE.indexOf('title="Readiness"'));
+  });
+
+  // Settings spec R-3 / AC-2: the two branching controls have distinct names.
+  it('names Repository\'s control Git workflow and Delivery\'s Mission pull requests', () => {
+    const form = readFileSync(join(import.meta.dir, 'GitConfigForm.tsx'), 'utf8');
+    const strategy = readFileSync(join(import.meta.dir, 'BranchStrategySection.tsx'), 'utf8');
+    expect(form).toContain('Git workflow');
+    expect(form).not.toContain('Branching strategy');
+    expect(strategy).toContain('Mission pull requests');
+    expect(strategy).not.toContain('Branch strategy');
   });
 
   // Settings spec R-7 / AC-8: the clean-copy switch is about the cloud runner, so it

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { CopyReviewConfig, CopyReviewMode } from '@buildd/shared';
 import Segmented from '@/components/ui/Segmented';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 type Choice = 'off' | CopyReviewMode;
 
@@ -27,19 +28,24 @@ export default function CopyReviewSection({ workspaceId, initial, canEdit }: Pro
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const copyReview = choice === 'off'
+    ? null
+    : {
+        voiceGuide: voiceGuide.trim(),
+        mode: choice,
+        ...(lintCommand.trim() ? { lintCommand: lintCommand.trim() } : {}),
+        ...(initial?.paths ? { paths: initial.paths } : {}),
+      };
+  const { dirty, snapshot, markSaved } = useDirtyState({ copyReview });
+  useWarnOnUnload(canEdit && dirty);
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    if (!dirty) return;
+    const submitted = snapshot;
     setSaving(true);
     setSaved(false);
     setSaveError(null);
-    const copyReview = choice === 'off'
-      ? null
-      : {
-          voiceGuide: voiceGuide.trim(),
-          mode: choice,
-          ...(lintCommand.trim() ? { lintCommand: lintCommand.trim() } : {}),
-          ...(initial?.paths ? { paths: initial.paths } : {}),
-        };
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/config`, {
         method: 'PATCH',
@@ -48,6 +54,7 @@ export default function CopyReviewSection({ workspaceId, initial, canEdit }: Pro
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Not saved');
+      markSaved(submitted);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
@@ -119,8 +126,8 @@ export default function CopyReviewSection({ workspaceId, initial, canEdit }: Pro
         </div>
       )}
       <div className="flex flex-wrap items-center gap-3">
-        <button type="submit" disabled={saving} className="btn min-h-11">
-          {saving ? 'Saving…' : 'Save copy review'}
+        <button type="submit" disabled={saving || !dirty} className="btn min-h-11">
+          {saving ? 'Saving…' : 'Save'}
         </button>
         {saved && <span className="text-status-success text-sm">Saved</span>}
         {saveError && <span className="text-status-error text-sm">{saveError}</span>}
