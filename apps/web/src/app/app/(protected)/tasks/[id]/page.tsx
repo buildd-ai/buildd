@@ -5,17 +5,17 @@ import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
-import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst, selectTaskWorkers } from '@/lib/attempt-order';
+import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst } from '@/lib/attempt-order';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions, taskEstimates } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, releases, missions, taskEstimates } from '@buildd/core/db/schema';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { buildTimeRow } from '@/lib/task-time-row';
 import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
 import { deriveTaskEyebrow, taskEyebrowText } from '@/lib/task-eyebrow';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
-import { isOpenAsk, isOpenQuestionNote } from '@/lib/open-ask';
+import { loadTaskView } from '@/lib/task-view';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -107,7 +107,6 @@ import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
 import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { displayTaskTitle } from '@/lib/task-title';
-import { linkQuestionNote } from './question-hero';
 import { buildLineage, diffStatsRecorded } from './pr-lineage';
 import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
 import type { PrOutcome } from '@/components/task/PrCard';
@@ -132,7 +131,6 @@ import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-conse
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
 import Notice from '@/components/ui/Notice';
-import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
@@ -216,29 +214,12 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat, taskRecoveryViews] = await Promise.all([
-    // Open question notes scoped to this task (drives the "Waiting on you"
-    // badge, and lets the live worker view show the note and the worker's
-    // waitingFor as ONE question). A mission task's questions carry its
-    // missionId too — they are still this task's, so no mission gate (S6).
-    db
-      .select({
-        id: missionNotes.id,
-        workerId: missionNotes.workerId,
-        type: missionNotes.type,
-        status: missionNotes.status,
-        title: missionNotes.title,
-        body: missionNotes.body,
-        defaultChoice: missionNotes.defaultChoice,
-        createdAt: missionNotes.createdAt,
-      })
-      .from(missionNotes)
-      .where(and(
-        eq(missionNotes.taskId, id),
-        eq(missionNotes.type, 'question'),
-        eq(missionNotes.status, 'open'),
-      ))
-      .orderBy(asc(missionNotes.createdAt)),
+  const [taskView, depTasks, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
+    // The task's workers, open question notes and any failure recovery holding
+    // it, picked the way the sheet picks them (lib/task-view.ts): one worker
+    // and one question on both surfaces. A mission task's questions carry its
+    // missionId too; they are still this task's, so no mission gate (S6).
+    loadTaskView(task, { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null }),
     // Dependency tasks, if dependsOn has entries
     depTaskIds.length > 0
       ? db.query.tasks.findMany({
@@ -255,12 +236,6 @@ export default async function TaskDetailPage({
           },
         })
       : Promise.resolve([]),
-    // Workers for this task
-    db.query.workers.findMany({
-      where: sqlWhere(eq(workers.taskId, id)),
-      orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
-      with: { account: { columns: { name: true } } },
-    }),
     // Mission context bar (W6): the mission row and its tasks' light columns —
     // the same selection a Home card makes, so no result/context/artifact
     // content — fed through the builders every mission surface shares.
@@ -299,10 +274,10 @@ export default async function TaskDetailPage({
     // An answer link for a mission filed from the reader's own conversation
     // opens that conversation instead, when chat is on for them.
     focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
-    // A failure incident's recovery holding this task (failure-incident-recovery §16.4).
-    loadTaskRecoveryViewsForViewer([task.id], { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null }),
   ]);
   if (answerInChat) redirect(answerInChat);
+  // Newest first by (createdAt, id).
+  const taskWorkers = taskView.ordered;
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
   const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
   // S35: the mission's failed deliverables read through the kernel, as its card does.
@@ -341,10 +316,7 @@ export default async function TaskDetailPage({
   // resolver (it needs the release id it returns), so it stays chained inside
   // that entry rather than becoming a fourth serial step.
   const workerIds = taskWorkers.map(w => w.id);
-  // Latest / live / PR worker by (createdAt, id), never by row position: two
-  // workers created in the same instant must not trade places between renders.
-  const workerPicks = selectTaskWorkers(taskWorkers, isLiveWorkerStatus);
-  const prWorker = workerPicks.prWorker ?? null;
+  const prWorker = taskView.prWorker ?? null;
   // Stored evidence objects (pointers only; the text is read on demand by the
   // section). Best-effort: a failed lookup shows the empty list, never an error page.
   const evidenceFilesPromise = listTaskEvidenceObjects({ id: task.id, workspaceId: task.workspaceId })
@@ -652,17 +624,12 @@ export default async function TaskDetailPage({
     }
   }
 
-  // Never revive an ended worker merely because it retained a question.
-  const activeWorkerRow = !isTerminalTaskStatus(task.status)
-    ? workerPicks.activeWorker : undefined;
-  // A task blocked by a failure incident reads the incident's recovery (failure-incident-recovery
-  // §16.4, §17.2): while recovery owns the next step, a question the worker asked about the same
-  // failure is stale, so its controls are not offered; history keeps it.
-  const taskRecovery = taskRecoveryViews.get(task.id) ?? null;
-  const activeWorker = activeWorkerRow?.waitingFor && (!isOpenAsk(task.status, activeWorkerRow.status) || taskRecovery?.supersedesQuestion)
-    ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
-
-  const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
+  // The live worker, with its question dropped once the task ended or a failure
+  // incident's recovery owns the next step (failure-incident-recovery §16.4, §17.2):
+  // a question about the same failure is stale then; history keeps it.
+  const taskRecovery = taskView.recovery;
+  const activeWorker = taskView.activeWorker;
+  const openQuestionCount = taskView.openQuestionCount;
 
   // A kernel-owned delivery's header reads the kernel's DeliveryView, not the
   // raw task/worker columns below (workflow-state-kernel §17.5). Legacy-owned
@@ -872,7 +839,7 @@ export default async function TaskDetailPage({
   const roleName = roleRow?.name ?? null;
   const headerTrack = headerLifecycle(deliveryView);
   const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, roleName);
-  const questionNote = activeWorker?.waitingFor ? linkQuestionNote(openQuestionRows, activeWorker.id) : null;
+  const questionNote = taskView.questionNote;
 
 
   let prOutcome: PrOutcome | null = null;
@@ -2153,7 +2120,7 @@ export default async function TaskDetailPage({
               taskTerminal={isTerminal}
               earlierRun={(() => {
                 // The run before this one, for the messages it ended before reading.
-                const prev = workerPicks.ordered.find(w => w.id !== activeWorker.id && compareWorkersChrono(w, activeWorker) < 0);
+                const prev = taskWorkers.find(w => w.id !== activeWorker.id && compareWorkersChrono(w, activeWorker) < 0);
                 return prev ? { workerId: prev.id, status: prev.status, history: (prev.instructionHistory as any[]) || [] } : null;
               })()}
             />
