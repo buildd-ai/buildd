@@ -322,7 +322,7 @@ current manifests.
   `evaluateSoftOverlaps`; holder read in `soft-overlap-store.ts`.
 - `apps/web/src/lib/explain-coordination.ts`: `buildCoordinationHolds`, the
   explain answer's `coordination.holds` (edge kind, holder, paths, verdict).
-- `packages/core/drizzle/0267_soft_overlap_legacy_edges.sql`: the legacy
+- `packages/core/drizzle/20261008023735_soft_overlap_legacy_edges/migration.sql`: the legacy
   edge conversion (pending tasks only, idempotent).
 - `apps/web/src/app/api/workers/claim/hold-start-shadow.ts`:
   `ClaimHoldCollector`, `scheduleClaimHoldShadow`, `grantedFraction`,

@@ -27,6 +27,7 @@ import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { callerOwnsWorker } from '@/lib/worker-owner';
 import { isUuid } from '@/lib/uuid';
 import { parkWhere, parkedUntilFor, unparkWhere } from '@/lib/worker-park';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,7 +49,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!isUuid(id)) return notFound();
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true, status: true },
     with: { task: { columns: { missionId: true } } },
   });

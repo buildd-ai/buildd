@@ -17,6 +17,7 @@ import { deriveTaskVerdict, parseStoredVerdictDecision, type StoredVerdictDecisi
 import { buildVerdictInput, traceOutcomeOf } from './task-verdict-facts';
 import { decideTaskVerdict, unclearTraceFacts, verdictFingerprint, VERDICT_LOG_PREFIX, type DecideVerdictDeps, type VerdictRecord } from './task-verdict-decision';
 import { classifyTracesByRule, priorAttemptFactsOf, type ConsequenceTrace } from './trace-consequence';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const TRACE_LIMIT = 200;
 const NOTES = 5;
@@ -33,7 +34,7 @@ function milestoneText(m: unknown): string | null {
 
 export async function loadVerdictRecord(taskId: string): Promise<{ record: VerdictRecord | null; verdict: TaskVerdict | null; stored: StoredVerdictDecision | null }> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, status: true, mode: true, result: true, workspaceId: true, missionId: true, verdictDecision: true },
     with: { workspace: { columns: { teamId: true, dataClass: true, gitConfig: true } } },
   });
@@ -41,8 +42,8 @@ export async function loadVerdictRecord(taskId: string): Promise<{ record: Verdi
   const stored = parseStoredVerdictDecision(task.verdictDecision);
 
   const taskWorkers = await db.query.workers.findMany({
-    where: eq(workers.taskId, taskId),
-    orderBy: desc(workers.createdAt),
+    where: sqlWhere(eq(workers.taskId, taskId)),
+    orderBy: sqlOrderBy(desc(workers.createdAt)),
     columns: { id: true, status: true, waitingFor: true, prUrl: true, prNumber: true, prLifecycleStatus: true, mergedAt: true, error: true, createdAt: true, milestones: true, lastCommitSha: true, linesAdded: true, linesRemoved: true, filesChanged: true, branch: true, startedAt: true, exitCause: true, commitCount: true },
   });
   const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
@@ -51,9 +52,9 @@ export async function loadVerdictRecord(taskId: string): Promise<{ record: Verdi
   const [ciAttempts, openAttempt, questions, traceRows] = await Promise.all([
     prWorker?.prNumber
       ? db.query.tasks.findMany({
-          where: and(eq(tasks.parentTaskId, taskId), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha)),
+          where: sqlWhere(and(eq(tasks.parentTaskId, taskId), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha))),
           columns: { id: true, status: true, createdAt: true, context: true, result: true },
-          orderBy: asc(tasks.createdAt),
+          orderBy: sqlOrderBy(asc(tasks.createdAt)),
         })
       : Promise.resolve([]),
     prOpen ? loadOpenAttempt(taskId).catch(() => null) : Promise.resolve(null),

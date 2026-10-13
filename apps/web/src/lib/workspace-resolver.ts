@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { workspaces, accountWorkspaces } from '@buildd/core/db/schema';
 import { eq, and, or, ilike, inArray, sql, type SQL } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -58,24 +59,24 @@ export async function resolveWorkspace(raw: string, caller: WorkspaceCaller) {
 
   // UUID → direct lookup
   if (UUID_RE.test(raw)) {
-    return (await db.query.workspaces.findFirst({ where: and(eq(workspaces.id, raw), inScope) })) ?? null;
+    return (await db.query.workspaces.findFirst({ where: sqlWhere(and(eq(workspaces.id, raw), inScope)) })) ?? null;
   }
 
   // Try exact repo match first (e.g., "buildd-ai/moa")
   const byRepo = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.repo, raw), inScope),
+    where: sqlWhere(and(eq(workspaces.repo, raw), inScope)),
   });
   if (byRepo) return byRepo;
 
   // Try name match (case-insensitive) or repo suffix match
   const byName = await db.query.workspaces.findFirst({
-    where: and(
+    where: sqlWhere(and(
       or(
         ilike(workspaces.name, raw),
         sql`${workspaces.repo} ILIKE ${'%/' + raw}`,
       ),
       inScope,
-    ),
+    )),
   });
   return byName || null;
 }
@@ -90,11 +91,11 @@ export async function getLinkedWorkspaceIds(
   permission?: 'canClaim' | 'canCreate',
 ): Promise<string[]> {
   const links = await db.query.accountWorkspaces.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(accountWorkspaces.accountId, accountId),
       permission === 'canClaim' ? eq(accountWorkspaces.canClaim, true) : undefined,
       permission === 'canCreate' ? eq(accountWorkspaces.canCreate, true) : undefined,
-    ),
+    )),
     columns: { workspaceId: true },
   });
   return links.map(l => l.workspaceId);
@@ -110,10 +111,10 @@ export async function autoResolveAccountWorkspace(
   accountName: string,
 ): Promise<{ workspaceId: string } | { error: string; status: number }> {
   const linked = await db.query.accountWorkspaces.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(accountWorkspaces.accountId, accountId),
       eq(accountWorkspaces.canCreate, true),
-    ),
+    )),
     with: { workspace: { columns: { id: true, name: true } } },
   });
 

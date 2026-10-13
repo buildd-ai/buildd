@@ -10,6 +10,7 @@ import { computeFeatureHealth, featureHealthByCapability } from '@buildd/core/de
 import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const WINDOWS = { '24h': 1, '7d': 7, '30d': 30 } as const;
 type Window = keyof typeof WINDOWS;
@@ -49,7 +50,7 @@ export async function GET(req: NextRequest) {
 
   const teamIds = await resolveAccountTeamIds(user, account);
   const teamWorkspaces = teamIds.length ? await db.query.workspaces.findMany({
-    where: inArray(workspaces.teamId, teamIds), columns: { id: true, teamId: true },
+    where: sqlWhere(inArray(workspaces.teamId, teamIds)), columns: { id: true, teamId: true },
   }) : [];
   const allowed = account ? teamWorkspaces.filter(w => taskScopeAllowsDelegated(account, w.id, 'analytics:read')) : teamWorkspaces;
   const match = allowed.find(w => w.id === workspaceId);

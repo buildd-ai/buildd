@@ -38,6 +38,7 @@ import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { dependencyBotPushRefusal, isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 function bad(error: string, status: number, extra: Record<string, unknown> = {}) {
   return NextResponse.json({ error, ...extra }, { status });
@@ -63,14 +64,14 @@ export async function POST(
     return bad('Workspace not found or not accessible', 403);
   }
 
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)) });
   if (!workspace) return bad('Workspace not found', 404);
   if (!workspace.githubRepoId || !workspace.githubInstallationId) {
     return bad('Workspace is not linked to a GitHub repo', 400);
   }
 
   const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.id, workspace.githubRepoId),
+    where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
     with: { installation: true },
   });
   if (!repo?.installation) return bad('Workspace is not linked to a GitHub repo', 400);
@@ -82,14 +83,14 @@ export async function POST(
   // to context.prNumber, same field the CI-retry and drift-diagnose tasks
   // both carry, and the same field Home's ciAttemptMap reads.
   const inFlight = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.taskClass, 'attempt'),
       inArray(tasks.status, [...LIVE_TASK_STATUSES]),
       sql`(${tasks.context}->>'prNumber')::int = ${prNumber}`,
-    ),
+    )),
     columns: { id: true, outputRequirement: true },
-    orderBy: (t, { desc }) => [desc(t.createdAt)],
+    orderBy: sqlOrderByFn((t, { desc }) => [desc(t.createdAt)]),
   });
   if (inFlight) {
     return NextResponse.json({

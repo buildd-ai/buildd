@@ -34,6 +34,7 @@ import {
   type PrReviewStatus,
   type PrReviewWaitFor,
 } from './pr-review-status';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── DB reads ──────────────────────────────────────────────────────────────────
 
@@ -68,10 +69,38 @@ export async function findReviewTaskForPr(
   return rows[0] ?? null;
 }
 
+/**
+ * The newest live reviewer task for a PR (any head SHA, but must have pending/assigned/in_progress status).
+ * Used as a fallback when the concurrent-producer race causes a lost insert — only adopts
+ * live tasks, never completed or terminal ones from prior heads.
+ */
+export async function findLiveReviewTaskForPr(
+  workspaceId: string,
+  prNumber: number,
+): Promise<{ id: string; status: string } | null> {
+  const rows = await db
+    .select({
+      id: tasks.id,
+      status: tasks.status,
+    })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.workspaceId, workspaceId),
+        eq(tasks.category, 'review'),
+        sql`${tasks.context}->>'prNumber' = ${String(prNumber)}`,
+        sql`${tasks.status} IN ('pending', 'assigned', 'in_progress')`,
+      ),
+    )
+    .orderBy(desc(tasks.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 /** The worker row that owns this PR in this workspace, if any. */
 export async function findPrOwningWorker(workspaceId: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    where: sqlWhere(and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber))),
     columns: {
       id: true,
       taskId: true,
@@ -232,7 +261,7 @@ export async function resolveOrAdoptPrOwner(params: {
   const existingWorker = await findPrOwningWorker(workspaceId, prNumber);
   if (existingWorker?.taskId) {
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, existingWorker.id),
+      where: sqlWhere(eq(workers.id, existingWorker.id)),
       with: { task: true },
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

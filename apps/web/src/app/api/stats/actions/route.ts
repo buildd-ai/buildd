@@ -12,6 +12,7 @@ import {
   countWorkersInWindow,
   fetchActionEvents,
 } from '@/lib/action-events';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const WINDOWS = ['24h', '7d', '30d'] as const;
 type Window = (typeof WINDOWS)[number];
@@ -67,7 +68,7 @@ export async function GET(req: NextRequest) {
   const teamIds = await resolveAccountTeamIds(user, apiAccount ?? null);
   const scopedWorkspaces = teamIds.length > 0
     ? await db.query.workspaces.findMany({
-        where: inArray(workspaces.teamId, teamIds),
+        where: sqlWhere(inArray(workspaces.teamId, teamIds)),
         columns: { id: true },
       })
     : [];

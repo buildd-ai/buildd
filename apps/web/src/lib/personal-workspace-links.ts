@@ -19,6 +19,7 @@ import { and, eq } from 'drizzle-orm';
 import { invalidateAccountWorkspaceCache } from './account-workspace-cache';
 import { roleHas } from './permissions';
 import { personalTeamSlug, planPersonalWorkspaceLinks } from './personal-workspace-links-plan';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export { personalTeamSlug, planPersonalWorkspaceLinks } from './personal-workspace-links-plan';
 export type { PersonalLinkInput, PlannedLink } from './personal-workspace-links-plan';
@@ -37,26 +38,26 @@ export async function linkAccountToPersonalWorkspaces(args: {
 }): Promise<number> {
   try {
     const account = await db.query.accounts.findFirst({
-      where: eq(accounts.id, args.accountId),
+      where: sqlWhere(eq(accounts.id, args.accountId)),
       columns: { id: true, type: true, teamId: true, workspaceIds: true },
     });
     if (!account) return 0;
     const team = await db.query.teams.findFirst({
-      where: eq(teams.id, account.teamId),
+      where: sqlWhere(eq(teams.id, account.teamId)),
       columns: { id: true, slug: true },
     });
     if (!team || team.slug !== personalTeamSlug(args.userId)) return 0;
     const membership = await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, team.id), eq(teamMembers.userId, args.userId)),
+      where: sqlWhere(and(eq(teamMembers.teamId, team.id), eq(teamMembers.userId, args.userId))),
       columns: { role: true },
     });
     const [teamWorkspaces, links] = await Promise.all([
       db.query.workspaces.findMany({
-        where: eq(workspaces.teamId, team.id),
+        where: sqlWhere(eq(workspaces.teamId, team.id)),
         columns: { id: true, teamId: true, accessMode: true },
       }),
       db.query.accountWorkspaces.findMany({
-        where: eq(accountWorkspaces.accountId, account.id),
+        where: sqlWhere(eq(accountWorkspaces.accountId, account.id)),
         columns: { workspaceId: true },
       }),
     ]);

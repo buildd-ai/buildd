@@ -112,17 +112,13 @@ jobs:
         id: migration_check
         run: |
           cd packages/core
-          # drizzle-kit aborts without generating anything and STILL EXITS 0. A
-          # generate that aborts writes nothing, which the porcelain check below
-          # cannot tell apart from "no changes needed" — so this step used to
-          # report success over a db:generate that never ran.
-          #
-          # The collision/malformed branch is fixed at the root by
-          # patches/drizzle-kit@*.patch (exit 0 -> exit 1), guarded by
-          # packages/core/__tests__/drizzle-kit-patch.test.ts. This output check
-          # stays for the abort paths the patch does NOT cover: the
-          # "snapshot is not of the latest version" branch still exits 0, and it
-          # prints via console.log rather than as an Error.
+          # drizzle-kit 0.31 aborted without generating anything and STILL EXITED
+          # 0. A generate that aborts writes nothing, which the porcelain check
+          # below cannot tell apart from "no changes needed" — so this step used
+          # to report success over a db:generate that never ran. The rc kit exits
+          # non-zero on a malformed or non-commuting chain (the `migrations:commute`
+          # step below pins that), but this output check stays as a floor: it
+          # costs nothing and a kit that goes quiet again must not read as green.
           # Capture before asserting: the step runs under `bash -e`, so letting a
           # now-nonzero db:generate fail the assignment would kill the step before
           # its output is ever echoed, leaving no diagnosis in the log.
@@ -166,30 +162,32 @@ jobs:
             --form-string "url_title=View CI run" \
             https://api.pushover.net/1/messages.json || true
 
-      # Journal ordering is load-bearing and must not ride on the affected-tests
-      # fan-out. Drizzle's migrator applies migrations by the journal's `when`
-      # high-water-mark, so a migration whose `when` is lower than an
-      # already-applied one is silently recorded as applied and its DDL never
-      # runs. Today `scripts/affected-tests.sh` fans out to ALL for any
-      # `packages/core/` change (which every migration touches), so this test does
-      # execute -- but only as a side effect of that mapping, and it is also
-      # enforced by `.githooks/pre-commit`, which `--no-verify` bypasses and CI
-      # never runs. Invoke the gate by name so a future change to either one
-      # cannot quietly remove it.
-      - name: Lint migration journal ordering
+      # `migrations:lint` is the prod-build-runs-migrations guard: a deploy that
+      # skipped `db:migrate` ships code that reads columns that do not exist.
+      # Invoke it by name so the affected-tests fan-out can never drop it.
+      - name: Lint migration build wiring
         run: bun run migrations:lint
 
-      # drizzle-kit takes the next index from the local journal, so parallel
-      # branches mint the same NNNN_ and git cannot see it (the .sql names
-      # differ). Fail the PR the moment its base takes the slot, naming the
-      # colliding file and the next free index, instead of finding out at the
-      # landing gate or a failed deploy. Fix: `bun run migrations:renumber`.
-      # See packages/core/db/migration-index.ts.
-      - name: Check migration indices are free on the base
+      # drizzle v1 keeps one migration per `<YYYYMMDDHHMMSS>_<slug>/` folder, so
+      # branches cannot collide on a name. What can go wrong is a leftover from
+      # before the cutover (a numbered `NNNN_x.sql`, a `meta/` journal): v1 never
+      # reads it, so its DDL would be skipped with the deploy green. Fail closed.
+      # Fix: `bun run migrations:regenerate`. See packages/core/db/migration-layout.ts.
+      - name: Check migration layout
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: bun run migrations:index-check "--base=origin/$BASE_REF"
+        run: bun run migrations:layout-check "--base=origin/$BASE_REF"
+
+      # Two branches that each ran generate off the same base produce snapshots
+      # sharing a parent: git merges them cleanly and the second one's DDL is
+      # computed against a schema the first already changed. drizzle-kit check
+      # exits non-zero on a pair whose changes touch each other (the pinned rc
+      # kit; migration-layout.test.ts pins both the pass and the fail). Unlike
+      # the layout check it needs no base ref, so it also runs on push.
+      # Fix: `bun run migrations:regenerate`.
+      - name: Check migrations commute
+        run: bun run migrations:commute
 
       - name: Lint hardcoded model IDs
         # The self-test runs first: it plants a known violation outside the
@@ -257,7 +255,7 @@ jobs:
 
       # The dependency handover fixture exercises a real frozen pnpm install.
       - name: Setup Node for pnpm
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -684,10 +682,14 @@ jobs:
       # apps/web/tests/db/migration-baseline.test.ts replays the pre-squash
       # migration tree from this tag (LAST_RELEASE_BEFORE_SQUASH in
       # packages/core/db/migrate-plan.ts) to prove the baseline equivalent; a
-      # shallow checkout carries no tags.
-      - name: Fetch the pre-squash release tag
+      # shallow checkout carries no tags. migration-layout-v1.test.ts also runs
+      # the previous release's migrator out of git (ROLLBACK_MIGRATOR_REF there)
+      # to prove a rollback applies nothing against the upgraded tracking table.
+      - name: Fetch the pre-squash and rollback-migrator release tags
         if: steps.dedupe.outputs.redundant != 'true'
-        run: git fetch --no-tags --depth=1 origin +refs/tags/v0.284.0:refs/tags/v0.284.0
+        run: |
+          git fetch --no-tags --depth=1 origin +refs/tags/v0.284.0:refs/tags/v0.284.0
+          git fetch --no-tags --depth=1 origin +refs/tags/v0.327.1:refs/tags/v0.327.1
       - uses: oven-sh/setup-bun@v2
         if: steps.dedupe.outputs.redundant != 'true'
         with:
@@ -770,10 +772,139 @@ jobs:
     # the API integration tests on every push to dev (advisory, never required),
     # and release_status reports that result for the release PR's head. The job
     # body lives in integration.yml so both callers run the same steps.
-    if: needs.changes.outputs.needs_server == 'true' && github.head_ref != 'dev'
+    #
+    # Release candidates (release/vX.Y.Z → main) are not hotfixes: they get the
+    # unconditional candidate-integration job below instead, not this one too.
+    if: needs.changes.outputs.needs_server == 'true' && github.head_ref != 'dev' && !startsWith(github.head_ref, 'release/v')
     uses: ./.github/workflows/integration.yml
     secrets: inherit
     with:
       api: ${{ needs.changes.outputs.api == 'true' }}
       runner: ${{ needs.changes.outputs.runner == 'true' }}
       neon_branch: ci/pr-${{ github.event.pull_request.number }}
+      checkout_sha: ${{ github.event.pull_request.head.sha }}
+      source: hotfix-pr
+
+  # The authoritative integration verdict for a release candidate: one full API
+  # + runner run on the candidate's exact head SHA, whatever changed, because a
+  # candidate is the code that ships and post-merge dev runs are advisory and
+  # on other SHAs. Not path-filtered and not "covered by an earlier green".
+  # Check name "candidate integration / integration"; it is not advisory, so
+  # it counts toward the release PR's ciState (pending until it finishes, red if
+  # it fails, is cancelled or the test machine is down). A new push to the
+  # candidate (an amendment) cancels this run and starts one on the new SHA.
+  #
+  # E2E is off: it needs the CI Claude OAuth quota, and a release cannot wait
+  # on that. Hotfix PRs still run it. The candidate branch itself is cut by
+  # release.yml; this job only needs the release/v prefix. It is the ONLY job
+  # that tests a candidate: `release candidate verified` below reads its result
+  # instead of booking the test machine a second time.
+  candidate-integration:
+    name: candidate integration
+    if: github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/v')
+    uses: ./.github/workflows/integration.yml
+    secrets: inherit
+    with:
+      api: true
+      runner: true
+      e2e: false
+      neon_branch: ci/candidate-pr-${{ github.event.pull_request.number }}
+      checkout_sha: ${{ github.event.pull_request.head.sha }}
+      source: release-candidate
+
+  # Is this PR into main a frozen release candidate, and is its head the
+  # release commit release.yml builds? Runs on every PR into main so the
+  # aggregate below always has an answer. A release/v head that is not a
+  # same-repo release/vX.Y.Z, or whose head is not the one release-only commit
+  # for that version (someone pushed on top by hand), fails here instead of
+  # being tested and shipped as if it were the candidate.
+  candidate-identify:
+    name: candidate verification / identify
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      candidate: ${{ steps.id.outputs.candidate }}
+      sha: ${{ steps.id.outputs.sha }}
+    steps:
+      - id: id
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Same prefix candidate-integration keys on, so the two always agree
+          # on what a candidate is.
+          if [[ "$HEAD_REF" != release/v* ]]; then
+            echo "candidate=false" >> "$GITHUB_OUTPUT"
+            echo "Not a release candidate ($HEAD_REF); nothing to verify here."
+            exit 0
+          fi
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::error::$HEAD_REF comes from $HEAD_REPO. Release candidates are cut in $REPO by the Release workflow only."
+            exit 1
+          fi
+          if [[ ! "$HEAD_REF" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$HEAD_REF is not a release/vX.Y.Z candidate branch."
+            exit 1
+          fi
+          echo "candidate=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "::notice::Release candidate $HEAD_REF at $HEAD_SHA."
+
+      - uses: actions/checkout@v7
+        if: steps.id.outputs.candidate == 'true'
+        with:
+          ref: ${{ steps.id.outputs.sha }}
+          fetch-depth: 2
+
+      - name: Check the candidate's shape
+        if: steps.id.outputs.candidate == 'true'
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          VERSION="${HEAD_REF#release/v}"
+          SUBJECT=$(git log -1 --format=%s HEAD)
+          PKG=$(jq -r .version apps/web/package.json)
+          echo "head subject: $SUBJECT"
+          echo "apps/web/package.json: $PKG"
+          if [ "$SUBJECT" != "chore: bump version to v${VERSION}" ] || [ "$PKG" != "$VERSION" ]; then
+            echo "::error::$HEAD_REF head is not the release commit for v${VERSION}. Re-cut or amend the candidate through the Release workflow instead of pushing to it."
+            exit 1
+          fi
+
+  # The check to require on main (scripts/release-candidate.ts
+  # REQUIRED_CANDIDATE_CHECKS). Reported on every PR into main and never
+  # Skipped there (a Skipped check satisfies branch protection without
+  # running): a hotfix passes as "not a candidate"; a candidate passes only
+  # when its shape checked out AND candidate-integration succeeded at its head.
+  candidate-verified:
+    name: release candidate verified
+    needs: [candidate-identify, candidate-integration]
+    if: always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - env:
+          CANDIDATE: ${{ needs.candidate-identify.outputs.candidate }}
+          IDENTIFY: ${{ needs.candidate-identify.result }}
+          INTEGRATION: ${{ needs.candidate-integration.result }}
+          SHA: ${{ needs.candidate-identify.outputs.sha }}
+        run: |
+          echo "identify=$IDENTIFY candidate=${CANDIDATE:-?} integration=$INTEGRATION sha=${SHA:-n/a}"
+          if [ "$IDENTIFY" != "success" ]; then
+            echo "::error::Could not identify or validate the PR head as a release candidate."
+            exit 1
+          fi
+          if [ "$CANDIDATE" != "true" ]; then
+            echo "Not a release candidate: nothing to verify."
+            exit 0
+          fi
+          if [ "$INTEGRATION" != "success" ]; then
+            echo "::error::candidate integration did not pass at candidate SHA $SHA (result: $INTEGRATION)."
+            exit 1
+          fi
+          echo "Release candidate verified at $SHA."

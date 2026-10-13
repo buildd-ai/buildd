@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missions } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * May a task owned by `teamId` be linked to `missionId`? Only when the mission
@@ -17,7 +18,7 @@ export async function isMissionLinkable(
   if (typeof missionId !== 'string' || missionId.length === 0) return false;
   if (!teamId) return false;
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { teamId: true },
   });
   return !!mission && mission.teamId === teamId;

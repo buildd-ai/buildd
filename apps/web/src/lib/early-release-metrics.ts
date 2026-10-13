@@ -25,6 +25,7 @@ import { GATE_SLUGS } from '@buildd/core/gate-slugs';
 import { EARLY_RELEASE_SATISFYING_DECISIONS } from '@/lib/dep-gate-contract';
 import { resolveEarlyReleaseMode, type EarlyReleaseMode } from '@/lib/early-release-mode';
 import { coordinationFilters, type CoordinationWindow } from '@/lib/coordination-stats-query';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const RELEASED = new Set<string>(EARLY_RELEASE_SATISFYING_DECISIONS);
 
@@ -173,7 +174,7 @@ export async function fetchEarlyReleaseStats(input: {
   const missionScope = input.missionId ? eq(tasks.missionId, input.missionId) : undefined;
 
   const [workspaceRows, releases, events, chainRows] = await Promise.all([
-    db.query.workspaces.findMany({ where: inArray(workspaces.id, input.workspaceIds), columns: { id: true, gitConfig: true } }),
+    db.query.workspaces.findMany({ where: sqlWhere(inArray(workspaces.id, input.workspaceIds)), columns: { id: true, gitConfig: true } }),
     db.select({
       id: dependencyReleases.id,
       dependentTaskId: dependencyReleases.dependentTaskId,

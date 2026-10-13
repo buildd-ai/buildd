@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { capturedOrderBy, capturedWhere } from '@buildd/core/db/relational-sql';
 
 let rows: any[];
 let boom: boolean;
@@ -52,8 +53,8 @@ describe('loadInlineEvidence', () => {
   it('scopes to the workspace and the task lineage, newest first, capped', async () => {
     await loadInlineEvidence('ws', 't1', CTX);
     expect(findArgs.limit).toBe(INLINE_EVIDENCE_LIMIT);
-    expect(findArgs.orderBy).toEqual([{ desc: 'evidenceObjects.createdAt' }]);
-    expect(findArgs.where).toEqual({
+    expect(capturedOrderBy(findArgs.orderBy, {})).toEqual([{ desc: 'evidenceObjects.createdAt' }]);
+    expect(capturedWhere(findArgs.where)).toEqual({
       and: [
         { eq: ['evidenceObjects.workspaceId', 'ws'] },
         { or: [{ eq: ['evidenceObjects.taskId', 't1'] }, { eq: ['evidenceObjects.rootTaskId', 't1'] }] },

@@ -312,7 +312,7 @@ export function getGateReasonTitle(refusal: GateRefusal, ctx: GateCopyContext = 
     case 'mission_held':
       return 'Blocked: parent mission is held';
     case 'mission_local':
-      return 'Running in a local session';
+      return 'Runs from a local session';
     case 'subject_dead':
       return 'Blocked: subject PR is closed';
     case 'connector_routing_mismatch':

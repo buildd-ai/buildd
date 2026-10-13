@@ -13,6 +13,7 @@ import { fetchLiveEstimateRows } from '@buildd/core/task-estimate-accuracy-sourc
 import { computeTaskEstimateReadout } from '@buildd/core/task-estimate-accuracy';
 import { EstimatesClient } from './EstimatesClient';
 import { FIXTURE_READOUTS, isEstimatesFixtureState } from './estimates-fixtures';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,7 +28,7 @@ function LoadError() {
 /** Whether the viewer may switch the team's features (Settings › Features). A failed read is "no". */
 async function canManageTeam(userId: string, teamId: string): Promise<boolean> {
   const m = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)),
+    where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId))),
     columns: { role: true },
   }).catch(() => null);
   return !!m && roleHas(m.role, 'manage_team_settings');

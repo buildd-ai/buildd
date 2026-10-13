@@ -26,6 +26,7 @@ import { resolveTaskEstimatesState } from '@buildd/core/task-estimate-rollout';
 import { loadTeamClusters, runTaskEstimateReadout } from '@buildd/core/task-estimate-accuracy-source';
 import { getRequestPrincipal } from '@/lib/auth-helpers';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -40,13 +41,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       if (principal.account.teamId !== id) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
     } else {
       const membership = await db.query.teamMembers.findFirst({
-        where: and(eq(teamMembers.teamId, id), eq(teamMembers.userId, principal.user.id)),
+        where: sqlWhere(and(eq(teamMembers.teamId, id), eq(teamMembers.userId, principal.user.id))),
         columns: { role: true },
       });
       if (!membership) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
     }
 
-    const team = await db.query.teams.findFirst({ where: eq(teams.id, id), columns: { taskEstimates: true } });
+    const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, id)), columns: { taskEstimates: true } });
     if (!team) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
 
     const [readout, workspaces] = await Promise.all([runTaskEstimateReadout(id), loadTeamClusters(id)]);

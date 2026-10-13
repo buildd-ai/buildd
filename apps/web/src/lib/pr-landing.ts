@@ -77,6 +77,7 @@ import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { isFailingCheckRun } from '@/lib/ci-verdict';
 import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/pr-landing-fix-dispatch';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -428,11 +429,11 @@ function filenames(list: unknown): string[] | null {
 
 async function findLiveReviewerRetryTask(workspaceId: string, prNumber: number): Promise<string | null> {
   const row = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.reviewerRetryPrNumber, prNumber),
       inArray(tasks.status, [...OPEN_TASK_STATUSES]),
-    ),
+    )),
     columns: { id: true },
   });
   return row?.id ?? null;
@@ -783,6 +784,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     ? { ...policy, threshold: { ...policy.threshold, maxLines: Number.MAX_SAFE_INTEGER } as MergePolicy['threshold'] }
     : policy;
   const observed: { baseRef?: string | null; mergeableState?: string | null; checkRuns?: CheckRunState[] } = {};
+  let kernelView: Awaited<ReturnType<typeof import('@/lib/workflow/seam').kernelLandingView>> = null;
   let kernelViewPromise: ReturnType<typeof import('@/lib/workflow/seam').kernelLandingView> | null = null;
   const kernelStatus = () => (kernelViewPromise ??= (async () => {
     const read = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
@@ -850,6 +852,11 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       case 'migration':
         if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason, deps.dispatchFix ?? defaultFix);
         if (/^could not /.test(reason)) return waiting(reason);
+        // A stale snapshot parent is work, not a decision: refresh onto the base so CI runs on it.
+        if (/^migration snapshot parent is no longer a leaf/.test(reason) && baseRef) {
+          kernelView = await kernelStatus();
+          return refresh(reason, baseRef);
+        }
         // Human authorization gates landing, not technical review. A repaired
         // head can earn its review while the migration decision is outstanding.
         // Use the existing reviewer dispatcher/dedupe; never file another repair.
@@ -885,7 +892,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // row must not block, stall or re-review it: a composition- or human-approved
   // delivery has no reviewer row at all (incident #2574). A read error falls back to
   // the legacy gate, which can only hold a landing, never authorise one past T15.
-  let kernelView = await kernelStatus();
+  kernelView = await kernelStatus();
   if (kernelView?.current.state === 'REPAIRING') {
     // edc02148: a repair whose effect backed off (a refresh that threw once) is owed again once due,
     // and the outbox floor drains only hourly. The door runs the delivery's due effects itself
@@ -1033,7 +1040,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     try {
       mergingTask =
         (await db.query.tasks.findFirst({
-          where: eq(tasks.id, owner.taskId),
+          where: sqlWhere(eq(tasks.id, owner.taskId)),
           columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
         })) ?? null;
     } catch (err) {

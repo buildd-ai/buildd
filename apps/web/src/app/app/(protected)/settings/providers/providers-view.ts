@@ -95,14 +95,32 @@ export function usedFor(surfaces: readonly ProviderSurfaceId[]): string {
   return surfaces.length ? `Used for ${surfaceList(surfaces)}.` : 'Not used by anything.';
 }
 
-export type RowState = { word: 'Needs attention' | 'Working' | 'Set' | 'Team key' | 'Not available' | 'Not set'; tone: 'error' | 'success' | 'muted' };
+export type RowState = { word: 'Needs attention' | 'Working' | 'Set' | `${string}'s key` | 'Team key' | 'Not available' | 'Not set'; tone: 'error' | 'success' | 'muted' };
+
+/** "Acme's key": an inherited row names the team it comes from. "Team key" when the name is unknown. */
+export function teamKeyWord(teamName?: string | null): RowState['word'] {
+  const name = teamName?.trim();
+  return name ? `${name}'s key` : 'Team key';
+}
+
+/** "Uses Acme's settings.": a workspace with nothing of its own. */
+export function usesTeamLine(teamName?: string | null): string {
+  const name = teamName?.trim();
+  return name ? `Uses ${name}'s settings.` : 'Uses team settings.';
+}
+
+/** "Providers · Acme" for someone in more than one team, so a "Not set" says whose; "Providers" otherwise. */
+export function providersTitle(data: Pick<ListProvidersResponse, 'teamName' | 'teamCount'> | null): string {
+  const name = data?.teamName?.trim();
+  return name && (data?.teamCount ?? 1) > 1 ? `Providers · ${name}` : 'Providers';
+}
 
 /** The one status word on a provider row. */
-export function rowState(rows: readonly ProviderCredentialSummary[], inherited: readonly ProviderCredentialSummary[], closed: string | null): RowState {
+export function rowState(rows: readonly ProviderCredentialSummary[], inherited: readonly ProviderCredentialSummary[], closed: string | null, teamName?: string | null): RowState {
   if (rows.some((r) => r.health === 'revoked' || r.lastVerificationError)) return { word: 'Needs attention', tone: 'error' };
   if (rows.some((r) => r.health === 'healthy')) return { word: 'Working', tone: 'success' };
   if (rows.length > 0) return { word: 'Set', tone: 'muted' };
-  if (inherited.length > 0) return { word: 'Team key', tone: 'muted' };
+  if (inherited.length > 0) return { word: teamKeyWord(teamName), tone: 'muted' };
   if (closed) return { word: 'Not available', tone: 'muted' };
   return { word: 'Not set', tone: 'muted' };
 }
@@ -262,16 +280,23 @@ export function usedForView(
 ): UsedForRow[] | null {
   const connected = connectedProviders(res);
   if (connected.length < 2) return null;
-  // Named the way the list names its rows ("Claude"); a group's member by its
-  // own name only when two of that group could serve the same surface.
+  // A group shows once per surface, named the way the list names its row
+  // ("Claude"): only its members that serve the surface, or the first one,
+  // disabled, when none does. Two members serving go by their own names.
   const groupOf = (id: string) => PROVIDER_GROUPS.find((g) => g.members.includes(id));
   return SURFACE_ORDER.map((surface) => {
-    const serving = connected.filter((p) => p.surfaces[surface]?.ok);
+    const serves = (p: ProviderListing) => !!p.surfaces[surface]?.ok;
+    const shown = connected.filter((p) => {
+      const g = groupOf(p.id);
+      if (!g) return true;
+      const members = connected.filter((q) => groupOf(q.id) === g);
+      return members.some(serves) ? serves(p) : members[0] === p;
+    });
     const label = (p: ProviderListing) => {
       const g = groupOf(p.id);
-      return g && serving.filter((q) => groupOf(q.id) === g).length < 2 ? g.label : p.label;
+      return g && shown.filter((q) => groupOf(q.id) === g).length < 2 ? g.label : p.label;
     };
-    const options: UsedForOption[] = connected.map((p) => {
+    const options: UsedForOption[] = shown.map((p) => {
       const support = p.surfaces[surface];
       if (support?.ok) {
         // Every team key rejected: picking it would route this surface to a key that fails.

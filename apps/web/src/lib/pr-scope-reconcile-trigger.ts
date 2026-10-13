@@ -12,6 +12,7 @@ import { after } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { githubRepos, workspaces } from '@buildd/core/db/schema';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface PrScopeReconcileRequest {
   workspaceId: string;
@@ -55,9 +56,9 @@ export function schedulePrScopeReconcile(input: PrScopeReconcileRequest): void {
 type RepoLink = { fullName: string; installationId: number };
 
 async function linkedRepo(workspaceId: string): Promise<RepoLink | null> {
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { githubRepoId: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { githubRepoId: true } });
   if (!ws?.githubRepoId) return null;
-  const repo = await db.query.githubRepos.findFirst({ where: eq(githubRepos.id, ws.githubRepoId), with: { installation: true } }) as
+  const repo = await db.query.githubRepos.findFirst({ where: sqlWhere(eq(githubRepos.id, ws.githubRepoId)), with: { installation: true } }) as
     { fullName: string; installation: { installationId: number } | null } | undefined;
   return repo?.installation ? { fullName: repo.fullName, installationId: repo.installation.installationId } : null;
 }

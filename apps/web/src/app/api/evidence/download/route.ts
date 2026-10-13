@@ -8,6 +8,7 @@ import { isUuid } from '@/lib/uuid';
 import {
   EvidenceReadError, auditEvidenceRead, findTaskEvidenceObject, generateEvidenceDownloadUrl,
 } from '@/lib/evidence-read';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,7 +41,7 @@ export async function GET(req: NextRequest) {
   }
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, workspaceId: true },
   });
   if (!task || !(await verifyWorkspaceAccess(user.id, task.workspaceId))) {

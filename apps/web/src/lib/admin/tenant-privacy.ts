@@ -84,7 +84,7 @@ async function splitRead<T>(v: ScopedViewer, read: (workspaceIds: string[]) => P
   return { all, own };
 }
 
-/** Echoed on every scoped read so the admin app can say detail is limited. */
+/** Echoed on every scoped read so a client can say detail is limited. */
 const detailNote = (v: ScopedViewer) => ({ detailLimitedToOwnTeams: v.otherTeams });
 
 // ── Views ─────────────────────────────────────────────────────────────────────

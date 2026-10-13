@@ -23,6 +23,7 @@ import { resolveClaudeCredential } from '@/lib/claude-credential';
 import { resolveOpenAiApiKey } from '@/lib/openai-credential';
 import { pickMostSpecificCredential, pickTeamAgentApiKey, teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { agentKeyPurposes } from '@buildd/core/providers/agent-keys';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The claim-candidate rows the credential blocks look tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -60,7 +61,7 @@ export async function attachServerManagedSecrets(
       if (task?.backend === 'codex') continue;
 
       const workerSecrets = await db.query.secrets.findMany({
-        where: teamCredentialWhere(
+        where: sqlWhere(teamCredentialWhere(
           { teamId: workspaceTeamId, purpose: [...agentKeyPurposes('anthropic'), 'oauth_token', 'mcp_credential'] },
           or(
             isNull(secrets.accountId),
@@ -70,7 +71,7 @@ export async function attachServerManagedSecrets(
             isNull(secrets.workspaceId),
             eq(secrets.workspaceId, task.workspaceId),
           ),
-        ),
+        )),
         columns: {
           id: true, purpose: true, label: true, healthStatus: true, updatedAt: true,
           accountId: true, workspaceId: true, userId: true,
@@ -295,14 +296,14 @@ export async function attachPendingCredentialRefreshes(
     try {
       const twoHoursFromNow = sql`NOW() + INTERVAL '2 hours'`;
       const pendingRows = await db.query.secrets.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(secrets.teamId, teamId),
           inArray(secrets.purpose, ['claude_credential', 'codex_credential']),
           not(eq(secrets.healthStatus, 'revoked')),
           isNotNull(secrets.tokenExpiresAt),
           lt(secrets.tokenExpiresAt, twoHoursFromNow),
           or(isNull(secrets.workspaceId), eq(secrets.workspaceId, wsId)),
-        ),
+        )),
         columns: { id: true, purpose: true, tokenExpiresAt: true },
       });
 
@@ -356,14 +357,14 @@ export async function resolveAccountCredentialRefreshes(
   try {
     const twoHoursFromNow = sql`NOW() + INTERVAL '2 hours'`;
     const pendingRows = await db.query.secrets.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(secrets.teamId, account.teamId),
         inArray(secrets.purpose, ['claude_credential', 'codex_credential']),
         not(eq(secrets.healthStatus, 'revoked')),
         isNotNull(secrets.tokenExpiresAt),
         lt(secrets.tokenExpiresAt, twoHoursFromNow),
         or(isNull(secrets.accountId), eq(secrets.accountId, account.id)),
-      ),
+      )),
       columns: { id: true, purpose: true, tokenExpiresAt: true },
     });
 

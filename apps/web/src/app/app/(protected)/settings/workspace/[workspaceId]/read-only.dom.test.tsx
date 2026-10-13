@@ -70,34 +70,40 @@ function expectReadOnly() {
 }
 
 describe('workspace settings, read by a member', () => {
-  it('GitConfigForm: every git setting as text', async () => {
-    await mount(
-      <GitConfigForm
-        workspaceId="ws-1"
-        workspaceName="app"
-        canEdit={false}
-        initialConfig={{
-          defaultBranch: 'dev',
-          branchingStrategy: 'gitflow',
-          commitStyle: 'conventional',
-          requiresPR: true,
-          targetBranch: 'staging',
-          autoCreatePR: true,
-          useClaudeMd: true,
-          agentInstructions: 'Run the linter first.',
-          effort: 'high',
-          criteriaGrader: 'runner',
-        }}
-      />,
-    );
+  const gitConfig = {
+    defaultBranch: 'dev',
+    branchingStrategy: 'gitflow',
+    commitStyle: 'conventional',
+    requiresPR: true,
+    targetBranch: 'staging',
+    autoCreatePR: true,
+    useClaudeMd: true,
+    agentInstructions: 'Run the linter first.',
+    effort: 'high',
+    criteriaGrader: 'runner',
+  } as const;
+
+  it('GitConfigForm (Repository): every git setting as text', async () => {
+    await mount(<GitConfigForm part="repository" workspaceId="ws-1" workspaceName="app" canEdit={false} initialConfig={gitConfig as never} />);
     expectReadOnly();
     const text = host.textContent ?? '';
-    for (const v of ['dev', 'GitFlow', 'Conventional Commits', 'staging', 'Run the linter first.', 'High']) {
+    for (const v of ['dev', 'GitFlow', 'Conventional Commits', 'staging']) {
       expect(text).toContain(v);
     }
+    expect(text).not.toContain('Run the linter first.');
     // Goal grading left the UI; a stored value stays in gitConfig.
     expect(text).not.toMatch(/criteria grading|goal grading/i);
     expect(host.querySelector('[data-testid="git-config-merge-policy"]')).not.toBeNull();
+  });
+
+  it('GitConfigForm (Agents): every agent setting as text', async () => {
+    await mount(<GitConfigForm part="agents" workspaceId="ws-1" workspaceName="app" canEdit={false} initialConfig={gitConfig as never} />);
+    expectReadOnly();
+    const text = host.textContent ?? '';
+    for (const v of ['Run the linter first.', 'High']) {
+      expect(text).toContain(v);
+    }
+    expect(text).not.toContain('GitFlow');
   });
 
   it('MemberRepoAccessSection: on or off as text', async () => {
@@ -113,7 +119,7 @@ describe('workspace settings, read by a member', () => {
     expect(host.textContent).not.toContain('to turn this on');
   });
 
-  it('MergePolicyEditor: tier, limit, paths and suggestions as text; mission overrides keep their own actions', async () => {
+  it('MergePolicyEditor: tier, limit, paths and the flagged-path summary as text; mission overrides keep their own actions', async () => {
     await mount(
       <MergePolicyEditor
         workspaceId="ws-1"
@@ -128,7 +134,9 @@ describe('workspace settings, read by a member', () => {
     );
     expectReadOnly();
     const text = host.textContent ?? '';
-    for (const v of ['Auto-threshold', '500', '.github/workflows/', 'lib/auth/session.ts', '45 minutes']) expect(text).toContain(v);
+    for (const v of ['Auto-threshold', '500', '.github/workflows/', '1 path in 1 class', '45 minutes']) expect(text).toContain(v);
+    // Flagged paths: the summary line only (settings spec R-8).
+    expect(text).not.toContain('lib/auth/session.ts');
     expect(text).not.toContain('Re-scan to detect');
   });
 
@@ -154,7 +162,7 @@ describe('workspace settings, read by a member', () => {
   it('BranchStrategySection: the strategy as text', async () => {
     await mount(<BranchStrategySection workspaceId="ws-1" effectiveBranchStrategy="direct" defaultBranch="dev" canEdit={false} />);
     expectReadOnly();
-    expect(host.querySelector('[data-testid="branch-strategy-value"]')!.textContent).toBe('Direct');
+    expect(host.querySelector('[data-testid="branch-strategy-value"]')!.textContent).toBe('One PR per task');
     expect(host.querySelector('[data-testid="branch-strategy-description"]')!.textContent).toContain('dev');
   });
 

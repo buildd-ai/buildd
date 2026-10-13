@@ -4,6 +4,7 @@ import { decrypt } from '@buildd/core/secrets';
 import { eq, isNull, or, sql } from 'drizzle-orm';
 import { agentKeyPurposes, agentKeyStorageIndex } from '@buildd/core/providers/agent-keys';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * A plain team/workspace OpenAI API key for Codex agent tasks.
@@ -46,11 +47,11 @@ export async function resolveOpenAiApiKey(opts: {
   workspaceId?: string | null;
 }): Promise<OpenAiApiKeyCredential | null> {
   const rows = (await db.query.secrets.findMany({
-    where: teamCredentialWhere(
+    where: sqlWhere(teamCredentialWhere(
       { teamId: opts.teamId, purpose: PURPOSES },
       or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    ),
+    )),
     columns: { id: true, purpose: true, label: true, userId: true, encryptedValue: true, accountId: true, workspaceId: true, healthStatus: true },
   })).filter(isTeamOpenAiKey);
   if (rows.length === 0) return null;
@@ -90,13 +91,13 @@ export async function hasOpenAiApiKey(opts: {
 }): Promise<boolean> {
   const anyAccount = opts.accountId === 'any';
   const rows = await db.query.secrets.findMany({
-    where: teamCredentialWhere(
+    where: sqlWhere(teamCredentialWhere(
       { teamId: opts.teamId, purpose: PURPOSES },
       ...(anyAccount
         ? []
         : [or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`)]),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    ),
+    )),
     columns: { purpose: true, label: true, userId: true, healthStatus: true },
   });
   return rows.some((r) => isTeamOpenAiKey(r) && (r.healthStatus as string) !== 'revoked');

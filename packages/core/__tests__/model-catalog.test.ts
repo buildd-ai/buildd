@@ -55,6 +55,18 @@ describe('normalizeCatalog', () => {
     expect(qwen.permaslug).toBe('qwen/qwen3-coder');
   });
 
+  test('keeps what each model reads, and leaves it unset when the feed does not say', () => {
+    const raw = { data: [
+      { id: 'qwen/qwen3.8-27b', architecture: { input_modalities: ['text', 'image', 'video'], output_modalities: ['text'] }, supported_parameters: ['tools'], pricing: { prompt: '0.00000004', completion: '0.0000002' } },
+      { id: 'deepseek/deepseek-v3', architecture: { input_modalities: ['text'] }, supported_parameters: ['tools'], pricing: { prompt: '0.0000002', completion: '0.0000008' } },
+      { id: 'mistralai/old', supported_parameters: ['tools'], pricing: { prompt: '0.0000002', completion: '0.0000008' } },
+    ] };
+    const [qwen, deepseek, old] = normalizeCatalog(raw);
+    expect(qwen.inputModalities).toEqual(['text', 'image', 'video']);
+    expect(deepseek.inputModalities).toEqual(['text']);
+    expect(old.inputModalities).toBeUndefined();
+  });
+
   test('drops :batch variants — a different endpoint, not a routable model', () => {
     expect(entries.some((e) => e.openRouterId.includes(':batch'))).toBe(false);
   });

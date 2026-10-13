@@ -14,6 +14,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { appendPrActivity, taskActivityUrl } from './pr-activity-comment';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface ClaimedTaskShape {
   id: string;
@@ -47,7 +48,7 @@ export function fixAttemptOf(task: ClaimedTaskShape): {
 
 async function workspaceRepo(workspaceId: string): Promise<{ installationId: number; repoFullName: string } | null> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true },
     with: { githubRepo: { columns: { fullName: true }, with: { installation: { columns: { installationId: true } } } } },
   });

@@ -7,6 +7,7 @@ import { POLICY_PERMISSION } from '@buildd/core/providers/manage';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { TASK_TOKEN_READ_ONLY, resolveProvidersCaller } from '@/lib/providers/caller';
 import type { ProviderAssignmentsResponse } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Which connected provider serves each surface (`teams.provider_assignments`,
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
   if (!r.ok) return r.response;
   if (r.caller.taskScope) return NextResponse.json({ error: TASK_TOKEN_READ_ONLY }, { status: 403 });
   try {
-    const team = await db.query.teams.findFirst({ where: eq(teams.id, r.caller.teamId), columns: { providerAssignments: true } });
+    const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, r.caller.teamId)), columns: { providerAssignments: true } });
     const body: ProviderAssignmentsResponse = { assignments: parseProviderAssignments(team?.providerAssignments) };
     return NextResponse.json(body, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {

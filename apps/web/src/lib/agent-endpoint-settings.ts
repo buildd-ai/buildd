@@ -46,6 +46,7 @@ import {
   type AgentModelMap,
   type CloudflareEndpointRef,
 } from '@buildd/core/agent-endpoint';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type EndpointHealth = 'healthy' | 'revoked' | 'unknown';
 
@@ -142,7 +143,7 @@ async function agentTierModels(teamId: string): Promise<{ wanted: Array<{ model:
   let rows: Array<{ tier: string; provider: string; model: string; surface: string | null }> = [];
   try {
     rows = (await db.query.modelTierRegistry.findMany({
-      where: eq(modelTierRegistry.teamId, teamId),
+      where: sqlWhere(eq(modelTierRegistry.teamId, teamId)),
       columns: { tier: true, provider: true, model: true, surface: true, workspaceId: true },
     })) ?? [];
   } catch {
@@ -261,7 +262,7 @@ function readBlob(encryptedValue: string): AgentEndpointBlob | null {
 /** This team's workspaces by id to name (the query is re-checked in code). */
 async function teamWorkspaceNames(teamId: string): Promise<Map<string, string>> {
   const ws = await db.query.workspaces.findMany({
-    where: eq(workspaces.teamId, teamId),
+    where: sqlWhere(eq(workspaces.teamId, teamId)),
     columns: { id: true, name: true, teamId: true },
   });
   const names = new Map<string, string>();
@@ -307,7 +308,7 @@ async function resolveAppliesTo(teamId: string, raw: unknown): Promise<{ ok: tru
 
 export async function listTeamAgentEndpoints(teamId: string): Promise<MaskedAgentEndpoint[]> {
   const rows = await db.query.secrets.findMany({
-    where: endpointRows(teamId),
+    where: sqlWhere(endpointRows(teamId)),
     columns: {
       id: true, workspaceId: true, accountId: true, userId: true, purpose: true, encryptedValue: true,
       healthStatus: true, lastVerifiedAt: true, lastVerificationError: true, updatedAt: true,
@@ -376,7 +377,7 @@ async function resolveScope(teamId: string, raw: unknown): Promise<{ ok: true; w
   if (raw === undefined || raw === null || raw === '') return { ok: true, workspaceId: null };
   if (typeof raw !== 'string') return { ok: false, status: 400, error: 'workspaceId must be a workspace id.' };
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, raw),
+    where: sqlWhere(eq(workspaces.id, raw)),
     columns: { id: true, teamId: true, name: true },
   });
   if (!ws || ws.teamId !== teamId) return { ok: false, status: 404, error: 'Workspace not found in this team.' };
@@ -386,7 +387,7 @@ async function resolveScope(teamId: string, raw: unknown): Promise<{ ok: true; w
 /** The stored endpoint at exactly this scope, decrypted, or null. */
 async function storedBlobAt(teamId: string, workspaceId: string | null): Promise<AgentEndpointBlob | null> {
   const rows = await db.query.secrets.findMany({
-    where: endpointRows(teamId),
+    where: sqlWhere(endpointRows(teamId)),
     columns: { id: true, workspaceId: true, accountId: true, userId: true, purpose: true, encryptedValue: true },
   });
   const row = (rows ?? []).find((r) => r.purpose === AGENT_ENDPOINT_PURPOSE && !r.accountId && !r.userId && (r.workspaceId ?? null) === workspaceId);
@@ -643,7 +644,7 @@ export async function setAgentEndpointAppliesTo(input: {
   if (!a.ok) return a;
 
   const rows = ((await db.query.secrets.findMany({
-    where: endpointRows(input.teamId),
+    where: sqlWhere(endpointRows(input.teamId)),
     columns: { id: true, workspaceId: true, accountId: true, userId: true, purpose: true, encryptedValue: true },
   })) ?? []).filter((r) => r.purpose === AGENT_ENDPOINT_PURPOSE && !r.accountId && !r.userId);
   const teamRow = rows.find((r) => !r.workspaceId);
@@ -695,7 +696,7 @@ export async function verifyAgentEndpointSecret(
   deps: VerifyDeps = {},
 ): Promise<{ health: EndpointHealth; error: string | null }> {
   const row = await db.query.secrets.findFirst({
-    where: eq(secrets.id, secretId),
+    where: sqlWhere(eq(secrets.id, secretId)),
     columns: { id: true, teamId: true, workspaceId: true, purpose: true, encryptedValue: true },
   });
   if (!row || row.purpose !== AGENT_ENDPOINT_PURPOSE) return { health: 'unknown', error: 'Not an agent endpoint.' };

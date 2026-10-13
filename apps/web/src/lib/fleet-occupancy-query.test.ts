@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 import { occupancyWhere } from './fleet-occupancy-query';
 
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 const SINCE = new Date('2026-10-07T12:00:00Z');
 const NOW = new Date('2026-10-08T12:00:00Z');
 

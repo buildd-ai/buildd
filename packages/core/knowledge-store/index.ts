@@ -23,6 +23,8 @@ export {
   buildLivingSpecGraph,
   livingSpecChunkPrefix,
   livingSpecRevisionKey,
+  livingSpecCriterionKey,
+  LIVING_SPEC_DERIVED_RULE_PREFIX,
   LIVING_SPEC_SOURCE_TYPE,
   LIVING_SPEC_RULE_PREFIX,
 } from './living-spec';

@@ -2,13 +2,13 @@
 title: Answered-Question Resume
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 summary: Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 domain: runners
-surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/web/src/lib/answer-wait-capability.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts]
+surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/web/src/lib/answer-wait-capability.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.ts]
 related: [human-in-the-loop-protocol, runner-liveness, codex-backend-spec, credential-refresh-lifecycle]
 keywords: [await_answer, ask_human, waitCommand, wait capability, run_in_background, sessionSeenAt, resume, sessionId, codexThreadId, waiting_input, Continue task, superseded, pendingInstructions, answerDelivery, cold continuation, AskUserQuestion, transcript]
-verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, apps/web/src/lib/answer-wait-capability.test.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.test.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.test.ts, packages/core/__tests__/mcp-tools-ask-human.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
+verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, apps/web/src/lib/answer-wait-capability.test.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.test.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.test.ts, packages/core/__tests__/mcp-tools-ask-human.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/local-session.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -521,6 +521,52 @@ a shell command that does the waiting instead.
   threshold THEN the worker and task fail and no retry task is inserted;
   on an `executor = 'local'` mission the retry is inserted.
 
+### An answer the session never reads
+
+The interactive path flips the worker to `running` the moment the answer
+lands, so a session that dies between the answer and its next poll leaves the
+answer on a `running` worker that neither the park expiry nor the resume
+sweep looks at.
+
+**Invariants**:
+- `cleanupUnreadInteractiveAnswers` sends the answer to a cold continuation
+  (`reasonCode: 'interactive_answer_not_read'`) when ALL hold: the worker is
+  `runner = 'mcp'` and `running`; `answerDelivery` is `path: 'interactive'`
+  for this worker with a `messageId`; that instruction-history entry is not
+  `acknowledged`; and the worker's `updatedAt` is older than
+  `INTERACTIVE_ANSWER_READ_DEADLINE_MS` (15 min).
+- The clock is the worker's last activity, not the answer: the answer itself,
+  any `update_progress` and every plugin presence touch move `updatedAt`, so a
+  session that is busy and checking in is never overtaken. The claiming write
+  re-checks `status = 'running'` and the quiet `updatedAt`; a session that
+  reads the answer or checks in first wins.
+- The worker is superseded and the answer leaves the old task's message queue.
+  A session that comes back gets `session_ended` (with the continuation id)
+  from `await_answer`, a 401 from the wait route and an abort from every
+  worker PATCH, so it cannot act on the answer alongside the continuation.
+- If the continuation insert fails, the worker goes back to `running` with the
+  answer still readable; a later pass retries.
+- The plugin's turn-boundary nudge covers a queued answer (`hasUnreadAnswerFor`
+  in `lib/local-session.ts`), not only `pendingInstructions`: a live session
+  that stopped waiting is told to call `receive_messages` at its next prompt,
+  tool call or stop.
+- Both answer sweeps run from `POST /api/tasks/cleanup` (each runner's timer)
+  and from the declared `waiting-input-sweep` cron, so an account whose runners
+  are all down is still covered.
+
+**Acceptance criteria**:
+- AC-AQR-I14: GIVEN an interactive answer unread and the worker quiet for over
+  15 min WHEN the sweep runs THEN a `Continue:` task carries the answer with
+  `reasonCode: 'interactive_answer_not_read'`, the worker is superseded and
+  points at it, and the message leaves the old task's queue.
+- AC-AQR-I15: GIVEN the same answer with the worker active within 15 min, or
+  the entry `acknowledged` THEN the sweep leaves it alone.
+- AC-AQR-I16: GIVEN a superseded worker whose answer is still unread WHEN
+  `await_answer` THEN `session_ended` with the continuation id, never the
+  answer.
+- AC-AQR-I17: GIVEN an answer queued for a bound worker WHEN a presence touch
+  THEN the response flags `pendingInstructions: true`.
+
 **Acceptance criteria**:
 - AC-AQR-I1: GIVEN an interactive worker in `waiting_input` checked in within
   the idle window WHEN `POST /respond` THEN `path: 'interactive'`, no task is
@@ -774,12 +820,11 @@ them.
    cleanup, a manual `rm`) passes G2. The runner's Layer 2 reconstructed-context
    fallback catches it, so the failure mode is a degraded resume rather than a
    crash — but the owner is told `resume` ran, and Layer 2 is not `resume`.
-3. **The fallback sweep rides an undeclared trigger.** `cleanupUnresumedAnswers`
-   is reached only through `POST /api/tasks/cleanup`, which no entry in
-   `cron-manifest.json` calls; it depends on each runner's 30-minute timer. If
-   every runner for a team is down — one of the ways an answer goes
-   unacknowledged in the first place — nothing converts it. Inherited from
-   `cleanupStuckWaitingInput`, which has the identical exposure.
+3. **The fallback sweeps run hourly at best without a runner.** Both answer
+   sweeps also run from the `waiting-input-sweep` cron, but that job fires
+   hourly and only between 07:00 and 23:00 ET. With every runner for a team
+   down, an answer can wait up to an hour past its deadline by day, and until
+   morning overnight.
 4. **No cross-channel lock.** An answer delivered through `/respond` on the
    resume path and a concurrent `/instruct` message reach the same session by
    the same queue, in arrival order, with nothing linking the records. This
@@ -788,12 +833,11 @@ them.
    A credential that is unexpired and `healthy` can still be rejected by the
    provider. Only a live verification call would prove it, and that is a
    per-answer round trip this path does not take.
-6. **An interactive answer has no acknowledgement deadline.** The poll
-   heartbeat covers a session that dies while it waits: its answer goes cold.
-   A session that dies in the moment between the answer landing and its next
-   poll is not covered — the worker is already `running`, so the answer waits
-   on the task until a later worker on the same task reads it, or the reaper
-   frees the claim; it is not converted to a cold continuation.
+6. **An idle but open session loses its answer to a follow-up.** A session
+   that ended its turn without waiting (no background `waitCommand`, no
+   plugin to nudge it) is indistinguishable from a dead one. After 15 quiet
+   minutes its answer goes to a continuation, even if the person later comes
+   back to that terminal.
 7. **The heartbeat proves the session polled, not that it will read.** A
    session that keeps calling `await_answer` but whose model never acts on the
    result looks live forever. Nothing here can tell those apart.

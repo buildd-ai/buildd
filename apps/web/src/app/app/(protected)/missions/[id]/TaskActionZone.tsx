@@ -371,7 +371,7 @@ export default function TaskActionZone({
             </WaitingLine>
           ) : !hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
             {local
-              ? "Waiting for a local session to claim it. Runners never pick up this mission's tasks."
+              ? 'Ready to start. Claim it from a local session.'
               : 'Waiting for a runner to claim it.'}
           </p>}
           {has('claim_hint') && <ClaimTaskHint taskId={taskId} />}

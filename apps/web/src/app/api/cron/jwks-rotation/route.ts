@@ -27,6 +27,7 @@ import {
   RETIRING_WINDOW_MS,
   RETIRING_WINDOW_FORCE_MS,
 } from '@/lib/signing-key-windows';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 function getSigningKeyTeamId(): string {
   const teamId = process.env.BUILDD_SIGNING_KEY_TEAM_ID;
@@ -42,9 +43,9 @@ async function rotate(req: NextRequest, report: CronReport) {
 
   // ── Step 1: Query all signing key rows ─────────────────────────────────────
   const allKeys = await db.query.secrets.findMany({
-    where: eq(secrets.purpose, 'signing_key'),
+    where: sqlWhere(eq(secrets.purpose, 'signing_key')),
     columns: { id: true, label: true, tokenExpiresAt: true, createdAt: true },
-    orderBy: (t, { asc }) => [asc(t.createdAt)],
+    orderBy: sqlOrderByFn((t, { asc }) => [asc(t.createdAt)]),
   });
 
   // ── Step 4: Delete expired Retiring keys (tokenExpiresAt < NOW()) ──────────

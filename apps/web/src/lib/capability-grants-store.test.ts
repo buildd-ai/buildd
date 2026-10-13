@@ -5,6 +5,7 @@
  * stopping the next call, role change and terminal tasks mid-run.
  */
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 // ── a tiny drizzle stand-in: columns are names, conditions are predicates ────
 
@@ -36,8 +37,8 @@ let seq = 0;
 const tick = () => new Promise(r => setTimeout(r, 0));
 
 const finder = (name: string) => ({
-  findFirst: async (q: { where?: Pred } = {}) => { await tick(); return T[name].find(r => !q.where || q.where(r)) ?? undefined; },
-  findMany: async (q: { where?: Pred } = {}) => { await tick(); return T[name].filter(r => !q.where || q.where(r)).map(r => ({ ...r })); },
+  findFirst: async (q: { where?: unknown } = {}) => { await tick(); const w = capturedWhere(q.where) as Pred | undefined; return T[name].find(r => !w || w(r)) ?? undefined; },
+  findMany: async (q: { where?: unknown } = {}) => { await tick(); const w = capturedWhere(q.where) as Pred | undefined; return T[name].filter(r => !w || w(r)).map(r => ({ ...r })); },
 });
 
 const db = {

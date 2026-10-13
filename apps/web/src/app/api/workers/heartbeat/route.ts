@@ -7,6 +7,7 @@ import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { randomBytes } from 'crypto';
 import { getLatestVersion } from '@/lib/version-cache';
 import { parseClaimHandoff, releaseUnacknowledgedClaims } from '@/lib/lost-claim';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/workers/heartbeat
@@ -104,10 +105,10 @@ export async function POST(req: NextRequest) {
 
     // Check if this instance already has a viewerToken
     const existing = await db.query.workerHeartbeats.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(workerHeartbeats.accountId, account.id),
         eq(workerHeartbeats.localUiUrl, localUiUrl),
-      ),
+      )),
       columns: { viewerToken: true, updateAvailable: true, updateAvailableSince: true },
     });
 

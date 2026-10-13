@@ -3,6 +3,7 @@ import { workspaces, connectors, connectorShares, connectorWorkspaces, secrets }
 import { and, eq, inArray } from 'drizzle-orm';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** 'blocked' = the team's catalog policy forbids agents from using it (connector and credential kept). */
 export type ConnectorLiveStatus = 'ok' | 'auth_expired' | 'unreachable' | 'disabled' | 'blocked';
@@ -23,7 +24,7 @@ export async function listMountedConnectors(
   workspaceId: string,
 ): Promise<{ ok: true; connectors: MountedConnectorSummary[] } | { ok: false; error: 'workspace_not_found' }> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   if (!ws?.teamId) return { ok: false, error: 'workspace_not_found' };
@@ -31,14 +32,14 @@ export async function listMountedConnectors(
 
   // Collect connector IDs owned by this team
   const ownedRows = await db.query.connectors.findMany({
-    where: eq(connectors.teamId, teamId),
+    where: sqlWhere(eq(connectors.teamId, teamId)),
     columns: { id: true },
   });
   const ownedIds = new Set(ownedRows.map(r => r.id));
 
   // Collect connector IDs shared to this team
   const shareRows = await db.query.connectorShares.findMany({
-    where: eq(connectorShares.sharedWithTeamId, teamId),
+    where: sqlWhere(eq(connectorShares.sharedWithTeamId, teamId)),
     columns: { connectorId: true },
   });
   const sharedIds = new Set(shareRows.map(r => r.connectorId));
@@ -48,17 +49,17 @@ export async function listMountedConnectors(
 
   // Fetch connectorWorkspaces rows for this workspace — only mounted connectors appear
   const cwRows = await db.query.connectorWorkspaces.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(connectorWorkspaces.workspaceId, workspaceId),
       inArray(connectorWorkspaces.connectorId, allVisibleIds),
-    ),
+    )),
   });
   if (cwRows.length === 0) return { ok: true, connectors: [] };
 
   // Fetch connector details for mounted connectors
   const mountedIds = cwRows.map(r => r.connectorId);
   const connectorRows = await db.query.connectors.findMany({
-    where: inArray(connectors.id, mountedIds),
+    where: sqlWhere(inArray(connectors.id, mountedIds)),
     columns: { id: true, name: true, authMode: true, teamId: true, url: true },
   });
   const connectorMap = new Map(connectorRows.map(c => [c.id, c]));
@@ -68,7 +69,7 @@ export async function listMountedConnectors(
   const ownerTeamIds = [...new Set(connectorRows.map(c => c.teamId).filter(Boolean))] as string[];
   const secretRows = ownerTeamIds.length > 0
     ? await db.query.secrets.findMany({
-        where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential' }),
+        where: sqlWhere(teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential' })),
         columns: { label: true, tokenExpiresAt: true, healthStatus: true },
       })
     : [];

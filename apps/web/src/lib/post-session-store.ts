@@ -33,6 +33,16 @@ import { isStorageConfigured, objectExists } from './storage';
 import { sessionArtifactKey } from './session-artifact-keys';
 import { WORKSPACE_NOT_OFF } from './post-session-mode-sql';
 import type { PostSessionRunStore, PostSessionWorkerRef } from './post-session-run';
+import { triagedRunState } from '@buildd/core/post-session-triage';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+/** Runs triaged since `since` whose skip was sampled for analysis. Exported for a dialect test. */
+export function sampledSkipsSinceWhere(since: Date) {
+  return and(
+    gte(postSessionRuns.triagedAt, since),
+    sql`${postSessionRuns.triage}->'provenance'->>'sampled' = 'true'`,
+  );
+}
 
 /** Reviewer rounds read per PR. A loop longer than this is itself the signal. */
 const MAX_REVIEW_ROUNDS = 100;
@@ -63,7 +73,7 @@ async function corpusAvailability(namespace: string): Promise<CorpusAvailability
 export const postSessionRunStore: PostSessionRunStore = {
   async loadWorker(workerId) {
     const row = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
+      where: sqlWhere(eq(workers.id, workerId)),
       columns: { id: true, status: true, startedAt: true, exitCause: true, taskId: true, workspaceId: true },
       with: {
         task: { columns: { missionId: true } },
@@ -119,7 +129,7 @@ export const postSessionRunStore: PostSessionRunStore = {
 
   async loadSource(ref: PostSessionWorkerRef, mode) {
     const w = await db.query.workers.findFirst({
-      where: eq(workers.id, ref.id),
+      where: sqlWhere(eq(workers.id, ref.id)),
       columns: {
         id: true, status: true, exitCause: true, error: true, turns: true, inputTokens: true, outputTokens: true,
         costUsd: true, startedAt: true, completedAt: true, prNumber: true, prLifecycleStatus: true, mergedAt: true,
@@ -356,7 +366,7 @@ export const postSessionRunStore: PostSessionRunStore = {
     const rows = await db
       .update(postSessionRuns)
       .set({
-        state: outcome.finalDecision === 'analyse' ? 'triaged' : 'skipped',
+        state: triagedRunState(outcome),
         triage: outcome.triage,
         hardTriggered: outcome.hardTriggered,
         hardTriggerReasons: outcome.hardTriggerReasons,
@@ -383,6 +393,14 @@ export const postSessionRunStore: PostSessionRunStore = {
       .orderBy(asc(postSessionRuns.updatedAt))
       .limit(limit);
     return rows.map(r => r.id);
+  },
+
+  async countSampledSkipsSince(since) {
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(postSessionRuns)
+      .where(sampledSkipsSinceWhere(since));
+    return Number(row?.n ?? 0);
   },
 
   async recordTriageFailure(runId, error, now) {

@@ -17,6 +17,7 @@ import { describeBackendRouting } from '@buildd/core/backend-policy';
 import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import type { WaitingFor } from '@buildd/shared';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -43,7 +44,7 @@ export async function GET(
 
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
+      where: sqlWhere(eq(tasks.id, id)),
       columns: {
         id: true,
         title: true,
@@ -92,8 +93,8 @@ export async function GET(
 
     // Get latest worker
     const latestWorkers = await db.query.workers.findMany({
-      where: eq(workers.taskId, id),
-      orderBy: desc(workers.createdAt),
+      where: sqlWhere(eq(workers.taskId, id)),
+      orderBy: sqlOrderBy(desc(workers.createdAt)),
       limit: 1,
       columns: {
         id: true,
@@ -147,8 +148,8 @@ export async function GET(
     // Latest error excerpt across all workers on this task — powers the panel's
     // "Failed" state so you see *why* it broke without opening the full page.
     const latestTraces = await db.query.workerErrorTraces.findMany({
-      where: eq(workerErrorTraces.taskId, id),
-      orderBy: desc(workerErrorTraces.ts),
+      where: sqlWhere(eq(workerErrorTraces.taskId, id)),
+      orderBy: sqlOrderBy(desc(workerErrorTraces.ts)),
       limit: 1,
       columns: { excerpt: true, pattern: true, ts: true },
     });
@@ -157,8 +158,8 @@ export async function GET(
     // Records (W4): what the task produced, across every attempt's worker.
     // Titles only — never `content`, which can be large.
     const recordWorkers = await db.query.workers.findMany({
-      where: eq(workers.taskId, id),
-      orderBy: desc(workers.createdAt),
+      where: sqlWhere(eq(workers.taskId, id)),
+      orderBy: sqlOrderBy(desc(workers.createdAt)),
       columns: { id: true },
       with: { artifacts: { columns: { id: true, type: true, title: true } } },
     });
@@ -216,12 +217,12 @@ export async function GET(
     let blockedByCount = 0;
     if (task.status === 'pending' && depTaskIds.length > 0) {
       const depTasks = await db.query.tasks.findMany({
-        where: inArray(tasks.id, depTaskIds),
+        where: sqlWhere(inArray(tasks.id, depTaskIds)),
         columns: { id: true, status: true, missionId: true },
         with: {
           workers: {
             columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
-            orderBy: desc(workers.createdAt),
+            orderBy: sqlOrderBy(desc(workers.createdAt)),
             limit: 1,
           },
         },

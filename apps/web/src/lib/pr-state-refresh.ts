@@ -34,6 +34,7 @@ import { resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { TERMINAL_PR_LIFECYCLE, isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const BATCH_CAP = 10;
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
@@ -142,7 +143,7 @@ export async function refreshStaleWorkersForWorkspaces(workspaceIds: string[]): 
   const backedOff = backedOffIds(Date.now());
 
   const candidates = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, workspaceIds),
       backedOff.length > 0 ? notInArray(workers.id, backedOff) : undefined,
       isNotNull(workers.prNumber),
@@ -154,12 +155,12 @@ export async function refreshStaleWorkersForWorkspaces(workspaceIds: string[]): 
         isNull(workers.prLastCheckedAt),
         lt(workers.prLastCheckedAt, staleCutoff),
       ),
-    ),
+    )),
     columns: { id: true, prNumber: true, prUrl: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
     // Least-recently-checked first. Without an ordering the cap made this an
     // arbitrary sample of the backlog, so a row could be passed over on every
     // single render — indefinitely.
-    orderBy: sql`${workers.prLastCheckedAt} ASC NULLS FIRST`,
+    orderBy: sqlOrderBy(sql`${workers.prLastCheckedAt} ASC NULLS FIRST`),
     limit: BATCH_CAP,
   });
 
@@ -242,7 +243,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
 
   for (const [workspaceId, wsWorkers] of byWorkspace) {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { repo: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });

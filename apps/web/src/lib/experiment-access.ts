@@ -32,6 +32,7 @@ import { isPlatformOperator } from '@/lib/platform-operator';
 import { isPlatformOperatorAccount, isPlatformOperatorUserId } from '@/lib/admin/platform-operator-caller';
 import { resolveActiveTeamId, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import type { TeamRole } from './experiments';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface ExperimentViewer {
   teamId: string;
@@ -51,7 +52,7 @@ const notFound = (what: string): ViewerResult => ({ ok: false, status: 404, erro
 
 async function memberRole(teamId: string, userId: string): Promise<TeamRole | null> {
   const m = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)),
+    where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId))),
     columns: { role: true },
   });
   return (m?.role as TeamRole | undefined) ?? null;
@@ -66,7 +67,7 @@ export async function resolveExperimentViewer(req: NextRequest, workspaceId: str
     let teamId: string | null = (account as { teamId?: string | null }).teamId ?? null;
     if (workspaceId) {
       if (!(await verifyAccountWorkspaceAccess(account, workspaceId))) return notFound('Workspace');
-      const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } });
+      const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { teamId: true } });
       teamId = ws?.teamId ?? null;
     }
     if (!teamId) return notFound('Team');
@@ -114,7 +115,7 @@ export function bearerOf(req: NextRequest): string | null {
  * and confined any requested workspace to its task's.
  */
 export async function taskTokenExperimentViewer(workspaceId: string, accountId: string): Promise<ViewerResult> {
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { teamId: true } });
   if (!ws?.teamId) return notFound('Team');
   return { ok: true, viewer: { teamId: ws.teamId, role: 'member', userId: null, accountId, operator: false } };
 }

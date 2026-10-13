@@ -310,6 +310,10 @@ Call \`buildd\` action=consolidate_knowledge op=find_decayed (task+artifact chun
 Step 4 — emit a consolidation report:
 Create a report artifact via \`buildd\` action=create_artifact type=report title "Knowledge consolidation <date>" listing: pairs merged (survivor ← loser), chunks archived (id + reason), and pairs/candidates deliberately left alone. The report is itself indexed and is the audit trail for this run.`,
     priority: 1,
+    // consolidate_knowledge is admin-only; the runner keeps its key for this
+    // role's buildd MCP (ADMIN_ACTION_ROLES in apps/runner/src/agent-task-token.ts).
+    // Without it the session runs at worker level and every call is refused.
+    roleSlug: 'consolidator',
   },
 } as const;
 

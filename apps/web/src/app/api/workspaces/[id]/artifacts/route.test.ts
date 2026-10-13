@@ -75,6 +75,11 @@ mock.module('drizzle-orm', () => ({
 }));
 
 // Every column `@/lib/artifact-scope` references must exist here, including
+// The db client builds its relations from the schema when it loads; with the
+// partial schema below that would throw. (No-op before drizzle v1, where the
+// module does not exist yet.)
+mock.module('@buildd/core/db/relations', () => ({ relations: {} }));
+
 // `workers` (its worker-arm subquery): a missing named export fails the whole
 // file at link time, before a single test runs.
 mock.module('@buildd/core/db/schema', () => ({

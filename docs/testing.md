@@ -398,6 +398,14 @@ predicate (see `github-repo-link.test.ts` and `required-connectors.test.ts`):
 sibling tests stub `drizzle-orm` with incompatible `sql` shapes, so anything
 built on the real tagged-template internals is load-order dependent.
 
+When a test mocks `db.query.<t>.findFirst/findMany` and asserts on the config
+it received, read `where` / `orderBy` / `extras` through `capturedWhere`,
+`capturedWhereFn`, `capturedOrderBy` and `capturedExtras` from
+`@buildd/core/db/relational-sql`, not as raw properties. They read the drizzle
+0.45 shape and the drizzle v1 shape (`{ RAW }` filters, orderBy callbacks) the
+same way, so the test survives the relational-query move
+(`scripts/codemods/rqb-v2.ts`).
+
 ## Test-Driven Development (TDD)
 
 ### Bug Fix Workflow

@@ -32,6 +32,7 @@ import { accountWorkspaces, tasks, workspaces, workspaceSkills } from '@buildd/c
 import { personalRoleVisibleSql } from '@buildd/core/role-visibility';
 import { and, eq, inArray, isNull, like, notInArray, or, sql } from 'drizzle-orm';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Why a required slug cannot be delivered by a claim in this workspace. */
 export type MissingSkillReason = 'not_registered' | 'team_level_only' | 'not_on_every_claim_account';
@@ -84,10 +85,10 @@ export async function diagnoseScheduleSkills(workspaceId: string, slugs: string[
 
   const [claimLinks, workspace] = await Promise.all([
     db.query.accountWorkspaces.findMany({
-      where: and(eq(accountWorkspaces.workspaceId, workspaceId), eq(accountWorkspaces.canClaim, true)),
+      where: sqlWhere(and(eq(accountWorkspaces.workspaceId, workspaceId), eq(accountWorkspaces.canClaim, true))),
       columns: { accountId: true },
     }),
-    db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } }),
+    db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { teamId: true } }),
   ]);
   const accountIds = [...new Set(claimLinks.map(l => l.accountId).filter(Boolean))];
 
@@ -105,11 +106,11 @@ export async function diagnoseScheduleSkills(workspaceId: string, slugs: string[
   }
 
   const rows = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workspaceSkills.slug, slugs),
       eq(workspaceSkills.enabled, true),
       scopes.length === 1 ? scopes[0] : or(...scopes),
-    ),
+    )),
     columns: { slug: true, workspaceId: true, accountId: true },
   });
 
@@ -165,12 +166,12 @@ export async function fileMissingSkillFriction(input: {
   const signature = missingSkillFrictionSignature(input.scheduleId);
 
   const existing = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, input.workspaceId),
       like(tasks.title, '[friction] %'),
       sql`${tasks.context}->>'frictionSignature' = ${signature}`,
       notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
-    ),
+    )),
     columns: { id: true },
   });
   if (existing) return 'exists';

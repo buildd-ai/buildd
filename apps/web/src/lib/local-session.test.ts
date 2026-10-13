@@ -27,6 +27,7 @@ const {
   boundWorkerTouchWhere,
   bindInsertSql,
   usageWriteWhere,
+  hasUnreadAnswerFor,
   LocalSessionError,
 } = await import('./local-session');
 type Store = import('./local-session').LocalSessionStore;
@@ -37,7 +38,7 @@ const NOW = new Date('2026-10-07T12:00:00Z');
 const later = (ms: number) => new Date(NOW.getTime() + ms);
 
 interface Presence { id: string; accountId: string | null; userId: string | null; kind: string; hash: string; endedAt: Date | null; lastSeenAt: Date; workspaceId: string | null; endReason?: string; busySince?: Date | null }
-interface Worker { id: string; accountId: string; runner: string; status: string; taskId: string | null; workspaceId: string; updatedAt: Date; pendingInstructions: string | null; ownerTeamId?: string | null; claimUserId?: string | null }
+interface Worker { id: string; accountId: string; runner: string; status: string; taskId: string | null; workspaceId: string; updatedAt: Date; pendingInstructions: string | null; ownerTeamId?: string | null; claimUserId?: string | null; waitingFor?: { type: string; prompt?: string } | null }
 
 let presences: Presence[];
 /** local_session_workers: worker id -> presence id (primary key on the worker). */
@@ -53,6 +54,7 @@ let usageWrites: UsageWrite[];
 /** Interleaving of usage writes and detaches, to pin "usage lands before release". */
 let usageOrder: string[];
 let taskStatus: Map<string, string>;
+let withdrawals: string[];
 
 const row = (p: Presence) => ({
   id: p.id,
@@ -133,7 +135,15 @@ function memoryStore(): Store {
       const w = workers.get(id);
       if (!w) return null;
       const live = LIVE.has(w.status);
-      return { taskId: w.taskId, pendingInstructions: live && !!w.pendingInstructions, live };
+      return { taskId: w.taskId, pendingInstructions: live && !!w.pendingInstructions, live, interactive: w.runner === 'mcp' };
+    },
+    // The same compare-and-swap /respond claims an answer with: a question
+    // still open, on an interactive worker parked on it.
+    async withdrawQuestion(id) {
+      const w = workers.get(id);
+      if (!w || w.runner !== 'mcp' || w.status !== 'waiting_input' || w.waitingFor?.type !== 'question') return false;
+      w.status = 'running'; w.waitingFor = null; withdrawals.push(id);
+      return true;
     },
   };
 }
@@ -179,6 +189,7 @@ beforeEach(() => {
   detachCalls = [];
   usageWrites = [];
   usageOrder = [];
+  withdrawals = [];
   store = memoryStore();
 });
 
@@ -344,6 +355,116 @@ describe('touch of a bound worker', () => {
     const res = await run({ event: 'touch' }, ACCOUNT, later(120_000));
     expect(res.pendingInstructions).toBe(true);
     expect(JSON.stringify(res)).not.toContain('rebase');
+  });
+});
+
+// docs/specs/terminal-question-redirect.md
+describe('terminal question redirect', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+
+  it('names the held interactive worker as where to ask (askVia)', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    const res = await run({ event: 'touch' }, ACCOUNT, later(120_000));
+    expect(res.askVia).toEqual({ workerId: id });
+  });
+
+  it('names the most recently bound live one when the session holds several', async () => {
+    const other = '22222222-2222-4222-8222-222222222222';
+    claimWorker(id);
+    claimWorker(other);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'bind', workerId: other });
+    const res = await run({ event: 'touch' }, ACCOUNT, later(120_000));
+    expect(res.askVia).toEqual({ workerId: other });
+  });
+
+  // AC-TQR-4
+  it('gives no askVia once the held worker has ended', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    workers.get(id)!.status = 'completed';
+    const res = await run({ event: 'touch' }, ACCOUNT, later(120_000));
+    expect(res.askVia ?? null).toBeNull();
+  });
+
+  // AC-TQR-6
+  it('gives no askVia for a worker a runner manages', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    workers.get(id)!.runner = 'runner-1';
+    const res = await run({ event: 'touch' }, ACCOUNT, later(120_000));
+    expect(res.askVia ?? null).toBeNull();
+  });
+
+  it('gives no askVia to a session holding nothing', async () => {
+    const res = await run({ event: 'touch' });
+    expect(res.askVia ?? null).toBeNull();
+  });
+
+  // AC-TQR-8
+  it('a person typing at the terminal withdraws the open ask_human question', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    Object.assign(workers.get(id)!, { status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Tabs or spaces?' } });
+    await run({ event: 'touch', busy: true, prompted: true }, ACCOUNT, later(120_000));
+    expect(withdrawals).toEqual([id]);
+    expect(workers.get(id)!.status).toBe('running');
+    expect(workers.get(id)!.waitingFor).toBeNull();
+  });
+
+  // AC-TQR-9
+  it('a touch that is not a typed prompt leaves the question open', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    Object.assign(workers.get(id)!, { status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Tabs or spaces?' } });
+    await run({ event: 'touch', busy: true }, ACCOUNT, later(120_000));
+    await run({ event: 'touch', busy: false }, ACCOUNT, later(240_000));
+    expect(withdrawals).toEqual([]);
+    expect(workers.get(id)!.status).toBe('waiting_input');
+  });
+
+  // AC-TQR-10 / AC-TQR-11: the CAS decides; a lost race or a permission
+  // prompt is left exactly as it was.
+  it('leaves a question already answered, and a permission prompt, alone', async () => {
+    const other = '22222222-2222-4222-8222-222222222222';
+    claimWorker(id);
+    claimWorker(other);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'bind', workerId: other });
+    Object.assign(workers.get(id)!, { status: 'running', waitingFor: null });
+    Object.assign(workers.get(other)!, { status: 'waiting_input', waitingFor: { type: 'permission' } });
+    await run({ event: 'touch', prompted: true }, ACCOUNT, later(120_000));
+    expect(withdrawals).toEqual([]);
+    expect(workers.get(other)!.status).toBe('waiting_input');
+  });
+
+  it('accepts prompted on touch only, as a boolean', () => {
+    expect(parseLocalSessionEvent({ event: 'touch', client: 'claude', clientSessionId: 's', prompted: true }).ok).toBe(true);
+    expect(parseLocalSessionEvent({ event: 'touch', client: 'claude', clientSessionId: 's', prompted: 'yes' }).ok).toBe(false);
+    expect(parseLocalSessionEvent({ event: 'start', client: 'claude', clientSessionId: 's', prompted: true }).ok).toBe(false);
+  });
+});
+
+// An answer to the session's own ask_human question waits in the task's
+// message queue, not in pendingInstructions: the hook's turn-boundary nudge
+// must fire for it too, or a session that stopped waiting never hears of it.
+describe('hasUnreadAnswerFor', () => {
+  const W = 'worker-1';
+  const answer = { id: 'msg-1', type: 'answer', body: { source: 'human', text: 'Use Postgres', workerId: W } };
+
+  it('flags an answer queued for this worker', () => {
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [answer] })).toBe(true);
+  });
+
+  it('ignores an answer for another worker on the same task', () => {
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [{ ...answer, body: { ...answer.body, workerId: 'worker-2' } }] })).toBe(false);
+  });
+
+  it('ignores other queued messages, and an empty or missing queue', () => {
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [{ id: 'm', type: 'path_released', body: {} }] })).toBe(false);
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [] })).toBe(false);
+    expect(hasUnreadAnswerFor(W, null)).toBe(false);
   });
 });
 

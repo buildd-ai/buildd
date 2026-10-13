@@ -7,6 +7,7 @@ import {
 } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import type { SubjectIntakeRepository, SubjectTask } from './subject-intake';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type IntakeTask = typeof tasks.$inferSelect & SubjectTask;
 
@@ -28,12 +29,12 @@ export function createSubjectIntakeRepository(
 
     async getActiveClaim(workspaceId, keyType, keyHash) {
       return await db.query.taskSubjectClaims.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(taskSubjectClaims.workspaceId, workspaceId),
           eq(taskSubjectClaims.keyType, keyType),
           eq(taskSubjectClaims.keyHash, keyHash),
           eq(taskSubjectClaims.state, 'active'),
-        ),
+        )),
       }) ?? null;
     },
 
@@ -107,7 +108,7 @@ export function createSubjectIntakeRepository(
     },
 
     async getTask(taskId) {
-      const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
+      const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)) });
       return task ? { ...task, hasOpenWorkerPr: false } as IntakeTask : null;
     },
 
@@ -117,13 +118,13 @@ export function createSubjectIntakeRepository(
         const known = [...ids];
         const [taskRows, reportRows] = await Promise.all([
           db.query.tasks.findMany({
-            where: or(inArray(tasks.id, known), inArray(tasks.parentTaskId, known)),
+            where: sqlWhere(or(inArray(tasks.id, known), inArray(tasks.parentTaskId, known))),
           }),
           db.query.taskSubjectReports.findMany({
-            where: or(
+            where: sqlWhere(or(
               inArray(taskSubjectReports.taskId, known),
               inArray(taskSubjectReports.reportingTaskId, known),
-            ),
+            )),
           }),
         ]);
         for (const task of taskRows) {
@@ -138,9 +139,9 @@ export function createSubjectIntakeRepository(
         if (ids.size === known.length) break;
       }
 
-      const taskRows = await db.query.tasks.findMany({ where: inArray(tasks.id, [...ids]) });
+      const taskRows = await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, [...ids])) });
       const workerRows = await db.query.workers.findMany({
-        where: and(inArray(workers.taskId, [...ids]), isNotNull(workers.prUrl)),
+        where: sqlWhere(and(inArray(workers.taskId, [...ids]), isNotNull(workers.prUrl))),
         columns: { taskId: true, prLifecycleStatus: true },
       });
       const openPrTaskIds = new Set(

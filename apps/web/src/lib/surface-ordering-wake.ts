@@ -17,6 +17,7 @@ import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-polic
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const TERMINAL_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE];
 
@@ -26,18 +27,18 @@ const TERMINAL_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE];
  */
 export async function resolveOpenWorkerPr(workspaceId: string, prNumber: number) {
   const worker = await db.query.workers.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.workspaceId, workspaceId),
       eq(workers.prNumber, prNumber),
       isNull(workers.mergedAt),
       or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL_LIFECYCLE)),
-    ),
-    orderBy: desc(workers.createdAt),
+    )),
+    orderBy: sqlOrderBy(desc(workers.createdAt)),
     columns: { id: true, taskId: true, prUrl: true, prBaseRef: true, workspaceId: true },
   });
   if (!worker) return { skip: 'no_open_worker' as const };
 
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), with: WORKSPACE_INSTALLATION_WITH });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), with: WORKSPACE_INSTALLATION_WITH });
   if (!workspace) return { skip: 'no_workspace' as const };
 
   const identity = pickWorkspaceRepoIdentity(workspace);
@@ -71,7 +72,7 @@ export async function redriveSurfaceWaiter(
 
   const task = worker.taskId
     ? await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         with: { mission: { columns: RESOLVE_POLICY_MISSION_COLUMNS } },
         columns: { id: true, requiresReview: true, missionId: true },
       })

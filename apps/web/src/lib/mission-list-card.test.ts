@@ -223,7 +223,7 @@ describe('buildMissionListCard — recurring, held and done', () => {
     expect(card.kind).toBe('active');
     expect(card.status).toEqual({ label: 'Local', tone: 'accent' });
     expect(card.held).toBeNull();
-    expect(card.sentence).toBe('Waiting for a local session to claim its 2 open tasks.');
+    expect(card.sentence).toBe('2 tasks ready to start from a local session.');
     expect(card.sentence).not.toMatch(/no live worker|stall/i);
     expect(summary.group).toBe('running');
     expect(summary.state.chip.label).toBe('LOCAL');

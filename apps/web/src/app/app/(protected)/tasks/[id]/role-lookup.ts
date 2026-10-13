@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The task's role row (name, colour) — a workspace-scoped role wins over the
@@ -14,9 +15,9 @@ export async function findTaskRole(opts: { workspaceId: string; teamId: string |
     ? or(eq(workspaceSkills.workspaceId, opts.workspaceId), and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, opts.teamId)))
     : eq(workspaceSkills.workspaceId, opts.workspaceId);
   const row = await db.query.workspaceSkills.findFirst({
-    where: and(scope, eq(workspaceSkills.slug, opts.slug), eq(workspaceSkills.isRole, true)),
+    where: sqlWhere(and(scope, eq(workspaceSkills.slug, opts.slug), eq(workspaceSkills.isRole, true))),
     columns: { name: true, color: true },
-    orderBy: sql`${workspaceSkills.workspaceId} is null`,
+    orderBy: sqlOrderBy(sql`${workspaceSkills.workspaceId} is null`),
   });
   return row ?? null;
 }

@@ -7,6 +7,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsMissionTask } from '@/lib/
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/tasks/[id]/approve-plan - Approve a planning task's plan and create child execution tasks
 export async function POST(
@@ -31,7 +32,7 @@ export async function POST(
 
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
+      where: sqlWhere(eq(tasks.id, id)),
       columns: { id: true, workspaceId: true, missionId: true, mode: true, status: true, result: true, context: true },
     });
 

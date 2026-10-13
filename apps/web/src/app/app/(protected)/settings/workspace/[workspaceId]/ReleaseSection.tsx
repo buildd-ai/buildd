@@ -8,6 +8,9 @@ import { Select } from '@/components/ui/Select';
 import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import type { StateKey } from '@/components/ui/states';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
+import { buildReleaseConfigPayload } from './release-config-payload';
+import { splitRecentReleases } from '../../_lib/recent-releases';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 type StrategyOption = ReleaseStrategy | 'none';
 
@@ -141,6 +144,10 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
   const [trigger, setTrigger] = useState<ReleaseTrigger>(
     effectiveTrigger ?? resolveReleaseTrigger(cfg)
   );
+  const [candidateEnabled, setCandidateEnabled] = useState(!!cfg?.candidate);
+  const [candidateBranches, setCandidateBranches] = useState((cfg?.candidate?.branches ?? []).join(', '));
+  const [candidateSource, setCandidateSource] = useState(cfg?.candidate?.sourceBranch ?? '');
+  const [candidateAuthors, setCandidateAuthors] = useState((cfg?.candidate?.authors ?? []).join(', '));
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -149,6 +156,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
   const [lastRelease, setLastRelease] = useState<LastRelease | null>(null);
   const [recentReleases, setRecentReleases] = useState<RecentRelease[]>([]);
   const [loadingReleases, setLoadingReleases] = useState(false);
+  const [showSkipped, setShowSkipped] = useState(false);
 
   const [hasVercelToken, setHasVercelToken] = useState<boolean | null>(null);
 
@@ -205,34 +213,22 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
       .catch(() => setHasVercelToken(null));
   }, [teamId]);
 
+  const form = {
+    strategy, prodBranch, ref, workflowFile, trigger,
+    candidateEnabled, candidateBranches, candidateSource, candidateAuthors,
+  };
+  const { dirty, snapshot, markSaved } = useDirtyState(form);
+  useWarnOnUnload(canEdit && dirty);
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    if (!dirty) return;
+    const submitted = snapshot;
     setSaving(true);
     setSaved(false);
     setSaveError(null);
 
-    let releaseConfig: Record<string, unknown>;
-    if (strategy === 'none') {
-      releaseConfig = { strategy: 'none' }; // API treats 'none' as enabled: false
-    } else if (strategy === 'branch_merge') {
-      releaseConfig = {
-        enabled: true,
-        strategy: 'branch_merge',
-        prodBranch: prodBranch.trim() || 'main',
-        ref: ref.trim() || 'dev',
-        trigger,
-      };
-    } else if (strategy === 'workflow_dispatch') {
-      releaseConfig = {
-        enabled: true,
-        strategy: 'workflow_dispatch',
-        workflowFile: workflowFile.trim() || 'release.yml',
-        ref: ref.trim() || 'dev',
-        trigger,
-      };
-    } else {
-      releaseConfig = { enabled: false };
-    }
+    const releaseConfig = buildReleaseConfigPayload(cfg, form);
 
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/config`, {
@@ -242,6 +238,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save');
+      markSaved(submitted);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
@@ -338,6 +335,74 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
                     />
                   </div>
+                  <div>
+                    <label className="block text-sm text-text-primary mb-1">Production (e.g. main)</label>
+                    <input
+                      type="text"
+                      value={prodBranch}
+                      onChange={(e) => setProdBranch(e.target.value)}
+                      placeholder="main"
+                      className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Frozen release candidates */}
+              {isReleaseEnabled && (
+                <div data-testid="release-candidate-settings">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={candidateEnabled}
+                      onChange={(e) => setCandidateEnabled(e.target.checked)}
+                      className="mt-0.5 shrink-0"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm text-text-primary">Release candidates</span>
+                      <span className="block text-xs text-text-muted mt-0.5">
+                        Versioned release PRs from your release workflow skip re-review of already-reviewed changes.
+                        Shipped once production runs the merge.
+                      </span>
+                    </span>
+                  </label>
+                  {candidateEnabled && (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
+                      <div>
+                        <label className="block text-sm text-text-primary mb-1">Candidate branches</label>
+                        <input
+                          type="text"
+                          value={candidateBranches}
+                          onChange={(e) => setCandidateBranches(e.target.value)}
+                          placeholder="release/v*"
+                          className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-text-primary mb-1">Cut from</label>
+                        <input
+                          type="text"
+                          value={candidateSource}
+                          onChange={(e) => setCandidateSource(e.target.value)}
+                          placeholder="dev"
+                          className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-text-primary mb-1">Opened by</label>
+                        <input
+                          type="text"
+                          value={candidateAuthors}
+                          onChange={(e) => setCandidateAuthors(e.target.value)}
+                          placeholder="github-actions[bot]"
+                          className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                        />
+                      </div>
+                      <p className="sm:col-span-3 text-xs text-text-muted">
+                        A PR from any other account, or one pushed to after it was cut, is reviewed like any other PR.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -395,7 +460,15 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   ? [
                       { label: 'Workflow file', value: <span className="font-mono">{workflowFile}</span> },
                       { label: 'Ref', value: <span className="font-mono">{ref}</span> },
+                      { label: 'Production', value: <span className="font-mono">{prodBranch}</span> },
                     ]
+                  : []),
+                ...(isReleaseEnabled && cfg?.candidate
+                  ? [{
+                      label: 'Release candidates',
+                      value: <span className="font-mono">{cfg.candidate.branches.join(', ')}</span>,
+                      note: `Cut from ${cfg.candidate.sourceBranch}, opened by ${cfg.candidate.authors.join(', ')}`,
+                    }]
                   : []),
                 ...(isReleaseEnabled
                   ? [{
@@ -435,10 +508,10 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
         {canEdit && <div className="flex flex-wrap items-center gap-4">
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || !dirty}
             className="btn min-h-11"
           >
-            {saving ? 'Saving…' : 'Save release settings'}
+            {saving ? 'Saving…' : 'Save'}
           </button>
           {saved && <span className="text-status-success text-sm">Saved</span>}
           {saveError && <span className="text-status-error text-sm">{saveError}</span>}
@@ -480,10 +553,14 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
               )}
             </div>
 
-            {/* Recent releases table */}
-            {recentReleases.length > 0 && (
+            {/* Recent releases table: releases that ran; skipped ones fold into one line */}
+            {recentReleases.length > 0 && (() => {
+              const { ran, skipped, skippedSince } = splitRecentReleases(recentReleases);
+              const rows = showSkipped ? [...ran, ...skipped] : ran;
+              return (
               <div>
                 <h4 className="text-sm font-medium text-text-primary mb-1">Recent releases</h4>
+                {rows.length > 0 && (
                 <div className="border-y border-border-default overflow-x-auto">
                   <table className="w-full table-fixed text-xs">
                     <thead className="border-b border-border-default">
@@ -495,8 +572,8 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border-default">
-                      {recentReleases.slice(0, 5).map((r: RecentRelease) => (
-                        <tr key={r.taskId} className="hover:bg-surface-2">
+                      {rows.map((r: RecentRelease) => (
+                        <tr key={r.taskId} className="hover:bg-surface-2" data-testid="recent-release-row">
                           <td className="px-3 py-2 text-text-secondary whitespace-nowrap" title={r.completedAt}>
                             {relativeTime(r.completedAt)}
                           </td>
@@ -523,8 +600,21 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                     </tbody>
                   </table>
                 </div>
+                )}
+                {skipped.length > 0 && skippedSince && (
+                  <button
+                    type="button"
+                    data-testid="recent-releases-skipped"
+                    aria-expanded={showSkipped}
+                    onClick={() => setShowSkipped(v => !v)}
+                    className="btn btn-quiet min-h-11 md:min-h-0 mt-1"
+                  >
+                    {skipped.length} skipped since {new Date(skippedSince).toLocaleDateString()}
+                  </button>
+                )}
               </div>
-            )}
+              );
+            })()}
           </div>
         )}
       </form>
