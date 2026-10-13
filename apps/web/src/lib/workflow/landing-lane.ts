@@ -20,23 +20,15 @@
  * waking one only makes it due; whoever drains the outbox runs it.
  */
 import { sql, type SQL } from 'drizzle-orm';
-import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { acquireLaneOn, settleLanesOn, LANE_HOLD_MS, LANE_PARKED_OUTCOME, type LaneAcquisition, type LaneKey } from '@buildd/workflow-kernel/landing-lane';
 import type { Exec } from './kernel';
 
-export type LandingLaneMode = 'off' | 'shadow' | 'enforce';
-
-/** Default off: absent, null, 'off' or any unrecognised value. */
-export function resolveLandingLaneMode(gitConfig: WorkspaceGitConfig | null | undefined | unknown): LandingLaneMode {
-  const mode = (gitConfig as { landingLane?: unknown } | null | undefined)?.landingLane;
-  return mode === 'shadow' || mode === 'enforce' ? mode : 'off';
-}
-
-/** A holder keeps the lane this long past its last refresh (several CI runs); a renewal restarts it. */
-export const LANE_HOLD_MS = 20 * 60_000;
-/** A parked refresh comes due again after this even if no release wakes it. */
-export const LANE_PARK_BACKSTOP_MS = 10 * 60_000;
-/** The outcome prefix of a parked refresh; the wake finds parked rows by it. */
-export const LANE_PARKED_OUTCOME = 'parked:lane_busy';
+// The lane's rules (modes, hold and backstop, acquire-then-ask-who-holds,
+// release-then-wake) are the package's; this file keeps the statements.
+export {
+  laneOutcome, resolveLandingLaneMode, LANE_HOLD_MS, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME,
+  type LandingLaneMode, type LaneAcquisition, type LaneKey,
+} from '@buildd/workflow-kernel/landing-lane';
 
 /** The lane row `l` still holds: lease running and its delivery in the refresh window. */
 function holdingSql(): SQL {
@@ -46,8 +38,6 @@ function holdingSql(): SQL {
       AND (hd.state IN ('APPROVED', 'LANDING') OR (hd.state = 'REPAIRING' AND hd.state_reason = 'behind'))
   ))`;
 }
-
-export interface LaneKey { repoFullName: string; baseRef: string }
 
 /**
  * Take the lane, or renew it for the delivery that holds it. Returns the row
@@ -95,16 +85,9 @@ WHERE id = (
 RETURNING delivery_id`;
 }
 
-export type LaneAcquisition =
-  | { acquired: true }
-  | { acquired: false; holder: { deliveryId: string; prNumber: number | null } | null };
-
 export async function acquireLane(exec: Exec, k: LaneKey & { deliveryId: string; headSha: string }): Promise<LaneAcquisition> {
-  const got = (await exec(acquireLaneSql(k))).rows ?? [];
-  if (got.length) return { acquired: true };
-  const h = ((await exec(laneHolderSql(k))).rows ?? [])[0] as { delivery_id?: string; pr_number?: number | null } | undefined;
-  // Nothing holds it but the CAS lost: another acquire took it between the two reads.
-  return { acquired: false, holder: h?.delivery_id ? { deliveryId: String(h.delivery_id), prNumber: h.pr_number ?? null } : null };
+  const { postgresStore } = await import('./postgres-store');
+  return acquireLaneOn(postgresStore(exec), k);
 }
 
 /**
@@ -112,16 +95,6 @@ export async function acquireLane(exec: Exec, k: LaneKey & { deliveryId: string;
  * make each lane's next parked refresh due. Returns the woken deliveries.
  */
 export async function settleLanes(exec: Exec, deliveryId: string): Promise<string[]> {
-  const released = ((await exec(releaseSettledLanesSql(deliveryId))).rows ?? []) as Array<{ repo_full_name: string; base_ref: string }>;
-  const woken: string[] = [];
-  for (const r of released) {
-    const w = ((await exec(wakeNextWaiterSql({ repoFullName: r.repo_full_name, baseRef: r.base_ref }))).rows ?? [])[0] as { delivery_id?: string } | undefined;
-    if (w?.delivery_id) woken.push(String(w.delivery_id));
-  }
-  return woken;
-}
-
-/** A parked or would-wait outcome naming the holder. */
-export function laneOutcome(prefix: string, holder: { prNumber: number | null } | null): string {
-  return `${prefix}:${holder?.prNumber != null ? `#${holder.prNumber}` : 'unknown'}`;
+  const { postgresStore } = await import('./postgres-store');
+  return settleLanesOn(postgresStore(exec), deliveryId);
 }

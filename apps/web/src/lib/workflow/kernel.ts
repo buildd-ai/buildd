@@ -11,11 +11,17 @@
  *
  * A replayed idempotency key violates workflow_transitions' unique index and
  * aborts the whole statement; the runner re-reads and answers `duplicate`.
+ *
+ * The runner itself (read → reduce → CAS → re-read once) is the package's
+ * `applyCommandOn` (@buildd/workflow-kernel/command-runner); these statements
+ * reach it through the Postgres store (postgres-store.ts).
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import type { ApplyDecision, AttemptOp, Command, CurrentView, DeliveryPatch, RecordOnly, RoundOp } from './commands';
-import { currentOf, reduce, stableIdempotencyKey } from './reducer';
+import { applyCommandOn } from '@buildd/workflow-kernel/command-runner';
+import type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
+import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, RecordOnly, RoundOp } from './commands';
+import { postgresStore } from './postgres-store';
 import type {
   ApprovalBasis,
   AttemptSnapshot,
@@ -259,11 +265,6 @@ ${sql.join(ctes, sql`,\n`)}
 SELECT 1 AS recorded`;
 }
 
-export type DeliveryRef =
-  | { deliveryId: string }
-  | { workspaceId: string; ownerTaskId: string }
-  | { workspaceId: string; repoFullName: string; prNumber: number };
-
 /** One read of everything the reducer needs for one delivery. */
 export function loadViewSql(ref: DeliveryRef): SQL {
   const where = 'deliveryId' in ref
@@ -362,95 +363,27 @@ export function toAttemptSnapshot(r: J): AttemptSnapshot {
 
 // ── Runner ──────────────────────────────────────────────────────────────────
 
-export type CommandResult =
-  | { result: 'applied'; transitionId: string; deliveryId: string; version: number; decision: ApplyDecision }
-  | { result: 'duplicate'; transitionId: string | null; reason: string; current: CurrentView }
-  | { result: 'stale'; reason: string; current: CurrentView }
-  | { result: 'rejected'; reason: string; missing?: string[]; current: CurrentView };
+export type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
 
 export interface KernelDeps {
   exec?: Exec;
   newId?: () => string;
 }
 
+/** One read of everything the reducer needs for one delivery (`loadViewSql`, through the Postgres store). */
 export async function loadView(ref: DeliveryRef, exec: Exec = dbExec): Promise<KernelView> {
-  const row = ((await exec(loadViewSql(ref))).rows ?? [])[0] as { delivery: J; rounds: J[]; attempts: J[] } | undefined;
-  if (!row) return { delivery: null, rounds: [], attempts: [] };
-  return {
-    delivery: toDeliverySnapshot(row.delivery),
-    rounds: (row.rounds ?? []).map(toRoundSnapshot),
-    attempts: (row.attempts ?? []).map(toAttemptSnapshot),
-  };
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  let e: unknown = err;
-  for (let i = 0; i < 4 && e; i++) {
-    const code = (e as { code?: string }).code;
-    if (code === '23505') return true;
-    e = (e as { cause?: unknown }).cause;
-  }
-  return /duplicate key value violates unique constraint/.test(String((err as Error)?.message ?? ''));
-}
-
-function refFor(cmd: Command, ref: DeliveryRef | undefined): DeliveryRef {
-  if (ref) return ref;
-  if (cmd.type === 'DeliveryOpened') return { workspaceId: cmd.workspaceId, ownerTaskId: cmd.ownerTaskId };
-  if (cmd.type === 'PrBound' && cmd.adoption) return { workspaceId: cmd.adoption.workspaceId, ownerTaskId: cmd.adoption.ownerTaskId };
-  throw new Error(`applyCommand: a delivery ref is required for ${cmd.type}`);
+  return postgresStore(exec).loadView(ref);
 }
 
 /**
  * Apply one command (§7.2): read, reduce, write with the version read; on a
- * CAS miss re-read and re-evaluate ONCE, then answer `stale`.
+ * CAS miss re-read and re-evaluate ONCE, then answer `stale`. The loop is the
+ * package's (`applyCommandOn`); the statements are this file's, run by the
+ * Postgres store.
  */
 export async function applyCommand(
   cmd: Command,
   opts: { ref?: DeliveryRef; factId?: string | null } & KernelDeps = {},
 ): Promise<CommandResult> {
-  const exec = opts.exec ?? dbExec;
-  const ref = refFor(cmd, opts.ref);
-  let view = await loadView(ref, exec);
-
-  for (let pass = 0; pass < 2; pass++) {
-    const d = view.delivery;
-    // §14: a delivery released to legacy is never decided by the kernel again,
-    // whoever asks (a draining effect's report, a sweep, a door that raced the release).
-    if (d?.authority === 'legacy') return { result: 'rejected', reason: 'legacy_owns', current: currentOf(view) };
-    const key = stableIdempotencyKey(cmd, d);
-    if (d && key) {
-      const hit = ((await exec(findTransitionSql(d.id, key))).rows ?? [])[0] as { id: string } | undefined;
-      if (hit) return { result: 'duplicate', transitionId: hit.id, reason: 'idempotency_key_seen', current: currentOf(view) };
-    }
-
-    const decision = reduce(view, cmd, { newId: opts.newId });
-    if (decision.result === 'duplicate') return { result: 'duplicate', transitionId: null, reason: decision.reason, current: decision.current };
-    if (decision.result === 'stale' || decision.result === 'rejected') {
-      if (d && decision.record) {
-        const q = recordOnlySql(d.id, decision.record);
-        if (q) await exec(q);
-      }
-      return decision.result === 'stale'
-        ? { result: 'stale', reason: decision.reason, current: decision.current }
-        : { result: 'rejected', reason: decision.reason, missing: decision.missing, current: decision.current };
-    }
-
-    let row: { transition_id: string; delivery_id: string; version: number | string } | undefined;
-    try {
-      row = ((await exec(transitionSql(decision, { deliveryId: d?.id ?? null, factId: opts.factId ?? null }))).rows ?? [])[0] as typeof row;
-    } catch (err) {
-      // A replayed key (or a racing single-flight insert) aborts the statement
-      // atomically; nothing was written. Re-read and decide again.
-      if (!isUniqueViolation(err)) throw err;
-    }
-    if (row) {
-      return { result: 'applied', transitionId: row.transition_id, deliveryId: row.delivery_id, version: Number(row.version), decision };
-    }
-    view = await loadView(d ? { deliveryId: d.id } : ref, exec);
-    if (decision.create && view.delivery) {
-      // Lost the open race: the delivery exists; T1 / adoption replay is a duplicate.
-      return { result: 'duplicate', transitionId: null, reason: 'delivery_exists', current: currentOf(view) };
-    }
-  }
-  return { result: 'stale', reason: 'cas_conflict', current: currentOf(view) };
+  return applyCommandOn(postgresStore(opts.exec ?? dbExec), cmd, { ref: opts.ref, factId: opts.factId, newId: opts.newId });
 }
