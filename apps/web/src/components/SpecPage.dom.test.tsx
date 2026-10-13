@@ -60,6 +60,7 @@ const base = {
   commentAnchors: [{ kind: 'criterion' as const, id: 'R-1', label: 'R-1' }],
   canComment: true,
   nearby: [] as any[],
+  filing: null as any,
   compare: null,
   canApprove: true,
   review: null as any,
@@ -123,6 +124,32 @@ describe('SpecPage', () => {
       .toEqual([['shares_files', '/app/specs/n1', "Changes 3 files this spec's work changed"], ['similar', '/app/specs/n2', 'Similar in what it asks for']]);
     act(() => root.render(<SpecPage view={base} />));
     expect(q('spec-page-nearby')).toBeNull();
+  });
+
+  it('says "Filed by buildd" with an undo that posts that filing, and a suggestion with accept and dismiss (§17 R-7)', async () => {
+    const calls: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ filing: null }), { status: 200 });
+    }) as typeof fetch;
+    const filed = { id: 'f1', kind: 'filed', status: 'applied', parent: { specId: 'area-1', title: 'Payments' }, previousParent: null, source: 'model', p: 0.97, newArea: null, createdAt: iso };
+    act(() => root.render(<SpecPage view={{ ...base, filing: filed }} />));
+    expect(q('spec-page-filing')!.textContent).toContain('Filed by buildd under Payments');
+    expect(q('spec-page-filing')!.querySelector('a')!.getAttribute('href')).toBe('/app/specs/area-1');
+    await act(async () => { q('spec-page-filing-undo')!.click(); });
+    expect(calls).toEqual([{ url: `/api/specs/${SPEC}/filing`, body: { action: 'undo', filingId: 'f1' } }]);
+    expect(refreshes).toBe(1);
+
+    act(() => root.render(<SpecPage view={{ ...base, filing: { ...filed, id: 'f2', kind: 'suggested', status: 'open' } }} />));
+    expect(q('spec-page-filing')!.textContent).toContain('buildd suggests filing this under Payments');
+    expect(q('spec-page-filing-undo')).toBeNull();
+    await act(async () => { q('spec-page-filing-accept')!.click(); });
+    expect(calls[1]).toEqual({ url: `/api/specs/${SPEC}/filing`, body: { action: 'accept', filingId: 'f2' } });
+
+    act(() => root.render(<SpecPage view={{ ...base, canComment: false, filing: filed }} />));
+    expect(q('spec-page-filing-undo')).toBeNull();
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-filing')).toBeNull();
   });
 
   it('a reader who may not approve sees no approve action', () => {
@@ -202,5 +229,27 @@ describe('SpecPage', () => {
     await act(async () => { q('spec-page-approve')!.click(); });
     expect(q('spec-page-approve-result')!.textContent).toContain('version 5');
     expect(q('spec-page-approve')).toBeNull();
+  });
+
+  it('names the one source and says when the repo copy is behind (living-specs.md §18, R-13, AC-79)', () => {
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-source')).toBeNull();
+    const source = { source: 'Source: buildd, repo copy at docs/specs/checkout.md', copy: 'Repo copy is behind: Lint specs failed on PR #9.', behind: true };
+    act(() => root.render(<SpecPage view={{ ...base, source }} />));
+    expect(q('spec-page-source')!.textContent).toBe('Source: buildd, repo copy at docs/specs/checkout.md');
+    expect(q('spec-page-repo-copy')!.textContent).toContain('Lint specs failed');
+  });
+
+  it('shows a failing repo check on review and still offers Approve (R-34, AC-96)', () => {
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    const preflight = { state: 'ran' as const, path: 'docs/specs/checkout.md', checks: [
+      { name: 'specs:lint' as const, ok: false, messages: ['frontmatter missing `summary` (one sentence: what MUST hold)'] },
+      { name: 'public-docs:check' as const, ok: true, messages: [] },
+      { name: 'no-prod-data' as const, ok: true, messages: [], note: 'The identifier half runs only in CI.' },
+    ] };
+    act(() => root.render(<SpecPage view={{ ...base, review, preflight }} />));
+    expect(q('spec-repo-checks')!.textContent).toContain('fails specs:lint');
+    expect(q('spec-repo-checks')!.textContent).toContain('frontmatter missing `summary`');
+    expect(q('spec-page-approve')).not.toBeNull();
   });
 });
