@@ -162,6 +162,33 @@ say so and stop.
   `figma`; `url` and `figma` need `version`. Figma is one kind among several,
   not the default.
 
+## Importing repo spec files
+
+A workspace's `docs/specs/*.md` can become native specs, filed under the area
+each file's `domain:` names, with the path, the commit and the PR that last
+changed it recorded.
+
+- Look first: `buildd action=manage_specs params={ action: "import" }` is a
+  dry run. It writes nothing and lists, per file, the spec it would create,
+  its area, its provenance, any duplicate of an approved spec, and the files
+  it skips with a reason (`SPEC-FORMAT.md`, `INDEX.md`, superseded, already
+  imported). `ref` reads another branch or commit; `paths` limits it.
+- Write:
+  `buildd action=manage_specs params={ action: "import", dryRun: false }`.
+  Revision 1 is imported, not approved; the mechanical frontmatter goes to
+  the metadata block. Running it again with no repo change imports nothing;
+  a changed file becomes a new imported revision. A duplicate is skipped
+  unless you name it in `allowDuplicates` after reading the spec it
+  duplicates.
+- Until a person confirms, the repo file is the source: `revise` and
+  `approve` are refused with a 409 (code spec_imported) and no repo copy is
+  written. Change the file and import again instead.
+- Confirming is a person's act:
+  `buildd action=manage_specs params={ action: "confirm_import", specIds }`
+  approves each spec whose file is unchanged since its imported commit and
+  reports the rest stale. From an agent run or API key it is a 403; from an
+  OAuth session it returns the specs page link. Hand that link to the person.
+
 ## Reading changes
 
 `buildd action=manage_specs params={ action: "diff", specId, from, to }`
@@ -196,6 +223,7 @@ approval and moves neither the version nor the approved hash.
   approved. Drafted, submitted and in review are not approved. Building
   ahead of approval does not approve anything either.
 - Never call `attach_provisional` from an agent run; it is a person's act.
+- Never call `confirm_import` from an agent run; confirming an import approves specs.
 - Never click, open or forward a confirm link as if you were the person.
 - Never record a verdict on your own task, or a pass you did not observe on
   that exact head.

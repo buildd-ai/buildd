@@ -97,6 +97,8 @@ export type SpecListView =
     proposals: AreaProposal[];
     /** The reader may file, undo, dismiss and accept (write access). */
     canAct: boolean;
+    /** The reader may confirm imports here (approve_specs, §18 R-19). */
+    canConfirm: boolean;
     /** When the page was read, so relative times match between server and client. */
     now: number;
   };
@@ -137,6 +139,7 @@ export async function specIndexInputs(workspaceId: string, rows: ReadonlyArray<S
     return {
       id: r.id, title: r.title, scope: r.scope, parentSpecId: r.parentSpecId, status: r.status,
       approvedRevision: r.approvedRevision, headRevision: r.headRevision, updatedAt: new Date(r.updatedAt).toISOString(),
+      imported: r.repoSource?.state === 'imported',
       filedBy: facts.filedBy ?? null, filingId: facts.filingId ?? null,
       suggestion: facts.suggestion ?? guesses.get(r.id) ?? null,
     };
@@ -161,9 +164,13 @@ export async function specListView(userId: string, workspaceId: string): Promise
   if (!r.ok) return { state: 'not_found' };
   const [ws] = await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
   if (!ws) return { state: 'not_found' };
-  const [index, canAct] = await Promise.all([specIndexInputs(workspaceId, r.specs), reach(caller, workspaceId, true)]);
+  const anyImported = r.specs.some((s) => s.repoSource?.state === 'imported');
+  const [index, canAct, approver] = await Promise.all([
+    specIndexInputs(workspaceId, r.specs), reach(caller, workspaceId, true),
+    anyImported ? specApprover(caller, workspaceId) : Promise.resolve(null),
+  ]);
   const proposals = canAct ? await coldStartProposals(caller, workspaceId, r.specs) : [];
-  return { state: 'ok', workspace: ws, specs: specTree(r.specs), index, proposals, canAct, now: Date.now() };
+  return { state: 'ok', workspace: ws, specs: specTree(r.specs), index, proposals, canAct, canConfirm: !!approver, now: Date.now() };
 }
 
 export interface SpecRevisionLine {
@@ -352,7 +359,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
 
   return {
     state: 'ok',
-    source: repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null),
+    source: repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource),
     preflight,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },
     standing: specStanding(spec).standing,

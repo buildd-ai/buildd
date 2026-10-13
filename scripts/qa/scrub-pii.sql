@@ -622,16 +622,18 @@ UPDATE artifact_links SET created_by = NULL;
 -- revision is an account or user id. Bodies are artifacts, scrubbed above.
 UPDATE specs SET title = 'Spec ' || left(md5(id::text), 8), created_by = NULL;
 -- The metadata block names repo paths and a handle; the repo copy state holds a
--- repo name, a path and an error string: wiped.
-UPDATE specs SET metadata = NULL, repo_copy = NULL;
+-- repo name, a path and an error string; an import's source names a repo path
+-- and who confirmed it: wiped.
+UPDATE specs SET metadata = NULL, repo_copy = NULL, repo_source = NULL;
 -- Metadata changes: the values and the reason are free text; who changed it is an id.
 UPDATE spec_metadata_changes SET previous_value = NULL, new_value = NULL, reason = pg_temp.qa_text(reason), changed_by = md5(changed_by);
 -- Spec comments: the text and the anchored heading are free text; ids and hashes are not content.
 UPDATE spec_comments SET body = pg_temp.qa_text(body), anchor_label = pg_temp.qa_text(anchor_label), author_id = md5(author_id),
   resolved_by = CASE WHEN resolved_by IS NULL THEN NULL ELSE md5(resolved_by) END;
--- A design reference carries free-text screen names and may carry a URL: wiped.
+-- A design reference carries free-text screen names and may carry a URL, and an
+-- import names the repo path it was read from: both wiped.
 UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
-  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL;
+  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL, imported = NULL;
 -- Outcome verdicts: the evidence holds what a reviewer observed (prose), file
 -- refs and who recorded it; criterion ids and head SHAs are not content.
 UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence);

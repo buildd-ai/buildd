@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { artifacts, specRevisions, specs, SPEC_SCOPES, type SpecScope } from '@buildd/core/db/schema';
+import { artifacts, specRevisions, specs, SPEC_SCOPES, type SpecRevisionImport, type SpecScope } from '@buildd/core/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { resolveWorkspaceAccess, type WorkspaceAccessCaller } from '@/lib/workspace-access';
@@ -88,13 +88,24 @@ async function checkRepoRefs(workspaceId: string, refs: readonly RepoRef[]): Pro
 }
 
 export type SpecRow = typeof specs.$inferSelect;
+
+const importOf = (i: SpecRevisionImport): SpecRevisionImport => ({ path: i.path, commitSha: i.commitSha, blobSha: i.blobSha, prNumber: i.prNumber });
+
+/** R-18: until a person confirms an import, the repo file is the source; an edit in buildd would fork it. */
+export const importedRefusal = (spec: Pick<SpecRow, 'repoSource'>): SpecError | null => (spec.repoSource?.state === 'imported'
+  ? fail(409, `This spec is imported from ${spec.repoSource.path} and waiting for confirmation, so the repo file is still its source. Change the file and run import again, or have a person confirm the import first.`, { code: 'spec_imported' })
+  : null);
 export type SpecRevisionRow = typeof specRevisions.$inferSelect;
 
 export async function createSpecDraft(caller: SpecCaller, input: {
   workspaceId: unknown; title: unknown; scope?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
   /** Override a duplicate refusal (§13): the spec this one replaces, or why it is distinct. */
   supersedes?: unknown; distinctBecause?: unknown;
-}, opts: { duplicates?: DuplicateCheckDeps | false } = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; duplicateCheck: DuplicateCheck | null } | SpecError> {
+}, opts: {
+  duplicates?: DuplicateCheckDeps | false;
+  /** Written by an import (§18, R-18, ./import.ts): revision 1 is this repo file, and the repo stays the source until confirmed. */
+  imported?: SpecRevisionImport & { importedAt: string };
+} = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; duplicateCheck: DuplicateCheck | null } | SpecError> {
   const { workspaceId, title, parentSpecId } = input;
   const scope = (input.scope ?? 'feature') as SpecScope;
   if (typeof workspaceId !== 'string' || !isUuid(workspaceId)) return fail(400, 'workspaceId must be a UUID');
@@ -147,19 +158,24 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   const [spec] = await db.insert(specs).values({
     workspaceId, title: title.trim(), scope, parentSpecId: (parentSpecId as string | null | undefined) ?? null,
     bodyArtifactId: art.id, headRevision: 1, createdBy: who.label,
+    repoSource: opts.imported ? { state: 'imported', ...importOf(opts.imported), revision: 1, importedAt: opts.imported.importedAt } : null,
   }).returning();
   const [revision] = await db.insert(specRevisions).values({
     specId: spec.id, revision: 1, artifactRevision: art.currentRevision, contentHash: bodyRev!.contentHash!,
     authorKind: who.authorKind, authorId: who.authorId, changeSummary: typeof input.changeSummary === 'string' ? input.changeSummary : null,
     repoRefs: repoRefs ?? null,
     design: design ?? null,
+    imported: opts.imported ? importOf(opts.imported) : null,
   }).returning();
   return { ok: true, spec, revision, duplicateCheck };
 }
 
 export async function reviseSpecDraft(caller: SpecCaller, specId: string, input: {
   expectedVersion: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
-}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean } | SpecError> {
+}, opts: {
+  /** A re-import of a changed repo file (R-18, ./import.ts): the new revision is that file, still imported. */
+  imported?: SpecRevisionImport & { importedAt: string };
+} = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
   const body = checkBody(input.body);
@@ -169,6 +185,10 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
   if (spec.status === 'retired' || spec.status === 'superseded') return fail(409, `A ${spec.status} spec is not revised`);
+  if (!opts.imported) {
+    const refused = importedRefusal(spec);
+    if (refused) return refused;
+  }
   const conflict = () => fail(409, `The spec changed since version ${input.expectedVersion as number}: it is now at version ${spec.version}. Re-read it, merge, then revise on top.`, { currentVersion: spec.version });
   if (spec.version !== input.expectedVersion) return conflict();
 
@@ -189,6 +209,9 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   }
   const refsJson = repoRefs ? JSON.stringify(repoRefs) : null;
   const designJson = design ? JSON.stringify(design) : null;
+  const importJson = opts.imported ? JSON.stringify(importOf(opts.imported)) : null;
+  // A re-import moves the spec's provenance to the new file in the same statement.
+  const sourceJson = opts.imported ? JSON.stringify({ ...importOf(opts.imported), importedAt: opts.imported.importedAt }) : null;
 
   // One statement, so it lands whole or not at all: the body (only while the
   // artifact is still at the revision the head pins AND the spec still at the
@@ -198,12 +221,13 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   const summary = typeof input.changeSummary === 'string' ? input.changeSummary : null;
   const rows = hash === head.contentHash ? await db.execute(sql`
     WITH up AS (
-      UPDATE specs SET version = version + 1, head_revision = head_revision + 1, status = 'draft', updated_at = now()
+      UPDATE specs SET version = version + 1, head_revision = head_revision + 1, status = 'draft', updated_at = now(),
+        repo_source = CASE WHEN ${sourceJson}::jsonb IS NULL THEN repo_source ELSE repo_source || ${sourceJson}::jsonb || jsonb_build_object('revision', head_revision + 1) END
       WHERE id = ${specId}::uuid AND version = ${spec.version}
       RETURNING id, head_revision
     )
-    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design)
-    SELECT up.id, up.head_revision, ${head.artifactRevision}, ${head.contentHash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb FROM up
+    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported)
+    SELECT up.id, up.head_revision, ${head.artifactRevision}, ${head.contentHash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb FROM up
     RETURNING id`) : await db.execute(sql`
     WITH body AS (
       UPDATE artifacts SET content = ${body}, content_author = ${who.label}, updated_at = now()
@@ -211,12 +235,13 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
         AND EXISTS (SELECT 1 FROM specs WHERE id = ${specId}::uuid AND version = ${spec.version})
       RETURNING current_revision
     ), up AS (
-      UPDATE specs SET version = version + 1, head_revision = head_revision + 1, status = 'draft', updated_at = now()
+      UPDATE specs SET version = version + 1, head_revision = head_revision + 1, status = 'draft', updated_at = now(),
+        repo_source = CASE WHEN ${sourceJson}::jsonb IS NULL THEN repo_source ELSE repo_source || ${sourceJson}::jsonb || jsonb_build_object('revision', head_revision + 1) END
       WHERE id = ${specId}::uuid AND version = ${spec.version} AND EXISTS (SELECT 1 FROM body)
       RETURNING id, head_revision
     )
-    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design)
-    SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb FROM up, body
+    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported)
+    SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb FROM up, body
     RETURNING id`);
   if (((rows as { rows?: unknown[] }).rows ?? []).length === 0) {
     const [now] = await db.select({ version: specs.version }).from(specs).where(eq(specs.id, specId)).limit(1);
