@@ -16,6 +16,7 @@ import MissionTaskStripFixture from './MissionTaskStripFixture';
 import MissionPlanFixture from './MissionPlanFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
 import GoalCriteriaFixture from './GoalCriteriaFixture';
+import SpecSurfaceFixture from './SpecSurfaceFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
 import ConnectionsFixture from './ConnectionsFixture';
@@ -69,6 +70,7 @@ import {
     ONBOARDING_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
     TASK_ERROR_EVIDENCE_FIXTURE_STATE,
+    SPEC_SURFACE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -148,6 +150,10 @@ export default function DevFixturesPage() {
 
     if (state === TASK_EVIDENCE_FIXTURE_STATE) {
         return <TaskEvidenceFilesFixture />;
+    }
+
+    if (state === SPEC_SURFACE_FIXTURE_STATE) {
+        return <SpecSurfaceFixture />;
     }
 
     if (state === TASK_ERROR_EVIDENCE_FIXTURE_STATE) {

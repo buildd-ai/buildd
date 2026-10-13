@@ -2,6 +2,7 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import MermaidBlock from '@/components/MermaidBlock';
 
 interface MarkdownContentProps {
   content: string;
@@ -19,10 +20,29 @@ interface MarkdownContentProps {
    * could leave through it.
    */
   images?: 'render' | 'link';
+  /**
+   * `spec`: a Living Spec surface (living-specs.md §15). ```mermaid blocks
+   * draw as diagrams, loaded only when one is present, and tables get ruled
+   * rows. Every other surface renders exactly as before.
+   */
+  surface?: 'default' | 'spec';
 }
 
-export default function MarkdownContent({ content, className = '', variant = 'default', images = 'render' }: MarkdownContentProps) {
+type HastNode = { type?: string; tagName?: string; value?: string; properties?: { className?: unknown }; children?: HastNode[] };
+
+/** The source of a ```mermaid block, from the `pre` element's code child; null for any other block. */
+export function mermaidSource(node: HastNode | undefined): string | null {
+  const code = node?.children?.find((c) => c.type === 'element' && c.tagName === 'code');
+  const cls = code?.properties?.className;
+  const classes = Array.isArray(cls) ? cls.map(String) : typeof cls === 'string' ? cls.split(/\s+/) : [];
+  if (!classes.includes('language-mermaid')) return null;
+  const text = (n: HastNode): string => (n.type === 'text' ? n.value ?? '' : (n.children ?? []).map(text).join(''));
+  return text(code!).replace(/\n$/, '');
+}
+
+export default function MarkdownContent({ content, className = '', variant = 'default', images = 'render', surface = 'default' }: MarkdownContentProps) {
   const compact = variant === 'compact';
+  const spec = surface === 'spec';
   return (
     <div className={`prose prose-sm dark:prose-invert max-w-none ${className}`}>
       <ReactMarkdown
@@ -54,11 +74,15 @@ export default function MarkdownContent({ content, className = '', variant = 'de
               <code className={className}>{children}</code>
             );
           },
-          pre: ({ children }) => (
-            <pre className={`bg-surface-1 text-text-primary p-3 rounded-md overflow-x-auto my-2 ${compact ? 'text-[12px]' : 'text-sm'}`}>
-              {children}
-            </pre>
-          ),
+          pre: ({ children, node }) => {
+            const diagram = spec ? mermaidSource(node as HastNode | undefined) : null;
+            if (diagram !== null) return <MermaidBlock source={diagram} />;
+            return (
+              <pre className={`bg-surface-1 text-text-primary p-3 rounded-md overflow-x-auto my-2 ${compact ? 'text-[12px]' : 'text-sm'}`}>
+                {children}
+              </pre>
+            );
+          },
           a: ({ href, children }) => (
             <a
               href={href}
@@ -78,10 +102,19 @@ export default function MarkdownContent({ content, className = '', variant = 'de
           } : {}),
           // A wide table scrolls inside its own box instead of widening the page.
           table: ({ children }) => (
-            <div className="overflow-x-auto my-2 max-w-full">
-              <table className="my-0">{children}</table>
+            <div className="overflow-x-auto my-2 max-w-full" data-testid={spec ? 'spec-table' : undefined}>
+              <table className={spec ? 'my-0 w-max min-w-full border-collapse text-meta' : 'my-0'}>{children}</table>
             </div>
           ),
+          ...(spec ? {
+            th: ({ children }: { children?: React.ReactNode }) => (
+              <th className="border border-border-default bg-surface-2 px-2 py-1 text-left align-top font-semibold text-text-primary">{children}</th>
+            ),
+            td: ({ children }: { children?: React.ReactNode }) => (
+              <td className="border border-border-default px-2 py-1 align-top text-text-secondary">{children}</td>
+            ),
+            tr: ({ children }: { children?: React.ReactNode }) => <tr className="even:bg-surface-2">{children}</tr>,
+          } : {}),
           blockquote: ({ children }) => (
             <blockquote className="border-l-4 border-border-default pl-4 my-2 italic text-text-secondary">
               {children}
