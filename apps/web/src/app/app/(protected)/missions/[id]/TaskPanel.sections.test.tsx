@@ -81,3 +81,13 @@ describe('one component per section', () => {
     expect(panel).not.toContain('<PrCard');
   });
 });
+
+describe('?state=task-sheet fixture', () => {
+  it('renders every shared section', async () => {
+    const { TASK_SHEET_FIXTURE_DATA } = await import('@/app/app/dev/fixtures/TaskSheetFixture');
+    const html = render(TASK_SHEET_FIXTURE_DATA);
+    for (const needle of ['Merged', 'pull/42', 'task-fact-runner', 'task-fact-branch', 'task-summary-fallback']) {
+      expect(html).toContain(needle);
+    }
+  });
+});
