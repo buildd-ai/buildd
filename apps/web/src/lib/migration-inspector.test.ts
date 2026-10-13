@@ -711,6 +711,52 @@ describe('inspectPullRequestMigrations — a refresh PR that renumbers the missi
       expect((verdict as { reason: string }).reason).toMatch(/migrations:regenerate/);
     });
 
+    describe('stale parent (a sibling landed after CI ran)', () => {
+      const snap = (id: string, prevIds: string[]) => JSON.stringify({ id, prevIds });
+      const OLD = '20261001090000_prior';
+      const NEW = '20261011090000_sibling';
+      const baseSnaps = (leaf: string) => ({
+        [`${DIR}/20260901090000_baseline/snapshot.json`]: snap('s-0', []),
+        [`${DIR}/${OLD}/snapshot.json`]: snap('s-1', ['s-0']),
+        ...(leaf === 's-2' ? { [`${DIR}/${NEW}/snapshot.json`]: snap('s-2', ['s-1']) } : {}),
+      });
+      const folders = (leaf: string) => ['20260901090000_baseline', OLD, ...(leaf === 's-2' ? [NEW] : [])];
+      const prFiles = [{ filename: V1, status: 'added' }, { filename: V1_SNAPSHOT, status: 'added' }];
+
+      it('lands when the parent is still the base leaf', async () => {
+        github({ files: prFiles, head: { [V1]: SAFE, [V1_SNAPSHOT]: snap('p-1', ['s-1']) }, base: baseSnaps('s-1'), baseFolders: folders('s-1') });
+        expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+      });
+
+      it('asks for fresh CI when a sibling landed on the parent', async () => {
+        github({ files: prFiles, head: { [V1]: SAFE, [V1_SNAPSHOT]: snap('p-1', ['s-1']) }, base: baseSnaps('s-2'), baseFolders: folders('s-2') });
+        const verdict = await inspect('dev');
+        expect(verdict).toMatchObject({ safe: false, kind: 'stale_parent' });
+        expect((verdict as { reason: string }).reason).toMatch(/needs rebase/);
+      });
+
+      it('accepts a chain of the PR’s own migrations whose outer parent is the leaf', async () => {
+        const V1B = `${DIR}/20261012120500_second/migration.sql`;
+        const V1B_SNAPSHOT = `${DIR}/20261012120500_second/snapshot.json`;
+        github({
+          files: [...prFiles, { filename: V1B, status: 'added' }, { filename: V1B_SNAPSHOT, status: 'added' }],
+          head: { [V1]: SAFE, [V1B]: SAFE, [V1_SNAPSHOT]: snap('p-1', ['s-1']), [V1B_SNAPSHOT]: snap('p-2', ['p-1']) },
+          base: baseSnaps('s-1'),
+          baseFolders: folders('s-1'),
+        });
+        expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+      });
+
+      it('does not apply to a legacy-layout PR', async () => {
+        github({
+          files: [{ filename: `${DIR}/0094_safe.sql`, status: 'added' }],
+          head: { [`${DIR}/0094_safe.sql`]: SAFE },
+          baseDir: ['0092_a.sql', '0093_b.sql'],
+        });
+        expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+      });
+    });
+
     it('a legacy file over a legacy base still follows the slot rules', async () => {
       github({
         files: [{ filename: `${DIR}/0094_safe.sql`, status: 'added' }],
