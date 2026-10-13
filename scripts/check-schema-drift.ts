@@ -19,12 +19,16 @@
  * packages/core/db/migrate-drift.ts, which keeps this file thin enough to stay a
  * top-to-bottom script while the decisions it makes are unit-tested.
  *
- * Reads either migration layout: the legacy journal (`meta/_journal.json`,
- * `meta/NNNN_snapshot.json`) or drizzle v1 folders (`<ts>_<slug>/migration.sql`
- * + `snapshot.json`, chained by `prevIds`). On a v1 tree the applied set is
- * tracking-row names plus exact-ms legacy `when`s from
- * packages/core/db/legacy-migrations.json, so it reads prod correctly both
- * before the cutover release upgrades the tracking table and after.
+ * Reads the drizzle v1 folder layout (`<ts>_<slug>/migration.sql` + `snapshot.json`,
+ * chained by `prevIds`). The applied set is tracking-row names plus exact-ms
+ * legacy `when`s from packages/core/db/legacy-migrations.json, so it reads prod
+ * correctly both before a database's tracking table is upgraded and after. A
+ * legacy journal tree is refused: nothing produces one any more.
+ *
+ * Parallel migrations: two branches that each generated from one base leave two
+ * leaf snapshots, each holding only its own change on top of the base. CI's
+ * `drizzle-kit check` already proved they commute, so the schema is the union of
+ * the leaves, and that union is what production is compared against.
  *
  * Reads DATABASE_URL from env. Uses information_schema for read-only introspection.
  * Run from the repo root: bun run scripts/check-schema-drift.ts
@@ -38,19 +42,18 @@
  */
 
 import { neon, neonConfig } from '@neondatabase/serverless';
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import {
   classifyExtraSchemaObjects,
   classifyMissingSchemaObjects,
   expectedColumnsFromSnapshot,
-  loadMigrationSources,
   loadMigrationSourcesV1,
-  loadSnapshotMetas,
   loadSnapshotMetasV1,
+  snapshotLeaves,
+  unionLeafDdl,
   reconcileAppliedCount,
-  resolveSnapshotSelection,
   resolveSnapshotSelectionV1,
   snapshotChainGaps,
   type MigrationSource,
@@ -65,7 +68,6 @@ const ROOT = join(__dirname, '..');
 // tree, as they do the migrator: apps/web/tests/db/migration-layout-v1.test.ts
 // runs it over a converted v1 tree. Nothing in CI's release gate sets them.
 const MIGRATIONS_DIR = process.env.BUILDD_MIGRATIONS_DIR || join(ROOT, 'packages/core/drizzle');
-const SNAPSHOT_DIR = join(MIGRATIONS_DIR, 'meta');
 
 const OFFLINE = process.argv.includes('--offline');
 
@@ -92,6 +94,7 @@ const EXIT_CANNOT_VERIFY = 2;
 let LAYOUT: MigrationLayout;
 try {
   LAYOUT = detectLayout(MIGRATIONS_DIR);
+  if (LAYOUT !== 'v1') throw new Error(`${MIGRATIONS_DIR} is in the legacy journal layout, which this gate no longer reads`);
 } catch (err) {
   console.error(`⛔ Cannot verify: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(EXIT_CANNOT_VERIFY);
@@ -146,12 +149,7 @@ function droppedByMigration(): { columns: Set<string>; tables: Set<string> } {
   const tables = new Set<string>();
   let texts: string[];
   try {
-    texts =
-      LAYOUT === 'v1'
-        ? readMigrationTree(MIGRATIONS_DIR).map((m) => m.sql.join('\n'))
-        : readdirSync(MIGRATIONS_DIR)
-            .filter((f) => f.endsWith('.sql'))
-            .map((f) => readFileSync(join(MIGRATIONS_DIR, f), 'utf8'));
+    texts = readMigrationTree(MIGRATIONS_DIR).map((m) => m.sql.join('\n'));
   } catch {
     console.log('  [warn] could not read migration dir — pending drops not considered');
     return { columns, tables };
@@ -169,68 +167,34 @@ function droppedByMigration(): { columns: Set<string>; tables: Set<string> } {
 // ─── Load latest snapshot ────────────────────────────────────────────────────
 
 function latestSnapshot(): unknown {
-  const v1 = LAYOUT === 'v1';
-  const v1Metas = v1 ? loadSnapshotMetasV1(MIGRATIONS_DIR) : [];
-  const metas = v1 ? [] : loadSnapshotMetas(SNAPSHOT_DIR);
-  const selection = v1 ? resolveSnapshotSelectionV1(v1Metas) : resolveSnapshotSelection(metas);
+  const metas = loadSnapshotMetasV1(MIGRATIONS_DIR);
+  const selection = resolveSnapshotSelectionV1(metas);
 
   if (selection.kind === 'empty') {
-    throw new Error('No snapshot files found in ' + (v1 ? MIGRATIONS_DIR : SNAPSHOT_DIR));
+    throw new Error('No snapshot files found in ' + MIGRATIONS_DIR);
   }
 
+  console.log(`Using snapshot: ${selection.file} (chain tip of ${metas.length} snapshots)`);
+
+  // Surfaced, not fatal.
+  const gaps = snapshotChainGaps(metas);
+  if (gaps.length > 0) console.log(`  [note] snapshot chain gaps: ${gaps.join('; ')} — not release-blocking`);
+
+  const read = (file: string) => JSON.parse(readFileSync(join(MIGRATIONS_DIR, file), 'utf8')) as { ddl?: unknown[] };
   if (selection.kind === 'forked') {
-    console.error('\n\u26d4 Cannot verify: the Drizzle snapshot chain is FORKED.\n');
-    console.error(`  ${selection.file} and ${selection.siblings.join(', ')}`);
-    console.error(`  all record prevId ${selection.prevId} \u2014 they are siblings, not a sequence.\n`);
-    console.error(`Two concurrent 'bun db:generate' runs each diffed against the same parent and
-each claimed the next free index. Git conflicts on neither the .sql nor the
-.json, so the fork lands silently, and each sibling holds only part of the
-schema.
-
-NO DRIFT VERDICT IS POSSIBLE in this state. Whichever sibling this gate picked,
-whatever the other one added would read as an object the snapshot has never
-heard of \u2014 indistinguishable from production having been hand-edited. Only one
-of those is an emergency, so the gate refuses to guess.
-
-This is a repo metadata problem. Production has not been inspected and is not
-implicated. To resolve, relinearize the chain: rebuild the highest-numbered
-snapshot as a true child of its sibling (its sibling's content plus its own
-delta, keeping its own id, with prevId set to the sibling's id).
-
-Do NOT delete the snapshot and re-run db:generate \u2014 that re-derives migrations
-production has already applied. The .sql files are correct and already applied;
-only the snapshot metadata is inconsistent.`);
-    process.exit(EXIT_CANNOT_VERIFY);
+    // Parallel migrations, each generated from the same base. `drizzle-kit check`
+    // (CI, every PR) fails a pair that does not commute, so the schema is the union
+    // of the leaf snapshots. Anything a leaf holds is expected; nothing is guessed.
+    const leaves = snapshotLeaves(metas);
+    console.log(`  [note] ${leaves.length} parallel leaf snapshots (${leaves.map((l) => l.file.split('/')[0]).join(', ')}): expecting their union`);
+    const ddl = unionLeafDdl(leaves, (file) => read(file).ddl ?? []);
+    return { version: '8', dialect: 'postgres', ddl };
   }
-
-  console.log(`Using snapshot: ${selection.file} (chain tip of ${(v1 ? v1Metas : metas).length} snapshots)`);
-
-  if (v1) {
-    // Surfaced, not fatal, like the dangling legacy fragments below.
-    const gaps = snapshotChainGaps(v1Metas);
-    if (gaps.length > 0) console.log(`  [note] snapshot chain gaps: ${gaps.join('; ')} — not release-blocking`);
-    return JSON.parse(readFileSync(join(MIGRATIONS_DIR, selection.file), 'utf8'));
-  }
-
-  // Older fragments dangle in this repo as residue from past renumbering, which
-  // has been harmless for a long time \u2014 surfaced, never fatal, because failing
-  // on it would block every release to re-litigate settled history.
-  const tips = metas.filter(
-    (m) => m.id && !metas.some((other) => other.prevId === m.id) && m.file !== selection.file
-  );
-  if (tips.length > 0) {
-    console.log(
-      `  [note] ${tips.length} older snapshot(s) dangle (successor removed by past ` +
-        `renumbering): ${tips.map((t) => t.file).join(', ')} \u2014 not release-blocking`
-    );
-  }
-
-  return JSON.parse(readFileSync(join(SNAPSHOT_DIR, selection.file), 'utf8'));
+  return read(selection.file);
 }
 
-/** Drift sources for the tree's layout (see packages/core/db/migrate-drift.ts). */
+/** Drift sources for the tree (see packages/core/db/migrate-drift.ts). */
 function loadSources(): MigrationSource[] {
-  if (LAYOUT === 'legacy') return loadMigrationSources(MIGRATIONS_DIR);
   return loadMigrationSourcesV1(MIGRATIONS_DIR, loadLegacyMap(process.env[LEGACY_MIGRATIONS_ENV] || LEGACY_MIGRATIONS_PATH));
 }
 

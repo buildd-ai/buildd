@@ -306,7 +306,11 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than sleep a fixed 200ms: a loaded CI runner can take longer
+      // to drain the 10 queued messages.
+      for (let i = 0; i < 100 && !manager.getWorker('w-loop-abort')?.error; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       const worker = manager.getWorker('w-loop-abort');
       // Worker should be in error state due to loop detection

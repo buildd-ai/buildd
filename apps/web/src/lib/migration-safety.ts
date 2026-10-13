@@ -33,12 +33,15 @@ export interface MigrationCollision {
  *  - `lineage`: the PR deletes, rewrites or reorders existing migrations.
  *  - `mixed`: safe EXPAND plus CONTRACT in one PR; an agent splits it.
  *  - `collision`: a mechanical renumber (see `MigrationSafety.collision`).
+ *  - `stale_parent`: a drizzle v1 snapshot's parent is no longer a leaf on the
+ *    base, so a sibling landed since CI ran: the PR needs a fresh base and a
+ *    fresh CI run, not a decision.
  *  - `uninspectable`: GitHub could not be read; the inspector retries once,
  *    then fails closed.
  * Absent means `destructive` (see `unsafeKind`), so a verdict without one
  * still fails closed.
  */
-export type MigrationUnsafeKind = 'destructive' | 'data' | 'lineage' | 'mixed' | 'collision' | 'uninspectable';
+export type MigrationUnsafeKind = 'destructive' | 'data' | 'lineage' | 'mixed' | 'collision' | 'stale_parent' | 'uninspectable';
 
 export type MigrationSafety =
   | { safe: true; operationClass: 'EXPAND' }

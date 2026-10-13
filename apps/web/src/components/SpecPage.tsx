@@ -90,8 +90,10 @@ export default function SpecPage({ view }: { view: Ok }) {
     view.review ? (
       <section className="flex flex-col gap-3" data-testid="spec-page-review-panel">
         <h2 className="text-body font-semibold text-text-primary">
-          {view.review.replaces ? `Revision ${view.review.revision} replaces revision ${view.review.replaces}` : `Revision ${view.review.revision}, the first to be approved`}
+          {view.review.replaces ? `Revision ${view.review.revision} replaces revision ${view.review.replaces}` : `Revision ${view.review.revision} (nothing approved yet)`}
         </h2>
+        {/* The action sits where the reader pressed Review, above the text it approves. */}
+        <Approve specId={spec.id} revision={view.review.revision} expectedVersion={spec.version} />
         <SpecRevisionPanes
           body={view.review.body}
           hunks={view.review.hunks}
@@ -101,7 +103,6 @@ export default function SpecPage({ view }: { view: Ok }) {
           linesRemoved={view.review.linesRemoved}
           initial={view.review.replaces ? 'changes' : 'spec'}
         />
-        <Approve specId={spec.id} revision={view.review.revision} expectedVersion={spec.version} />
       </section>
     ) : view.compare ? (
       <section className="flex flex-col gap-3" data-testid="spec-page-compare-panel">

@@ -99,8 +99,12 @@ describe('SpecApprovalRequest', () => {
 
   it('a first approval opens on the spec itself, rendered as Markdown', () => {
     act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={first} />));
+    expect(container.textContent).toContain('Nothing is approved yet. Approving puts revision 3 in force.');
     const rendered = q('spec-approval-rendered');
     expect(rendered).not.toBeNull();
+    // The action comes before the text it approves.
+    const approveBtn = q('spec-approval-approve')!;
+    expect(approveBtn.compareDocumentPosition(rendered!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(rendered!.querySelector('h2')!.textContent).toBe('Totals');
     expect(rendered!.querySelector('strong')!.textContent).toBe('Totals');
     expect(q('spec-approval-diff')).toBeNull();
