@@ -20,9 +20,10 @@ import type { FlowWindow } from '@/lib/insights-flow';
 import type { ExperimentRow } from '@/lib/experiments-store';
 import { toExperimentDTO } from '@/lib/experiments';
 import {
-  listChatRetros, listTeamsWithWorkspaces, loadAgentAccess, loadDispatchHealth, loadFailures, loadGates,
+  listChatRetros, listTeamsWithWorkspaces, loadAgentAccess, loadDispatchHealth, loadEstimates, loadFailures, loadGates,
   loadInsights, loadInsightsBand, loadOperatorData, loadUsage, type InsightsBandFilter,
 } from './data';
+import { buildOperatorEstimatesReport, type OperatorGroup } from '@buildd/core/task-estimate-operator';
 import type { AdminScope } from './scope';
 
 export interface AdminViewer {
@@ -171,6 +172,26 @@ export async function viewAgentAccess(v: ScopedViewer, windowHours: number) {
   return report && {
     ...report,
     grantProblems: report.grantProblems.map(p => ({ ...p, workspaceName: workspaceName(v, p.workspaceId, p.workspaceName) })),
+  };
+}
+
+/**
+ * Insights → Estimation (docs/specs/task-estimates.md, operator surface).
+ * Every team's numbers count; area-cluster labels (repo paths) come from own
+ * teams' rows only, and other teams and workspaces are named by pseudonym.
+ */
+export async function viewEstimates(v: ScopedViewer, opts: { since: Date; estimatorVersion: string | null }) {
+  const data = await loadEstimates({ workspaceIds: v.workspaceIds, ...opts });
+  const report = buildOperatorEstimatesReport({ ...data, detailTeamIds: v.ownTeamIds, estimatorVersion: opts.estimatorVersion });
+  const team = (g: OperatorGroup) => ({ ...g, own: v.ownTeamIds.has(g.key), name: teamName(v, g.key) });
+  const owned = ownWs(v);
+  const workspace = (g: OperatorGroup) => ({
+    ...g, own: owned.has(g.key), name: workspaceName(v, g.key, data.workspaceNames[g.key] ?? workspacePseudonym(g.key)),
+  });
+  return {
+    ...report,
+    live: report.live.map(l => ({ ...l, byTeam: l.byTeam.map(team), byWorkspace: l.byWorkspace.map(workspace) })),
+    ...detailNote(v),
   };
 }
 
