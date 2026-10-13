@@ -1274,26 +1274,48 @@ at any time.
 **Status: contract, not built.** Replaces §9's list layout when built; §9's
 reach and wording rules still apply.
 
-**Capability statement**: The spec list MUST read as an outline a person can
-scan at phone width, grouped by product and area with counts in words, and
-MUST list as unfiled only what buildd could not place.
+**Capability statement**: The spec index MUST show at a glance how a
+workspace's specs cluster, as a compact map above an outline grouped by
+product and area, both legible at phone width, and MUST show as unfiled only
+what buildd could not place.
 
 **Invariants**:
-- R-21: The default index is an outline: the product, then each area as a
-  row group headed by its title and counts in words (approved, draft,
-  imported awaiting confirmation, needs attention), then its features as rows
-  in §9's wording, children indented under them.
-- R-22: Needs attention counts a spec with a failing governed outcome on any
-  pinned task (§7), a design changed since approval (§12), or a repo-sourced
-  file past `specs:check`'s 90-day staleness warning.
-- R-23: Unfiled comes last and holds only what buildd could not place; each
-  row shows its suggestion inline (R-7) with accept and dismiss.
-- R-24: No graph of the whole workspace. On a spec page, Related gains a
-  small graph as a second view: the spec, its parent, its siblings and up to
-  8 neighbours (§14). The list stays the default and carries the same
-  entries in words.
-- R-25: Both views fit a 320px-wide screen with no sideways scroll; where the
-  graph cannot fit, the list shows instead.
+- R-21: Legibility is the rule for every view here: solid fills, labels a
+  person can read at the size shown, state also said in words (never by
+  colour alone), and a tap shows detail in place without leaving the page.
+- R-22: Status mix, for the map and the outline alike, counts four states:
+  approved, draft, imported awaiting confirmation (§18), and failing: a
+  failing governed outcome on any pinned task (§7), a design changed since
+  approval (§12), or a repo-sourced file past `specs:check`'s 90-day
+  staleness warning.
+- R-23: The cluster map sits above the outline. Each area is a labelled
+  block, its area proportional to the number of specs it holds (with a floor
+  so the smallest block still fits its label and a 44px tap target), filled
+  by its status mix in solid segments, and labelled with its title and
+  counts in words ("Runners · 9 specs, 7 approved, 1 failing").
+- R-24: Unfiled specs show as loose dots outside the blocks. Specs buildd
+  thinks form an unnamed cluster show as a dashed group labelled "possible
+  area: <proposed title>": two or more unfiled specs whose `spec_area`
+  answer (§17 R-6) was `new_area` with the same proposed title, or an area of
+  a taxonomy proposal (§17 R-4) no person has acted on yet.
+- R-25: Tapping a block, the dot cloud or a dashed group filters the outline
+  below to those specs in place; tapping it again, or a clear action, shows
+  all. A dashed group's filter offers its proposal's accept action inline.
+- R-26: With one area or none, the map collapses to one line of words
+  ("12 specs, all in Runners, 3 unfiled", or "12 specs, none filed yet" with
+  the taxonomy proposal's link), because a picture with one shape says
+  nothing. With two or more areas it renders from about 10 specs up.
+- R-27: The outline: the product, then each area as a row group headed by its
+  title and status mix in words, then its features as rows in §9's wording,
+  children indented under them. Unfiled comes last, holding only what buildd
+  could not place, each row with its suggestion inline (§17 R-7) and accept
+  and dismiss.
+- R-28: On a spec page, Related gains a small neighbour graph as a second
+  view: the spec, its parent, its siblings and up to 8 neighbours (§14). The
+  list stays the default and carries the same entries in words.
+- R-29: Every view fits a 320px-wide screen with no sideways scroll: map
+  blocks wrap into rows, and where the neighbour graph cannot fit, its list
+  shows instead.
 
 **Acceptance criteria**:
 - AC-80: GIVEN a product with two areas and one approved and one draft
@@ -1304,14 +1326,29 @@ MUST list as unfiled only what buildd could not place.
   suggestion; GIVEN every spec filed THEN no Unfiled group renders
   (test pending).
 - AC-82: GIVEN a pinned task with a failing outcome THEN its spec's area
-  counts it under needs attention (test pending).
+  counts it as failing, in the map and the outline (test pending).
+- AC-85: GIVEN areas of 8 and 2 specs WHEN the map renders THEN the first
+  block is larger, both carry their title and counts in words, and the
+  smaller still meets the label and tap-target floor (test pending).
+- AC-86: GIVEN three unfiled specs, two answered `new_area` "Billing" WHEN
+  the map renders THEN those two are a dashed group labelled "possible area:
+  Billing" and the third is a loose dot (test pending).
+- AC-87: GIVEN the map WHEN a block is tapped THEN the outline shows only that
+  area's specs, the URL path is unchanged, and a second tap shows all
+  (test pending).
+- AC-88: GIVEN one area, or no area, WHEN the index renders THEN no map
+  renders and one line of words states the counts (test pending).
+- AC-89: GIVEN 10 specs in three areas WHEN the map renders THEN it shows
+  three labelled blocks (test pending).
 - AC-83: GIVEN a spec with a parent, two siblings and ten neighbours WHEN the
   graph view opens THEN it shows the spec, the parent, both siblings and 8
   neighbours, and the list is the default view (test pending).
-- AC-84: GIVEN a 320px viewport THEN neither view scrolls sideways
-  (test pending).
+- AC-84: GIVEN a 320px viewport THEN neither the map, the outline nor either
+  Related view scrolls sideways (test pending).
 
 **Not yet**:
 - §9's list is what renders: top-level products and areas as groups, the rest
-  Unfiled. No counts, no inline suggestion, no graph.
+  Unfiled. No map, no counts, no inline suggestion, no neighbour graph.
+- Possible-area groups need §17's classifier; until it runs only a pending
+  taxonomy proposal can form one.
 
