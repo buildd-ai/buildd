@@ -1096,7 +1096,7 @@ and a comment MUST never change the body, its hash or an approval.
 what exists today.
 
 **Capability statement**: Buildd MUST place every spec of a workspace in one
-product > area > feature tree itself, with the full list of areas in front of
+product > area > feature tree itself, with the workspace's areas in front of
 the classifier, and a person MUST only have to review what it could not place
 or wants to change.
 
@@ -1110,21 +1110,31 @@ or wants to change.
   approves, pins or grades work reads the tree.
 - R-4: Cold start. When a workspace has no product or area, buildd proposes a
   taxonomy instead of a nearest-neighbour guess: at most one product (the
-  workspace) and its areas, drawn from what exists (the `domain:` values of
-  the workspace's repo specs, every spec's title and summary), each area with
-  a charter and the specs it would hold. It is one proposal a person accepts,
-  edits or rejects, whole or per area. Accepting creates the areas and files
-  their members by R-7. Nothing is created before a person acts.
+  workspace) and its areas, each with a charter and the specs it would hold,
+  drawn from every spec's title and summary. The `domain:` values of the
+  workspace's repo specs are hints, not the taxonomy: a cross-cutting value
+  (such as `surfaces`, which names a kind of code rather than a part of the
+  product) and any proposed area holding more than about a quarter of all
+  specs are split. It is one proposal a person accepts, edits or rejects,
+  whole or per area. Accepting creates the areas and files their members by
+  R-7. Nothing is created before a person acts.
 - R-5: The classifier is a decision kind, `buildd.spec_area`, capability
   `spec_area`, built like `buildd.spec_duplicate` (§13): a measured model list,
   every answer in the decision ledger under subject `spec`, fail-open, and a
   threshold fixed by an offline eval (knowledge base) before any answer is
   applied. A model that was not measured is recorded, never applied.
-- R-6: Its state is the whole area list of the workspace (each area's id,
-  title, charter and up to 5 member titles) plus the spec's card (title,
-  opening line, criteria, as `specCard` builds it). It answers exactly one of:
-  an area id from that list, `new_area` with a proposed title and charter, or
-  `unsure`. An id not in the list reads as `unsure`.
+- R-6: Its state is the spec's card (title, opening line, criteria, as
+  `specCard` builds it) and the workspace's areas, each as id, title, charter
+  and up to 5 member titles: the product node, the 15 areas most similar to
+  the card, and every area with more than N members (N set with the eval),
+  in that order until a token budget is spent. The state says how many areas
+  it left out. It answers exactly one of: an area id from the state,
+  `new_area` with a proposed title and charter, or `unsure`. An id not in the
+  state reads as `unsure`.
+- R-30: Areas are structure, not approved text: the classifier and
+  `suggestParent` (§14) consider every area and product in the workspace
+  whatever its approval state (draft, in review or approved), and skip only
+  retired and superseded ones.
 - R-7: An area answer at or above the measured threshold, from a measured
   model, is applied: the parent is set and a filing is recorded (spec,
   previous parent, new parent, ledger row). The spec page and the list say
@@ -1149,10 +1159,19 @@ or wants to change.
 **Acceptance criteria**:
 - AC-66: GIVEN a workspace with no area and repo specs carrying three
   distinct `domain:` values WHEN the taxonomy is proposed THEN it is one
-  proposal naming at most one product and an area per value with members,
-  and no spec exists until a person accepts it (test pending).
+  proposal naming at most one product and areas with members, and no spec
+  exists until a person accepts it (test pending).
+- AC-90: GIVEN repo specs where one `domain:` value holds a third of all
+  specs, or the value is `surfaces`, WHEN the taxonomy is proposed THEN that
+  value is split across two or more proposed areas (test pending).
 - AC-67: GIVEN three areas WHEN a spec is classified THEN the model's state
   holds all three areas' ids, titles and charters (test pending).
+- AC-91: GIVEN 40 areas WHEN a spec is classified THEN the state holds the
+  product, the 15 most similar areas and every area over N members within
+  the token budget, and states how many it left out (test pending).
+- AC-92: GIVEN a workspace whose only area is a draft WHEN a spec is created
+  with no parent THEN the classifier's state and `suggestParent` both
+  consider that area (test pending).
 - AC-68: GIVEN a measured model answering an area above the threshold WHEN a
   draft is created THEN its parent is that area, the ledger row and filing
   exist, and undo restores the previous parent with the version unmoved
@@ -1173,13 +1192,12 @@ or wants to change.
   refused (test pending).
 
 **Not yet**:
-- None of R-2 to R-11 is built. An area is made by hand with scope `domain`,
-  and the only placement is `suggestParent` (§14), which searches the
-  approved-spec corpus: an unapproved area is never found, so a new workspace
-  gets no suggestion at all.
+- None of R-2 to R-11 or R-30 is built. An area is made by hand with scope
+  `domain`, and the only placement is `suggestParent` (§14), which searches
+  the approved-spec corpus: an unapproved area is never found, so a new
+  workspace gets no suggestion at all. R-30 is the fix.
 - The threshold eval has not run; until it has, R-7 applies nothing and every
-  answer is a suggestion.
-- No rule yet for a workspace with more areas than fit the prompt.
+  answer is a suggestion. N and the token budget in R-6 are set with it.
 
 ## 18. Spec homes in practice: native source, generated repo copy
 
@@ -1196,7 +1214,9 @@ at any time.
   approved revision; elsewhere D-1 holds unchanged. Approving in buildd is one
   action, approving through a merged PR is a review cycle, and two editable
   copies drift. The generated copy is not a second home (§10: one home per
-  spec); it is an output, like `docs/specs/INDEX.md`.
+  spec); it is an output, like `docs/specs/INDEX.md`. Its PR is a named
+  exception to the merge policy (R-35), and only the body is approved text;
+  mechanical metadata changes without a revision (R-14, R-31).
 
 **Invariants**:
 - R-12: Opt-in is per workspace (`gitConfig.livingSpecs`), off by default.
@@ -1204,23 +1224,47 @@ at any time.
 - R-13: The spec page names the one source: "Source: buildd, repo copy at
   <path>", "Source: repo <path> at <sha>, imported, awaiting confirmation",
   or "Source: repo".
-- R-14: Approving a native-sourced revision (§6) files one mechanical PR that
-  writes the copy. Its frontmatter gains two generated lines,
-  `generated_from` (the spec's 8-character short id and the revision) and
-  `content_hash` (the revision's sha256); the rest of the file is the
-  revision's body byte for byte, so `verified_by`, `surfaces`, `domain` and
-  `assertions` are approved text. The full spec id is never written to the
-  file (public repos; the no-prod-data UUID rule).
-- R-15: The generated PR carries no new intent, so it lands on green CI with
-  no review round, the approval recorded as the reason. One open generated PR
-  per spec; a later approval updates it in place. A red check (lint,
-  no-prod-data, conformance) leaves it open and the spec page says "repo copy
-  not landed" with the check; the approval stands and the fix is a new
-  revision.
-- R-16: `specs:lint` recomputes the hash of every file carrying
-  `generated_from`, the file minus those two lines. A mismatch is an error
-  naming the short id and saying the spec is edited in buildd. A PR that
-  hand-edits a native-sourced copy fails; the generated PR always passes.
+- R-14: Approved text and metadata are separate. The revision's body is the
+  intent and the criteria, plus the frontmatter fields that state intent
+  (`title`, `summary`, `related`, `keywords`, `supersedes`); only it is
+  approved and only it is hashed. The mechanical fields (`verified_by`,
+  `surfaces`, `last_verified`, `assertions`, and `domain`, which R-32 derives)
+  live in the spec's metadata block, outside every revision.
+- R-31: Agents with write access and CI (API key or task token) update the
+  metadata block without a new revision. Each change records who, why and
+  the previous value. It moves neither the version, the approved revision
+  nor its content hash, and it regenerates the repo copy (R-15).
+- R-15: Approving a native-sourced revision (§6), or a metadata change
+  (R-31), files or updates the one generated PR per spec, which writes the
+  copy: the approved text, the metadata block, and three generated lines,
+  `generated_from` (the spec's 8-character short id and the revision),
+  `content_hash` (the approved text's sha256) and `metadata_hash`. The full
+  spec id is never written (public repos; the no-prod-data UUID rule).
+- R-35: The generated PR is a named exception to the workspace merge policy:
+  it lands on green CI with no review round, because the approval was the
+  review and the PR carries the generated header and no hand edits. A head
+  commit not written by the generator voids the exception and the PR is
+  refused. A red check leaves it open and the spec page says "repo copy is
+  behind", naming the check; the approval stands, and the fix is a new
+  revision or a metadata change.
+- R-16: `specs:lint` recomputes both hashes of every file carrying
+  `generated_from`. A mismatch is an error naming the short id, saying the
+  spec is edited in buildd, and printing its link (R-33). A PR that
+  hand-edits any part of a native-sourced copy, `domain:` included, fails;
+  the generated PR always passes.
+- R-32: The copy's `domain:` is derived on generation from the spec's filed
+  area. Each area maps to exactly one domain value. Creating an area whose
+  value is new adds it to the allowed list (`DOMAINS` in
+  `scripts/check-specs.ts`) in the same generated PR. A native-sourced spec
+  with no area is not generated until it is filed, and its page says so.
+- R-33: Buildd resolves /app/specs/<short id> to the spec page for a reader
+  who can read the spec (§9), so the link CI prints works. A short id
+  matching two specs the reader can reach lists both; one the reader cannot
+  reach is a 404, as §9.
+- R-34: Before approval, the approval page (§6 confirm page, §9 review) runs
+  the repo checks (`specs:lint`, no-prod-data, `public-docs:check`) on the
+  would-be repo copy and shows each result. A failing check warns; it never
+  blocks the approval. R-35 covers a generated PR that still fails.
 - R-17: The repo checks keep reading the repo copy (`specs:lint`,
   `verified_by`, surfaces, symbol liveness, conformance per
   `docs/design/spec-conformance.md`), offline and in a public repo, with no
@@ -1228,7 +1272,8 @@ at any time.
 - R-18: Import. A repo spec becomes a native spec filed under the area its
   `domain:` maps to, with provenance: path, the commit SHA read, and the PR
   that last merged a change to it. Its first revision is imported, not
-  approved, and is the file as read. Until confirmed the repo file stays the
+  approved, and is the file as read minus the mechanical fields, which become
+  its metadata block (R-14). Until confirmed the repo file stays the
   source: nothing is generated and the file is never overwritten. A repo
   change before confirmation re-imports it as a new imported revision.
 - R-19: Confirmation is one action by a person with `approve_specs` over a
@@ -1244,11 +1289,27 @@ at any time.
 
 **Acceptance criteria**:
 - AC-74: GIVEN an opted-in workspace WHEN a person approves revision N THEN
-  one PR writes `docs/specs/<slug>.md`, the file minus its two generated
-  lines hashes to N's content hash, and no full spec id is in it
+  one PR writes `docs/specs/<slug>.md`, its approved text hashes to N's
+  content hash, its metadata to `metadata_hash`, and no full spec id is in it
   (test pending).
-- AC-75: GIVEN a PR that hand-edits a generated copy WHEN `specs:lint` runs
-  THEN it fails naming the short id (test pending).
+- AC-75: GIVEN a PR that hand-edits a generated copy's body, metadata or
+  `domain:` WHEN `specs:lint` runs THEN it fails naming the short id and
+  printing its link (test pending).
+- AC-93: GIVEN an approved spec WHEN an agent adds a `verified_by` path with a
+  reason THEN the version, approved revision and content hash are unchanged,
+  the change records who, why and the previous value, and the generated PR
+  carries it (test pending).
+- AC-94: GIVEN a spec filed under an area mapped to a value `DOMAINS` lacks
+  WHEN its copy is generated THEN `domain:` is that value and the same PR
+  adds it to `DOMAINS`; GIVEN an unfiled native-sourced spec THEN no copy is
+  generated (test pending).
+- AC-95: GIVEN a reader with access WHEN they open /app/specs/<short id> THEN
+  the spec page renders; GIVEN a reader of another team THEN 404
+  (test pending).
+- AC-96: GIVEN a would-be copy that fails `specs:lint` WHEN the approval page
+  opens THEN it shows the failure and Approve still approves (test pending).
+- AC-97: GIVEN a generated PR whose head commit the generator did not write
+  THEN it does not land under the exception (test pending).
 - AC-76: GIVEN an imported, unconfirmed spec THEN no PR touches its file;
   GIVEN its file changes in the repo THEN a new imported revision is written
   (test pending).
@@ -1259,15 +1320,16 @@ at any time.
 - AC-78: GIVEN a workspace that has not opted in WHEN a spec is approved THEN
   no PR is filed (test pending).
 - AC-79: GIVEN a generated PR with a red check THEN it stays open, the
-  approval is unchanged and the spec page names the check (test pending).
+  approval is unchanged and the spec page says the repo copy is behind,
+  naming the check (test pending).
 
 **Not yet**:
-- None of R-12 to R-20 is built: no source field, no import, no generated
-  copy. D-1 holds everywhere.
-- Changing only `verified_by` or `last_verified` of a native-sourced spec is a
-  revision and an approval, like any text; there is no lighter path.
-- After import, area filing and the frontmatter `domain:` can disagree; no
-  rule writes one from the other.
+- None of R-12 to R-20 or R-31 to R-35 is built: no source field, no
+  metadata block, no import, no generated copy, no short-id route. D-1 holds
+  everywhere.
+- The R-34 preflight cannot run the identifier half of no-prod-data: that
+  pattern is a repo secret only CI holds, so the generated PR's own run is
+  the first full check.
 
 ## 19. Spec index view
 
