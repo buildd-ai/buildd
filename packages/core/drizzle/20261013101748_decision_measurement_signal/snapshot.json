@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "bfdcdc51-a8a5-4061-826f-f147260110ab",
+  "id": "2b58bb3f-7877-43bf-a045-419f2033b710",
   "prevIds": [
-    "113c9804-c26a-4815-9617-5d3ec91bc81d"
+    "5a565f66-b990-4ca9-9df3-bacd9201118e"
   ],
   "ddl": [
     {
@@ -8706,6 +8706,19 @@
       "generated": null,
       "identity": null,
       "name": "resolved_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "failure_incidents"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "recovery",
       "entityType": "columns",
       "schema": "public",
       "table": "failure_incidents"
