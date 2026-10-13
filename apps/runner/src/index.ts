@@ -1331,13 +1331,16 @@ const server = DEBUG_MODE ? Bun.serve({
 
     // Check if configured
     if (path === '/api/config' && req.method === 'GET') {
-      const authStatus = workerManager?.getAuthStatus() || { hasCredentials: false };
+      const authStatus = workerManager?.getAuthStatus() || { hasCredentials: false, modelAuthSource: undefined, modelAuthMode: undefined };
       return Response.json({
         configured: !!config.apiKey,
         serverless: config.serverless || false,
         builddServer: config.builddServer,
         projectRoots: config.projectRoots,
         hasClaudeCredentials: authStatus.hasCredentials,
+        // Label + mode only (host-seat.ts detectModelAuthSource), never a value.
+        modelAuthSource: authStatus.modelAuthSource,
+        modelAuthMode: authStatus.modelAuthMode,
         model: config.model,
         maxConcurrent: config.maxConcurrent,
         acceptRemoteTasks: config.acceptRemoteTasks !== false,
