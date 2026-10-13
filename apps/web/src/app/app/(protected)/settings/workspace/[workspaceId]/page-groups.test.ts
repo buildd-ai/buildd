@@ -87,7 +87,8 @@ describe('workspace settings page', () => {
   it('points runner setup at Settings › Runners instead of repeating it', () => {
     expect(PAGE).not.toContain('ConnectClaudeSection');
     expect(existsSync(join(import.meta.dir, 'ConnectClaudeSection.tsx'))).toBe(false);
-    expect(PAGE).toContain('href="/app/settings/runners"');
+    // Settings spec R-11: the link opens Runners on this workspace's team.
+    expect(PAGE).toContain('href={`/app/settings/runners?team=${encodeURIComponent(workspace.teamId)}`}');
   });
 
   it('shows knowledge health on the workspace Memory page, not here', () => {
@@ -108,5 +109,18 @@ describe('workspace settings page', () => {
 
   it('names the workspace on a phone, where the shell header only says Workspaces', () => {
     expect(PAGE).toMatch(/<SettingsPage\s+title=\{workspace\.name\}\s+titleOnMobile/);
+  });
+});
+
+// Settings spec R-11 / AC-12: Runners shows the team it is for, `?team=` picks it,
+// and Members and Runners share the one switcher.
+describe('settings runners page', () => {
+  const RUNNERS = readFileSync(join(import.meta.dir, '../../runners/page.tsx'), 'utf8');
+  const MEMBERS = readFileSync(join(import.meta.dir, '../../team/page.tsx'), 'utf8');
+  it('picks the team from ?team= and shows the switcher', () => {
+    expect(RUNNERS).toContain('pickShownTeam(teams, teamParam, currentTeam)');
+    expect(RUNNERS).toContain('<TeamSwitcher');
+    expect(RUNNERS).toContain('basePath="/app/settings/runners"');
+    expect(MEMBERS).toContain('<TeamSwitcher');
   });
 });

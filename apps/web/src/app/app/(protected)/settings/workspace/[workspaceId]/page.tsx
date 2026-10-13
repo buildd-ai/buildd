@@ -340,7 +340,7 @@ export default async function WorkspaceSettingsPage({
           />
           <p className="py-4 last:pb-0 text-xs text-text-secondary" data-testid="workspace-runners-pointer">
             Runners and their sign-ins are set up in{' '}
-            <Link href="/app/settings/runners" className="text-text-primary underline">Settings › Runners</Link>.
+            <Link href={`/app/settings/runners?team=${encodeURIComponent(workspace.teamId)}`} className="text-text-primary underline">Settings › Runners</Link>.
           </p>
         </div>
       </Section>
