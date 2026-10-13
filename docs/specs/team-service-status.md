@@ -406,9 +406,11 @@ Existing, read-only context for this spec:
   of those records; 404 to team keys and sessions.
 
 - `apps/web/src/lib/service-status-loader.ts` — the section 9 loader:
-  `resolveHolder` (the section 8 table, from runner-account fields),
-  `buildRootCauses` (records to projection input), `serviceStatusView` and
-  `loadServiceStatus` (never throws). Home, Health and the task page read it.
+  `loadServiceStatus`, one read per render, never throws. Home, Health and the
+  task page call it.
+- `apps/web/src/lib/service-status-view.ts` — its pure half: `resolveHolder`
+  (the section 8 table, from runner-account fields), `buildRootCauses`
+  (records to projection input) and `serviceStatusView`.
 - `apps/web/src/components/service-status/ServiceStatusList.tsx` — the quiet
   status list (Health Overview, an affected task's page) and the banner (Home,
   every Health page).

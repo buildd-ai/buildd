@@ -4,7 +4,7 @@
  * each section 8 row is set up the same way.
  */
 import type { RootCauseClassification, RootCauseRecord } from '@buildd/shared';
-import type { ServiceStatusFacts, StatusRunner, StatusTask } from './service-status-loader';
+import type { ServiceStatusFacts, StatusRunner, StatusTask } from './service-status-view';
 
 export const TEAM = 'team-a';
 export const OWNER = 'user-owner';

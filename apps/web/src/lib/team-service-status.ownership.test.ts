@@ -5,7 +5,7 @@
  * whose creator left the team gives the action to team admins.
  */
 import { describe, expect, it } from 'bun:test';
-import { resolveHolder, serviceStatusView, RUNNERS_HREF, SIGN_INS_HREF } from './service-status-loader';
+import { resolveHolder, serviceStatusView, RUNNERS_HREF, SIGN_INS_HREF } from './service-status-view';
 import { ADMIN, LEFT, MEMBER, OWNER, facts, patternRecord, runner, runnerRecord } from './service-status-fixtures';
 
 const view = (f: ReturnType<typeof facts>, userId: string) => serviceStatusView(f, userId);
