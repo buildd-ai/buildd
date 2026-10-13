@@ -45,7 +45,7 @@ describe('GettingStartedChecklist', () => {
     expect(html).toContain('Get started · 2 of 3');
     expect(html).toMatch(/data-testid="getting-started-task" data-done="false" aria-current="step"/);
     expect(html).toContain('Your first task failed');
-    expect(html).toContain('Needs you');
+    expect(html).toContain('The card below');
   });
 
   it('a first task still running says so instead of asking for a new one', () => {

@@ -20,7 +20,7 @@ import type { PortfolioRow } from './mission-portfolio';
 export type MissionSectionKey = 'needs' | 'motion' | 'waiting' | 'landed';
 
 export const SECTION_META: Record<MissionSectionKey, { label: string; order: string }> = {
-  needs: { label: 'Needs you', order: 'oldest first' },
+  needs: { label: 'Waiting on you', order: 'oldest first' },
   motion: { label: 'In motion', order: 'slipping first' },
   waiting: { label: 'Waiting', order: 'next to start first' },
   landed: { label: 'Landed, checks pending', order: 'oldest first' },

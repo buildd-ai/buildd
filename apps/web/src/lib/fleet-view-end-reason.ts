@@ -25,7 +25,7 @@ export interface RunEndInput {
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 
 export function runEndReason(r: RunEndInput): string {
-  if (r.status === 'waiting_input') return r.waitingFor?.type === 'pause' ? 'Paused' : 'Needs input';
+  if (r.status === 'waiting_input') return r.waitingFor?.type === 'pause' ? 'Paused' : 'Has a question';
   if (LIVE.has(r.status)) return 'Working';
   if (r.status === 'paused') return 'Paused';
   if (r.status === 'cancelled') return 'Cancelled';

@@ -97,7 +97,7 @@ describe('FleetOverview', () => {
 
   it('flags a runner whose agent is waiting on you', () => {
     const html = renderToStaticMarkup(<FleetOverview fleet={fleet([runner('a', 'runner-1', 1, 2, true, true)])} />);
-    expect(text(html)).toContain('1 need input');
+    expect(text(html)).toContain('1 waiting on you');
   });
 
   it('with no runners, says how to start one and still shows the cloud row', () => {

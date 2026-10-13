@@ -371,7 +371,7 @@ export function buildMissionListCard(
     if (kind === 'held') return { label: 'Held', tone: 'warning' };
     // Not LOCAL: nothing is happening, and nothing will until the owner acts.
     if (strand) return { label: 'Stranded', tone: 'warning' };
-    if (needsYou) return { label: 'Needs you', tone: 'warning' };
+    if (needsYou) return { label: 'Waiting on you', tone: 'warning' };
     // A local mission is active work run from a person's session: LOCAL, in
     // the running tone — never Held, and never Stalled for want of a runner.
     if (kind === 'active' && row.executor === 'local') return { label: 'Local', tone: 'accent' };

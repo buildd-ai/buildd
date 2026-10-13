@@ -211,7 +211,7 @@ the three below ink all resolve to `--sub` and are the floor for text.
 | `--status-success` | `#86c99d` | `#2f6440` | `*-status-success` | Landed, done, healthy | `ok` |
 | `--status-info` | `#93b8d6` | `#2d5a7c` | `*-status-info` | Auditing, in review; informational | `run` |
 | `--status-running` | `#f59b4e` | `#9a4a12` | `*-status-running` | Live work (the accent hue, text-safe) | `act` |
-| `--status-warning` | `#f59b4e` | `#a9521a` | `*-status-warning` | Needs you, waiting on a decision | `dec` |
+| `--status-warning` | `#f59b4e` | `#a9521a` | `*-status-warning` | Waiting on you, a decision | `dec` |
 | `--status-error` | `#e08a7f` | `#97391f` | `*-status-error` | Failed, blocked, not landed | `bad` |
 | `--q` | `#a89f96` | `#5f594f` | `text-[var(--q)]` | Queued, ready, idle | `q` |
 
@@ -588,7 +588,9 @@ notification text) follows the same rules as a PR lede:
    the heading ("Tabs or spaces?"), with **Waiting for your answer** only where
    something must be said and the question is not on screen. Counts are words
    ("2 questions for you", "1 waiting on you"), never a label beside a number.
-   "Needs input" and "Needs you" are label-speak; don't add them. Answering a
+   Where a state word is unavoidable, a decision reads **Waiting on you** and a
+   question reads **Has a question**. "Needs input" and "Needs you" are
+   label-speak: the `label-speak` copy rule fails them. Answering a
    question always opens the task page (`taskAnswerHref`), never the mission
    sheet.
 7. **The UI doesn't explain itself.** Would GitHub, Linear or Claude Code say

@@ -19,6 +19,7 @@ export type CopyRuleId =
   | 'reassurance'
   | 'justification'
   | 'needs-you'
+  | 'label-speak'
   | 'exclamation'
   | 'long-copy'
   | 'not-this-its-that'
@@ -103,6 +104,14 @@ export const COPY_RULES: CopyRule[] = [
     why: 'Say what is waiting, in words ("2 questions for you", "Waiting for your answer"). Do not dramatise a vague demand.',
     bad: '5 things need you',
     good: '2 questions for you',
+  },
+  {
+    id: 'label-speak',
+    name: 'Status label instead of words',
+    test: re(/\bneeds? (you|input)\b|\bworker is running\b/i),
+    why: 'A badge phrase reads like a product talking about itself. Lead with the question, or say what is waiting: "Has a question", "1 waiting on you".',
+    bad: 'Needs input',
+    good: 'Has a question',
   },
   {
     id: 'exclamation',

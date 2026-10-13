@@ -21,7 +21,7 @@ describe('Home with many decisions', () => {
     const html = render([1, 2, 3, 4, 5, 6, 7, 8].map(n => item(n)));
     expect(html.match(/data-testid="needs-you-card"/g)).toHaveLength(3);
     expect(html.match(/data-testid="needs-you-row"/g)).toHaveLength(5);
-    expect(html).toContain('8 things need you.');
+    expect(html).toContain('8 waiting on you.');
     const rows = html.slice(html.indexOf('data-testid="needs-you-rows"'));
     expect(rows).not.toMatch(/class="[^"]*\bbtn\b/);
     expect(rows).not.toContain('card-decision');

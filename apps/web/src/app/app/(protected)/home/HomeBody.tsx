@@ -94,7 +94,7 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
     {!needsOwner && setup}
     {(items.length > 0 || lead) && <section data-testid="home-waiting-on-you" aria-labelledby="home-needs-you-h" className="mb-8">
       {/* The headline is this section's visible header and count. */}
-      <h2 id="home-needs-you-h" className="sr-only">Needs you</h2>
+      <h2 id="home-needs-you-h" className="sr-only">Waiting on you</h2>
       {lead}
       {cards.length > 0 && <div data-testid="needs-you-cards" className={`grid gap-4 ${CARD_COLS[cards.length]}`}>{cards.map(item => done[item.key] ? doneLine(item) : <DecisionCard key={item.key} item={item} onDone={(key, label) => setDone(prev => ({ ...prev, [key]: label }))} />)}</div>}
       {digests.length > 0 && <PolicyDigests digests={digests} />}
