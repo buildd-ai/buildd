@@ -28,6 +28,7 @@
 import type {
   FailureIncident,
   FailureIncidentAffectedRefs,
+  FailureIncidentRecovery,
   FailureIncidentRule,
   FailureIncidentSeverity,
   FailureIncidentTrace,
@@ -54,6 +55,8 @@ export interface IncidentStorePort {
   compareAndSwap(id: string, expectedVersion: number, next: NewStoredIncident): Promise<StoredIncident | null>;
   /** Open and acknowledged incidents of one rule in a workspace. Absent: nothing is reconciled. */
   listUnresolved?(workspaceId: string, rule: FailureIncidentRule): Promise<StoredIncident[]>;
+  /** Open and acknowledged incidents in a workspace whose affected refs name this PR. */
+  listUnresolvedByPr?(workspaceId: string, prNumber: number): Promise<StoredIncident[]>;
 }
 
 export type UpsertOutcome = 'opened' | 'updated' | 'reopened' | 'unchanged';
@@ -149,6 +152,7 @@ export function mergeIncident(existing: StoredIncident | null, candidate: Incide
         linkedFixTaskId: null,
         acknowledgedAt: null,
         resolvedAt: null,
+        recovery: null,
       },
     };
   }
@@ -199,7 +203,27 @@ export function mergeIncident(existing: StoredIncident | null, candidate: Incide
       impact: { ...ruleImpact(candidate.impact), ...carryAlertKeys(existing.impact) },
       acknowledgedAt: reopening ? null : existing.acknowledgedAt,
       resolvedAt: reopening ? null : existing.resolvedAt,
+      recovery: reopening ? reopenRecovery(existing.recovery ?? null) : existing.recovery ?? null,
     },
+  };
+}
+
+/**
+ * A reopen is a new look (failure-incident-recovery §7): the generation bumps,
+ * the budget resets, the state goes back to `observing` until it is assessed
+ * again. The attempts already run stay as history.
+ */
+export function reopenRecovery(prior: FailureIncidentRecovery | null): FailureIncidentRecovery | null {
+  if (!prior) return null;
+  return {
+    ...prior,
+    generation: prior.generation + 1,
+    state: 'observing',
+    owner: 'buildd',
+    nextAction: null,
+    nextCheckAt: null,
+    decision: undefined,
+    budget: { ...prior.budget, spent: 0, spentKeys: [] },
   };
 }
 
@@ -280,6 +304,12 @@ export type IncidentStateAction =
   | { type: 'alerted'; severity: FailureIncidentSeverity; scope?: number; recurrence?: number }
   /** First writer wins: an incident already linked keeps its task. */
   | { type: 'link_fix_task'; taskId: string }
+  /**
+   * Write a recovery assessment (failure-incident-recovery §3). `recovered`
+   * resolves the incident in the same write (I-1); any other state leaves
+   * `open` / `acknowledged` as they are, and never resolves.
+   */
+  | { type: 'assess'; recovery: FailureIncidentRecovery }
   /** Replace the lifecycle trace (spec: bug-intake-and-quality §10). Same version-bumping CAS as every other member. */
   | { type: 'trace'; trace: FailureIncidentTrace };
 
@@ -288,9 +318,25 @@ export function applyIncidentAction(row: StoredIncident, action: IncidentStateAc
   const { id: _id, version: _version, ...base } = row;
   switch (action.type) {
     case 'acknowledge':
-      return { ...base, status: 'acknowledged', acknowledgedAt: now };
+      // A dismissal is a person's choice on the current assessment, not a resolution.
+      return {
+        ...base, status: 'acknowledged', acknowledgedAt: now,
+        recovery: base.recovery?.decision ? { ...base.recovery, decision: { ...base.recovery.decision, chosen: 'dismiss' } } : base.recovery,
+      };
     case 'resolve':
-      return { ...base, status: 'resolved', resolvedAt: now };
+      return {
+        ...base, status: 'resolved', resolvedAt: now,
+        recovery: base.recovery ? { ...base.recovery, state: 'recovered', owner: 'buildd', nextAction: null, nextCheckAt: null } : base.recovery,
+      };
+    case 'assess': {
+      const recovered = action.recovery.state === 'recovered';
+      return {
+        ...base,
+        recovery: action.recovery,
+        status: recovered ? 'resolved' : base.status === 'resolved' ? 'open' : base.status,
+        resolvedAt: recovered ? base.resolvedAt ?? now : null,
+      };
+    }
     case 'alerted':
       return {
         ...base,
@@ -370,6 +416,7 @@ export async function createDbIncidentPort(): Promise<IncidentStorePort> {
     acknowledgedAt: iso(r.acknowledgedAt),
     resolvedAt: iso(r.resolvedAt),
     trace: r.trace ?? null,
+    recovery: r.recovery ?? null,
     version: r.version,
   });
 
@@ -395,6 +442,7 @@ export async function createDbIncidentPort(): Promise<IncidentStorePort> {
     acknowledgedAt: date(n.acknowledgedAt),
     resolvedAt: date(n.resolvedAt),
     trace: n.trace ?? null,
+    recovery: n.recovery ?? null,
   });
 
   return {
@@ -424,6 +472,18 @@ export async function createDbIncidentPort(): Promise<IncidentStorePort> {
         .from(failureIncidents)
         .where(and(eq(failureIncidents.workspaceId, workspaceId), eq(failureIncidents.rule, rule), ne(failureIncidents.status, 'resolved')))
         .limit(200);
+      return rows.map(fromRow);
+    },
+    async listUnresolvedByPr(workspaceId, prNumber) {
+      const rows = await db
+        .select()
+        .from(failureIncidents)
+        .where(and(
+          eq(failureIncidents.workspaceId, workspaceId),
+          ne(failureIncidents.status, 'resolved'),
+          sql`${failureIncidents.affectedRefs}->'prNumbers' @> ${JSON.stringify([prNumber])}::jsonb`,
+        ))
+        .limit(50);
       return rows.map(fromRow);
     },
     async compareAndSwap(id, expectedVersion, next) {

@@ -79,6 +79,9 @@ export type CausalLinkSource =
   | 'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor'
   | 'task_dispatch_outbox.status'
   | 'tasks.context.entitlementBlock'
+  /** failure-incident-recovery §18.3/§18.5: a credential hold, a recorded cancel reason. */
+  | 'tasks.context.credentialHold'
+  | 'tasks.context.cancellation'
   | 'tasks.pathDeclaration.softOverlaps + gate_events'
   | 'gate_events.detail'
   | 'DeliveryView.lastTransition'

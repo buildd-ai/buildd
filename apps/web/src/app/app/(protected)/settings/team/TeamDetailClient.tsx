@@ -104,14 +104,14 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to send invitation');
+        throw new Error(err.error || "Could not send the invitation.");
       }
 
       const data = await res.json();
       setInviteUrl(data.inviteUrl);
       setInviteEmail('');
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to invite');
+      setError(err instanceof Error ? err.message : "Could not send the invitation.");
     } finally {
       setInviting(false);
     }
@@ -130,13 +130,13 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to update team');
+        throw new Error(err.error || "Could not rename the team.");
       }
 
       setEditing(false);
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not rename the team.");
     } finally {
       setSaving(false);
     }
@@ -155,13 +155,13 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to delete team');
+        throw new Error(err.error || "Could not delete the team.");
       }
 
       router.push('/app/settings');
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not delete the team.");
       setDeleting(false);
     }
   }
@@ -178,13 +178,13 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to update role');
+        throw new Error(err.error || "Could not change the role.");
       }
 
       setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'they'));
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not change the role.");
     }
   }
 
@@ -201,13 +201,13 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to remove member');
+        throw new Error(err.error || "Could not remove the member.");
       }
 
       setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'they'));
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not remove the member.");
     }
   }
 
@@ -232,18 +232,18 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to transfer ownership');
+        throw new Error(err.error || "Could not transfer ownership.");
       }
 
       setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'you'));
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not transfer ownership.");
     }
   }
 
   async function handleLeave() {
-    if (!(await confirm({ title: 'Leave team?', message: `You lose access to ${team.name} and its workspaces. Someone with member access has to add you back.`, confirmLabel: 'Leave team', variant: 'danger' }))) {
+    if (!(await confirm({ title: 'Leave team?', message: `You lose access to ${team.name} and its workspaces. Only someone who manages members can add you back.`, confirmLabel: 'Leave team', variant: 'danger' }))) {
       return;
     }
     if (isQaFixtureMemberId(currentUserId)) return;
@@ -256,13 +256,13 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to leave team');
+        throw new Error(err.error || "Could not leave the team.");
       }
 
       router.push('/app/settings/account');
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not leave the team.");
       setLeaving(false);
     }
   }
@@ -327,7 +327,7 @@ export default function TeamDetailClient({
 
       <Section title="Members" count={members.length}>
         <p className="mb-3 text-sm text-text-muted">
-          A lower role also lowers the API keys that person created. Older keys with no recorded creator stay as they are.
+          Lowering a role also limits the API keys that person created. Keys with no recorded creator are unchanged.
         </p>
         <div className="divide-y divide-border-default border-y border-border-default">
           {members.map((member) => (
@@ -404,7 +404,7 @@ export default function TeamDetailClient({
         {canManage && (
           <div className="mt-4">
             {!showInvite ? (
-              <PrimaryAction onClick={() => setShowInvite(true)}>+ Invite someone</PrimaryAction>
+              <PrimaryAction onClick={() => setShowInvite(true)}>+ Invite member</PrimaryAction>
             ) : (
               <div className="space-y-3">
                 <h3 className="text-sm font-semibold text-text-primary">Invite a team member</h3>

@@ -4,6 +4,7 @@ import {
   classifyStaleExit,
   consumesRetryAttempt,
   isBookkeepingExit,
+  isInfrastructureExit,
   isConcurrencyConflictError,
   isSilentStartShape,
   isModelIdRejectedError,
@@ -489,5 +490,25 @@ describe('isSilentStartShape', () => {
   it('keeps the turn cap when there is no terminal usage evidence (the reaper path)', () => {
     expect(isSilentStartShape({ turns: 9, costUsd: 0, inputTokens: 0, outputTokens: 0 })).toBe(false);
     expect(isSilentStartShape({ turns: 9, costUsd: 0, inputTokens: 0, outputTokens: 0, resultMeta: null })).toBe(false);
+  });
+});
+
+// failure-incident-recovery §18.2: a rejected credential is the credential's
+// failure, not the work's. Booked code_failure, a dead login failed the task.
+describe('auth_failure', () => {
+  it('a reported auth failure is auth_failure, after cancellation and budget', () => {
+    expect(classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, authFailure: true })).toBe('auth_failure');
+    expect(classifyReportedFailure({ budgetLimited: true, sandboxMountGap: false, authFailure: true })).toBe('budget_limited');
+    expect(classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, authFailure: true, taskCancelled: true })).toBe('task_cancelled');
+  });
+
+  it('is not charged, and is an infrastructure exit', () => {
+    expect(consumesRetryAttempt('auth_failure')).toBe(false);
+    expect(isBookkeepingExit('auth_failure')).toBe(false);
+    expect(isInfrastructureExit('auth_failure')).toBe(true);
+    expect(isInfrastructureExit('infra_failure')).toBe(true);
+    expect(isInfrastructureExit('reassigned')).toBe(true);
+    expect(isInfrastructureExit('code_failure')).toBe(false);
+    expect(isInfrastructureExit(null)).toBe(false);
   });
 });

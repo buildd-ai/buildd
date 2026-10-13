@@ -86,7 +86,7 @@ export const COMPARE_FILES_CAP = 300;
 
 type Api = (installationId: number, path: string, options?: RequestInit) => Promise<any>;
 
-function encodeRef(ref: string): string {
+export function encodeRef(ref: string): string {
   return ref.split('/').map(encodeURIComponent).join('/');
 }
 

@@ -17,12 +17,28 @@
  * applying and the model records again (`fingerprint_changed`), until it is
  * measured anew. A retired row records only.
  *
+ * A row also says which number the threshold is compared with
+ * (`confidenceSource`). Clef's own `confidence` barely moves with its
+ * probabilities, so a row for it can measure on the probabilities instead: the
+ * chosen label's probability (`top_p`), the gap between the top two (`margin`),
+ * or top p mapped through isotonic breakpoints the eval stored (`calibration`,
+ * for `calibrated_top_p`). `labelThresholds` lets a row act on some labels
+ * only: `{ START: 0.65 }` applies a START at top p >= 0.65 and leaves every
+ * HOLD to the rule. A row with neither keeps today: `confidence` against
+ * `threshold`, for every label. `gateOnMeasurement` is the one comparison.
+ *
  * Reads are cached per instance for a minute and never throw: a failed read is
  * "no rows", so Jev keeps today and every other model records.
  */
 import { isClefModel, isJevModel } from './decision-model';
 
 export type MeasurementStatus = 'active' | 'retired';
+
+export type ConfidenceSource = 'confidence' | 'top_p' | 'margin' | 'calibrated_top_p';
+export const CONFIDENCE_SOURCES: readonly ConfidenceSource[] = ['confidence', 'top_p', 'margin', 'calibrated_top_p'];
+
+/** Isotonic breakpoints: top p `x[i]` calibrates to `y[i]`. Both non-decreasing, same length, at least two. */
+export interface Calibration { x: number[]; y: number[] }
 
 export interface StoredMeasurement {
   kind: string;
@@ -37,6 +53,12 @@ export interface StoredMeasurement {
   setByAccountId: string | null;
   setAt: Date;
   reason: string | null;
+  /** Which number `threshold` is compared with. Absent (a row written before it existed) is `confidence`. */
+  confidenceSource?: ConfidenceSource;
+  /** For `calibrated_top_p` only. */
+  calibration?: Calibration | null;
+  /** Act on these labels only, each at its own threshold. Null: every label, at `threshold`. */
+  labelThresholds?: Record<string, number> | null;
 }
 
 export type MeasurementReason = 'jev_default' | 'measured' | 'not_measured' | 'fingerprint_changed' | 'retired';
@@ -47,6 +69,10 @@ export interface ModelMeasurement {
   /** The stored threshold; null means "the call site's own threshold" (Jev with no row) or not measured. */
   threshold: number | null;
   reason: MeasurementReason;
+  /** Which number the threshold is compared with (`confidence` unless a measured row says otherwise). */
+  confidenceSource: ConfidenceSource;
+  calibration: Calibration | null;
+  labelThresholds: Record<string, number> | null;
 }
 
 export interface MeasurementQuery {
@@ -88,13 +114,93 @@ export function measurementFor(rows: readonly StoredMeasurement[], q: Measuremen
     // The most specific match wins (a dated row over its undated name).
     .sort((a, b) => b.model.length - a.model.length)[0];
 
+  const asToday = { confidenceSource: 'confidence', calibration: null, labelThresholds: null } as const;
   const fallback = (reason: Exclude<MeasurementReason, 'measured' | 'jev_default'>): ModelMeasurement =>
-    jev ? { measured: true, threshold: null, reason: 'jev_default' } : { measured: false, threshold: null, reason };
+    jev ? { measured: true, threshold: null, reason: 'jev_default', ...asToday } : { measured: false, threshold: null, reason, ...asToday };
 
   if (!row) return fallback('not_measured');
   if (row.status !== 'active') return fallback('retired');
   if (q.fingerprint === null || row.measuredFingerprint !== q.fingerprint) return fallback('fingerprint_changed');
-  return { measured: true, threshold: row.threshold, reason: 'measured' };
+  return {
+    measured: true,
+    threshold: row.threshold,
+    reason: 'measured',
+    confidenceSource: row.confidenceSource ?? 'confidence',
+    calibration: row.calibration ?? null,
+    labelThresholds: row.labelThresholds ?? null,
+  };
+}
+
+// ── The signal ───────────────────────────────────────────────────────────────
+
+/** What one answer offers to compare: the chosen label, the provider's confidence and the label probabilities. */
+export interface AnswerSignal {
+  choice: string;
+  confidence: number;
+  probabilities?: Readonly<Record<string, number>> | null;
+}
+
+/** Top p through isotonic breakpoints: piecewise linear, clipped to the end values. Pure. */
+export function calibrate(p: number, cal: Calibration): number {
+  const { x, y } = cal;
+  const last = x.length - 1;
+  if (p <= x[0]) return y[0];
+  if (p >= x[last]) return y[last];
+  // The last breakpoint at or below p: on a repeated x (a flat isotonic step) that is the higher side.
+  let i = 0;
+  while (i < last && x[i + 1] <= p) i++;
+  if (x[i] === p) return y[i];
+  return y[i] + ((p - x[i]) / (x[i + 1] - x[i])) * (y[i + 1] - y[i]);
+}
+
+/**
+ * The number a measurement's threshold is compared with, or null when the
+ * answer cannot give it (no probabilities, no calibration stored). A source
+ * other than `confidence` never falls back to `confidence`. Pure.
+ */
+export function measuredSignal(source: ConfidenceSource, answer: AnswerSignal, calibration: Calibration | null): number | null {
+  if (source === 'confidence') return answer.confidence;
+  const probs = answer.probabilities ?? {};
+  const top = probs[answer.choice];
+  if (typeof top !== 'number' || !Number.isFinite(top)) return null;
+  if (source === 'top_p') return top;
+  if (source === 'calibrated_top_p') return calibration && isCalibration(calibration) ? calibrate(top, calibration) : null;
+  const sorted = Object.values(probs).filter(Number.isFinite).sort((a, b) => b - a);
+  return sorted[0] - (sorted[1] ?? 0);
+}
+
+export type MeasuredGateReason = 'not_measured' | 'label_not_measured' | 'no_signal' | 'below_threshold';
+
+export interface MeasuredGate {
+  /** May the answer be applied? */
+  acts: boolean;
+  /** The number compared (see `confidenceSource`); null when there was none. */
+  signal: number | null;
+  /** The threshold it was compared with; null when the label is not measured to act. */
+  threshold: number | null;
+  reason: MeasuredGateReason | null;
+}
+
+/**
+ * Does this answer clear its measurement? The label's own threshold when the
+ * row lists labels (a label not listed never acts), else the row's threshold,
+ * else the call site's (`defaultThreshold`, Jev with no row). Pure.
+ */
+export function gateOnMeasurement(m: ModelMeasurement, answer: AnswerSignal, defaultThreshold: number): MeasuredGate {
+  const signal = m.measured ? measuredSignal(m.confidenceSource, answer, m.calibration) : null;
+  if (!m.measured) return { acts: false, signal, threshold: null, reason: 'not_measured' };
+  let threshold: number;
+  if (m.labelThresholds) {
+    const t = m.labelThresholds[answer.choice];
+    if (typeof t !== 'number') return { acts: false, signal, threshold: null, reason: 'label_not_measured' };
+    threshold = t;
+  } else {
+    threshold = m.threshold ?? defaultThreshold;
+  }
+  if (signal === null) return { acts: false, signal, threshold, reason: 'no_signal' };
+  return signal >= threshold
+    ? { acts: true, signal, threshold, reason: null }
+    : { acts: false, signal, threshold, reason: 'below_threshold' };
 }
 
 // ── Storage ──────────────────────────────────────────────────────────────────
@@ -124,6 +230,9 @@ export async function loadDecisionModelMeasurements(now: () => number = Date.now
     setByAccountId: r.setByAccountId,
     setAt: r.setAt,
     reason: r.reason,
+    confidenceSource: r.confidenceSource,
+    calibration: r.calibration,
+    labelThresholds: r.labelThresholds,
   }));
   cache = { at: t, rows };
   return rows;
@@ -153,7 +262,13 @@ export async function writeDecisionModelMeasurement(row: Omit<StoredMeasurement,
   const { db } = await import('./db');
   const { decisionModelMeasurements } = await import('./db/schema');
   const setAt = new Date();
-  const values = { ...row, setAt };
+  const values = {
+    ...row,
+    confidenceSource: row.confidenceSource ?? 'confidence',
+    calibration: row.calibration ?? null,
+    labelThresholds: row.labelThresholds ?? null,
+    setAt,
+  };
   await db.insert(decisionModelMeasurements).values(values).onConflictDoUpdate({
     target: [decisionModelMeasurements.kind, decisionModelMeasurements.model],
     set: {
@@ -167,6 +282,9 @@ export async function writeDecisionModelMeasurement(row: Omit<StoredMeasurement,
       setByAccountId: values.setByAccountId,
       setAt,
       reason: values.reason,
+      confidenceSource: values.confidenceSource,
+      calibration: values.calibration,
+      labelThresholds: values.labelThresholds,
     },
   });
   clearDecisionModelMeasurementCache();
@@ -184,7 +302,7 @@ export async function retireDecisionModelMeasurement(input: { kind: string; mode
     .where(and(eq(decisionModelMeasurements.kind, input.kind), eq(decisionModelMeasurements.model, input.model)))
     .returning();
   clearDecisionModelMeasurementCache();
-  return r ? { ...r, status: r.status as MeasurementStatus } : null;
+  return r ? { ...r, status: r.status as MeasurementStatus, confidenceSource: r.confidenceSource } : null;
 }
 
 // ── The admin write, validated ───────────────────────────────────────────────
@@ -196,6 +314,21 @@ export type MeasurementWritePlan =
 
 const isUnit = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
 const KIND_RE = /^[a-z][a-z0-9_.:-]{0,127}$/;
+const LABEL_RE = /^[^\s].{0,63}$/;
+const MAX_BREAKPOINTS = 200;
+const MAX_LABELS = 50;
+
+const nonDecreasing = (v: readonly number[]) => v.every((n, i) => i === 0 || n >= v[i - 1]);
+
+/** Two or more breakpoints in [0, 1], same length, both non-decreasing. */
+export function isCalibration(v: unknown): v is Calibration {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const { x, y } = v as Record<string, unknown>;
+  if (!Array.isArray(x) || !Array.isArray(y)) return false;
+  if (x.length < 2 || x.length !== y.length || x.length > MAX_BREAKPOINTS) return false;
+  if (!x.every(isUnit) || !y.every(isUnit)) return false;
+  return nonDecreasing(x) && nonDecreasing(y) && x[0] < x[x.length - 1];
+}
 
 /** Validate a POST body. Pure. */
 export function planMeasurementWrite(body: unknown): MeasurementWritePlan {
@@ -219,6 +352,27 @@ export function planMeasurementWrite(body: unknown): MeasurementWritePlan {
   if (!fingerprint || fingerprint.length > 200) return bad('measuredFingerprint is required: what was measured, as the call site versions it');
   const evalRunId = typeof b.evalRunId === 'string' && b.evalRunId.trim() ? b.evalRunId.trim().slice(0, 100) : null;
 
+  const confidenceSource = b.confidenceSource ?? 'confidence';
+  if (!(CONFIDENCE_SOURCES as readonly unknown[]).includes(confidenceSource)) return bad(`confidenceSource must be one of ${CONFIDENCE_SOURCES.join(', ')}`);
+  const hasCalibration = b.calibration !== undefined && b.calibration !== null;
+  if (confidenceSource === 'calibrated_top_p' && !isCalibration(b.calibration)) {
+    return bad('calibrated_top_p needs calibration: { x, y }, two or more isotonic breakpoints in [0, 1], both non-decreasing');
+  }
+  if (confidenceSource !== 'calibrated_top_p' && hasCalibration) return bad('calibration is only for confidenceSource calibrated_top_p');
+
+  let labelThresholds: Record<string, number> | null = null;
+  if (b.labelThresholds !== undefined && b.labelThresholds !== null) {
+    const lt = b.labelThresholds;
+    if (typeof lt !== 'object' || Array.isArray(lt)) return bad('labelThresholds must be an object of label to threshold');
+    const entries = Object.entries(lt as Record<string, unknown>);
+    if (entries.length === 0 || entries.length > MAX_LABELS) return bad(`labelThresholds needs 1 to ${MAX_LABELS} labels`);
+    for (const [label, t] of entries) {
+      if (!LABEL_RE.test(label)) return bad(`labelThresholds has a bad label: ${JSON.stringify(label.slice(0, 64))}`);
+      if (!isUnit(t)) return bad(`labelThresholds.${label} must be a number in [0, 1]`);
+    }
+    labelThresholds = Object.fromEntries(entries) as Record<string, number>;
+  }
+
   return {
     ok: true,
     action: 'set',
@@ -233,6 +387,9 @@ export function planMeasurementWrite(body: unknown): MeasurementWritePlan {
       measuredFingerprint: fingerprint,
       status: 'active',
       reason,
+      confidenceSource: confidenceSource as ConfidenceSource,
+      calibration: confidenceSource === 'calibrated_top_p' ? { x: [...(b.calibration as Calibration).x], y: [...(b.calibration as Calibration).y] } : null,
+      labelThresholds,
     },
   };
 }

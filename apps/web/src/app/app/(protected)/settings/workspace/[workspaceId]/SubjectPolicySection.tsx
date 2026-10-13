@@ -55,11 +55,11 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy, canEd
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? 'Save failed');
+        throw new Error(data.error ?? 'Could not save. Try again.');
       }
     } catch (e) {
       setStored(prev);
-      setError(e instanceof Error ? e.message : 'Save failed');
+      setError(e instanceof Error ? e.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }

@@ -33,7 +33,7 @@ export function useCloudflareCredential(teamId: string) {
         window.dispatchEvent(new CustomEvent<Detail>(EVENT, { detail: { teamId, cred: next } }));
       }
     } catch {
-      setError('Failed to load the Cloudflare token');
+      setError('Could not load the Cloudflare token.');
     } finally {
       setLoading(false);
       setLoaded(true);

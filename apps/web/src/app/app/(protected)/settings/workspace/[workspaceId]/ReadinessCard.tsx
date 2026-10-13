@@ -172,7 +172,7 @@ export function ReadinessCard({ workspaceId }: { workspaceId: string }) {
                 </div>
                 {report.truncated && (
                     <p className="text-xs text-text-muted mb-2" data-testid="readiness-truncated">
-                        The repository is too large to scan fully, so some items show as unknown rather than missing.
+                        Repository too large to scan fully. Some items show as unknown.
                     </p>
                 )}
 
@@ -232,7 +232,7 @@ export function ReadinessCard({ workspaceId }: { workspaceId: string }) {
                             disabled={selected.size === 0 || busy}
                             onClick={() => scaffold(false)}
                         >
-                            {busy && propose.kind === 'idle' ? 'Rendering…' : 'Propose changes'}
+                            {busy && propose.kind === 'idle' ? 'Preparing…' : 'Propose changes'}
                         </button>
                         <button
                             type="button"
@@ -258,7 +258,7 @@ export function ReadinessCard({ workspaceId }: { workspaceId: string }) {
                         ) : (
                             <>
                                 <p className="text-xs text-text-muted mb-2">
-                                    A builder will open {propose.preview.prs.length === 1 ? 'a PR' : `${propose.preview.prs.length} PRs`} with these files. Nothing is written to your default branch; you merge the PR.
+                                    An agent opens {propose.preview.prs.length === 1 ? 'a PR' : `${propose.preview.prs.length} PRs`} with these files. Nothing reaches your default branch until you merge.
                                 </p>
                                 <ul className="space-y-2">
                                     {propose.preview.files.map((f) => (
@@ -293,7 +293,7 @@ export function ReadinessCard({ workspaceId }: { workspaceId: string }) {
 
                 {propose.kind === 'created' && (
                     <p className="text-sm text-text-secondary mt-4" data-testid="readiness-created">
-                        A builder task is on its way to open the PR. Review and merge it, then reload this page.
+                        Task created to open the PR. Review and merge it, then reload this page.
                     </p>
                 )}
 

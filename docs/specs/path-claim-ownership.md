@@ -2,11 +2,11 @@
 title: Path Claim Ownership
 status: active
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-11
 summary: Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.
 domain: tasks
 surfaces: [packages/core/path-claim.ts, packages/core/working-set.ts, apps/web/src/lib/working-set-sync.ts, apps/runner/src/ship-checkpoint.ts]
-related: [orchestration-decisions-shadow, mission-task-lifecycle, claim-ordering]
+related: [orchestration-decisions-shadow, mission-task-lifecycle, claim-ordering, failure-incident-recovery]
 keywords: [path_claims, check_path_claim, lease, narrow, pathManifest, path_declaration, path_claim_revision, waiter, retry scope, working set, ship checkpoint, observedTouches, coverage_unknown_at_ship, observation_truncated]
 verified_by: [packages/core/__tests__/path-claim-ownership.test.ts, packages/core/__tests__/working-set-reconcile.test.ts, packages/core/__tests__/path-coordination-signal.test.ts, apps/web/src/lib/working-set-sync.test.ts, apps/runner/__tests__/unit/working-set-tracker.test.ts, apps/runner/__tests__/unit/ship-checkpoint.test.ts, apps/runner/__tests__/unit/path-claim-hook.test.ts, apps/web/src/lib/pr-scope-reconcile.test.ts, apps/web/src/app/api/tasks/[id]/path-claim/route.test.ts, apps/web/src/lib/approve-plan.test.ts]
 assertions:
@@ -235,6 +235,23 @@ reports the split as `pathCoordination`.
   or `coverage_unknown_at_ship` event is.
 - AC-18: GIVEN a runner that predates the delta protocol WHEN it reports
   touched paths THEN they are leased regardless of the sample cap.
+
+**Stall recovery** (owned by failure-incident-recovery):
+
+- When a waiter stays deferred on `path_overlap`, the Failure Pattern
+  Sentinel's `path_overlap_stall` incident and its recovery assessment take
+  over.
+- Recovery acts only through this spec's writers: `releaseAndNotify` for a
+  merged or closed holder, and the release's own outbox wake. It never
+  acquires, narrows or releases a lease directly, and it never decides
+  scheduling.
+- Three gaps that recovery depends on are recorded in failure-incident-recovery
+  §2.2:
+  - a deferral streak is coalesced per (task, reason), not per blocker (G1);
+  - `reconcileStalePrWorkers` heals a missed merge without releasing the PR's
+    leases (G6);
+  - deferrals do not record which paths overlapped (G7).
+- This spec's invariants do not change until those gaps are fixed.
 
 **Code surface**:
 

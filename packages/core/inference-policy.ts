@@ -48,9 +48,11 @@ export type InferenceCapability =
   | 'escalation_gate'
   | 'post_session_triage'
   | 'failure_incident_triage'
+  | 'visual_impact'
   | 'task_verdict'
   | 'early_release'
   | 'merge_readiness'
+  | 'operator_recovery'
   | 'spec_duplicate'
   | 'chat';
 
@@ -241,6 +243,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'When a repeated failure pattern opens or grows, a decision model reads its counts (never logs or code) and says whether it is noise, worth watching, a bug to fix, or worth paging you. It can only raise the alert level.',
     costHint: '~$0.00003 per incident change',
   },
+  // Visual review applicability (packages/core/decision-kind-visual-impact.ts).
+  // Opt-in: asked only about a diff the deterministic rules cannot call. Its
+  // fallback runs the audit, so a team that leaves it off loses a skip, never a check.
+  visual_impact: {
+    id: 'visual_impact',
+    kind: 'opt_in',
+    label: 'Visual impact',
+    description: 'When a change touches UI-adjacent files and the rules cannot tell whether anything on screen moved, a decision model reads bounded facts about the diff (file kinds and change counts, never code) and says whether a visual review is needed. When unsure it asks for the review.',
+    costHint: '~$0.00005 per ambiguous change',
+  },
   // Task verdict (apps/web/src/lib/task-verdict-decision.ts). Runs on a task
   // state change only (CI result, attempt end, PR event, worker terminal),
   // never on a page load, over the structured record (no transcripts).
@@ -270,6 +282,17 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Merge readiness',
     description: 'On a review card, a decision model says whether the pull request looks safe to merge as-is, from its CI, review and policy. Only advice; you merge.',
     costHint: '~$0.00003 per tap',
+  },
+  // Operator recovery (packages/core/decision-kind-operator-recovery.ts). The
+  // platform owner's recovery queue: an ambiguous cause pair, a next repair with
+  // no runbook, priority advice. Bounded by the platform's own daily caps
+  // (operator-recovery §6.4), not a team switch.
+  operator_recovery: {
+    id: 'operator_recovery',
+    kind: 'built_in',
+    label: 'Operator recovery',
+    description: 'When a platform failure is ambiguous, a decision model reads its counts and redacted excerpts (never names) and says whether two problems are one, which allowed repair is next, or whether its priority looks off.',
+    costHint: '~$0.0001 per question, capped at $5 a day platform-wide',
   },
   // Spec duplicates (apps/web/src/lib/spec-duplicate-decision.ts). Asked when
   // a spec is created or approved, once per shortlisted approved spec (at

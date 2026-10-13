@@ -4,6 +4,7 @@ import { mcpToolSurfaceFor, listMcpTools } from '../app/api/mcp/tools';
 import { BUILDD_ACTION_TOOL_NAMES, LEGACY_BUILDD_ACTION_TOOL } from '@buildd/shared';
 import { DEFAULT_ROLES, defaultRoleMetadata, planDefaultRoleResync, planDefaultRoleRoutingBackfill, roleContentHash } from './default-roles';
 import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { CAPTURE_FAILURE_COMPONENTS, CAPTURE_FAILURE_ERROR_PREFIX, CONFIG_ERROR_SETUP_ACTIONS } from '@buildd/core/visual-qa-page-source';
 
 describe('DEFAULT_ROLES', () => {
   const bySlug = Object.fromEntries(DEFAULT_ROLES.map(r => [r.slug, r]));
@@ -240,23 +241,51 @@ describe('DEFAULT_ROLES', () => {
       expect(c).toContain('action=get_page_source');
       expect(c).toContain('QA_PAGE_SOURCE=vercel-preview');
       expect(c).toMatch(/source: "sandbox" \| "vercel-preview"/);
-      const boot = c.slice(c.indexOf('## Boot failure'), c.indexOf('## Pull Gates'));
-      for (const e of ['preview_unavailable', 'protection_bypass_missing', 'app_auth_not_configured']) expect(boot).toContain(e);
-      expect(boot).toMatch(/never a visual finding/);
+      const walls = c.slice(c.indexOf('### Preview auth walls'), c.indexOf('## Pull Gates'));
+      for (const e of ['preview_unavailable', 'protection_bypass_missing', 'app_auth_not_configured']) expect(walls).toContain(e);
+      expect(walls).toMatch(/never a visual finding/);
     });
 
-    // post_note is non-blocking: the session would end, the runner's fallback
-    // completion would hit the visual_evidence 400, and the worker would be
-    // recorded failed (output_unmet). AskUserQuestion is what the runner parks
-    // as waiting_input, which keeps the task open and the mission held.
-    it('prompt parks a boot failure with AskUserQuestion, never a failed task or a note', () => {
+    // docs/specs/failure-incident-recovery.md §16.5, H2 (task 7d3ff681): the
+    // old "Boot failure" section turned every capture failure into a question,
+    // and the auditor invented options (sync dev, capture dev, cancel).
+    const infra = () => {
       const c = role().content;
-      const boot = c.slice(c.indexOf('## Boot failure'), c.indexOf('## Pull Gates'));
-      expect(boot).toMatch(/did not\s+boot/i);
-      expect(boot).toContain('AskUserQuestion');
-      expect(boot).toContain('waiting_input');
-      expect(boot).toMatch(/do not (mark|fail|complete)/i);
-      expect(boot).toMatch(/do not use\s+`post_note`/i);
+      return c.slice(c.indexOf('## Capture failure'), c.indexOf('### Preview auth walls'));
+    };
+
+    it('an infrastructure capture failure is reported as a typed field, never asked', () => {
+      const s = infra();
+      expect(s).not.toBe('');
+      for (const comp of CAPTURE_FAILURE_COMPONENTS) expect(s).toContain(comp);
+      expect(s).toContain('capture-failure.json');
+      expect(s).toContain('captureFailure');
+      expect(s).toMatch(/complete_task/);
+      // The error line Buildd parses back (parseCaptureFailureError).
+      expect(s).toContain(`${CAPTURE_FAILURE_ERROR_PREFIX} <component> at <step> <the file as one-line JSON>`);
+      expect(s).toMatch(/do not call\s+`AskUserQuestion`/i);
+      expect(s).not.toMatch(/call the `AskUserQuestion` tool/);
+    });
+
+    it('never invents options, never captures another revision as evidence (I-12)', () => {
+      const s = infra().replace(/\s+/g, ' ');
+      expect(s).toMatch(/never offer options/i);
+      for (const o of ['sync dev', 'capture dev', 'cancel']) expect(s).toContain(o);
+      expect(s).toMatch(/never capture (a different|another) (revision|ref)/i);
+      expect(s).toMatch(/do not dispatch again/i);
+    });
+
+    // AC-17: the preview auth walls are owner setup, so they keep a typed question.
+    it('keeps a typed person question for the two preview auth walls', () => {
+      const c = role().content;
+      const walls = c.slice(c.indexOf('### Preview auth walls'), c.indexOf('## Pull Gates'));
+      expect(walls).toContain('AskUserQuestion');
+      expect(walls).toContain('waiting_input');
+      expect(walls).toMatch(/do not use\s+`post_note`/i);
+      for (const actions of Object.values(CONFIG_ERROR_SETUP_ACTIONS)) {
+        for (const a of actions) expect(walls).toContain(a.label);
+      }
+      expect(walls).toMatch(/not retry or cancel/i);
     });
 
     // The mission page's Visual review turns "blocked" by matching this

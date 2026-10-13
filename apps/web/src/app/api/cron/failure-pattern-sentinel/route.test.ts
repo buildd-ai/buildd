@@ -8,6 +8,8 @@ let sweepResult: Record<string, unknown> = {
   incidentsOpened: 0,
   incidentsUpdated: 0,
   incidentsResolved: 0,
+  incidentsAssessed: 0,
+  recoveryRepairs: 0,
   duplicatesSuppressed: 0,
   alertsSent: 0,
   fixTasksFiled: 0,

@@ -973,6 +973,48 @@ describe('PATCH /api/workspaces/[id]/config', () => {
     expect(data.gitConfig.defaultBranch).toBe('dev');
   });
 
+  it('sets the visual review policy override via PATCH, keeping the rest of gitConfig', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBranch: 'dev', branchStrategy: 'direct' } });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ visualReview: { policy: 'strict' } }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.visualReview).toEqual({ policy: 'strict' });
+    expect(data.gitConfig.branchStrategy).toBe('direct');
+  });
+
+  it('rejects an unknown visual review policy with 400', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ visualReview: { policy: 'sometimes' } }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+  });
+
+  it('null visualReview clears the override so the workspace inherits', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBranch: 'dev', visualReview: { policy: 'ask' } } });
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ visualReview: null }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.visualReview).toBeUndefined();
+    expect(data.gitConfig.defaultBranch).toBe('dev');
+  });
+
   it('saves branch_merge releaseConfig with trigger', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
 

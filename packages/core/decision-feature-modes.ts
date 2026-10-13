@@ -106,9 +106,11 @@ export const FEATURE_EFFECT: Record<InferenceCapability, DecisionFeatureEffect> 
   escalation_gate: 'acts',
   post_session_triage: 'acts',
   failure_incident_triage: 'acts',
+  visual_impact: 'acts',
   task_verdict: 'acts',
   early_release: 'acts',
   merge_readiness: 'advises',
+  operator_recovery: 'acts',
   spec_duplicate: 'acts',
   chat: 'interactive',
 };

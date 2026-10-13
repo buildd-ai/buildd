@@ -53,12 +53,12 @@ export default function CopyReviewSection({ workspaceId, initial, canEdit }: Pro
         body: JSON.stringify({ copyReview }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Not saved');
+      if (!res.ok) throw new Error(data.error || 'Could not save. Try again.');
       markSaved(submitted);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Not saved');
+      setSaveError(err instanceof Error ? err.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }

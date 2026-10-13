@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, FailureIncidentTrace, IncidentReportSource, IncidentReportRefs, IncidentReportDecision, IncidentReportDecidedBy, RootCauseClassification, RootCauseCapabilityKind } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery, FailureIncidentTrace, IncidentReportSource, IncidentReportRefs, IncidentReportDecision, IncidentReportDecidedBy } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -674,6 +674,10 @@ export interface WorkspaceGitConfig {
   // Controls which type of runner (user/service/action) can claim tasks by default
   // Can be overridden per-task at creation time
   defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
+
+  // Visual review policy override (strict | automatic | ask | off). Absent = inherit the team
+  // default. Read only through visualReviewPolicyOf() / resolveVisualReviewPolicy().
+  visualReview?: { policy?: import('@buildd/shared').VisualReviewPolicyMode } | null;
 
   // Merge policy — supersedes autoMerge* fields when set.
   // null / absent → fall back to legacy autoMerge* fields (backward compat).
@@ -2244,7 +2248,7 @@ export const workers = pgTable('workers', {
   // task_cancelled:     the task was cancelled while the session was still running — whatever
   //                     the session reported afterwards is moot. Bookkeeping; never charged.
   // null: worker is still active, completed successfully, or predates this column.
-  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | 'needs_input' | 'server_refused' | 'output_unmet' | 'task_cancelled' | null>(),
+  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'auth_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | 'needs_input' | 'server_refused' | 'output_unmet' | 'task_cancelled' | null>(),
   // Subagent spans flushed once at worker terminal state (not on every progress event).
   // JSONB (v1): keeps the change small; migrate to a worker_subagents table when per-span
   // querying is needed (e.g. mission skyline v2 lanes-within-a-bar).
@@ -5874,6 +5878,13 @@ export const decisionModelMeasurements = pgTable('decision_model_measurements', 
   setByAccountId: uuid('set_by_account_id'),
   setAt: timestamp('set_at', { withTimezone: true }).defaultNow().notNull(),
   reason: text('reason'),
+  // Which number `threshold` is compared with (decision-model-measurements.ts
+  // `measuredSignal`). 'confidence' keeps the provider's confidence.
+  confidenceSource: text('confidence_source').notNull().default('confidence').$type<'confidence' | 'top_p' | 'margin' | 'calibrated_top_p'>(),
+  // Isotonic breakpoints { x, y } for 'calibrated_top_p'; null otherwise.
+  calibration: jsonb('calibration').$type<{ x: number[]; y: number[] }>(),
+  // Act on these labels only, each at its own threshold; null = every label at `threshold`.
+  labelThresholds: jsonb('label_thresholds').$type<Record<string, number>>(),
 }, (t) => ({
   kindModelIdx: uniqueIndex('decision_model_measurements_kind_model_idx').on(t.kind, t.model),
 }));
@@ -6755,6 +6766,9 @@ export const failureIncidents = pgTable('failure_incidents', {
   linkedFixTaskId: uuid('linked_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
   acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  // The recovery assessment (docs/specs/failure-incident-recovery.md §3). NULL:
+  // not assessed yet. Written with `status` in the one CAS on `version`.
+  recovery: jsonb('recovery').$type<FailureIncidentRecovery>(),
   // Lifecycle trace (stage history, owner, fixes). Written only through the incident CAS; NULL = no trace yet.
   trace: jsonb('trace').$type<FailureIncidentTrace>(),
   // Optimistic-lock counter for the compare-and-swap update.

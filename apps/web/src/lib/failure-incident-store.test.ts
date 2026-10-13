@@ -410,3 +410,93 @@ describe('watermark once evidence is full', () => {
     expect(newer.newOccurrences).toBe(1);
   });
 });
+
+// ── Recovery assessment (docs/specs/failure-incident-recovery.md) ───────────
+
+describe('recovery assessment on the incident row', () => {
+  const recovery = (over: Partial<NonNullable<StoredIncident['recovery']>> = {}): NonNullable<StoredIncident['recovery']> => ({
+    v: 1, generation: 2,
+    cause: { reasonCode: 'path_overlap.blocker_open', rule: 'path_overlap_stall', ownership: 'workflow' },
+    subjects: [{ kind: 'task', id: 'task-a' }], blockers: [{ kind: 'pr', id: '7', state: 'open', observedAt: at(0) }],
+    overlappingPaths: [], observation: { observedAt: at(0), source: 'sweep', evidenceRevision: 'r1' },
+    firstSeenAt: at(0), lastSeenAt: at(0), lastProgressAt: null, owner: 'person', state: 'needs_decision',
+    nextAction: null, nextCheckAt: null,
+    decision: { question: 'q', options: [{ capability: 'dismiss', label: 'Dismiss', effect: 'e' }], recommended: 'dismiss' },
+    verification: { predicate: 'p', params: {} },
+    budget: { spent: 3, limit: 3, deadlineAt: at(360), spentKeys: ['k1', 'k2', 'k3'] },
+    attempts: [{ key: 'k1', action: 'wake_subject', subject: { kind: 'task', id: 'task-a' }, at: at(1), generation: 2 }],
+    ...over,
+  });
+
+  const stalled = (min: number): IncidentCandidate => {
+    const [c] = detectFailurePatterns({
+      workspaceId: WS, now: at(min),
+      pathOverlapDeferrals: [{ taskId: `task-${min}`, blockingPrNumber: 7, firstDeferredAt: at(min - 200), lastDeferredAt: at(min), lastProgressAt: null, taskStatus: 'pending', blockerState: 'open' }],
+    });
+    return c;
+  };
+
+  it('AC-12: a reopen bumps the generation, resets the budget and keeps the attempts', async () => {
+    const { port } = memoryPort();
+    const opened = await upsertIncident(port, stalled(300));
+    await port.compareAndSwap(opened.incident.id, opened.incident.version, {
+      ...(({ id: _i, version: _v, ...b }) => b)(opened.incident), status: 'resolved', resolvedAt: at(301), recovery: recovery({ state: 'recovered' }),
+    });
+    const reopened = await upsertIncident(port, stalled(500));
+    expect(reopened.outcome).toBe('reopened');
+    expect(reopened.incident.recurrenceCount).toBe(1);
+    expect(reopened.incident.recovery?.generation).toBe(3);
+    expect(reopened.incident.recovery?.budget.spent).toBe(0);
+    expect(reopened.incident.recovery?.budget.spentKeys).toEqual([]);
+    expect(reopened.incident.recovery?.state).toBe('observing');
+    expect(reopened.incident.recovery?.attempts).toHaveLength(1);
+  });
+
+  it('a new incident opens with no assessment (reads as observing)', async () => {
+    const { port } = memoryPort();
+    const opened = await upsertIncident(port, stalled(300));
+    expect(opened.incident.recovery).toBeNull();
+  });
+
+  it('an update that is not a reopen keeps the stored assessment', async () => {
+    const { port } = memoryPort();
+    const opened = await upsertIncident(port, stalled(300));
+    await port.compareAndSwap(opened.incident.id, opened.incident.version, { ...(({ id: _i, version: _v, ...b }) => b)(opened.incident), recovery: recovery() });
+    const updated = await upsertIncident(port, stalled(400));
+    expect(updated.outcome).toBe('updated');
+    expect(updated.incident.recovery?.generation).toBe(2);
+  });
+
+  it('assess: recovered resolves in the same write; any other state never resolves (I-1)', async () => {
+    const { port } = memoryPort();
+    const opened = await upsertIncident(port, stalled(300));
+    const waiting = await updateIncidentState(port, opened.incident.id, { type: 'assess', recovery: recovery({ state: 'waiting', owner: 'buildd' }) }, { now: at(310) });
+    expect(waiting?.status).toBe('open');
+    expect(waiting?.resolvedAt).toBeNull();
+    const done = await updateIncidentState(port, opened.incident.id, { type: 'assess', recovery: recovery({ state: 'recovered', owner: 'buildd' }) }, { now: at(320) });
+    expect(done?.status).toBe('resolved');
+    expect(done?.resolvedAt).toBe(at(320));
+    expect(done?.recovery?.state).toBe('recovered');
+  });
+
+  it('assess keeps a dismissal (acknowledged) until the check passes', async () => {
+    const { port } = memoryPort();
+    const opened = await upsertIncident(port, stalled(300));
+    await updateIncidentState(port, opened.incident.id, { type: 'assess', recovery: recovery() }, { now: at(305) });
+    const dismissed = await updateIncidentState(port, opened.incident.id, { type: 'acknowledge' }, { now: at(306) });
+    expect(dismissed?.status).toBe('acknowledged');
+    expect(dismissed?.recovery?.decision?.chosen).toBe('dismiss');
+    const still = await updateIncidentState(port, opened.incident.id, { type: 'assess', recovery: recovery({ state: 'waiting', owner: 'buildd' }) }, { now: at(307) });
+    expect(still?.status).toBe('acknowledged');
+    const passed = await updateIncidentState(port, opened.incident.id, { type: 'assess', recovery: recovery({ state: 'recovered', owner: 'buildd' }) }, { now: at(308) });
+    expect(passed?.status).toBe('resolved');
+  });
+
+  it('a manual resolve marks a stored assessment recovered, so status and state agree', async () => {
+    const { port } = memoryPort();
+    const opened = await upsertIncident(port, stalled(300));
+    await updateIncidentState(port, opened.incident.id, { type: 'assess', recovery: recovery({ state: 'waiting', owner: 'buildd' }) }, { now: at(305) });
+    const resolved = await updateIncidentState(port, opened.incident.id, { type: 'resolve' }, { now: at(306) });
+    expect(resolved?.recovery?.state).toBe('recovered');
+  });
+});

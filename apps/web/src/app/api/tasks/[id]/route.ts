@@ -1,5 +1,6 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { pauseRefusal, requestWorkerPause } from '@/lib/worker-pause';
+import { parseCancellation } from '@/lib/task-cancellation';
 import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { isTerminalTaskStatus, canDeleteTask, LIVE_WORKER_STATUSES } from '@buildd/shared';
@@ -319,7 +320,7 @@ export async function PATCH(
         }, { status: 403 });
       }
     }
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, reserved, pathManifest, startAt, startIn, abort } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, reserved, pathManifest, startAt, startIn, abort, cancelReason, supersededBy } = body;
 
     // delegation: a person grants (or clears) this task's cross-workspace
     // reach before it is claimed (lib/task-delegation.ts). Its own request:
@@ -722,6 +723,19 @@ export async function PATCH(
             );
           }
         }
+      }
+      // A cancel says why (failure-incident-recovery §18.5): an API caller
+      // must pass cancelReason or supersededBy; a dashboard cancel is the
+      // person's own act. Refused before anything is written.
+      if (status === 'cancelled') {
+        const parsed = parseCancellation({
+          cancelReason,
+          supersededBy,
+          actor: apiAccount ? `account:${apiAccount.id}` : `user:${user?.id ?? 'unknown'}`,
+          byPerson: !apiAccount,
+        });
+        if (!parsed.ok) return NextResponse.json({ error: parsed.error, code: parsed.code }, { status: 400 });
+        updateData.context = { ...((updateData.context ?? task.context ?? {}) as Record<string, unknown>), cancellation: parsed.cancellation };
       }
       updateData.status = status;
 

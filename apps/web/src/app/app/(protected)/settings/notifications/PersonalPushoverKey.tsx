@@ -9,7 +9,7 @@ const CONSOLE_URL = 'https://pushover.net';
 
 async function errorText(res: Response): Promise<string> {
   const body = await res.json().catch(() => ({})) as { error?: unknown };
-  return typeof body.error === 'string' ? body.error : "That didn’t go through. Try again.";
+  return typeof body.error === 'string' ? body.error : "Request failed. Try again.";
 }
 
 /**
@@ -37,7 +37,7 @@ export default function PersonalPushoverKey({ teamId }: { teamId: string }) {
       setStatus(pushoverKeyStatus(body.key));
       setLoadError(null);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : 'Could not load your Pushover key');
+      setLoadError(e instanceof Error ? e.message : "Could not load your Pushover key. Try again.");
     } finally {
       setLoaded(true);
     }
@@ -54,7 +54,7 @@ export default function PersonalPushoverKey({ teamId }: { teamId: string }) {
     try {
       await fn();
     } catch (e) {
-      setMsg({ tone: 'err', text: e instanceof Error ? e.message : 'Something went wrong.' });
+      setMsg({ tone: 'err', text: e instanceof Error ? e.message : "Request failed. Try again." });
     } finally {
       setBusy(null);
     }
@@ -62,7 +62,7 @@ export default function PersonalPushoverKey({ teamId }: { teamId: string }) {
 
   const save = () => run('save', async () => {
     const r = checkPushoverKeyShape(value);
-    if (!r.ok) throw new Error(r.message ?? 'That key does not look right.');
+    if (!r.ok) throw new Error(r.message ?? 'Enter a valid Pushover user key.');
     const res = await fetch('/api/me/pushover', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -76,7 +76,7 @@ export default function PersonalPushoverKey({ teamId }: { teamId: string }) {
     setEditing(false);
     setMsg(next?.health === 'ok' || !next
       ? { tone: 'ok', text: 'Saved. Pushover accepted the key.' }
-      : { tone: 'warn', text: 'Saved, but Pushover did not answer cleanly. Test it again in a minute.' });
+      : { tone: 'warn', text: "Saved. Pushover didn't confirm the key. Test it again in a minute." });
   });
 
   const remove = () => run('remove', async () => {
@@ -103,7 +103,7 @@ export default function PersonalPushoverKey({ teamId }: { teamId: string }) {
     <>
       {configured
         ? <><span className="font-mono">{status?.masked}</span>{status?.lastVerifiedAt && <span className="text-text-muted"> · {formatCheckedAgo(status.lastVerifiedAt)}</span>}</>
-        : 'Alerts for things you watch, sent to your phone when you are away.'}
+        : 'Sends alerts for things you watch to your phone when you’re away.'}
       {status?.health === 'failing' && status.error && (
         <span className="block text-status-error break-words">Last check failed: {status.error}</span>
       )}
@@ -115,9 +115,9 @@ export default function PersonalPushoverKey({ teamId }: { teamId: string }) {
     confirmRemove ? (
       <>
         <button className="btn btn-sm btn-danger" onClick={remove} disabled={busy !== null}>
-          {busy === 'remove' ? 'Removing…' : 'Confirm remove'}
+          {busy === 'remove' ? 'Removing…' : 'Remove key'}
         </button>
-        <button className="btn btn-sm btn-quiet" onClick={() => setConfirmRemove(false)} disabled={busy !== null}>Keep</button>
+        <button className="btn btn-sm btn-quiet" onClick={() => setConfirmRemove(false)} disabled={busy !== null}>Cancel</button>
       </>
     ) : (
       <>
@@ -136,7 +136,7 @@ export default function PersonalPushoverKey({ teamId }: { teamId: string }) {
 
   return (
     <ChannelRow
-      title="Pushover · yours"
+      title="Pushover · personal"
       connected={configured}
       sub={sub}
       actions={actions}
@@ -162,7 +162,7 @@ export default function PersonalPushoverKey({ teamId }: { teamId: string }) {
                 <p className={`text-xs ${shape.ok ? 'text-status-warning' : 'text-status-error'}`}>{shape.message}</p>
               )}
               <p className="text-xs text-text-muted">
-                Your user key is on your <a href={CONSOLE_URL} target="_blank" rel="noreferrer" className="underline hover:text-text-primary">Pushover dashboard</a>. Tested on save. Encrypted, write-only.
+                Find your user key on the <a href={CONSOLE_URL} target="_blank" rel="noreferrer" className="underline hover:text-text-primary">Pushover dashboard</a>. Tested on save. Encrypted, write-only.
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 <button className="btn btn-primary" onClick={save} disabled={busy !== null || !value.trim() || shape?.ok === false}>

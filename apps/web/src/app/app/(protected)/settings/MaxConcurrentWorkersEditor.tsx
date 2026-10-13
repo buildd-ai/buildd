@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 
+const SAVE_FAILED = 'Could not save the worker limit.';
+
 interface MaxConcurrentWorkersEditorProps {
   accountId: string;
   value: number;
@@ -25,7 +27,7 @@ export default function MaxConcurrentWorkersEditor({
     const newValue = parseInt(inputValue, 10);
 
     if (!Number.isInteger(newValue) || newValue < 1 || newValue > 50) {
-      setError('Must be a number between 1 and 50');
+      setError('Enter a number from 1 to 50.');
       return;
     }
 
@@ -44,14 +46,14 @@ export default function MaxConcurrentWorkersEditor({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to update');
+        throw new Error(err.error || SAVE_FAILED);
       }
 
       const data = await res.json();
       onUpdate(data.maxConcurrentWorkers);
       setIsEditing(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update');
+      setError(err instanceof Error ? err.message : SAVE_FAILED);
     } finally {
       setSaving(false);
     }

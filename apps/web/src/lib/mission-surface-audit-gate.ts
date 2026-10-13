@@ -74,7 +74,7 @@ export async function loadSurfaceAuditWaiver(
   return { reason: (latest.body ?? '').trim(), actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString() };
 }
 
-async function repoFor(workspaceId: string): Promise<{ installationId: number; fullName: string } | null> {
+export async function repoFor(workspaceId: string): Promise<{ installationId: number; fullName: string } | null> {
   const ws = await db.query.workspaces.findFirst({
     where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true },
