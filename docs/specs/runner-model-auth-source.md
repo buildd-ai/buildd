@@ -9,6 +9,31 @@ surfaces: [apps/runner/src/host-seat.ts, apps/runner/src/workers.ts, apps/web/sr
 related: [runner-liveness, credential-isolation, real-and-virtual-cost, auth-oauth-boundaries]
 keywords: [host seat, claude login, setup-token, CLAUDE_CODE_OAUTH_TOKEN, BUILDD_HOST_SEAT, owner seat, keychain, hasClaudeCredentials, model_auth_source, detectModelAuthSource]
 verified_by: [apps/runner/__tests__/unit/model-auth-detect.test.ts, apps/web/src/app/api/workers/heartbeat/route.test.ts, apps/web/src/app/app/(protected)/settings/_lib/model-auth-label.test.ts, apps/web/src/app/app/(protected)/settings/RunnerTokensSection.dom.test.tsx, apps/cloud-runner/src/owner-seat.test.ts]
+assertions:
+  - id: detector
+    type: symbol
+    name: detectModelAuthSource
+    path: apps/runner/src/host-seat.ts
+  - id: detector-tests
+    type: test_file
+    path: apps/runner/__tests__/unit/model-auth-detect.test.ts
+  - id: heartbeat-route
+    type: route
+    method: POST
+    path: /api/workers/heartbeat
+    file: apps/web/src/app/api/workers/heartbeat/route.ts
+  - id: heartbeat-reads-label
+    type: symbol_reachable
+    symbol: isRunnerModelAuthSource
+    entry: apps/web/src/app/api/workers/heartbeat/route.ts
+  - id: stored-column
+    type: config_key
+    key: model_auth_source
+    file: packages/core/db/schema.ts
+  - id: settings-label
+    type: symbol
+    name: modelAuthLabel
+    path: apps/web/src/app/app/(protected)/settings/_lib/model-auth-label.ts
 ---
 
 # Runner Model Auth Source
