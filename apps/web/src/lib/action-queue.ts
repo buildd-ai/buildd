@@ -254,7 +254,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'incident' | 'access';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'incident' | 'access' | 'spec_provisional';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -285,6 +285,9 @@ export interface WaitingOnYouRawItem {
   accessTtlSeconds?: number;
   /** kind === 'access' — the approve button's words, lease included ("Approve for 1 hour"). */
   accessApproveLabel?: string;
+  /** kind === 'spec_provisional' — a spec with merged work built ahead of approval and still unapproved (lib/specs/provisional.ts). */
+  specId?: string;
+  specTitle?: string;
   fixHref?: string;
   fixLabel?: string;
   /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
@@ -592,6 +595,8 @@ export interface ActionQueueItem {
   incidentTitle?: string;
   /** Set when chip === 'INCIDENT' — the recovery asks one typed choice; the card reads as a decision. */
   incidentDecision?: boolean;
+  /** Set when chip === 'APPROVE' for a spec with merged work built ahead of approval (living-specs.md §20, R-42). */
+  specProvisional?: { specId: string; specTitle: string };
   /** Set when chip === 'ACCESS' — the capability request, the ask and the lease asked for. */
   accessRequestId?: string;
   accessAsk?: string;
@@ -1606,6 +1611,22 @@ export function buildActionQueue(
           accessApproveLabel: item.accessApproveLabel,
           taskId: item.taskId,
           taskTitle: item.taskTitle,
+          workspaceId: item.workspaceId,
+          workspaceName: item.workspaceName ?? undefined,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
+        });
+      }
+    } else if (item.kind === 'spec_provisional') {
+      // Re-derived on every build from the task and worker rows (lib/specs/provisional.ts):
+      // approving the spec re-pins the work, and the card drops out by itself.
+      const key = `spec-provisional:${item.specId}`;
+      if (item.specId && !map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'APPROVE',
+          specProvisional: { specId: item.specId, specTitle: item.specTitle ?? '' },
           workspaceId: item.workspaceId,
           workspaceName: item.workspaceName ?? undefined,
           failureMessage: item.failureMessage,

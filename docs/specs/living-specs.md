@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-13
 summary: Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 domain: knowledge
-surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
+surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
-keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts]
+keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -226,9 +226,9 @@ later ones are proposed (D-4).
 - A task filed with `context.specSource.specId` is pinned as it is filed
   (`apps/web/src/lib/specs/pin.ts`): the server writes the approved revision's
   `specRevisionId`, `revision` and `contentHash` from the database, overwriting
-  whatever the caller sent. A spec with no approved revision, a named revision
-  that is not approved, or a spec in another workspace refuses the filing
-  (409/409/404) and nothing is inserted. `commitSha` is kept when it is a SHA.
+  whatever the caller sent. A spec with no approved revision, or a named
+  revision that is not approved, pins that revision provisionally (§20, R-36);
+  a spec in another workspace refuses the filing (404) and nothing is inserted. `commitSha` is kept when it is a SHA.
   A task naming no spec, or only a repo document (`specPath`), is untouched.
 - Work runs on the revision approved when it starts: the task's first claim
   re-pins it to the revision approved then (`apps/web/src/lib/specs/claim-pin.ts`,
@@ -1508,3 +1508,100 @@ what buildd could not place.
   accepted by its key. An unfiled spec with no filing row yet gets
   `suggestParent` on its title instead, for at most 12 per page load, and
   dismissing that one hides it for the page only.
+
+## 20. Building ahead of approval
+
+**Capability statement**: Work built against a draft revision MUST say so
+plainly, MUST be pinned to the exact revision it was built against, and MUST
+be graded against the revision a person later approves, so approving after
+the fact grades what already shipped.
+
+**Decision**:
+- D-14: Build first, approve later (2026-10-13). An owner may tell an agent to
+  build before a spec is approved. Refusing to pin that work left it with no
+  pin at all, so a later approval graded nothing and the PR text read as a
+  contradiction of the approve-before-build advice. A provisional pin records
+  what the work was built against; approval is still a person's act (§6), and
+  it re-grades provisional work instead of being skipped by it.
+
+**Invariants**:
+- R-36: `create_task context.specSource { specId, criteria?, revision? }` on a
+  spec with no approved revision, or naming a revision that is not approved
+  (`revision` or `specRevisionId`), pins that exact revision provisionally:
+  its id, number and content hash from the database, with `provisional: true`.
+  With no revision named it pins the head. A person and an agent may both file
+  it. A named revision that does not exist is a 409, and a named revision
+  that is approved pins as in §6 (`explicit: true`).
+- R-37: A provisional pin moves at first claim only to a newer approved
+  revision than the one it names, and then stops being provisional
+  (`apps/web/src/lib/specs/claim-pin.ts`). It never moves to another draft.
+- R-38: A PR opened for provisionally pinned work says "Built ahead of
+  approval, against revision N" under the lede, and that approving the spec
+  re-grades it. Nothing in it reads as a contradiction of §6.
+- R-39: When a person approves revision M, every provisional pin on that spec
+  re-pins to M, after the response, on the path the approval already runs
+  (`approveSpecRevision`'s after-response work). For each task, one statement
+  moves the pin only while it still names N and is still provisional, so a
+  second run writes nothing. The pin records `regradedFrom` (N's id, number
+  and hash). A scope (`criteria`) keeps only the ids M still has; when none
+  remain the scope is dropped and the note says so.
+- R-40: The re-grade on M: each checked criterion of M reruns at the task's PR
+  head through the existing check runs (§7); a verdict recorded on N carries
+  to M only when that criterion's text (its line and the lines under it, up
+  to the next criterion or heading) is the same in N and M, and a carried
+  verdict names the verdict it came from. A check-authored verdict is not
+  carried for a criterion M still checks: the rerun decides it.
+- R-41: Each re-pinned task gets a note with the N-to-M diff (the bounded diff
+  of `apps/web/src/lib/specs/diff.ts`) and what carried over and what reruns,
+  and its PR text changes to "Built ahead of approval against revision N,
+  re-graded against approved revision M". A failed PR edit is recorded on the
+  pin and blocks nothing.
+- R-42: A spec with merged provisional work and no approval for 3 days shows
+  in Needs You, to people who may approve it, as "Work shipped against an
+  unapproved spec", naming the spec, how many merged tasks and the revision
+  they were built against, with a link to the spec.
+- R-43: `manage_specs action=attach_provisional { specId, revision, taskIds }`
+  (`POST /api/specs/[specId]/provisional`) pins finished tasks (completed, in
+  the spec's workspace, not already pinned to a Living Spec) provisionally to
+  the revision they were built against, so a later approval grades them. Only
+  a person or an admin token may; an agent run (a per-task token) and a
+  plain API key are a 403. When the spec already has an approved revision
+  newer than the one named, the tasks are re-graded to it at once (R-39); when
+  the named revision is approved, they are pinned to it as in §6. Each task's
+  result says attached, or why not.
+
+**Acceptance criteria**:
+- AC-98: GIVEN a spec with only a draft revision WHEN an agent files a task
+  against it THEN the task is pinned to that revision with its hash and
+  `provisional: true`, and a revision that does not exist is a 409
+  (`apps/web/tests/db/spec-provisional-pin.test.ts`).
+- AC-99: GIVEN two tasks provisionally pinned to revision 1 and a person
+  approving revision 2 WHEN the approval's after-response work runs THEN both
+  pins name revision 2, are no longer provisional, record `regradedFrom` 1,
+  each task has a note with the diff and a check run at its PR head, and
+  running it again changes nothing (`apps/web/tests/db/spec-provisional-pin.test.ts`).
+- AC-100: GIVEN verdicts on R-1 and R-2 of revision 1 and revision 2 that
+  rewords R-2 WHEN revision 2 is approved THEN R-1's verdict reads on
+  revision 2 and R-2 has none (`apps/web/tests/db/spec-provisional-pin.test.ts`).
+- AC-101: GIVEN a provisional task merged 4 days ago and no approval WHEN an
+  approver's Needs You loads THEN it holds one "Work shipped against an
+  unapproved spec" item; a plain member's holds none, and after approval
+  neither does (`apps/web/tests/db/spec-provisional-pin.test.ts`).
+- AC-102: GIVEN a completed task WHEN an agent run calls attach_provisional
+  THEN 403 and the task is untouched; WHEN a person does THEN it is pinned
+  provisionally and a later approval re-grades it
+  (`apps/web/tests/db/spec-provisional-pin.test.ts`).
+- AC-103: GIVEN a provisional pin WHEN its PR body is composed THEN it says
+  "Built ahead of approval, against revision N", and after re-grading it says
+  which revision was approved (`apps/web/src/lib/specs/provisional-text.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/provisional.ts` — `regradeProvisionalPins`, `attachProvisional`, `loadProvisionalNeedsYou`
+- `apps/web/src/lib/specs/provisional-text.ts` — `withSpecSourceBlock`, `criterionTexts`
+- `apps/web/src/app/api/specs/[specId]/provisional/route.ts` — `POST`
+
+**Not yet**:
+- The task page shows a provisional pin like any other pin; it does not yet
+  say "built ahead of approval" there.
+- A re-grade interrupted after its pin moved is not resumed: the note, check
+  runs or PR edit it had not reached stay undone.

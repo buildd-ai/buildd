@@ -21,6 +21,10 @@
  * read_ref reads one of them at that commit, bounded, over
  * GET /api/specs/[id]/repo-ref.
  *
+ * attach_provisional pins finished tasks to the revision they were built
+ * against (POST /api/specs/[id]/provisional), so a later approval grades them:
+ * a person's or an admin token's act, never an agent run's.
+ *
  * diff (read-only) says what changed between two revisions, over
  * GET /api/specs/[id]/diff: sections added, removed and changed, then a capped
  * unified line diff of them.
@@ -348,6 +352,26 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'attach_provisional': {
+      // Building ahead of approval (living-specs.md §20, R-43): a person's or an
+      // admin token's act; an agent run gets the route's 403, passed through.
+      const specId = need(params.specId, 'specId');
+      try {
+        const r = await api(`/api/specs/${encodeURIComponent(specId)}/provisional`, { method: 'POST', body: JSON.stringify({ revision: params.revision, taskIds: params.taskIds }) });
+        const rows = (r.results ?? []) as Array<{ taskId: string; attached: boolean; reason?: string }>;
+        const regraded = (r.regraded ?? []) as Array<{ taskId: string; to: number }>;
+        return text([
+          `Revision ${r.revision}${r.provisional ? ' (not approved: pinned provisionally, a later approval re-grades the work)' : ' (approved: pinned to it)'}:`,
+          ...rows.map((x) => `  ${x.taskId}: ${x.attached ? 'attached' : `not attached, ${x.reason ?? 'refused'}`}`),
+          ...(regraded.length ? [`Re-graded at once against approved revision ${regraded[0].to}: ${regraded.length} task(s).`] : []),
+        ].join('\n'));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 403, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }

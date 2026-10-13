@@ -18,6 +18,7 @@ import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@/lib/mission-integration-branch';
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
+import { withSpecSourceBlock } from '@/lib/specs/provisional-text';
 import { describeProseFindings, scanPrProse } from '@buildd/core/no-prod-data-prose';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -969,11 +970,13 @@ export async function POST(req: NextRequest) {
         `[create_pr] no lede supplied for worker ${workerId} — deriving one from the PR title`,
       );
     }
-    const effectivePrBody = composeBodyWithLede(
+    // Work built ahead of approval says so under the lede, in words that match
+    // what buildd will do with it (living-specs.md §20, R-38).
+    const effectivePrBody = withSpecSourceBlock(composeBodyWithLede(
       effectiveLede,
       (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix,
       { derived: ledeIsDerived },
-    );
+    ), taskContext?.specSource as Record<string, unknown> | undefined);
 
     // Mission integration guard: a task worker must NEVER open a PR with the
     // mission integration branch as its HEAD. Only the mission PR owner may do that.
