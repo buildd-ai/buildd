@@ -87,6 +87,7 @@ import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
+import { recordRootCauseForOutcome } from '@/lib/root-cause-record';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
@@ -4453,6 +4454,9 @@ export async function PATCH(
 
       // Credential health tracking: update health state on auth failure or success.
       await runStep('credential-health', () => recordCredentialHealthForOutcome(taskId, status, error));
+      // Root causes: an auth failure records its runner's cause; a completed run
+      // is the capability check that clears causes on its runner and workspace.
+      await runStep('root-cause', () => recordRootCauseForOutcome({ taskId, accountId: worker.accountId, status, error }));
     }
   }
 
