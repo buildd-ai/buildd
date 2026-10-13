@@ -46,6 +46,7 @@ import TeamMembersFixture from './TeamMembersFixture';
 import RefinedComponentsFixture from './RefinedComponentsFixture';
 import MissionFlowFixture from './MissionFlowFixture';
 import MissionDetailCompactFixture from './MissionDetailCompactFixture';
+import BranchPanelFixture from './BranchPanelFixture';
 import HomeCardsFixture from './HomeCardsFixture';
 import ServiceStatusFixture from './ServiceStatusFixture';
 import {
@@ -88,6 +89,7 @@ import {
     REFINED_COMPONENTS_FIXTURE_STATE,
     MISSION_FLOW_FIXTURE_STATE,
     MISSION_DETAIL_COMPACT_FIXTURE_STATE,
+    BRANCH_PANEL_FIXTURE_STATE,
     HOME_CARDS_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -265,6 +267,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_FLOW_FIXTURE_STATE) {
         return <MissionFlowFixture />;
+    }
+
+    if (state === BRANCH_PANEL_FIXTURE_STATE) {
+        return <BranchPanelFixture />;
     }
 
     if (state === MISSION_DETAIL_COMPACT_FIXTURE_STATE) {

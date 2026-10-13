@@ -15,6 +15,7 @@ import { deriveMissionProgressSubline, type MissionIntegrationPrView } from './m
 import type { ReleaseState } from './release-state';
 import type { VisualReviewModel } from '@buildd/shared';
 import { describeVisualPhase } from './visual-review-model';
+import type { VisualReviewPresentation } from './workflow/visual-review-presentation';
 
 export type DeliveryStepKey = 'integrated' | 'verified' | 'visual' | 'shipped' | 'budget';
 export type DeliveryStepState = 'done' | 'partial' | 'todo' | 'blocked';
@@ -77,6 +78,12 @@ export interface DeliveryInput {
    * of a bare "waiting". Absent: the verdict counts alone decide the step.
    */
   visualPhase?: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary' | 'needsYou'> | null;
+  /**
+   * The canonical visual-review reading (`presentVisualReview`). When set it
+   * decides the Visual review step, and `visual` / `visualPhase` are not
+   * consulted: no surface re-derives the stage from phases.
+   */
+  visualReview?: VisualReviewPresentation | null;
   /**
    * When THIS mission's work reached trunk (`missionTrunkMergedAt`): one entry
    * per merge. Empty when nothing of the mission is on trunk yet.
@@ -178,7 +185,12 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
     });
   }
 
-  if (input.visual) steps.push(visualStep(input.visual, input.visualPhase ?? null));
+  if (input.visualReview !== undefined) {
+    const step = presentedVisualStep(input.visualReview);
+    if (step) steps.push(step);
+  } else if (input.visual) {
+    steps.push(visualStep(input.visual, input.visualPhase ?? null));
+  }
 
   // D6: the Shipped step is this mission's fact. The workspace queue depth
   // never decides it: only this mission's merges, read against the release
@@ -197,6 +209,31 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
   }
 
   return steps;
+}
+
+/** The Visual review step read off the canonical presentation: its words are the panel's words. */
+function presentedVisualStep(p: VisualReviewPresentation | null): DeliveryStep | null {
+  if (!p) return null;
+  const base = { key: 'visual' as const, label: DELIVERY_STEP_LABEL.visual };
+  switch (p.stage) {
+    case 'none':
+      return p.record?.kind === 'passed' ? { ...base, state: 'done', value: '✓', detail: p.record.text } : null;
+    case 'ready':
+    case 'merged':
+      return { ...base, state: 'done', value: '✓', detail: p.label };
+    case 'waived':
+      return { ...base, state: 'done', value: 'waived', detail: p.label };
+    case 'verifying':
+      return p.tone === 'success'
+        ? { ...base, state: 'done', value: '✓', detail: p.label }
+        : { ...base, state: 'partial', value: '…', detail: p.label };
+    case 'fixing':
+      return { ...base, state: 'partial', value: 'fix', detail: p.label };
+    case 'judgment':
+      return { ...base, state: 'partial', value: '?', detail: p.label };
+    case 'blocked':
+      return { ...base, state: p.needsYou ? 'blocked' : 'partial', value: p.needsYou ? 'stuck' : 'retry', detail: p.label };
+  }
 }
 
 /**

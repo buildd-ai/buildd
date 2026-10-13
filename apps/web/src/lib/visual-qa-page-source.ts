@@ -49,6 +49,13 @@ export interface PageSourceResult {
   dispatch: string | null;
   /** How far `captureRef.ref` is behind trunk; null when it is trunk. */
   freshness: CaptureRefFreshness | null;
+  /**
+   * The commit `captureRef.ref` points at right now, whatever the page source.
+   * The auditor compares it with the commit its audit task names (the
+   * integration head the review is for) and says so when the branch has moved:
+   * a pass only counts for the commit it looked at. Null for trunk (not a mission review) or when unreadable.
+   */
+  captureHeadSha: string | null;
   sha: string | null;
   preview: PreviewResolution | null;
   decision: PageSourceDecision;
@@ -177,7 +184,11 @@ export async function resolvePageSource(opts: {
   const repo = opts.repoFullName;
   const trunk = captureTrunk(opts.gitConfig, opts.repoDefaultBranch);
   const captureRef = await resolveCaptureRef(get, repo, opts.mission, trunk);
+  const captureHeadSha = get && repo && captureRef.ref && captureRef.ref !== trunk
+    ? await resolveSha(get, repo, { ref: captureRef.ref }).then(s => s.toLowerCase()).catch(() => null)
+    : null;
   const harness = {
+    captureHeadSha,
     harnessRef: trunk,
     dispatch: visualQaDispatchCommand(trunk, captureRef.ref),
     freshness: get && repo && trunk && captureRef.ref && captureRef.ref !== trunk

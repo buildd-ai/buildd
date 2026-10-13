@@ -189,6 +189,7 @@
     "./decision-kind-post-session-triage": "./decision-kind-post-session-triage.ts",
     "./decision-kind-scout-probe-selection": "./decision-kind-scout-probe-selection.ts",
     "./decision-kind-failure-incident-triage": "./decision-kind-failure-incident-triage.ts",
+    "./decision-kind-visual-impact": "./decision-kind-visual-impact.ts",
     "./decision-shadow-harness": "./decision-shadow-harness.ts",
     "./manifest-prediction": "./manifest-prediction.ts",
     "./manifest-prediction-source": "./manifest-prediction-source.ts",

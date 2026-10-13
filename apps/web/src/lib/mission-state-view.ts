@@ -519,6 +519,14 @@ export interface MissionStateInput {
   criteriaItems?: Array<{ verdict: string; label?: string; name?: string; type?: string; awaitingRunner?: boolean }>;
   /** From `canCompleteMission`, when a caller ran it. */
   completion?: MissionCompletionSummary | null;
+  /**
+   * Who the mission's visual review waits on, from the one canonical state
+   * (`MissionVisualReviewState.nextActor`). Set when a caller loaded it. Absent
+   * keeps the legacy reading, where a missing audit is always the owner's;
+   * present and not `owner`, the system files and runs the review and the
+   * owner is not asked to run or waive anything.
+   */
+  visualReviewActor?: 'system' | 'jev' | 'owner' | 'none' | null;
   /** From `classifyMissionWait`, when a caller ran it. */
   wait?: { reason: string; waitUntil: Date | string } | null;
   /** From `evaluateMissionWorkState`, when a caller ran it. */
@@ -1531,6 +1539,20 @@ function visualReviewFact(input: MissionStateInput): Resolution | null {
 /** Rule 9¾ — completion refused for want of a surface audit on a UI change. */
 function surfaceAuditFact(input: MissionStateInput): Resolution | null {
   if (input.completion?.code !== 'surface_audit_missing') return null;
+  if (input.visualReviewActor && input.visualReviewActor !== 'owner') {
+    return {
+      kind: 'waiting',
+      waitingOn: {
+        kind: 'self_resolving_wait',
+        tone: 'neutral',
+        label: 'Waiting: the visual check is running',
+        reason: 'visual check',
+        waitUntil: null,
+      },
+      displayState: 'active',
+      source: 'canCompleteMission',
+    };
+  }
   return {
     kind: 'awaiting_decision',
     waitingOn: {
