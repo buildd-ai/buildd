@@ -12,6 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
 import { upsertedContent } from '@/lib/artifact-upsert-content';
+import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 /**
@@ -44,7 +45,7 @@ export async function POST(
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, id),
+    where: sqlWhere(eq(missions.id, id)),
     columns: { id: true, teamId: true, workspaceId: true },
   });
 
@@ -96,10 +97,10 @@ export async function POST(
   // Upsert by (workspaceId, key) if key provided
   if (key && typeof key === 'string' && mission.workspaceId) {
     const existing = await db.query.artifacts.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(artifacts.workspaceId, mission.workspaceId),
         eq(artifacts.key, key),
-      ),
+      )),
     });
 
     // A key is unique per workspace, so the upsert can land on any artifact
@@ -229,7 +230,7 @@ export async function GET(
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, id),
+    where: sqlWhere(eq(missions.id, id)),
     columns: { id: true, teamId: true, workspaceId: true },
   });
 
@@ -253,12 +254,12 @@ export async function GET(
 
   const byMission = eq(artifacts.missionId, id);
   const rows = await db.query.artifacts.findMany({
-    where: q.types ? and(byMission, inArray(artifacts.type, q.types)) : byMission,
-    ...(q.limit !== null ? { limit: q.limit, orderBy: [desc(artifacts.updatedAt)] } : {}),
+    where: sqlWhere(q.types ? and(byMission, inArray(artifacts.type, q.types)) : byMission),
+    ...(q.limit !== null ? { limit: q.limit, orderBy: sqlOrderBy([desc(artifacts.updatedAt)]) } : {}),
     ...(q.preview
       ? {
           columns: { content: false },
-          extras: { contentPreview: sql<string | null>`left(${artifacts.content}, ${PREVIEW_CHARS})`.as('content_preview') },
+          extras: sqlExtras({ contentPreview: sql<string | null>`left(${artifacts.content}, ${PREVIEW_CHARS})`.as('content_preview') }),
         }
       : {}),
   }) as Array<Record<string, unknown> & { type: string; contentPreview?: string | null }>;

@@ -3,6 +3,7 @@ import { missionNotes, workers, tasks } from '@buildd/core/db/schema';
 import { and, desc, eq, gte } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import type { MissionNoteType, MissionNoteAuthorType } from '@buildd/shared';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Who did this to the mission. Resolved once per request and threaded into
@@ -41,12 +42,12 @@ export async function resolveFeedActor(opts: {
 
   if (opts.actorWorkerId) {
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, opts.actorWorkerId),
+      where: sqlWhere(eq(workers.id, opts.actorWorkerId)),
       columns: { id: true, taskId: true },
     });
     if (worker?.taskId) {
       const task = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { id: true, title: true },
       });
       if (task) {
@@ -108,12 +109,12 @@ export async function postMissionFeedEvent(opts: {
   if (opts.collapseKey) {
     const since = new Date(Date.now() - (opts.collapseWindowMs ?? DEFAULT_COLLAPSE_WINDOW_MS));
     const existing = await db.query.missionNotes.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(missionNotes.missionId, opts.missionId),
         eq(missionNotes.collapseKey, opts.collapseKey),
         gte(missionNotes.createdAt, since),
-      ),
-      orderBy: [desc(missionNotes.createdAt)],
+      )),
+      orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
     });
 
     if (existing) {

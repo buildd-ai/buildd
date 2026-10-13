@@ -11,6 +11,7 @@ import { normalizeRepoFullName, prUrlFor } from '@/lib/repo-scope';
 import { incidentAffected, incidentCause, incidentEvidence, projectIncident } from '@/lib/incident-view';
 import IncidentDetail from '@/components/incidents/IncidentDetail';
 import { INCIDENT_VERDICTS } from '@/modules';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,12 +31,12 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
   if (!isPlatformOperator(user)) redirect('/app/health');
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
 
-  const incident = await db.query.failureIncidents.findFirst({ where: eq(failureIncidents.id, id) });
+  const incident = await db.query.failureIncidents.findFirst({ where: sqlWhere(eq(failureIncidents.id, id)) });
   if (!incident?.workspaceId) notFound();
   const wsIds = await getUserWorkspaceIds(user.id);
   if (!wsIds.includes(incident.workspaceId)) notFound();
 
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, incident.workspaceId), columns: { name: true, teamId: true, repo: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, incident.workspaceId)), columns: { name: true, teamId: true, repo: true } });
   const taskIds = [...new Set([...(incident.affectedRefs?.taskIds ?? []).slice(0, 10), ...(incident.linkedFixTaskId ? [incident.linkedFixTaskId] : [])])];
   const taskRows = taskIds.length
     ? await db.select({ id: tasks.id, title: tasks.title, status: tasks.status }).from(tasks).where(inArray(tasks.id, taskIds))

@@ -52,6 +52,7 @@ import {
 } from './task-estimate';
 import { resolveTaskEstimatesState, taskEstimatesDefaultOn, type TaskEstimatesState } from './task-estimate-rollout';
 import { defaultStore, neighbourSessionsWhere } from './task-size-estimate';
+import { sqlWhere } from './db/relational-sql';
 
 // ── Team switch ──────────────────────────────────────────────────────────────
 
@@ -70,7 +71,7 @@ export function readTaskEstimatesSetting(raw: unknown, defaultOn: boolean = task
  */
 export async function loadTaskEstimatesState(teamId: string): Promise<TaskEstimatesState & { error?: true }> {
   try {
-    const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { taskEstimates: true } });
+    const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { taskEstimates: true } });
     return resolveTaskEstimatesState(row?.taskEstimates);
   } catch {
     return { ...resolveTaskEstimatesState(null), enabled: false, error: true };
@@ -121,7 +122,7 @@ export async function loadTaskEstimateK0(): Promise<number> {
   if (k0Cache && Date.now() - k0Cache.at < CONFIG_TTL_MS) return k0Cache.k0;
   let row: Record<string, unknown> | null = null;
   try {
-    const found = await db.query.systemCache.findFirst({ where: eq(systemCache.key, TASK_ESTIMATE_CONFIG_CACHE_KEY) });
+    const found = await db.query.systemCache.findFirst({ where: sqlWhere(eq(systemCache.key, TASK_ESTIMATE_CONFIG_CACHE_KEY)) });
     if (found?.value && typeof found.value === 'object' && !Array.isArray(found.value)) row = found.value as Record<string, unknown>;
   } catch {
     // No row, no table: the fallback is a working value.
@@ -501,7 +502,7 @@ export async function writeTaskEstimate(taskId: string, deps: WriteTaskEstimateD
   const startedAt = Date.now();
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: {
         id: true, workspaceId: true, title: true, description: true, kind: true, complexity: true,
         createdAt: true, pathManifest: true, taskClass: true,

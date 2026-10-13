@@ -15,11 +15,13 @@
  *
  * Both lists unset: nobody is an operator (fails closed).
  */
+import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { users } from '@buildd/core/db/schema';
 import { isPlatformOperator } from '@/lib/platform-operator';
 import { isPlatformAdminAccount } from '@/lib/platform-admin';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface OperatorCandidateAccount {
   id: string;
@@ -31,7 +33,7 @@ export interface OperatorCandidateAccount {
 /** Whether the person with this user id is a platform operator. */
 export async function isPlatformOperatorUserId(userId: string | null | undefined): Promise<boolean> {
   if (!userId) return false;
-  const user = await db.query.users.findFirst({ where: eq(users.id, userId), columns: { email: true } });
+  const user = await db.query.users.findFirst({ where: sqlWhere(eq(users.id, userId)), columns: { email: true } });
   return isPlatformOperator(user);
 }
 
@@ -47,4 +49,10 @@ export async function isPlatformOperatorCaller(caller: {
 }): Promise<boolean> {
   if (caller.account) return isPlatformOperatorAccount(caller.account);
   return isPlatformOperator(caller.user);
+}
+
+/** The refusal for an operator control inside a team route: 403, the same for every team role. */
+export const OPERATOR_ONLY_ERROR = 'buildd manages this setting.';
+export function operatorOnlyResponse(): NextResponse {
+  return NextResponse.json({ error: OPERATOR_ONLY_ERROR, code: 'operator_only' }, { status: 403 });
 }

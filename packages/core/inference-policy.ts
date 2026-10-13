@@ -52,6 +52,7 @@ export type InferenceCapability =
   | 'early_release'
   | 'merge_readiness'
   | 'operator_recovery'
+  | 'spec_duplicate'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -281,6 +282,18 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Operator recovery',
     description: 'When a platform failure is ambiguous, a decision model reads its counts and redacted excerpts (never names) and says whether two problems are one, which allowed repair is next, or whether its priority looks off.',
     costHint: '~$0.0001 per question, capped at $5 a day platform-wide',
+  },
+  // Spec duplicates (apps/web/src/lib/spec-duplicate-decision.ts). Asked when
+  // a spec is created or approved, once per shortlisted approved spec (at
+  // most 5). A duplicate at 0.9 is refused with an override; an overlap only
+  // warns. Built in for every team (owner, 2026-10-13): measured before launch,
+  // cheap, and every refusal carries its own override.
+  spec_duplicate: {
+    id: 'spec_duplicate',
+    kind: 'built_in',
+    label: 'Spec duplicates',
+    description: 'When a spec is created, a decision model compares it with the most similar approved specs. A clear duplicate is refused unless you say it replaces the old spec or why it is different; an overlap is only flagged.',
+    costHint: '~$0.00005 per new spec',
   },
   chat: {
     id: 'chat',

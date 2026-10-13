@@ -1,6 +1,8 @@
 import type { RunProgressReaders } from '@/lib/run-progress-read';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import { resolvePolicy } from '@/lib/merge-policy';
+import MyMaximumSection from '@/app/app/(protected)/settings/models/MyMaximumSection';
+import { isPlatformOperatorCaller, operatorOnlyResponse } from '@/lib/admin/platform-operator-caller';
 /**
  * Composition root: the one place optional modules are wired into core.
  *
@@ -61,6 +63,9 @@ import { answerInChatHref } from '@/lib/chat/answer-link';
 import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
 import type { ClaimContextInjection } from '@/app/api/workers/claim/context-injection';
 import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-routes';
+import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-audit-spec-criteria';
+import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
+import { checkSpecDuplicates, recordDuplicateOverride } from '@/lib/spec-duplicate-decision';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -206,6 +211,20 @@ export const DECISION_HEALTH_NEEDS_YOU = loadDecisionHealthNeedsYou;
 export const DECISION_MODEL_PROBE = probeDecisionModel;
 
 /**
+ * The decisions module's slot for Home (lib/decision-health-needs-you.ts): one
+ * card per team whose decision calls nearly all fail at the provider, for the
+ * people who can change the decision model. Reads the ledgers; no model call.
+ */
+export const DECISION_HEALTH_NEEDS_YOU = loadDecisionHealthNeedsYou;
+
+/**
+ * The decisions module's slot for the team settings route
+ * (packages/core/decision-probe.ts): one test decision through a decision
+ * model's exact route before it is saved.
+ */
+export const DECISION_MODEL_PROBE = probeDecisionModel;
+
+/**
  * The chat module's slot for the task page (lib/chat/answer-link.ts): where an
  * answer link (`?respond=1`) goes when the question folds into the reader's own
  * conversation. Null keeps them on the task page's reply box.
@@ -219,11 +238,56 @@ export const ANSWER_IN_CHAT = answerInChatHref;
 export const PR_ACTION_SHEET = loadPrActionSheet;
 
 /**
+ * The model-tiers module's slot for Settings › You › Keys: a member's own
+ * maximum tier (`member_self`, docs/specs/model-tier-ceilings.md). A client
+ * component; the Keys page renders it.
+ */
+export const MY_MAXIMUM_SECTION = MyMaximumSection;
+
+/**
+ * The platform operator check (lib/admin/platform-operator-caller.ts) for core
+ * team routes that hold an operator-only field: `decisionModel` on PATCH
+ * /api/teams/[id], `overCapAuto` on the model ceilings. One definition; core
+ * reaches it here rather than importing the admin module.
+ */
+export const IS_PLATFORM_OPERATOR_CALLER = isPlatformOperatorCaller;
+export const OPERATOR_ONLY_RESPONSE = operatorOnlyResponse;
+
+/**
  * The visual-qa module's claim slot (app/api/workers/claim/visual-audit-routes.ts):
  * a surface audit's prompt states the required routes completion will check,
- * computed at claim from its current dependencies.
+ * computed at claim from its current dependencies, and the Living Spec
+ * criteria of the tasks it depends on (visual-audit-spec-criteria.ts).
  */
-export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = attachVisualAuditRoutes;
+export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers, claimedTasks) => {
+  await attachVisualAuditRoutes(claimedWorkers, claimedTasks);
+  await attachVisualAuditSpecCriteria(claimedWorkers, claimedTasks);
+};
+
+/**
+ * The visual-qa module's spec verdict slot (lib/visual-audit-spec-verdict.ts):
+ * POST /api/specs/outcomes/[taskId] with `checker: 'visual'` records what a
+ * mission's [surface audit] saw on a spec criterion.
+ */
+export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
+
+/**
+ * The decisions module's spec duplicate slot (lib/spec-duplicate-decision.ts):
+ * createSpecDraft compares a new spec with the approved ones, and records a
+ * person's override of a refusal on the ledger rows that refused it.
+ */
+export const SPEC_DUPLICATE_CHECK = checkSpecDuplicates;
+export const SPEC_DUPLICATE_OVERRIDE = recordDuplicateOverride;
+
+/**
+ * The knowledge module's boot slot for Living Spec neighbours (instrumentation.ts):
+ * installs the spec-corpus similarity query behind core's `neighbourDeps`
+ * (lib/specs/neighbours.ts), so the nearby route can suggest a parent.
+ */
+export const SPEC_SIMILARITY = async (): Promise<void> => {
+  const { installSpecSimilarity } = await import('@/lib/specs/knowledge');
+  installSpecSimilarity();
+};
 
 /**
  * The decisions module's boot slot (instrumentation.ts): installs the evidence

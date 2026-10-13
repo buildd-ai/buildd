@@ -13,6 +13,7 @@ import { INTERACTIVE_CLAIM_USER_KEY, INTERACTIVE_LIVE_STATUSES } from '@/lib/int
 import { priceSessionUsage } from '@buildd/core/model-prices';
 import type { LocalSessionCostBasis, LocalSessionUsage } from '@buildd/shared';
 import { costBasisWrite, type CostBasis } from '@buildd/core/cost-basis';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Presence for a person's interactive coding session, fed by the buildd agent
@@ -126,6 +127,17 @@ export interface LocalSessionStore {
    */
   adopt(fromPresenceId: string, toPresenceId: string, now: Date): Promise<string[]>;
   /**
+   * Mark an open presence as inside a turn (`busy_since`) or not. Written only
+   * when the mark changes (never throttled: a flip is what the reaper reads),
+   * bumping last_seen_at with it. True if written.
+   */
+  setBusy(id: string, busy: boolean, now: Date): Promise<boolean>;
+  /**
+   * Move every worker one presence holds to another (a `/clear` continuing in
+   * the same process). Returns the ids moved.
+   */
+  adopt(fromPresenceId: string, toPresenceId: string, now: Date): Promise<string[]>;
+  /**
    * Keep the bound interactive worker alive, same guard as the MCP touch. True
    * if written. `accountId` null: a person's presence, whose bound worker may
    * belong to any of their teams' accounts (bind checked that).
@@ -147,7 +159,26 @@ export interface LocalSessionStore {
    */
   recordUsage(u: WorkerUsageWrite): Promise<boolean>;
   /** Whether the worker has an instruction queued that no consumer picked up. */
-  workerState(workerId: string): Promise<{ taskId: string | null; pendingInstructions: boolean; live: boolean } | null>;
+  workerState(workerId: string): Promise<{ taskId: string | null; pendingInstructions: boolean; live: boolean; interactive?: boolean } | null>;
+  /**
+   * Withdraw the open ask_human question of a held interactive worker, because
+   * the person answered at the terminal. Same compare-and-swap /respond claims
+   * an answer with (`waitingFor IS NOT NULL`), so exactly one of the two wins.
+   * True if this call withdrew it.
+   */
+  withdrawQuestion(workerId: string, now: Date): Promise<boolean>;
+}
+
+/**
+ * Whether the task's message queue holds an answer to this worker's own
+ * ask_human question. /respond's interactive path queues it there, not in
+ * `pendingInstructions`, and the hook's nudge ("call receive_messages") is
+ * what reaches a session that stopped waiting for it.
+ */
+export function hasUnreadAnswerFor(workerId: string, taskContext: unknown): boolean {
+  const queue = (taskContext as { pendingWorkerMessages?: unknown } | null | undefined)?.pendingWorkerMessages;
+  if (!Array.isArray(queue)) return false;
+  return queue.some(m => m?.type === 'answer' && m?.body?.workerId === workerId);
 }
 
 /** What one held worker's usage report writes. */
@@ -243,15 +274,18 @@ export function hashClientSessionId(clientKind: string, clientSessionId: string)
   return createHash('sha256').update(`${clientKind}:${clientSessionId}`).digest('hex');
 }
 
+type HeldState = { taskId: string | null; pendingInstructions: boolean; askVia?: { workerId: string } | null };
+
 const result = (
   outcome: string,
   presence: PresenceRow | null,
-  state: { taskId: string | null; pendingInstructions: boolean } | null = null,
+  state: HeldState | null = null,
 ): LocalSessionEventResult => ({
   ok: true,
   sessionId: presence?.id ?? null,
   taskId: state?.taskId ?? null,
   pendingInstructions: state?.pendingInstructions ?? false,
+  askVia: state?.askVia ?? null,
   outcome,
 });
 
@@ -309,13 +343,37 @@ export async function handleLocalSessionEvent(
 
   // Across every held worker: a pending instruction on any of them is flagged
   // (naming that task), else the most recently bound live task is reported.
-  const boundState = async (presence: PresenceRow) => {
+  // askVia: the most recently bound live interactive worker, where a question
+  // the session asks belongs (docs/specs/terminal-question-redirect.md).
+  const boundState = async (presence: PresenceRow): Promise<HeldState | null> => {
     if (presence.workerIds.length === 0) return null;
-    const states = (await Promise.all(presence.workerIds.map(id => store.workerState(id)))).filter(s => s !== null);
-    const pending = states.find(s => s.pendingInstructions);
-    if (pending) return pending;
-    const live = states.filter(s => s.live);
-    return live[live.length - 1] ?? null;
+    const held = (await Promise.all(presence.workerIds.map(async id => ({ id, s: await store.workerState(id) }))))
+      .filter((h): h is { id: string; s: NonNullable<typeof h.s> } => h.s !== null);
+    const interactive = held.filter(h => h.s.live && h.s.interactive);
+    const askVia = interactive.length > 0 ? { workerId: interactive[interactive.length - 1].id } : null;
+    const pending = held.find(h => h.s.pendingInstructions);
+    if (pending) return { ...pending.s, askVia };
+    const live = held.filter(h => h.s.live);
+    const last = live[live.length - 1];
+    return last ? { ...last.s, askVia } : (askVia ? { taskId: null, pendingInstructions: false, askVia } : null);
+  };
+
+  // `/clear` keeps the process (and its MCP connection) but gives the
+  // conversation a new session id, whose presence would hold nothing: the
+  // claims would then be kept alive by MCP calls alone. The hook names the
+  // session it continues; its claims move here. Only this owner's own session
+  // of the same client, and only one still open or ended by `clear` (an exit
+  // already released its claims).
+  const adoptCleared = async (presence: PresenceRow, continuesSessionId: string): Promise<PresenceRow> => {
+    const prev = await store.find(owner, event.client, hashClientSessionId(event.client, continuesSessionId));
+    if (!prev || prev.id === presence.id || prev.workerIds.length === 0) return presence;
+    if (prev.endedAt && prev.endReason !== 'clear') return presence;
+    const moved = await store.adopt(prev.id, presence.id, now);
+    if (moved.length === 0) return presence;
+    for (const workerId of moved) {
+      await store.touchBoundWorker(workerId, isLocalSessionPerson(principal) ? null : principal.id, now);
+    }
+    return { ...presence, workerIds: [...presence.workerIds, ...moved.filter(id => !presence.workerIds.includes(id))] };
   };
 
   // `/clear` keeps the process (and its MCP connection) but gives the
@@ -365,7 +423,19 @@ export async function handleLocalSessionEvent(
       for (const workerId of presence.workerIds) {
         await store.touchBoundWorker(workerId, isLocalSessionPerson(principal) ? null : principal.id, now);
       }
-      return result(wrote ? 'touched' : 'coalesced', presence, await boundState(presence));
+      // A person typed into the session: they are at the terminal, so an open
+      // ask_human question of a held worker is answered there, not in buildd.
+      let withdrew = false;
+      if (event.prompted) {
+        for (const workerId of presence.workerIds) {
+          try {
+            if (await store.withdrawQuestion(workerId, now)) withdrew = true;
+          } catch (err) {
+            console.warn('[local-session] question withdrawal failed:', err instanceof Error ? err.message : err);
+          }
+        }
+      }
+      return result(withdrew ? 'question_withdrawn' : wrote ? 'touched' : 'coalesced', presence, await boundState(presence));
     }
 
     case 'bind': {
@@ -446,7 +516,7 @@ export async function resolveWorkspaceForRepo(principal: LocalSessionPrincipal, 
         .filter(id => principal.workspaceIds == null || principal.workspaceIds.includes(id));
     if (reachable.length === 0) return null;
     const ws = await db.query.workspaces.findFirst({
-      where: and(workspaceRepoMatches(repo), inArray(workspaces.id, reachable)),
+      where: sqlWhere(and(workspaceRepoMatches(repo), inArray(workspaces.id, reachable))),
       columns: { id: true },
     });
     return ws && reachable.includes(ws.id) ? ws.id : null;
@@ -472,6 +542,15 @@ export function usageWriteWhere(workerId: string, graceCutoff: Date): SQL {
       inArray(workers.status, [...LIVE_WORKER_STATUSES]),
       gt(workers.completedAt, graceCutoff),
     ),
+  )!;
+}
+
+/** Turn-state write: only an open row whose mark actually changes. */
+export function presenceBusyWhere(id: string, busy: boolean): SQL {
+  return and(
+    eq(localSessions.id, id),
+    isNull(localSessions.endedAt),
+    busy ? isNull(localSessions.busySince) : isNotNull(localSessions.busySince),
   )!;
 }
 
@@ -701,13 +780,25 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
       .returning({ id: workers.id });
     return rows.length > 0;
   },
+  async withdrawQuestion(workerId, now) {
+    const { withdrawQuestionAnsweredInTerminal } = await import('@/lib/terminal-answer');
+    return withdrawQuestionAnsweredInTerminal(workerId, now);
+  },
   async workerState(workerId) {
     const w = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
-      columns: { taskId: true, pendingInstructions: true, status: true },
+      where: sqlWhere(eq(workers.id, workerId)),
+      columns: { taskId: true, pendingInstructions: true, status: true, runner: true },
+      with: { task: { columns: { context: true } } },
     });
     if (!w) return null;
     const live = (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status);
-    return { taskId: w.taskId, pendingInstructions: live && !!w.pendingInstructions?.trim(), live };
+    const waiting = !!w.pendingInstructions?.trim()
+      || hasUnreadAnswerFor(workerId, (w as { task?: { context?: unknown } | null }).task?.context);
+    return {
+      taskId: w.taskId,
+      pendingInstructions: live && waiting,
+      live,
+      interactive: w.runner === INTERACTIVE_WORKER_RUNNER,
+    };
   },
 };

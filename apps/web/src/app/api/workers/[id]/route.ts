@@ -7,6 +7,7 @@ import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/m
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
+import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
@@ -88,6 +89,7 @@ import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_C
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity, type AuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { holdTaskForCredential, resolveCredentialIdentity } from '@/lib/task-recovery-hold';
+import { recordRootCauseForOutcome } from '@/lib/root-cause-record';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
@@ -128,6 +130,7 @@ import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capa
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -210,7 +213,7 @@ function resolveSessionActualModel(
  * so its console log reads as "captured" rather than "silently dropped".
  */
 async function workerConflictResponse(id: string, extra?: Record<string, unknown>) {
-  const current = await db.query.workers.findFirst({ where: eq(workers.id, id) });
+  const current = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)) });
   const actualStatus = current?.status ?? null;
 
   if (!isTerminalWorkerStatus(actualStatus)) {
@@ -460,7 +463,7 @@ function collectSecretValues(label: string, plaintext: string): Array<{ label: s
  */
 async function checkAndExhaustMissionBudget(missionId: string): Promise<boolean> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, title: true, status: true, costBudgetUsd: true },
   });
   if (!mission || mission.status !== 'active') return mission?.status === 'budget_exhausted';
@@ -491,7 +494,7 @@ async function recordCredentialHealthForOutcome(
 ): Promise<void> {
   if (!taskId) return;
   const taskForHealth = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { backend: true, workspaceId: true },
     with: { workspace: { columns: { teamId: true } } },
   });
@@ -518,7 +521,7 @@ async function recordCredentialHealthForOutcome(
           secretId = await getActiveClaudeSecretId(teamId, workspaceId);
         } else {
           const codexRow = await db.query.secrets.findFirst({
-            where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
+            where: sqlWhere(and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential'))),
             columns: { id: true },
           });
           secretId = codexRow?.id ?? null;
@@ -544,7 +547,7 @@ async function recordCredentialHealthForOutcome(
       secretId = await getActiveClaudeSecretId(teamId, workspaceId);
     } else if (backend === 'codex') {
       const codexRow = await db.query.secrets.findFirst({
-        where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
+        where: sqlWhere(and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential'))),
         columns: { id: true },
       });
       secretId = codexRow?.id ?? null;
@@ -639,7 +642,7 @@ export async function GET(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     with: { task: true, workspace: true },
   });
 
@@ -691,7 +694,7 @@ export async function PATCH(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
   });
 
   if (!worker) {
@@ -707,7 +710,7 @@ export async function PATCH(
   // Resolve workspace sensitivity once — used throughout the handler to redact prose.
   const wsForSensitivity = worker.workspaceId
     ? await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, worker.workspaceId),
+        where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
         columns: { dataClass: true, teamId: true, gitConfig: true },
       })
     : null;
@@ -722,13 +725,13 @@ export async function PATCH(
   try {
     if (worker.workspaceId && wsForSensitivity?.teamId) {
       const credRows = await db.query.secrets.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(secretsTable.teamId, wsForSensitivity.teamId),
           or(isNull(secretsTable.workspaceId), eq(secretsTable.workspaceId, worker.workspaceId)),
           worker.accountId
             ? or(isNull(secretsTable.accountId), eq(secretsTable.accountId, worker.accountId))
             : isNull(secretsTable.accountId),
-        ),
+        )),
         columns: { encryptedValue: true, label: true, purpose: true },
       });
       for (const row of credRows) {
@@ -844,7 +847,7 @@ export async function PATCH(
   // For oauth/static connectors it fires on the first 401.
   if (body.event === 'connector_auth_expired' && typeof body.connectorId === 'string') {
     const connectorRow = await db.query.connectors.findFirst({
-      where: eq(connectors.id, body.connectorId),
+      where: sqlWhere(eq(connectors.id, body.connectorId)),
       columns: { id: true, name: true, teamId: true },
     });
     if (connectorRow) {
@@ -866,7 +869,7 @@ export async function PATCH(
   // and broadcast so the workspace can surface a fix hint.
   if (body.event === 'connector_permission_insufficient' && typeof body.connectorId === 'string') {
     const connectorRow = await db.query.connectors.findFirst({
-      where: eq(connectors.id, body.connectorId),
+      where: sqlWhere(eq(connectors.id, body.connectorId)),
       columns: { id: true, name: true, teamId: true },
     });
     if (connectorRow) {
@@ -1287,7 +1290,7 @@ export async function PATCH(
     let stored = briefed;
     if (briefed) {
       const parkTask = worker.taskId
-        ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { title: true, pathManifest: true, missionId: true } })
+        ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, worker.taskId)), columns: { title: true, pathManifest: true, missionId: true } })
         : null;
       const gitConfig = wsForSensitivity?.gitConfig ?? null;
       const parked = await disposeParkedWaitingFor({
@@ -1312,7 +1315,7 @@ export async function PATCH(
         pathManifest: parkTask?.pathManifest ?? null,
         nowMs: Date.now(),
         repairTaskExists: async (repairId) => isUuid(repairId) && !!(await db.query.tasks.findFirst({
-          where: and(eq(tasks.id, repairId), eq(tasks.workspaceId, worker.workspaceId)),
+          where: sqlWhere(and(eq(tasks.id, repairId), eq(tasks.workspaceId, worker.workspaceId))),
           columns: { id: true },
         })),
         deps: { fileRepair: RECOVERABLE_BLOCKER_REPAIR },
@@ -1395,7 +1398,7 @@ export async function PATCH(
     if (!(account as { sessionUserId?: string | null }).sessionUserId && worker.workspaceId) {
       const reportingTask = worker.taskId
         ? await db.query.tasks.findFirst({
-            where: eq(tasks.id, worker.taskId),
+            where: sqlWhere(eq(tasks.id, worker.taskId)),
             columns: { id: true, title: true, description: true, context: true, dependsOn: true, missionId: true, taskClass: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true },
           })
         : null;
@@ -1491,6 +1494,10 @@ export async function PATCH(
   // Set by the pr_required gate when `alreadyShippedIn` names a PR GitHub
   // confirms merged; snapshotted onto tasks.result for audit.
   let alreadyShipped: { prNumber: number; prUrl: string } | null = null;
+  // Set by the pr_required gate when a mission-branch refresh task finds its
+  // integration branch already containing the trunk sha it was dispatched for
+  // (the merge was pushed straight to the branch, so no PR exists or can).
+  let refreshAlreadyLanded: { trunk: string; trunkSha: string; branch: string } | null = null;
   // Lifted out of the outputRequirement block below (which only runs when
   // outputReq !== 'none') so the planning-contract guard can see a PR that was
   // auto-detected from GitHub even on a task with no output requirement.
@@ -1569,7 +1576,7 @@ export async function PATCH(
             // in schema.ts, so dropping one breaks this loop for the length of a
             // build. These four are the whole budget CAS working set.
             const team = await db.query.teams.findFirst({
-              where: eq(teams.id, account.teamId),
+              where: sqlWhere(eq(teams.id, account.teamId)),
               columns: {
                 monthlyBudgetUsd: true,
                 monthlyCostUsd: true,
@@ -1762,11 +1769,11 @@ export async function PATCH(
         )
       : eq(artifacts.workerId, id);
     const rows = await db.query.artifacts.findMany({
-      where: strict ? and(where,
+      where: sqlWhere(strict ? and(where,
         sql`COALESCE(${artifacts.metadata}->>'salvaged', 'false') <> 'true'`,
         sql`COALESCE(${artifacts.key}, '') NOT LIKE 'cloud-run-report:%'`,
         or(not(inArray(artifacts.type, ['screenshot', 'diff', 'file', 'data', 'link', 'recording', 'calendar_event'])), isNotNull(artifacts.key)),
-      ) : where,
+      ) : where),
       limit: 1,
     });
     return rows.length > 0;
@@ -1796,10 +1803,10 @@ export async function PATCH(
   async function hasOpenPrOnWorkerBranch(): Promise<boolean> {
     if (!workerBranch) return false;
     try {
-      const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workerWorkspaceId) });
+      const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workerWorkspaceId)) });
       if (!ws?.githubRepoId) return false;
       const repo = await db.query.githubRepos.findFirst({
-        where: eq(githubRepos.id, ws.githubRepoId),
+        where: sqlWhere(eq(githubRepos.id, ws.githubRepoId)),
         with: { installation: true },
       }) as { fullName: string; installation: { installationId: number } | null } | undefined;
       if (!repo?.installation) return false;
@@ -1997,11 +2004,11 @@ export async function PATCH(
       let repoWithInstallation: { fullName: string; installation: { installationId: number } } | null = null;
       if (!hasPR && (worker.branch || outputReq === 'pr_required')) {
         const workspace = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, worker.workspaceId),
+          where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
         });
         if (workspace?.githubRepoId) {
           const repo = await db.query.githubRepos.findFirst({
-            where: eq(githubRepos.id, workspace.githubRepoId),
+            where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
             with: { installation: true },
           });
           if (repo?.installation) {
@@ -2204,6 +2211,25 @@ export async function PATCH(
         }
       }
 
+      // pr_required, refresh already landed: a mission-branch refresh whose
+      // merge reached the integration branch without a PR (pushed directly, so
+      // the worker branch equals the mission branch and no PR can be opened).
+      // Accepted on the same evidence buildd checks after a refresh merges:
+      // the dispatched trunk sha is an ancestor of the integration branch.
+      if (outputReq === 'pr_required' && !hasPR && !alreadyShipped && repoWithInstallation) {
+        const refresh = integrationRefreshOf(terminalTaskRow[0]?.context);
+        const refreshBranch = (terminalTaskRow[0]?.context as Record<string, unknown> | null | undefined)?.baseBranch;
+        if (refresh?.trunk && refresh.trunkSha && typeof refreshBranch === 'string' && refreshBranch) {
+          const contained = await isAncestor(
+            repoWithInstallation.installation.installationId,
+            repoWithInstallation.fullName,
+            refresh.trunkSha,
+            encodeRef(refreshBranch),
+          );
+          if (contained) refreshAlreadyLanded = { trunk: refresh.trunk, trunkSha: refresh.trunkSha, branch: refreshBranch };
+        }
+      }
+
       // Standing ask from the outputRequirement-rejection bug: a gate-rejected
       // completion used to discard the agent's summary/structuredOutput with
       // zero persistence — a 60-turn run's only record was a 400 in the
@@ -2311,7 +2337,7 @@ export async function PATCH(
         filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
         dirtyWorktree: effectiveDirtyWorktree,
         observedTouches: sessionObservedTouches,
-        hasPR: hasPR || !!alreadyShipped, mergedAt: worker.mergedAt, discardEdits,
+        hasPR: hasPR || !!alreadyShipped || !!refreshAlreadyLanded, mergedAt: worker.mergedAt, discardEdits,
         summary: body.summary, summarySource: body.summarySource,
       }) && !(await hasDeliverableArtifact(true))) {
         const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
@@ -2398,10 +2424,10 @@ export async function PATCH(
         // need the same explicit discard the `auto` arm asks for.
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
         const strandsOwnEdits = (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
-        if (!alreadyShipped || strandsOwnEdits) {
+        if ((!alreadyShipped && !refreshAlreadyLanded) || strandsOwnEdits) {
           const frictionSignature = await persistRejectedCompletionPayload('pr_required');
-          const error = alreadyShipped
-            ? `PR #${alreadyShipped.prNumber} is merged, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+          const error = alreadyShipped || refreshAlreadyLanded
+            ? `${alreadyShipped ? `PR #${alreadyShipped.prNumber} is merged` : `${refreshAlreadyLanded!.branch} already contains ${refreshAlreadyLanded!.trunk}`}, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
             : alreadyShippedRefusal
               ? `This task requires a pull request before completing. ${alreadyShippedRefusal}`
               : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
@@ -2420,7 +2446,9 @@ export async function PATCH(
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'accepted',
-          reason: 'completion accepted under pr_required: work already shipped in a merged PR',
+          reason: refreshAlreadyLanded
+            ? 'completion accepted under pr_required: mission branch already contains the refresh trunk sha'
+            : 'completion accepted under pr_required: work already shipped in a merged PR',
           workspaceId: worker.workspaceId,
           missionId: taskMissionId,
           taskId: worker.taskId,
@@ -2428,7 +2456,8 @@ export async function PATCH(
           callerOrigin: 'worker',
           detail: {
             outputRequirement: 'pr_required',
-            alreadyShippedIn: alreadyShipped.prNumber,
+            ...(alreadyShipped ? { alreadyShippedIn: alreadyShipped.prNumber } : {}),
+            ...(refreshAlreadyLanded ? { refreshAlreadyLanded } : {}),
             commits: effectiveCommits,
             dirtyWorktree: effectiveDirtyWorktree,
             ...(discardReason ? { discardEdits: discardReason.slice(0, 500) } : {}),
@@ -2879,7 +2908,7 @@ export async function PATCH(
     // entirely for cancelled tasks (WHERE clause alone prevents the DB write, but
     // we want to avoid the call when we already know the task is gone).
     const deferralTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, worker.taskId),
+      where: sqlWhere(eq(tasks.id, worker.taskId)),
       columns: { status: true },
     });
     if (deferralTask?.status !== 'cancelled') {
@@ -2932,7 +2961,7 @@ export async function PATCH(
 
     // Fetch the task to get tenant context and workspace teamId
     const taskForBudget = await db.query.tasks.findFirst({
-      where: eq(tasks.id, worker.taskId),
+      where: sqlWhere(eq(tasks.id, worker.taskId)),
       columns: { context: true, workspaceId: true, title: true, backend: true, startAt: true, status: true },
       with: { workspace: { columns: { teamId: true, name: true } } },
     });
@@ -3026,8 +3055,8 @@ export async function PATCH(
             seatId: account.seatId ?? null,
           });
           const prior = await db.query.oauthBudgetEpisodes.findFirst({
-            where: inArray(oauthBudgetEpisodes.accountId, accountIds),
-            orderBy: (t, { desc }) => [desc(t.exhaustedAt)],
+            where: sqlWhere(inArray(oauthBudgetEpisodes.accountId, accountIds)),
+            orderBy: sqlOrderByFn((t, { desc }) => [desc(t.exhaustedAt)]),
             columns: { resetsAt: true },
           });
           // Same measurement the claim route paces against: window start inferred
@@ -3194,7 +3223,7 @@ export async function PATCH(
   let sandboxGapMissionExhausted = false; // lifted so the auto-retry block can read it
   if (isSandboxMountGap && worker.taskId) {
     const gapTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, worker.taskId),
+      where: sqlWhere(eq(tasks.id, worker.taskId)),
       columns: { status: true, missionId: true },
     });
 
@@ -3203,7 +3232,7 @@ export async function PATCH(
     const gapMissionId = (gapTask as any)?.missionId as string | null | undefined;
     if (gapMissionId) {
       const missionRow = await db.query.missions.findFirst({
-        where: eq(missions.id, gapMissionId),
+        where: sqlWhere(eq(missions.id, gapMissionId)),
         columns: { status: true },
       });
       sandboxGapMissionExhausted = missionRow?.status === 'budget_exhausted';
@@ -3240,7 +3269,7 @@ export async function PATCH(
       if (authSeverity === 'none') {
         try {
           const traces = await db.query.workerErrorTraces.findMany({
-            where: eq(workerErrorTraces.workerId, worker.id),
+            where: sqlWhere(eq(workerErrorTraces.workerId, worker.id)),
             columns: { pattern: true, excerpt: true },
           });
           for (const trace of traces) {
@@ -3257,7 +3286,7 @@ export async function PATCH(
       if (authSeverity !== 'none' && updates.exitCause === 'code_failure') updates.exitCause = 'auth_failure';
       if (authSeverity !== 'none') {
         const authTask = await db.query.tasks.findFirst({
-          where: eq(tasks.id, worker.taskId),
+          where: sqlWhere(eq(tasks.id, worker.taskId)),
           columns: { backend: true, workspaceId: true, context: true, status: true },
           with: { workspace: { columns: { teamId: true } } },
         });
@@ -3430,7 +3459,7 @@ export async function PATCH(
       const INFRA_BACKOFF_MINUTES_PATCH = [5, 15, 30] as const;
       if (status === 'failed') {
         const taskForRetry = await db.query.tasks.findFirst({
-          where: eq(tasks.id, worker.taskId),
+          where: sqlWhere(eq(tasks.id, worker.taskId)),
           columns: { missionId: true, context: true, status: true, roleSlug: true },
         });
         taskCtxForRetry = (taskForRetry?.context || {}) as Record<string, unknown>;
@@ -3992,7 +4021,7 @@ export async function PATCH(
 
         // Re-read worker to pick up auto-detected PR fields
         const freshWorker = await db.query.workers.findFirst({
-          where: eq(workers.id, id),
+          where: sqlWhere(eq(workers.id, id)),
         });
 
         taskUpdate.result = {
@@ -4309,13 +4338,13 @@ export async function PATCH(
 
         // Resolve GitHub installation for API calls
         const wsForShutdown = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, worker.workspaceId),
+          where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
           columns: { githubRepoId: true },
         });
         if (!wsForShutdown?.githubRepoId) return;
 
         const repoForShutdown = await db.query.githubRepos.findFirst({
-          where: eq(githubRepos.id, wsForShutdown.githubRepoId),
+          where: sqlWhere(eq(githubRepos.id, wsForShutdown.githubRepoId)),
           with: { installation: true },
         });
         if (!repoForShutdown?.installation) return;
@@ -4445,7 +4474,7 @@ export async function PATCH(
       // Notify on task completion/failure — routed to the OWNING team's channel.
       await runStep('notify', async () => {
         const taskRecord = await db.query.tasks.findFirst({
-          where: eq(tasks.id, taskId),
+          where: sqlWhere(eq(tasks.id, taskId)),
           // startAt feeds the auto-retry wake below.
           columns: {
             id: true, title: true, description: true, workspaceId: true, mode: true, priority: true,
@@ -4503,6 +4532,9 @@ export async function PATCH(
 
       // Credential health tracking: update health state on auth failure or success.
       await runStep('credential-health', () => recordCredentialHealthForOutcome(taskId, status, error));
+      // Root causes: an auth failure records its runner's cause; a completed run
+      // is the capability check that clears causes on its runner and workspace.
+      await runStep('root-cause', () => recordRootCauseForOutcome({ taskId, accountId: worker.accountId, status, error }));
     }
   }
 
@@ -4767,7 +4799,7 @@ export async function PATCH(
   // Detect heartbeat-ok suppression: silent completion for heartbeat tasks with status "ok"
   const taskContext = worker.taskId
     ? (await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { context: true },
       }))?.context as Record<string, unknown> | null
     : null;
@@ -4857,7 +4889,7 @@ export async function PATCH(
       : newlyObservedPaths;
   if (workingSetDelta && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     const leaseTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, worker.taskId),
+      where: sqlWhere(eq(tasks.id, worker.taskId)),
       columns: { category: true, context: true },
     }).catch(() => null);
     const applied = await applyWorkingSetSync({
@@ -4871,7 +4903,7 @@ export async function PATCH(
   if (offeredPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
       const leaseTask = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { category: true, context: true },
       });
       const { inserted: leased, blocked } = isReadOnlyReview(leaseTask?.category, leaseTask?.context)
@@ -4889,7 +4921,7 @@ export async function PATCH(
       if (blocked.length > 0) {
         const holderIds = [...new Set(blocked.map(b => b.blockingTaskId))];
         const holders = await db.query.tasks.findMany({
-          where: inArray(tasks.id, holderIds),
+          where: sqlWhere(inArray(tasks.id, holderIds)),
           columns: { id: true, title: true },
         }).catch(() => [] as Array<{ id: string; title: string | null }>);
         const titles = new Map((holders ?? []).map(h => [h.id, h.title ?? null]));
@@ -4951,14 +4983,14 @@ export async function PATCH(
     try {
       const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const siblings = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.workspaceId, worker.workspaceId),
           not(eq(workers.id, id)),
           not(inArray(workers.status, TERMINAL_WORKER_STATUSES)),
           isNull(workers.mergedAt),
           gt(workers.updatedAt, twentyFourHoursAgo),
           not(isNull(workers.observedTouches)),
-        ),
+        )),
         columns: {
           id: true,
           taskId: true,
@@ -5178,7 +5210,7 @@ export async function PATCH(
   if ((status === 'completed' || status === 'failed') && worker.taskId && !isHeartbeatOk && !shouldAutoRetry && !isBudgetReset) {
     try {
       const taskForNotify = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         with: { workspace: true },
       });
 
@@ -5253,7 +5285,7 @@ export async function PATCH(
   if (instructionConsumer && status !== 'completed' && status !== 'failed' && worker.taskId) {
     try {
       const taskForNotes = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { missionId: true },
       });
       // Task-scoped notes (a task with no mission) are addressed by taskId. The
@@ -5268,12 +5300,12 @@ export async function PATCH(
 
       // Find this worker's answered questions
       const workerQuestions = await db.query.missionNotes.findMany({
-        where: and(
+        where: sqlWhere(and(
           noteScope,
           eq(missionNotes.workerId, id),
           eq(missionNotes.type, 'question'),
           eq(missionNotes.status, 'answered'),
-        ),
+        )),
         columns: { id: true, title: true },
       });
 
@@ -5281,14 +5313,14 @@ export async function PATCH(
         // Fetch the undelivered replies to those questions
         const questionIds = workerQuestions.map(q => q.id);
         const replies = await db.query.missionNotes.findMany({
-          where: and(
+          where: sqlWhere(and(
             noteScope,
             eq(missionNotes.type, 'reply'),
             eq(missionNotes.authorType, 'user'),
             inArray(missionNotes.replyTo, questionIds),
             undeliveredToWorker,
-          ),
-          orderBy: [desc(missionNotes.createdAt)],
+          )),
+          orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
         });
 
         if (replies.length > 0) {
@@ -5303,13 +5335,13 @@ export async function PATCH(
 
       // Also deliver mission-wide guidance notes this worker has not seen
       const guidance = await db.query.missionNotes.findMany({
-        where: and(
+        where: sqlWhere(and(
           noteScope,
           eq(missionNotes.type, 'guidance'),
           eq(missionNotes.status, 'open'),
           undeliveredToWorker,
-        ),
-        orderBy: [desc(missionNotes.createdAt)],
+        )),
+        orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
         limit: 5,
       });
 
@@ -5398,7 +5430,7 @@ export async function PATCH(
 async function deliverReviewCallbackIfRequested(reviewerTaskId: string, workspaceId: string): Promise<void> {
   try {
     const reviewerTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, reviewerTaskId),
+      where: sqlWhere(eq(tasks.id, reviewerTaskId)),
       columns: { category: true, context: true },
     });
     const ctx = (reviewerTask?.context ?? {}) as Record<string, unknown>;
@@ -5433,7 +5465,7 @@ async function handleReviewerOutcomeIfNeeded(
   structuredOutput: unknown,
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, reviewerTaskId),
+    where: sqlWhere(eq(tasks.id, reviewerTaskId)),
     columns: { id: true, workspaceId: true, category: true, context: true, parentTaskId: true, missionId: true, title: true, createdAt: true, deliveryId: true },
   });
 
@@ -5491,14 +5523,14 @@ async function handleReviewerOutcomeIfNeeded(
   );
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     // releaseConfig is read for prodBranch — one of the trunk branches a model
     // verdict may never merge into (see protectedBaseBranches).
     columns: { id: true, gitConfig: true, releaseConfig: true },
   });
   const missionForPolicy = missionId
     ? await db.query.missions.findFirst({
-        where: eq(missions.id, missionId),
+        where: sqlWhere(eq(missions.id, missionId)),
         columns: WORKERS_POLICY_MISSION_COLUMNS,
       })
     : null;
@@ -5508,7 +5540,7 @@ async function handleReviewerOutcomeIfNeeded(
   // the mission's review gate — the single PR from that branch into trunk is —
   // so the tier drops here and applies there instead.
   const gatedWorker = await db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    where: sqlWhere(and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber))),
     // `prBaseRef: null` means "unknown", which resolvePolicy treats as
     // not-the-integration-branch — i.e. it degrades to today's gate.
     columns: { id: true, taskId: true, prBaseRef: true },
@@ -5537,6 +5569,12 @@ async function handleReviewerOutcomeIfNeeded(
         `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`,
       );
       if (Array.isArray(fetched)) currentFiles = fetched;
+      // An integration-refresh PR is judged on its trunk delta here too, as
+      // pre-flight does (reviewer-subscribers.ts): its own diff against the
+      // mission branch shows a renumbered mission migration as deleted.
+      const { refreshDeltaBase } = await import('@/lib/integration-refresh');
+      const original = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, originalTaskId)), columns: { context: true } });
+      const deltaBase = refreshDeltaBase(original?.context, workspace?.gitConfig ?? null);
       const { inspectPullRequestMigrations } = await import('@/lib/migration-inspector');
       migrationSafety = await inspectPullRequestMigrations({
         installationId,
@@ -5544,6 +5582,7 @@ async function handleReviewerOutcomeIfNeeded(
         prNumber,
         headSha,
         files: currentFiles as never,
+        ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
     } catch (err) {
       // Leave currentFiles empty: the helper treats an unreadable file list as
@@ -5857,10 +5896,10 @@ async function handleReviewerOutcomeIfNeeded(
 
       // Find original worker to get its id (needed for tryAutoMergeWorkerPr signature)
       const originalWorker = await db.query.workers.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.workspaceId, workspaceId),
           eq(workers.prNumber, prNumber),
-        ),
+        )),
         columns: { id: true, taskId: true },
       });
 
@@ -5997,7 +6036,7 @@ async function handleReviewerOutcomeIfNeeded(
 
       // Fetch original task data for the retry
       const originalTask = await db.query.tasks.findFirst({
-        where: eq(tasks.id, originalTaskId),
+        where: sqlWhere(eq(tasks.id, originalTaskId)),
         columns: {
           id: true, title: true, description: true, missionId: true, pathManifest: true,
           // The attempt's identity (see attemptIdentityFrom): read in the same
@@ -6061,10 +6100,10 @@ async function handleReviewerOutcomeIfNeeded(
 
       // Fetch the prior attempt's worker to get lastCommitSha for retry continuity
       const priorWorker = await db.query.workers.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.workspaceId, workspaceId),
           eq(workers.prNumber, prNumber),
-        ),
+        )),
         columns: { lastCommitSha: true },
       });
       const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
@@ -6129,7 +6168,7 @@ async function handleReviewerOutcomeIfNeeded(
       }
 
       const workspace = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, workspaceId),
+        where: sqlWhere(eq(workspaces.id, workspaceId)),
       });
       // A newer round or an approve can land between the check above and the
       // insert, and the approve's own reconcile may have found nothing to
@@ -6139,7 +6178,7 @@ async function handleReviewerOutcomeIfNeeded(
       if (await guardDispatchedTask(fixProposal, retryTask.id, verdictEvent)) return;
       // Approval may have cancelled the row while we read the newest round.
       const liveRetry = await db.query.tasks.findFirst({
-        where: eq(tasks.id, retryTask.id), columns: { status: true },
+        where: sqlWhere(eq(tasks.id, retryTask.id)), columns: { status: true },
       });
       if (liveRetry?.status !== 'pending') return;
 

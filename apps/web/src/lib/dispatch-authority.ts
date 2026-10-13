@@ -45,6 +45,7 @@ import { clearDue, markDue, reseedDue } from '@/lib/redis';
 import { SCHEDULED_DISPATCH_MAX_AHEAD_MS, buildTaskPayload, type DispatchTask, type DispatchWorkspace } from '@/lib/task-dispatch-delivery';
 import { dispatchTransportConfig, publishPendingDispatches } from '@/lib/dispatch-transport';
 import { ADAPTER_CHAINS, offerScheduledNotice, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The Redis due-queue (lib/cron-due-queue.ts) the dispatch-drain tick gates on. */
 export const DISPATCH_DUE_QUEUE = 'dispatch';
@@ -259,7 +260,7 @@ export async function drainDispatchOutbox(opts: { limit?: number } = {}): Promis
 /** The task and workspace a delivery decision reads. Shared with the Dispatch callbacks (lib/dispatch-resolve.ts). */
 export async function loadForDelivery(taskId: string): Promise<{ task: DispatchContext['task']; workspace: DispatchWorkspace } | null> {
   const row = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: {
       id: true, title: true, description: true, workspaceId: true, mode: true, priority: true,
       missionId: true, backend: true, roleSlug: true, runnerPreference: true, status: true, startAt: true,

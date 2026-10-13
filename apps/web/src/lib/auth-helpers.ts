@@ -5,6 +5,7 @@ import { db } from '@buildd/core/db';
 import { users } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type CurrentUser = {
   id: string;
@@ -34,7 +35,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
     // If DEV_USER_EMAIL is set, authenticate as that real user from the database
     if (process.env.DEV_USER_EMAIL) {
       const realUser = await db.query.users.findFirst({
-        where: eq(users.email, process.env.DEV_USER_EMAIL),
+        where: sqlWhere(eq(users.email, process.env.DEV_USER_EMAIL)),
       });
       if (realUser) {
         return {
@@ -69,7 +70,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   if (!session?.user?.id) return null;
 
   const user = await db.query.users.findFirst({
-    where: eq(users.id, session.user.id),
+    where: sqlWhere(eq(users.id, session.user.id)),
   });
 
   if (!user) return null;

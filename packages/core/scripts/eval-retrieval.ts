@@ -34,6 +34,7 @@ import path from 'path';
 
 const SPEC_SYNC_NS_DEFAULT = '471effe1-4668-4cc9-9fa3-e20a56769deb';
 import { ndcg, reciprocalRank, recallAtK, mean } from './eval-metrics';
+import { sqlWhere } from '../db/relational-sql';
 
 const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname);
 const DEFAULT_OUTPUT = path.join(SCRIPT_DIR, 'eval', 'baseline-results.json');
@@ -183,7 +184,7 @@ async function main() {
 
   // Resolve team ID for memory corpus
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   const teamId = ws?.teamId ?? null;

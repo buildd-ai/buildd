@@ -8,6 +8,7 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import { admitsToNeedsYou } from '@buildd/core/needs-you';
 import type { WaitingFor } from '@buildd/shared';
 import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -24,7 +25,7 @@ export async function GET() {
 
     // Find workers in waiting_input state for user's workspaces
     const waitingWorkers = await db.query.workers.findMany({
-      where: eq(workers.status, 'waiting_input'),
+      where: sqlWhere(eq(workers.status, 'waiting_input')),
       columns: { taskId: true, waitingFor: true, workspaceId: true },
     });
 
@@ -51,7 +52,7 @@ export async function GET() {
       return NextResponse.json({ tasks: [] });
     }
     const waitingTasks = await db.query.tasks.findMany({
-      where: inArray(tasks.id, taskIds),
+      where: sqlWhere(inArray(tasks.id, taskIds)),
       columns: { id: true, title: true, status: true, workspaceId: true, missionId: true },
     });
 

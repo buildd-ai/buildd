@@ -111,6 +111,19 @@ mock.module('@/lib/admin/data', () => ({
     { id: OTHER_TEAM, name: `${SECRET} team`, workspaces: [{ id: OTHER_WS, name: `${SECRET} repo` }] },
   ],
   loadExperimentReadout: async (row: any) => ({ policyVersion: row.policyVersion, readout: null, health: [] }),
+  // Estimates: the real report builder runs over these rows; the other team's area label is a repo path it wrote.
+  loadEstimates: async (o: any) => ({
+    rows: o.workspaceIds.flatMap((ws: string) => Array.from({ length: 12 }, (_, i) => ({
+      taskId: `task-${ws}-${i}`, teamId: teamOf(ws), workspaceId: ws, estimatorVersion: 'blend-v1', createdAt: new Date('2026-01-01T00:00:00Z'),
+      p50Minutes: 10, p80Minutes: 20, p50Tokens: 1, p80Tokens: 2, expectedRepairs: 0,
+      explanation: { sources: [{ source: 'clusters', n: 3, weight: 1 }], clusterLabel: text(ws, 'area') },
+      kind: 'engineering', complexity: null, taskClass: 'work', taskStatus: 'completed',
+      actuals: { minutes: 12, tokens: 1, repairs: 0 }, priorCompleted: 5,
+    }))),
+    truncated: false, rowLimit: 5000,
+    counts: { workTasks: 24, estimatedByVersion: { 'blend-v1': 24 }, written: 24 },
+    workspaceNames: Object.fromEntries(o.workspaceIds.map((ws: string) => [ws, text(ws, 'repo')])),
+  }),
 }));
 
 const route = (p: string) => import(p);
@@ -140,6 +153,7 @@ const cases: { name: string; call: () => Promise<Response>; own: string | null }
   { name: 'GET chat-retros', call: async () => (await route('./chat-retros/route')).GET(req('chat-retros')), own: 'Mine team' },
   { name: 'GET teams', call: async () => (await route('./teams/route')).GET(req('teams')), own: 'Mine repo' },
   { name: 'GET experiments', call: async () => (await route('./experiments/route')).GET(req('experiments')), own: 'Mine hypothesis' },
+  { name: 'GET estimates', call: async () => (await route('./estimates/route')).GET(req('estimates')), own: 'Mine area' },
   {
     name: 'GET experiments/[id]/readout (other team)',
     call: async () => (await route('./experiments/[id]/readout/route')).GET(req(`experiments/${OTHER_EXP}/readout`), idCtx(OTHER_EXP)),
@@ -204,6 +218,17 @@ describe('what the other team still contributes', () => {
     const gates = await (await (await route('./gates/route')).GET(req('gates'))).json();
     expect(gates.gates.gates[0].count).toBe(2);
     expect(gates.gates.gates[0].exampleTaskId).toBe(`task-${OWN_WS}`);
+  });
+
+  it('counts its estimates in every number, names it by pseudonym and keeps its area labels out', async () => {
+    const body = await (await (await route('./estimates/route')).GET(req('estimates'))).json();
+    const live = body.live[0];
+    expect(live.overall.n).toBe(24);
+    expect(live.byCluster.map((g: any) => g.key)).toEqual(['Mine area']);
+    expect(live.byTeam.find((g: any) => g.key === OTHER_TEAM)).toMatchObject({ own: false, name: expect.stringMatching(/^Team [0-9a-f]{6}$/) });
+    expect(live.byWorkspace.find((g: any) => g.key === OWN_WS)).toMatchObject({ own: true, name: 'Mine repo' });
+    expect(live.byWorkspace.find((g: any) => g.key === OTHER_WS)).toMatchObject({ own: false, name: expect.stringMatching(/^Workspace [0-9a-f]{6}$/) });
+    expect(body.detailLimitedToOwnTeams).toBe(true);
   });
 
   it('pseudonymizes the team on chat retros', async () => {

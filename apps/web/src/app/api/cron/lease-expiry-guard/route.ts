@@ -36,6 +36,7 @@ import { gateOnDueQueue } from '@/lib/cron-due-queue';
 import { reseedDue } from '@/lib/redis';
 import { LEASE_DUE_QUEUE } from '@/lib/lease-due-queue';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
 
@@ -54,7 +55,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
   // Find all leases whose TTL has lapsed — the runner stopped heartbeating.
   const expiredLeases = await db.query.credentialLeases.findMany({
-    where: lt(credentialLeases.expiresAt, sql`NOW()`),
+    where: sqlWhere(lt(credentialLeases.expiresAt, sql`NOW()`)),
     with: {
       credential: {
         columns: { id: true, teamId: true, purpose: true },

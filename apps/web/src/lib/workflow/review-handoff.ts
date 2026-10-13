@@ -22,11 +22,12 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 import { conformanceManifest } from '@/lib/path-declaration';
 import { reviewerTitle } from '@/lib/task-title';
 import type { LegacyFirstReview } from './legacy-handoff';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const legacyFirstReview: LegacyFirstReview = async (p) => {
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, p.workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, p.workspaceId)) });
   const owner = await db.query.tasks.findFirst({
-    where: eq(tasks.id, p.ownerTaskId),
+    where: sqlWhere(eq(tasks.id, p.ownerTaskId)),
     columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
   });
   if (!workspace || !owner) return { outcome: 'skipped:missing_context' };
@@ -44,7 +45,7 @@ export const legacyFirstReview: LegacyFirstReview = async (p) => {
   }
 
   const mission = owner.missionId
-    ? await db.query.missions.findFirst({ where: eq(missions.id, owner.missionId), columns: RESOLVE_POLICY_MISSION_COLUMNS })
+    ? await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, owner.missionId)), columns: RESOLVE_POLICY_MISSION_COLUMNS })
     : null;
   const policy = resolvePolicy(workspace as never, mission as never, null, { baseRef: p.baseRef });
   const roles = await listWorkspaceRoles(workspace.id, workspace.teamId);
@@ -58,9 +59,9 @@ export const legacyFirstReview: LegacyFirstReview = async (p) => {
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.taskId, owner.id),
+    where: sqlWhere(eq(workers.taskId, owner.id)),
     columns: { branch: true },
-    orderBy: [desc(workers.createdAt)],
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
   const ctx: { iteration?: unknown; maxIterations?: unknown } = owner.context && typeof owner.context === 'object' ? owner.context : {};
   const { createReviewerTask } = await import('@/lib/reviewer');

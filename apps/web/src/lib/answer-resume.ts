@@ -25,6 +25,7 @@ import {
   isTerminalWorkerStatus,
   LIVE_WORKER_STATUSES,
 } from '@buildd/shared';
+import { FILING_TARGETS_CONTEXT_KEY, inheritTaskDelegation, readFilingTargets } from '@buildd/core/token-delegation';
 
 /**
  * How stale `workers.updatedAt` may be and still mean "the runner that holds
@@ -81,6 +82,8 @@ export const ANSWER_PATH_REASONS = {
     'the interactive session that asked has ended or stopped checking in, so nobody was there to receive the answer',
   interactive_session_stopped_polling:
     'the interactive session that asked stopped waiting for the answer (its terminal likely closed), so nobody was there to receive it',
+  interactive_answer_not_read:
+    'the answer was sent back to the interactive session, but the session went quiet without reading it',
 } as const;
 
 /**
@@ -98,6 +101,20 @@ export const ANSWER_PATH_REASONS = {
  * hours.
  */
 export const INTERACTIVE_SESSION_POLL_STALE_MS = 5 * 60 * 1000;
+
+/**
+ * How long an answer sent back to an interactive session may sit unread while
+ * the session shows no sign of life, before it goes to a follow-up task.
+ *
+ * Measured from the worker's last activity (`updatedAt`: the answer itself, an
+ * update_progress, a plugin presence touch), not from the answer alone, so a
+ * session that is busy and checking in is never overtaken. A session waiting
+ * correctly reads the answer within seconds (waitCommand exits, await_answer
+ * reads it). 15 minutes is 3x the poll staleness above and over the ~3 minute
+ * update_progress cadence: only a session that died, or ended its turn without
+ * waiting, is still quiet by then.
+ */
+export const INTERACTIVE_ANSWER_READ_DEADLINE_MS = 15 * 60 * 1000;
 
 export type AnswerPathReason = keyof typeof ANSWER_PATH_REASONS;
 
@@ -518,6 +535,9 @@ export function buildContinuationDescription(opts: {
     '',
     '## User Response',
     opts.answer,
+    '',
+    '## Already Answered',
+    'The question above was asked by the run this task continues, and a person answered it. Act on that answer; do not ask it again. If you hit the same need again (e.g. access you were told you have), check whether the answer or the task\'s grants already cover it; if something is still missing, ask for that specific thing (request_capability for access), never the same question.',
   ].join('\n');
 }
 
@@ -542,6 +562,8 @@ export interface ContinuationParentTask {
   backend?: 'claude' | 'codex' | null;
   runnerPreference?: 'any' | 'user' | 'service' | 'action' | null;
   context?: unknown;
+  /** The task's own cross-workspace grant (packages/core/token-delegation.ts). */
+  delegation?: unknown;
 }
 
 /**
@@ -598,6 +620,11 @@ export function buildContinuationTaskValues(opts: {
 }) {
   const parentContext = (opts.task?.context as Record<string, unknown>) || {};
   const currentIteration = (parentContext.iteration as number) || 1;
+  // The same work keeps the same cross-workspace grant a person gave it, and
+  // the same declared need; without them the continuation would hit the wall
+  // its parent was granted past, or start without the claim pre-flight.
+  const delegation = opts.task?.id ? inheritTaskDelegation({ id: opts.task.id, delegation: opts.task.delegation }) : null;
+  const filingTargets = readFilingTargets(parentContext);
 
   return {
     workspaceId: opts.workspaceId,
@@ -624,6 +651,7 @@ export function buildContinuationTaskValues(opts: {
     // it goes where the parent was allowed to go (claim routing and webhook
     // dispatch both read it).
     runnerPreference: opts.task?.runnerPreference ?? undefined,
+    ...(delegation ? { delegation } : {}),
     context: {
       // Honored by the runner's worktree setup — but ONLY when `branch` already
       // exists on the remote, i.e. the original worker had already pushed. If
@@ -650,6 +678,7 @@ export function buildContinuationTaskValues(opts: {
       // continuation itself so a reader of the cold task sees it without
       // reconstructing anything.
       answerDelivery: opts.delivery,
+      ...(filingTargets.length ? { [FILING_TARGETS_CONTEXT_KEY]: filingTargets } : {}),
     },
   };
 }

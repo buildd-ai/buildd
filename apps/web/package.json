@@ -1,6 +1,6 @@
 {
   "name": "@buildd/web",
-  "version": "0.325.0",
+  "version": "0.335.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
@@ -28,6 +28,7 @@
     "@buildd/core": "workspace:*",
     "@buildd/dispatch-contract": "workspace:*",
     "@buildd/shared": "workspace:*",
+    "@buildd/spec-contract": "workspace:*",
     "@builddai/ai-kit": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@neondatabase/serverless": "^1.0.0",
@@ -40,8 +41,9 @@
     "@vercel/otel": "^2.1.1",
     "ai": "^7.0.116",
     "croner": "^10.0.1",
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "1.0.0-rc.4",
     "jose": "^6.2.0",
+    "mermaid": "12.1.0",
     "next": "^16.3.6",
     "next-auth": "^5.0.0-beta.30",
     "pusher": "^5.2.0",
@@ -54,7 +56,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^20.14.5",
+    "@happy-dom/global-registrator": "^21.0.0",
     "@tailwindcss/postcss": "^4.0.0",
     "@types/bun": "latest",
     "@types/node": "^26.0.0",

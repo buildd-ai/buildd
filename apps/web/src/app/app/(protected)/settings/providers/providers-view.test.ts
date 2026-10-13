@@ -14,7 +14,10 @@ import {
   groupProviders,
   keyRuleLine,
   maskedValue,
+  providersTitle,
   rowState,
+  teamKeyWord,
+  usesTeamLine,
   storedPolicyLine,
   servesLine,
   surfaceList,
@@ -207,6 +210,19 @@ describe('rows', () => {
     expect(rowState([], [r({})], null).word).toBe('Team key');
     expect(rowState([], [], 'team only').word).toBe('Not available');
     expect(rowState([], [], null).word).toBe('Not set');
+    expect(rowState([], [r({})], null, 'Acme').word).toBe("Acme's key");
+  });
+
+  it('names the team: its key, its settings, and the Providers heading when the caller is in several', () => {
+    expect(teamKeyWord('Acme')).toBe("Acme's key");
+    expect(teamKeyWord(null)).toBe('Team key');
+    expect(teamKeyWord('  ')).toBe('Team key');
+    expect(usesTeamLine('Acme')).toBe("Uses Acme's settings.");
+    expect(usesTeamLine(undefined)).toBe('Uses team settings.');
+    expect(providersTitle({ teamName: 'Acme', teamCount: 2 })).toBe('Providers · Acme');
+    expect(providersTitle({ teamName: 'Acme', teamCount: 1 })).toBe('Providers');
+    expect(providersTitle({ teamName: null, teamCount: 3 })).toBe('Providers');
+    expect(providersTitle(null)).toBe('Providers');
   });
 
   it('masks a key by its last four, and names a subscription', () => {
@@ -242,6 +258,34 @@ describe('Used for: a choice only once there is one', () => {
     expect(seat.description).toBeTruthy();
     expect(chat.options.find((o) => o.value === 'openrouter')!.disabled).toBe(false);
     expect(rows.every((r) => r.value === null)).toBe(true);
+  });
+
+  it('options are named like the rows, and a provider whose team keys all fail cannot be picked', () => {
+    const res = fixtureResponse({ rows: [
+      { provider: 'anthropic', scope: 'team' },
+      { provider: 'openrouter', scope: 'team' },
+      { provider: 'openai', scope: 'team', health: 'revoked' },
+    ] });
+    const chat = usedForView(res, {})!.find((r) => r.surface === 'chat')!;
+    expect(chat.options.find((o) => o.value === 'anthropic')!.label).toBe('Claude');
+    expect(chat.options.find((o) => o.value === 'openai')).toMatchObject({ label: 'OpenAI', disabled: true, description: 'Needs a working key' });
+    // Two of one group serving the same surface: each by its own name.
+    const both = fixtureResponse({ rows: [{ provider: 'anthropic', scope: 'team' }, { provider: 'claude-subscription', scope: 'team', shape: 'setup_token' }] });
+    const claude = usedForView(both, {})!.find((r) => r.surface === 'agent-claude')!;
+    expect(claude.options.map((o) => o.label).sort()).toEqual(['Anthropic', 'Claude subscription'].sort());
+  });
+
+  it('a group appears once per surface: a member that cannot serve it is left out when another can', () => {
+    const both = fixtureResponse({ rows: [{ provider: 'anthropic', scope: 'team' }, { provider: 'claude-subscription', scope: 'team', shape: 'setup_token' }, { provider: 'openrouter', scope: 'team' }] });
+    const rows = usedForView(both, {})!;
+    const chat = rows.find((r) => r.surface === 'chat')!;
+    expect(chat.options.filter((o) => o.label === 'Claude')).toEqual([{ value: 'anthropic', label: 'Claude', disabled: false }]);
+    expect(chat.options.some((o) => o.value === 'claude-subscription')).toBe(false);
+    // Where no member serves, the group still shows once, disabled with what it needs.
+    for (const r of rows) {
+      const labels = r.options.map((o) => o.label);
+      expect(labels).toEqual([...new Set(labels)]);
+    }
   });
 
   it('options are named like the rows, and a provider whose team keys all fail cannot be picked', () => {

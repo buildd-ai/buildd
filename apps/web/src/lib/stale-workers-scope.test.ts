@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 
 /**
  * Scope tests for the stale-worker reaper's WHERE clauses.
@@ -64,7 +64,7 @@ import {
 import { INTERACTIVE_WORKER_BUSY_MAX_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 import { claimantPresenceAlive, heldByLivePresence, interactiveAbandonedScope, interactiveTouchScope, INTERACTIVE_TOUCH_THROTTLE_MS } from './interactive-worker-liveness';
 
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 
 /**
  * Rendered SQL, whitespace-collapsed and lower-cased. Keywords are lower-cased

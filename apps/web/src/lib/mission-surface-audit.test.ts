@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { capturedOrderBy } from '@buildd/core/db/relational-sql';
 
 const missionsFindFirst = mock(() => Promise.resolve(null as any));
 const tasksFindFirst = mock(() => Promise.resolve(null as any));
@@ -330,8 +331,9 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
     const opts = tasksFindFirst.mock.calls[0][0] as any;
     // Ascending would keep returning the finished round 1, and every later fix
     // would open yet another round 2.
-    expect(opts.orderBy).toHaveLength(1);
-    expect(render(opts.orderBy[0]).sql).toBe('"tasks"."created_at" desc');
+    const orderBy = capturedOrderBy(opts.orderBy, {});
+    expect(orderBy).toHaveLength(1);
+    expect(render(orderBy[0]).sql).toBe('"tasks"."created_at" desc');
     expect(opts.columns).toMatchObject({ id: true, status: true, title: true, context: true, dependsOn: true });
   });
 

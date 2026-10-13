@@ -14,6 +14,7 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The two phase columns a task carries, or both-null when it has no phase. */
 export interface MissionPhase {
@@ -82,7 +83,7 @@ export function computePlanPhases(
 export async function inheritPhaseFromParent(parentTaskId: string | null | undefined): Promise<MissionPhase> {
   if (!parentTaskId) return NO_PHASE;
   const parent = await db.query.tasks.findFirst({
-    where: eq(tasks.id, parentTaskId),
+    where: sqlWhere(eq(tasks.id, parentTaskId)),
     columns: { missionPhaseIndex: true, missionPhaseLabel: true },
   });
   if (parent?.missionPhaseIndex == null || parent.missionPhaseLabel == null) return NO_PHASE;

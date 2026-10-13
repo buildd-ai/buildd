@@ -11,6 +11,7 @@ import { can } from '@/lib/permissions';
 import { TeamGrid } from './TeamGrid';
 import { TurnedOffRoles, type TurnedOffRole } from './TurnedOffRoles';
 import { splitTeamLevelRows, type RoleVisibility } from '@/lib/personal-roles-shared';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -109,21 +110,21 @@ export default async function RolesPage() {
 
   // Get user's account IDs for account-level roles
   const userAccountWs = await db.query.accountWorkspaces.findMany({
-    where: inArray(accountWorkspaces.workspaceId, wsIds),
+    where: sqlWhere(inArray(accountWorkspaces.workspaceId, wsIds)),
     columns: { accountId: true },
   });
   const accountIds = [...new Set(userAccountWs.map(aw => aw.accountId))];
 
   // Get workspace name map for scope labels
   const workspaceList = await db.query.workspaces.findMany({
-    where: inArray(workspaces.id, wsIds),
+    where: sqlWhere(inArray(workspaces.id, wsIds)),
     columns: { id: true, name: true },
   });
   const wsNameMap = new Map(workspaceList.map(w => [w.id, w.name]));
 
   // Get ALL role rows (both team-defaults AND workspace overrides) — no dedup
   const allSkillsRaw = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.enabled, true),
       eq(workspaceSkills.isRole, true),
       or(
@@ -133,23 +134,23 @@ export default async function RolesPage() {
         teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), isNull(workspaceSkills.ownerUserId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
         accountIds.length > 0 ? inArray(workspaceSkills.accountId, accountIds) : undefined,
       ),
-    ),
-    orderBy: [desc(workspaceSkills.createdAt)],
+    )),
+    orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
   });
 
   // Turned-off roles in the same scope (plus the viewer's own personal ones):
   // listed quietly so they stay findable and can be turned back on.
   const turnedOffRows = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.enabled, false),
       eq(workspaceSkills.isRole, true),
       or(
         inArray(workspaceSkills.workspaceId, wsIds),
         teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds), or(isNull(workspaceSkills.ownerUserId), eq(workspaceSkills.ownerUserId, user.id))) : undefined,
       ),
-    ),
+    )),
     columns: { id: true, slug: true, name: true, workspaceId: true },
-    orderBy: [desc(workspaceSkills.createdAt)],
+    orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
   });
   const turnedOff: TurnedOffRole[] = turnedOffRows.map(r => ({
     id: r.id,
@@ -160,21 +161,21 @@ export default async function RolesPage() {
 
   // Personal roles in the active team: the viewer's own and teammates' shared ones.
   const personalRows = teamIds.length === 0 ? [] : await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workspaceSkills.teamId, teamIds),
       isNull(workspaceSkills.workspaceId),
       isNotNull(workspaceSkills.ownerUserId),
       eq(workspaceSkills.isRole, true),
       eq(workspaceSkills.enabled, true),
       or(eq(workspaceSkills.ownerUserId, user.id), eq(workspaceSkills.visibility, 'team')),
-    ),
+    )),
     columns: { id: true, slug: true, name: true, description: true, color: true, model: true, ownerUserId: true, visibility: true },
-    orderBy: [desc(workspaceSkills.createdAt)],
+    orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
   });
   const { mine, sharedByOthers } = splitTeamLevelRows(personalRows, user.id);
   const otherOwnerIds = [...new Set(sharedByOthers.map(r => r.ownerUserId!))];
   const owners = otherOwnerIds.length === 0 ? [] : await db.query.users.findMany({
-    where: inArray(users.id, otherOwnerIds),
+    where: sqlWhere(inArray(users.id, otherOwnerIds)),
     columns: { id: true, name: true, email: true },
   });
   const ownerNames = new Map(owners.map(o => [o.id, o.name || o.email?.split('@')[0] || null]));
@@ -194,12 +195,12 @@ export default async function RolesPage() {
   // Exclude attempt tasks (parentTaskId IS NOT NULL) so CI retries don't inflate stats.
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const recentTasks = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(tasks.workspaceId, wsIds),
       sql`${tasks.roleSlug} IS NOT NULL`,
       sql`${tasks.createdAt} >= ${thirtyDaysAgo}`,
       isNull(tasks.parentTaskId),
-    ),
+    )),
     columns: { roleSlug: true, status: true },
   });
   const roleStats: Record<string, { completed: number; failed: number; total: number }> = {};
@@ -213,10 +214,10 @@ export default async function RolesPage() {
 
   // Get active workers with their tasks
   const activeWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, wsIds),
       inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-    ),
+    )),
     with: {
       task: {
         columns: { id: true, title: true, workspaceId: true, roleSlug: true, context: true },

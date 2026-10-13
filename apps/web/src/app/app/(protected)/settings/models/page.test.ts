@@ -10,8 +10,9 @@ const client = await Bun.file(new URL('../providers/ModelProvidersClient.tsx', i
 
 describe('Settings → Models page', () => {
   it('orders the sections Providers, Used for, Tiers and has no sign-ins or Routing section', () => {
-    expect(client.indexOf('title="Providers"')).toBeGreaterThan(-1);
-    expect(client.indexOf('title="Providers"')).toBeLessThan(client.indexOf('<UsedForSection'));
+    // "Providers", or "Providers · <team>" for someone in several teams.
+    expect(client.indexOf('title={providersTitle(data)}')).toBeGreaterThan(-1);
+    expect(client.indexOf('title={providersTitle(data)}')).toBeLessThan(client.indexOf('<UsedForSection'));
     expect(client).not.toContain('title="Routing"');
     const at = (s: string) => page.indexOf(s);
     expect(page).not.toContain('title="Runner sign-ins"');
@@ -35,8 +36,17 @@ describe('Settings → Models page', () => {
     expect(page).not.toMatch(/\buppercase\b/);
   });
 
+  it('operator controls follow the operator gate, not a team permission; My maximum is on You › Keys', async () => {
+    expect(page).toContain('const operator = await isPlatformOperatorCaller({ user })');
+    expect(page).toContain('operator={operator}');
+    expect(page).not.toMatch(/operator=\{perms\./);
+    expect(page).not.toContain('MyMaximumSection');
+    const keys = await Bun.file(new URL('../keys/page.tsx', import.meta.url)).text();
+    expect(keys).toContain('<MyMaximumSection');
+  });
+
   it('has no decision features, chat retros or goal grading controls', () => {
-    for (const gone of ['DecisionFeatures', 'ChatRetroSection', 'isPlatformOperator', 'ModelFeatures', 'hasTeamInferenceKey']) {
+    for (const gone of ['DecisionFeatures', 'ChatRetroSection', 'isPlatformOperator(', 'ModelFeatures', 'hasTeamInferenceKey']) {
       expect(`${gone}: ${page.includes(gone)}`).toBe(`${gone}: false`);
     }
   });

@@ -20,6 +20,7 @@ import { db } from '@buildd/core/db';
 import { missionNotes, missions, artifacts, tasks, initiatives } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
 import { isUuid } from './uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type FeedbackEntityType = 'note' | 'artifact' | 'summary' | 'orchestration' | 'heartbeat' | 'conversation_message';
 
@@ -72,7 +73,7 @@ export async function resolveFeedbackEntityHomes<K>(
   const noteMission = new Map<string, string>();
   if (noteIds.length > 0) {
     const rows = await db.query.missionNotes.findMany({
-      where: inArray(missionNotes.id, noteIds),
+      where: sqlWhere(inArray(missionNotes.id, noteIds)),
       columns: { id: true, missionId: true },
     });
     for (const n of rows) if (n.missionId) noteMission.set(n.id, n.missionId);
@@ -82,7 +83,7 @@ export async function resolveFeedbackEntityHomes<K>(
   const artifactRows = new Map<string, ArtifactRow>();
   if (artifactIds.length > 0) {
     const rows = await db.query.artifacts.findMany({
-      where: inArray(artifacts.id, artifactIds),
+      where: sqlWhere(inArray(artifacts.id, artifactIds)),
       columns: { id: true, workspaceId: true, missionId: true, initiativeId: true },
     });
     for (const a of rows) artifactRows.set(a.id, a);
@@ -96,7 +97,7 @@ export async function resolveFeedbackEntityHomes<K>(
   const missionHome = new Map<string, MissionHome>();
   if (missionIds.length > 0) {
     const rows = await db.query.missions.findMany({
-      where: inArray(missions.id, missionIds),
+      where: sqlWhere(inArray(missions.id, missionIds)),
       columns: { id: true, workspaceId: true, teamId: true },
     });
     for (const m of rows) missionHome.set(m.id, { workspaceId: m.workspaceId, teamId: m.teamId });
@@ -108,7 +109,7 @@ export async function resolveFeedbackEntityHomes<K>(
   const initiativeTeam = new Map<string, string>();
   if (initiativeIds.length > 0) {
     const rows = await db.query.initiatives.findMany({
-      where: inArray(initiatives.id, initiativeIds),
+      where: sqlWhere(inArray(initiatives.id, initiativeIds)),
       columns: { id: true, teamId: true },
     });
     for (const i of rows) initiativeTeam.set(i.id, i.teamId);
@@ -117,7 +118,7 @@ export async function resolveFeedbackEntityHomes<K>(
   const taskWs = new Map<string, string>();
   if (taskIds.length > 0) {
     const rows = await db.query.tasks.findMany({
-      where: inArray(tasks.id, taskIds),
+      where: sqlWhere(inArray(tasks.id, taskIds)),
       columns: { id: true, workspaceId: true },
     });
     for (const t of rows) if (t.workspaceId) taskWs.set(t.id, t.workspaceId);

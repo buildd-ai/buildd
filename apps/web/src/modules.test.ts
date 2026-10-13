@@ -73,6 +73,7 @@ describe('composition root', () => {
     ]);
     expect(byEvent('pr.review_ready')).toEqual(['releases:early-release-dispatch', 'reviews:spec-checks-on-open']);
     expect(byEvent('task.left_mission')).toEqual(['visual-qa:surface-audit-detach']);
+    expect(byEvent('task.role_changed')).toEqual(['jev-decisions:task-role-correction']);
     expect(byEvent('task.override_started')).toEqual(['jev-decisions:override-start-decision']);
     // The mission wakes and dependents unblock before the release trigger.
     expect(byEvent('task.pr_merged')).toEqual([

@@ -19,7 +19,7 @@
  * `isGeneratedMigrationPath` (kept here so the kernel imports no module;
  * base-delta.test.ts pins the two together).
  */
-const MIGRATION_PATH = /(?:^|\/)drizzle\/\d{4}_[^/]+\.sql$/;
+const MIGRATION_PATH = /(?:^|\/)drizzle\/(?:\d{4}_[^/]+\.sql|\d{14}_[^/]+\/migration\.sql)$/;
 
 /**
  * Once a refresh cycle is spent, a head may land across a base gap of up to

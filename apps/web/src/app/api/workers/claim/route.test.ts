@@ -391,6 +391,12 @@ mock.module('./role-env-injection', () => ({
   attachRoleEnvSecrets: async () => {},
 }));
 
+// Claim pre-flight for cross-workspace reach. Its rules are tested in
+// packages/core/__tests__/token-delegation.test.ts and
+// lib/task-delegation-checks.test.ts; here only how the loop reacts.
+const mockCheckDelegationGate = mock(async (..._args: any[]): Promise<any> => null);
+mock.module('./delegation-gate', () => ({ checkDelegationGate: mockCheckDelegationGate }));
+
 // Model-routing experiment glue. The real module is exercised against rendered
 // SQL in packages/core/__tests__/model-routing-experiment-source.test.ts; here
 // only the call-site wiring is under test. Default: no running experiment.
@@ -557,6 +563,7 @@ import { POST } from './route';
 import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -960,7 +967,7 @@ describe('POST /api/workers/claim', () => {
       return Object.values(node).some((v) => (Array.isArray(v) ? v.some((x) => hasEq(x, field, value)) : hasEq(v, field, value)));
     };
     const openQueries = mockWorkspacesFindMany.mock.calls
-      .map((c: any[]) => c[0]?.where)
+      .map((c: any[]) => capturedWhere(c[0]?.where))
       .filter((w: any) => hasEq(w, 'accessMode', 'open'));
     expect(openQueries.length).toBeGreaterThan(0);
     for (const w of openQueries) expect(hasEq(w, 'teamId', 'team-runner')).toBe(true);
@@ -2384,6 +2391,15 @@ describe('POST /api/workers/claim', () => {
         const res = await POST(claimReq());
         return (await res.json()) as any;
       };
+
+      it('a reservation is cleared when the task is claimed, so a re-queue is not held from runners', async () => {
+        const sets = withTask({ context: { reservedBy: { accountId: 'a', at: 'then', expiresAt: '2999-01-01T00:00:00.000Z' }, model: 'x' } });
+        const data = await claim();
+        expect(data.workers.length).toBe(1);
+        const assigned = sets.find(v => v.status === 'assigned');
+        expect(assigned.context.reservedBy).toBeUndefined();
+        expect(assigned.context.model).toBe('x');
+      });
 
       it('no ceiling: the router pick and lookups are unchanged', async () => {
         const sets = withTask({ complexity: 'complex' });
@@ -4967,7 +4983,7 @@ describe('POST /api/workers/claim', () => {
   });
 
   // Regression: on 2026-05-25, a task pinned to project "sibling-app" was created
-  // against a workspace whose projects[] only contained "dispatch-family". The
+  // against a workspace whose projects[] only contained "acme-app". The
   // task got claimed, the agent flailed on a non-existent path, stuck-detector
   // killed it, cleanup re-queued, and the loop ran 4 times before being killed
   // manually. The claim route now refuses such tasks up-front and marks them
@@ -4994,7 +5010,7 @@ describe('POST /api/workers/claim', () => {
         workspace: {
           id: 'ws-1',
           gitConfig: { claimPlanner: 'record' },
-          projects: [{ name: 'dispatch-family' }],
+          projects: [{ name: 'acme-app' }],
         },
       },
     ]);
@@ -5040,13 +5056,13 @@ describe('POST /api/workers/claim', () => {
         id: 'good-task',
         workspaceId: 'ws-1',
         title: 'Test task',
-        project: 'dispatch-family',
+        project: 'acme-app',
         requiredCapabilities: [],
         context: {},
         workspace: {
           id: 'ws-1',
           gitConfig: { claimPlanner: 'record' },
-          projects: [{ name: 'dispatch-family' }, { name: 'other-project' }],
+          projects: [{ name: 'acme-app' }, { name: 'other-project' }],
         },
       },
     ]);
@@ -8021,7 +8037,7 @@ describe('claim gate overrides', () => {
 
       await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
 
-      const whereArg = (mockTasksFindMany.mock.calls[0] as any)[0]?.where;
+      const whereArg = capturedWhere((mockTasksFindMany.mock.calls[0] as any)[0]?.where);
       expect(conditionLiterals(whereArg)).toContain('capExempt');
     });
 
@@ -8330,7 +8346,7 @@ describe('claim gate overrides', () => {
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValue([]);
       await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', ...body } }));
-      return (mockTasksFindMany.mock.calls[0] as any)[0]?.where;
+      return capturedWhere((mockTasksFindMany.mock.calls[0] as any)[0]?.where);
     }
 
     // Mocked db returns rows regardless of WHERE, so assert the predicate.
@@ -9285,6 +9301,45 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.detail).toContain('mailer');
     const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'role_env_unsatisfied');
     expect(deferred?.detail).toEqual({ roleSlug: 'mailer', missing: ['SERVICE_API_KEY', 'TENANT_ID'] });
+  });
+
+  it('a task whose cross-workspace need its token would not carry is held before any agent turn, with the named reason', async () => {
+    const gaps = [{ workspaceId: 'ws-target', capability: 'tasks:create', reason: 'not_granted' }];
+    mockCheckDelegationGate.mockResolvedValueOnce({ gaps, detail: 'tasks:create on workspace ws-target: it declares it will file tasks there, but no delegation grants tasks:create on it' });
+    mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+    mockWorkersInsert.mockClear();
+    mockTasksFindMany.mockResolvedValueOnce([task({ context: { filingTargets: ['ws-target'] } })]);
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    // No worker row: the agent never started, so it cannot discover the gap mid-run.
+    expect(mockWorkersInsert).not.toHaveBeenCalled();
+    expect(data.diagnostics.deferrals.delegation_unmet).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('delegation_unmet');
+    expect(data.diagnostics.taskExclusion.detail).toContain('no delegation grants tasks:create');
+    expect(data.diagnostics.taskExclusion.detail).toContain('update_task { delegation }');
+    const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'delegation_unmet');
+    expect(deferred?.detail?.gaps).toEqual(gaps);
+  });
+
+  it('an admin force claim does not start a task past an unmet delegation', async () => {
+    mockCheckDelegationGate.mockResolvedValueOnce({ gaps: [{ workspaceId: 'ws-target', capability: 'tasks:create', reason: 'out_of_token_reach' }], detail: 'out of reach' });
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockTasksFindMany
+      .mockResolvedValueOnce(forceTarget())
+      .mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.taskExclusion.code).toBe('delegation_unmet');
+  });
+
+  it('a task whose delegation the token covers is claimed as before', async () => {
+    mockCheckDelegationGate.mockResolvedValueOnce(null);
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ delegation: { grants: [{ workspaceId: 'ws-target', capabilities: ['tasks:create'] }] } })]);
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(1);
+    expect(mockCheckDelegationGate.mock.calls.at(-1)![1]).toMatchObject({ id: 'account-1' });
   });
 
   it('a task with no role env gap is claimed as before', async () => {

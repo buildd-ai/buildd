@@ -6,6 +6,7 @@ import { CATALOG_POLICIES, connectorHostKey, type CatalogPolicy } from '@/lib/co
 import { loadTeamCatalog } from '@/lib/connector-catalog-store';
 import { preinstallForTeam, registrationRefusalBody } from '@/lib/connector-provision';
 import { resolveConnectorTeam, forbidden } from '@/lib/connector-team-auth';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * PUT { slug, policy } — a team admin decides how one catalog entry behaves
@@ -60,7 +61,7 @@ export async function PUT(req: NextRequest) {
   if (policy === 'blocked') {
     // Same host match the runtime block uses (connector-access-policy.ts).
     const target = connectorHostKey(entry.url);
-    const owned = await db.query.connectors.findMany({ where: eq(connectors.teamId, caller.teamId), columns: { id: true, url: true } });
+    const owned = await db.query.connectors.findMany({ where: sqlWhere(eq(connectors.teamId, caller.teamId)), columns: { id: true, url: true } });
     const retainedConnectorIds = owned.filter(c => target !== null && connectorHostKey(c.url) === target).map(c => c.id);
     return NextResponse.json({ slug, policy, connectorId, retainedConnectorIds });
   }

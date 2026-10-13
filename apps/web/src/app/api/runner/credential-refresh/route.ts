@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { refuseCredentialCustody } from '@/lib/credential-custody';
 import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from '@/lib/credential-health';
 import { notifyTeam } from '@/lib/notify';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ALLOWED_PURPOSES = ['claude_credential', 'codex_credential'] as const;
 type AllowedPurpose = (typeof ALLOWED_PURPOSES)[number];
@@ -91,7 +92,7 @@ export async function POST(req: NextRequest) {
 
   if ((TEAM_SCOPED_ACTIONS as readonly string[]).includes(action)) {
     credential = await db.query.secrets.findFirst({
-      where: eq(secrets.id, secretId),
+      where: sqlWhere(eq(secrets.id, secretId)),
       columns: {
         id: true,
         teamId: true,
@@ -293,11 +294,11 @@ export async function POST(req: NextRequest) {
     }
 
     const lease = await db.query.credentialLeases.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(credentialLeases.credentialId, secretId),
         eq(credentialLeases.heldByRunnerId, runnerId),
         gt(credentialLeases.expiresAt, sql`NOW()`),
-      ),
+      )),
       columns: { id: true },
     });
     if (!lease) {
@@ -308,7 +309,7 @@ export async function POST(req: NextRequest) {
     }
 
     const bootstrapped = await db.query.secrets.findFirst({
-      where: and(eq(secrets.id, secretId), eq(secrets.purpose, purpose as AllowedPurpose)),
+      where: sqlWhere(and(eq(secrets.id, secretId), eq(secrets.purpose, purpose as AllowedPurpose))),
       columns: { encryptedValue: true, tokenExpiresAt: true },
     });
     if (!bootstrapped) {

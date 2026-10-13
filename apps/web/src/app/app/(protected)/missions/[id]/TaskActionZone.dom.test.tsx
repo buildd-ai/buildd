@@ -110,7 +110,7 @@ describe('TaskActionZone — inline Force start', () => {
     await mount();
     await act(async () => { button('Run now')!.click(); });
     await flush();
-    expect(container.textContent).toContain('Running in a local session');
+    expect(container.textContent).toContain('Runs from a local session');
     const force = button('Force start');
     expect(force).toBeDefined();
     await act(async () => { force!.click(); });
@@ -319,7 +319,7 @@ describe('TaskActionZone — overrides carry through a chain of refusals', () =>
     await flush();
     await act(async () => { button('Start anyway')!.click(); });
     await flush();
-    expect(container.textContent).toContain('Running in a local session');
+    expect(container.textContent).toContain('Runs from a local session');
     await act(async () => { button('Force start')!.click(); });
     await flush();
     expect(startCalls().at(-1)!.body).toEqual({ forceOverride: true, capExempt: true });

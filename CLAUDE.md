@@ -55,6 +55,8 @@ When modifying `packages/core/db/schema.ts`:
 
 CI will **fail** if you change schema.ts without generating/committing migrations.
 
+Migrations are drizzle v1 folders (`packages/core/drizzle/<YYYYMMDDHHMMSS>_<slug>/` with `migration.sql` and `snapshot.json`): no journal, no index, so names cannot collide. Two branches can still generate from one base and touch the same thing: before pushing, merge dev and run `bun run migrations:layout-check`, `bun run migrations:commute` and `bun db:generate` (it must report no changes). Never hand-edit a migration or snapshot, or rename a folder: run `bun run migrations:regenerate --base=origin/dev`. See `.claude/skills/schema-change/`.
+
 **Do NOT use `db:push`** in production - it bypasses migration tracking.
 
 ## This Repo Is Public
@@ -96,17 +98,17 @@ never has — and says so rather than reporting a false green.
 - **Production branch**: `main`
 - **Flow**: Push to `dev` → CI runs. `dev` does **not** auto-merge to `main` — ship via a release PR.
 - **PRs**: Target `dev` for features, `main` for hotfixes only. Use conventional PR titles (e.g., `feat:`, `fix:`, `ci:`, `refactor:`, `docs:`)
-- **Release**: `bun run release` (or `release.yml` / `trigger_release` MCP) opens a `Release vX.Y.Z` PR (dev→main); merge tags + deploys. `release:hotfix` = branch→main, patch bump.
+- **Release**: `bun run release` (or `release.yml` / `trigger_release` MCP) dispatches the Release workflow on dev; merge tags + deploys. With repo variable `RELEASE_CANDIDATE_CUT=enabled` it cuts a frozen `release/vX.Y.Z` branch from one captured dev SHA (version + CHANGELOG commit only there) and opens `release/vX.Y.Z → main`; reruns never move it, only an explicit `amend` dispatch does. Unset = legacy dev→main PR. Engine: `scripts/release-candidate.ts`. `release:hotfix` = branch→main, patch bump. dev is never reset: `sync-dev.yml` merges main back in.
 - **CI**: `.github/workflows/build.yml` is the gating test workflow (push to `dev`; PRs to `main`/`dev`). Jobs: `build` (lints + type check + unit tests + build), `sandbox-isolation`, `schema-drift`, and `changes` → `integration`. The integration job body lives in the reusable `integration.yml`.
-- **Integration/E2E gate only hotfix PRs** (PRs into `main` whose head is not `dev`) — never a `dev` PR or a release PR. There is no `preview-tests.yml`.
-- **Post-merge integration** (`post-merge-integration.yml`) runs the API integration tests on every push to `dev`, **advisory only**: its check-runs (prefix `post-merge integration`) are ignored by the release gate and the health watcher, and reported separately as `postMergeIntegration` in `release_status`.
+- **Integration/E2E gate only hotfix PRs** (PRs into `main` whose head is not `dev`) — never a `dev` PR or a dev→main release PR. Release candidate PRs (`release/vX.Y.Z` → `main`) get `candidate integration / integration` instead: full API + runner tests on the exact head SHA, counted in `ciState`. There is no `preview-tests.yml`.
+- **Post-merge integration** (`post-merge-integration.yml`) runs the API integration tests on a `dev` push carrying server code no earlier passing run verified (`scripts/ci/post-merge-coverage.ts`), **advisory only**: its check-runs (prefix `post-merge integration`) are ignored by the release gate and the health watcher, and reported separately as `postMergeIntegration` in `release_status`.
 - **Vercel**: Only deploys from `main` (dev deploys disabled)
 
 Do NOT commit directly to `main` unless it's an emergency hotfix.
 
 ### Hotfix vs Normal Release
 
-- **Normal** (`bun run release`): Feature/fix goes to `dev` first, then release PR merges dev→main. Use this when there's no urgency.
+- **Normal** (`bun run release`): Feature/fix goes to `dev` first, then a frozen release candidate (`release/vX.Y.Z` → main, on since 2026-10-12: `RELEASE_CANDIDATE_CUT=enabled`, `releaseConfig.candidate` set, `release candidate verified` required on main) merges with a merge commit. Use this when there's no urgency.
 - **Hotfix** (`bun run release:hotfix`): Run from a feature branch. Creates PR directly to `main` with a patch bump. Use only for urgent production fixes that can't wait for the normal dev→main cycle. After merging, backport to dev: `git checkout dev && git merge origin/main && git push origin dev`.
 
 ## Missions
@@ -280,7 +282,7 @@ This repo (`apps/web`) serves the dashboard and API at `buildd.dev`.
 
 Some workflows exist as GitHub Actions only and must NOT be registered as routable agent roles:
 
-- **Visual QA** (`.github/workflows/visual-qa.yml`): Playwright screenshot capture + Claude judgment on release PRs. CI-only by design (PR #1029). Any `visual-qa` row in `workspace_skills` is stray — migration 0064 removed it (now part of `packages/core/drizzle/0000_baseline.sql`).
+- **Visual QA** (`.github/workflows/visual-qa.yml`): Playwright screenshot capture + Claude judgment on release PRs. CI-only by design (PR #1029). Any `visual-qa` row in `workspace_skills` is stray — migration 0064 removed it (now part of `packages/core/drizzle/20261006230118_baseline/migration.sql`).
 
 ## Skills
 

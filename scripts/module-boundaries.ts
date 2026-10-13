@@ -87,6 +87,17 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   // task and why. The start gate and the claim probe decide on them, so they
   // are core coordination, not the explain feature `explain` misfiles them as.
   'apps/web/src/lib/explain-coordination.ts',
+  // The releaseConfig JSONB's shape (candidate branch patterns, config-write
+  // validation, refs-only release-PR test): read by the core workspace config
+  // route and base-advance notices. Pure, no release behaviour; provenance and
+  // tracking stay in the releases module (packages/core/release-candidate.ts).
+  'packages/core/release-config-shape.ts',
+  // The release settings form's serializer, used only by the core settings
+  // page's ReleaseSection.tsx (which `release` does not match, being PascalCase).
+  'apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/release-config-payload.ts',
+  // The Release section's recent-releases split (ran vs skipped), pure and used
+  // only by the core settings page's ReleaseSection.tsx.
+  'apps/web/src/app/app/(protected)/settings/_lib/recent-releases.ts',
 ]);
 
 export function moduleOf(path: string): Owner {

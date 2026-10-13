@@ -11,6 +11,14 @@ describe('generated artifacts', () => {
     expect(isGeneratedArtifactPath('packages/core/drizzle/0290_fat_hemingway.sql')).toBe(true);
     expect(isCiVerifiedGeneratedPath('packages/core/drizzle/0290_fat_hemingway.sql')).toBe(false);
   });
+  test('v1 folders: the snapshot is regenerated and CI-verified, the migration.sql is generated but still reviewed', () => {
+    const dir = 'packages/core/drizzle/20261012120000_add_busy_since/';
+    expect(isCiVerifiedGeneratedPath(`${dir}snapshot.json`)).toBe(true);
+    expect(isGeneratedArtifactPath(`${dir}snapshot.json`)).toBe(true);
+    expect(isGeneratedArtifactPath(`${dir}migration.sql`)).toBe(true);
+    expect(isCiVerifiedGeneratedPath(`${dir}migration.sql`)).toBe(false);
+    expect(isCiVerifiedGeneratedPath('packages/core/drizzle/20261012120000_x/notes.json')).toBe(false);
+  });
   test('the design-check baseline is generated but only ratcheted, so not CI-verified', () => {
     expect(isGeneratedArtifactPath('scripts/design-check.baseline.json')).toBe(true);
     expect(isCiVerifiedGeneratedPath('scripts/design-check.baseline.json')).toBe(false);

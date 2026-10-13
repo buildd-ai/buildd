@@ -13,6 +13,7 @@ import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity } from '@/lib/workspace-installation';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** A cited file larger than this is refused rather than read in full. */
 export const MAX_REPO_REF_FILE_BYTES = 1_000_000;
@@ -54,11 +55,16 @@ export async function fetchFileAtCommit(
 }
 
 /** The workspace's linked repo, or null when it has none (or no installation). */
-async function linkedRepo(workspaceId: string): Promise<{ fullName: string; installationId: number } | null> {
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), with: WORKSPACE_INSTALLATION_WITH });
+export async function linkedRepo(workspaceId: string): Promise<{ fullName: string; installationId: number } | null> {
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), with: WORKSPACE_INSTALLATION_WITH });
   const id = pickWorkspaceRepoIdentity(ws);
   if (id.source !== 'github_repo' || !id.fullName || !id.installationId) return null;
   return { fullName: id.fullName, installationId: id.installationId };
+}
+
+/** The `owner/name` of the workspace's linked repo, for links to a cited file; null without one. */
+export async function linkedRepoFullName(workspaceId: string): Promise<string | null> {
+  return (await linkedRepo(workspaceId))?.fullName ?? null;
 }
 
 /** The `owner/name` of the workspace's linked repo, for links to a cited file; null without one. */

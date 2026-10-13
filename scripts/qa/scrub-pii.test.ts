@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MISSION_PR_TASK_PREFIX } from '../../packages/core/mission-integration';
-import { knownColumns, latestSnapshotPath, schemaShape, textColumns } from './known-columns';
+import { knownColumns, latestSnapshotPath, normalizeSnapshot, schemaShape, textColumns } from './known-columns';
 
 /**
  * scrub-pii.sql rewrites a prod clone before Visual QA screenshots it, and the
@@ -186,6 +186,10 @@ const SAFE: Record<string, string[]> = {
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',
     'conflict_retry_head_sha', 'reviewer_retry_head_sha', 'depends_on', 'predicted_model',
     'loop_state', 'subject_head_sha',
+    // TaskDelegation (packages/core/token-delegation.ts): workspace ids,
+    // fixed-vocabulary capabilities, granting user/account ids, timestamps and
+    // capability-grant ids. Same shape as task_schedules.delegation.
+    'delegation',
     'category_decision', // { v, source, keyword, jev, confidence, skipped?, at }: labels, numbers, a version, a timestamp
     // StoredVerdictDecision (lib/task-verdict.ts): fixed-vocabulary labels, a
     // hash, row ids, a model id, a timestamp, and a cause key naming CI checks.
@@ -217,6 +221,8 @@ const SAFE: Record<string, string[]> = {
   spec_revisions: ['content_hash', 'repo_refs'], // repo paths pinned to commit SHAs
   // A criterion id from the spec body (R-1, AC-2) and a git SHA.
   spec_outcome_verdicts: ['criterion_id', 'head_sha'],
+  spec_neighbors: ['source'], // vector | lexical | pr_files | path_manifest | a decision model id
+  spec_comments: ['anchor_id', 'anchor_hash'], // an outline id (s3) or criterion id (AC-2), and a sha256
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
   // github_repos.default_branch.
@@ -262,6 +268,10 @@ const SAFE: Record<string, string[]> = {
   migration_log: ['phase'], // multi-line literal-union $type
   credential_leases: ['held_by_runner_id'], // wiped via secrets cascade too
   user_feedback: ['entity_id'],
+  // Root causes hold no text by design (apps/web/src/lib/root-cause-record.ts):
+  // fixed vocabularies, a backend id, a failure-pattern rule id, and a key
+  // built from those plus row ids. Classification never reads free text.
+  root_causes: ['key', 'capability_kind', 'provider', 'component', 'classification'],
 };
 
 const schema = schemaTextColumns(schemaSrc);
@@ -363,6 +373,14 @@ describe('scrub-pii.sql covers the schema', () => {
     expect(re.test('Task 12: lorem ipsum')).toBe(true);
   });
 
+  // ': ' starts at position(': '); the kept prefix ends AFTER the space (+1) and the
+  // rewritten remainder starts one past it (+2). Off by one leaks the first real character.
+  test('surface-audit round prefix keeps exactly "round N: " and rewrites the rest', () => {
+    const titleExpr = cov.assignments.find(a => a.table === 'tasks' && a.column === 'title')?.expr ?? '';
+    expect(titleExpr).toContain("substring(t.title, 1, position(': ' in t.title) + 1)");
+    expect(titleExpr).toContain("substr(t.title, position(': ' in t.title) + 2)");
+  });
+
   test('one transaction, fail on first error, quiet, no DETAIL in public logs', () => {
     expect(sqlSrc).toContain('\\set ON_ERROR_STOP on');
     expect(sqlSrc).toContain('\\set QUIET on');
@@ -435,7 +453,7 @@ describe('scrub-pii.sql covers the schema', () => {
   test('a branch behind prod leaves the newer table off the known list', () => {
     // Replays the incident: the snapshot a lagging branch carries has no
     // post_session_runs, so its facts column is not "known" and gets overwritten.
-    const snap = JSON.parse(readFileSync(latestSnapshotPath(join(root, 'packages/core/drizzle')), 'utf8'));
+    const snap = normalizeSnapshot(JSON.parse(readFileSync(latestSnapshotPath(join(root, 'packages/core/drizzle')), 'utf8')));
     expect(textColumns(snap)).toContain('post_session_runs.facts');
     delete snap.tables['public.post_session_runs'];
     const lagging = textColumns(snap);
@@ -465,6 +483,43 @@ describe('scrub-pii.sql covers the schema', () => {
       expect(knownColumns(trunk, branch)).toEqual(['artifact_revisions.body', 'tasks.branch_only', 'tasks.title']);
       // One dir (shoot.sh, a single checkout) is just that snapshot.
       expect(knownColumns(branch)).toEqual(['tasks.branch_only', 'tasks.title']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // The capture ref's drizzle dir can be in either layout: a branch cut before
+  // the drizzle v1 cutover still has a journal, one cut after has folders with
+  // v8 `ddl[]` snapshots. The union must read both.
+  test('known columns read a drizzle v1 folder snapshot, alone and mixed with a journal dir', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'known-cols-v1-'));
+    try {
+      const v1 = join(tmp, 'v1');
+      mkdirSync(join(v1, '20260101000000_old'), { recursive: true });
+      mkdirSync(join(v1, '20260201000000_new'), { recursive: true });
+      const ddl = (cols: Array<[string, string, string, number]>) => ({
+        version: '8', dialect: 'postgres', id: 'x', prevIds: [],
+        ddl: [
+          { entityType: 'tables', schema: 'public', name: 'tasks' },
+          ...cols.map(([table, name, type, dimensions]) => ({ entityType: 'columns', schema: 'public', table, name, type, typeSchema: null, dimensions })),
+        ],
+      });
+      // The older folder must be ignored: only the newest snapshot is the schema.
+      writeFileSync(join(v1, '20260101000000_old', 'snapshot.json'), JSON.stringify(ddl([['tasks', 'stale', 'text', 0]])));
+      writeFileSync(join(v1, '20260201000000_new', 'snapshot.json'), JSON.stringify(ddl([
+        ['tasks', 'title', 'text', 0], ['tasks', 'tags', 'text', 1], ['tasks', 'attempts', 'integer', 0], ['tasks', 'meta', 'jsonb', 0],
+      ])));
+      expect(latestSnapshotPath(v1)).toBe(join(v1, '20260201000000_new', 'snapshot.json'));
+      expect(knownColumns(v1)).toEqual(['tasks.meta', 'tasks.tags', 'tasks.title']);
+      expect(schemaShape(JSON.parse(readFileSync(latestSnapshotPath(v1), 'utf8'))).tasks).toEqual({
+        title: 'text', tags: 'text[]', attempts: 'integer', meta: 'jsonb',
+      });
+
+      const journal = join(tmp, 'journal');
+      mkdirSync(join(journal, 'meta'), { recursive: true });
+      writeFileSync(join(journal, 'meta', '_journal.json'), JSON.stringify({ entries: [{ idx: 0 }] }));
+      writeFileSync(join(journal, 'meta', '0000_snapshot.json'), JSON.stringify({ tables: { 'public.tasks': { name: 'tasks', schema: '', columns: { journal_only: { name: 'journal_only', type: 'text' } } } } }));
+      expect(knownColumns(v1, journal)).toEqual(['tasks.journal_only', 'tasks.meta', 'tasks.tags', 'tasks.title']);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

@@ -3,6 +3,7 @@ import { taskSchedules, missions } from '@buildd/core/db/schema';
 import { eq, and, lt } from 'drizzle-orm';
 import { isOverdue, estimateCronIntervalMs } from '@/lib/heartbeat-helpers';
 import { notifyOperator } from '@/lib/pushover';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Check for heartbeat missions whose nextRunAt is still far in the past
@@ -18,10 +19,10 @@ export async function runOverdueHeartbeatAlerts(now: Date): Promise<number> {
   let overdueHeartbeatAlerts = 0;
   try {
     const stuckSchedules = await db.query.taskSchedules.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(taskSchedules.enabled, true),
         lt(taskSchedules.nextRunAt, now),
-      ),
+      )),
     });
 
     for (const schedule of stuckSchedules) {
@@ -37,7 +38,7 @@ export async function runOverdueHeartbeatAlerts(now: Date): Promise<number> {
       ) continue;
 
       const linkedMission = await db.query.missions.findFirst({
-        where: eq(missions.scheduleId, schedule.id),
+        where: sqlWhere(eq(missions.scheduleId, schedule.id)),
         columns: { id: true },
       });
 

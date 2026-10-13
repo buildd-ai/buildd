@@ -23,6 +23,7 @@ import { registerTextPrompt, resolvePromptEntry, resolvedPromptVersion } from '@
 import { OPERATOR_ROLE_SLUG } from './permission-registry';
 import type { RoleOverride } from './policy-overrides';
 import { loadPolicyOverrides } from './policy-overrides-source';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const BUILDD_MCP = {
   type: 'http',
@@ -245,8 +246,13 @@ If a near-duplicate exists, update it instead of creating a new entry.
     slug: 'builder',
     // v2: the migration section stopped telling agents to call a REST route
     // with a key they do not hold and to hand-edit the journal.
-    version: 2,
-    supersededContentHashes: ['e81862de3a7a2f0914c9c472c864d45ab04bac39f69b9fdb140d5e82e3c57174'],
+    // v3: the migration section no longer assumes a journal: drizzle v1 keeps one
+    // folder per migration, and the check before pushing is generate-then-commute.
+    version: 3,
+    supersededContentHashes: [
+      'e81862de3a7a2f0914c9c472c864d45ab04bac39f69b9fdb140d5e82e3c57174',
+      '485516f74b87e954cc15d2a4d4a08852d282079c28d107f11d478aa00a299053',
+    ],
     // Builds UI from claude.ai Design canvases cited in context.designSource.
     claudeAiArtifacts: 'read',
     name: 'Builder',
@@ -294,11 +300,11 @@ Specific triggers to always check (in both memory and task corpora):
 
 ## Schema Migrations — Generate, Never Hand-Edit
 
-Migrations, snapshots and the journal are generated from the schema. Never rename a migration file or edit \`meta/_journal.json\` by hand.
+Migrations and snapshots are generated from the schema. Never rename or edit a migration, a snapshot or a \`meta/_journal.json\` by hand.
 
 1. Edit the schema, then run \`bun db:generate\` and read the SQL it emits.
-2. Immediately before pushing, compare your newest journal entry with \`origin/dev\`'s. Concurrent branches collide often, and git does not warn you.
-3. If \`origin/dev\` already has your number, rebase onto it, take its migration files and journal as they are, drop yours, and run \`bun db:generate\` again. Regenerating keeps anything another branch added in the same window.
+2. Immediately before pushing, merge \`origin/dev\` and run \`bun db:generate\` again: it must report no changes. Where the repo defines them, also run \`bun run migrations:layout-check\` and \`bun run migrations:commute\`. Concurrent branches can generate from the same base, and git does not warn you.
+3. If either check fails, or \`origin/dev\` moved the schema under you, take its migration files as they are, drop yours, and run \`bun db:generate\` again (or \`bun run migrations:regenerate\` where the repo defines it). Regenerating keeps anything another branch added in the same window.
 
 ## End-of-Task Memory (Gotchas Only)
 
@@ -1281,7 +1287,7 @@ export async function deliverSeededRoleContent(row: SeededRoleRow & { content: s
  */
 export async function resyncDefaultRolesForTeam(teamId: string): Promise<number> {
   const rows = await db.query.workspaceSkills.findMany({
-    where: and(eq(workspaceSkills.teamId, teamId), inArray(workspaceSkills.slug, [...DEFAULT_ROLE_SLUGS])),
+    where: sqlWhere(and(eq(workspaceSkills.teamId, teamId), inArray(workspaceSkills.slug, [...DEFAULT_ROLE_SLUGS]))),
     columns: { id: true, slug: true, source: true, contentHash: true, metadata: true },
   }) as SeededRoleRow[];
   const roles = await currentDefaultRoles();
@@ -1327,7 +1333,7 @@ export function planDefaultRoleRoutingBackfill(rows: readonly SeededRoleRow[], n
 export async function backfillDefaultRoleRouting(opts: { dryRun?: boolean } = {}): Promise<DefaultRoleRoutingBackfill[]> {
   const { sql } = await import('drizzle-orm');
   const rows = await db.query.workspaceSkills.findMany({
-    where: eq(workspaceSkills.source, 'system'),
+    where: sqlWhere(eq(workspaceSkills.source, 'system')),
     columns: { id: true, slug: true, source: true, contentHash: true, metadata: true },
   }) as SeededRoleRow[];
   const plan = planDefaultRoleRoutingBackfill(rows, new Date());
@@ -1389,7 +1395,7 @@ export async function seedDefaultRolesForTeam(teamId: string): Promise<void> {
  */
 export async function seedDefaultRoles(workspaceId: string): Promise<void> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   if (!ws) return;

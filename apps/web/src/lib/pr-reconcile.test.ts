@@ -184,6 +184,7 @@ import {
   MISSION_PR_SWEEP_WINDOW_MS,
 } from './pr-reconcile';
 import { TIER_SLA_MS, UNRESOLVABLE_FAILURE_THRESHOLD, DAY_MS, HOUR_MS } from './pr-freshness';
+import { capturedOrderBy, capturedWhere } from '@buildd/core/db/relational-sql';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -201,14 +202,19 @@ const ancientOpenedAt = new Date(Date.now() - 90 * DAY_MS);
  * which columns and literals it references. Cycle-safe: the stubbed `sql` tag
  * hands back objects that share sub-trees, which plain JSON.stringify chokes on.
  */
-function describePredicate(node: unknown, seen = new WeakSet<object>()): string {
+/** A captured relational where / orderBy, as it was built before or after the RQB v2 move. */
+function describePredicate(captured: unknown): string {
+  return describeNode(typeof captured === 'function' ? capturedOrderBy(captured, {}) : capturedWhere(captured));
+}
+
+function describeNode(node: unknown, seen = new WeakSet<object>()): string {
   if (node == null) return '';
   if (typeof node !== 'object') return String(node);
   if (seen.has(node as object)) return '';
   seen.add(node as object);
-  if (Array.isArray(node)) return node.map(n => describePredicate(n, seen)).join(' ');
+  if (Array.isArray(node)) return node.map(n => describeNode(n, seen)).join(' ');
   return Object.entries(node as Record<string, unknown>)
-    .map(([k, v]) => `${k} ${describePredicate(v, seen)}`)
+    .map(([k, v]) => `${k} ${describeNode(v, seen)}`)
     .join(' ');
 }
 

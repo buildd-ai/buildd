@@ -16,6 +16,7 @@ import { eq } from 'drizzle-orm';
 import { noteQuestionNeedsDisposition } from '@buildd/core/needs-you';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { gateEnabledFromGitConfig, hardRailContextFromGitConfig, recheckParkedQuestion, type QuestionCheckDeps } from './question-gate-check';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface QuestionNoteInput {
   type: string;
@@ -54,10 +55,10 @@ async function defaultLoadContext(input: QuestionNoteInput): Promise<QuestionNot
   const { tasks, workspaces } = await import('@buildd/core/db/schema');
   const [ws, task] = await Promise.all([
     input.workspaceId
-      ? db.query.workspaces.findFirst({ where: eq(workspaces.id, input.workspaceId), columns: { teamId: true, dataClass: true, gitConfig: true } })
+      ? db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, input.workspaceId)), columns: { teamId: true, dataClass: true, gitConfig: true } })
       : null,
     input.taskId
-      ? db.query.tasks.findFirst({ where: eq(tasks.id, input.taskId), columns: { title: true, pathManifest: true, missionId: true } })
+      ? db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, input.taskId)), columns: { title: true, pathManifest: true, missionId: true } })
       : null,
   ]);
   return {

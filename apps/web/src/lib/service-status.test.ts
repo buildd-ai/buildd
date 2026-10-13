@@ -106,11 +106,12 @@ describe('roles', () => {
     expect(s.work.length).toBe(5);
   });
 
-  it('team admin gets a Needs You decision only when another runner can take the work', () => {
+  it('team admin may move the work when another runner can take it, quietly: the owner holds the fix', () => {
     const withAlt = correlateSignals(scenario({ alternateRunnerAvailable: true }));
     const [a] = projectServiceStatus(withAlt, viewer(ADMIN, { isTeamAdmin: true }));
     expect(a.action).toMatchObject({ kind: 'route_work' });
-    expect(a.attention).toBe('needs_you');
+    expect(a.attention).toBe('quiet');
+    expect(statusAttentionItems([a])).toHaveLength(0);
     const [b] = projectServiceStatus(records, viewer(ADMIN, { isTeamAdmin: true }));
     expect(b.attention).toBe('quiet');
   });

@@ -58,6 +58,9 @@ describe('splitDiffStats — PR #2297 fixture', () => {
 
   test('the migration .sql itself is never classified as generated', () => {
     expect(isGeneratedPath('packages/core/drizzle/0157_noisy_marauders.sql')).toBe(false);
+    // v1 folders: the snapshot is generated noise, the migration.sql is the reviewable artifact
+    expect(isGeneratedPath('packages/core/drizzle/20261012120000_x/snapshot.json')).toBe(true);
+    expect(isGeneratedPath('packages/core/drizzle/20261012120000_x/migration.sql')).toBe(false);
   });
 
   test('formatDiffStats keeps the generated bulk visible instead of hiding it', () => {

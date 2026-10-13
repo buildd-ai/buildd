@@ -331,8 +331,8 @@ describe('explainMission', () => {
     const live = answer.because.find(l => l.refs.taskId === 'task-live');
     const orphan = answer.because.find(l => l.refs.taskId === 'task-orphan');
     expect(live?.claim).toBeDefined();
-    expect(live!.claim).not.toContain('no live worker');
-    expect(orphan?.claim).toBe('Task "Write the docs" is in_progress with no live worker.');
+    expect(live!.claim).toBe('"Build the page" is in progress.');
+    expect(orphan?.claim).toBe('"Write the docs" was started, but nothing is running it now.');
     // The situation block prints because[0]: the orphan, not the running task.
     expect(answer.because[0].refs.taskId).toBe('task-orphan');
   });
@@ -429,12 +429,12 @@ describe('explainTask', () => {
     taskRows = [task({ id: 'task-1', status: 'pending' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.chip.label).toBe('LOCAL');
-    expect(answer.situation.headline).toBe('Waiting for a local session to claim the open task.');
+    expect(answer.situation.headline).toBe('Ready to start from a local session.');
     expect(answer.situation.headline).not.toMatch(/stall/i);
     expect(answer.situation.nextAction ?? '').toContain('claim_task');
     expect(answer.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
-    expect(answer.because.map(l => l.claim).join(' ')).toContain('waiting for a local session to claim it');
-    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('no live worker');
+    expect(answer.because.map(l => l.claim).join(' ')).toContain('is ready to start. Claim it from a local session.');
+    expect(answer.because.map(l => l.claim).join(' ')).not.toMatch(/waiting for a runner|nothing is running it/);
   });
 
   it('the same pending task in a runner mission still reads as a stall', async () => {

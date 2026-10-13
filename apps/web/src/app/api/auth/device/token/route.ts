@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { deviceCodes } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/auth/device/token
 // No auth required. CLI polls this with device_token.
@@ -21,7 +22,7 @@ export async function POST(req: NextRequest) {
     }
 
     const record = await db.query.deviceCodes.findFirst({
-      where: eq(deviceCodes.deviceToken, device_token),
+      where: sqlWhere(eq(deviceCodes.deviceToken, device_token)),
     });
 
     if (!record) {
@@ -60,7 +61,7 @@ export async function POST(req: NextRequest) {
       if (record.userId) {
         const { users } = await import('@buildd/core/db/schema');
         const user = await db.query.users.findFirst({
-          where: eq(users.id, record.userId),
+          where: sqlWhere(eq(users.id, record.userId)),
         });
         email = user?.email;
         // Best effort: a login without one still works (hooks fall back to the key).

@@ -15,6 +15,7 @@ import { resolveConnectorIconData } from '@/lib/connector-icon';
 import { scheduleStaleIconRefresh } from '@/lib/connector-icon-refresh';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { canManageTeamConnectors } from '@/lib/connector-team-auth';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -67,14 +68,14 @@ export async function GET(req: NextRequest) {
 
   try {
     const rows = await db.query.connectors.findMany({
-      where: eq(connectors.teamId, teamId),
+      where: sqlWhere(eq(connectors.teamId, teamId)),
     });
 
     // Cross-team sharing (spec §1b): visibility = owned ∪ shared-in. Shared-in
     // connectors are joined via connector_shares; their credentials stay on the
     // owner team and are never exposed here.
     const shareRows = await db.query.connectorShares.findMany({
-      where: eq(connectorShares.sharedWithTeamId, teamId),
+      where: sqlWhere(eq(connectorShares.sharedWithTeamId, teamId)),
       with: { connector: { with: { team: { columns: { name: true } } } } },
     });
     const ownedIds = new Set(rows.map(r => r.id));
@@ -89,7 +90,7 @@ export async function GET(req: NextRequest) {
       // shared-in connectors' secrets live under the owner's teamId.
       const secretTeamIds = [...new Set([teamId, ...sharedIn.map(c => c.teamId)])];
       const secretRows = await db.query.secrets.findMany({
-        where: teamCredentialWhere({ teamId: secretTeamIds, purpose: 'mcp_connector_credential', label: connectorIds }),
+        where: sqlWhere(teamCredentialWhere({ teamId: secretTeamIds, purpose: 'mcp_connector_credential', label: connectorIds })),
         columns: { label: true, tokenExpiresAt: true, lastVerificationError: true },
       });
       for (const s of secretRows) {
@@ -241,7 +242,7 @@ export async function POST(req: NextRequest) {
     // (teamId, name) uniqueness (spec §1 AC-4). Registry install passes
     // reuseIfExists to adopt the existing row instead of erroring (spec §5 AC-3).
     const existing = await db.query.connectors.findFirst({
-      where: and(eq(connectors.teamId, teamId), eq(connectors.name, name)),
+      where: sqlWhere(and(eq(connectors.teamId, teamId), eq(connectors.name, name))),
     });
     if (existing) {
       if (reuseIfExists) {

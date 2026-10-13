@@ -21,6 +21,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { holdsInWorkspace } from '@/lib/team-access';
 import { detachInteractiveWorker } from '@/lib/interactive-detach';
 import { isInteractiveWorker } from '@/lib/interactive-worker-liveness';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,7 +51,7 @@ export async function POST(
   const reason = rawReason ? rawReason.slice(0, MAX_REASON) : 'released from the task page';
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, workspaceId: true, runner: true },
   });
   if (!worker) {

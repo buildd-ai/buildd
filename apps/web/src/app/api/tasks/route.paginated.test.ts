@@ -114,6 +114,8 @@ mock.module('@/lib/account-workspace-cache', () => ({
 mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: mockGetUserWorkspaceIds,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
+  // A person's task delegation (lib/task-delegation-checks.ts); unused here.
+  verifyWorkspaceAccess: async () => null,
 }));
 mock.module('@/lib/task-service', () => ({
   resolveCreatorContext: mock(() => Promise.resolve({ createdByAccountId: null, createdByWorkerId: null, creationSource: 'api', parentTaskId: null })),

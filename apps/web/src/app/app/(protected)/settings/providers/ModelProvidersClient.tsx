@@ -12,15 +12,17 @@ import ProviderRow from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
 import AgentBackendsSection, { type SignInSlots } from '../AgentBackendsSection';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
-import { connectedProviders, groupProviders, keyRuleLine, storedPolicyLine } from './providers-view';
+import { connectedProviders, groupProviders, keyRuleLine, providersTitle, storedPolicyLine, usesTeamLine } from './providers-view';
 import UsedForSection from './UsedForSection';
 
 /**
  * The model keys, one scope per page. `scope="team"` is Settings › Team ›
  * Models: Providers (the team's, plus one line naming the workspaces that
  * use their own keys) and Used for (only once two or more are connected).
- * `scope="workspace"` is that workspace's settings page: "Uses team settings"
- * until an admin overrides, then the workspace's own rows. `scope="mine"` is
+ * `scope="workspace"` is that workspace's settings page: "Uses <team>'s
+ * settings" until an admin overrides, then the workspace's own rows, an
+ * inherited one reading "<team>'s key". The team page's heading names the
+ * team ("Providers · <team>") for someone in more than one. `scope="mine"` is
  * Settings › You › Keys: your own keys and nothing of the team's to change,
  * with the key rule as a line. No page mixes scopes.
  *
@@ -39,12 +41,17 @@ import UsedForSection from './UsedForSection';
  *
  * The LiteLLM gateway and a custom endpoint are rows like any other; their
  * forms open in the row. A gateway change reloads the rows and the decision
- * model, so all of it lives in one component.
+ * model, so all of it lives in one component. The decision model is a platform
+ * operator control (lib/admin/platform-operator-caller.ts): its Used for row renders for an
+ * operator only, editable when they also hold the `manage_team_settings` its
+ * route checks.
  */
-export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [], signIns, scope = 'team', workspaceId: fixedWorkspaceId = null }: {
+export default function ModelProvidersClient({ teamId, isAdmin, operator = false, workspaces = [], signIns, scope = 'team', workspaceId: fixedWorkspaceId = null }: {
   teamId: string;
   /** Fallback for the Routing section until the list loads. */
   isAdmin: boolean;
+  /** A platform operator: the decision model row renders. */
+  operator?: boolean;
   /** The team's workspaces, for Workspace keys and the agent endpoint. */
   workspaces?: EndpointWorkspace[];
   /** Props for the sign-ins folded into the Claude and OpenAI rows. Omitted: the rows hold keys only. */
@@ -56,7 +63,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
 }) {
   const params = useSearchParams();
   const workspaceId = scope === 'workspace' ? fixedWorkspaceId : null;
-  // A workspace with nothing of its own shows "Uses team settings" until an admin overrides.
+  // A workspace with nothing of its own shows "Uses <team>'s settings" until an admin overrides.
   const [overriding, setOverriding] = useState(false);
   const [data, setData] = useState<ListProvidersResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -155,7 +162,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
 
   const render = (slots: SignInSlots | null) => (
     <>
-      <Section title="Providers" id="keys" className="scroll-mt-20">
+      <Section title={providersTitle(data)} id="keys" className="scroll-mt-20">
         <span id="providers" aria-hidden="true" />
         {/* Old links: #routing, #advanced (the removed Routing section; the gateway and endpoint are rows now). */}
         <span id="routing" aria-hidden="true" />
@@ -190,7 +197,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
           teamId={teamId}
           data={data}
           canManage={data.caller.can.manage_team_settings}
-          decisions={<DecisionModelPicker teamId={teamId} canManage={canManageRouting} rev={gatewayRev} embedded />}
+          decisions={operator ? <DecisionModelPicker teamId={teamId} canManage={data.caller.can.manage_team_settings} rev={gatewayRev} embedded /> : undefined}
           extra={slots && bothBackends(data) ? <div className="border-y border-border-default">{slots.routing}</div> : null}
         />
       )}
@@ -208,7 +215,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
           {status}
           {data && !own && !overriding && (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="workspace-uses-team">
-              <p className="text-body text-text-secondary">Uses team settings.</p>
+              <p className="text-body text-text-secondary">{usesTeamLine(data.teamName)}</p>
               {canOverride && <button type="button" className="btn" onClick={() => setOverriding(true)}>Override</button>}
             </div>
           )}

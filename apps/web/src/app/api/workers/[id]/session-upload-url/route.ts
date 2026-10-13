@@ -12,6 +12,7 @@ import {
   isSessionArtifactKind,
   sessionArtifactKey,
 } from '@/lib/session-artifact-keys';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/workers/[id]/session-upload-url
@@ -89,7 +90,7 @@ export async function POST(
   // The one unavoidable lookup: authorization + data class + team, in a single
   // relational query (one round trip, workers.id is the primary key).
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, accountId: true, claimedByUserId: true, taskId: true, workspaceId: true },
     with: { workspace: { columns: { teamId: true, dataClass: true } } },
   });

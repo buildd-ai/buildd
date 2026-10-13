@@ -59,6 +59,7 @@ import { isReadOnlyReview } from '@/lib/read-only-review';
 
 export { readPinnedPrScope, PR_FILES_PAGE_SIZE, PR_FILES_LIST_CAP } from '@buildd/core/pr-scope-read';
 import { readPinnedPrScope, type PrScopeRead, type GithubGet } from '@buildd/core/pr-scope-read';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 export type { PrScopeRead, PrScopeIncompleteReason, GithubGet } from '@buildd/core/pr-scope-read';
 export const PR_SCOPE_SURFACE = 'pr-scope-reconcile';
 
@@ -251,13 +252,13 @@ export async function reconcilePrBackedScope(input: ReconcileInput): Promise<Rec
   const { workspaceId, prNumber } = input;
 
   const prWorkers = await db.query.workers.findMany({
-    where: and(eq(workers.workspaceId, workspaceId), workerOwnsPr(input.repoFullName, prNumber)),
+    where: sqlWhere(and(eq(workers.workspaceId, workspaceId), workerOwnsPr(input.repoFullName, prNumber))),
     columns: { taskId: true },
   });
   const ownerTaskIds = unique(prWorkers.map(w => w.taskId).filter((id): id is string => !!id));
 
   const rows = await db.query.tasks.findMany({
-    where: scopeHolderTasksWhere(workspaceId, prNumber, ownerTaskIds),
+    where: sqlWhere(scopeHolderTasksWhere(workspaceId, prNumber, ownerTaskIds)),
     columns: {
       id: true, category: true, context: true, pathManifest: true, pathDeclaration: true, pathClaimRevision: true,
       conflictRetryPrNumber: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true,
@@ -268,11 +269,11 @@ export async function reconcilePrBackedScope(input: ReconcileInput): Promise<Rec
 
   const [liveWorkers, leases] = await Promise.all([
     db.query.workers.findMany({
-      where: and(inArray(workers.taskId, ids), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+      where: sqlWhere(and(inArray(workers.taskId, ids), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
       columns: { taskId: true, observedTouches: true },
     }),
     db.query.pathClaims.findMany({
-      where: and(eq(pathClaims.workspaceId, workspaceId), inArray(pathClaims.taskId, ids), isNull(pathClaims.releasedAt)),
+      where: sqlWhere(and(eq(pathClaims.workspaceId, workspaceId), inArray(pathClaims.taskId, ids), isNull(pathClaims.releasedAt))),
       columns: { taskId: true, path: true },
     }),
   ]);

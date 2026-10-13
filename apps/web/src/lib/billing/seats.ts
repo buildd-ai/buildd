@@ -3,6 +3,7 @@ import { teamInvitations, teamMembers, teams } from '@buildd/core/db/schema';
 import { and, count, eq } from 'drizzle-orm';
 import { isBillingEnforced } from '@buildd/core/entitlements';
 import { seatDecision, type SeatDecision } from '@buildd/core/billing';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Members on the team and invitations still pending — what a seat count must cover. */
 export async function teamSeatUsage(teamId: string): Promise<{ members: number; pending: number }> {
@@ -24,7 +25,7 @@ export async function teamSeatUsage(teamId: string): Promise<{ members: number; 
 export async function checkSeatForNewMember(teamId: string, opts: { countPending: boolean }): Promise<SeatDecision> {
   if (!isBillingEnforced()) return { ok: true };
   const [team, usage] = await Promise.all([
-    db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { plan: true, paidSeats: true } }),
+    db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { plan: true, paidSeats: true } }),
     teamSeatUsage(teamId),
   ]);
   return seatDecision({

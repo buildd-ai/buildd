@@ -11,6 +11,7 @@ import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { emit } from '@/lib/core-emit';
 import { checkSeatForNewMember } from '@/lib/billing/seats';
 import { recordActiveDay, utcDay } from '@/lib/active-days';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 
@@ -114,14 +115,14 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       try {
         // Look up by provider ID
         const existingUser = provider === 'google'
-          ? await db.query.users.findFirst({ where: eq(users.googleId, providerId) })
-          : await db.query.users.findFirst({ where: eq(users.githubId, providerId) });
+          ? await db.query.users.findFirst({ where: sqlWhere(eq(users.googleId, providerId)) })
+          : await db.query.users.findFirst({ where: sqlWhere(eq(users.githubId, providerId)) });
 
         if (existingUser) return true;
 
         // No user with this provider ID — check by email for linking
         const emailUser = await db.query.users.findFirst({
-          where: eq(users.email, user.email),
+          where: sqlWhere(eq(users.email, user.email)),
         });
 
         if (emailUser) {
@@ -198,10 +199,10 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
         // Auto-accept any pending invitations for this email
         const pendingInvites = await db.query.teamInvitations.findMany({
-          where: and(
+          where: sqlWhere(and(
             eq(teamInvitations.email, user.email!),
             eq(teamInvitations.status, 'pending'),
-          ),
+          )),
         });
 
         for (const invite of pendingInvites) {
@@ -232,8 +233,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       if (account?.provider === 'google' || account?.provider === 'github') {
         try {
           const dbUser = account.provider === 'google'
-            ? await db.query.users.findFirst({ where: eq(users.googleId, account.providerAccountId) })
-            : await db.query.users.findFirst({ where: eq(users.githubId, account.providerAccountId) });
+            ? await db.query.users.findFirst({ where: sqlWhere(eq(users.googleId, account.providerAccountId)) })
+            : await db.query.users.findFirst({ where: sqlWhere(eq(users.githubId, account.providerAccountId)) });
           if (dbUser) {
             token.userId = dbUser.id;
           }

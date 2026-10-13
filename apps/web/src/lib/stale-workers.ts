@@ -1,4 +1,5 @@
 import { isSilentCompletion } from '@/lib/silent-completion';
+import { inheritTaskDelegation } from '@buildd/core/token-delegation';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, asc, sql } from 'drizzle-orm';
@@ -16,8 +17,10 @@ import { kernelDeliveryById } from '@/lib/workflow/authority';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import { PARK_MAX_MS, PARK_MISSION_MAX_MS, notParkedScope } from '@/lib/worker-park';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { clearWorkerMessages } from '@buildd/core/worker-messages';
 import {
   ANSWER_PATH_REASONS,
+  INTERACTIVE_ANSWER_READ_DEADLINE_MS,
   buildContinuationTaskValues,
   describeAnswerPath,
   type AnswerDeliveryRecord,
@@ -25,6 +28,7 @@ import {
 } from '@/lib/answer-resume';
 import type { WaitingFor } from '@buildd/shared';
 import { waitingForOptionLabels } from '@/lib/waiting-for-options';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -79,7 +83,7 @@ async function resolveStaleTask(
   // Read current task status and context upfront. A cancelled task must never
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { kind: true, pathManifest: true, outputRequirement: true, taskClass: true, status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true, deliveryId: true, deliveryRole: true },
   });
   // A visual-auditor mission task is settled only by its own evidence check
@@ -102,7 +106,7 @@ async function resolveStaleTask(
     : null;
   const kernelAttemptEnded = async () => {
     if (!kernelDeliveryId || !currentTask) return;
-    const after = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true } });
+    const after = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true } });
     if (after?.status !== 'failed') return;
     // Lazy: the seam loads the effect handlers, which load half the app.
     const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
@@ -303,10 +307,10 @@ async function resolveStaleTask(
     // NOT consume a retry slot (they reflect external constraints, not task bugs).
     // Workers predating exitCause (null) are treated as code_failure for safety.
     const failedWorkers = await db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workers.taskId, taskId),
         eq(workers.status, 'failed'),
-      ),
+      )),
       columns: { id: true, exitCause: true },
     });
     const chargeableFailures = failedWorkers.filter(w => consumesRetryAttempt(w.exitCause));
@@ -420,7 +424,7 @@ async function resolveAbandonedInteractiveTask(
   workspaceId: string,
   staleWorker: { branch?: string | null; error?: string | null } | undefined,
 ) {
-  const current = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true, context: true } });
+  const current = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true, context: true } });
   if (current && current.status !== 'pending' && !isTerminalTaskStatus(current.status)) {
     const existingCtx = (current.context || {}) as Record<string, unknown>;
     await db
@@ -696,7 +700,7 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
 
   // 1. Auto-expire stale workers. The rules live in staleWorkerScope.
   const staleWorkers = await db.query.workers.findMany({
-    where: staleWorkerScope(accountId),
+    where: sqlWhere(staleWorkerScope(accountId)),
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       // Needed to tell a never-started row and a silent session apart from a
@@ -846,7 +850,7 @@ export async function resolveTasksOfReapedWorkers(
   if (taskIds.length === 0) return;
   // Fetch workspace IDs before updating, for dependency resolution
   const staleTasks = await db.query.tasks.findMany({
-    where: inArray(tasks.id, taskIds),
+    where: sqlWhere(inArray(tasks.id, taskIds)),
     columns: { id: true, workspaceId: true },
   });
 
@@ -854,11 +858,11 @@ export async function resolveTasksOfReapedWorkers(
   const reapedIds = reaped.map(w => w.id);
   for (const t of staleTasks) {
     const otherActiveWorkers = await db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workers.taskId, t.id),
         inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
         not(inArray(workers.id, reapedIds)),
-      ),
+      )),
       columns: { id: true },
       limit: 1,
     });
@@ -924,7 +928,7 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   const heartbeatCutoff = new Date(now.getTime() - HEARTBEAT_STALE_MS);
 
   const freshHeartbeat = await db.query.workerHeartbeats.findFirst({
-    where: heartbeatFreshnessScope(accountId, heartbeatCutoff),
+    where: sqlWhere(heartbeatFreshnessScope(accountId, heartbeatCutoff)),
     columns: { id: true },
   });
   if (freshHeartbeat) return 0;
@@ -932,7 +936,7 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   const orphanedByHeartbeat = await db.query.workers.findMany({
     // Account-scoped on purpose — NOT widened to the team. See
     // heartbeatOrphanScope for why widening it is unsafe either way.
-    where: heartbeatOrphanScope(accountId, heartbeatCutoff, now),
+    where: sqlWhere(heartbeatOrphanScope(accountId, heartbeatCutoff, now)),
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
@@ -979,18 +983,18 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   if (orphanTaskIds.length > 0) {
     // Fetch workspace IDs for dependency resolution
     const orphanTasks = await db.query.tasks.findMany({
-      where: inArray(tasks.id, orphanTaskIds),
+      where: sqlWhere(inArray(tasks.id, orphanTaskIds)),
       columns: { id: true, workspaceId: true },
     });
 
     // Only reset tasks that have NO other active workers
     for (const task of orphanTasks) {
       const otherActiveWorkers = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.taskId, task.id),
           inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
           not(inArray(workers.id, orphanIds)),
-        ),
+        )),
         columns: { id: true },
         limit: 1,
       });
@@ -1026,14 +1030,14 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
   const recoveryCutoff = new Date(Date.now() - RECOVERY_CUTOFF_MS);
 
   const staleWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, accountId),
       inArray(workers.status, ['running', 'starting']),
       lt(workers.updatedAt, staleThreshold),
       // Don't attempt recovery on workers that have been stale for 30+ minutes
       // (they already had their chance)
       gt(workers.updatedAt, recoveryCutoff),
-    ),
+    )),
     columns: { id: true, taskId: true, localUiUrl: true },
   });
 
@@ -1046,11 +1050,11 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
       // Only attempt recovery if runner has a fresh heartbeat
       if (worker.localUiUrl) {
         const heartbeat = await db.query.workerHeartbeats.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workerHeartbeats.accountId, accountId),
             eq(workerHeartbeats.localUiUrl, worker.localUiUrl),
             gt(workerHeartbeats.lastHeartbeatAt, staleThreshold),
-          ),
+          )),
           columns: { id: true },
         });
 
@@ -1058,10 +1062,10 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
       } else {
         // No localUiUrl on the worker — check if ANY heartbeat for the account is fresh
         const anyHeartbeat = await db.query.workerHeartbeats.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workerHeartbeats.accountId, accountId),
             gt(workerHeartbeats.lastHeartbeatAt, staleThreshold),
-          ),
+          )),
           columns: { id: true },
         });
 
@@ -1128,12 +1132,12 @@ export async function cleanupStuckWaitingInput(
   const standaloneCutoff = new Date(Date.now() - WAITING_INPUT_STALE_MS);
 
   const allWaitingWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, accountId),
       eq(workers.status, 'waiting_input'),
       // A superseded question is closed now, whatever its age; only the named workers.
       superseded ? inArray(workers.id, opts.workerIds?.length ? opts.workerIds : ['']) : lt(workers.updatedAt, missionCutoff),
-    ),
+    )),
     columns: { id: true, taskId: true, accountId: true, runner: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
     with: { task: { columns: { missionId: true }, with: { mission: { columns: { executor: true } } } } },
   });
@@ -1189,7 +1193,7 @@ export async function cleanupStuckWaitingInput(
 
     // Fetch original task to clone
     const originalTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, worker.taskId),
+      where: sqlWhere(eq(tasks.id, worker.taskId)),
     });
 
     if (!originalTask) continue;
@@ -1271,6 +1275,8 @@ export async function cleanupStuckWaitingInput(
         outputRequirement: originalTask.outputRequirement,
         outputSchema: originalTask.outputSchema,
         parentTaskId: originalTask.parentTaskId,
+        // A person's cross-workspace grant is part of the work, not the attempt.
+        ...(() => { const delegation = inheritTaskDelegation(originalTask); return delegation ? { delegation } : {}; })(),
         // Routing survives the retry: without it a visual-auditor audit would
         // be claimable by any runner and skip its evidence check.
         roleSlug: originalTask.roleSlug,
@@ -1337,11 +1343,11 @@ export async function cleanupUnresumedAnswers(
   const now = Date.now();
 
   const candidates = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, accountId),
       eq(workers.status, 'waiting_input'),
       isNotNull(workers.pendingInstructions),
-    ),
+    )),
     columns: {
       id: true, taskId: true, accountId: true, workspaceId: true, branch: true,
       milestones: true, pendingInstructions: true, instructionHistory: true,
@@ -1494,6 +1500,183 @@ export async function cleanupUnresumedAnswers(
 
   // Release concurrency seats for OAuth accounts — a superseded worker no
   // longer holds one. Grouped per account for one atomic decrement.
+  if (degraded > 0) {
+    await db
+      .update(accounts)
+      .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${degraded}, 0)` })
+      .where(and(eq(accounts.id, accountId), eq(accounts.authType, 'oauth')));
+  }
+
+  return { degraded };
+}
+
+/**
+ * Send an answer that went back to an interactive session, and was never read,
+ * to a follow-up task.
+ *
+ * `/respond`'s interactive path flips the worker to `running` and queues the
+ * answer for the session that asked (`ask_human`). If that session dies between
+ * the answer landing and its next poll, nothing else ever looks at the worker:
+ * it is not `waiting_input`, so neither the park expiry nor
+ * cleanupUnresumedAnswers sees it, and the answer sits on a `running` row until
+ * the 2 h idle reaper fails it. Past INTERACTIVE_ANSWER_READ_DEADLINE_MS with
+ * no activity on the worker, the answer goes to the cold continuation it would
+ * have gone to had the session already been gone when the human answered.
+ *
+ * "No activity" is the worker's `updatedAt`, which the answer itself, any
+ * update_progress and every plugin presence touch move, so a session that is
+ * busy and checking in is never overtaken. The claiming write is gated on it
+ * staying quiet; a session that reads the answer or checks in first wins.
+ *
+ * The answer also leaves the old task's queue, and the worker is superseded:
+ * a session that does come back gets "this went to a follow-up task" from
+ * await_answer and an abort from everything else, instead of acting on the
+ * answer alongside the follow-up.
+ *
+ * See docs/specs/answered-question-resume.md.
+ */
+export async function cleanupUnreadInteractiveAnswers(
+  accountId: string,
+): Promise<{ degraded: number }> {
+  const now = Date.now();
+  const quietSince = new Date(now - INTERACTIVE_ANSWER_READ_DEADLINE_MS);
+
+  const candidates = await db.query.workers.findMany({
+    where: sqlWhere(and(
+      eq(workers.accountId, accountId),
+      eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
+      eq(workers.status, 'running'),
+      lt(workers.updatedAt, quietSince),
+    )),
+    columns: {
+      id: true, taskId: true, accountId: true, workspaceId: true, branch: true,
+      milestones: true, instructionHistory: true, runner: true, status: true, updatedAt: true,
+    },
+    with: { task: true, workspace: true },
+  });
+
+  let degraded = 0;
+
+  for (const worker of candidates) {
+    if (worker.runner !== INTERACTIVE_WORKER_RUNNER || worker.status !== 'running') continue;
+    if (!worker.updatedAt || new Date(worker.updatedAt).getTime() >= quietSince.getTime()) continue;
+    const task = (worker as any).task as Record<string, any> | null;
+    if (!task?.id) continue;
+    const delivery = (task.context as Record<string, unknown> | null)
+      ?.answerDelivery as AnswerDeliveryRecord | undefined;
+    if (!delivery || delivery.path !== 'interactive' || delivery.workerId !== worker.id || !delivery.messageId) continue;
+
+    // The answer is unread while its instruction-history entry is not
+    // acknowledged (await_answer and the receive_messages ack both write that).
+    const history = Array.isArray(worker.instructionHistory)
+      ? (worker.instructionHistory as Array<{ id?: string; message?: string; deliveryState?: string }>)
+      : [];
+    const entry = history.find(e => e?.id === delivery.messageId);
+    if (!entry || entry.deliveryState === 'acknowledged') continue;
+    const answer = typeof entry.message === 'string' && entry.message ? entry.message : null;
+    if (!answer) continue;
+
+    const [claimed] = await db
+      .update(workers)
+      .set({
+        status: 'superseded',
+        currentAction: 'Answer went to a follow-up task — the session never read it',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(workers.id, worker.id),
+        eq(workers.status, 'running'),
+        lt(workers.updatedAt, quietSince),
+      ))
+      .returning({ id: workers.id });
+
+    if (!claimed) continue;
+
+    const coldDecision = {
+      path: 'cold_continuation' as const,
+      reasonCode: 'interactive_answer_not_read' as const,
+      reason: ANSWER_PATH_REASONS.interactive_answer_not_read,
+    };
+    const coldDelivery: AnswerDeliveryRecord = {
+      ...delivery,
+      path: coldDecision.path,
+      reasonCode: coldDecision.reasonCode,
+      reason: coldDecision.reason,
+      decidedAt: new Date(now).toISOString(),
+    };
+
+    let continuation;
+    try {
+      [continuation] = await db
+        .insert(tasks)
+        .values(buildContinuationTaskValues({
+          task: task as ContinuationParentTask,
+          workspaceId: worker.workspaceId,
+          workerId: worker.id,
+          branch: worker.branch,
+          milestones: (worker.milestones as Array<{ type?: string; label?: string }>) || [],
+          question: delivery.question || 'A question the agent asked (not retained)',
+          answer,
+          delivery: coldDelivery,
+        }))
+        .returning();
+    } catch (err) {
+      // No transactions on neon-http: undo the claim so the session can still
+      // read its answer, and a later pass can try again.
+      console.error(`[Worker ${worker.id}] Cold-continuation insert failed, restoring the interactive answer:`, err);
+      await db
+        .update(workers)
+        .set({ status: 'running', completedAt: null, updatedAt: worker.updatedAt })
+        .where(eq(workers.id, worker.id));
+      continue;
+    }
+
+    // Best-effort from here: the continuation carries the answer.
+    try {
+      await clearWorkerMessages(task.id, [delivery.messageId]);
+      await db
+        .update(tasks)
+        .set({
+          context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('answerDelivery', ${JSON.stringify(coldDelivery)}::jsonb)` as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, task.id));
+      if (continuation) {
+        await db
+          .update(workers)
+          .set({ continuationTaskId: continuation.id })
+          .where(eq(workers.id, worker.id));
+      }
+      await db.insert(missionNotes).values({
+        missionId: task.missionId ?? null,
+        taskId: task.id,
+        workerId: worker.id,
+        authorType: 'system',
+        type: 'warning',
+        title: 'The session never read your answer',
+        body: describeAnswerPath(coldDecision),
+        status: 'open',
+      });
+      // The work goes on under the continuation's id, as on /respond's cold path.
+      await releaseAndNotify(task.id, 'abandoned');
+    } catch (err) {
+      console.error(`[Worker ${worker.id}] Post-continuation bookkeeping failed:`, err);
+    }
+
+    if (continuation) {
+      await wakeTask(continuation.id, 'task.created');
+      try {
+        const workspace = (worker as any).workspace ?? { id: worker.workspaceId };
+        await announceTaskCreated(continuation, workspace);
+      } catch (err) {
+        console.error(`[Worker ${worker.id}] Continuation task announce failed:`, err);
+      }
+    }
+
+    degraded++;
+  }
+
   if (degraded > 0) {
     await db
       .update(accounts)

@@ -19,7 +19,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { NextRequest } from 'next/server';
 import { sql } from 'drizzle-orm';
-import { assertDbConfigured, q, seedWorkspace } from './harness';
+import { allMigrationSql, assertDbConfigured, q, seedWorkspace } from './harness';
 
 process.env.AUTH_SECRET ||= 'oauth-refresh-families-test-secret-0123456789';
 const storage = await import('../../src/lib/oauth/storage');
@@ -64,11 +64,9 @@ async function rowFor(token: string): Promise<Row | undefined> {
 
 /** The data statements of the migration that introduced refresh-token families. */
 function backfillStatements(): string[] {
-  const dir = join(import.meta.dir, '../../../../packages/core/drizzle');
-  const file = readdirSync(dir).find((f) => f.endsWith('.sql')
-    && readFileSync(join(dir, f), 'utf8').includes('"oauth_refresh_tokens_family_idx"'));
-  if (!file) throw new Error('refresh-token family migration not found');
-  return readFileSync(join(dir, file), 'utf8')
+  const found = allMigrationSql().find((m) => m.sql.includes('"oauth_refresh_tokens_family_idx"'));
+  if (!found) throw new Error('refresh-token family migration not found');
+  return found.sql
     .split('--> statement-breakpoint')
     .map((s) => s.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n').trim())
     .filter((s) => /^UPDATE\b/i.test(s));

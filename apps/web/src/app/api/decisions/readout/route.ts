@@ -7,6 +7,7 @@ import { readDecisionKindReadout } from '@buildd/core/decision-readout-source';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const WINDOWS = { '24h': 1, '7d': 7, '30d': 30 } as const;
 type Window = keyof typeof WINDOWS;
@@ -35,7 +36,7 @@ export async function GET(req: NextRequest) {
 
   const teamIds = await resolveAccountTeamIds(user, account);
   const allowed = teamIds.length ? await db.query.workspaces.findMany({
-    where: inArray(workspaces.teamId, teamIds), columns: { id: true, teamId: true },
+    where: sqlWhere(inArray(workspaces.teamId, teamIds)), columns: { id: true, teamId: true },
   }) : [];
   const match = allowed.find(w => w.id === workspaceId);
   if (!match) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });

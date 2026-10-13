@@ -39,6 +39,7 @@ import {
   rowNeedsRecheck,
   type DiscrepancyCandidate,
 } from '@/lib/action-queue';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const LEDGER_WORKFLOW_FILE = 'spec-discrepancy-ledger.yml';
 
@@ -52,7 +53,7 @@ export type LedgerDispatcher = (workspaceId: string) => Promise<{ ok: boolean; r
  */
 export const dispatchLedgerWorkflow: LedgerDispatcher = async (workspaceId) => {
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     with: { githubInstallation: true, githubRepo: true },
   });
   const installationId = workspace?.githubInstallation?.installationId;
@@ -178,14 +179,14 @@ async function loadClaimedCandidates(where: ReturnType<typeof and>): Promise<Can
 
   const taskIds = [...new Set(rows.map((r) => r.docFixTaskId).filter(Boolean) as string[])];
   const taskRows = taskIds.length
-    ? await db.query.tasks.findMany({ where: inArray(tasks.id, taskIds), columns: { id: true, status: true } })
+    ? await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, taskIds)), columns: { id: true, status: true } })
     : [];
   const statusById = new Map(taskRows.map((t) => [t.id, t.status]));
   const workerRows = taskIds.length
     ? await db.query.workers.findMany({
-        where: inArray(workers.taskId, taskIds),
+        where: sqlWhere(inArray(workers.taskId, taskIds)),
         columns: { taskId: true, prLifecycleStatus: true, mergedAt: true },
-        orderBy: (w, { desc }) => [desc(w.startedAt)],
+        orderBy: sqlOrderByFn((w, { desc }) => [desc(w.startedAt)]),
       })
     : [];
   const workerByTask = new Map<string, { prLifecycleStatus: string | null; mergedAt: Date | null }>();

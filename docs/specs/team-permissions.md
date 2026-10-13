@@ -6,7 +6,7 @@ last_verified: 2026-10-11
 summary: Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
 domain: auth
 surfaces: [apps/web/src/lib/permissions.ts, apps/web/src/lib/permission-registry.ts, apps/web/src/lib/team-access.ts, apps/web/src/lib/key-level-policy.ts]
-related: [team-namespace-scoping, auth-oauth-boundaries, agent-capabilities, mcp-connectors-and-roles]
+related: [team-namespace-scoping, auth-oauth-boundaries, agent-capabilities, mcp-connectors-and-roles, settings-audiences]
 keywords: [owner, admin, member, team role, api key level, permission registry, rbac, ownership transfer, personal role, credential policy, key clamp]
 verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/app/app/(protected)/settings/team/no-grant-table.test.ts, apps/web/src/lib/migrate-access.test.ts, apps/web/src/lib/team-access-team-scope.test.ts, apps/web/src/app/api/teams/[id]/members/route.test.ts, apps/web/src/app/api/teams/[id]/members/[userId]/route.test.ts, apps/web/src/app/api/teams/[id]/ownership/route.test.ts, apps/web/src/app/api/teams/[id]/invitations/route.test.ts, apps/web/src/app/api/invitations/[token]/accept/route.test.ts, apps/web/src/lib/creator-key-clamp.test.ts, apps/web/src/lib/connector-team-auth.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/lib/admin/platform-operator-caller.test.ts, apps/web/src/app/api/experiments/route.test.ts, apps/web/src/app/api/experiments/[id]/route.test.ts, apps/web/src/app/api/decisions/route.test.ts, apps/web/src/app/api/decisions/[id]/label/route.test.ts, apps/web/src/app/api/admin/platform-owner-routes.test.ts, apps/web/src/app/app/(protected)/home/home-view.test.tsx, apps/web/src/app/api/roles/personal.test.ts, apps/web/src/app/api/roles/[id]/personal.test.ts, apps/web/src/app/api/roles/[id]/share/route.test.ts, apps/web/src/app/api/roles/[id]/promote/route.test.ts, packages/core/__tests__/role-visibility.test.ts, packages/core/__tests__/credential-policy.test.ts, apps/web/src/app/api/workers/claim/personal-credential-injection.test.ts]
 supersedes: []
@@ -303,6 +303,14 @@ its account and level. Both lists unset: nobody is an operator.
 - Chat retro settings are written only through that same admin route
   (`chatRetro`); no team route reads or writes them. Account dogfood is set
   only by the daily pass for owners of teams in `CHAT_RETRO_DOGFOOD_TEAM_IDS`.
+- Settings › Models: a team admin (`manage_model_tiers`) picks each tier's
+  primary model and an Automatic or Manual upgrade policy. Model traffic pools
+  (alternates, the dial, split and explore, weights), the `soak` upgrade mode,
+  `overCapAuto` (what an automatic pick above the maximum does) and the
+  decision model are operator machinery: their controls, and the pool state
+  around them (a cell's learning state, alternates, what ran, History), render
+  for an operator only (a team member or admin sees each tier's primary), and their writes refuse every team role with 403 and write
+  nothing. The "Decisions are failing" Home card is an operator's only.
 - Home's layout for owners and admins is the `admin` audience
   (`homeAudience`, from `view_team_usage`); "operator" in this spec and in code
   means the platform operator only.
@@ -499,9 +507,8 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/teams/[id]/agent-endpoint/models/suggest/route.ts:25` | agent endpoint model suggest | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/teams/[id]/litellm-gateway/route.ts:23` | LiteLLM gateway writes | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/lib/chat-availability.ts:48` | UI: may set up chat keys | owner, admin | — | `manage_inference_providers` |
-| `apps/web/src/lib/model-tier-access.ts:88` | write model tiers and the upgrade policy | owner, admin | admin (route policy) | `manage_model_tiers` |
-| `apps/web/src/lib/tier-pool-access.ts:23` | write model traffic pools | owner, admin | — | `manage_model_tiers` |
-| `apps/web/src/app/app/(protected)/settings/models/page.tsx:74` | UI: edit model tiers | owner, admin, personal team | — | `manage_model_tiers` |
+| `apps/web/src/lib/model-tier-access.ts:88` | write a tier's primary model and the upgrade policy (Automatic or Manual) | owner, admin | admin (route policy) | `manage_model_tiers` |
+| `apps/web/src/app/app/(protected)/settings/models/page.tsx:68` | UI: pick a tier's primary model | owner, admin, personal team | — | `manage_model_tiers` |
 | `apps/web/src/app/api/accounts/[id]/ai-budget/route.ts:24` | app account daily AI cap | owner, admin, personal team | admin | `manage_ai_budget` |
 | `apps/web/src/lib/chat/turn.ts:516` | chat admin tool group | owner, admin | — | `use_chat_admin_tools` |
 
@@ -585,6 +592,12 @@ path. See Platform operator.
 | `apps/web/src/lib/decision-audit-access.ts:42` | read a decision for grading, grade it (MCP `get_decision`, `label_decision`; session `:46`) | operator | admin key of a platform admin account (no per-task token); OAuth by its person | platform operator |
 | `apps/web/src/app/api/admin/teams/[id]/experiment-flags/route.ts:30` | write `enabledDecisionShadows`, `inferenceFeatureModes`, `chatRetro` | — | admin key of a platform admin account (`requirePlatformOwner`) | platform admin |
 | `apps/web/src/app/app/(protected)/health/_lib/render-health.tsx:32` | UI: experiment controls on Health → Operator | operator | — | platform operator |
+| `apps/web/src/lib/tier-pool-access.ts:28` | write model traffic pools (alternates, dial, split, explore, weights; session only) | operator, in the team | — | platform operator |
+| `apps/web/src/app/api/model-tiers/policy/route.ts:103` | set the `soak` upgrade mode | operator | admin key of a platform admin account; OAuth by its person | platform operator |
+| `apps/web/src/lib/model-ceilings-api.ts:118` | set `overCapAuto` | operator | as above | platform operator |
+| `apps/web/src/app/api/teams/[id]/route.ts:221` | PATCH `decisionModel` | operator | — (session only) | platform operator |
+| `apps/web/src/lib/decision-health-needs-you.ts:194` | UI: "Decisions are failing" Home card | operator, in the team | — | platform operator |
+| `apps/web/src/app/app/(protected)/settings/models/page.tsx:35` | UI: traffic pools in the cell editor, tier History, the decision model | operator | — | platform operator |
 
 ### Oddities, reproduced not fixed
 

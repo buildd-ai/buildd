@@ -425,6 +425,8 @@ mock.module('@/lib/subscriptions', () => ({
 const mockRecordTaskOutcome = mock((_input: any) => Promise.resolve(true));
 const mockRecordRunnerOutcome = mock(async (_outcome: string) => {});
 mock.module('@buildd/core/runner-health', () => ({ recordRunnerOutcome: mockRecordRunnerOutcome }));
+const mockRecordRootCauseForOutcome = mock(async (_input: any) => {});
+mock.module('@/lib/root-cause-record', () => ({ recordRootCauseForOutcome: mockRecordRootCauseForOutcome }));
 // The message queue writes are single SQL statements now, so a mocked db has
 // no resulting array to inspect. Mock the queue module instead and assert the
 // calls — which is also what the route's contract actually is.
@@ -5909,6 +5911,57 @@ describe('PATCH /api/workers/[id]', () => {
         expect(capturedTaskSet?.result?.alreadyShippedIn?.prNumber).toBe(3851);
       });
 
+      describe('mission-branch refresh already on the branch', () => {
+        const refreshTask = {
+          ...shippedTask,
+          context: {
+            baseBranch: 'buildd/mission-x', requireMergeCommit: true,
+            refreshTrunk: 'dev', refreshTrunkSha: 'abc1234', refreshMissionHeadSha: 'def5678',
+          },
+        };
+        const compare = (status: string) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+          if (path.includes('/pulls?head=')) return Promise.resolve([]);
+          if (path.includes('/compare/abc1234...')) return Promise.resolve({ status });
+          return Promise.resolve(null);
+        });
+
+        it('completes without a PR when the branch already contains the trunk sha', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          compare('ahead');
+          expect((await complete({})).status).toBe(200);
+        });
+
+        it('keeps the slashes in the branch name when comparing', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          mockGithubApi.mockClear();
+          compare('ahead');
+          await complete({});
+          const comparePaths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string).filter((p) => p.includes('/compare/'));
+          expect(comparePaths.length).toBeGreaterThan(0);
+          for (const p of comparePaths) {
+            expect(p).toContain('buildd/mission-x');
+            expect(p).not.toContain('%2F');
+          }
+        });
+
+        it('still refuses when the branch does not contain the trunk sha', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          compare('diverged');
+          expect((await complete({})).status).toBe(400);
+        });
+
+        it('own commits still need discardEdits', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 1 });
+          compare('identical');
+          expect((await complete({})).status).toBe(400);
+          expect((await complete({ discardEdits: 'merge already pushed to the branch' })).status).toBe(200);
+        });
+      });
+
       it('the plain pr_required refusal points at alreadyShippedIn', async () => {
         mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
         githubPr(true);
@@ -9048,6 +9101,33 @@ describe('PATCH /api/workers/[id]', () => {
       // The gate must never be handed the model's own text to reason about.
       expect(arg).not.toHaveProperty('escalationReason');
       expect(arg).not.toHaveProperty('summary');
+    });
+
+    it('approve on an integration-refresh PR: the verdict-time inspector judges the trunk delta, like pre-flight', async () => {
+      // Without deltaBase the inspector read the PR diff against the mission
+      // branch, where a renumbered mission migration shows as deleted, and
+      // escalated a refresh the reviewer had approved (task 87c7e48d).
+      setupReviewerTaskCompletion('approve');
+      const reviewerTask = mockTasksFindFirst.getMockImplementation()!;
+      mockTasksFindFirst.mockImplementation((opts_?: any) => {
+        const cols = Object.keys(opts_?.columns ?? {});
+        if (cols.length === 1 && cols[0] === 'context') {
+          return Promise.resolve({ context: { requireMergeCommit: true, refreshTrunk: 'dev' } });
+        }
+        return reviewerTask(opts_);
+      });
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
+      expect((mockInspectPullRequestMigrations.mock.calls[0] as any[])[0]).toMatchObject({ prNumber: 42, headSha: 'abc123', deltaBase: 'dev' });
+    });
+
+    it('approve on an ordinary PR: the verdict-time inspector gets no deltaBase', async () => {
+      setupReviewerTaskCompletion('approve');
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+      expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
+      expect((mockInspectPullRequestMigrations.mock.calls[0] as any[])[0]).not.toHaveProperty('deltaBase');
     });
 
     it('approve: honours a server override — escalates, does not merge, and says why', async () => {
@@ -17763,6 +17843,16 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(runnerOutcomes()).toEqual(['completed']);
     expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]]);
     expect(evidenceWrites()).toHaveLength(1);
+  });
+
+  it('root causes hear the outcome with the worker\'s runner: a failure to record, a completion to verify', async () => {
+    setup();
+    mockRecordRootCauseForOutcome.mockClear();
+    releaseReturns({ status: 'completed', message: 'Released to main' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(mockRecordRootCauseForOutcome.mock.calls.map(c => c[0])).toEqual([
+      { taskId: 'task-1', accountId: 'account-1', status: 'completed', error: undefined },
+    ]);
   });
 });
 

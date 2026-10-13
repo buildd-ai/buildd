@@ -1599,6 +1599,69 @@ describe('evaluateAutoMergeSafety — release branch PR', () => {
   });
 });
 
+// ── A frozen release candidate (release/vX.Y.Z → prodBranch) ────────────────
+//
+// Exempt from the aggregate cap only when it proves it was opened by the
+// configured release workflow at the head its metadata records.
+
+const candidateConfig = {
+  enabled: true, strategy: 'workflow_dispatch' as const, workflowFile: 'release.yml', ref: 'dev', prodBranch: PROD_BRANCH,
+  candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+};
+const candidatePull = (o: Record<string, unknown> = {}) => ({
+  mergeable_state: 'clean',
+  head: { sha: 'head-sha', ref: 'release/v1.2.3', repo: { full_name: 'org/repo' } },
+  base: { ref: PROD_BRANCH, repo: { full_name: 'org/repo' } },
+  user: { login: 'github-actions[bot]' },
+  body: `<!-- release-candidate ${JSON.stringify({ schema: 1, version: '1.2.3', branch: 'release/v1.2.3', sourceRef: 'dev', sourceSha: 's', candidateSha: 'head-sha', baseRef: PROD_BRANCH })} -->`,
+  ...o,
+});
+
+describe('evaluateAutoMergeSafety — frozen release candidate', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+  });
+  const oversized = (pull: unknown) => mockGithubApi
+    .mockResolvedValueOnce({ check_runs: [] })
+    .mockResolvedValueOnce(OVERSIZED_FILES)
+    .mockResolvedValueOnce(pull);
+
+  it('does not apply the aggregate line threshold to a trusted release/v1.2.3 → main candidate', async () => {
+    oversized(candidatePull());
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: candidateConfig })).resolves.toEqual({ ok: true });
+  });
+
+  it('keeps the cap for a release/v* branch someone else opened (spoof)', async () => {
+    oversized(candidatePull({ user: { login: 'mallory' } }));
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: candidateConfig }))
+      .resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('keeps the cap once the head moved off the recorded candidate SHA', async () => {
+    oversized(candidatePull({ head: { sha: 'pushed-sha', ref: 'release/v1.2.3', repo: { full_name: 'org/repo' } } }));
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: candidateConfig }))
+      .resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('keeps the cap when the workspace declares no candidate policy', async () => {
+    oversized(candidatePull());
+    const { candidate: _c, ...noCandidates } = candidateConfig;
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: noCandidates }))
+      .resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('a CONTRACT migration still blocks a trusted candidate', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: 'packages/core/drizzle/0001_drop_column.sql', additions: 2, deletions: 0 }]);
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: false, operationClass: 'CONTRACT', reason: 'drops a column' });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: candidateConfig }))
+      .resolves.toEqual({ ok: false, reason: 'drops a column' });
+  });
+});
+
 describe('tryAutoMergeWorkerPr — mission-branch strategy and the size cap', () => {
   beforeEach(() => {
     mockGithubApi.mockReset();

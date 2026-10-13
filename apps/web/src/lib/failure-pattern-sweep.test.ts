@@ -107,6 +107,7 @@ interface FakeOpts {
   incidentPort?: IncidentStorePort;
   fixTasks?: FixTaskPort | null;
   send?: IncidentAlertSender;
+  rootCauses?: SweepDeps['rootCauses'];
 }
 
 function fakeDeps(workspaceIds: string[], opts: FakeOpts = {}) {
@@ -130,6 +131,7 @@ function fakeDeps(workspaceIds: string[], opts: FakeOpts = {}) {
     decide: null, // keep triage deterministic/DB-free in tests
     send: opts.send ?? sentSender,
     fixTasks: opts.fixTasks === undefined ? null : opts.fixTasks,
+    rootCauses: opts.rootCauses,
     async reportOpsError(message, detail, severity) { opsErrors.push({ message, detail, severity }); },
     async recordSelfHealth(ok) {
       selfHealthConsecutive = ok ? 0 : selfHealthConsecutive + 1;
@@ -342,7 +344,37 @@ describe('runFailurePatternSweep', () => {
   });
 });
 
-// ── recovery backstop (docs/specs/failure-incident-recovery.md §12(a)) ────────
+// ── path-overlap incidents reconcile against current facts ──────────────────
+
+describe('runFailurePatternSweep: root causes', () => {
+  it('records each detected pattern as one root cause on the workspace\'s team', async () => {
+    const upserts: any[] = [];
+    const rootCauses = { store: { async upsert(o: any) { upserts.push(o); }, async verifyRestored() { return 0; } }, teamOfWorkspace: async () => 'team-a' };
+    const facts = new Map([[WS1, { ...emptyFacts(WS1), workerFailures: criticalWorkerFailures(10) }]]);
+    const { deps } = fakeDeps([WS1], { facts, incidentPort: memoryIncidentPort(), rootCauses });
+
+    const counters = await runFailurePatternSweep(deps, { now });
+
+    expect(counters.runFailures).toBe(0);
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]).toMatchObject({ key: `pattern:repeated_failure:${WS1}`, teamId: 'team-a', classification: 'unknown', capability: { kind: 'platform', workspaceId: WS1 } });
+    expect(upserts[0].taskIds.length).toBeGreaterThan(0);
+  });
+
+  it('a root-cause store failure is an ops error; the incident path and the watermark still run', async () => {
+    const rootCauses = { store: { async upsert() { throw new Error('store down'); }, async verifyRestored() { return 0; } }, teamOfWorkspace: async () => 'team-a' };
+    const incidentPort = memoryIncidentPort();
+    const facts = new Map([[WS1, { ...emptyFacts(WS1), workerFailures: criticalWorkerFailures(10) }]]);
+    const { deps, opsErrors, watermarkWrites } = fakeDeps([WS1], { facts, incidentPort, rootCauses });
+
+    const counters = await runFailurePatternSweep(deps, { now });
+
+    expect(counters.runFailures).toBe(1);
+    expect(counters.incidentsOpened).toBe(1);
+    expect(opsErrors.map(e => e.message)).toEqual([`Failure Pattern Sentinel: root-cause record failed for workspace ${WS1}`]);
+    expect(watermarkWrites).toHaveLength(1);
+  });
+});
 
 describe('runFailurePatternSweep: last run and recovery event retention (operator-recovery §10)', () => {
   it('a full sweep records its run and prunes; a triggered one-workspace sweep does neither', async () => {

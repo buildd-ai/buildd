@@ -34,6 +34,7 @@ import { githubApi } from '@/lib/github';
 import { normalizeRepoFullName, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { installationIdForRepo } from '@/lib/workspace-installation';
 import type { CommandResult } from '@/lib/workflow/seam';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface RecordPrSupersessionParams {
   workerId: string;
@@ -95,12 +96,12 @@ export async function supersessionRepoScope(worker: {
   if (!worker.taskId) return out;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, worker.taskId),
+    where: sqlWhere(eq(tasks.id, worker.taskId)),
     columns: { missionId: true },
   });
   if (!task?.missionId) return out;
   const siblings = await db.query.tasks.findMany({
-    where: eq(tasks.missionId, task.missionId),
+    where: sqlWhere(eq(tasks.missionId, task.missionId)),
     columns: { id: true },
     with: {
       workspace: { columns: { repo: true }, with: { githubRepo: { columns: { fullName: true } } } },
@@ -150,7 +151,7 @@ export async function recordPrSupersession(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, workerId),
+    where: sqlWhere(eq(workers.id, workerId)),
     with: {
       workspace: {
         with: { githubRepo: { with: { installation: true } } },
@@ -308,7 +309,7 @@ export async function recordPrAbandonment(params: {
   if (!params.actor?.startsWith('human:')) return { ok: false, error: 'only a person can mark a PR abandoned', status: 403 };
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, params.workerId),
+    where: sqlWhere(eq(workers.id, params.workerId)),
     columns: { id: true, workspaceId: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true },
   });
   if (!worker) return { ok: false, error: 'Worker not found', status: 404 };
@@ -354,7 +355,7 @@ export async function dismissSupersessionSuggestion(params: {
   candidatePrUrl: string;
 }): Promise<SimpleWriteResult> {
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, params.workerId),
+    where: sqlWhere(eq(workers.id, params.workerId)),
     columns: { id: true, prUrl: true, supersessionScan: true },
   });
   if (!worker?.prUrl) return { ok: false, error: 'Worker not found', status: 404 };

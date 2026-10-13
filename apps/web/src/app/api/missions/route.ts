@@ -31,6 +31,7 @@ import { getTeamTimezone } from '@/lib/team-timezone';
 import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/lib/gate-ledger';
 import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from '@/lib/mission-list-query';
 import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -78,14 +79,14 @@ export async function GET(req: NextRequest) {
     });
 
     const results = await db.query.missions.findMany({
-      where,
-      orderBy: missionListOrderBy(parseMissionListSort(searchParams.get('sort')), q),
+      where: sqlWhere(where),
+      orderBy: sqlOrderBy(missionListOrderBy(parseMissionListSort(searchParams.get('sort')), q)),
       ...(limit ? { limit } : {}),
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
           columns: { id: true, status: true, kind: true, title: true, mode: true, category: true, parentTaskId: true, creationSource: true, updatedAt: true, taskClass: true },
-          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
+          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true }, orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt)]), limit: 1 } },
         },
         schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true, lastDeferralReason: true, lastDeferredAt: true } },
       },
@@ -340,7 +341,7 @@ export async function POST(req: NextRequest) {
       // We don't have the new mission's ID yet — no cycle possible on create since it's new.
       // But we still validate that the upstream mission exists in the same team.
       const upstream = await db.query.missions.findFirst({
-        where: eq(missions.id, dependsOnMission),
+        where: sqlWhere(eq(missions.id, dependsOnMission)),
         columns: { id: true, teamId: true },
       });
       if (!upstream || upstream.teamId !== teamId) {
@@ -352,7 +353,7 @@ export async function POST(req: NextRequest) {
     // teamId here is derived from the workspace; use callerTeamIds to allow cross-workspace linking.
     if (initiativeId) {
       const init = await db.query.initiatives.findFirst({
-        where: eq(initiatives.id, initiativeId),
+        where: sqlWhere(eq(initiatives.id, initiativeId)),
         columns: { id: true, teamId: true },
       });
       const callerTeamIds = apiAccount ? [apiAccount.teamId] : userTeamIds;

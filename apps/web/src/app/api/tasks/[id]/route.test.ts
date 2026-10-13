@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { signInteractiveSession } from '@/lib/interactive-session';
 
 // Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
 // a per-test policy instead of the DB. No ceiling unless a test sets one.
@@ -119,6 +120,7 @@ const mockIsMissionLinkable = mock(() => Promise.resolve(true));
 const mockEmit = mock(async (_event: any) => {});
 mock.module('@/lib/core-emit', () => ({ emit: mockEmit }));
 const leftMission = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.left_mission');
+const roleChanged = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.role_changed');
 mock.module('@/lib/mission-link-scope', () => ({
   isMissionLinkable: mockIsMissionLinkable,
 }));
@@ -193,6 +195,14 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 // Import handlers AFTER mocks
+// A person's delegation write (lib/task-delegation-checks.ts, tested in
+// task-delegation-scenario.test.ts and api/tasks/route.test.ts); here only
+// how PATCH routes it.
+const mockResolveTaskDelegationWrite = mock(async (input: unknown, _ws: string, person: string | null): Promise<any> =>
+  person ? { ok: true, value: input ? { ...(input as object), grantedByUserId: person, grantedByAccountId: null, grantedAt: 'now' } : null }
+    : { ok: false, status: 403, error: 'Only a person can grant a task delegation' });
+mock.module('@/lib/task-delegation-checks', () => ({ resolveTaskDelegationWrite: mockResolveTaskDelegationWrite }));
+
 import { GET, PATCH, DELETE } from './route';
 
 // Helper to create mock NextRequest
@@ -718,6 +728,58 @@ describe('PATCH /api/tasks/[id]', () => {
     mockIsMissionLinkable.mockResolvedValue(true);
   });
 
+  describe('delegation (update_task before claim)', () => {
+    const TARGET = '22222222-2222-4222-8222-222222222222';
+    const grant = { grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }] };
+    const task = (status = 'pending') => ({ id: TASK_ID, title: 'T', status, workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' } });
+    const patch = (body: Record<string, unknown>, headers?: Record<string, string>) =>
+      callHandler(PATCH, createMockRequest({ method: 'PATCH', body, ...(headers ? { headers } : {}) }), TASK_ID);
+
+    it('a person grants it on a pending task; it is written to the task row, guarded on pending', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-owner', email: 'o@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      const set = mock((_v: any) => ({ where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, delegation: { ...grant, grantedByUserId: 'user-owner' } }]) })) }));
+      mockTasksUpdate.mockReturnValue({ set });
+      const res = await patch({ delegation: grant });
+      expect(res.status).toBe(200);
+      expect(mockResolveTaskDelegationWrite.mock.calls.at(-1)).toEqual([grant, 'ws-1', 'user-owner']);
+      expect(set.mock.calls[0][0].delegation).toMatchObject({ ...grant, grantedByUserId: 'user-owner' });
+      expect((await res.json()).delegation.grants[0].workspaceId).toBe(TARGET);
+    });
+
+    it('is refused once the task is claimed: a running agent asks with request_capability', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-owner', email: 'o@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task('in_progress'));
+      const res = await patch({ delegation: grant });
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toContain('request_capability');
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+
+    it('a claim racing the write answers 409, not a silent grant on a running task', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-owner', email: 'o@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) });
+      expect((await patch({ delegation: grant })).status).toBe(409);
+    });
+
+    it('is sent on its own', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-owner', email: 'o@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      expect((await patch({ delegation: grant, title: 'x' })).status).toBe(400);
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+
+    it('an API key is not a person: refused, nothing written', async () => {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'acct-admin', level: 'admin', teamId: 'team-1' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      const res = await patch({ delegation: grant }, { Authorization: 'Bearer bld_admin' });
+      expect(res.status).toBe(403);
+      expect(mockResolveTaskDelegationWrite.mock.calls.at(-1)![2]).toBeNull();
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+  });
+
   // Review of #3053: a dependsOn edge may only name tasks in the task's own
   // workspace (POST already enforces this); PATCH accepted any string.
   describe('dependsOn workspace scope', () => {
@@ -836,6 +898,50 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(res.status).toBe(200);
       expect(mockWorkspaceSkillsFindMany).not.toHaveBeenCalled();
       expect(setCalls[0].roleSlug).toBeNull();
+    });
+
+    // Changing a role a role pick filled is an implicit correction of that
+    // decision; the decisions module labels it off task.role_changed
+    // (lib/decision-subscribers.ts).
+    describe('role change event', () => {
+      beforeEach(() => {
+        mockEmit.mockReset();
+        mockEmit.mockImplementation(async () => {});
+      });
+
+      it('emits on a change from the current role', async () => {
+        setup([role({ slug: 'researcher' })]);
+        mockTasksFindFirst.mockResolvedValue({ ...task, roleSlug: 'builder' });
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'researcher' } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(roleChanged()).toEqual([{
+          type: 'task.role_changed', taskId: TASK_ID, teamId: 'team-1',
+          from: 'builder', to: 'researcher', by: 'user-123',
+        }]);
+      });
+
+      it('does not emit when the role is cleared', async () => {
+        setup([]);
+        mockTasksFindFirst.mockResolvedValue({ ...task, roleSlug: 'builder' });
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: null } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(roleChanged()).toEqual([]);
+      });
+
+      it('does not emit for an unchanged role', async () => {
+        setup([role({ slug: 'builder' })]);
+        mockTasksFindFirst.mockResolvedValue({ ...task, roleSlug: 'builder' });
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'builder' } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(roleChanged()).toEqual([]);
+      });
+
+      it('does not emit for a first role on a task that had none', async () => {
+        setup([role({ slug: 'builder' })]);
+        const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'builder' } }), TASK_ID);
+        expect(res.status).toBe(200);
+        expect(roleChanged()).toEqual([]);
+      });
     });
   });
 
@@ -2114,6 +2220,94 @@ describe('PATCH /api/tasks/[id]', () => {
       expect((await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: 'yes' } }), TASK_ID)).status).toBe(400);
       mockTasksFindFirst.mockResolvedValue({ ...openTask(), status: 'completed' });
       expect((await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: true } }), TASK_ID)).status).toBe(400);
+    });
+  });
+
+  describe('reserve / release (reserved)', () => {
+    const pending = (context: Record<string, unknown> = { model: 'x' }, over: Record<string, unknown> = {}) => ({
+      id: TASK_ID, title: 'port migrator', status: 'pending', claimedBy: null, workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' }, context, ...over,
+    });
+    const live = (accountId: string) => ({ accountId, at: 'then', expiresAt: new Date(Date.now() + 600_000).toISOString() });
+    function capture() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1', ...v }]) })) }; }),
+      });
+      return sets;
+    }
+    const SAVED = process.env.AUTH_SECRET;
+    const interactive = () => ({ 'x-buildd-interactive-session': signInteractiveSession({ accountId: 'account-123', userId: null })! });
+    const patch = (body: Record<string, unknown>, headers: Record<string, string> = interactive()) =>
+      callHandler(PATCH, createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_xxx', ...headers }, body }), TASK_ID);
+    afterEach(() => { if (SAVED === undefined) delete process.env.AUTH_SECRET; else process.env.AUTH_SECRET = SAVED; });
+    beforeEach(() => {
+      process.env.AUTH_SECRET = 'test-secret-for-interactive-marker';
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    });
+
+    it('reserved: true stamps context.reservedBy for the calling account and keeps the rest of the context', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending());
+      const sets = capture();
+      const res = await patch({ reserved: true });
+      expect(res.status).toBe(200);
+      expect(sets[0].context.model).toBe('x');
+      expect(sets[0].context.reservedBy.accountId).toBe('account-123');
+      expect(new Date(sets[0].context.reservedBy.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('renews its own reservation', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending({ reservedBy: live('account-123') }));
+      const sets = capture();
+      expect((await patch({ reserved: true })).status).toBe(200);
+      expect(sets[0].context.reservedBy.at).not.toBe('then');
+    });
+
+    it('refuses a second account while the first reservation is live, and takes over a lapsed one', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending({ reservedBy: live('someone-else') }));
+      capture();
+      expect((await patch({ reserved: true })).status).toBe(409);
+      mockTasksFindFirst.mockResolvedValue(pending({ reservedBy: { accountId: 'someone-else', at: 'old', expiresAt: '2020-01-01T00:00:00.000Z' } }));
+      const sets = capture();
+      expect((await patch({ reserved: true })).status).toBe(200);
+      expect(sets[0].context.reservedBy.accountId).toBe('account-123');
+    });
+
+    it('reserved: false releases only the caller\'s own reservation', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending({ model: 'x', reservedBy: live('account-123') }));
+      const sets = capture();
+      expect((await patch({ reserved: false })).status).toBe(200);
+      expect(sets[0].context).toEqual({ model: 'x' });
+      mockTasksFindFirst.mockResolvedValue(pending({ reservedBy: live('someone-else') }));
+      capture();
+      expect((await patch({ reserved: false })).status).toBe(409);
+    });
+
+    it('refuses a caller that is not a verified interactive session, and writes nothing', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending());
+      const sets = capture();
+      const wrongAccount = { 'x-buildd-interactive-session': signInteractiveSession({ accountId: 'someone-else', userId: null })! };
+      for (const headers of [{}, wrongAccount, { 'x-buildd-interactive-session': 'v2.1.a.b.c.forged' }]) {
+        expect((await patch({ reserved: true }, headers)).status).toBe(403);
+        expect((await patch({ reserved: false }, headers)).status).toBe(403);
+      }
+      expect(sets).toEqual([]);
+    });
+
+    it('refuses a non-boolean, a task a worker has, a finished task, and a dashboard user with no account', async () => {
+      mockTasksFindFirst.mockResolvedValue(pending());
+      capture();
+      expect((await patch({ reserved: 'yes' })).status).toBe(400);
+      mockTasksFindFirst.mockResolvedValue(pending({}, { claimedBy: 'worker-1' }));
+      expect((await patch({ reserved: true })).status).toBe(409);
+      mockTasksFindFirst.mockResolvedValue(pending({}, { status: 'completed' }));
+      expect((await patch({ reserved: true })).status).toBe(409);
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue(pending());
+      expect((await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { reserved: true } }), TASK_ID)).status).toBe(403);
     });
   });
 

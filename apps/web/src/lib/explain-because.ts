@@ -60,6 +60,8 @@ export interface StateBecauseExtras {
     title: string | null;
     status: string;
     live?: boolean;
+    /** Its worker is parked on a question for a person: the question link names it, not this row. */
+    waiting?: boolean;
     /** A reviewer task: runners claim it even in a local-executor mission. */
     runnerClaimable?: boolean;
     missingBrowser?: boolean;
@@ -191,23 +193,24 @@ function openTaskLinks(
   const orphaned = (t: Row) => !depBlocked(t) && (t.live === undefined ? nothingLive : !t.live);
   const rank = (t: Row) => (orphaned(t) ? 0 : depBlocked(t) ? 2 : 1);
   const rows = [...(extra.openTasks ?? [])].sort((a, b) => rank(a) - rank(b));
-  return rows.slice(0, 10).map(t => {
+  const name = (t: Row) => `"${t.title ?? t.id}"`;
+  return rows.filter(t => !t.waiting).slice(0, 10).map(t => {
     if (depBlocked(t)) {
       const deps = t.waitingOn!;
       const named = deps.map(d => `"${d.title ?? d.id}"`).join(', ');
       return link(
-        `Task "${t.title ?? t.id}" is waiting on ${deps.length === 1 ? 'its dependency' : 'its dependencies'} ${named}.`,
+        `${name(t)} is waiting on ${named}.`,
         'tasks.dependsOn',
         { ...base, taskId: deps[0].id },
       );
     }
     // A local-executor mission: its rows are the person's session's to claim,
-    // so "no live worker" (read: a runner should have it) is the wrong claim.
+    // so "waiting for a runner" is the wrong claim.
     if (w.local && !t.live && !t.runnerClaimable) {
       return link(
         t.status === 'pending'
-          ? `Task "${t.title ?? t.id}" is pending, waiting for a local session to claim it (runners never pick up this mission's tasks).`
-          : `Task "${t.title ?? t.id}" is ${t.status} in a local session.`,
+          ? `${name(t)} is ready to start. Claim it from a local session.`
+          : `A local session claimed ${name(t)}, but it is not running now.`,
         'mission.executor',
         { ...base, taskId: t.id },
       );
@@ -221,10 +224,12 @@ function openTaskLinks(
     }
     return link(
       orphaned(t)
-        ? `Task "${t.title ?? t.id}" is ${t.status} with no live worker.`
+        ? t.status === 'pending'
+          ? `${name(t)} is waiting for a runner.`
+          : `${name(t)} was started, but nothing is running it now.`
         : t.live
-          ? `Task "${t.title ?? t.id}" is ${t.status}. A worker is running it.`
-          : `Task "${t.title ?? t.id}" is ${t.status} and not finished yet.`,
+          ? `${name(t)} is in progress${w.local ? ' in a local session' : ''}.`
+          : `${name(t)} is not finished yet.`,
       'tasks.status + workers.status',
       { ...base, taskId: t.id },
     );
@@ -373,6 +378,15 @@ function causeLinksFor(
       );
 
     case 'human_decision':
+      if (w.question) {
+        return w.question.asks.slice(0, 10).map(a =>
+          link(
+            `"${a.title ?? a.taskId}" needs input${a.prompt ? `: ${a.prompt}` : '.'}`,
+            'workers.waitingFor',
+            { ...base, taskId: a.taskId },
+          ),
+        );
+      }
       return [
         link(
           w.detail ? `An owner decision is open: ${w.detail}` : 'An owner decision is open.',

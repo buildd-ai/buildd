@@ -304,6 +304,8 @@ DELETE FROM gate_events;
 DELETE FROM failure_incidents;
 -- Who deployed what with which credential reference: an audit trail, not app state.
 DELETE FROM deployment_audit_events;
+-- Who pressed each release-flow button, with mission titles and refusal text: an audit trail.
+DELETE FROM release_flow_steps;
 -- Writes made through the platform-owner API: an audit trail, not app state.
 DELETE FROM platform_admin_audit_events;
 -- The platform owner's per-feature acting switch: an owner note in `reason`;
@@ -505,8 +507,8 @@ UPDATE tasks t SET
   -- losing it makes them appear as regular tasks needing a decision on the clone.
   title = CASE
     WHEN t.title ~ '^\[surface audit\] round [0-9]+: '
-    THEN substring(t.title, 1, position(': ' in t.title) + 2) ||
-      pg_temp.qa_title('Task', s.n, substr(t.title, position(': ' in t.title) + 3))
+    THEN substring(t.title, 1, position(': ' in t.title) + 1) ||
+      pg_temp.qa_title('Task', s.n, substr(t.title, position(': ' in t.title) + 2))
     WHEN t.title LIKE '[surface audit] %'
     THEN '[surface audit] ' || pg_temp.qa_title('Task', s.n, substr(t.title, 17))
     WHEN t.task_class = 'bookkeeping' AND t.title LIKE 'Ship mission: %'
@@ -619,11 +621,17 @@ UPDATE artifact_links SET created_by = NULL;
 -- Living Specs: titles and summaries are prose; who wrote or approved a
 -- revision is an account or user id. Bodies are artifacts, scrubbed above.
 UPDATE specs SET title = 'Spec ' || left(md5(id::text), 8), created_by = NULL;
+-- Spec comments: the text and the anchored heading are free text; ids and hashes are not content.
+UPDATE spec_comments SET body = pg_temp.qa_text(body), anchor_label = pg_temp.qa_text(anchor_label), author_id = md5(author_id),
+  resolved_by = CASE WHEN resolved_by IS NULL THEN NULL ELSE md5(resolved_by) END;
+-- A design reference carries free-text screen names and may carry a URL: wiped.
 UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
-  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END;
+  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL;
 -- Outcome verdicts: the evidence holds what a reviewer observed (prose), file
 -- refs and who recorded it; criterion ids and head SHAs are not content.
 UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence);
+-- Spec neighbours: the reason detail names repo paths and criterion ids; kind and source are fixed words.
+UPDATE spec_neighbors SET detail = pg_temp.qa_json(detail);
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.

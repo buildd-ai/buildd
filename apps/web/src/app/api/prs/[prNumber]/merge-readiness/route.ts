@@ -23,6 +23,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveOpenWorkerForUser } from '@/lib/pr-resolve';
 import { verifyMergeAdviceToken } from '@/lib/merge-advice-server';
 import { askMergeReadiness } from '@/lib/merge-readiness-decision';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function POST(
   req: NextRequest,
@@ -63,7 +64,7 @@ export async function POST(
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   if (!workspace?.teamId) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });

@@ -12,6 +12,7 @@ import { isDispatchedReview } from '@/lib/read-only-task';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { producesNoFileEdits, type OpenPrTask } from './coordination-gates';
 import type { MissionInFlightRow } from './claim-plan-input';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Tasks with an open PR per workspace (path-overlap layer 1). Closed PRs and
@@ -23,12 +24,12 @@ export async function loadOpenPrTasksByWorkspace(workspaceIds: string[]): Promis
   const byWorkspace = new Map<string, OpenPrTask[]>();
   if (workspaceIds.length === 0) return byWorkspace;
   const openPrWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, workspaceIds),
       not(isNull(workers.prUrl)),
       isNull(workers.mergedAt),
       inArray(workers.status, [...LIVE_WORKER_STATUSES, 'completed']),
-    ),
+    )),
     columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true, branch: true, prBaseRef: true, prLifecycleStatus: true, status: true, updatedAt: true },
   });
   const activeOpenPrWorkers = openPrWorkers.filter(w => w.prLifecycleStatus !== 'closed' && !isExpiredParkedHolder(w));
@@ -36,7 +37,7 @@ export async function loadOpenPrTasksByWorkspace(workspaceIds: string[]): Promis
   const prTaskIds = activeOpenPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
   const prTasks = prTaskIds.length > 0
     ? (await db.query.tasks.findMany({
-        where: inArray(tasks.id, prTaskIds),
+        where: sqlWhere(inArray(tasks.id, prTaskIds)),
         columns: { id: true, pathManifest: true },
       })) ?? []
     : [];
@@ -93,7 +94,7 @@ export async function loadMissionCoordination(missionIds: string[]): Promise<Mis
   };
   if (missionIds.length === 0) return out;
   const missionRows = await db.query.missions.findMany({
-    where: inArray(missions.id, missionIds),
+    where: sqlWhere(inArray(missions.id, missionIds)),
     columns: {
       id: true, status: true, maxConcurrentTasks: true, pacingMode: true,
       pacingMaxPerHour: true, lastTaskStartedAt: true,

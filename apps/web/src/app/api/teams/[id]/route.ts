@@ -11,8 +11,9 @@ import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
 import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
-import { DECISION_MODEL_PROBE } from '@/modules';
+import { DECISION_MODEL_PROBE, IS_PLATFORM_OPERATOR_CALLER, OPERATOR_ONLY_RESPONSE } from '@/modules';
 import { detachTeamStoredFiles, removeTeamStoredFiles } from '@/lib/artifact-team-files';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Written only through /api/admin/teams/[id]/experiment-flags; refused here for everyone. */
 const PLATFORM_ONLY_TEAM_FIELDS = ['enabledDecisionShadows', 'inferenceFeatureModes'] as const;
@@ -27,10 +28,10 @@ async function verifyTeamAccess(
   permission?: Permission
 ): Promise<{ role: TeamRole } | null> {
   const membership = await db.query.teamMembers.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(teamMembers.teamId, teamId),
       eq(teamMembers.userId, userId)
-    ),
+    )),
   });
 
   if (!membership) return null;
@@ -81,7 +82,7 @@ export async function GET(
     // cannot break it mid-deploy — db:migrate runs before next build, so the old
     // code serves against the new schema for the length of the build.
     const team = await db.query.teams.findFirst({
-      where: eq(teams.id, id),
+      where: sqlWhere(eq(teams.id, id)),
       columns: {
         id: true,
         name: true,
@@ -115,7 +116,7 @@ export async function GET(
 
     // Get members with user info
     const members = await db.query.teamMembers.findMany({
-      where: eq(teamMembers.teamId, id),
+      where: sqlWhere(eq(teamMembers.teamId, id)),
       with: {
         user: true,
       },
@@ -217,6 +218,8 @@ export async function PATCH(
     }
     // The retired enabledInferenceCapabilities allowlist is ignored, not written.
     if (decisionModel !== undefined) {
+      // A platform operator control, not a team setting (lib/admin/platform-operator-caller.ts).
+      if (!(await IS_PLATFORM_OPERATOR_CALLER({ user }))) return OPERATOR_ONLY_RESPONSE();
       // Which model answers decision calls. null = Jev on OpenRouter.
       // This sets the team default only; per-decision overrides are kept
       // (they are set through setDecisionModelForKind).
@@ -231,7 +234,7 @@ export async function PATCH(
           return NextResponse.json({ error: `${probe.error} The decision model was not saved.` }, { status: 422 });
         }
       }
-      const current = await db.query.teams.findFirst({ where: eq(teams.id, id), columns: { decisionModel: true } });
+      const current = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, id)), columns: { decisionModel: true } });
       updates.decisionModel = withDecisionModelDefault(current?.decisionModel ?? null, normalized.value);
     }
     if (timezone !== undefined) {
@@ -277,7 +280,7 @@ export async function PATCH(
         return NextResponse.json({ error: 'inferenceKeyPolicy must be "team", "team_or_own" or "own"' }, { status: 400 });
       }
       updates.inferenceKeyPolicy = inferenceKeyPolicy;
-      const current = await db.query.teams.findFirst({ where: eq(teams.id, id), columns: { credentialPolicy: true } });
+      const current = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, id)), columns: { credentialPolicy: true } });
       if (isCredentialPolicy(current?.credentialPolicy)) {
         updates.credentialPolicy = toCredentialPolicy(inferenceKeyPolicy);
       }
@@ -319,7 +322,7 @@ export async function PATCH(
 
       // Check slug uniqueness (excluding current team)
       const existing = await db.query.teams.findFirst({
-        where: eq(teams.slug, slug),
+        where: sqlWhere(eq(teams.slug, slug)),
         columns: { id: true },
       });
 
@@ -369,7 +372,7 @@ export async function DELETE(
 
     // Check if it's a personal team
     const team = await db.query.teams.findFirst({
-      where: eq(teams.id, id),
+      where: sqlWhere(eq(teams.id, id)),
       columns: { slug: true },
     });
 

@@ -84,7 +84,8 @@ export function toBacktestRow(r: LiveEstimateRow): BacktestRow {
   };
 }
 
-function groupScores(rows: readonly LiveEstimateRow[], keyOf: (r: LiveEstimateRow) => string, order?: readonly string[]): GroupScore[] {
+/** Score each group of rows through the backtest scorer; by n, or in `order`. */
+export function groupScores(rows: readonly LiveEstimateRow[], keyOf: (r: LiveEstimateRow) => string, order?: readonly string[]): GroupScore[] {
   const groups = new Map<string, LiveEstimateRow[]>();
   for (const r of rows) (groups.get(keyOf(r)) ?? groups.set(keyOf(r), []).get(keyOf(r))!).push(r);
   const out = [...groups].map(([key, rs]) => ({ key, score: scoreRows(rs.map(toBacktestRow)) }));

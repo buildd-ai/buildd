@@ -16,6 +16,7 @@ import MissionTaskStripFixture from './MissionTaskStripFixture';
 import MissionPlanFixture from './MissionPlanFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
 import GoalCriteriaFixture from './GoalCriteriaFixture';
+import SpecSurfaceFixture from './SpecSurfaceFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
 import ConnectionsFixture from './ConnectionsFixture';
@@ -46,6 +47,7 @@ import RefinedComponentsFixture from './RefinedComponentsFixture';
 import MissionFlowFixture from './MissionFlowFixture';
 import MissionDetailCompactFixture from './MissionDetailCompactFixture';
 import HomeCardsFixture from './HomeCardsFixture';
+import ServiceStatusFixture from './ServiceStatusFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -54,8 +56,11 @@ import {
     RUNNER_SIZE_FIXTURE_STATE,
     WORKSPACES_LIST_FIXTURE_STATE,
     HOSTED_RUNNER_FIXTURE_STATE,
+    SERVICE_STATUS_FIXTURE_STATE,
     INTERACTIVE_SESSIONS_FIXTURE_STATE,
     MODEL_PROVIDERS_FIXTURE_STATE,
+    MODEL_PROVIDERS_LONE_FIXTURE_STATE,
+    MODEL_PROVIDERS_STORED_POLICY_FIXTURE_STATE,
     TOOL_BREAKDOWN_FIXTURE_STATE,
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
@@ -67,6 +72,7 @@ import {
     ONBOARDING_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
     TASK_ERROR_EVIDENCE_FIXTURE_STATE,
+    SPEC_SURFACE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -148,6 +154,10 @@ export default function DevFixturesPage() {
         return <TaskEvidenceFilesFixture />;
     }
 
+    if (state === SPEC_SURFACE_FIXTURE_STATE) {
+        return <SpecSurfaceFixture />;
+    }
+
     if (state === TASK_ERROR_EVIDENCE_FIXTURE_STATE) {
         return <TaskErrorEvidenceFixture />;
     }
@@ -220,8 +230,17 @@ export default function DevFixturesPage() {
     if (state === HOSTED_RUNNER_FIXTURE_STATE) {
         return <HostedRunnerFixture />;
     }
+    if (state === SERVICE_STATUS_FIXTURE_STATE) {
+        return <ServiceStatusFixture />;
+    }
     if (state === MODEL_PROVIDERS_FIXTURE_STATE) {
         return <ModelProvidersFixture />;
+    }
+    if (state === MODEL_PROVIDERS_LONE_FIXTURE_STATE) {
+        return <ModelProvidersFixture variant="lone" />;
+    }
+    if (state === MODEL_PROVIDERS_STORED_POLICY_FIXTURE_STATE) {
+        return <ModelProvidersFixture variant="stored-policy" />;
     }
 
     if (state === RUN_ACTIVITY_FIXTURE_STATE) {
