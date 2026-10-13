@@ -9,7 +9,7 @@ import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import type { StateKey } from '@/components/ui/states';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
 import { buildReleaseConfigPayload } from './release-config-payload';
-import { splitRecentReleases } from './recent-releases';
+import { splitRecentReleases } from '../../_lib/recent-releases';
 import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 type StrategyOption = ReleaseStrategy | 'none';
