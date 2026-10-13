@@ -5911,7 +5911,7 @@ export async function handleBuilddAction(
 
     case 'manage_specs': {
       const op = params.action;
-      const needsWorkspace = (WORKSPACE_SPEC_OPS as readonly string[]).includes(op);
+      const needsWorkspace = (WORKSPACE_SPEC_OPS as readonly string[]).includes(String(op));
       const wsId = needsWorkspace
         ? (params.workspaceId ? await resolveWorkspaceId(api, params.workspaceId, ctx) : await ctx.getWorkspaceId())
         : null;
