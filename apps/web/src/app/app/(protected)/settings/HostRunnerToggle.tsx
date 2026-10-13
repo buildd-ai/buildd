@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 
+const SAVE_FAILED = 'Could not change host runner trust. Try again.';
+
 /**
  * Whether a runner token is trusted as a long-lived host runner: the only kind
  * of key that may lease, refresh or list the team's stored credentials
@@ -31,11 +33,11 @@ export default function HostRunnerToggle({
       });
       const data = await res.json().catch(() => ({})) as { hostRunner?: boolean; error?: string };
       if (!res.ok || typeof data.hostRunner !== 'boolean') {
-        throw new Error(data.error || 'Could not change the host runner setting');
+        throw new Error(data.error || SAVE_FAILED);
       }
       setHostRunner(data.hostRunner);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not change the host runner setting');
+      setError(err instanceof Error ? err.message : SAVE_FAILED);
     } finally {
       setSaving(false);
     }

@@ -94,7 +94,7 @@ describe('TeamRoleForm "Just for me"', () => {
     expect(q('[data-testid="role-kind-picker"]')).not.toBeNull();
     expect(byText('All workspaces in team')).toBeDefined();
 
-    await act(async () => { byText('Just for me')!.click(); });
+    await act(async () => { byText('Personal')!.click(); });
     expect(byText('All workspaces in team')).toBeUndefined();
     expect(byText('One workspace')).toBeUndefined();
 

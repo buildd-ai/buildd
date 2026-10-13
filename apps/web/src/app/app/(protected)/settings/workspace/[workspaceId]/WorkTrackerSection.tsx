@@ -84,14 +84,14 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(errorLabel(err.error) ?? 'Failed to save');
+        throw new Error(errorLabel(err.error) ?? 'Could not save. Try again.');
       }
       const data = await res.json();
       setConfig(data.workTrackerConfig ?? null);
       markSaved(submitted);
       setMessage({ type: 'success', text: successText });
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to save' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Could not save. Try again.' });
     } finally {
       setSaving(false);
     }
@@ -110,7 +110,7 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
     }
     const connector = connectors.find(c => c.id === selection);
     if (!connector) {
-      setMessage({ type: 'error', text: 'Connector not found' });
+      setMessage({ type: 'error', text: 'Connector not found. Reload and select it again.' });
       return;
     }
     return save(
@@ -132,8 +132,8 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
         {config && activeLabel && <TonePill tone="ok">Active</TonePill>}
       </div>
       <p className="text-xs text-text-secondary mt-0.5 mb-3">
-        Link an issue tracker to this workspace. Agents post a completion comment when a task&apos;s
-        PR merges, and an issue labeled with your trigger label opens a linked task.
+        Agents comment on the linked issue when a task&apos;s PR merges. Issues with the trigger
+        label open a linked task.
       </p>
 
       {!canEdit && (
@@ -203,8 +203,8 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
                 onChange={e => setInboundLabel(e.target.value)}
               />
               <p className="mt-1 text-xs text-text-muted">
-                Labeling a GitHub issue with this opens a linked task. Closing the issue cancels the open
-                task. Leave blank to use <code className="font-mono">buildd</code>.
+                Adding this label to a GitHub issue opens a linked task; closing the issue cancels it.
+                Defaults to <code className="font-mono">buildd</code>.
               </p>
             </div>
           )}
@@ -225,7 +225,7 @@ function errorLabel(code: unknown): string | null {
   if (typeof code !== 'string') return null;
   const map: Record<string, string> = {
     github_app_not_installed: 'Install the buildd GitHub App on this repo first.',
-    unsupported_provider: 'buildd doesn\'t support that tracker.',
+    unsupported_provider: 'This tracker is not supported.',
   };
   return map[code] ?? code;
 }

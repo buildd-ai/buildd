@@ -15,9 +15,10 @@ const start = src.indexOf('const heading = (');
 const row = src.slice(start, src.indexOf('id={panelId}', start));
 
 describe('team app row layout', () => {
-  it('keeps the name column shrinkable so it truncates rather than wrapping', () => {
+  it('keeps the name column shrinkable and lets the description wrap to two lines', () => {
     expect(row).toContain('min-w-0 flex-1');
-    expect(row).toMatch(/block truncate text-meta/);
+    expect(row).toMatch(/block line-clamp-2 text-meta/);
+    expect(row).not.toMatch(/block truncate text-meta/);
   });
 
   it('keeps the single action from wrapping or being squeezed', () => {

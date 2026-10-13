@@ -16,7 +16,6 @@ import { NO_PERMISSIONS, settingsPermissions } from '../_lib/settings-permission
 import UrlSheet from '@/components/UrlSheet';
 import NewTeamForm from './NewTeamForm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import TeamSwitcher from '../_components/TeamSwitcher';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,7 +67,6 @@ export default async function TeamSettingsPage({
   ]);
 
   const role = shown.role as 'owner' | 'admin' | 'member';
-  const otherTeams = userTeams.filter((t) => t.id !== shown.id);
   // The shown team's flags (it can differ from the active team via ?team=).
   // A failed team read leaves the page read-only, as it says it could not load.
   const perms = team ? settingsPermissions({ role, slug: team.slug }, user.id) : NO_PERMISSIONS;
@@ -83,10 +81,8 @@ export default async function TeamSettingsPage({
   return (
     <SettingsPage title="Members" readOnly={settingsReadOnly('team', perms)}>
       {newTeamSheet}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        {otherTeams.length > 0 ? (
-          <TeamSwitcher shown={shown} others={otherTeams} basePath="/app/settings/team" />
-        ) : <span />}
+      {/* The team card below names the team; the shell switcher changes it. */}
+      <div className="flex justify-end">
         <Link href={newTeamHref} scroll={false} data-testid="new-team-link" className="btn btn-sm h-11 md:h-8 shrink-0">New team</Link>
       </div>
 
@@ -112,7 +108,7 @@ export default async function TeamSettingsPage({
         </TeamDetailClient>
       ) : (
         <>
-          <p className="text-sm text-text-muted">Could not load the team.</p>
+          <p className="text-sm text-text-muted">Couldn&apos;t load the team.</p>
           {sections}
         </>
       )}

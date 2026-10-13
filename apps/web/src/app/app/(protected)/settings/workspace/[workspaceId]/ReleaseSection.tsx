@@ -69,23 +69,23 @@ const TRIGGER_OPTIONS: TriggerOption[] = [
     value: 'on_mission_complete',
     label: 'When mission completes',
     badge: 'Recommended',
-    help: 'Releases once after every task in a mission finishes, as one ship.',
+    help: 'Releases once, when every task in a mission finishes.',
   },
   {
     value: 'every_merge',
     label: 'Every merge',
-    help: 'Releases on each completed task. Use for hotfix workspaces or repos that ship continuously.',
+    help: 'Releases after each completed task.',
   },
   {
     value: 'manual',
     label: 'Manual only',
-    help: "You release by hand: 'Release now' on Home, or trigger_release over MCP.",
+    help: "Use Release now on Home, or trigger_release over MCP.",
   },
   {
     value: 'scheduled',
     label: 'Scheduled',
     disabled: true,
-    help: 'Coming soon. Releases on a cron schedule, such as nightly.',
+    help: 'Releases on a schedule, such as nightly.',
   },
 ];
 
@@ -237,12 +237,12 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
         body: JSON.stringify({ releaseConfig }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save');
+      if (!res.ok) throw new Error(data.error || 'Could not save. Try again.');
       markSaved(submitted);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Failed to save');
+      setSaveError(err instanceof Error ? err.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }
@@ -254,7 +254,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
     return (
       <div className="py-4 first:pt-0 last:pb-0">
         <h3 className="text-sm font-medium text-text-primary">Release</h3>
-        <p className="text-xs text-text-muted mt-0.5">Link a GitHub repo to enable releases.</p>
+        <p className="text-xs text-text-muted mt-0.5">Requires a linked GitHub repository.</p>
       </div>
     );
   }
@@ -440,7 +440,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   </div>
                   {trigger === 'on_mission_complete' && (
                     <p className="text-xs text-text-muted mt-2">
-                      Tasks outside a mission don&apos;t trigger a release with this setting.
+                      Tasks outside a mission don&apos;t trigger a release.
                     </p>
                   )}
                 </div>

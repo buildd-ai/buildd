@@ -72,14 +72,14 @@ export interface CreateRepoNextStep {
 export function createRepoNextStep(input: { githubConfigured: boolean; installationCount: number }): CreateRepoNextStep | null {
   if (!input.githubConfigured) {
     return {
-      message: 'GitHub is not set up on this buildd server, so it cannot create repositories. Connect a repository you already have instead, or start without one.',
+      message: 'This buildd server has no GitHub App, so it cannot create repositories. Connect an existing repository, or create the workspace without one.',
       action: 'connect-existing',
-      label: 'Use Connect existing',
+      label: 'Connect existing repo',
     };
   }
   if (input.installationCount === 0) {
     return {
-      message: 'To create a repository, connect GitHub to the account or organisation that will own it.',
+      message: 'Connect GitHub to the account or organisation that will own the repository.',
       action: 'install-github',
       label: 'Connect GitHub',
       href: '/api/github/install',
