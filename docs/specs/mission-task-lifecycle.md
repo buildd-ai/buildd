@@ -545,12 +545,16 @@ hold:
   (`apps/web/src/lib/open-ask.ts`) hands the asking tasks to
   `deriveMissionStateView` as `openQuestions`. It outranks the live-worker
   rule: kind `awaiting_decision` (NEEDS YOU), focus `human_decision` with
-  `question`, headline "Needs input: <question>" ("N tasks need input" for
-  several), next action "Answer it on the task page to continue.", and the
-  causal line names the question, never "a worker is running it". The chip
-  keeps saying who runs the work (`LOCAL` / `RUNNING`). Held still wins; a
-  failed deliverable still leads the headline. The Board counts the same task
-  in Needs you (`deriveFeedTaskState`, `isOpenAsk`).
+  `question`, headline the question itself ("N questions for you" for
+  several, "An agent is waiting for your answer" with no question text), next
+  action "Answer it on the task page to continue.", and the causal line reads
+  `"<task>" asks: <question>`, never "a worker is running it". Its action
+  ("Answer the question") opens the task page with the answer focused
+  (`taskAnswerHref`), never the mission sheet. The chip keeps saying who runs
+  the work (`LOCAL` / `RUNNING`). Held still wins; a failed deliverable still
+  leads the headline. The Board counts the same task in its waiting-on-you
+  count (`deriveFeedTaskState`, `isOpenAsk`), with the asking worker as the
+  task's worker whatever order the query returned (`toBoardTaskInput`).
 
 Use `executor: 'local'` for work someone runs locally. `startMode: 'held'` is a
 pause: it also blocks the interactive claim, so it was never a fit for that.

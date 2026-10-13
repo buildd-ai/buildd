@@ -69,7 +69,19 @@ describe('deriveMissionStateView — blocked by task', () => {
     const waiting = gated(view);
     if (waiting.kind !== 'task') throw new Error('unreachable');
     expect(waiting.count).toBe(2);
-    expect(waiting.label).toContain('2 pending');
+    // Plain words, not raw statuses: "2 queued", never "2 pending" or "task(s)".
+    expect(waiting.label).toBe('No agent is working on 2 open tasks: 2 queued');
+  });
+
+  // Regression (owner report): "2 deliverable task(s) still open (1 pending, 1 assigned)".
+  it('with an agent working, says what is still open in plain words', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      activeAgents: 1,
+      completion: { ok: false, code: 'pending_deliverables', reason: '', pendingDeliverables: 2, pendingByStatus: { pending: 1, assigned: 1 } },
+    });
+    const waiting = view.outstanding.find(f => f.kind === 'task') ?? gated(view);
+    expect(waiting.label).toBe('2 tasks still open: 1 queued, 1 picked up');
   });
 
   it('consumes deriveTaskHealthSignal, not a reimplementation of it', () => {

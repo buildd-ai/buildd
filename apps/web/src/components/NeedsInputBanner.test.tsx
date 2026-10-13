@@ -9,14 +9,16 @@ import NeedsInputBanner, { needsInputTaskHref } from './NeedsInputBanner';
 import { NeedsInputContext } from './NeedsInputProvider';
 import { hideNeedsInputBanner, hideNeedsInputBannerOnPhone, hideNeedsInputFor } from '@/lib/needs-input-hidden';
 
+// Regression (owner report): clicking the banner opened the mission sheet,
+// a small answer box, instead of the task page's full answering experience.
 describe('needsInputTaskHref', () => {
-  it('opens a mission task as the sheet over its mission', () => {
-    expect(needsInputTaskHref({ id: 'task-1', missionId: 'mission-1' })).toBe('/app/missions/mission-1?task=task-1');
+  it('opens a mission task on its own page, answer focused, with the way back to its mission', () => {
+    expect(needsInputTaskHref({ id: 'task-1', missionId: 'mission-1' })).toBe('/app/tasks/task-1?from=mission&missionId=mission-1&respond=1');
   });
 
-  it('opens a task with no mission on its own page', () => {
-    expect(needsInputTaskHref({ id: 'task-1', missionId: null })).toBe('/app/tasks/task-1');
-    expect(needsInputTaskHref({ id: 'task-1' })).toBe('/app/tasks/task-1');
+  it('opens a task with no mission on its own page, answer focused', () => {
+    expect(needsInputTaskHref({ id: 'task-1', missionId: null })).toBe('/app/tasks/task-1?respond=1');
+    expect(needsInputTaskHref({ id: 'task-1' })).toBe('/app/tasks/task-1?respond=1');
   });
 });
 
@@ -43,8 +45,8 @@ describe('NeedsInputBanner — the question open in its own sheet', () => {
       const html = render([waiting('q1', 'feat(checkout): pay in currency'), waiting('q2', 'docs: billing guide')]);
       expect(html).toContain('Billing guide');
       expect(html).not.toContain('ay in currency');
-      expect(html).toContain('needs input');
-      expect(html).not.toContain('2 tasks');
+      expect(html).toContain('is waiting for your answer');
+      expect(html).not.toContain('2 questions');
     } finally { release(); }
   });
 
@@ -53,12 +55,12 @@ describe('NeedsInputBanner — the question open in its own sheet', () => {
     try {
       expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toBe('');
     } finally { release(); }
-    expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('needs input');
+    expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('is waiting for your answer');
   });
 
   it('renders again once the sheet is closed', () => {
     hideNeedsInputFor('q1')();
-    expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('needs input');
+    expect(render([waiting('q1', 'feat(checkout): pay in currency')])).toContain('is waiting for your answer');
   });
 });
 
@@ -79,9 +81,18 @@ describe('NeedsInputBanner — names the task as the task page does', () => {
     expect(html).not.toContain('feat(checkout)');
   });
 
+  // Owner report: "Needs input" is label-speak. The banner leads with the
+  // question itself; the task follows, quiet.
+  it('leads with the question itself, then names the task', () => {
+    const html = render([{ ...waiting('q1', 'feat(fmt): settle indentation'), waitingFor: { type: 'question', prompt: 'Tabs or spaces?' } } as never]);
+    expect(html).toMatch(/<a [^>]*href="\/app\/tasks\/q1\?from=mission&amp;missionId=m1&amp;respond=1"[^>]*>Tabs or spaces\?<\/a>/);
+    expect(html).toContain('Settle indentation');
+    expect(html).not.toMatch(/needs input|Needs input/);
+  });
+
   it('joins two waiting tasks without an em dash', () => {
     const html = render([waiting('q1', 'fix: a'), waiting('q2', 'fix: b')]);
-    expect(html).toContain('2 tasks need input');
+    expect(html).toContain('2 questions for you');
     expect(html).not.toContain('\u2014');
   });
 });
@@ -124,14 +135,14 @@ describe('NeedsInputBanner: an answer is on its way', () => {
     expect(html).toContain('data-testid="global-answer-sent-banner"');
     expect(html).toContain('Answer sent, waiting for the agent');
     expect(html).toContain('Pay in currency');
-    expect(html).not.toContain('needs input');
+    expect(html).not.toContain('waiting for your answer');
   });
 
   it('a task still waiting takes the banner; the answered one is not counted', () => {
     const html = render([task('q1', 'fix: a', true), task('q2', 'fix: b')]);
-    expect(html).toContain('needs input');
+    expect(html).toContain('is waiting for your answer');
     expect(html).toContain('B');
-    expect(html).not.toContain('2 tasks');
+    expect(html).not.toContain('2 questions');
     expect(html).not.toContain('Answer sent');
   });
 });

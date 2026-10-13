@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { missionTaskAnchorId, missionTaskHref, parseMissionTaskHash, taskPageHref } from './mission-task-href';
+import { missionTaskAnchorId, missionTaskHref, parseMissionTaskHash, taskAnswerHref, taskPageHref } from './mission-task-href';
 
 describe('missionTaskHref', () => {
   it('sheet mode opens the task sheet over the mission, carrying ?from=', () => {
@@ -34,6 +34,17 @@ describe('taskPageHref', () => {
   it('full page for a mission task carries the mission back-link context', () => {
     expect(taskPageHref({ taskId: 't1', missionId: 'm1' })).toBe('/app/tasks/t1?from=mission&missionId=m1');
     expect(taskPageHref({ taskId: 't1' })).toBe('/app/tasks/t1');
+  });
+});
+
+// An answer link lands on the full answering experience (the task page's
+// question, its options and its own-words box, focused), never the mission
+// sheet, whatever mission the task belongs to.
+describe('taskAnswerHref', () => {
+  it('is the task page with the answer focused, keeping the mission back-link', () => {
+    expect(taskAnswerHref({ taskId: 't1', missionId: 'm1' })).toBe('/app/tasks/t1?from=mission&missionId=m1&respond=1');
+    expect(taskAnswerHref({ taskId: 't1' })).toBe('/app/tasks/t1?respond=1');
+    expect(taskAnswerHref({ taskId: 't1', missionId: null })).toBe('/app/tasks/t1?respond=1');
   });
 });
 
