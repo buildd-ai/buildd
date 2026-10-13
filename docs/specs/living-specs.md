@@ -832,7 +832,7 @@ stop a spec.
     in the workspace (title, the opening line, every R-n/AC-n), at most 5 above
     a floor. The shortlist only picks what the model reads; it never decides.
   - Judge: decision kind `buildd.spec_duplicate`, capability `spec_duplicate`
-    (opt-in, on for new teams), one call per shortlisted spec, the question
+    (built in: on for every team whose decision-model key resolves), one call per shortlisted spec, the question
     the offline eval measured (knowledge base:
     `buildd/reports/spec-duplicate-detection-eval-2026-10-12.md`): duplicate,
     overlap or distinct, by what the specs require, not their topic. Every
@@ -847,8 +847,8 @@ stop a spec.
   override, so the threshold can be re-measured on real cases.
 - `overlap` at p >= 0.5, or `duplicate` below 0.9: created, with the
   candidates in `duplicateCheck.warnings`.
-- No team, no approved spec, the capability off, no decision-model key, a
-  provider failure or any error: created, with `duplicateCheck.ran: false` and
+- No team, no approved spec, no decision-model key, a provider failure or
+  any error: created, with `duplicateCheck.ran: false` and
   the reason.
 
 **Acceptance criteria**:
@@ -876,9 +876,6 @@ stop a spec.
 - A revise is not checked, and the shortlist compares whole specs, not single
   criteria.
 - `supersedes` is recorded but does not mark the old spec superseded.
-- New teams start with the capability on. An existing team gets it when a
-  platform operator adds `spec_duplicate` to the team's decision capabilities
-  (`PATCH /api/admin/teams/[id]/experiment-flags`).
 
 ## 14. Neighbours and derived edges
 
