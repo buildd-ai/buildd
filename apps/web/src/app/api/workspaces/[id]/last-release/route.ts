@@ -71,7 +71,9 @@ export async function GET(
                 result: true,
             },
             orderBy: sqlOrderBy([desc(tasks.updatedAt)]),
-            limit: 5,
+            // The page folds skipped releases away and lists five that ran,
+            // so read far enough back to find them.
+            limit: 20,
         });
 
         const lastRelease = recentReleases[0] ?? null;
