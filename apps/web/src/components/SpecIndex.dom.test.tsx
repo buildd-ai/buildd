@@ -260,3 +260,13 @@ describe('SpecIndex map', () => {
     expect(container.textContent).not.toMatch(/\d/);
   });
 });
+
+describe('titleLines', () => {
+  it('breaks a graph title at words into two lines and marks a cut', async () => {
+    const { titleLines } = await import('@/lib/specs/index-view');
+    expect(titleLines('Step timers')).toEqual(['Step timers']);
+    expect(titleLines('Scaling a recipe by servings')).toEqual(['Scaling a recipe by', 'servings']);
+    expect(titleLines('Metric and imperial switch for the pantry shelves')).toEqual(['Metric and imperial', 'switch for the pantry…']);
+    expect(titleLines('Supercalifragilisticexpialidocious')).toEqual(['Supercalifragilistice…']);
+  });
+});

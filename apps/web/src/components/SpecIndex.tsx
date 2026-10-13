@@ -24,6 +24,8 @@ const LEGEND: Record<SpecMixState, string> = {
   failing: 'failing',
 };
 
+const FILE_FAILED = 'Could not file it. Try again.';
+
 export type AcceptSuggestion = (specId: string, parentSpecId: string) => Promise<{ ok: boolean; error?: string }>;
 
 const acceptByApi: AcceptSuggestion = async (specId, parentSpecId) => {
@@ -32,7 +34,7 @@ const acceptByApi: AcceptSuggestion = async (specId, parentSpecId) => {
   });
   if (res.ok) return { ok: true };
   const body = (await res.json().catch(() => ({}))) as { error?: string };
-  return { ok: false, error: body.error ?? 'Could not file it. Try again.' };
+  return { ok: false, error: body.error ?? FILE_FAILED };
 };
 
 function MixBar({ mix, count, className = '' }: { mix: Mix; count: number; className?: string }) {
@@ -134,7 +136,7 @@ function PossibleGroup({ group, on, onPick }: { group: PossibleArea & { rows: In
     >
       <span className="text-body font-medium text-text-primary [overflow-wrap:anywhere]" data-testid="spec-index-possible-label">{label}</span>
       <span className="flex flex-wrap gap-1">{group.rows.map((r) => <Dot key={r.id} row={r} />)}</span>
-      <span className="text-meta text-text-secondary">{group.rows.length} specs, not filed yet</span>
+      <span className="text-meta text-text-secondary">{group.rows.length} unfiled specs</span>
     </button>
   );
 }
@@ -153,8 +155,8 @@ function Suggestion({ row, accept }: { row: IndexRow; accept: AcceptSuggestion }
   const go = async () => {
     if (s.kind !== 'parent') return;
     setState('busy');
-    const r = await accept(row.id, s.specId).catch(() => ({ ok: false, error: 'Could not file it. Try again.' }));
-    setState(r.ok ? { filed: s.title } : { error: r.error ?? 'Could not file it. Try again.' });
+    const r = await accept(row.id, s.specId).catch(() => ({ ok: false, error: FILE_FAILED }));
+    setState(r.ok ? { filed: s.title } : { error: r.error ?? FILE_FAILED });
   };
   return (
     <div className="flex flex-col gap-1 px-2 pb-2" data-testid="spec-index-suggestion">
@@ -205,10 +207,10 @@ function AreaGroup({ area, accept }: { area: IndexArea; accept: AcceptSuggestion
       <header className="flex flex-col gap-1 px-2">
         <h3 className="text-title font-semibold text-text-primary [overflow-wrap:anywhere]">
           <Link href={`/app/specs/${area.id}`} className="hover:underline">
-            {area.kind === 'product' ? `${area.title}, not in an area` : area.title}
+            {area.kind === 'product' ? `${area.title} · no area` : area.title}
           </Link>
         </h3>
-        <p className="text-meta text-text-secondary" data-testid="spec-index-area-words">{area.count ? area.words : 'No specs yet'}</p>
+        <p className="text-meta text-text-secondary" data-testid="spec-index-area-words">{area.count ? area.words : 'Empty'}</p>
         <MixBar mix={area.mix} count={area.count} className="h-2 max-w-[16rem]" />
       </header>
       {area.rows.length ? (
@@ -301,7 +303,9 @@ export default function SpecIndex({ specs, options, accept = acceptByApi }: {
         {unfiledShown.length ? (
           <section className="flex flex-col gap-1" data-testid="spec-index-unfiled">
             <h2 className="section-label px-2 text-text-muted">Unfiled</h2>
-            <p className="px-2 text-meta text-text-muted">What buildd could not place, each with where it probably belongs.</p>
+            <p className="px-2 text-meta text-text-muted">
+              {unfiledShown.some((u) => u.suggestion) ? 'What buildd could not place, with where it probably belongs.' : 'What buildd could not place.'}
+            </p>
             <ul className="mt-1 flex flex-col">{unfiledShown.map((r) => <Row key={r.id} row={r} accept={accept} unfiled />)}</ul>
           </section>
         ) : null}

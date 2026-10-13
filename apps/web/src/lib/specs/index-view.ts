@@ -324,6 +324,23 @@ export interface NeighbourGraph {
   omittedNeighbours: number;
 }
 
+/** A graph node's title in at most `lines` lines of `max` characters, broken at words, "…" where it was cut. Pure. */
+export function titleLines(title: string, max = 22, lines = 2): string[] {
+  const words = title.trim().split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  let i = 0;
+  while (out.length < lines && i < words.length) {
+    let line = words[i++];
+    while (i < words.length && `${line} ${words[i]}`.length <= max) line = `${line} ${words[i++]}`;
+    out.push(line.length > max ? `${line.slice(0, max - 1)}…` : line);
+  }
+  if (i < words.length && out.length) {
+    const last = out[out.length - 1].replace(/…$/, '');
+    out[out.length - 1] = `${last.length >= max ? last.slice(0, max - 1) : last}…`;
+  }
+  return out;
+}
+
 const KIND_WORDS: Record<string, string> = { overlaps: 'overlaps', shares_files: 'shares files', similar: 'similar' };
 
 /** The spec, its parent, siblings and up to 8 neighbours, each edge's kind in words. Pure. */

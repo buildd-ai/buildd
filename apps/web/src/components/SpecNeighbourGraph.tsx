@@ -1,4 +1,4 @@
-import type { GraphNode, NeighbourGraph } from '@/lib/specs/index-view';
+import { titleLines, type GraphNode, type NeighbourGraph } from '@/lib/specs/index-view';
 
 /**
  * A spec's neighbour graph (living-specs.md §19 R-28), the secondary view of
@@ -9,12 +9,9 @@ import type { GraphNode, NeighbourGraph } from '@/lib/specs/index-view';
  */
 const W = 720;
 const NODE_W = 168;
-const NODE_H = 48;
-const ROW = 60;
+const NODE_H = 62;
+const ROW = 72;
 const COL = { left: 16, mid: (W - NODE_W) / 2, right: W - NODE_W - 16 };
-const MAX_CHARS = 22;
-
-const clip = (t: string) => (t.length > MAX_CHARS ? `${t.slice(0, MAX_CHARS - 1)}…` : t);
 
 function Node({ node, x, y, self = false }: { node: GraphNode; x: number; y: number; self?: boolean }) {
   const body = (
@@ -24,8 +21,10 @@ function Node({ node, x, y, self = false }: { node: GraphNode; x: number; y: num
         x={x} y={y} width={NODE_W} height={NODE_H} rx={4}
         fill="var(--card)" stroke={self ? 'var(--text-primary)' : 'var(--border-strong)'} strokeWidth={self ? 1.5 : 1}
       />
-      <text x={x + 10} y={y + 20} fontSize={13} fontWeight={600} fill="var(--text-primary)">{clip(node.title)}</text>
-      <text x={x + 10} y={y + 37} fontSize={12} fill="var(--text-secondary)">{node.relation}</text>
+      <text x={x + 10} y={y + 20} fontSize={13} fontWeight={600} fill="var(--text-primary)">
+        {titleLines(node.title).map((l, i) => <tspan key={i} x={x + 10} dy={i ? 16 : 0}>{l}</tspan>)}
+      </text>
+      <text x={x + 10} y={y + 52} fontSize={12} fill="var(--text-secondary)">{node.relation}</text>
     </g>
   );
   return node.href ? <a href={node.href} aria-label={`${node.title}, ${node.relation}`}>{body}</a> : body;
