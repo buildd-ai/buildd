@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "1d64dcbf-044f-425f-96a3-255aecc53fa2",
+  "id": "6037a9e7-6148-492a-9571-8eb4c3b4333d",
   "prevIds": [
-    "2b58bb3f-7877-43bf-a045-419f2033b710"
+    "a417f747-5fb3-439b-83c5-3f5b239c1696"
   ],
   "ddl": [
     {
@@ -26499,6 +26499,32 @@
       "generated": null,
       "identity": null,
       "name": "tracked_branch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model_auth_source",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model_auth_mode",
       "entityType": "columns",
       "schema": "public",
       "table": "worker_heartbeats"
