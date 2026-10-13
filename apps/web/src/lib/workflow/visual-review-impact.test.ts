@@ -54,6 +54,41 @@ describe('classifyImpactFile', () => {
     expect(classifyImpactFile({ path: 'apps/web/src/app/app/page.tsx', patch: patch('+<div/>') })).toBe('screen');
     expect(classifyImpactFile({ path: 'apps/web/src/components/billing/Plan.tsx', patch: patch('+<b>x</b>') })).toBe('risky_flow');
   });
+  // task e7285dc4: a data-query port inside a route screen moves no pixel by any rule
+  // the features can see, so it is Jev's to judge, not protected by rule.
+  const QUERY_ONLY_PAGE: ImpactFile = {
+    path: 'apps/web/src/app/app/(protected)/tasks/page.tsx',
+    patch: patch(
+      '-  const rows = await db.query.tasks.findMany({ where: eq(tasks.missionId, id) });',
+      '+  const rows = await db.query.tasks.findMany({ where: sqlWhere(eq(tasks.missionId, id)) });',
+      "+import { sqlWhere } from '@buildd/core/db/relational-sql';",
+    ),
+  };
+  const CLASSNAME_PAGE: ImpactFile = {
+    path: 'apps/web/src/app/app/(protected)/tasks/page.tsx',
+    patch: patch('-    <section className="p-2">', '+    <section className="p-4">'),
+  };
+  it('a route screen whose hunk changes no markup, style or text line is a candidate, not protected', () => {
+    expect(classifyImpactFile(QUERY_ONLY_PAGE)).toBe('candidate');
+  });
+  it('a route screen with a className change stays protected', () => {
+    expect(classifyImpactFile(CLASSNAME_PAGE)).toBe('screen');
+  });
+  it('a route screen with no patch stays protected', () => {
+    expect(classifyImpactFile({ path: QUERY_ONLY_PAGE.path })).toBe('screen');
+    expect(classifyImpactFile({ path: QUERY_ONLY_PAGE.path, patch: null })).toBe('screen');
+  });
+  it('a query-only screen goes to Jev under automatic, and still requires review under strict', async () => {
+    calls.length = 0;
+    const auto = await run({ files: [QUERY_ONLY_PAGE], decide: deciderOf({}) });
+    expect(auto).toMatchObject({ verdict: 'not_applicable', basis: 'model' });
+    expect(calls).toHaveLength(1);
+    const strict = await run({ files: [QUERY_ONLY_PAGE], policy: policy('strict') });
+    expect(strict).toMatchObject({ verdict: 'review_required', basis: 'policy' });
+    const protectedScreen = await run({ files: [CLASSNAME_PAGE] });
+    expect(protectedScreen).toMatchObject({ verdict: 'review_required', basis: 'rule', reasons: [{ code: 'protected_screen' }] });
+  });
+
   it('other component code is a candidate', () => {
     expect(classifyImpactFile({ path: 'apps/web/src/components/Card.tsx', patch: patch('+<b>x</b>') })).toBe('candidate');
   });
