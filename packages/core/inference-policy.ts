@@ -54,6 +54,7 @@ export type InferenceCapability =
   | 'merge_readiness'
   | 'operator_recovery'
   | 'spec_duplicate'
+  | 'spec_area'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -304,6 +305,18 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     kind: 'built_in',
     label: 'Spec duplicates',
     description: 'When a spec is created, a decision model compares it with the most similar approved specs. A clear duplicate is refused unless you say it replaces the old spec or why it is different; an overlap is only flagged.',
+    costHint: '~$0.00005 per new spec',
+  },
+  // Spec areas (apps/web/src/lib/spec-area-decision.ts, Living Specs §17).
+  // Asked once per new or unfiled spec, after the response. A confident answer
+  // from a measured model files the spec under that area, with undo; anything
+  // else is only a suggestion. Built in like spec_duplicate: measured before
+  // launch, one cheap call, every filing reversible.
+  spec_area: {
+    id: 'spec_area',
+    kind: 'built_in',
+    label: 'Spec areas',
+    description: 'When a spec has no parent, a decision model reads it and the workspace\'s areas and files it under the one it belongs in when it is sure, with undo. Otherwise it only suggests a place.',
     costHint: '~$0.00005 per new spec',
   },
   chat: {

@@ -14,6 +14,7 @@ import MarkdownContent from '@/components/MarkdownContent';
 import SpecDiffView from '@/components/SpecDiffView';
 import SpecRevisionPanes from '@/components/SpecRevisionPanes';
 import SpecComments from '@/components/SpecComments';
+import SpecFiling from '@/components/SpecFiling';
 import SpecRepoChecks from '@/components/SpecRepoChecks';
 import type { SpecPageView } from '@/lib/specs/page-view';
 
@@ -162,6 +163,7 @@ export default function SpecPage({ view }: { view: Ok }) {
             Part of <Link href={`/app/specs/${view.parent.id}`} className="underline hover:text-text-primary">{view.parent.title}</Link>
           </p>
         ) : null}
+        {view.filing ? <SpecFiling specId={spec.id} filing={view.filing} canAct={view.canComment} /> : null}
         {view.children.length ? (
           <div data-testid="spec-page-children">
             <p className="text-body text-text-secondary">Specs under this one:</p>

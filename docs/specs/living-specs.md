@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -1096,8 +1096,7 @@ and a comment MUST never change the body, its hash or an approval.
 
 ## 17. Organization
 
-**Status: contract, not built.** Every rule here is the target; "Not yet" says
-what exists today.
+**Status: built**, except what "Not yet" names.
 
 **Capability statement**: Buildd MUST place every spec of a workspace in one
 product > area > feature tree itself, with the workspace's areas in front of
@@ -1138,7 +1137,10 @@ or wants to change.
 - R-30: Areas are structure, not approved text: the classifier and
   `suggestParent` (§14) consider every area and product in the workspace
   whatever its approval state (draft, in review or approved), and skip only
-  retired and superseded ones.
+  retired and superseded ones. `suggestParent` still prefers an area the
+  spec corpus ranks, then matches every area by its words (TF-IDF over the
+  title, charter and member titles), so a draft area the corpus never
+  indexed is found.
 - R-7: An area answer at or above the measured threshold, from a measured
   model, is applied: the parent is set and a filing is recorded (spec,
   previous parent, new parent, ledger row). The spec page and the list say
@@ -1160,48 +1162,93 @@ or wants to change.
   `distinctBecause`), so the threshold eval reads real disagreements, and the
   sweep leaves that spec alone.
 
+**As built**:
+- Measured 2026-10-13 (knowledge base:
+  `buildd/reports/spec-area-filing-eval-2026-10-13.md`), on cards from the
+  public `docs/specs` with a hand-refined area per spec, cases where the
+  spec's own area was removed, and lists past 18 areas. The bar counts a spec
+  with no fitting area filed anywhere as wrong. R-7's threshold is p >= 0.97:
+  where auto-filing by Jev was right at least 95% of the time. Jev rarely
+  says `new_area` and is confident when it picks a neighbour instead, which
+  is what sets the bar so high; when the right area is listed it is right
+  far below it. Clef and Clef Flash were as precise at lower bars but never
+  reach 0.97, so under them every answer is a suggestion. N in R-6 is 8.
+- The state holds at most 18 numbered entries and about 6,000 characters of
+  areas; the answer is a slot number, `new_area` or `unsure`.
+- Placement is recorded in `spec_filings`: `filed` (with the previous parent
+  undo restores), `suggested` (a new area's proposed title and charter ride
+  along) and `manual` (any set or clear through `relate`, by a person or an
+  agent). The sweep skips every spec with any row, so a spec it has looked at
+  once is not asked about again.
+- The cold-start taxonomy is drawn without a model: `domain:` frontmatter in
+  a spec's body seeds the groups, a cross-cutting value (`surfaces`, `ui`,
+  `api`, catch-alls) is re-clustered by the specs' words, and a group at
+  about a quarter of all specs or more is split the same way. Titles and
+  charters come from the members' distinctive words, for a person to edit.
+- `POST /api/specs/organize { workspaceId, dryRun = true, limit?, areas?,
+  edits? }` and MCP `manage_specs action=organize`: a taxonomy (no product
+  or area) or a sweep batch grouped by area. `GET /api/specs/organize?
+  workspaceId=&batchId=` lists one run's filings.
+  `GET|POST /api/specs/[id]/filing { action: undo | accept | dismiss,
+  filingId }` reads and acts on one spec's placement.
+
 **Acceptance criteria**:
 - AC-66: GIVEN a workspace with no area and repo specs carrying three
   distinct `domain:` values WHEN the taxonomy is proposed THEN it is one
   proposal naming at most one product and areas with members, and no spec
-  exists until a person accepts it (test pending).
+  exists until a person accepts it (`apps/web/src/lib/specs/areas.test.ts`, `apps/web/tests/db/spec-organize.test.ts`).
 - AC-90: GIVEN repo specs where one `domain:` value holds a third of all
   specs, or the value is `surfaces`, WHEN the taxonomy is proposed THEN that
-  value is split across two or more proposed areas (test pending).
+  value is split across two or more proposed areas (`apps/web/src/lib/specs/areas.test.ts`).
 - AC-67: GIVEN three areas WHEN a spec is classified THEN the model's state
-  holds all three areas' ids, titles and charters (test pending).
+  holds all three areas' ids, titles and charters (`apps/web/src/lib/spec-area-decision.test.ts`).
 - AC-91: GIVEN 40 areas WHEN a spec is classified THEN the state holds the
   product, the 15 most similar areas and every area over N members within
-  the token budget, and states how many it left out (test pending).
+  the token budget, and states how many it left out (`apps/web/src/lib/spec-area-decision.test.ts`).
 - AC-92: GIVEN a workspace whose only area is a draft WHEN a spec is created
   with no parent THEN the classifier's state and `suggestParent` both
-  consider that area (test pending).
+  consider that area (`apps/web/tests/db/spec-organize.test.ts`).
 - AC-68: GIVEN a measured model answering an area above the threshold WHEN a
   draft is created THEN its parent is that area, the ledger row and filing
   exist, and undo restores the previous parent with the version unmoved
-  (test pending).
+  (`apps/web/tests/db/spec-organize.test.ts`, `apps/web/src/components/SpecPage.dom.test.tsx`).
 - AC-69: GIVEN `new_area`, `unsure`, an id outside the list, or any answer
   from an unmeasured model THEN the parent is unchanged and a suggestion
-  shows (test pending).
+  shows (`apps/web/tests/db/spec-organize.test.ts`, `apps/web/src/lib/spec-area-decision.test.ts`).
 - AC-70: GIVEN no decision-model key or a provider error WHEN a draft is
   created THEN it is created, with `suggestParent`'s suggestion
-  (test pending).
+  (`apps/web/tests/db/spec-organize.test.ts`).
 - AC-71: GIVEN a sweep run twice with nothing changed in between THEN the
   second batch is empty; GIVEN a spec a person moved THEN no run moves it
-  (test pending).
+  (`apps/web/tests/db/spec-organize.test.ts`).
 - AC-72: GIVEN a person moves a spec buildd filed THEN the filing's ledger
-  row carries a human override naming the new parent (test pending).
+  row carries a human override naming the new parent (`apps/web/tests/db/spec-organize.test.ts`).
 - AC-73: GIVEN an area in workspace B WHEN a spec in workspace A is
   classified THEN that area is not in the state, and a filing naming it is
-  refused (test pending).
+  refused (`apps/web/tests/db/spec-organize.test.ts`, `apps/web/src/lib/spec-area-decision.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/spec-area-decision.ts` — `classifySpecArea`, `selectAreasForState`, `specAreaState`, `specAreaKind`, `recordAreaOverride`
+- `apps/web/src/lib/specs/areas.ts` — `listAreas`, `proposeTaxonomy`
+- `apps/web/src/lib/specs/organize.ts` — `organizeNewSpec`, `organizeWorkspace`, `actOnFiling`
+- `apps/web/src/lib/specs/filings.ts` — `recordManualPlacement`, `setParentIfUnfiled`
+- `apps/web/src/app/api/specs/organize/route.ts` — `POST`, `GET`
+- `apps/web/src/app/api/specs/[specId]/filing/route.ts` — `GET`, `POST`
 
 **Not yet**:
-- None of R-2 to R-11 or R-30 is built. An area is made by hand with scope
-  `domain`, and the only placement is `suggestParent` (§14), which searches
-  the approved-spec corpus: an unapproved area is never found, so a new
-  workspace gets no suggestion at all. R-30 is the fix.
-- The threshold eval has not run; until it has, R-7 applies nothing and every
-  answer is a suggestion. N and the token budget in R-6 are set with it.
+- The sweep is not on the knowledge digest cron (R-10): it runs when a person
+  or an agent calls organize. Wiring it is one call, left for the owner to
+  switch on.
+- The spec list does not say "Filed by buildd" yet; the spec page does.
+- One threshold for every measured model: a per-model bar (Clef was precise
+  from 0.7 in the eval) needs a stored measurement.
+- A `new_area` suggestion proposes the spec's own title and opening line as
+  the area, not a title a model wrote, and accepting it does not create the
+  area: a person creates the area, then moves the spec.
+- `domain:` hints are read from a spec body's own frontmatter; a repo file a
+  revision cites is not read for one.
+- Areas themselves (scope `domain`) are not filed under the product by the
+  classifier; the taxonomy accept places them.
 
 ## 18. Spec homes in practice: native source, generated repo copy
 

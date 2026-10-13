@@ -196,7 +196,8 @@ export async function recordChallengerRun(input: ChallengerRunInput, deps: { ins
 export async function recordHumanOverride(
   decisionRecordId: string,
   override: Record<string, unknown>,
-  overriddenBy: string,
+  /** The person's user id (the column is a uuid); null when no person is behind it. */
+  overriddenBy: string | null,
   deps: { now?: () => Date } = {},
 ): Promise<void> {
   try {

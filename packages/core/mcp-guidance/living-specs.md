@@ -100,11 +100,27 @@ say so and stop.
 
 ## Structure and neighbours
 
-- One tree: product, then area (`domain`), then feature, by parent. A draft
-  with no parent may come back with a suggested parent. It is never applied
-  for you: `buildd action=manage_specs params={ action: "relate", specId, parentSpecId }`
-  sets it, `parentSpecId: null` clears it. A parent in another workspace, or
-  one that forms a cycle, is refused. Relating does not change the version.
+- One tree: product, then area (`domain`), then feature, by parent. An area
+  is a spec with scope `domain`: a title and a one-paragraph charter. It is a
+  parent from its first revision, approved or not.
+- A draft with no parent comes back with a suggested parent, and after the
+  reply buildd files it itself when it is sure: the spec page then says
+  "Filed by buildd", with undo. Otherwise it only suggests a place. Set the
+  parent yourself with
+  `buildd action=manage_specs params={ action: "relate", specId, parentSpecId }`;
+  `parentSpecId: null` clears it. A parent in another workspace, or one that
+  forms a cycle, is refused. Relating does not change the version, and a spec
+  you place by hand is never moved by buildd again.
+- Organize a whole workspace:
+  `buildd action=manage_specs params={ action: "organize", workspaceId, dryRun }`.
+  `dryRun` defaults to true and writes nothing. With no product or area it
+  proposes a taxonomy (areas with charters and the specs each would hold);
+  `dryRun: false` creates it, `areas: [keys]` and
+  `edits: { [key]: { title, charter } }` accept part of it or rename. With
+  areas it sweeps the unfiled specs into one batch grouped by area; with
+  `dryRun: false` the confident ones are filed (each with undo) and the rest
+  stay suggestions. Run the dry run first and show it to a person before a
+  taxonomy is created.
 - Neighbours (similar specs, specs whose work touched the same files,
   criteria judged to overlap) show on the spec page under Related. They are
   information: they approve, pin, grade and block nothing.

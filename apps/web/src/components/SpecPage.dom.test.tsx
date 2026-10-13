@@ -60,6 +60,7 @@ const base = {
   commentAnchors: [{ kind: 'criterion' as const, id: 'R-1', label: 'R-1' }],
   canComment: true,
   nearby: [] as any[],
+  filing: null as any,
   compare: null,
   canApprove: true,
   review: null as any,
@@ -123,6 +124,32 @@ describe('SpecPage', () => {
       .toEqual([['shares_files', '/app/specs/n1', "Changes 3 files this spec's work changed"], ['similar', '/app/specs/n2', 'Similar in what it asks for']]);
     act(() => root.render(<SpecPage view={base} />));
     expect(q('spec-page-nearby')).toBeNull();
+  });
+
+  it('says "Filed by buildd" with an undo that posts that filing, and a suggestion with accept and dismiss (§17 R-7)', async () => {
+    const calls: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ filing: null }), { status: 200 });
+    }) as typeof fetch;
+    const filed = { id: 'f1', kind: 'filed', status: 'applied', parent: { specId: 'area-1', title: 'Payments' }, previousParent: null, source: 'model', p: 0.97, newArea: null, createdAt: iso };
+    act(() => root.render(<SpecPage view={{ ...base, filing: filed }} />));
+    expect(q('spec-page-filing')!.textContent).toContain('Filed by buildd under Payments');
+    expect(q('spec-page-filing')!.querySelector('a')!.getAttribute('href')).toBe('/app/specs/area-1');
+    await act(async () => { q('spec-page-filing-undo')!.click(); });
+    expect(calls).toEqual([{ url: `/api/specs/${SPEC}/filing`, body: { action: 'undo', filingId: 'f1' } }]);
+    expect(refreshes).toBe(1);
+
+    act(() => root.render(<SpecPage view={{ ...base, filing: { ...filed, id: 'f2', kind: 'suggested', status: 'open' } }} />));
+    expect(q('spec-page-filing')!.textContent).toContain('buildd suggests filing this under Payments');
+    expect(q('spec-page-filing-undo')).toBeNull();
+    await act(async () => { q('spec-page-filing-accept')!.click(); });
+    expect(calls[1]).toEqual({ url: `/api/specs/${SPEC}/filing`, body: { action: 'accept', filingId: 'f2' } });
+
+    act(() => root.render(<SpecPage view={{ ...base, canComment: false, filing: filed }} />));
+    expect(q('spec-page-filing-undo')).toBeNull();
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-filing')).toBeNull();
   });
 
   it('a reader who may not approve sees no approve action', () => {

@@ -1,3 +1,4 @@
+import { currentFiling, type FilingView } from './filings';
 import { db } from '@buildd/core/db';
 import { artifacts, specRevisions, specs, users, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
@@ -158,6 +159,8 @@ export type SpecPageView =
      */
     /** Derived neighbours (§14), strongest first, each with why it is near. */
     nearby: NearbySpec[];
+    /** Where buildd filed this spec, or the place it suggests (§17), if either is in effect. */
+    filing: FilingView | null;
     /** Comments readable on the revision being read (§16), and where one can be added. */
     comments: CommentView[];
     commentAnchors: Array<{ kind: 'criterion' | 'section'; id: string; label: string }>;
@@ -251,6 +254,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   }
 
   const nearby = await readSpecNeighbours(spec.id).catch(() => [] as NearbySpec[]);
+  const filing = await currentFiling(spec.id).catch(() => null);
   const listed = await listSpecComments(caller, specId, { revision: got.view.revision.revision }).catch(() => null);
   const comments = listed?.ok ? listed.comments : [];
   const commentAnchors = [
@@ -293,6 +297,6 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     reading: { revision: got.view.revision.revision, approved: spec.approvedRevision === got.view.revision.revision, isHead: got.view.revision.revision === spec.headRevision },
     waiting: pending && open ? spec.headRevision : null,
     body: got.view.body,
-    revisions, parent: parent ?? null, children, repoRefs, design, nearby, comments, commentAnchors, canComment, compare, canApprove, review,
+    revisions, parent: parent ?? null, children, repoRefs, design, nearby, filing, comments, commentAnchors, canComment, compare, canApprove, review,
   };
 }
