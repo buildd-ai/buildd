@@ -3,10 +3,11 @@ import { specOutcomeVerdicts, specRevisions, specs, tasks } from '@buildd/core/d
 import { and, asc, desc, eq, isNotNull, lt, sql } from 'drizzle-orm';
 import { specCriteria } from '@buildd/spec-contract/requirements';
 import { scopeOf } from '@buildd/spec-contract/scope';
-import { computeSpecNeighbours, neighbourDeps, readSpecNeighbours, specFiles, type SimilarFn } from './neighbours';
+import { computeSpecNeighbours, neighbourDeps, readSpecNeighbours, replaceSpecNeighbours, specFiles, type SimilarFn } from './neighbours';
 import type { KnowledgeStore, LivingSpecGraph } from '@buildd/core/knowledge-store';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { appBaseUrl } from '@/lib/app-url';
+import type { DuplicateCheck, DuplicateCheckInput } from './duplicates';
 
 /**
  * Put a spec's approved revision into recall (corpus `spec`) and project its
@@ -26,6 +27,8 @@ type Store = Pick<KnowledgeStore, 'upsert'> & Partial<Pick<KnowledgeStore, 'dele
 
 /** Overridable for tests: where chunks and graph go. */
 export const specKnowledgeDeps: {
+  /** The duplicate decision (§13), for `overlaps` neighbours. Default: the decisions module's slot. */
+  duplicates?: (input: DuplicateCheckInput) => Promise<DuplicateCheck>;
   store: () => Promise<Store>;
   writeGraph: (input: { workspaceId: string; specId: string; namespace: string; graph: LivingSpecGraph; chunkIds: readonly string[] }) => Promise<unknown>;
 } = {
@@ -45,6 +48,8 @@ export interface SpecKnowledgeResult {
   chunks: number;
   graph: boolean;
   neighbours?: { similar: number; sharesFiles: number };
+  /** Approved specs Jev judged a duplicate or an overlap of this one, at approval only (§13, §14). */
+  overlaps?: number;
   skipped?: 'not_found' | 'not_approved';
   errors: string[];
 }
@@ -85,6 +90,7 @@ export async function indexApprovedSpec(specId: string): Promise<SpecKnowledgeRe
       out.errors.push(`chunks: ${(err as Error).message}`);
     }
 
+    await writeOverlaps(spec, body.content, out);
     await deriveAndWriteGraph(spec, rev, body.content, namespace, out.indexed ? chunks.map(c => c.id) : [], out);
   } catch (err) {
     out.errors.push((err as Error).message);
@@ -94,6 +100,27 @@ export async function indexApprovedSpec(specId: string): Promise<SpecKnowledgeRe
 }
 
 type SpecRow = typeof specs.$inferSelect;
+
+/**
+ * `overlaps` neighbours (§14), from the duplicate decision (§13): the approved
+ * spec against every other approved one in its workspace. At approval only, so
+ * the daily refresh never spends a model call. A check that did not run keeps
+ * the rows it had.
+ */
+async function writeOverlaps(spec: SpecRow, body: string, out: SpecKnowledgeResult): Promise<void> {
+  try {
+    const run = specKnowledgeDeps.duplicates ?? (await import('@/modules')).SPEC_DUPLICATE_CHECK;
+    const check = await run({ workspaceId: spec.workspaceId, title: spec.title, body, excludeSpecId: spec.id });
+    if (!check.ran) return;
+    const found = [...check.blocking, ...check.warnings];
+    await replaceSpecNeighbours(spec.workspaceId, spec.id, 'overlaps', found.map((c) => ({
+      neighborSpecId: c.specId, score: c.p, source: 'jev', detail: { relation: c.relation },
+    })));
+    out.overlaps = found.length;
+  } catch (err) {
+    out.errors.push(`overlaps: ${(err as Error).message}`);
+  }
+}
 type RevisionRow = typeof specRevisions.$inferSelect;
 
 /** What the approved revision's work derived: pinned tasks, their criteria and passes, the files changed. */

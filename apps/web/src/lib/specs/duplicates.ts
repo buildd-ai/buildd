@@ -14,7 +14,11 @@ export type DuplicateCheck =
   | { ran: true; blocking: DuplicateCandidate[]; warnings: DuplicateCandidate[]; compared: number }
   | { ran: false; reason: string };
 
-export interface DuplicateCheckInput { workspaceId: string; title: string; body: string; userId?: string | null; accountId?: string | null }
+export interface DuplicateCheckInput {
+  workspaceId: string; title: string; body: string; userId?: string | null; accountId?: string | null;
+  /** A spec already in the pool (an approval comparing itself with the rest): left out. */
+  excludeSpecId?: string;
+}
 
 export type DuplicateOverride = { supersedes?: string; distinctBecause?: string };
 

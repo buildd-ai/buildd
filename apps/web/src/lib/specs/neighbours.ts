@@ -164,7 +164,7 @@ export function neighbourReason(kind: NeighbourKind, detail: Record<string, unkn
   if (kind === 'overlaps') {
     const pairs = Array.isArray(detail?.pairs) ? (detail!.pairs as Array<{ here?: string; there?: string }>) : [];
     const first = pairs.find((p) => typeof p.here === 'string' && typeof p.there === 'string');
-    if (!first) return 'Has a criterion that means the same';
+    if (!first) return detail?.relation === 'duplicate' ? 'Asks for the same things' : 'Shares some of what it asks for';
     return pairs.length > 1 ? `${first.here} here matches ${first.there} there, and ${pairs.length - 1} more` : `${first.here} here matches ${first.there} there`;
   }
   return 'Similar in what it asks for';

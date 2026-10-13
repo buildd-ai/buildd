@@ -184,6 +184,19 @@ describe('manage_specs', () => {
     expect(rec).toContain('Governed outcome: FAIL');
   });
 
+  it('create_draft passes the duplicate override and shows overlaps, a check that did not run, and a suggested parent', async () => {
+    api.mockResolvedValueOnce({ spec: { id: SPEC, title: 'Basket', version: 1, status: 'draft' }, duplicateCheck: { ran: true, warnings: [{ specId: 'cart-id', title: 'Cart', relation: 'overlap', p: 0.82 }] }, suggestedParent: { specId: 'shop-id', title: 'Shop', reason: 'Closest product by what it asks for' } });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'Basket', body: 'x', distinctBecause: 'B2B quotes, not the cart' }, ctx()));
+    expect(JSON.parse(api.mock.calls[0][1].body)).toMatchObject({ distinctBecause: 'B2B quotes, not the cart' });
+    expect(r).toContain('Cart (cart-id): overlap, p 0.82');
+    expect(r).toContain('Suggested parent: "Shop" (shop-id), closest product by what it asks for.');
+    api.mockResolvedValueOnce({ spec: { id: SPEC, title: 'B', version: 1, status: 'draft' }, duplicateCheck: { ran: false, reason: 'this team has no decision-model key' }, suggestedParent: null });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'B', body: 'x' }, ctx()))).toContain('Duplicate check did not run: this team has no decision-model key.');
+    api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"This spec looks like a duplicate of \\"Cart\\"","code":"spec_duplicate"}'));
+    const refused: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'C', body: 'x' }, ctx());
+    expect(refused.isError).toBe(true);
+  });
+
   it('a visual verdict sends what the audit captured instead of a head', async () => {
     api.mockResolvedValueOnce(outcome('unverified', 'AC-1 has no verdict'));
     await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', taskId: TASK, checker: 'visual', criterionId: 'AC-1', verdict: 'pass', capturedSha: HEAD, screenshotIds: ['s-1'], headSha: 'ignored' }, ctx());

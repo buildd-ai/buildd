@@ -205,7 +205,7 @@ export async function checkSpecDuplicates(
   try {
     const teamId = await (deps.teamOf ?? teamOfWorkspace)(input.workspaceId);
     if (!teamId) return { ran: false, reason: 'the workspace has no team' };
-    const pool = await (deps.approved ?? approvedCards)(input.workspaceId);
+    const pool = (await (deps.approved ?? approvedCards)(input.workspaceId)).filter((p) => p.specId !== input.excludeSpecId);
     const card = specCard(input.title, input.body);
     const shortlist = tfidfShortlist(card, pool);
     if (shortlist.length === 0) return { ran: true, blocking: [], warnings: [], compared: 0 };
