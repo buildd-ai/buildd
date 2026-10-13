@@ -1,4 +1,5 @@
 import type { Verdict } from './outcome';
+import { tableRowId } from './requirements';
 
 /**
  * Check commands on spec criteria (Living Specs V1, mechanical path). A
@@ -35,7 +36,8 @@ export function criterionLines(body: string, label: string): Array<{ criterionId
   for (const raw of body.split('\n')) {
     if (/^\s*(```|~~~)/.test(raw)) { fenced = !fenced; continue; }
     if (fenced) continue;
-    const id = ID.exec(raw);
+    const row = tableRowId(raw);
+    const id = row ? [raw, row.kind, String(row.n)] : ID.exec(raw);
     if (id) {
       const key = `${id[1]}-${Number(id[2])}`;
       // The first definition of an id wins (requirements.ts); a repeat owns no line.

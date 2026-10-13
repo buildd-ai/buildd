@@ -222,6 +222,7 @@ const SAFE: Record<string, string[]> = {
   // A criterion id from the spec body (R-1, AC-2) and a git SHA.
   spec_outcome_verdicts: ['criterion_id', 'head_sha'],
   spec_neighbors: ['source'], // vector | lexical | pr_files | path_manifest | a decision model id
+  spec_comments: ['anchor_id', 'anchor_hash'], // an outline id (s3) or criterion id (AC-2), and a sha256
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
   // github_repos.default_branch.
@@ -267,6 +268,10 @@ const SAFE: Record<string, string[]> = {
   migration_log: ['phase'], // multi-line literal-union $type
   credential_leases: ['held_by_runner_id'], // wiped via secrets cascade too
   user_feedback: ['entity_id'],
+  // Root causes hold no text by design (apps/web/src/lib/root-cause-record.ts):
+  // fixed vocabularies, a backend id, a failure-pattern rule id, and a key
+  // built from those plus row ids. Classification never reads free text.
+  root_causes: ['key', 'capability_kind', 'provider', 'component', 'classification'],
 };
 
 const schema = schemaTextColumns(schemaSrc);

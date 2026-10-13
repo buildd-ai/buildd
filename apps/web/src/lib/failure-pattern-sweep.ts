@@ -60,6 +60,7 @@ import {
   type IncidentAlertSender,
   type IncidentDecider,
 } from './failure-incident-actions';
+import { dbRootCauseStore, dbTeamOfWorkspace, recordPatternRootCauses, type RootCauseStorePort } from './root-cause-record';
 
 // ── Window math (pure) ──────────────────────────────────────────────────────
 
@@ -181,6 +182,11 @@ export interface SweepDeps {
   decide?: IncidentDecider | null;
   send?: IncidentAlertSender;
   fixTasks?: FixTaskPort | null;
+  /**
+   * Where each detected pattern is recorded as a root cause on the
+   * workspace's team. Absent: none is recorded (production always sets it).
+   */
+  rootCauses?: { store: RootCauseStorePort; teamOfWorkspace(workspaceId: string): Promise<string | null> } | null;
   /** The existing ops-error reporting path (`reportOps`), never a new incident. */
   reportOpsError(message: string, detail: string, severity: 'warning' | 'error' | 'critical'): Promise<void>;
   /**
@@ -315,6 +321,8 @@ async function sweepOneWorkspace(
   const candidates = detectFailurePatterns(facts);
   counters.candidates += candidates.length;
 
+  await recordRootCauses(deps, workspaceId, candidates, counters);
+
   if (candidates.length > 0) {
     const results = await recordIncidentCandidates(candidates, {
       port: deps.incidentPort,
@@ -357,6 +365,36 @@ async function sweepOneWorkspace(
   await deps.setWatermark(workspaceId, now);
   counters.workspacesEvaluated++;
   counters.windowsEvaluated++;
+}
+
+// ── Root causes ──────────────────────────────────────────────────────────────
+
+/**
+ * Record each pattern as a root cause on the workspace's team, independent of
+ * the incident path above. Only the pattern's rule, workspace and task refs
+ * are read. Never throws: a store failure is an ops error and a run failure.
+ */
+async function recordRootCauses(
+  deps: SweepDeps,
+  workspaceId: string,
+  candidates: readonly IncidentCandidate[],
+  counters: SweepRunCounters,
+): Promise<void> {
+  if (!deps.rootCauses || candidates.length === 0) return;
+  try {
+    await recordPatternRootCauses(
+      workspaceId,
+      candidates.map(c => ({ rule: c.rule, workspaceId: c.workspaceId, taskIds: c.affected.taskIds, firstObservedAt: c.firstObservedAt, lastObservedAt: c.lastObservedAt })),
+      deps.rootCauses,
+    );
+  } catch (err) {
+    counters.runFailures++;
+    await deps.reportOpsError(
+      `Failure Pattern Sentinel: root-cause record failed for workspace ${workspaceId}`,
+      err instanceof Error ? err.message : String(err),
+      'error',
+    ).catch(() => {});
+  }
 }
 
 // ── Reconcile: resolve what current facts say is over ───────────────────────
@@ -821,6 +859,7 @@ export function productionSweepDeps(): SweepDeps {
     },
     collectFacts: dbCollectFacts,
     observePathOverlapSubjects: dbObservePathOverlapSubjects,
+    rootCauses: { store: dbRootCauseStore, teamOfWorkspace: dbTeamOfWorkspace },
     async reportOpsError(message, detail, severity) {
       const { reportOps } = await import('@buildd/core/report-ops');
       await reportOps({ source: 'failure-pattern-sentinel', severity, message, detail });

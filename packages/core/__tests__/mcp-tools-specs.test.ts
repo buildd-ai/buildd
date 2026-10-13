@@ -204,6 +204,19 @@ describe('manage_specs', () => {
     expect([endpoint, JSON.parse(opts.body)]).toEqual([`/api/specs/outcomes/${TASK}`, { checker: 'visual', criterionId: 'AC-1', verdict: 'pass', capturedSha: HEAD, screenshotIds: ['s-1'] }]);
   });
 
+  it('comment posts an anchor on a revision; comments lists states; reading needs only read scope', async () => {
+    expect(requiredScopeForAction('manage_specs', { action: 'comments' })).toBe('tasks:read');
+    expect(requiredScopeForAction('manage_specs', { action: 'comment' })).toBe('tasks:write');
+    api.mockResolvedValueOnce({ comment: { id: 'c-1', anchor: { kind: 'criterion', id: 'AC-2', label: 'AC-2' }, madeOnRevision: 3 } });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'comment', specId: SPEC, criterion: 'AC-2', body: 'Which currency?', revision: 3 }, ctx()));
+    expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual([`/api/specs/${SPEC}/comments`, { anchor: { criterion: 'AC-2' }, body: 'Which currency?', revision: 3 }]);
+    expect(r).toContain('Comment c-1 added on AC-2 of revision 3');
+    api.mockResolvedValueOnce({ revision: 4, comments: [{ id: 'c-1', anchor: { kind: 'criterion', id: 'AC-2', label: 'AC-2' }, body: 'Which currency?', author: { kind: 'agent' }, state: 'outdated', madeOnRevision: 3, parentCommentId: null }] });
+    const list = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'comments', specId: SPEC, revision: 4 }, ctx()));
+    expect(api.mock.calls[1][0]).toBe(`/api/specs/${SPEC}/comments?revision=4`);
+    expect(list).toContain('[outdated] AC-2 (r3, agent, c-1): Which currency?');
+  });
+
   it('a refused verdict (a task grading itself) comes back as the route\'s error', async () => {
     api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"a task never grades its own outcome"}'));
     const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', taskId: TASK, criterionId: 'R-1', verdict: 'pass', headSha: HEAD }, ctx());

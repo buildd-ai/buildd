@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -2838,6 +2838,38 @@ export const specNeighbors = pgTable('spec_neighbors', {
 }, (t) => ({
   uniquePair: uniqueIndex('spec_neighbors_pair_kind_idx').on(t.specId, t.neighborSpecId, t.kind),
   neighborIdx: index('spec_neighbors_neighbor_idx').on(t.neighborSpecId),
+}));
+
+/**
+ * A comment on one section or one criterion of a spec revision (Living Specs
+ * R-26, docs/specs/living-specs.md §16). It belongs to the revision it was made
+ * on; a later revision shows it open when the anchored text is unchanged
+ * (same `anchor_hash`) and outdated otherwise. A section is found again on a
+ * later revision by its heading (`anchor_label`), a criterion by its id.
+ * Comments never touch the body, the hash or an approval; resolving is a
+ * person's act.
+ */
+export const specComments = pgTable('spec_comments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  anchorKind: text('anchor_kind').notNull().$type<'section' | 'criterion'>(),
+  /** The outline section id at that revision (`s3`), or the criterion id (`AC-2`). */
+  anchorId: text('anchor_id').notNull(),
+  /** The section's heading, or the criterion id: how a later revision finds the anchor again. */
+  anchorLabel: text('anchor_label').notNull(),
+  /** sha256 of the anchored text at that revision. */
+  anchorHash: text('anchor_hash').notNull(),
+  body: text('body').notNull(),
+  authorKind: text('author_kind').notNull().$type<'user' | 'agent'>(),
+  authorId: text('author_id').notNull(),
+  parentCommentId: uuid('parent_comment_id'),
+  resolvedBy: text('resolved_by'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specIdx: index('spec_comments_spec_idx').on(t.specId, t.createdAt),
 }));
 
 /**
@@ -6734,3 +6766,43 @@ export const failureIncidents = pgTable('failure_incidents', {
 
 export type FailureIncidentRow = typeof failureIncidents.$inferSelect;
 export type NewFailureIncidentRow = typeof failureIncidents.$inferInsert;
+
+/**
+ * One root cause per team: what broke (a runner's credential, a provider key,
+ * a platform component), how it is classified, which work it hit, and whether
+ * a capability check has since verified it restored. Written by detection
+ * (apps/web/src/lib/root-cause-record.ts): the worker outcome path for runner
+ * credential failures and the failure-pattern sweep. Upsert is one atomic
+ * INSERT … ON CONFLICT on (team_id, key), so a repeat of a cleared cause
+ * reopens the same row. `verified_restored_at` is written only by a passing
+ * capability check, never by a person or a timer.
+ *
+ * Classification only. Operator state (severity, paging, acknowledgement, fix
+ * tasks, verdicts) does not belong here: operator tooling reads this table
+ * through the platform-owner API and keeps its own state elsewhere.
+ */
+export const rootCauses = pgTable('root_causes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  key: text('key').notNull(),
+  capabilityKind: text('capability_kind').notNull().$type<RootCauseCapabilityKind>(),
+  runnerId: uuid('runner_id').references(() => accounts.id, { onDelete: 'set null' }),
+  provider: text('provider'),
+  component: text('component'),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  classification: text('classification').notNull().$type<RootCauseClassification>(),
+  // Newest first, deduplicated, capped on write.
+  affectedTaskIds: uuid('affected_task_ids').array().notNull().default(sql`ARRAY[]::uuid[]`),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  verifiedRestoredAt: timestamp('verified_restored_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamKeyIdx: uniqueIndex('root_causes_team_key_idx').on(t.teamId, t.key),
+  runnerIdx: index('root_causes_runner_idx').on(t.runnerId),
+  lastSeenIdx: index('root_causes_last_seen_idx').on(t.lastSeenAt),
+}));
+
+export type RootCauseRow = typeof rootCauses.$inferSelect;
+export type NewRootCauseRow = typeof rootCauses.$inferInsert;
