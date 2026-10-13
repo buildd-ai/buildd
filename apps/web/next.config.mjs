@@ -102,7 +102,7 @@ const nextConfig = {
   // `typescript` is on that list too: lib/copy-review.ts parses PR patches with
   // it, and reviewer.ts pulls that into the server graph of every page.
   // Guarded by src/lib/next-config.test.ts.
-  transpilePackages: ['@buildd/shared', '@buildd/core', '@builddai/ai-kit', '@aws-sdk/client-s3', 'typescript'],
+  transpilePackages: ['@buildd/shared', '@buildd/core', '@buildd/workflow-kernel', '@builddai/ai-kit', '@aws-sdk/client-s3', 'typescript'],
   // @ast-grep/napi is a native napi binary loaded via dynamic import() in
   // packages/core/knowledge-store/symbol-extractor.ts. Turbopack statically
   // traces the dynamic import and cannot place the .node asset in an ESM
