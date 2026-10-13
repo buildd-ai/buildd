@@ -117,11 +117,10 @@ describe('workspace settings page', () => {
 describe('settings runners page', () => {
   const RUNNERS = readFileSync(join(import.meta.dir, '../../runners/page.tsx'), 'utf8');
   const MEMBERS = readFileSync(join(import.meta.dir, '../../team/page.tsx'), 'utf8');
-  it('picks the team from ?team= and shows the switcher', () => {
+  it('picks the team from ?team= without a page-level switcher', () => {
     expect(RUNNERS).toContain('pickShownTeam(teams, teamParam, currentTeam)');
-    expect(RUNNERS).toContain('<TeamSwitcher');
-    expect(RUNNERS).toContain('basePath="/app/settings/runners"');
-    // Members names the team in its card; the shell switcher changes it.
+    // The shell switcher changes the team; neither page repeats it.
+    expect(RUNNERS).not.toContain('<TeamSwitcher');
     expect(MEMBERS).not.toContain('<TeamSwitcher');
   });
 });
