@@ -20,7 +20,7 @@ import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-heal
 import type { DispatchHistoryEntry } from './dispatch-outbox';
 import { formatEvidenceObjects, formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
-import { handleSpecsAction } from './mcp-specs';
+import { handleSpecsAction, WORKSPACE_SPEC_OPS } from './mcp-specs';
 import { handleModelUpgradeAction } from './mcp-model-upgrades';
 import { defaultProvidersScope, handleProvidersAction, providersNeedsAdmin, type ProvidersOp } from './mcp-providers';
 import { modelCredentialPurposes } from './providers/manage';
@@ -5911,10 +5911,11 @@ export async function handleBuilddAction(
 
     case 'manage_specs': {
       const op = params.action;
-      const wsId = op === 'create_draft' || op === 'list'
+      const needsWorkspace = (WORKSPACE_SPEC_OPS as readonly string[]).includes(String(op));
+      const wsId = needsWorkspace
         ? (params.workspaceId ? await resolveWorkspaceId(api, params.workspaceId, ctx) : await ctx.getWorkspaceId())
         : null;
-      if ((op === 'create_draft' || op === 'list') && params.workspaceId && !wsId) {
+      if (needsWorkspace && params.workspaceId && !wsId) {
         return errorResult(`Workspace "${params.workspaceId}" not found or not visible to this token.`);
       }
       return handleSpecsAction(api, params, wsId, ctx.appBaseUrl || 'https://buildd.dev');

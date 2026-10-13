@@ -5,6 +5,7 @@ import { describe, it, expect } from 'bun:test';
 // tasks/page.test.ts's mission-budget plumbing suite — a re-derivation of the
 // wiring in this test file would prove nothing about the actual page.
 const pageSource = await Bun.file(new URL('./page.tsx', import.meta.url)).text();
+const taskViewSource = await Bun.file(new URL('../../../../../lib/task-view.ts', import.meta.url)).text();
 
 describe('ship badge plumbing — tasks/[id]/page.tsx (spec §10.3)', () => {
   it('imports the single shared ship-state loader, not a local re-derivation', () => {
@@ -148,7 +149,9 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
   });
 
   it('one question, one surface: the worker view gets the linked note and the feed skips it', () => {
-    expect(pageSource).toContain('linkQuestionNote(openQuestionRows, activeWorker.id)');
+    // The note is linked once, in lib/task-view.ts, for the page and the sheet.
+    expect(taskViewSource).toContain('linkQuestionNote(openQuestions, activeWorker.id)');
+    expect(pageSource).toContain('const questionNote = taskView.questionNote;');
     expect(pageSource).toContain('questionNote={questionNote}');
     expect(pageSource).toContain('excludeNoteId={questionNote?.id ?? null}');
   });
@@ -238,8 +241,10 @@ describe('deterministic attempt order — tasks/[id]/page.tsx', () => {
     expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?desc\(workers\.createdAt\)\)?\s*[,}]/);
     expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?\[\s*desc\(workers\.createdAt\)\s*\]/);
     const withTiebreak = pageSource.match(/orderBy:\s*(sqlOrderBy\()?\[desc\(workers\.createdAt\), desc\(workers\.id\)\]/g) ?? [];
-    // Four reads: the PR-fact refresh no longer re-fetches workers inline (it runs in after()).
-    expect(withTiebreak.length).toBeGreaterThanOrEqual(4);
+    // Three reads here (dependencies, CI-retry attempts, the plan chain); the
+    // task's own workers are read by lib/task-view.ts, with the same tiebreak.
+    expect(withTiebreak.length).toBeGreaterThanOrEqual(3);
+    expect(taskViewSource).toContain('orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)])');
   });
 
   it('never orders tasks by createdAt without an id tiebreak', () => {
@@ -249,7 +254,7 @@ describe('deterministic attempt order — tasks/[id]/page.tsx', () => {
 
   it('picks latest / active / PR worker from the shared comparator, not from row order', () => {
     expect(pageSource).toContain("from '@/lib/attempt-order'");
-    expect(pageSource).toContain('selectTaskWorkers(');
+    expect(taskViewSource).toContain('selectTaskWorkers(');
     expect(pageSource).not.toMatch(/taskWorkers\.find\(w => w\.prUrl && w\.prNumber\)/);
   });
 
@@ -306,5 +311,19 @@ describe('task header — full-width title on a phone, actions on the title row 
   it('the actions are right-aligned, never spread', () => {
     const actions = header.slice(header.indexOf('data-testid="task-header-actions"') - 200, header.indexOf('data-testid="task-header-actions"'));
     expect(actions).not.toContain('justify-between');
+  });
+});
+
+describe('one worker pick — tasks/[id]/page.tsx and the sheet', () => {
+  it('reads its workers and question through loadTaskView, as /api/tasks/[id]/summary does', async () => {
+    const summarySource = await Bun.file(new URL('../../../../api/tasks/[id]/summary/route.ts', import.meta.url)).text();
+    for (const src of [pageSource, summarySource]) {
+      expect(src).toContain("import { loadTaskView } from '@/lib/task-view'");
+      expect(src).toContain('loadTaskView(task, ');
+    }
+    // No second worker pick beside it.
+    expect(pageSource).not.toContain('selectTaskWorkers(');
+    expect(pageSource).not.toContain('linkQuestionNote(');
+    expect(summarySource).not.toContain('linkQuestionNote(');
   });
 });

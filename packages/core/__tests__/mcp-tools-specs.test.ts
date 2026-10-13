@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { handleBuilddAction, workerActions, adminActions, buildParamsDescription, type ApiFn, type ActionContext } from '../mcp-tools';
-import { SPEC_INLINE_BODY_MAX } from '../mcp-specs';
+import { SPEC_INLINE_BODY_MAX, WORKSPACE_SPEC_OPS } from '../mcp-specs';
 import { requiredScopeForAction } from '../token-scopes';
 
 const WS = '00000000-0000-0000-0000-000000000001';
@@ -31,6 +31,20 @@ describe('manage_specs', () => {
     expect([endpoint, opts.method]).toEqual(['/api/specs', 'POST']);
     expect(JSON.parse(opts.body)).toEqual({ workspaceId: WS, title: 'Checkout', body: 'R-1: x', scope: 'feature' });
     expect(r).toContain('Version: 1');
+  });
+
+  // Regression: organize shipped resolving no workspace, so over MCP it always
+  // failed with "workspaceId is required" even in a workspace-bound session.
+  it('every sub-action that needs a workspace gets the session one', async () => {
+    for (const action of WORKSPACE_SPEC_OPS) {
+      api.mockReset();
+      api.mockResolvedValue({ specs: [], spec: { ...spec, version: 1 }, mode: 'sweep', dryRun: true, scanned: 0, remaining: 0, skipped: 0, groups: [] });
+      const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action, title: 'T', body: 'R-1: x' }, ctx());
+      expect(r.isError ?? false).toBe(false);
+      const [endpoint, opts] = api.mock.calls[0];
+      expect(`${endpoint} ${opts?.body ?? ''}`).toContain(WS);
+    }
+    expect(WORKSPACE_SPEC_OPS).toContain('organize');
   });
 
   it('create_draft and get return the spec page URL, from appBaseUrl when set and buildd.dev otherwise', async () => {
