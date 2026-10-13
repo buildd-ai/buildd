@@ -312,6 +312,13 @@ mock.module('@/lib/github', () => ({
   postPrReview: mockPostPrReview,
 }));
 
+// Has the mission's one PR into trunk merged? (lib/mission-shipping-pr, reached
+// through the MISSION_SHIPPING_PR_MERGED slot in @/modules). Null = no.
+const mockMissionShippingPrMerged = mock((..._args: any[]) => Promise.resolve(null as null | { prNumber: number | null; via: string }));
+mock.module('@/lib/mission-shipping-pr', () => ({
+  missionShippingPrMerged: (...args: any[]) => mockMissionShippingPrMerged(...args),
+}));
+
 // The verdict-time escalation gate re-inspects migrations. The real inspector
 // walks several paginated endpoints; mocking it keeps these tests about the
 // gate's wiring, the way the webhook route tests do.
@@ -5959,6 +5966,67 @@ describe('PATCH /api/workers/[id]', () => {
           compare('identical');
           expect((await complete({})).status).toBe(400);
           expect((await complete({ discardEdits: 'merge already pushed to the branch' })).status).toBe(200);
+        });
+
+        it('records the ancestry evidence on the task result', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          compare('ahead');
+          expect((await complete({})).status).toBe(200);
+          expect(capturedTaskSet?.result?.refreshAlreadyLanded).toMatchObject({
+            branch: 'buildd/mission-x', trunk: 'dev', trunkSha: 'abc1234', evidence: 'branch_contains_trunk_sha',
+          });
+        });
+
+        // A refresh filed for a mission whose shipping PR then merged: the
+        // integration branch may be deleted (compare reads fail, isAncestor is
+        // null) and GitHub refuses an empty PR, so nothing could ever satisfy
+        // pr_required. The merged shipping PR is the evidence instead.
+        describe('the mission branch is gone after its shipping PR merged', () => {
+          const missionRefreshTask = { ...refreshTask, missionId: 'mission-1' };
+          const branchDeleted = () => mockGithubApi.mockImplementation((_i: number, path: string) => {
+            if (path.includes('/pulls?head=')) return Promise.resolve([]);
+            if (path.includes('/compare/')) return Promise.reject(new Error('GitHub API error: 404 Not Found'));
+            return Promise.resolve(null);
+          });
+          beforeEach(() => {
+            mockMissionShippingPrMerged.mockReset();
+            mockMissionShippingPrMerged.mockResolvedValue(null);
+          });
+
+          it('completes when the shipping PR merged, and records that PR', async () => {
+            mockTasksFindFirst.mockResolvedValue(missionRefreshTask);
+            mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+            branchDeleted();
+            mockMissionShippingPrMerged.mockResolvedValue({ prNumber: 4686, via: 'github' });
+
+            expect((await complete({})).status).toBe(200);
+            expect(mockMissionShippingPrMerged.mock.calls[0]?.[0]).toBe('mission-1');
+            expect(capturedTaskSet?.result?.refreshAlreadyLanded).toMatchObject({
+              branch: 'buildd/mission-x', trunkSha: 'abc1234', evidence: 'mission_pr_merged', missionPrNumber: 4686,
+            });
+          });
+
+          it('neither the ancestry nor a merged shipping PR: still refused by the same gate', async () => {
+            mockTasksFindFirst.mockResolvedValue(missionRefreshTask);
+            mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+            branchDeleted();
+
+            const res = await complete({});
+            expect(res.status).toBe(400);
+            const data = await res.json();
+            expect(data.gate).toBe('output_requirement');
+            expect(data.hint).toBe('create_pr');
+          });
+
+          it('a task that is not a refresh never counts a merged shipping PR', async () => {
+            mockTasksFindFirst.mockResolvedValue({ ...shippedTask, missionId: 'mission-1' });
+            mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+            branchDeleted();
+            mockMissionShippingPrMerged.mockResolvedValue({ prNumber: 4686, via: 'github' });
+
+            expect((await complete({})).status).toBe(400);
+          });
         });
       });
 
