@@ -5,7 +5,7 @@
  * conformance.test.ts); identical expectations on both is the proof that the
  * adapter keeps the kernel's CAS, uniqueness, outbox and lane rules.
  */
-import { beforeAll, describe, test } from 'bun:test';
+import { afterEach, beforeAll, describe, test } from 'bun:test';
 import { db } from '@buildd/core/db';
 import { sql } from 'drizzle-orm';
 import { CONFORMANCE_SCENARIOS, type ConformanceHost } from '@buildd/workflow-kernel/conformance/scenarios';
@@ -20,6 +20,8 @@ beforeAll(() => {
 
 const exec: Exec = (query) => db.execute(query) as unknown as Promise<{ rows?: unknown[] }>;
 let repoSeq = 0;
+/** Workspaces this file seeded: their outbox is settled after each scenario (below). */
+const seeded: string[] = [];
 const runTag = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 function postgresHost(): ConformanceHost {
@@ -28,6 +30,7 @@ function postgresHost(): ConformanceHost {
     newId: () => crypto.randomUUID(),
     seedOwner: async () => {
       const { workspaceId } = await seedWorkspace();
+      seeded.push(workspaceId);
       const ownerTaskId = await seedTask(workspaceId, { status: 'in_progress' });
       return { workspaceId, ownerTaskId };
     },
@@ -44,6 +47,15 @@ function postgresHost(): ConformanceHost {
     },
   };
 }
+
+// The scenarios leave effects owed (most never drain). Other files drain the whole
+// outbox with a batch limit, so settle ours rather than leave them due.
+afterEach(async () => {
+  if (!seeded.length) return;
+  await q(sql`UPDATE workflow_effects SET status = 'done', outcome = 'conformance:settled', lease_until = NULL, updated_at = now()
+    WHERE status IN ('pending', 'delivering')
+      AND delivery_id IN (SELECT id FROM workflow_deliveries WHERE workspace_id IN (SELECT (jsonb_array_elements_text(${JSON.stringify(seeded)}::jsonb))::uuid))`);
+});
 
 describe('the kernel conformance scenarios on the Postgres store (AC-7)', () => {
   for (const sc of CONFORMANCE_SCENARIOS) {
