@@ -302,6 +302,9 @@ DELETE FROM gate_events;
 -- Failure incident ledger: titles and evidence refs echo task/PR titles and
 -- error text; derived from gate_events and worker failures, wiped with them.
 DELETE FROM failure_incidents;
+-- Problem reports (bug-intake-and-quality): titles, excerpts and refs echo task and
+-- error text; they hang off failure_incidents and are wiped with them.
+DELETE FROM incident_reports;
 -- Who deployed what with which credential reference: an audit trail, not app state.
 DELETE FROM deployment_audit_events;
 -- Who pressed each release-flow button, with mission titles and refusal text: an audit trail.
