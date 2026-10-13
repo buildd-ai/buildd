@@ -48,6 +48,18 @@ function apiError(err: unknown): { status: number; body: Record<string, unknown>
   }
 }
 
+type DuplicateCheckView =
+  | { ran: true; warnings: Array<{ specId: string; title: string; relation: string; p: number }> }
+  | { ran: false; reason: string };
+
+/** What the duplicate check found, for the create reply. Empty when it found nothing. */
+const duplicateText = (d: DuplicateCheckView | null): string => {
+  if (!d) return '';
+  if (!d.ran) return `\nDuplicate check did not run: ${d.reason}.`;
+  if (!d.warnings.length) return '';
+  return `\nOverlaps with approved specs (check the shared criteria; consider a common parent):\n${d.warnings.map((w) => `  ${w.title} (${w.specId}): ${w.relation}, p ${w.p.toFixed(2)}`).join('\n')}`;
+};
+
 const need = (v: unknown, name: string): string => {
   if (typeof v !== 'string' || !v.trim()) throw new Error(`${name} is required`);
   return v.trim();
@@ -83,16 +95,17 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'create_draft': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId, title: need(params.title, 'title'), body: need(params.body, 'body (the spec text, Markdown)') };
-      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause'] as const) if (params[k] !== undefined) payload[k] = params[k];
       let spec;
+      let duplicateCheck: DuplicateCheckView | null = null;
       try {
-        ({ spec } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
+        ({ spec, duplicateCheck } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
       } catch (err) {
         const e = apiError(err);
-        if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        if (e?.status === 400 || e?.status === 502 || (e?.status === 409 && e.body?.code === 'spec_duplicate')) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
-      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}\nSpec URL: ${specUrl(spec.id)}\nA person approves it (submit / approve from their own session).`);
+      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}\nSpec URL: ${specUrl(spec.id)}\nA person approves it (submit / approve from their own session).${duplicateText(duplicateCheck)}`);
     }
 
     case 'get': {
