@@ -60,6 +60,17 @@ describe('POST /api/workers/[id]/answer', () => {
     mockSeen.mockClear();
   });
 
+  // A signed-in (OAuth) session owns a worker only with the worker's
+  // workspaceId and claimedByUserId in hand (lib/worker-owner.ts). Without
+  // them every session's own worker reads as not found.
+  it('loads the worker fields ownership needs', async () => {
+    mockWorkersFindFirst.mockResolvedValue(parked);
+    await POST(req(), params());
+    const cols = (mockWorkersFindFirst.mock.calls[0] as any[])[0].columns;
+    expect(cols.workspaceId).toBe(true);
+    expect(cols.claimedByUserId).toBe(true);
+  });
+
   it('401 without a caller', async () => {
     mockAuth.mockResolvedValue(null);
     expect((await POST(req(), params())).status).toBe(401);

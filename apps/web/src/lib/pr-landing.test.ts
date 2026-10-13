@@ -1114,6 +1114,22 @@ describe('landPr — safety rails', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('a stale migration snapshot parent is refreshed for fresh CI, not parked for a person', async () => {
+    gh.prFiles = ['packages/core/drizzle/20261012120000_x/migration.sql'];
+    mockInspectMigrations.mockImplementation(async () => ({
+      safe: false, operationClass: 'CONTRACT', kind: 'stale_parent',
+      reason: 'migration snapshot parent is no longer a leaf of the base: a migration landed since CI ran, so the earlier green never tested the two together. CI must run again on a fresh base, needs rebase onto base branch',
+    }));
+    mockDispatchConflictRetry.mockImplementation(async () => {
+      gh.head = 'head2';
+      return { dispatched: true, branchUpdated: true };
+    });
+    const out = await land();
+    expect(out).toEqual({ kind: 'updating_branch', newHeadSha: 'head2' });
+    expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
   it('a stale dirty flag that merged cleanly is a branch update, not a conflict fix', async () => {
     gh.mergeableState = 'dirty';
     mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, branchUpdated: true, conflictFalsePositive: true }));
