@@ -41,7 +41,7 @@ function seed() {
   ];
 }
 
-let team: Row | null = { credentialPolicy: null, inferenceKeyPolicy: null };
+let team: Row | null = { name: 'Acme', credentialPolicy: null, inferenceKeyPolicy: null };
 let workspaceExists = true;
 const updates: Array<Record<string, unknown>> = [];
 let deleteReturns: Array<{ id: string }> = [];
@@ -93,8 +93,9 @@ mock.module('@/lib/credential-recovery', () => ({ requeueAuthFailedTasks: requeu
 // ── Callers ──────────────────────────────────────────────────────────────────
 let sessionUser: { id: string } | null = null;
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => sessionUser }));
+let userTeamIds = ['t-1'];
 mock.module('@/lib/team-access', () => ({
-  getUserTeamIds: async () => ['t-1'],
+  getUserTeamIds: async () => userTeamIds,
   resolveActiveTeamId: async () => 't-1',
 }));
 const ADMINS = new Set(['u-admin']);
@@ -135,9 +136,10 @@ const asMember = () => { sessionUser = { id: 'u-member' }; };
 
 beforeEach(() => {
   seed();
-  team = { credentialPolicy: null, inferenceKeyPolicy: null };
+  team = { name: 'Acme', credentialPolicy: null, inferenceKeyPolicy: null };
   workspaceExists = true;
   sessionUser = null;
+  userTeamIds = ['t-1'];
   updates.length = 0;
   deleteCalls.length = 0;
   deleteReturns = [];
@@ -147,6 +149,20 @@ beforeEach(() => {
 // ── GET ──────────────────────────────────────────────────────────────────────
 
 describe('GET /api/providers', () => {
+  it('names the team and says how many teams the caller is in', async () => {
+    asMember();
+    userTeamIds = ['t-1', 't-2'];
+    const { body } = await call(await GET(req('GET', '/api/providers')));
+    expect(body).toMatchObject({ teamId: 't-1', teamName: 'Acme', teamCount: 2 });
+    const oauth = await call(await GET(req('GET', '/api/providers', { bearer: 'oauth_member' })));
+    expect(oauth.body.teamCount).toBe(2);
+    // A key or task token belongs to one team.
+    for (const bearer of ['bld_worker', 'bldt_task']) {
+      const r = await call(await GET(req('GET', bearer === 'bldt_task' ? '/api/providers?workspaceId=ws-1' : '/api/providers', { bearer })));
+      expect(r.body).toMatchObject({ teamName: 'Acme', teamCount: 1 });
+    }
+  });
+
   it('401s with no session and no bearer', async () => {
     expect((await call(await GET(req('GET', '/api/providers')))).status).toBe(401);
   });

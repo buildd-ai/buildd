@@ -13,6 +13,7 @@ import {
   workspacesWithKeys,
   listProviders,
   loadPolicySummary,
+  loadTeamName,
   planProviderWrite,
   setCredentialPolicy,
   setProviderCredential,
@@ -86,9 +87,10 @@ export async function GET(req: NextRequest) {
   const workspaceId = req.nextUrl.searchParams.get('workspaceId') || (caller.taskScope?.workspaceId ?? null);
   if (!taskScopeAllowsWorkspace(caller, workspaceId)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   try {
-    const [providers, policy, keys, creds, inference, settings, personalKeyCount, withKeys] = await Promise.all([
+    const [providers, policy, teamName, keys, creds, inference, settings, personalKeyCount, withKeys] = await Promise.all([
       listProviders({ teamId: caller.teamId, workspaceId, userId: caller.userId }),
       loadPolicySummary(caller.teamId),
+      loadTeamName(caller.teamId),
       caller.may('manage_team_model_keys'),
       caller.may('manage_team_credentials'),
       caller.may('manage_inference_providers'),
@@ -99,6 +101,8 @@ export async function GET(req: NextRequest) {
     ]);
     const body: ListProvidersResponse = {
       teamId: caller.teamId,
+      teamName,
+      teamCount: caller.teamCount,
       workspaceId,
       caller: {
         principal: caller.principal,

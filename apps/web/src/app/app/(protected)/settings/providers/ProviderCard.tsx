@@ -50,7 +50,7 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
   const readOnly = views.find(({ v }) => v.readOnly)?.v.readOnly ?? null;
   const paste = views.filter(({ v }) => v.edit.kind === 'paste');
   const form = views.find(({ v }) => v.edit.kind === 'form');
-  const state = rowState(rows, inherited, closed);
+  const state = rowState(rows, inherited, closed, data.teamName);
   const grouped = group.members.length > 1;
   // Set up only through a form this page does not draw (the gateway on a
   // workspace page), with nothing set or inherited: no row, not a dead "Not set".

@@ -400,5 +400,64 @@ async function inspectOnce(params: {
       .sort((a, b) => a.prNumber - b.prNumber)[0];
     if (ahead) baseCollision.collision.queuedBehind = ahead.prNumber;
   }
-  return baseCollision ?? verdict;
+  if (baseCollision || !verdict.safe) return baseCollision ?? verdict;
+  // Last: the verdict is otherwise safe, so the only thing left to prove is
+  // that the commute check CI ran still describes this base.
+  const novelV1 = novel.map((file) => file.filename).filter((name) => name.endsWith('/migration.sql'));
+  if (baseSha && novelV1.length > 0) {
+    const stale = await staleSnapshotParent(params, novelV1, baseSha);
+    if (stale) return stale;
+  }
+  return verdict;
+}
+
+/**
+ * The stale-parent rule (spec db-migration-gates.md). `drizzle-kit check` proves
+ * two snapshots commute only for the base a PR was tested against. If the PR's
+ * new snapshots name a parent that is no longer a leaf of the base, a sibling
+ * landed since, and the earlier green never saw it. Drizzle v1 only; a snapshot
+ * that cannot be read leaves the rule off (CI's commute check is the backstop).
+ */
+async function staleSnapshotParent(
+  params: { installationId: number; repoFullName: string; headSha: string },
+  novelV1: readonly string[],
+  baseSha: string,
+): Promise<MigrationSafety | null> {
+  const readSnapshot = async (path: string, ref: string) => {
+    try {
+      const parsed = JSON.parse((await readFileAtRef(params.installationId, params.repoFullName, path, ref)) ?? '');
+      return typeof parsed?.id === 'string' && Array.isArray(parsed.prevIds)
+        ? { id: parsed.id as string, prevIds: parsed.prevIds.filter((v: unknown): v is string => typeof v === 'string') }
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const dir = novelV1[0]!.split('/').slice(0, -2).join('/');
+  const own = await Promise.all(novelV1.map((p) => readSnapshot(p.replace(/migration\.sql$/, 'snapshot.json'), params.headSha)));
+  if (own.some((s) => !s)) return null;
+  const ownIds = new Set(own.map((s) => s!.id));
+  const parents = [...new Set(own.flatMap((s) => s!.prevIds).filter((id) => !ownIds.has(id)))];
+  if (parents.length === 0) return null;
+
+  const listing = await migrationNamesAt(params.installationId, params.repoFullName, dir, baseSha);
+  if (!listing) return null;
+  // The newest few base folders are enough to find the leaf: a chain's tip is its newest folder.
+  const recent = [...listing.v1Folders].sort().slice(-5);
+  const baseSnaps = (await Promise.all(recent.map((f) => readSnapshot(`${dir}/${f}/snapshot.json`, baseSha)))).filter(
+    (s): s is { id: string; prevIds: string[] } => !!s,
+  );
+  if (baseSnaps.length === 0) return null;
+  const referenced = new Set(baseSnaps.flatMap((s) => s.prevIds));
+  const leaves = new Set(baseSnaps.filter((s) => !referenced.has(s.id)).map((s) => s.id));
+  const stale = parents.filter((id) => !leaves.has(id));
+  if (stale.length === 0) return null;
+  return {
+    safe: false,
+    operationClass: 'CONTRACT',
+    kind: 'stale_parent',
+    reason:
+      `migration snapshot parent is no longer a leaf of the base: a migration landed since CI ran, so the earlier ` +
+      `green never tested the two together. CI must run again on a fresh base, needs rebase onto base branch`,
+  };
 }
