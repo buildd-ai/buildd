@@ -94,10 +94,10 @@ assertions:
 - AC-8: GIVEN two open PRs whose migrations share the same sequence number WHEN either is evaluated THEN `operationClass` is `CONTRACT` (collision guard).
 - AC-9: GIVEN an agent-review workspace with `mergePolicy.dataMigrations: 'agent-review'` WHEN a reviewer-approved PR's only CONTRACT statement is an `UPDATE` THEN the pre-check does not escalate and auto-merge safety passes; GIVEN the default WHEN the same PR is evaluated THEN auto-merge is refused with `runs data migration UPDATE on <table>`.
 - AC-10: GIVEN an integration-refresh PR whose diff deletes `0309_x.sql` and adds `0318_y.sql` with identical SQL WHEN evaluated THEN it is not `lineage` and an additive migration passes; GIVEN the same with different SQL, or the deletion alone, THEN `kind` is `lineage`.
-- AC-11: GIVEN a drizzle v1 PR whose new snapshot's parent is a leaf of the base WHEN evaluated THEN it lands; GIVEN a parent that a sibling has since extended THEN `kind` is `stale_parent` (fresh CI required); GIVEN a legacy-layout PR THEN the rule does not apply.
-
 - AC-11: GIVEN a PR that adds one v1 `migration.sql` with an additive body and its `snapshot.json` over a v1 base, with another open PR adding a different v1 folder WHEN evaluated THEN it is `EXPAND` with no collision; GIVEN the body drops a column THEN `CONTRACT` naming it.
 - AC-12: GIVEN a PR that adds a numbered `0400_x.sql` while the base's drizzle dir lists v1 migration folders WHEN evaluated THEN `kind` is `collision` against the base and the reason names drizzle v1 and `migrations:regenerate`.
+- AC-13: GIVEN a drizzle v1 PR whose new snapshot's parent is a leaf of the base WHEN evaluated THEN it lands; GIVEN a parent that a sibling has since extended THEN `kind` is `stale_parent` (fresh CI required); GIVEN a legacy-layout PR THEN the rule does not apply.
+- AC-14: GIVEN the inspector returns `stale_parent` WHEN `landPr` evaluates the safety rail THEN it refreshes the branch onto the base (outcome `updating_branch`), not `needs_human`.
 
 **Verification gate (EXPAND migrations)**
 
