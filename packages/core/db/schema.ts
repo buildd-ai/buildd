@@ -748,6 +748,13 @@ export interface WorkspaceGitConfig {
   // TODO: migrate to a first-class workspaces.data_class column (task cb34697b).
   dataClass?: 'standard' | 'sensitive';
 
+  // Living Specs (docs/specs/living-specs.md). `approverUserIds`: members who
+  // may approve besides owners and admins (§6). `nativeSource`: opt in to native
+  // spec homes (§18, D-13, R-12): a native spec is the source and its approved
+  // revision is generated to docs/specs/<slug>.md by a mechanical PR. Absent /
+  // false = off, and nothing of §18 runs.
+  livingSpecs?: { approverUserIds?: string[]; nativeSource?: boolean };
+
   // Spec conformance (docs/design/spec-conformance.md §14): where THIS
   // workspace's checkable specs live. Absent ⇒ buildd's own layout
   // (docs/specs, docs/design, packages/core/drizzle) — see
@@ -2775,6 +2782,38 @@ export const SPEC_STATUSES = ['draft', 'in_review', 'approved', 'superseded', 'r
 export type SpecScope = (typeof SPEC_SCOPES)[number];
 export type SpecStatus = (typeof SPEC_STATUSES)[number];
 
+/** A spec's metadata block (living-specs.md §18, R-14). `domain` is derived from the filed area, never stored. */
+export interface SpecMetadataBlock {
+  owner?: string;
+  last_verified?: string;
+  surfaces?: string[];
+  verified_by?: string[];
+  assertions?: Array<Record<string, string | number | boolean>>;
+}
+
+/**
+ * Where a native spec's generated repo copy stands (R-15, R-35, AC-79).
+ * `open`: the PR is waiting on CI. `merged`: it landed. `behind`: a check went
+ * red (`failingCheck`), the PR stays open. `refused`: its head commit is not the
+ * generator's, so it does not land under the exception. `unfiled`: no area, so
+ * nothing is generated (R-32). `failed`: the PR could not be written (`error`).
+ */
+export interface SpecRepoCopyState {
+  state: 'open' | 'merged' | 'behind' | 'refused' | 'unfiled' | 'failed';
+  path?: string;
+  branch?: string;
+  prNumber?: number;
+  repoFullName?: string;
+  /** The commit the generator wrote: the only head that lands under the exception. */
+  headSha?: string;
+  revision?: number;
+  contentHash?: string;
+  metadataHash?: string;
+  failingCheck?: string;
+  error?: string;
+  updatedAt: string;
+}
+
 export const specs = pgTable('specs', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
@@ -2787,6 +2826,14 @@ export const specs = pgTable('specs', {
   // The newest revision (the draft head) and the approved one, by spec revision number.
   headRevision: integer('head_revision').notNull().default(1),
   approvedRevision: integer('approved_revision'),
+  // The metadata block (living-specs.md §18, R-14/R-31): mechanical fields of
+  // the generated repo copy, outside every revision. Agents and CI change it
+  // without a new revision (spec_metadata_changes records each change); the
+  // version, the approved revision and its content hash never move with it.
+  metadata: jsonb('metadata').$type<SpecMetadataBlock>(),
+  // The generated repo copy's PR (R-15/R-35), in a workspace that opted in to a
+  // native source. NULL: never generated.
+  repoCopy: jsonb('repo_copy').$type<SpecRepoCopyState>(),
   createdBy: text('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -2842,6 +2889,26 @@ export const specNeighbors = pgTable('spec_neighbors', {
 }, (t) => ({
   uniquePair: uniqueIndex('spec_neighbors_pair_kind_idx').on(t.specId, t.neighborSpecId, t.kind),
   neighborIdx: index('spec_neighbors_neighbor_idx').on(t.neighborSpecId),
+}));
+
+/**
+ * One change to a spec's metadata block (living-specs.md §18, R-31): who, why,
+ * and the field's previous value. Append-only. A metadata change never writes a
+ * spec revision, so it never moves the version or the approved content hash.
+ */
+export const specMetadataChanges = pgTable('spec_metadata_changes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  field: text('field').notNull(),
+  previousValue: jsonb('previous_value'),
+  newValue: jsonb('new_value'),
+  reason: text('reason').notNull(),
+  changedByKind: text('changed_by_kind').notNull().$type<'user' | 'agent'>(),
+  changedBy: text('changed_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specIdx: index('spec_metadata_changes_spec_idx').on(t.specId, t.createdAt),
 }));
 
 /**
@@ -3232,6 +3299,11 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.
   trackedBranch: text('tracked_branch'),
+  // Which model login this runner's agents use, as the runner reports it
+  // (docs/specs/runner-model-auth-source.md). A label from a fixed list, never
+  // a credential; null = not reported (older runner).
+  modelAuthSource: text('model_auth_source').$type<'machine_token' | 'machine_login' | 'api_key' | 'none'>(),
+  modelAuthMode: text('model_auth_mode').$type<'auto' | 'prefer' | 'off'>(),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

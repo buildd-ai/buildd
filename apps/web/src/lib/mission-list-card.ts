@@ -33,7 +33,7 @@ import {
   type MissionCardWorkerRow,
 } from './mission-card-view';
 import { missionNeedsYou } from './mission-state-view';
-import { missionTaskHref } from './mission-task-href';
+import { missionTaskHref, taskAnswerHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import type { WaitingFor } from '@buildd/shared';
@@ -283,7 +283,7 @@ export function buildMissionListCard(
         .find(w => w.status === 'waiting_input' && w.waitingFor?.prompt);
       if (parked) {
         question = {
-          taskId: r.task.id, label, href: cell.href, workerId: parked.id ?? null,
+          taskId: r.task.id, label, href: taskAnswerHref({ taskId: r.task.id, missionId: row.id }), workerId: parked.id ?? null,
           prompt: parked.waitingFor!.prompt!, options: waitingForOptionLabels(parked.waitingFor!.options).slice(0, 3),
         };
       }

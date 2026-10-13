@@ -89,7 +89,7 @@ import { startOfDayInZone } from '@/lib/fleet-view';
 import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { buildMissionCardView as buildHomeCardView } from '@/lib/mission-card-view';
-import { missionTaskHref as homeTaskHref } from '@/lib/mission-task-href';
+import { missionTaskHref as homeTaskHref, taskAnswerHref } from '@/lib/mission-task-href';
 import { getChatAvailability } from '@/lib/chat-availability';
 import HomeChatCard from '@/components/chat/HomeChatCard';
 import GettingStartedChecklist from '@/components/onboarding/GettingStartedChecklist';
@@ -2037,7 +2037,8 @@ export default async function HomePage({
   const questions: HomeQuestion[] = (fleetData?.questions ?? []).map(q => ({
     workerId: q.workerId, taskId: q.taskId, label: q.label, runnerName: q.runnerName,
     askedAt: q.askedAt, question: q.question,
-    href: q.taskId ? homeTaskHref({ missionId: q.missionId, taskId: q.taskId, from: 'home', mode: 'sheet' }) : null,
+    // A question opens where it is answered in full: the task page.
+    href: q.taskId ? taskAnswerHref({ taskId: q.taskId, missionId: q.missionId }) : null,
   }));
   const live = fleetData?.fleet.live ?? activeItems.length;
   const missionTitleById = new Map(missionDeliveries.map(d => [d.delivery.id, d.delivery.title] as const));

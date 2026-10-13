@@ -58,7 +58,7 @@ export default function IncidentRecoveryPanel({ incidentId, projection: initial,
       });
       const body = await res.json().catch(() => null);
       if (body?.projection) setProjection(body.projection as IncidentProjection);
-      if (res.status === 409) setNotice({ tone: 'warn', text: 'This changed since you opened it. Here is where it stands now.' });
+      if (res.status === 409) setNotice({ tone: 'warn', text: 'Status changed since you opened this.' });
       else if (!res.ok) setNotice({ tone: 'err', text: typeof body?.error === 'string' && res.status < 500 ? body.error : RETRY });
       else router.refresh();
     } catch {

@@ -126,7 +126,7 @@ import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
 import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
 import BookkeepingAttemptRow from './BookkeepingAttemptRow';
-import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr } from '@/lib/task-verdict';
+import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr, verdictRepeatsOpenQuestion } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
@@ -1563,7 +1563,8 @@ export default async function TaskDetailPage({
           </Notice>
         )}
 
-        {verdict && (
+        {/* An open question's own card is below: the verdict would only point at it. */}
+        {verdict && !verdictRepeatsOpenQuestion(verdict, { questionOnPage: !!activeWorker?.waitingFor }) && (
           <TaskVerdictBlock verdict={verdict} displayStatus={displayStatus} />
         )}
 

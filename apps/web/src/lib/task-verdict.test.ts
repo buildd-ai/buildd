@@ -7,6 +7,7 @@ import {
   type StoredVerdictDecision,
   type VerdictInput,
   verdictLinksPr,
+  verdictRepeatsOpenQuestion,
 } from './task-verdict';
 
 const PR = { url: 'https://github.com/acme/app/pull/12', number: 12, lifecycle: 'ci_failed', merged: false };
@@ -193,5 +194,27 @@ describe('a live run says its status once', () => {
   it('with a PR it names the PR, not the work', () => {
     const v = deriveTaskVerdict(input({ taskStatus: 'in_progress', live: running, pr: { ...PR, lifecycle: 'pr_open' } }))!;
     expect(v.headline).toBe('PR #12 open');
+  });
+});
+
+// Regression (owner report): the task page drew "Waiting on your answer. The
+// agent asked a question and is paused until it is answered. [Answer]" right
+// above the question card it pointed at. The card is the flow; the banner
+// only explained it.
+describe('verdictRepeatsOpenQuestion', () => {
+  const asking = deriveTaskVerdict(input({ taskStatus: 'in_progress', live: { status: 'waiting_input', waitingForInput: true } }))!;
+
+  it('the question verdict stands down while the question card is on the page', () => {
+    expect(asking.causeKey).toBe('needs_you:question');
+    expect(verdictRepeatsOpenQuestion(asking, { questionOnPage: true })).toBe(true);
+  });
+
+  it('it stays when the page shows no question card', () => {
+    expect(verdictRepeatsOpenQuestion(asking, { questionOnPage: false })).toBe(false);
+  });
+
+  it('any other verdict stays', () => {
+    const live = deriveTaskVerdict(input({ taskStatus: 'in_progress', live: { status: 'running', waitingForInput: false } }))!;
+    expect(verdictRepeatsOpenQuestion(live, { questionOnPage: true })).toBe(false);
   });
 });

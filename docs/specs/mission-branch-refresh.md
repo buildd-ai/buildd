@@ -423,7 +423,7 @@ ancestry. This spec is the authority on both.
 | AC-31–AC-33 (real Git ancestry, lost commits, pinned landing) | `mission-branch-refresh.test.ts` › "real Git: refresh, task landings, the repair and the mission PR interleave…" |
 | Squash detected on the live head | same, "a squash-landed repair is caught by the live ancestry check…"; `apps/web/src/lib/integration-refresh.test.ts` |
 | Merge-commit-only at every door | `apps/web/src/lib/integration-refresh.test.ts`, `apps/web/src/lib/conflict-retry.test.ts` |
-| Approval carried or re-reviewed when the mission PR's head moves (§8.3) | `apps/web/src/lib/workflow/reducer.test.ts` ("APPROVED (S2)…", "APPROVED (S3)…", "LANDING: aborts landing to a new round when not equivalent"); `apps/web/tests/db/workflow-matrix.test.ts` (carry-forward, S10 pinned landing) |
+| Approval carried or re-reviewed when the mission PR's head moves (§8.3) | `packages/workflow-kernel/src/reducer.test.ts` ("APPROVED (S2)…", "APPROVED (S3)…", "LANDING: aborts landing to a new round when not equivalent"); `apps/web/tests/db/workflow-matrix.test.ts` (carry-forward, S10 pinned landing) |
 | A moved head refuses a pinned merge | `apps/web/src/lib/workflow/pr-landing-effects.test.ts` ("a moved head is not a refusal…") |
 | Generated-file recovery (AC-15–AC-20) | `scripts/resolve-generated-conflicts.test.ts` |
 

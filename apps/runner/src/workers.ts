@@ -91,7 +91,7 @@ import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
-import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, hostModelCredentialValues, hostSeatMode, localCodexAuthPath } from './host-seat';
+import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, describeModelAuthSource, detectModelAuthSource, hostModelCredentialValues, hostSeatMode, localCodexAuthPath, type ModelAuthReport } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
@@ -490,7 +490,8 @@ function isBenignBashCommand(cmd: string): boolean {
  * whenever the claim response carries them, independent of whether the runner
  * has any local credentials. A stale/invalid local credential (an expired
  * `~/.claude.json` oauthAccount, a leftover `.credentials.json`, etc.) makes
- * `hasClaudeCredentials()` return true even when those creds no longer work, so
+ * the legacy local-credential check (since replaced by host-seat.ts
+ * `detectModelAuthSource`) return true even when those creds no longer work, so
  * gating capture on `!hasCredentials` silently dropped the valid server token.
  *
  * Final precedence (explicitly-set env var wins) is enforced downstream at
@@ -597,40 +598,6 @@ export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
 import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSE_UNAVAILABLE_CODEX_MESSAGE, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
 import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
-
-function hasClaudeCredentials(): boolean {
-  // Check for OAuth credentials from `claude login` (.credentials.json)
-  const credentialsPath = join(homedir(), '.claude', '.credentials.json');
-  if (existsSync(credentialsPath)) {
-    return true;
-  }
-
-  // Check for oauthAccount in Claude state files (where OAuth is sometimes stored)
-  const stateFiles = [
-    join(homedir(), '.claude', 'settings.json'),
-    join(homedir(), '.claude', 'settings.local.json'),
-    join(homedir(), '.claude.json'),
-  ];
-  for (const statePath of stateFiles) {
-    if (existsSync(statePath)) {
-      try {
-        const data = JSON.parse(readFileSync(statePath, 'utf-8'));
-        if (data.oauthAccount?.accountUuid) {
-          return true;
-        }
-      } catch {
-        // Ignore parse errors
-      }
-    }
-  }
-
-  // Check env vars
-  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-    return true;
-  }
-
-  return false;
-}
 
 // Cache key for the per-team server-managed credential cache. Prefer the
 // workspace's teamId (team-wide secrets cover all workspaces) and fall back to
@@ -749,6 +716,7 @@ export class WorkerManager {
   private syncInterval?: Timer;
   private pusherManager: PusherManager;
   private hasCredentials: boolean = false;
+  private modelAuth: ModelAuthReport = { source: 'none', mode: 'auto' };
   private acceptRemoteTasks: boolean = true;
   private cleanupInterval?: Timer;
   private terminalWorktreeSweepTimer?: Timer;
@@ -1036,15 +1004,15 @@ export class WorkerManager {
     // Initialize Pusher if configured
     this.pusherManager.initialize();
 
-    // Check if credentials exist (don't validate, SDK handles auth)
-    // Skip in serverless mode — SDK handles its own auth, no server to report to
-    this.hasCredentials = hasClaudeCredentials();
+    // Which model credential this machine's agents use (presence only, never
+    // validated or read: the SDK handles auth). One detector feeds this line,
+    // getAuthStatus() and the heartbeat label (host-seat.ts).
+    // Skip the log in serverless mode — SDK handles its own auth.
+    const modelAuth = this.refreshModelAuth();
     if (!config.serverless) {
-      if (this.hasCredentials) {
-        console.log('Claude Code: credentials found');
-      } else {
-        console.warn('Claude Code: no credentials - run `claude login` or set ANTHROPIC_API_KEY');
-      }
+      const line = `Model auth: ${describeModelAuthSource(modelAuth.source)}`;
+      if (modelAuth.source === 'none') console.warn(line);
+      else console.log(line);
     }
   }
 
@@ -1055,9 +1023,16 @@ export class WorkerManager {
     console.log(`Accept remote tasks: ${enabled}`);
   }
 
-  // Check if credentials exist
-  getAuthStatus(): { hasCredentials: boolean } {
-    return { hasCredentials: this.hasCredentials };
+  /** Re-run the model-auth detector and cache it (keychain probe is cached 60s). */
+  private refreshModelAuth(): ModelAuthReport {
+    this.modelAuth = detectModelAuthSource();
+    this.hasCredentials = this.modelAuth.source !== 'none';
+    return this.modelAuth;
+  }
+
+  // Which model credential this runner uses (label + mode, never a value)
+  getAuthStatus(): { hasCredentials: boolean; modelAuthSource: ModelAuthReport['source']; modelAuthMode: ModelAuthReport['mode'] } {
+    return { hasCredentials: this.hasCredentials, modelAuthSource: this.modelAuth.source, modelAuthMode: this.modelAuth.mode };
   }
 
   getViewerToken(): string | undefined {
@@ -1176,7 +1151,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot());
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), this.refreshModelAuth());
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -2019,7 +1994,7 @@ export class WorkerManager {
 
     // Warn if no credentials found (but let SDK handle actual auth)
     if (!this.hasCredentials && !this.config.serverless) {
-      console.warn('No Claude credentials found - task may fail. Run `claude login` to authenticate.');
+      console.warn(`Model auth: ${describeModelAuthSource('none')} (the task fails unless its claim brings a credential)`);
     }
 
     // Claim from buildd first (pass taskId for targeted claiming). The claim
@@ -2116,7 +2091,7 @@ export class WorkerManager {
     // These are ALWAYS captured when present — we must NOT gate them behind
     // `!this.hasCredentials`. A leftover/stale local credential (e.g. an
     // expired `~/.claude.json` oauthAccount or a `.credentials.json` from a
-    // previous login) makes `hasClaudeCredentials()` return true even when
+    // previous login) makes the local credential check report one even when
     // those creds are invalid; gating here silently dropped the valid
     // server-managed OAuth token and the worker spawned with broken local
     // auth, failing with `401 Invalid authentication credentials`.

@@ -230,4 +230,26 @@ describe('SpecPage', () => {
     expect(q('spec-page-approve-result')!.textContent).toContain('version 5');
     expect(q('spec-page-approve')).toBeNull();
   });
+
+  it('names the one source and says when the repo copy is behind (living-specs.md §18, R-13, AC-79)', () => {
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-source')).toBeNull();
+    const source = { source: 'Source: buildd, repo copy at docs/specs/checkout.md', copy: 'Repo copy is behind: Lint specs failed on PR #9.', behind: true };
+    act(() => root.render(<SpecPage view={{ ...base, source }} />));
+    expect(q('spec-page-source')!.textContent).toBe('Source: buildd, repo copy at docs/specs/checkout.md');
+    expect(q('spec-page-repo-copy')!.textContent).toContain('Lint specs failed');
+  });
+
+  it('shows a failing repo check on review and still offers Approve (R-34, AC-96)', () => {
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    const preflight = { state: 'ran' as const, path: 'docs/specs/checkout.md', checks: [
+      { name: 'specs:lint' as const, ok: false, messages: ['frontmatter missing `summary` (one sentence: what MUST hold)'] },
+      { name: 'public-docs:check' as const, ok: true, messages: [] },
+      { name: 'no-prod-data' as const, ok: true, messages: [], note: 'The identifier half runs only in CI.' },
+    ] };
+    act(() => root.render(<SpecPage view={{ ...base, review, preflight }} />));
+    expect(q('spec-repo-checks')!.textContent).toContain('fails specs:lint');
+    expect(q('spec-repo-checks')!.textContent).toContain('frontmatter missing `summary`');
+    expect(q('spec-page-approve')).not.toBeNull();
+  });
 });
