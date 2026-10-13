@@ -627,6 +627,8 @@ UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.q
 -- Outcome verdicts: the evidence holds what a reviewer observed (prose), file
 -- refs and who recorded it; criterion ids and head SHAs are not content.
 UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence);
+-- Spec neighbours: the reason detail names repo paths and criterion ids; kind and source are fixed words.
+UPDATE spec_neighbors SET detail = pg_temp.qa_json(detail);
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.

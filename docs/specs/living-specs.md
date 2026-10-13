@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -430,14 +430,16 @@ without an approval ever depending on either.
   path: the repo ingest prunes paths it did not see on disk, and these are not
   repo files. Their source URL is the spec page, `/app/specs/<specId>` (§9),
   so a recall hit opens the spec, not an approval.
-- The graph comes only from what the spec stores: the spec `part_of` its
-  parent spec; the approved revision `references_doc` each repo file it cites
-  (the same `file` entity, keyed by repo path, that the repo ingest makes; the
-  commit sits on the revision entity's `repoRefs`); and the revision
-  `supersedes` the revision approved before it. No inferred, similarity or
-  agent-supplied edge is written for a spec. Each approval deletes this spec's
-  `living_spec:` edges and chunk links and writes them again, so the graph can
-  be rebuilt at any time.
+- The stored graph comes only from what the spec stores: the spec `part_of`
+  its parent spec; the approved revision `references_doc` each repo file it
+  cites (the same `file` entity, keyed by repo path, that the repo ingest
+  makes; the commit sits on the revision entity's `repoRefs`); and the
+  revision `supersedes` the revision approved before it. The derived graph
+  (§14) is written alongside it under rules starting `living_spec:derived:`,
+  so it can never be mistaken for a stored edge; no other inferred, similarity
+  or agent-supplied edge is written for a spec. Each approval deletes this
+  spec's `living_spec:` edges and chunk links and writes them again, so the
+  graph can be rebuilt at any time.
 - Fail-open, and off the response. Indexing runs after the approval has
   committed and after the approve response is sent (`after()`), so a person
   never waits on chunking, embedding or graph writes; recall picks the text up
@@ -496,6 +498,8 @@ same page, without an agent in between.
   team's workspace or spec is a 404 and its title never appears.
 - The list shows specs as a tree: a spec with a parent in the same workspace
   sits under it; a spec whose parent is not in the list sits at the top. Each
+  product or area at the top heads its own group, and every other top-level
+  spec is listed under Unfiled (§14). Each
   row says in words its title, scope, where it stands ("approved at revision
   N", "draft, never approved", "retired", "superseded"), "revision M waiting
   for approval" when the head is newer than the approved revision, and when it
@@ -811,4 +815,94 @@ the visual audit judges the build against that version of the design.
 - The spec page does not render the design inline; it links to it.
 - No design-tool integration (such as Figma) is built: such a reference is
   stored as given.
+
+## 14. Neighbours and derived edges
+
+**Capability statement**: A spec MUST know the specs near it, by meaning, by
+the files its work changed, and by criteria judged to mean the same, and the
+knowledge graph MUST hold the edges buildd can derive exactly from its own
+data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
+
+**Invariants**:
+- One strict tree (D-11): product, then area, then feature, by `parentSpecId`.
+  A product or an area is a spec with scope `product` or `domain`. The list
+  (§9) groups by it: each product or area at the top heads a group, the rest
+  are Unfiled.
+- Neighbours live in `spec_neighbors` (one row per spec, neighbour and kind:
+  score 0 to 1, source, a reason detail):
+  - `similar`: the nearest approved specs in the workspace's spec corpus, at
+    most 5, by cosine at 0.55 or above when an embedder answered (source
+    `vector`), else by lexical rank (source `lexical`, no floor). The spec's
+    own parent and children are left out: they are already related.
+  - `shares_files`: specs whose pinned tasks changed the same files, at most
+    5, scored by the shared share of the smaller set. Files come from the
+    knowledge ingest's record of each merged PR (source `pr_files`), else
+    from the tasks' declared path manifests, patterns dropped (source
+    `path_manifest`). No GitHub call.
+  - `overlaps`: criteria the duplicate check judged to mean the same, naming
+    each side (§13 writes these; this section only stores and shows them).
+- Each (spec, kind) is replaced whole on each recompute; `overlaps` is never
+  touched by the neighbour recompute. A row written for either side counts
+  for both, so a spec approved later shows on an older spec's page at once.
+- Recomputed in the same after-response step as the knowledge index (§8),
+  fail-open per kind (a kind that fails keeps its previous rows), and
+  refreshed at least daily on the knowledge digest cron within a bounded
+  budget, without re-embedding.
+- The spec page lists up to 8 neighbours under Related, strongest kind first
+  (overlaps, then shares files, then similar), each with its reason in words.
+  `GET /api/specs/[id]/nearby` returns the same list and, for a spec with no
+  parent, a suggested parent: the closest product or area by meaning, else
+  the parent of the closest spec that has one. A suggestion is only offered.
+- Exact derived edges, rebuilt with each approval and each refresh, under
+  `living_spec:derived:<name>`: each criterion of the approved revision
+  (`spec_criterion`, key `<specId>@<revision>#<id>`) `part_of` the revision
+  (`criterion`); a criterion `relates_to` each task pinned to the revision
+  that answers for it (`answers_for`, its scope else all), and `outcome_of`
+  that task when its newest verdict on the criterion is a pass (`verified`;
+  the head is on the criterion entity's `verified`); the revision
+  `references` its artifact design (`built_to`); the spec `references` each
+  file its work changed (`implemented_in:pr_files` or
+  `implemented_in:path_manifest`, weighted lower); and the spec `relates_to`
+  each neighbour at its strongest score (`neighbour`).
+
+**Acceptance criteria**:
+- AC-50: GIVEN a product spec with a child and a feature with no parent WHEN
+  the list renders THEN the product heads its own group and the feature is
+  under Unfiled; with no product or area every spec is Unfiled
+  (`apps/web/src/components/SpecList.dom.test.tsx`).
+- AC-51: GIVEN two approved specs whose pinned tasks changed the same file
+  WHEN either is refreshed THEN each lists the other as `shares_files`, from
+  merged-PR files when the ingest recorded them; WHEN the work stops sharing
+  the file and it is refreshed again THEN the row is gone
+  (`apps/web/tests/db/spec-neighbours.test.ts`).
+- AC-52: GIVEN `overlaps` rows written for one side WHEN either spec's
+  neighbours are read THEN the overlap shows first, naming its criteria the
+  right way round, and a neighbour recompute leaves it in place
+  (`apps/web/tests/db/spec-neighbours.test.ts`).
+- AC-53: GIVEN a scoped task with a pass on one criterion, a design and
+  changed files WHEN the spec is refreshed THEN the derived edges are exactly
+  the criterion, answers_for, verified, built_to and implemented_in edges, and
+  a second refresh writes the same set
+  (`apps/web/tests/db/spec-neighbours.test.ts`,
+  `packages/core/__tests__/living-spec-knowledge.test.ts`).
+- AC-54: GIVEN the neighbour computation throwing WHEN a person approves THEN
+  the spec is approved and new work pins to that revision
+  (`apps/web/tests/db/spec-neighbours.test.ts`).
+- AC-55: GIVEN neighbours WHEN the spec page renders THEN each shows its
+  title, link and reason, strongest kind first; with none, no Nearby list
+  (`apps/web/src/components/SpecPage.dom.test.tsx`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/neighbours.ts` — `computeSpecNeighbours`, `replaceSpecNeighbours`, `readSpecNeighbours`, `suggestParent`, `specFiles`
+- `apps/web/src/lib/specs/knowledge.ts` — `refreshSpecDerived`, `refreshAllSpecDerived`
+- `packages/core/knowledge-store/living-spec.ts` — `buildLivingSpecGraph` (`derived`)
+- `apps/web/src/app/api/specs/[specId]/nearby/route.ts` — `GET`
+- `apps/web/src/lib/specs/page-view.ts` — `specGroups`
+
+**Not yet**:
+- Nothing writes `overlaps` until the duplicate check (§13) does.
+- The suggested parent is offered through the nearby route only; create
+  responses and MCP do not show it yet.
+- `similar` is lexical wherever no embedder key is configured, and lexical
+  scores are not comparable to cosine, so it has no floor there.
 

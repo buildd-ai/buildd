@@ -164,6 +164,19 @@ export default function SpecPage({ view }: { view: Ok }) {
             </ul>
           </div>
         ) : null}
+        {view.nearby.length ? (
+          <div data-testid="spec-page-nearby">
+            <p className="text-body text-text-secondary">Nearby specs, found from their text and their work:</p>
+            <ul className="mt-1 flex flex-col">
+              {view.nearby.map((n) => (
+                <li key={n.specId} className="flex min-h-11 flex-col justify-center py-1" data-testid="spec-page-nearby-item" data-kind={n.kind}>
+                  <Link href={`/app/specs/${n.specId}`} className="text-body text-text-primary underline [overflow-wrap:anywhere]">{n.title}</Link>
+                  <span className="text-meta text-text-muted">{n.reason}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {view.design ? (
           <div data-testid="spec-page-design">
             <p className="text-body text-text-secondary">

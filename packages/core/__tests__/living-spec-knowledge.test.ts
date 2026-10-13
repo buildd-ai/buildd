@@ -115,3 +115,47 @@ describe('buildLivingSpecGraph', () => {
     for (const e of graph().edges) expect(e.rule.startsWith('living_spec:')).toBe(true);
   });
 });
+
+describe('buildLivingSpecGraph: derived edges (living-specs.md §14)', () => {
+  const graphBase = { workspaceId: WS, specId: SPEC, title: 'Cart', revision: 2, parent: null, repoRefs: [], previousApprovedRevision: null };
+  const TASK = '44444444-4444-4444-8444-444444444444';
+  const OTHER = '55555555-5555-4555-8555-555555555555';
+  const ART = '66666666-6666-4666-8666-666666666666';
+
+  test('criteria, the tasks answering for them, passes, design, files and neighbours, all under the derived rule', () => {
+    const g = buildLivingSpecGraph({
+      ...graphBase,
+      derived: {
+        criteria: [{ id: 'AC-1', text: 'Empty state.' }, { id: 'AC-2', text: 'Totals.' }],
+        tasks: [{ taskId: TASK, title: 'build cart', criteria: ['AC-1', 'AC-9'], verified: [{ criterionId: 'AC-1', headSha: 'a'.repeat(40) }] }],
+        design: { kind: 'artifact', ref: ART, version: '4' },
+        implementedIn: { files: ['src/cart.ts', 'src/cart.ts', 'src/total.ts'], source: 'pr_files' },
+        neighbours: [{ specId: OTHER, title: 'Refunds', score: 1.7 }, { specId: SPEC, title: 'self', score: 1 }],
+      },
+    });
+    const derived = g.edges.filter((e) => e.rule.startsWith('living_spec:derived:'));
+    const by = (rule: string) => derived.filter((e) => e.rule === `living_spec:derived:${rule}`);
+    expect(by('criterion').map((e) => e.fromEntityKey)).toEqual([`${SPEC}@2#AC-1`, `${SPEC}@2#AC-2`]);
+    // AC-9 is not a criterion of this revision: no edge for it.
+    expect(by('answers_for').map((e) => [e.fromEntityKey, e.toEntityKey])).toEqual([[`${SPEC}@2#AC-1`, TASK]]);
+    expect(by('verified').map((e) => [e.fromEntityKey, e.type])).toEqual([[`${SPEC}@2#AC-1`, 'outcome_of']]);
+    expect(by('built_to').map((e) => [e.fromEntityKey, e.toEntityKind, e.toEntityKey])).toEqual([[`${SPEC}@2`, 'artifact', ART]]);
+    expect(by('implemented_in:pr_files').map((e) => e.toEntityKey)).toEqual(['src/cart.ts', 'src/total.ts']);
+    // A spec is never its own neighbour; a score is clamped to 0..1.
+    expect(by('neighbour').map((e) => [e.toEntityKey, e.weight])).toEqual([[OTHER, 1]]);
+    const crit = g.entities.find((e) => e.kind === 'spec_criterion' && e.key === `${SPEC}@2#AC-1`)!;
+    expect(crit.attributes).toMatchObject({ criterionId: 'AC-1', verified: [{ taskId: TASK, headSha: 'a'.repeat(40) }] });
+  });
+
+  test('without derived input the graph is the stored one only', () => {
+    const g = buildLivingSpecGraph(graphBase);
+    expect(g.edges.some((e) => e.rule.startsWith('living_spec:derived:'))).toBe(false);
+    expect(g.entities.some((e) => e.kind === 'spec_criterion')).toBe(false);
+  });
+
+  test('a path-manifest file list is labelled as such and weighs less than PR files', () => {
+    const g = buildLivingSpecGraph({ ...graphBase, derived: { implementedIn: { files: ['src/a.ts'], source: 'path_manifest' } } });
+    const e = g.edges.find((x) => x.rule === 'living_spec:derived:implemented_in:path_manifest')!;
+    expect(e.weight).toBeLessThan(0.7);
+  });
+});

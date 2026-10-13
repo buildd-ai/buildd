@@ -1,5 +1,5 @@
 /**
- * A workspace's spec list, mounted (happy-dom), living-specs.md §9 AC-21/22:
+ * A workspace's spec list, mounted (happy-dom), living-specs.md §9 AC-21/22 and §14 AC-50:
  * a child sits under its parent, each row says where it stands in words, and
  * an empty workspace says how specs get made with no count.
  *
@@ -43,8 +43,12 @@ describe('SpecList', () => {
       row('d', 'Refunds'),
     ]);
     act(() => root.render(<SpecList specs={specs} />));
-    const top = [...container.querySelectorAll('[data-testid="spec-list"] > li')].map((li) => li.getAttribute('data-spec-id'));
+    const top = [...container.querySelectorAll('[data-testid="spec-list-group"] > ul > li')].map((li) => li.getAttribute('data-spec-id'));
     expect(top).toEqual(['p', 'd']);
+    // A product heads its own group; a feature with no parent is Unfiled.
+    const groups = [...container.querySelectorAll('[data-testid="spec-list-group"]')];
+    expect(groups.map((g) => [g.getAttribute('data-group'), g.querySelector('h2')!.textContent])).toEqual([['p', 'Product'], ['unfiled', 'Unfiled']]);
+    expect(groups[1].querySelector('[data-spec-id="d"]')).not.toBeNull();
     const parent = container.querySelector('[data-spec-id="p"]')!;
     expect(parent.querySelector('[data-testid="spec-list-children"] [data-spec-id="c"]')).not.toBeNull();
     expect(parent.querySelector('a')!.getAttribute('href')).toBe('/app/specs/p');
@@ -52,6 +56,13 @@ describe('SpecList', () => {
     expect(parent.querySelector('[data-testid="spec-list-waiting"]')!.textContent).toBe('Revision 2 waiting for approval');
     expect(container.querySelector('[data-spec-id="c"] [data-testid="spec-list-waiting"]')).toBeNull();
     expect(container.querySelector('[data-spec-id="d"]')!.textContent).toContain('draft, never approved');
+  });
+
+  it('with no product or area, every spec is Unfiled', () => {
+    act(() => root.render(<SpecList specs={specTree([row('a', 'One'), row('b', 'Two')])} />));
+    const groups = [...container.querySelectorAll('[data-testid="spec-list-group"]')];
+    expect(groups.map((g) => g.getAttribute('data-group'))).toEqual(['unfiled']);
+    expect([...groups[0].querySelectorAll(':scope > ul > li')].map((li) => li.getAttribute('data-spec-id'))).toEqual(['a', 'b']);
   });
 
   it('an empty workspace says how specs get made and shows no count', () => {
