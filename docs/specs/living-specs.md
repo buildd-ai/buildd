@@ -2,12 +2,12 @@
 title: Living Specs
 status: draft
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-13
 summary: Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
-keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
+keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index]
 verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx]
 supersedes: []
 assertions:
@@ -35,7 +35,8 @@ assertions:
 # Living Specs
 
 Governed intent, database-canonical for specs created through Buildd (decision
-D-1; repo-owned `docs/specs` stay Git-canonical).
+D-1; repo-owned `docs/specs` stay Git-canonical, except in a workspace that
+opts in to a native source with a generated repo copy, D-13, §18).
 Owned by Living Specs: only `apps/web/src/lib/specs/` writes `specs` and
 `spec_revisions` (docs/specs/execution-control-plane.md).
 
@@ -1088,4 +1089,229 @@ and a comment MUST never change the body, its hash or an approval.
 - Comments show in their own section of the spec page, not inline under each
   criterion in the rendered body.
 - No notification reaches the spec's owner or the comment's author on a reply.
+
+## 17. Organization
+
+**Status: contract, not built.** Every rule here is the target; "Not yet" says
+what exists today.
+
+**Capability statement**: Buildd MUST place every spec of a workspace in one
+product > area > feature tree itself, with the full list of areas in front of
+the classifier, and a person MUST only have to review what it could not place
+or wants to change.
+
+**Invariants**:
+- R-2: An area is a spec with scope `domain` (a product, scope `product`): a
+  title and a one-paragraph charter. It acts as a parent from its first
+  revision, approved or not. Creating one needs `canCreate` (§4), never an
+  approval, and passes the duplicate check (§13) like any spec.
+- R-3: Filing is structure, not body (§1): setting a parent never moves the
+  version, never needs approval, and every filing is reversible. Nothing that
+  approves, pins or grades work reads the tree.
+- R-4: Cold start. When a workspace has no product or area, buildd proposes a
+  taxonomy instead of a nearest-neighbour guess: at most one product (the
+  workspace) and its areas, drawn from what exists (the `domain:` values of
+  the workspace's repo specs, every spec's title and summary), each area with
+  a charter and the specs it would hold. It is one proposal a person accepts,
+  edits or rejects, whole or per area. Accepting creates the areas and files
+  their members by R-7. Nothing is created before a person acts.
+- R-5: The classifier is a decision kind, `buildd.spec_area`, capability
+  `spec_area`, built like `buildd.spec_duplicate` (§13): a measured model list,
+  every answer in the decision ledger under subject `spec`, fail-open, and a
+  threshold fixed by an offline eval (knowledge base) before any answer is
+  applied. A model that was not measured is recorded, never applied.
+- R-6: Its state is the whole area list of the workspace (each area's id,
+  title, charter and up to 5 member titles) plus the spec's card (title,
+  opening line, criteria, as `specCard` builds it). It answers exactly one of:
+  an area id from that list, `new_area` with a proposed title and charter, or
+  `unsure`. An id not in the list reads as `unsure`.
+- R-7: An area answer at or above the measured threshold, from a measured
+  model, is applied: the parent is set and a filing is recorded (spec,
+  previous parent, new parent, ledger row). The spec page and the list say
+  "Filed by buildd" with an undo that restores the previous parent.
+  `new_area`, `unsure` and answers below the threshold become a suggestion on
+  the spec, never a filing.
+- R-8: Never across workspaces: the area list holds only the spec's own
+  workspace, and a filing to a spec elsewhere is refused (§1).
+- R-9: When the model is unavailable, unmeasured or errors, the suggestion
+  falls back to `suggestParent` (§14). Organization never refuses, delays or
+  fails a draft: it runs after the create response, like §8's index.
+- R-10: Backfill. A one-shot run and an idempotent sweep (the knowledge digest
+  cron, bounded budget, §14) classify every unfiled spec. A filed spec, or one
+  a person moved or un-filed, is skipped. Each run yields one reviewable
+  batch, grouped by area and applied by R-7: confident filings applied with
+  undo, the rest suggestions a person accepts per row or per area.
+- R-11: A person moving or un-filing a spec is not training input. It is
+  recorded as a human override on the filing's ledger row (as §13 records
+  `distinctBecause`), so the threshold eval reads real disagreements, and the
+  sweep leaves that spec alone.
+
+**Acceptance criteria**:
+- AC-66: GIVEN a workspace with no area and repo specs carrying three
+  distinct `domain:` values WHEN the taxonomy is proposed THEN it is one
+  proposal naming at most one product and an area per value with members,
+  and no spec exists until a person accepts it (test pending).
+- AC-67: GIVEN three areas WHEN a spec is classified THEN the model's state
+  holds all three areas' ids, titles and charters (test pending).
+- AC-68: GIVEN a measured model answering an area above the threshold WHEN a
+  draft is created THEN its parent is that area, the ledger row and filing
+  exist, and undo restores the previous parent with the version unmoved
+  (test pending).
+- AC-69: GIVEN `new_area`, `unsure`, an id outside the list, or any answer
+  from an unmeasured model THEN the parent is unchanged and a suggestion
+  shows (test pending).
+- AC-70: GIVEN no decision-model key or a provider error WHEN a draft is
+  created THEN it is created, with `suggestParent`'s suggestion
+  (test pending).
+- AC-71: GIVEN a sweep run twice with nothing changed in between THEN the
+  second batch is empty; GIVEN a spec a person moved THEN no run moves it
+  (test pending).
+- AC-72: GIVEN a person moves a spec buildd filed THEN the filing's ledger
+  row carries a human override naming the new parent (test pending).
+- AC-73: GIVEN an area in workspace B WHEN a spec in workspace A is
+  classified THEN that area is not in the state, and a filing naming it is
+  refused (test pending).
+
+**Not yet**:
+- None of R-2 to R-11 is built. An area is made by hand with scope `domain`,
+  and the only placement is `suggestParent` (§14), which searches the
+  approved-spec corpus: an unapproved area is never found, so a new workspace
+  gets no suggestion at all.
+- The threshold eval has not run; until it has, R-7 applies nothing and every
+  answer is a suggestion.
+- No rule yet for a workspace with more areas than fit the prompt.
+
+## 18. Spec homes in practice: native source, generated repo copy
+
+**Status: contract, not built.**
+
+**Capability statement**: In a workspace that opts in, the native spec MUST be
+the one source of its text, its repo file MUST be a generated copy that lands
+without a second human approval, and every spec MUST have exactly one source
+at any time.
+
+**Decision**:
+- D-13: The sync question (2026-10-13). For a workspace that opts in, the
+  native spec is the source and `docs/specs/<slug>.md` is generated from each
+  approved revision; elsewhere D-1 holds unchanged. Approving in buildd is one
+  action, approving through a merged PR is a review cycle, and two editable
+  copies drift. The generated copy is not a second home (§10: one home per
+  spec); it is an output, like `docs/specs/INDEX.md`.
+
+**Invariants**:
+- R-12: Opt-in is per workspace (`gitConfig.livingSpecs`), off by default.
+  Off, nothing in this section runs.
+- R-13: The spec page names the one source: "Source: buildd, repo copy at
+  <path>", "Source: repo <path> at <sha>, imported, awaiting confirmation",
+  or "Source: repo".
+- R-14: Approving a native-sourced revision (§6) files one mechanical PR that
+  writes the copy. Its frontmatter gains two generated lines,
+  `generated_from` (the spec's 8-character short id and the revision) and
+  `content_hash` (the revision's sha256); the rest of the file is the
+  revision's body byte for byte, so `verified_by`, `surfaces`, `domain` and
+  `assertions` are approved text. The full spec id is never written to the
+  file (public repos; the no-prod-data UUID rule).
+- R-15: The generated PR carries no new intent, so it lands on green CI with
+  no review round, the approval recorded as the reason. One open generated PR
+  per spec; a later approval updates it in place. A red check (lint,
+  no-prod-data, conformance) leaves it open and the spec page says "repo copy
+  not landed" with the check; the approval stands and the fix is a new
+  revision.
+- R-16: `specs:lint` recomputes the hash of every file carrying
+  `generated_from`, the file minus those two lines. A mismatch is an error
+  naming the short id and saying the spec is edited in buildd. A PR that
+  hand-edits a native-sourced copy fails; the generated PR always passes.
+- R-17: The repo checks keep reading the repo copy (`specs:lint`,
+  `verified_by`, surfaces, symbol liveness, conformance per
+  `docs/design/spec-conformance.md`), offline and in a public repo, with no
+  call to buildd.
+- R-18: Import. A repo spec becomes a native spec filed under the area its
+  `domain:` maps to, with provenance: path, the commit SHA read, and the PR
+  that last merged a change to it. Its first revision is imported, not
+  approved, and is the file as read. Until confirmed the repo file stays the
+  source: nothing is generated and the file is never overwritten. A repo
+  change before confirmation re-imports it as a new imported revision.
+- R-19: Confirmation is one action by a person with `approve_specs` over a
+  selected batch, listed per area with each spec's path and commit. It is
+  still one approval per spec (§6), each written only while the file is
+  unchanged since the imported commit; a spec whose file moved is reported
+  stale and skipped. From an OAuth session it returns a confirmation link for
+  the batch, as §6 does for one revision. An agent cannot confirm.
+- R-20: Repo-only, never imported or generated: `docs/SPEC.md` (spec-sync's
+  source), `docs/specs/SPEC-FORMAT.md`, `docs/specs/INDEX.md` (generated by
+  `specs:check`), the `docs/design/*.md` stubs and their assertions, and
+  `docs/reports/gate-audit.md`.
+
+**Acceptance criteria**:
+- AC-74: GIVEN an opted-in workspace WHEN a person approves revision N THEN
+  one PR writes `docs/specs/<slug>.md`, the file minus its two generated
+  lines hashes to N's content hash, and no full spec id is in it
+  (test pending).
+- AC-75: GIVEN a PR that hand-edits a generated copy WHEN `specs:lint` runs
+  THEN it fails naming the short id (test pending).
+- AC-76: GIVEN an imported, unconfirmed spec THEN no PR touches its file;
+  GIVEN its file changes in the repo THEN a new imported revision is written
+  (test pending).
+- AC-77: GIVEN a batch of three imported specs, one whose file moved since
+  import, WHEN a person confirms THEN two are approved and the third is
+  reported stale and stays imported; GIVEN an agent token THEN 403
+  (test pending).
+- AC-78: GIVEN a workspace that has not opted in WHEN a spec is approved THEN
+  no PR is filed (test pending).
+- AC-79: GIVEN a generated PR with a red check THEN it stays open, the
+  approval is unchanged and the spec page names the check (test pending).
+
+**Not yet**:
+- None of R-12 to R-20 is built: no source field, no import, no generated
+  copy. D-1 holds everywhere.
+- Changing only `verified_by` or `last_verified` of a native-sourced spec is a
+  revision and an approval, like any text; there is no lighter path.
+- After import, area filing and the frontmatter `domain:` can disagree; no
+  rule writes one from the other.
+
+## 19. Spec index view
+
+**Status: contract, not built.** Replaces §9's list layout when built; §9's
+reach and wording rules still apply.
+
+**Capability statement**: The spec list MUST read as an outline a person can
+scan at phone width, grouped by product and area with counts in words, and
+MUST list as unfiled only what buildd could not place.
+
+**Invariants**:
+- R-21: The default index is an outline: the product, then each area as a
+  row group headed by its title and counts in words (approved, draft,
+  imported awaiting confirmation, needs attention), then its features as rows
+  in §9's wording, children indented under them.
+- R-22: Needs attention counts a spec with a failing governed outcome on any
+  pinned task (§7), a design changed since approval (§12), or a repo-sourced
+  file past `specs:check`'s 90-day staleness warning.
+- R-23: Unfiled comes last and holds only what buildd could not place; each
+  row shows its suggestion inline (R-7) with accept and dismiss.
+- R-24: No graph of the whole workspace. On a spec page, Related gains a
+  small graph as a second view: the spec, its parent, its siblings and up to
+  8 neighbours (§14). The list stays the default and carries the same
+  entries in words.
+- R-25: Both views fit a 320px-wide screen with no sideways scroll; where the
+  graph cannot fit, the list shows instead.
+
+**Acceptance criteria**:
+- AC-80: GIVEN a product with two areas and one approved and one draft
+  feature in the first WHEN the index renders THEN that area heads a group
+  reading "1 approved, 1 draft" with both features as its rows
+  (test pending).
+- AC-81: GIVEN a spec buildd could not place THEN it is under Unfiled with its
+  suggestion; GIVEN every spec filed THEN no Unfiled group renders
+  (test pending).
+- AC-82: GIVEN a pinned task with a failing outcome THEN its spec's area
+  counts it under needs attention (test pending).
+- AC-83: GIVEN a spec with a parent, two siblings and ten neighbours WHEN the
+  graph view opens THEN it shows the spec, the parent, both siblings and 8
+  neighbours, and the list is the default view (test pending).
+- AC-84: GIVEN a 320px viewport THEN neither view scrolls sideways
+  (test pending).
+
+**Not yet**:
+- §9's list is what renders: top-level products and areas as groups, the rest
+  Unfiled. No counts, no inline suggestion, no graph.
 
