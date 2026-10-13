@@ -25,6 +25,7 @@ import {
   type DispatchWorkerStatus,
 } from '@buildd/core/dispatch-health-report';
 import { dispatchTransportConfig, type DispatchTransportConfig } from '@/lib/dispatch-transport';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The `/health` probe. Short: a page render waits on it. */
 export const WORKER_PROBE_TIMEOUT_MS = 1_500;
@@ -74,16 +75,16 @@ export function parseRepairRun(row: { startedAt: Date | string; ok: boolean; res
 
 async function loadLastRepair(): Promise<DispatchRepairRun | null> {
   const row = await db.query.cronRuns.findFirst({
-    where: eq(cronRuns.job, FLOOR_JOB),
+    where: sqlWhere(eq(cronRuns.job, FLOOR_JOB)),
     columns: { startedAt: true, ok: true, result: true },
-    orderBy: desc(cronRuns.startedAt),
+    orderBy: sqlOrderBy(desc(cronRuns.startedAt)),
   });
   return parseRepairRun(row ?? null);
 }
 
 async function loadWorkspaces(ids: readonly string[]): Promise<Array<{ id: string; name: string; transport: DispatchTransportMode }>> {
   const rows = await db.query.workspaces.findMany({
-    where: inArray(workspaces.id, [...ids]),
+    where: sqlWhere(inArray(workspaces.id, [...ids])),
     columns: { id: true, name: true, dispatchTransport: true },
   });
   return rows

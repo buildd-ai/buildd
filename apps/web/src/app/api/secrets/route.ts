@@ -14,6 +14,7 @@ import { modelCredentialPurposes } from '@buildd/core/providers/manage';
 import { refuseCredentialCustody, type CustodyCaller } from '@/lib/credential-custody';
 import { isTaskToken } from '@/lib/task-token';
 import { CLOUDFLARE_PURPOSE, parseCloudflareCredential } from '@/lib/cloudflare-credential-shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Model-credential purposes (the provider registry's storages). Their writes go
@@ -256,7 +257,7 @@ export async function POST(req: NextRequest) {
   if (workspaceId != null) {
     const workspace = typeof workspaceId === 'string'
       ? await db.query.workspaces.findFirst({
-          where: and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, targetTeamId)),
+          where: sqlWhere(and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, targetTeamId))),
           columns: { id: true },
         })
       : null;

@@ -2,14 +2,35 @@
 title: Living Specs
 status: draft
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 summary: Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts]
 supersedes: []
+assertions:
+  - id: approve-spec-revision
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: approveSpecRevision
+    path: apps/web/src/lib/specs/approval.ts
+  - id: spec-patch-route
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: route
+    method: PATCH
+    path: "/api/specs/[specId]"
+    file: apps/web/src/app/api/specs/[specId]/route.ts
+  - id: spec-read-route
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: route
+    method: GET
+    path: "/api/specs/[specId]"
+    file: apps/web/src/app/api/specs/[specId]/route.ts
 ---
 # Living Specs
 
@@ -208,15 +229,36 @@ later ones are proposed (D-4).
   that is not approved, or a spec in another workspace refuses the filing
   (409/409/404) and nothing is inserted. `commitSha` is kept when it is a SHA.
   A task naming no spec, or only a repo document (`specPath`), is untouched.
+- Work runs on the revision approved when it starts: the task's first claim
+  re-pins it to the revision approved then (`apps/web/src/lib/specs/claim-pin.ts`,
+  `pinnedAt: 'claim'`, `repinnedFrom`). After that the pin never moves: a task
+  a worker has run, a retry attempt, a pin taken at a claim, and a revision
+  the filer named explicitly all keep theirs.
+- A task names the criteria it answers for in `context.specSource.criteria`
+  (`packages/spec-contract/src/scope.ts`): 1 to 50 `R-n`/`AC-n` ids of the pinned
+  revision, normalized (`AC-03` is `AC-3`) and de-duplicated. An id the
+  revision lacks, a decision or invariant, an empty list or a non-list is a
+  400 naming the revision's criteria, and nothing is inserted. Left out, the
+  task answers for every criterion. The claim re-pin moves a scoped task only
+  when the new revision still has every id in its scope; otherwise the task
+  keeps the revision those ids came from, and the claim log says which id is
+  gone.
 - `specSource` grew additively: `{specPath, planningTaskId}` (repo document,
   approvePlan) and `{specId, specRevisionId, revision, contentHash, commitSha}`
-  (Living Spec pin). Children of an approved plan inherit the planning task's
+  (Living Spec pin), plus `criteria`, `pinnedAt`, `repinnedFrom` and
+  `explicit`. Children of an approved plan inherit the planning task's
   pin.
 - The reviewer reads the pinned content, never the PR's copy: a Living Spec
   pin reads exactly that revision, hash-checked; a repo document pinned to
   `commitSha` is read at that commit. A spec the task names that cannot be
   read (missing, hash mismatch, fetch failure) is an explicit finding: the
-  reviewer is told conformance is unverified and to escalate.
+  reviewer is told conformance is unverified and to escalate. A scoped task's
+  reviewer is told which criteria the task answers for, and that the others
+  are context, not work it owes.
+- The task page names the spec, links its page (§9) and shows the pinned
+  revision, a newer approved revision when there is one, and the governed
+  outcome (§7) of each criterion the task answers for, failures first, at
+  most 8 with the rest counted (`apps/web/src/components/SpecSourceBlock.tsx`).
 
 **Acceptance criteria**:
 - AC-3: GIVEN revision N approved and a task filed against the spec WHEN an
@@ -247,11 +289,28 @@ later ones are proposed (D-4).
 - AC-15: GIVEN a person who switches between the two views WHEN they press
   Approve THEN the one request sent is the token the page was opened with,
   naming the same revision (`apps/web/src/components/SpecApprovalRequest.dom.test.tsx`).
+- AC-28: GIVEN a task filed while N is approved and N+1 approved before its
+  first claim WHEN it is claimed THEN it is pinned to N+1 with its hash; GIVEN
+  it scoped to an id N+1 no longer has THEN it keeps N
+  (`apps/web/tests/db/spec-pin-at-claim.test.ts`).
+- AC-29: GIVEN a task scoped to AC-1 of a revision with R-1 and AC-1 WHEN AC-1
+  passes on the current head THEN the outcome reads verified, and a verdict on
+  R-1 is a 400; GIVEN a scope naming an id the revision lacks THEN the filing
+  is a 400 naming the revision's criteria
+  (`apps/web/tests/db/spec-outcome-verification.test.ts`,
+  `packages/spec-contract/src/scope.test.ts`).
+- AC-30: GIVEN a pinned task WHEN its page renders THEN it names and links
+  the spec, says when a newer revision is approved, and lists each criterion
+  it answers for with its verdict, failures first; a pass on an older commit
+  reads as such, not as a pass (`apps/web/src/components/SpecSourceBlock.test.tsx`).
 
 **Code surface**:
 - `apps/web/src/lib/specs/approval.ts` — `specApprover`, `submitSpecRevision`, `approveSpecRevision`, `confirmSpecApproval`
 - `apps/web/src/lib/specs/approval-request.ts` — `signSpecApprovalRequest`, `verifySpecApprovalRequest`
 - `apps/web/src/lib/specs/pin.ts` — `pinSpecSource`, `readPinnedSpecRevision`
+- `apps/web/src/lib/specs/claim-pin.ts` — `repinSpecAtClaim`
+- `packages/spec-contract/src/scope.ts` — `checkCriteriaScope`, `inScope`, `scopeOf`
+- `apps/web/src/lib/specs/task-view.ts` — `loadLivingSpecView`; `apps/web/src/components/SpecSourceBlock.tsx` — `SpecSourceBlock`
 - `apps/web/src/lib/reviewer.ts` — `renderSpecConformanceGuidance`
 - `apps/web/src/lib/specs/approval-view.ts` — `approvalRequestView`
 - `apps/web/src/lib/specs/diff.ts` — `diffSpecBodies`, `diffSpecHunks`, `diffSpecRevisions`
@@ -259,10 +318,6 @@ later ones are proposed (D-4).
 - `apps/web/src/components/SpecDiffView.tsx` — `SpecDiffView`
 
 **Not yet**:
-- The pin is taken when a task is filed, not when it is claimed: a task filed
-  under N and claimed after N+1 is approved still runs on N, by design.
-- The task page shows the pinned revision as text; it does not link to the
-  spec page yet (§9).
 - No horizontal overflow at 320px is held by the wrapping the DOM test
   asserts and was measured on screenshots at 320, 390 and 1280px; no CI test
   renders the page at a real width yet.
@@ -272,8 +327,8 @@ later ones are proposed (D-4).
 ## 7. Verified outcomes
 
 **Capability statement**: A task pinned to an approved revision MUST read
-verified only when its outcome passes every criterion of that revision on
-the current PR head; a violated criterion MUST read fail, and anything not
+verified only when its outcome passes every criterion it answers for (§6:
+its scope, else all of the revision's) on the current PR head; a violated criterion MUST read fail, and anything not
 shown MUST read unverified, never pass (D-5). This is separate from whether
 the task completed or its PR merged.
 
@@ -281,10 +336,11 @@ the task completed or its PR merged.
 - The criteria are the revision's requirements and acceptance criteria: lines
   that start with `R-n` or `AC-n` (as a line, list item, heading or bold
   label, outside fenced code; first definition wins;
-  `apps/web/src/lib/specs/requirements.ts` `specCriteria`). Decisions (`D-n`)
+  `packages/spec-contract/src/requirements.ts` `specCriteria`). Decisions (`D-n`)
   and invariants (`I-n`) are context, not criteria. They are read from the
   pinned revision's body, so a later revision never changes what a running
-  task is judged against.
+  task is judged against, and narrowed to the task's scope when it has one; a
+  verdict on a criterion outside the scope is a 400.
 - A verdict is one row in `spec_outcome_verdicts`: the task, the pinned
   revision, the criterion, `pass | fail | inconclusive | unsupported` (the
   verification-check vocabulary), the PR head it judged, and its evidence:
@@ -292,7 +348,7 @@ the task completed or its PR merged.
   ledger, same workspace only) and who recorded it. Append-only; the newest
   verdict per criterion stands. A criterion the revision lacks, a verdict
   outside the vocabulary or a missing head is a 400 and nothing is written.
-- The outcome (`foldGovernedOutcome`, packages/core/verification-check.ts):
+- The outcome (`foldGovernedOutcome`, packages/spec-contract/src/outcome.ts, re-exported by packages/core/verification-check.ts):
   `fail` when any criterion's newest verdict is fail; `verified` only when
   every criterion's newest verdict is a pass on the head the workflow kernel
   observes for the task's PR delivery; `unverified` otherwise: a missing,
@@ -309,8 +365,17 @@ the task completed or its PR merged.
 - The reviewer of a pinned task is given the revision's criteria and asked to
   record one verdict each at the head it reviews (`manage_specs action=verdict`).
   Its review verdict still alone decides the merge.
+- A criterion with a check line under it (`check: <command>`,
+  `packages/spec-contract/src/check-lines.ts`) is verified by running that
+  command at the PR head (`apps/web/src/lib/specs/criterion-checks.ts`): one
+  run per task, revision, criterion and head, filed as a verification task a
+  runner executes. The runner's exit code is the verdict (0 pass, nonzero
+  fail, a failed checkout inconclusive), recorded as `check:<task>`; an agent
+  cannot write it. Only criteria in the task's scope are run. A criterion
+  with no check stays graded by the reviewer or a person.
 - `get_task` shows `Governed outcome` beside `Status` for a pinned task;
-  `manage_specs action=outcome` lists each criterion.
+  `manage_specs action=outcome` lists each criterion; the task page shows it
+  (§6).
 - Two criteria of an approved revision that disagree are recorded as a
   `conflict` discrepancy (`POST /api/specs/[id]/conflicts`,
   `manage_specs action=conflict`): `spec_discrepancies` with
@@ -331,15 +396,16 @@ the task completed or its PR merged.
 
 **Code surface**:
 - `apps/web/src/lib/specs/outcome.ts` — `recordSpecVerdict`, `readGovernedOutcome`, `recordSpecConflict`
+- `apps/web/src/lib/specs/criterion-checks.ts` — `dispatchCriterionChecks`, `handleCriterionCheckOutcome`; `packages/spec-contract/src/check-lines.ts` — `criterionChecks`
 - `apps/web/src/app/api/specs/outcomes/[taskId]/route.ts` — `GET`, `POST`
 - `apps/web/src/app/api/specs/[specId]/conflicts/route.ts` — `POST`
-- `packages/core/verification-check.ts` — `foldGovernedOutcome`
+- `packages/spec-contract/src/outcome.ts` — `foldGovernedOutcome`
 
 **Not yet**:
-- Verdicts come from the reviewer agent or a person; no executor yet runs a
-  criterion as a mechanical check.
-- The dashboard does not show the governed outcome yet (U1); it is in
-  `get_task` and the API.
+- A criterion with no check line is graded by the reviewer's judgement, with
+  no fixed rubric beyond the verdict vocabulary.
+- Nothing reads a spec's conformance across all its tasks, and no mission
+  goal criterion names a spec's criteria.
 
 ## 8. Approved specs in knowledge
 
@@ -364,16 +430,21 @@ without an approval ever depending on either.
   path: the repo ingest prunes paths it did not see on disk, and these are not
   repo files. Their source URL is the spec page, `/app/specs/<specId>` (§9),
   so a recall hit opens the spec, not an approval.
-- The graph comes only from what the spec stores: the spec `part_of` its
-  parent spec; the approved revision `references_doc` each repo file it cites
-  (the same `file` entity, keyed by repo path, that the repo ingest makes; the
-  commit sits on the revision entity's `repoRefs`); and the revision
-  `supersedes` the revision approved before it. No inferred, similarity or
-  agent-supplied edge is written for a spec. Each approval deletes this spec's
-  `living_spec:` edges and chunk links and writes them again, so the graph can
-  be rebuilt at any time.
-- Fail-open. Indexing runs after the approval has committed; a failure is
-  logged and never fails or rolls back the approval. Re-running the backfill
+- The stored graph comes only from what the spec stores: the spec `part_of`
+  its parent spec; the approved revision `references_doc` each repo file it
+  cites (the same `file` entity, keyed by repo path, that the repo ingest
+  makes; the commit sits on the revision entity's `repoRefs`); and the
+  revision `supersedes` the revision approved before it. The derived graph
+  (§14) is written alongside it under rules starting `living_spec:derived:`,
+  so it can never be mistaken for a stored edge; no other inferred, similarity
+  or agent-supplied edge is written for a spec. Each approval deletes this
+  spec's `living_spec:` edges and chunk links and writes them again, so the
+  graph can be rebuilt at any time.
+- Fail-open, and off the response. Indexing runs after the approval has
+  committed and after the approve response is sent (`after()`), so a person
+  never waits on chunking, embedding or graph writes; recall picks the text up
+  a moment later. A failure is logged and never fails or rolls back the
+  approval. Re-running the backfill
   (`bun run --cwd apps/web specs:backfill-knowledge --apply`) repairs it and is
   idempotent.
 
@@ -391,9 +462,14 @@ without an approval ever depending on either.
   `packages/core/__tests__/living-spec-knowledge.test.ts`).
 - AC-20: GIVEN the store and the graph writer both throw WHEN a person approves
   THEN the spec is approved (`apps/web/tests/db/spec-knowledge.test.ts`).
+- AC-31: GIVEN a person approves WHEN the approve response returns THEN the
+  approval has committed and the index is scheduled for after the response,
+  not run; the access and approver checks go out together, and so do the two
+  reads after the approval (`apps/web/src/lib/specs/approval.test.ts`,
+  `apps/web/tests/db/spec-knowledge.test.ts`).
 
 **Code surface**:
-- `apps/web/src/lib/specs/approval.ts` — emits `spec.approved` after the approval commits
+- `apps/web/src/lib/specs/approval.ts` — emits `spec.approved` after the approval commits, after the response (`specApprovalDeps`)
 - `apps/web/src/lib/knowledge-subscribers.ts` — `living-spec-index` subscriber
 - `apps/web/src/lib/specs/knowledge.ts` — `indexApprovedSpec`, `specKnowledgeDeps`
 - `packages/core/knowledge-store/living-spec.ts` — `buildLivingSpecChunks`, `buildLivingSpecGraph`
@@ -422,6 +498,8 @@ same page, without an agent in between.
   team's workspace or spec is a 404 and its title never appears.
 - The list shows specs as a tree: a spec with a parent in the same workspace
   sits under it; a spec whose parent is not in the list sits at the top. Each
+  product or area at the top heads its own group, and every other top-level
+  spec is listed under Unfiled (§14). Each
   row says in words its title, scope, where it stands ("approved at revision
   N", "draft, never approved", "retired", "superseded"), "revision M waiting
   for approval" when the head is newer than the approved revision, and when it
@@ -485,6 +563,12 @@ same page, without an agent in between.
   the version the page was rendered at; GIVEN a reader who may not approve
   THEN no approve action renders (`apps/web/src/components/SpecPage.dom.test.tsx`,
   `apps/web/tests/db/spec-pages.test.ts`).
+- AC-32: GIVEN an approver presses Approve WHEN the request is still out THEN
+  the page already reads "Approved. Revision M is in force." with no action;
+  WHEN it fails THEN the action returns with the error beside it; WHEN the spec
+  moved (409) THEN the notice stays and no action is offered
+  (`apps/web/src/components/SpecPage.dom.test.tsx`,
+  `apps/web/src/components/SpecApprovalRequest.dom.test.tsx`).
 
 **Code surface**:
 - `apps/web/src/lib/specs/page-view.ts` — `specListView`, `specPageView`, `specTree`, `specStanding`, `repoRefHref`
@@ -492,11 +576,403 @@ same page, without an agent in between.
 - `apps/web/src/app/app/(protected)/specs/[specId]/page.tsx` — the spec page
 - `apps/web/src/components/SpecList.tsx` — `SpecList`
 - `apps/web/src/components/SpecPage.tsx` — `SpecPage`, `readingLine`
+- `apps/web/src/components/useOptimisticApprove.ts` — `useOptimisticApprove`
 - `apps/web/src/components/SpecRevisionPanes.tsx` — `SpecRevisionPanes` (the Spec / Changes switch, shared with the confirm page)
 - `apps/web/src/lib/specs/repo-source.ts` — `linkedRepoFullName`
 
 **Not yet**:
-- The task page names the pinned revision but does not link to the spec page.
 - Reading the rendered body is not recorded in the read ledger, matching
   `GET /api/specs/[id]`, which does not record either; diffs are recorded.
 - There is no list across a team's workspaces; each workspace has its own.
+
+## 10. Portable contract
+
+**Capability statement**: The shapes and rules another product needs to keep
+Living Specs, pin work to them and grade work against them MUST live in one
+package that imports nothing of buildd's, and buildd MUST read those rules
+from that package, so a copy is the same rule and not a port of it.
+
+**Invariants**:
+- `@buildd/spec-contract` (`packages/spec-contract`) holds the pure rules:
+  criterion ids (`requirementIds`, `specCriteria`), check lines
+  (`criterionChecks`, `checkVerdict`), scope (`checkCriteriaScope`, `inScope`),
+  the verdict vocabulary (`VERDICTS`: pass, fail, inconclusive, unsupported)
+  and the outcome fold (`foldGovernedOutcome`), and the content hash
+  (`contentHash`, `normalizeFrozenCopy`, `frozenCopyHash`). buildd's spec
+  routes, reviewer, pins and outcome import them from there;
+  `packages/core/verification-check.ts` re-exports the vocabulary and the fold
+  for the other verification flavors.
+- It imports no buildd workspace package, database driver, app alias or path
+  outside itself, and declares no dependency. A test scans every tracked file
+  in it and proves its pattern can fail.
+- The records, each keyed on a spec revision (an approval is a property of a
+  revision, not a separate id):
+  - spec source `{ kind: buildd | confluence | git, ref, version }`: where one
+    version of the text lives. One home per spec; nothing syncs between homes.
+  - design reference `{ kind: artifact | url | figma, ref, version, screens? }`:
+    the design a revision is built to. A design stored as an artifact (an HTML
+    or code prototype, or images) is versioned by its artifact revisions.
+  - approval record `{ specId, revision, source, contentHash, design?,
+    approvedBy, approvedAt }`, written once, by a person (§6).
+  - pin `{ specId, specRevisionId, revision, contentHash, criteria? }`, written
+    by the server when work is filed and re-taken at first claim (§6).
+  - verdict `{ taskId, specRevisionId, criterionId, verdict, headSha,
+    evidence: [{ kind, ref }], checker }`, append-only; the newest per
+    criterion stands, whichever checker wrote it (§7).
+- A spec home implements four operations (`SpecSourceAdapter`): read one
+  version, list versions, propose a change beside the spec (never over
+  approved text), and list versions newer than one it has seen. The frozen
+  copy is Markdown. A home that re-serializes on save is hashed after
+  `normalizeFrozenCopy`, so a save that changed nothing is not a new version;
+  buildd's own home hashes its text as stored.
+- Who plays each part is the host's choice. In buildd: the spec service is
+  `apps/web/src/lib/specs/`, the pin reader is the claim route and the
+  reviewer, the code grader is the PR reviewer's round, and check lines run
+  on a runner. A copier maps the same parts to its own services; the package
+  does not name them.
+
+- The Confluence home (`packages/spec-contract/src/confluence.ts`) reads one
+  exact page version through Confluence Cloud REST v2 with an injected fetch,
+  converts its storage format to Markdown (`confluence-markdown.ts`), and
+  hashes it after `normalizeFrozenCopy`. A version written by the configured
+  bot account reads as an agent's. A missing page or version is null, never
+  the latest. A proposal is a child page "Proposed: vN — <title>" under the
+  spec page, with its base version and summary in a content property; it is
+  refused on a stale base, and the spec page itself is never written.
+  `criteriaWarning` says when a converted page has no R-n or AC-n line. A
+  table whose first column holds criterion ids is restated as one list line
+  per row, so those ids parse.
+
+**Acceptance criteria**:
+- AC-40: GIVEN a page with a requirements table, a code macro, a status macro
+  and nested lists WHEN converted THEN every criterion id parses and the code
+  is fenced; GIVEN two saves differing only in whitespace or `&nbsp;` THEN
+  they hash the same; GIVEN a page with no R-n or AC-n line THEN
+  `criteriaWarning` returns a warning
+  (`packages/spec-contract/src/confluence.test.ts`).
+- AC-41: GIVEN a fake Confluence WHEN a proposal names a stale base version
+  THEN it is refused and nothing is written; WHEN it names the current one
+  THEN a child page is created under the spec page and the spec page is never
+  written (`packages/spec-contract/src/confluence.test.ts`).
+- AC-33: GIVEN the package alone WHEN its tests run in their own process THEN
+  parsing, scope, the fold and hashing work end to end, and a home can be
+  implemented against the interface with no host
+  (`packages/spec-contract/src/contract.test.ts`).
+- AC-34: GIVEN a file in the package that imports `@buildd/core`, a database
+  driver, an app alias or a path outside the package WHEN the boundary test
+  runs THEN it fails; the test first proves its pattern matches each of those
+  (`packages/spec-contract/src/no-buildd-imports.test.ts`).
+
+**Code surface**:
+- `packages/spec-contract/src/index.ts` — the entry point
+- `packages/spec-contract/src/outcome.ts` — `VERDICTS`, `foldGovernedOutcome`
+- `packages/spec-contract/src/hash.ts` — `contentHash`, `normalizeFrozenCopy`, `frozenCopyHash`
+- `packages/spec-contract/src/shapes.ts` — `SpecSource`, `DesignRef`, `ApprovalRecord`, `SpecPin`, `SpecVerdict`
+- `packages/spec-contract/src/source.ts` — `SpecSourceAdapter`
+- `packages/spec-contract/src/confluence.ts` — `confluenceSource`, `criteriaWarning`; `packages/spec-contract/src/confluence-markdown.ts` — `storageToMarkdown`, `markdownToStorage`
+
+**Not yet**:
+- A Confluence Cloud home exists in the package (`confluenceSource`,
+  `storageToMarkdown`, `criteriaWarning`), but no buildd spec can have a
+  Confluence home yet: that needs a service account credential and a source
+  column on specs and revisions. A git home reads through `read_ref` (§5) but
+  is not wrapped as an adapter.
+- The stored verdict row has no `checker` column: the checker is implied by
+  who recorded it.
+
+## 11. The visual audit grades spec criteria
+
+**Capability statement**: A mission's visual audit MUST grade the spec
+criteria of the tasks it reviews that a page can show, with its own
+screenshots as evidence, bound to each task's PR head only when the commit it
+captured contains that head; no task MAY grade its own work this way.
+
+**Invariants**:
+- At claim, a `[surface audit]` gets a "Spec criteria to judge" block: for
+  each task it depends on that is pinned to a Living Spec, the task, the spec
+  title and pinned revision, and the criteria that task answers for (its
+  scope, §6) with their text. Computed from the audit's current dependencies,
+  like its required routes. A read that fails attaches nothing.
+- The audit records through `POST /api/specs/outcomes/[taskId]` with
+  `checker: 'visual'` (MCP `manage_specs action=verdict checker=visual`):
+  `{ criterionId, verdict, capturedSha, screenshotIds, observed }`. It lands in
+  the same verdict log as the reviewer's and check runs' (§7), authored
+  `visual:<audit task id>`; the newest verdict per criterion stands.
+- Only the audit's own run records (its per-task token), and only when the
+  audit is a visual-auditor `[surface audit]` that no agent filed (the
+  platform or a person did), in the subject's mission and workspace, with the
+  subject among its dependencies, and is neither the subject nor filed under
+  it. Anything else is a 403 and nothing is written.
+- `pass` and `fail` cite 1 to 4 screenshots that a worker of this audit
+  uploaded through upload-url; `inconclusive` says what could not be seen;
+  `unsupported` is refused, because the audit records only criteria it
+  looked at and its verdict would replace the reviewer's.
+- The audit captures the mission's capture ref, not the PR head. The server
+  reads the subject's PR head from the kernel and checks on GitHub that the
+  captured commit contains it: contained, the verdict binds to the PR head and
+  keeps the captured commit as evidence; not contained, a 409; unreadable, a
+  502; no PR head or no linked repo, a 409. Nothing is written on a refusal.
+- Each cited screenshot is copied out of the audit-shot area, which expires
+  after 30 days, into the artifact area before the verdict is written, and the
+  verdict records the copy and `retainUntil` (400 days on). A copy that fails
+  writes nothing.
+
+**Acceptance criteria**:
+- AC-35: GIVEN a builder task in a mission pinned to a spec scoped to AC-1 and
+  AC-2 WHEN its audit claims THEN the block lists AC-1 and AC-2 with their text
+  and the revision (`apps/web/tests/db/spec-visual-verdict.test.ts`,
+  `apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts`).
+- AC-36: GIVEN the audit's own screenshot and a captured commit containing the
+  builder's PR head WHEN it records a pass on AC-1 THEN the verdict binds to the
+  PR head, cites the screenshot, its retained copy and the captured commit,
+  and the builder's outcome shows it (`apps/web/tests/db/spec-visual-verdict.test.ts`).
+- AC-37: GIVEN the builder, a fix attempt filed under it, an agent-filed
+  audit, an audit in another mission, or a person's session WHEN each records
+  a visual verdict THEN each is refused and nothing is written
+  (`apps/web/tests/db/spec-visual-verdict.test.ts`).
+- AC-38: GIVEN a pass with no screenshot, with another worker's screenshot, an
+  `unsupported`, or an `inconclusive` without `observed` WHEN recorded THEN each
+  is a 400 (`apps/web/tests/db/spec-visual-verdict.test.ts`).
+- AC-39: GIVEN a captured commit that does not contain the PR head WHEN
+  recorded THEN 409 and no row; GIVEN GitHub unreachable THEN 502 and no row
+  (`apps/web/tests/db/spec-visual-verdict.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/visual-audit-spec-verdict.ts` — `recordVisualVerdict`, `auditorRefusal`
+- `apps/web/src/lib/specs/outcome.ts` — `recordAuditedVerdict`
+- `apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.ts` — `attachVisualAuditSpecCriteria`, `renderVisualAuditSpecCriteria`, `loadVisualAuditSpecCriteria`
+
+**Not yet**:
+- Nothing deletes a retained screenshot after `retainUntil`, so verdict
+  evidence is kept indefinitely today; 400 days is the floor, not a ceiling.
+- The task page lists each criterion's standing but does not link a visual
+  verdict's screenshots.
+- A mission with no `[surface audit]` (no UI change, or opted out) gets no
+  visual verdicts.
+
+## 12. Designs
+
+**Capability statement**: A spec revision MUST be able to name the design it
+is built to, at one version, so approving the revision records the design
+version next to the text, the spec says when the design moved on since, and
+the visual audit judges the build against that version of the design.
+
+**Invariants**:
+- A revision's `design` is `{ kind, ref, version, screens? }`
+  (`parseDesignRef`, packages/spec-contract/src/design.ts), written on
+  create_draft or revise (`apps/web/src/lib/specs/design.ts`):
+  - `artifact` (the default): an artifact in the spec's workspace, such as an
+    HTML or code prototype or images. Pinned to its current revision unless
+    `version` names one, which must exist. One in another workspace is a 400.
+  - `url` (https) or `figma`: `version` is required; buildd stores it as given
+    and cannot tell when either moves on.
+  - `screens` (at most 50) name the screens a criterion may cover.
+- On revise an omitted `design` carries the head's forward and `null` clears
+  it. A revise that changes only the design writes a new revision on the same
+  body, which an approver approves like any other.
+- Approval is of the revision, so it records the design version the revision
+  carries; nothing moves it after. Reading the approved revision, the spec
+  page names the design and its version, and, for an artifact design whose
+  current revision is newer, says "The design changed since approval".
+- A criterion names the screens it covers on a line under it:
+  `screen: <id>, <id>` (`criterionScreens`, same placement rule as check
+  lines, §7).
+- A visual audit's claim block (§11) names the design, its version, how to
+  open it (`get_artifact { artifactId, revision }` for an artifact) and each
+  criterion's screens. A visual pass or fail on a criterion that names screens
+  must also cite 1 or 2 screenshots of the design rendered at the same state
+  (`designShotIds`), taken by the audit's own run; the verdict's evidence then
+  names the design version it was judged against. A pixel difference alone is
+  not a fail; the audit judges layout, content and states.
+
+**Acceptance criteria**:
+- AC-42: GIVEN an artifact design with no version WHEN a draft is created THEN
+  the revision pins the artifact's current revision; GIVEN an artifact in
+  another workspace, a missing revision, or a URL with no version THEN 400
+  and nothing is written (`apps/web/tests/db/spec-design.test.ts`).
+- AC-43: GIVEN a revise that changes only the design THEN it is a new revision
+  on the same body; GIVEN a later revise that omits it THEN the design carries
+  forward; GIVEN `design: null` THEN it is cleared
+  (`apps/web/tests/db/spec-design.test.ts`).
+- AC-44: GIVEN an approved revision with an artifact design WHEN the artifact
+  is revised THEN the spec page says the design changed since approval and
+  names both versions, and the approved revision still names its own
+  (`apps/web/tests/db/spec-design.test.ts`,
+  `apps/web/src/components/SpecPage.dom.test.tsx`).
+- AC-45: GIVEN a criterion with a `screen:` line WHEN the audit records a pass
+  with no design shot THEN 400; WITH one THEN the verdict cites it and the
+  design version (`apps/web/tests/db/spec-visual-verdict.test.ts`).
+
+**Code surface**:
+- `packages/spec-contract/src/design.ts` — `parseDesignRef`, `designDrift`, `sameDesign`
+- `packages/spec-contract/src/check-lines.ts` — `criterionScreens`, `criterionLines`
+- `apps/web/src/lib/specs/design.ts` — `resolveDesign`, `approvedDesignDrift`
+- `apps/web/src/lib/specs/page-view.ts` — `specPageView` (`design`)
+
+**Not yet**:
+- A URL or design-tool design cannot be checked for drift; only artifact
+  designs say "changed since approval".
+- The spec page does not render the design inline; it links to it.
+- No design-tool integration (such as Figma) is built: such a reference is
+  stored as given.
+
+## 13. Duplicate specs
+
+**Capability statement**: Creating a spec MUST be refused when a measured
+decision model judges it a clear duplicate of an approved spec in the same
+workspace, unless the request says which spec it replaces or why it is
+different; an overlap MUST only warn, and a check that cannot run MUST never
+stop a spec.
+
+**Invariants**:
+- `createSpecDraft` (`POST /api/specs`, MCP `manage_specs action=create_draft`)
+  runs `checkSpecDuplicates` (`apps/web/src/lib/spec-duplicate-decision.ts`, reached from core through the `SPEC_DUPLICATE_CHECK` slot in `apps/web/src/modules.ts`)
+  before anything is written:
+  - Shortlist: TF-IDF cosine between the new spec and each approved revision
+    in the workspace (title, the opening line, every R-n/AC-n), at most 5 above
+    a floor. The shortlist only picks what the model reads; it never decides.
+  - Judge: decision kind `buildd.spec_duplicate`, capability `spec_duplicate`
+    (built in: on for every team whose decision-model key resolves), one call per shortlisted spec, the question
+    the offline eval measured (knowledge base:
+    `buildd/reports/spec-duplicate-detection-eval-2026-10-12.md`): duplicate,
+    overlap or distinct, by what the specs require, not their topic. Every
+    answer is recorded in the decision ledger under subject `spec_pair`.
+- `duplicate` at p >= 0.9 (Jev: 106 of 106 right in the eval): a 409 with
+  `code: spec_duplicate` and the `duplicates`, naming each spec, and nothing is
+  written. A model the kind was not measured on is recorded, never applied, so
+  it cannot block.
+- Override: `supersedes` (a spec id in the same workspace) or
+  `distinctBecause` (at least 10 characters). The spec is created and the
+  override is recorded on each blocking judgement's ledger row as a human
+  override, so the threshold can be re-measured on real cases.
+- `overlap` at p >= 0.5, or `duplicate` below 0.9: created, with the
+  candidates in `duplicateCheck.warnings`.
+- No team, no approved spec, no decision-model key, a provider failure or
+  any error: created, with `duplicateCheck.ran: false` and
+  the reason.
+
+**Acceptance criteria**:
+- AC-46: GIVEN an approved "Cart" spec WHEN a paraphrase is created and the
+  model answers duplicate at 0.97 THEN 409 naming Cart, and the workspace has
+  no new spec (`apps/web/tests/db/spec-duplicates.test.ts`).
+- AC-47: GIVEN the same WITH `supersedes` (Cart's id) or a `distinctBecause`
+  THEN it is created; GIVEN `supersedes` naming a spec in another workspace
+  THEN 400 (`apps/web/tests/db/spec-duplicates.test.ts`).
+- AC-48: GIVEN the model answers overlap THEN it is created with Cart in the
+  warnings; GIVEN no decision model THEN it is created with the check marked
+  not run (`apps/web/tests/db/spec-duplicates.test.ts`,
+  `apps/web/src/lib/spec-duplicate-decision.test.ts`).
+- AC-49: The kind asks the measured question, live, under `spec_duplicate`; a
+  duplicate at 0.89 only warns (`apps/web/src/lib/spec-duplicate-decision.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/spec-duplicate-decision.ts` — `checkSpecDuplicates`, `tfidfShortlist`, `specDuplicateKind`, `recordDuplicateOverride`
+- `apps/web/src/lib/specs/duplicates.ts` — `parseDuplicateOverride`
+- `apps/web/src/lib/specs/store.ts` — `createSpecDraft`
+
+**Not yet**:
+- Linking a page or a repo file as a spec's home is not checked: no spec can
+  have an external home in buildd (slice 4 is out of scope).
+- A revise is not checked, and the shortlist compares whole specs, not single
+  criteria.
+- `supersedes` is recorded but does not mark the old spec superseded.
+
+## 14. Neighbours and derived edges
+
+**Capability statement**: A spec MUST know the specs near it, by meaning, by
+the files its work changed, and by criteria judged to mean the same, and the
+knowledge graph MUST hold the edges buildd can derive exactly from its own
+data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
+
+**Invariants**:
+- One strict tree (D-11): product, then area, then feature, by `parentSpecId`.
+  A product or an area is a spec with scope `product` or `domain`. The list
+  (§9) groups by it: each product or area at the top heads a group, the rest
+  are Unfiled.
+- Neighbours live in `spec_neighbors` (one row per spec, neighbour and kind:
+  score 0 to 1, source, a reason detail):
+  - `similar`: the nearest approved specs in the workspace's spec corpus, at
+    most 5, by cosine at 0.55 or above when an embedder answered (source
+    `vector`), else by lexical rank (source `lexical`, no floor). The spec's
+    own parent and children are left out: they are already related.
+  - `shares_files`: specs whose pinned tasks changed the same files, at most
+    5, scored by the shared share of the smaller set. Files come from the
+    knowledge ingest's record of each merged PR (source `pr_files`), else
+    from the tasks' declared path manifests, patterns dropped (source
+    `path_manifest`). No GitHub call.
+  - `overlaps`: criteria the duplicate check judged to mean the same, naming
+    each side (§13 writes these; this section only stores and shows them).
+- `overlaps` is written at approval only, from the duplicate decision (§13):
+  the approved spec against every other approved spec in the workspace,
+  itself left out; a duplicate or an overlap becomes a row with Jev's
+  probability as its score. A check that did not run keeps the rows it had.
+  The daily refresh never asks the model.
+- Creating a spec with no parent returns `suggestedParent` (`POST /api/specs`,
+  and the `manage_specs create_draft` reply), the same suggestion the nearby
+  route gives. It is offered, never applied.
+- Each (spec, kind) is replaced whole on each recompute; `overlaps` is never
+  touched by the neighbour recompute. A row written for either side counts
+  for both, so a spec approved later shows on an older spec's page at once.
+- Recomputed in the same after-response step as the knowledge index (§8),
+  fail-open per kind (a kind that fails keeps its previous rows), and
+  refreshed at least daily on the knowledge digest cron within a bounded
+  budget, without re-embedding.
+- The spec page lists up to 8 neighbours under Related, strongest kind first
+  (overlaps, then shares files, then similar), each with its reason in words.
+  `GET /api/specs/[id]/nearby` returns the same list and, for a spec with no
+  parent, a suggested parent: the closest product or area by meaning, else
+  the parent of the closest spec that has one. A suggestion is only offered.
+- Exact derived edges, rebuilt with each approval and each refresh, under
+  `living_spec:derived:<name>`: each criterion of the approved revision
+  (`spec_criterion`, key `<specId>@<revision>#<id>`) `part_of` the revision
+  (`criterion`); a criterion `relates_to` each task pinned to the revision
+  that answers for it (`answers_for`, its scope else all), and `outcome_of`
+  that task when its newest verdict on the criterion is a pass (`verified`;
+  the head is on the criterion entity's `verified`); the revision
+  `references` its artifact design (`built_to`); the spec `references` each
+  file its work changed (`implemented_in:pr_files` or
+  `implemented_in:path_manifest`, weighted lower); and the spec `relates_to`
+  each neighbour at its strongest score (`neighbour`).
+
+**Acceptance criteria**:
+- AC-50: GIVEN a product spec with a child and a feature with no parent WHEN
+  the list renders THEN the product heads its own group and the feature is
+  under Unfiled; with no product or area every spec is Unfiled
+  (`apps/web/src/components/SpecList.dom.test.tsx`).
+- AC-51: GIVEN two approved specs whose pinned tasks changed the same file
+  WHEN either is refreshed THEN each lists the other as `shares_files`, from
+  merged-PR files when the ingest recorded them; WHEN the work stops sharing
+  the file and it is refreshed again THEN the row is gone
+  (`apps/web/tests/db/spec-neighbours.test.ts`).
+- AC-56: GIVEN an approved spec Jev judges to overlap another WHEN the second
+  is approved THEN both list each other as `overlaps`, the check left the
+  spec itself out, and a later check that did not run keeps the rows
+  (`apps/web/tests/db/spec-neighbours.test.ts`).
+- AC-52: GIVEN `overlaps` rows written for one side WHEN either spec's
+  neighbours are read THEN the overlap shows first, naming its criteria the
+  right way round, and a neighbour recompute leaves it in place
+  (`apps/web/tests/db/spec-neighbours.test.ts`).
+- AC-53: GIVEN a scoped task with a pass on one criterion, a design and
+  changed files WHEN the spec is refreshed THEN the derived edges are exactly
+  the criterion, answers_for, verified, built_to and implemented_in edges, and
+  a second refresh writes the same set
+  (`apps/web/tests/db/spec-neighbours.test.ts`,
+  `packages/core/__tests__/living-spec-knowledge.test.ts`).
+- AC-54: GIVEN the neighbour computation throwing WHEN a person approves THEN
+  the spec is approved and new work pins to that revision
+  (`apps/web/tests/db/spec-neighbours.test.ts`).
+- AC-55: GIVEN neighbours WHEN the spec page renders THEN each shows its
+  title, link and reason, strongest kind first; with none, no Nearby list
+  (`apps/web/src/components/SpecPage.dom.test.tsx`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/neighbours.ts` — `computeSpecNeighbours`, `replaceSpecNeighbours`, `readSpecNeighbours`, `suggestParent`, `specFiles`
+- `apps/web/src/lib/specs/knowledge.ts` — `refreshSpecDerived`, `refreshAllSpecDerived`
+- `packages/core/knowledge-store/living-spec.ts` — `buildLivingSpecGraph` (`derived`)
+- `apps/web/src/app/api/specs/[specId]/nearby/route.ts` — `GET`
+- `apps/web/src/lib/specs/page-view.ts` — `specGroups`
+
+**Not yet**:
+- `similar` is lexical wherever no embedder key is configured, and lexical
+  scores are not comparable to cosine, so it has no floor there.
+

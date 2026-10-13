@@ -42,6 +42,7 @@ import {
   type TaskAreaConfig,
   type TaskAreaPredictionResult,
 } from './task-area-prediction';
+import { sqlWhere } from './db/relational-sql';
 
 /** The slice of the knowledge store this needs, so tests can stub it. */
 export interface TaskAreaQuerier {
@@ -91,7 +92,7 @@ export async function loadTaskAreaConfig(): Promise<TaskAreaConfig> {
   let row: Record<string, unknown> | null = null;
   try {
     const found = await db.query.systemCache.findFirst({
-      where: eq(systemCache.key, TASK_AREA_CONFIG_CACHE_KEY),
+      where: sqlWhere(eq(systemCache.key, TASK_AREA_CONFIG_CACHE_KEY)),
     });
     const value = found?.value;
     if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -190,7 +191,7 @@ export async function fetchNeighbourPaths(
 
   if (args.config.pathSource === 'manifest') {
     const rows = await db.query.tasks.findMany({
-      where: inArray(tasks.id, [...neighbourIds]),
+      where: sqlWhere(inArray(tasks.id, [...neighbourIds])),
       columns: { id: true, pathManifest: true },
     });
     for (const row of rows) {

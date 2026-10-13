@@ -425,6 +425,8 @@ mock.module('@/lib/subscriptions', () => ({
 const mockRecordTaskOutcome = mock((_input: any) => Promise.resolve(true));
 const mockRecordRunnerOutcome = mock(async (_outcome: string) => {});
 mock.module('@buildd/core/runner-health', () => ({ recordRunnerOutcome: mockRecordRunnerOutcome }));
+const mockRecordRootCauseForOutcome = mock(async (_input: any) => {});
+mock.module('@/lib/root-cause-record', () => ({ recordRootCauseForOutcome: mockRecordRootCauseForOutcome }));
 // The message queue writes are single SQL statements now, so a mocked db has
 // no resulting array to inspect. Mock the queue module instead and assert the
 // calls — which is also what the route's contract actually is.
@@ -17727,6 +17729,16 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(runnerOutcomes()).toEqual(['completed']);
     expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]]);
     expect(evidenceWrites()).toHaveLength(1);
+  });
+
+  it('root causes hear the outcome with the worker\'s runner: a failure to record, a completion to verify', async () => {
+    setup();
+    mockRecordRootCauseForOutcome.mockClear();
+    releaseReturns({ status: 'completed', message: 'Released to main' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(mockRecordRootCauseForOutcome.mock.calls.map(c => c[0])).toEqual([
+      { taskId: 'task-1', accountId: 'account-1', status: 'completed', error: undefined },
+    ]);
   });
 });
 

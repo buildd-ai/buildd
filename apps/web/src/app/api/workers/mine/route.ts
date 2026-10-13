@@ -6,6 +6,7 @@ import { workers } from '@buildd/core/db/schema';
 import { eq, and, inArray, sql } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { claimingUserId } from '@/lib/worker-owner';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // GET /api/workers/mine - List workers for the authenticated account
 // Query params:
@@ -37,8 +38,8 @@ export async function GET(req: NextRequest) {
   }
 
   const myWorkers = await db.query.workers.findMany({
-    where: and(...conditions),
-    orderBy: (workers, { desc }) => [desc(workers.createdAt)],
+    where: sqlWhere(and(...conditions)),
+    orderBy: sqlOrderByFn((workers, { desc }) => [desc(workers.createdAt)]),
     columns: {
       id: true,
       taskId: true,

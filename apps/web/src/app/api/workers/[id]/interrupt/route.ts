@@ -19,6 +19,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,7 +57,7 @@ export async function POST(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, taskId: true, workspaceId: true, status: true },
   });
 
@@ -74,7 +75,7 @@ export async function POST(
   }
 
   const reviewerTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, worker.taskId),
+    where: sqlWhere(eq(tasks.id, worker.taskId)),
     columns: { id: true, category: true, context: true, workspaceId: true, deliveryId: true, deliveryRole: true },
   });
 
@@ -165,7 +166,7 @@ export async function POST(
   // the human queue with a clear reason ("Agent review interrupted").
   if (originalTaskId && !kernelRound) {
     const originalTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, originalTaskId),
+      where: sqlWhere(eq(tasks.id, originalTaskId)),
       columns: { missionId: true },
     });
 

@@ -13,7 +13,7 @@ process.env.AUTH_SECRET ||= 'spec-knowledge-test-secret';
 delete process.env.VOYAGE_API_KEY; // lexical-only store: no network
 
 const { createSpecDraft, reviseSpecDraft } = await import('../../src/lib/specs/store');
-const { approveSpecRevision } = await import('../../src/lib/specs/approval');
+const { approveSpecRevision, specApprovalDeps } = await import('../../src/lib/specs/approval');
 const { specKnowledgeDeps } = await import('../../src/lib/specs/knowledge');
 const { PgVectorStore, buildNamespace } = await import('@buildd/core/knowledge-store');
 
@@ -48,11 +48,24 @@ async function draft(title: string, body: string, parentSpecId?: string) {
 /** Repo refs are checked against GitHub on write; set them directly to stay offline. */
 const setRefs = (specId: string, revision: number, refs: unknown[]) =>
   q(sql`UPDATE spec_revisions SET repo_refs = ${JSON.stringify(refs)}::jsonb WHERE spec_id = ${specId}::uuid AND revision = ${revision}`);
+/** Indexing runs after the response (`after()` in a request); here, run what the approval scheduled and wait for it. */
 async function approve(specId: string) {
   const [s] = await q<{ version: number; head_revision: number }>(sql`SELECT version, head_revision FROM specs WHERE id = ${specId}::uuid`);
-  const r = await approveSpecRevision(user(admin), specId, { revision: s.head_revision, expectedVersion: s.version });
-  if (!r.ok || 'pending' in r) throw new Error(JSON.stringify(r));
-  return r;
+  const scheduled: Array<() => Promise<unknown>> = [];
+  const realAfter = specApprovalDeps.afterResponse;
+  specApprovalDeps.afterResponse = task => { scheduled.push(task); };
+  try {
+    const r = await approveSpecRevision(user(admin), specId, { revision: s.head_revision, expectedVersion: s.version });
+    if (!r.ok || 'pending' in r) throw new Error(JSON.stringify(r));
+    // The approval has committed before anything it scheduled runs.
+    const [committed] = await q<{ approved_revision: number }>(sql`SELECT approved_revision FROM specs WHERE id = ${specId}::uuid`);
+    expect(committed.approved_revision).toBe(s.head_revision);
+    expect(scheduled.length).toBe(1);
+    for (const task of scheduled) await task();
+    return r;
+  } finally {
+    specApprovalDeps.afterResponse = realAfter;
+  }
 }
 const chunks = (specId: string) => q<{ source_id: string; content: string; source_path: string | null; source_url: string | null; metadata: any }>(sql`
   SELECT source_id, content, source_path, source_url, metadata FROM knowledge_chunks
@@ -61,6 +74,8 @@ const edges = (specId: string) => q<{ edge: string }>(sql`
   SELECT f.kind || ':' || f.key || ' -' || e.type || '-> ' || t.kind || ':' || t.key AS edge
   FROM knowledge_edges e JOIN knowledge_entities f ON f.id = e.from_entity_id JOIN knowledge_entities t ON t.id = e.to_entity_id
   WHERE e.workspace_id = ${ws} AND ((f.kind = 'spec' AND f.key = ${specId}) OR (f.kind = 'spec_revision' AND starts_with(f.key, ${`${specId}@`})))
+    -- The stored graph only: derived edges (§14) have their own test, tests/db/spec-neighbours.test.ts.
+    AND NOT starts_with(e.rule, 'living_spec:derived:')
   ORDER BY 1`).then(rows => rows.map(r => r.edge));
 
 describe('approval indexes the approved text', () => {

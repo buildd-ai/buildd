@@ -130,6 +130,8 @@ export function affordanceFor(
     case 'dependency':
       return { kind: 'internal', label: 'Open the upstream mission', href: `/app/missions/${focus.missionId}` };
     case 'human_decision':
+      // A worker's question is answered on its task, from the task sheet.
+      return focus.question ? taskAffordance('Answer the question', focus.question.taskIds[0], ctx.missionId) : null;
     case 'self_resolving_wait':
       return null;
   }

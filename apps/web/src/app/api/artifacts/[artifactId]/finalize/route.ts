@@ -6,6 +6,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorker, taskScopeAllowsWor
 import { isStorageConfigured } from '@/lib/storage';
 import { finalizeArtifactUpload } from '@/lib/artifact-upload';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/artifacts/[artifactId]/finalize { sha256? } — after the PUT to the
@@ -21,7 +22,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ art
   if (!isUuid(artifactId)) return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
   if (!isStorageConfigured()) return NextResponse.json({ error: 'Storage not configured' }, { status: 503 });
 
-  const artifact = await db.query.artifacts.findFirst({ where: eq(artifacts.id, artifactId), with: { worker: true } });
+  const artifact = await db.query.artifacts.findFirst({ where: sqlWhere(eq(artifacts.id, artifactId)), with: { worker: true } });
   if (!artifact || !taskScopeAllowsWorkspace(account, artifact.workspaceId ?? artifact.worker?.workspaceId ?? null)) {
     return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
   }

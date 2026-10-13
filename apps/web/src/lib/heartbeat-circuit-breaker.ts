@@ -24,6 +24,7 @@ import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { isDiedEarly, normalizeErrorSignature } from './failure-analytics';
 import { notifyTeamOf } from './notify';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Consecutive died-early heartbeat failures before the breaker trips. */
 export const HEARTBEAT_BREAKER_THRESHOLD = 3;
@@ -57,18 +58,18 @@ export async function evaluateHeartbeatCircuitBreaker(
   input: HeartbeatBreakerCheckInput,
 ): Promise<HeartbeatBreakerSignal> {
   const recent = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, input.missionId),
       eq(tasks.scheduleId, input.scheduleId),
       ...(input.heartbeatBreakerTrippedAt ? [gt(tasks.createdAt, input.heartbeatBreakerTrippedAt)] : []),
-    ),
+    )),
     columns: { id: true, status: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: HEARTBEAT_BREAKER_THRESHOLD,
     with: {
       workers: {
         columns: { status: true, turns: true, costUsd: true, error: true },
-        orderBy: (w, { desc: d }) => [d(w.startedAt)],
+        orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]),
         limit: 1,
       },
     },
@@ -278,18 +279,18 @@ export async function evaluateHeartbeatPlanningBackoff(
   now: Date = new Date(),
 ): Promise<HeartbeatPlanningBackoff> {
   const recent = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, input.missionId),
       eq(tasks.scheduleId, input.scheduleId),
       ...(input.heartbeatBreakerTrippedAt ? [gt(tasks.createdAt, input.heartbeatBreakerTrippedAt)] : []),
-    ),
+    )),
     columns: { id: true, status: true, createdAt: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: PLANNING_BACKOFF_LOOKBACK,
     with: {
       workers: {
         columns: { completedAt: true, exitCause: true, error: true, rejectedCompletionPayload: true },
-        orderBy: (w, { desc: d }) => [d(w.startedAt)],
+        orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]),
         limit: 1,
       },
     },
@@ -344,11 +345,11 @@ export async function applyHeartbeatPlanningBackoff(input: {
   const body = planningBackoffNoteBody(input.backoff);
   try {
     const existing = await db.query.missionNotes.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(missionNotes.missionId, input.missionId),
         inArray(missionNotes.title, PLANNING_BACKOFF_NOTE_TITLES),
         eq(missionNotes.status, 'open'),
-      ),
+      )),
       columns: { id: true, body: true },
     });
     if (existing) {

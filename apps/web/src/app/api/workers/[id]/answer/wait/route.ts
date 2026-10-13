@@ -34,6 +34,7 @@ import {
   verifyAnswerWaitCapability,
   type AnswerWaitStatus,
 } from '@/lib/answer-wait-capability';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -66,11 +67,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const untilExpiry = Math.max(0, (cap.expiresAt - Date.now()) / 1000);
   const waitSeconds = Math.min(clampAwaitSeconds(body.waitSeconds), untilExpiry);
 
-  const loadWorker = () => db.query.workers.findFirst({ where: eq(workers.id, id), columns: WORKER_COLUMNS });
+  const loadWorker = () => db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)), columns: WORKER_COLUMNS });
   const readStatus = async (row: Awaited<ReturnType<typeof loadWorker>>): Promise<AnswerWaitStatus | null> => {
     if (!row) return null;
     const taskContext = row.taskId
-      ? (await db.query.tasks.findFirst({ where: eq(tasks.id, row.taskId), columns: { context: true } }))?.context ?? null
+      ? (await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, row.taskId)), columns: { context: true } }))?.context ?? null
       : null;
     return answerWaitStatus({ worker: row, taskContext, askId: cap.askId });
   };

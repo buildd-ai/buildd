@@ -17,6 +17,7 @@
 import { db } from '@buildd/core/db';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { mergeDelegationGrants, readScheduleDelegation, type ScheduleDelegationGrant } from '@buildd/core/token-delegation';
+import { sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 interface DelegatedTaskRow {
   id: string;
@@ -33,7 +34,7 @@ export async function loadRawTaskGrants(task: DelegatedTaskRow): Promise<Schedul
   let grants = readScheduleDelegation(task.delegation);
   if (task.scheduleId) {
     const schedule = await db.query.taskSchedules.findFirst({
-      where: (s, { eq: eqOp }) => eqOp(s.id, task.scheduleId!),
+      where: { RAW: sqlWhereFn((s, { eq: eqOp }) => eqOp(s.id, task.scheduleId!)) },
       columns: { workspaceId: true, delegation: true },
     });
     if (schedule && schedule.workspaceId === task.workspaceId) {
@@ -46,7 +47,7 @@ export async function loadRawTaskGrants(task: DelegatedTaskRow): Promise<Schedul
 export async function teamsOf(ids: string[]): Promise<Map<string, string | null>> {
   if (!ids.length) return new Map();
   const rows = await db.query.workspaces.findMany({
-    where: (w, { inArray: inArrayOp }) => inArrayOp(w.id, [...new Set(ids)]),
+    where: { RAW: sqlWhereFn((w, { inArray: inArrayOp }) => inArrayOp(w.id, [...new Set(ids)])) },
     columns: { id: true, teamId: true },
   });
   return new Map(rows.map(r => [r.id, r.teamId ?? null]));
@@ -66,7 +67,7 @@ export async function loadTokenDelegations(
 ): Promise<ScheduleDelegationGrant[]> {
   try {
     const task = await db.query.tasks.findFirst({
-      where: (t, { eq: eqOp }) => eqOp(t.id, taskId),
+      where: { RAW: sqlWhereFn((t, { eq: eqOp }) => eqOp(t.id, taskId)) },
       columns: { id: true, workspaceId: true, scheduleId: true, delegation: true },
     });
     if (!task || task.workspaceId !== workspaceId) return [];

@@ -22,6 +22,7 @@
  */
 import { sql, eq, type SQL } from 'drizzle-orm';
 import { tasks } from '@buildd/core/db/schema';
+import { sqlOrderByFn } from '@buildd/core/db/relational-sql';
 
 // ── The relational query ─────────────────────────────────────────────────────
 
@@ -124,11 +125,11 @@ export const MISSION_TASK_COLUMNS = {
 /** `mission.tasks` for the detail page: newest first, three workers each, five artifacts per worker. */
 export const MISSION_TASKS_WITH = {
   columns: MISSION_TASK_COLUMNS,
-  orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
+  orderBy: sqlOrderByFn((t: any, { desc }: any) => [desc(t.createdAt)]),
   with: {
     workers: {
       columns: MISSION_WORKER_COLUMNS,
-      orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
+      orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt)]),
       limit: 3,
       with: {
         artifacts: {

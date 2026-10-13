@@ -31,6 +31,7 @@ import { applyCommand, loadView, type Exec } from './kernel';
 import { ingestFact } from './facts';
 import { githubReader, workspaceRepo } from './github-facts';
 import { prUrlOf } from './pr-fact-effects';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -162,8 +163,8 @@ const emitPrMerged: EffectHandler = async (e) => {
   // Scoped to the delivery's workspace: another workspace on the same repo can carry a worker row
   // with this PR number and url, and the merge must never complete that workspace's task.
   const owner = await db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, d.workspaceId), workerOwnsPr(d.repoFullName, d.prNumber)),
-    orderBy: (w, { asc }) => [asc(w.createdAt)],
+    where: sqlWhere(and(eq(workers.workspaceId, d.workspaceId), workerOwnsPr(d.repoFullName, d.prNumber))),
+    orderBy: sqlOrderByFn((w, { asc }) => [asc(w.createdAt)]),
     with: { task: true },
   });
   if (!owner) return { outcome: 'skipped:no_worker' };
@@ -197,7 +198,7 @@ const emitPrMerged: EffectHandler = async (e) => {
 const finalizeMissionPr: EffectHandler = async (e) => {
   const d = (await loadView({ deliveryId: e.deliveryId }, dbExec)).delivery;
   if (!d?.repoFullName || d.state !== 'MERGED') return { outcome: `skipped:state_${d?.state ?? 'none'}` };
-  const task = await db.query.tasks.findFirst({ where: eq(tasks.id, d.ownerTaskId), columns: { title: true, taskClass: true, missionId: true } });
+  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, d.ownerTaskId)), columns: { title: true, taskClass: true, missionId: true } });
   const repo = await workspaceRepo(d.workspaceId);
   if (!repo) throw new Error('no GitHub installation for the workspace');
   // Deletes the mission branch after the mission PR ships, whichever door (or a person on GitHub) merged it.

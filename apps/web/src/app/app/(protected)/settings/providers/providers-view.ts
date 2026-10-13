@@ -95,14 +95,32 @@ export function usedFor(surfaces: readonly ProviderSurfaceId[]): string {
   return surfaces.length ? `Used for ${surfaceList(surfaces)}.` : 'Not used by anything.';
 }
 
-export type RowState = { word: 'Needs attention' | 'Working' | 'Set' | 'Team key' | 'Not set up'; tone: 'error' | 'success' | 'muted' };
+export type RowState = { word: 'Needs attention' | 'Working' | 'Set' | `${string}'s key` | 'Team key' | 'Not set up'; tone: 'error' | 'success' | 'muted' };
+
+/** "Acme's key": an inherited row names the team it comes from. "Team key" when the name is unknown. */
+export function teamKeyWord(teamName?: string | null): RowState['word'] {
+  const name = teamName?.trim();
+  return name ? `${name}'s key` : 'Team key';
+}
+
+/** "Uses Acme's settings.": a workspace with nothing of its own. */
+export function usesTeamLine(teamName?: string | null): string {
+  const name = teamName?.trim();
+  return name ? `Uses ${name}'s settings.` : 'Uses team settings.';
+}
+
+/** "Providers · Acme" for someone in more than one team, so a "Not set" says whose; "Providers" otherwise. */
+export function providersTitle(data: Pick<ListProvidersResponse, 'teamName' | 'teamCount'> | null): string {
+  const name = data?.teamName?.trim();
+  return name && (data?.teamCount ?? 1) > 1 ? `Providers · ${name}` : 'Providers';
+}
 
 /** The one status word on a provider row. */
-export function rowState(rows: readonly ProviderCredentialSummary[], inherited: readonly ProviderCredentialSummary[], closed: string | null): RowState {
+export function rowState(rows: readonly ProviderCredentialSummary[], inherited: readonly ProviderCredentialSummary[], closed: string | null, teamName?: string | null): RowState {
   if (rows.some((r) => r.health === 'revoked' || r.lastVerificationError)) return { word: 'Needs attention', tone: 'error' };
   if (rows.some((r) => r.health === 'healthy')) return { word: 'Working', tone: 'success' };
   if (rows.length > 0) return { word: 'Set', tone: 'muted' };
-  if (inherited.length > 0) return { word: 'Team key', tone: 'muted' };
+  if (inherited.length > 0) return { word: teamKeyWord(teamName), tone: 'muted' };
   if (closed) return { word: 'Not set up', tone: 'muted' };
   return { word: 'Not set up', tone: 'muted' };
 }

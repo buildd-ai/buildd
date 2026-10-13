@@ -2,6 +2,9 @@ import { db } from '@buildd/core/db';
 import { specRevisions, specs, workers } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
+import { readPinnedSpecRevision } from './pin';
+import { specCriteria } from '@buildd/spec-contract/requirements';
+import { scopeOf } from '@buildd/spec-contract/scope';
 
 /**
  * Pinning at claim (task 5c0a3f4c). Filing pins the approved revision
@@ -56,6 +59,17 @@ export async function repinSpecAtClaim(task: {
   }
   if (row.revId === src.specRevisionId && row.contentHash === src.contentHash) {
     return { specSource: null, reason: 'already pinned to the approved revision' };
+  }
+  // A task scoped to some criteria moves only when the new revision still has
+  // every one of them; otherwise it keeps the revision those ids came from.
+  const scope = scopeOf(src);
+  if (scope) {
+    const read = await readPinnedSpecRevision({ specId, specRevisionId: row.revId, contentHash: row.contentHash });
+    const ids = read.ok ? new Set(specCriteria(read.body).map((c) => c.id)) : null;
+    const missing = ids ? scope.filter((id) => !ids.has(id)) : scope;
+    if (missing.length > 0) {
+      return { specSource: null, reason: `approved revision ${row.revision} ${read.ok ? `no longer has ${missing.join(', ')}` : 'could not be read'}; the task keeps revision ${String(src.revision)}` };
+    }
   }
   return {
     specSource: {

@@ -14,6 +14,7 @@ import { getUserTeamIds, getUserTeamRole, resolveActiveTeamId } from '@/lib/team
 import type { TurnUser } from './turn';
 import { isStandardWorkspace } from './reach';
 import { workspaceHint, workspaceTerms, type RoutableWorkspace } from './routing';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type ChatCaller = { user: CurrentUser; teamIds: string[] };
 
@@ -32,7 +33,7 @@ export async function resolveChatTeam(req: NextRequest, caller: ChatCaller, requ
 
 export async function loadTeamChatSettings(teamId: string) {
   const team = await db.query.teams.findFirst({
-    where: eq(teams.id, teamId),
+    where: sqlWhere(eq(teams.id, teamId)),
     columns: {
       timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true, credentialPolicy: true,
       inferenceFeatureModes: true, decisionModel: true,
@@ -68,7 +69,7 @@ export async function turnUserFor(user: CurrentUser, teamId: string, teamTimezon
 export async function isSensitiveWorkspace(workspaceId: string): Promise<boolean> {
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { dataClass: true, gitConfig: true },
     });
     return !ws || !isStandardWorkspace(ws);
@@ -80,7 +81,7 @@ export async function isSensitiveWorkspace(workspaceId: string): Promise<boolean
 export async function workspaceForConversation(workspaceId: string | null, teamId: string) {
   if (!workspaceId) return null;
   const ws = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, teamId)),
+    where: sqlWhere(and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, teamId))),
     columns: { id: true, name: true },
   });
   return ws ?? null;

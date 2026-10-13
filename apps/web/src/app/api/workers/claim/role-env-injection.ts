@@ -40,6 +40,7 @@ import type { ClaimTasksResponse } from '@buildd/shared';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { loadRoleCandidateRows, resolveRoleRow } from './skill-and-role-injection';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The claim-candidate rows this block looks tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -138,11 +139,11 @@ export async function attachRoleEnvSecrets(
 
       const labels = [...new Set([...Object.values(mapping), ...envNames])];
       const rows = await db.query.secrets.findMany({
-        where: teamCredentialWhere(
+        where: sqlWhere(teamCredentialWhere(
           { teamId, purpose: ENV_DELIVERING_PURPOSES, label: labels },
           or(isNull(secrets.accountId), eq(secrets.accountId, accountId)),
           or(isNull(secrets.workspaceId), eq(secrets.workspaceId, wsId)),
-        ),
+        )),
         columns: { id: true, label: true, purpose: true, accountId: true, workspaceId: true, updatedAt: true },
       }) as SecretRow[];
       const bestByLabel = pickBestPerLabel(rows.filter(isRoleEnvRow));
@@ -223,10 +224,10 @@ export async function runRoleEnvPreFilter(
     const teamIds = [...new Set(needy.map(p => p.teamId))];
     const labels = [...new Set(needy.flatMap(p => [...Object.values(p.mapping), ...Object.keys(p.mapping)]))];
     const rows = await db.query.secrets.findMany({
-      where: teamCredentialWhere(
+      where: sqlWhere(teamCredentialWhere(
         { teamId: teamIds, purpose: ENV_DELIVERING_PURPOSES, label: labels },
         or(isNull(secrets.accountId), eq(secrets.accountId, accountId)),
-      ),
+      )),
       columns: { id: true, label: true, purpose: true, accountId: true, workspaceId: true, updatedAt: true, teamId: true },
     }) as Array<SecretRow & { teamId?: string }>;
 

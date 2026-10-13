@@ -15,6 +15,7 @@ import { db } from '@buildd/core/db';
 import { evidenceObjects } from '@buildd/core/db/schema';
 import { and, desc, eq, or } from 'drizzle-orm';
 import { auditEvidenceRead, type EvidenceActor } from '@/lib/evidence-audit';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const INLINE_EVIDENCE_LIMIT = 20;
 
@@ -44,11 +45,11 @@ export async function loadInlineEvidence(
   let list: InlineEvidenceObject[];
   try {
     const rows = await db.query.evidenceObjects.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(evidenceObjects.workspaceId, workspaceId),
         or(eq(evidenceObjects.taskId, taskId), eq(evidenceObjects.rootTaskId, taskId)),
-      ),
-      orderBy: [desc(evidenceObjects.createdAt)],
+      )),
+      orderBy: sqlOrderBy([desc(evidenceObjects.createdAt)]),
       limit: INLINE_EVIDENCE_LIMIT,
       columns: { id: true, taskId: true, kind: true, bytes: true, uploadState: true, createdAt: true },
     });

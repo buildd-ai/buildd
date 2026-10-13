@@ -292,11 +292,10 @@ describe('against the real repo', () => {
     expect(log).toContain('← imports packages/core/mcp-tools.ts');
   });
 
-  test('a new migration selects the journal tests', () => {
-    const { last } = runCli(['packages/core/drizzle/9999_new.sql', 'packages/core/drizzle/meta/_journal.json']);
-    const tests = last.split(' ');
-    expect(tests).toContain('packages/core/__tests__/migration-journal.test.ts');
-    expect(tests).toContain('packages/core/__tests__/migration-journal-ordering.test.ts');
+  test('a new migration runs everything: the tests that read the migrations tree name no migration folder', () => {
+    const { last, log } = runCli(['packages/core/drizzle/20261012120000_new/migration.sql', 'packages/core/drizzle/20261012120000_new/snapshot.json']);
+    expect(last).toBe('ALL');
+    expect(log).toContain('migrations tree is read whole');
   });
 
   test('the wrapper script still prints the same contract', () => {

@@ -6,10 +6,10 @@ import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { evaluateSoftOverlaps } from '@/app/api/workers/claim/soft-overlap-gate';
-import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+import { assertDbConfigured, legacyMigrationSql, q, seedTask, seedWorkspace } from './harness';
 
 // Read the shipped SQL, rather than mirroring the conversion in TypeScript.
-const migration = readFileSync(join(import.meta.dir, '../../../../packages/core/drizzle/0282_legacy_repair_overlap_edges.sql'), 'utf8');
+const migration = legacyMigrationSql('0282_legacy_repair_overlap_edges');
 const run = () => db.execute(sql.raw(migration));
 let workspaceId: string;
 beforeAll(async () => {

@@ -10,6 +10,7 @@ import { linkExternal } from '@buildd/core/external-links';
 import { parseLinearUrl, getConnectorAccessToken, linearGraphQL } from '@/lib/work-tracker';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Check if a mission is accessible: team match OR open-access workspace. */
 async function hasMissionAccess(
@@ -51,7 +52,7 @@ export async function POST(
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       columns: { id: true, teamId: true, workspaceId: true },
     });
 
@@ -73,7 +74,7 @@ export async function POST(
       );
     }
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, mission.workspaceId),
+      where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
       columns: { workTrackerConfig: true },
     });
     const config = ws?.workTrackerConfig;

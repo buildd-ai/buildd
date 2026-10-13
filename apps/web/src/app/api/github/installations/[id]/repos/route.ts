@@ -7,6 +7,7 @@ import { getInstallationAccessForUser } from '@/lib/github-installation-access';
 import { listInstallationRepos } from '@/lib/github';
 import { syncInstallationRepos } from '@/lib/github-repo-link';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(
   req: NextRequest,
@@ -32,7 +33,7 @@ export async function GET(
 
   try {
     const installation = await db.query.githubInstallations.findFirst({
-      where: eq(githubInstallations.id, id),
+      where: sqlWhere(eq(githubInstallations.id, id)),
     });
 
     if (!installation) {
@@ -50,7 +51,7 @@ export async function GET(
 
     // Get workspaces linked to repos from this installation to mark "already linked"
     const linkedWorkspaces = await db.query.workspaces.findMany({
-      where: eq(workspaces.githubInstallationId, id),
+      where: sqlWhere(eq(workspaces.githubInstallationId, id)),
       columns: { id: true, repo: true, githubRepoId: true },
     });
 
@@ -114,7 +115,7 @@ export async function POST(
 
   try {
     const installation = await db.query.githubInstallations.findFirst({
-      where: eq(githubInstallations.id, id),
+      where: sqlWhere(eq(githubInstallations.id, id)),
     });
     if (!installation) {
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 });

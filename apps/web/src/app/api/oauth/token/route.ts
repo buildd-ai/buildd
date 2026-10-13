@@ -15,6 +15,7 @@ import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { ensureTeamSessionAccount } from '@/lib/oauth/ensure-session-account';
 import { resourceMatchesBinding } from '@/lib/oauth/resource-binding';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +23,7 @@ export const dynamic = 'force-dynamic';
 async function ensureUserAccount(userId: string, workspaceId: string): Promise<void> {
   try {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { teamId: true },
     });
     if (workspace) await ensureTeamSessionAccount(userId, workspace.teamId);

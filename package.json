@@ -19,7 +19,7 @@
     "test:cleanup": "BUILDD_TEST_SERVER=${BUILDD_TEST_SERVER:-http://localhost:3000} bun run tests/cleanup.ts",
     "release": "bash scripts/release.sh",
     "release:hotfix": "bash scripts/release.sh --hotfix",
-    "release:finalize": "bash scripts/release.sh --finalize",
+    "release:candidate": "bun scripts/release-candidate.ts",
     "cleanup-branches": "bash scripts/release.sh --cleanup",
     "sync-dev": "bash scripts/sync-dev.sh",
     "cloud-runner:local": "bash apps/cloud-runner/scripts/local-e2e.sh",
@@ -62,10 +62,11 @@
     "cron:plan": "bun run scripts/sync-crons.ts --dry-run",
     "cron:sync": "bun run scripts/sync-crons.ts",
     "cron:check": "bun run scripts/sync-crons.ts --check",
-    "migrations:index-check": "bun packages/core/db/migration-index.ts check",
-    "migrations:renumber": "bun packages/core/db/migration-index.ts renumber",
+    "migrations:layout-check": "bun packages/core/db/migration-layout.ts check",
+    "migrations:regenerate": "bun packages/core/db/migration-layout.ts regenerate",
+    "migrations:commute": "bun packages/core/db/migration-layout.ts commute",
     "conflicts:generated": "bun run scripts/resolve-generated-conflicts.ts",
-    "migrations:lint": "bun test packages/core/__tests__/migration-journal-ordering.test.ts && bun test packages/core/__tests__/prod-build-runs-migrations.test.ts",
+    "migrations:lint": "bun test packages/core/__tests__/prod-build-runs-migrations.test.ts",
     "env:verify": "bun apps/runner/src/index.ts env verify",
     "prepare": "git config core.hooksPath .githooks || true"
   },
@@ -75,7 +76,7 @@
     "react-dom": "^19.0.0"
   },
   "overrides": {
-    "drizzle-orm": "0.45.4"
+    "drizzle-orm": "1.0.0-rc.4"
   },
   "devDependencies": {
     "@neondatabase/serverless": "^1.0.0",
@@ -85,8 +86,5 @@
     "playwright": "1.64.0",
     "typescript": "^6.0.0",
     "ws": "^8.19.0"
-  },
-  "patchedDependencies": {
-    "drizzle-kit@0.31.10": "patches/drizzle-kit@0.31.10.patch"
   }
 }

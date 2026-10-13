@@ -10,6 +10,7 @@ import { fetchLinearProgress, parseLinearUrl } from '@/lib/work-tracker';
 import type { TrackerProgressItem, TrackerProgressResponse } from '@/lib/tracker-progress-types';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Check if an initiative is accessible: team match OR open-access workspace. */
 async function hasInitiativeAccess(
@@ -29,7 +30,7 @@ type ChildMission = { id: string; title: string | null; teamId: string; workspac
 /** Default child-mission loader — the initiative's directly linked missions. */
 async function loadChildMissions(database: typeof db, initiativeId: string): Promise<ChildMission[]> {
   return database.query.missions.findMany({
-    where: eq(missions.initiativeId, initiativeId),
+    where: sqlWhere(eq(missions.initiativeId, initiativeId)),
     columns: { id: true, title: true, teamId: true, workspaceId: true },
   }) as unknown as Promise<ChildMission[]>;
 }
@@ -40,7 +41,7 @@ async function loadWorkspaceConnectorId(
   workspaceId: string,
 ): Promise<string | null> {
   const ws = await database.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { workTrackerConfig: true },
   });
   return ws?.workTrackerConfig?.provider === 'linear' ? ws.workTrackerConfig.connectorId ?? null : null;
@@ -148,7 +149,7 @@ export async function GET(
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     const initiative = await db.query.initiatives.findFirst({
-      where: eq(initiatives.id, id),
+      where: sqlWhere(eq(initiatives.id, id)),
       columns: { id: true, teamId: true, workspaceId: true },
     });
 

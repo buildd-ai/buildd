@@ -30,6 +30,7 @@ import type { EffectHandler, EffectHandlers } from './effects';
 import { loadView, type Exec } from './kernel';
 import { githubReader, workspaceRepo } from './github-facts';
 import { signatureChecks, trunkRecovered } from './trunk';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -98,7 +99,7 @@ const dispatchTrunkFix: EffectHandler = async (e) => {
   const runs = baseHead && reader.checkRuns ? await reader.checkRuns(inc.repo_full_name, baseHead) : null;
   if (runs?.complete && trunkRecovered(inc.signature, runs.failing)) return { outcome: 'skipped:trunk_green' };
 
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, inc.workspace_id) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, inc.workspace_id)) });
   if (!workspace) return { outcome: 'skipped:no_workspace' };
   const anchor = ((await dbExec(trunkFixAnchorSql(inc.id))).rows ?? [])[0] as { task_id: string; incident_id: string; fix_signature: string | null } | undefined;
   const taskId = String(anchor?.task_id ?? inc.id);

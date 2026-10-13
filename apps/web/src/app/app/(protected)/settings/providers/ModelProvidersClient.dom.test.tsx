@@ -31,6 +31,7 @@ const WORKSPACES = [{ id: 'ws-a', name: 'Workspace A' }, { id: 'ws-b', name: 'Wo
 let opts: FixtureOpts = {};
 let assigned: Record<string, unknown> = {};
 let withKeys: string[] = [];
+let team: { teamName?: string | null; teamCount?: number } = {};
 const calls: { url: string; method: string; body: Record<string, unknown> | null }[] = [];
 
 beforeEach(() => {
@@ -39,6 +40,7 @@ beforeEach(() => {
   calls.length = 0;
   assigned = {};
   withKeys = [];
+  team = {};
   globalThis.fetch = mock(async (input: string, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost');
     const method = init?.method ?? 'GET';
@@ -71,7 +73,7 @@ beforeEach(() => {
         opts = { ...opts, rows: (opts.rows ?? []).filter((r) => !(r.provider === p && r.scope === s)) };
         return Response.json({ provider: p, scope: s, workspaceId: null, credentials: [], deleted: 1 });
       }
-      return Response.json({ ...fixtureResponse({ ...opts, workspaceId: url.searchParams.get('workspaceId') }), workspacesWithKeys: withKeys });
+      return Response.json({ ...fixtureResponse({ ...opts, workspaceId: url.searchParams.get('workspaceId') }), workspacesWithKeys: withKeys, ...team });
     }
     if (url.pathname === '/api/teams/t/litellm-gateway') {
       const set = (opts.rows ?? []).some((r) => r.provider === 'litellm' && r.scope === 'team');
@@ -294,6 +296,25 @@ describe('one scope per page', () => {
     await type($('input[type="password"]', c) as HTMLInputElement, PASTED);
     await click(button(c, 'Save'));
     expect(calls.find((x) => x.method === 'PUT')!.body).toMatchObject({ provider: 'anthropic', scope: 'workspace', workspaceId: WORKSPACES[0].id, shape: 'api_key' });
+  });
+
+  it("a workspace page names the team it inherits from: Uses <team>'s settings, <team>'s key", async () => {
+    team = { teamName: 'Acme', teamCount: 2 };
+    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] }, false, WORKSPACES, 'workspace');
+    expect($('[data-testid="workspace-uses-team"]')!.textContent).toContain("Uses Acme's settings.");
+    await click(button(host, 'Override')!);
+    expect($('[data-testid="provider-card-state"]', cardOf('claude', 'workspace'))!.textContent).toBe("Acme's key");
+  });
+
+  it('the Models heading names the team only for someone in more than one', async () => {
+    team = { teamName: 'Acme', teamCount: 2 };
+    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] });
+    expect(host.textContent).toContain('Providers · Acme');
+    act(() => root.unmount()); host.remove();
+    team = { teamName: 'Acme', teamCount: 1 };
+    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] });
+    expect(host.textContent).not.toContain('Providers · Acme');
+    expect(host.textContent).toContain('Providers');
   });
 
   it('a workspace page with its own key lists it straight away', async () => {

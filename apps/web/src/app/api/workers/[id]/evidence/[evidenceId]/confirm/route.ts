@@ -7,6 +7,7 @@ import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { callerOwnsWorker } from '@/lib/worker-owner';
 import { confirmEvidenceUpload } from '@/lib/evidence-confirm';
 import type { EvidenceObjectRow } from '@/lib/evidence-read';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/workers/[id]/evidence/[evidenceId]/confirm
@@ -46,7 +47,7 @@ export async function POST(
 
   try {
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, id),
+      where: sqlWhere(eq(workers.id, id)),
       columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true },
       with: { workspace: { columns: { teamId: true } } },
     });
@@ -61,7 +62,7 @@ export async function POST(
     }
 
     const row = (await db.query.evidenceObjects.findFirst({
-      where: and(eq(evidenceObjects.id, evidenceId), eq(evidenceObjects.workerId, worker.id)),
+      where: sqlWhere(and(eq(evidenceObjects.id, evidenceId), eq(evidenceObjects.workerId, worker.id))),
     })) as EvidenceObjectRow | undefined;
     // Checked on the row too: the predicate is the scope, this is the proof.
     if (!row || row.id !== evidenceId || row.workerId !== worker.id) {

@@ -17,9 +17,9 @@ describe('buildStateBecause', () => {
     const open = { id: 'rev-1', title: 'Review PR #1', status: 'pending', runnerClaimable: true };
     const view = deriveMissionStateView({ ...base, executor: 'local', openTasks: [{ id: 'rev-1', status: 'pending', title: 'Review PR #1' }] });
     const chain = buildStateBecause(view, { missionId: 'm', workspaceId: 'ws' }, { openTasks: [open] });
-    expect(chain.map(l => l.claim).join('\n')).not.toContain('runners never pick up');
+    expect(chain.map(l => l.claim).join('\n')).not.toContain('Claim it from a local session');
     const plain = buildStateBecause(view, { missionId: 'm', workspaceId: 'ws' }, { openTasks: [{ ...open, runnerClaimable: false }] });
-    expect(plain.map(l => l.claim).join('\n')).toContain('runners never pick up');
+    expect(plain.map(l => l.claim).join('\n')).toContain('Claim it from a local session');
   });
 
   it('ends on the state and carries the mission ref on every link', () => {
@@ -65,12 +65,12 @@ describe('buildStateBecause', () => {
 
       const liveLink = chain.find(l => l.refs.taskId === 'task-live');
       expect(liveLink).toBeDefined();
-      expect(liveLink!.claim).not.toContain('no live worker');
-      expect(liveLink!.claim).toContain('Build the page');
+      expect(liveLink!.claim).not.toMatch(/waiting for a runner|nothing is running it/);
+      expect(liveLink!.claim).toBe('"Build the page" is in progress.');
       // The row without a worker is still named as such, and leads the chain —
       // it is the one worth a reader's attention.
       expect(chain[0].refs.taskId).toBe('task-queued');
-      expect(chain[0].claim).toContain('no live worker');
+      expect(chain[0].claim).toBe('"Write the docs" is waiting for a runner.');
     });
 
     it('does not claim "no live worker" when per-task liveness is unknown and agents are running', () => {
@@ -82,7 +82,7 @@ describe('buildStateBecause', () => {
       const chain = buildStateBecause(view, { missionId: 'm' }, {
         openTasks: [{ id: 'task-a', title: 'Build the page', status: 'in_progress' }],
       });
-      for (const l of chain) expect(l.claim).not.toContain('no live worker');
+      for (const l of chain) expect(l.claim).not.toMatch(/waiting for a runner|nothing is running it/);
     });
 
     it('still names a genuinely orphaned in_progress task', () => {
@@ -95,7 +95,7 @@ describe('buildStateBecause', () => {
         openTasks: [{ id: 'task-orphan', title: 'Build the page', status: 'in_progress', live: false }],
       });
       expect(chain[0].refs.taskId).toBe('task-orphan');
-      expect(chain[0].claim).toBe('Task "Build the page" is in_progress with no live worker.');
+      expect(chain[0].claim).toBe('"Build the page" was started, but nothing is running it now.');
     });
 
     it('names the unmet dependency, never "no live worker", for a dependency-blocked row', () => {
@@ -116,7 +116,7 @@ describe('buildStateBecause', () => {
       expect(chain[0].refs.taskId).toBe('task-first');
       const depLink = chain.find(l => l.claim.includes('Second step'));
       expect(depLink).toBeDefined();
-      expect(depLink!.claim).not.toContain('no live worker');
+      expect(depLink!.claim).not.toMatch(/waiting for a runner|nothing is running it/);
       expect(depLink!.claim).toContain('First step');
       expect(depLink!.refs.taskId).toBe('task-first');
     });
@@ -130,7 +130,7 @@ describe('buildStateBecause', () => {
       const chain = buildStateBecause(view, { missionId: 'm' }, {
         openTasks: [{ id: 'task-orphan', title: 'Build the page', status: 'in_progress' }],
       });
-      expect(chain[0].claim).toContain('no live worker');
+      expect(chain[0].claim).toContain('nothing is running it now');
     });
   });
 

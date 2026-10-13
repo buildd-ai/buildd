@@ -21,6 +21,7 @@ import { missions } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { isMissionBlocked } from '@/lib/mission-dependency';
 import type { LoopAction } from '@/lib/mission-loop';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type MissionWakeReason =
   | 'dependency_met'
@@ -74,7 +75,7 @@ export async function wakeMission(
 ): Promise<MissionWakeOutcome> {
   try {
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, missionId),
+      where: sqlWhere(eq(missions.id, missionId)),
       columns: {
         id: true,
         status: true,

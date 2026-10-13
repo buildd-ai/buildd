@@ -3,6 +3,7 @@ import { teams, users, workspaces, teamMembers } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { DEFAULT_TIMEZONE, isValidTimezone, resolveTimezone } from '@buildd/core/timezone';
 import { roleHas, TEAM_ROLES } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Timezone lookups. Two stored zones, no override chain — see
@@ -27,7 +28,7 @@ export async function getTeamTimezoneSetting(teamId: string | null | undefined):
   if (!teamId) return null;
   try {
     const team = await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       columns: { timezone: true },
     });
     return isValidTimezone(team?.timezone) ? team.timezone : null;
@@ -45,7 +46,7 @@ export async function getWorkspaceTimezone(workspaceId: string | null | undefine
   if (!workspaceId) return DEFAULT_TIMEZONE;
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { teamId: true },
     });
     return getTeamTimezone(ws?.teamId);
@@ -65,7 +66,7 @@ export async function getViewerTimezone(
   if (!userId) return getTeamTimezone(teamId);
   try {
     const user = await db.query.users.findFirst({
-      where: eq(users.id, userId),
+      where: sqlWhere(eq(users.id, userId)),
       columns: { timezone: true },
     });
     if (isValidTimezone(user?.timezone)) return user.timezone;

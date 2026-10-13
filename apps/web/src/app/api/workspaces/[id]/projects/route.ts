@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import type { WorkspaceProject } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
@@ -47,7 +48,7 @@ export async function GET(
 
     try {
         const workspace = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: { id: true, projects: true },
         });
 
@@ -143,7 +144,7 @@ export async function POST(
         }
 
         const workspace = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: { id: true, projects: true },
         });
 

@@ -8,7 +8,7 @@ describe('mission-list-executor fixture', () => {
     expect(cards.map(c => c.model.status.label)).toEqual([
       'Local', 'Local', 'Stranded', 'Stranded', 'Stalled', 'Held', 'In CI', 'Needs you',
     ]);
-    expect(cards[0].model.sentence).toContain('Waiting for a local session');
+    expect(cards[0].model.sentence).toContain('ready to start from a local session');
     expect(cards[5].model.kind).toBe('held');
   });
 

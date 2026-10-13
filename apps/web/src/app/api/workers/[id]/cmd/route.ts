@@ -10,6 +10,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { queueInstruction } from '@/lib/worker-instructions';
 import { pushInstructionDelivery } from '@/lib/worker-instruction-push';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/workers/[id]/cmd - Send command to worker via Pusher
 //
@@ -37,7 +38,7 @@ export async function POST(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     with: { workspace: true },
   });
 

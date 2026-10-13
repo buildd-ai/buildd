@@ -27,6 +27,7 @@ import {
   type MemoryState,
   type MemorySourceKind,
 } from './memory-candidates';
+import { sqlOrderBy, sqlWhere } from './db/relational-sql';
 
 // ── Types (same shape as the former HTTP client) ──────────────────────────────
 
@@ -153,15 +154,15 @@ export class MemoryStore {
     // because the same project was stored as both a URL and a short name.
     const scope = normalizeProject(project);
     const rows = await db.query.memories.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(memories.teamId, this.teamId),
         ...(scope ? [eq(memories.project, scope)] : []),
         // A memory recorded as replaced is not current knowledge.
         isNull(memories.supersededBy),
         // Always-loaded context is a push: active memories only.
         inArray(memories.state, [...PUSH_MEMORY_STATES]),
-      ),
-      orderBy: [desc(memories.updatedAt), desc(memories.id)],
+      )),
+      orderBy: sqlOrderBy([desc(memories.updatedAt), desc(memories.id)]),
       limit: MEMORY_CONTEXT_LIMIT,
     });
     return renderMemoryContext(rows);
@@ -278,7 +279,7 @@ export class MemoryStore {
     const [totalRes, rows] = await Promise.all([
       db.select({ total: dbCount() }).from(memories).where(where),
       db.query.memories.findMany({
-        where,
+        where: sqlWhere(where),
         // Best match first when there is a query, then recency. Without this a
         // row matching one token outranks a row matching five, purely because
         // it was touched more recently -- so the tokenisation would widen
@@ -288,11 +289,11 @@ export class MemoryStore {
         // id breaks ties: bulk-imported rows share an updatedAt, and without a
         // stable tiebreaker LIMIT/OFFSET pagination silently skips and repeats
         // rows -- which made backfill-knowledge-chunks miss ~30% of memories.
-        orderBy: [
+        orderBy: sqlOrderBy([
           ...(tokenMatchScore ? [desc(tokenMatchScore)] : []),
           desc(memories.updatedAt),
           desc(memories.id),
-        ],
+        ]),
         limit,
         offset,
       }),
@@ -321,7 +322,7 @@ export class MemoryStore {
     if (ids.length === 0) return { memories: [] };
 
     const rows = await db.query.memories.findMany({
-      where: and(eq(memories.teamId, this.teamId), inArray(memories.id, ids)),
+      where: sqlWhere(and(eq(memories.teamId, this.teamId), inArray(memories.id, ids))),
     });
 
     // Preserve caller's requested order
@@ -334,7 +335,7 @@ export class MemoryStore {
   /** Fetch a single memory by ID. */
   async get(id: string): Promise<{ memory: MemoryRecord }> {
     const row = await db.query.memories.findFirst({
-      where: and(eq(memories.id, id), eq(memories.teamId, this.teamId)),
+      where: sqlWhere(and(eq(memories.id, id), eq(memories.teamId, this.teamId))),
     });
     if (!row) throw new Error(`Memory not found: ${id}`);
     return { memory: toRecord(row) };
@@ -352,11 +353,11 @@ export class MemoryStore {
     const p = prefix.toLowerCase();
     if (!scope || !/^[0-9a-f]{8,}$/.test(p)) return [];
     const rows = await db.query.memories.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(memories.teamId, this.teamId),
         eq(memories.project, scope),
         sql`${memories.id}::text LIKE ${`${p}%`}`,
-      ),
+      )),
       limit,
     });
     return rows.map(toRecord);

@@ -33,6 +33,7 @@ import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { workerOwnsPr, workerOwnsPrUrl } from '@/lib/repo-scope';
 import { otherOpenPrsOfTask } from '@/lib/task-open-prs';
 import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface MergedPrTask {
   id: string;
@@ -75,7 +76,7 @@ async function afterOrNow(label: string, fn: () => Promise<void>): Promise<void>
 /** Work-tracker: post the completion comment and move the linked issue, when the task has one. */
 export async function maybePostWorkTrackerIssueUpdate(prNumber: number, prUrl: string, merged: boolean): Promise<void> {
   const worker = await db.query.workers.findFirst({
-    where: workerOwnsPrUrl(prUrl, prNumber),
+    where: sqlWhere(workerOwnsPrUrl(prUrl, prNumber)),
     with: { task: true },
   });
   const task = worker?.task;
@@ -83,7 +84,7 @@ export async function maybePostWorkTrackerIssueUpdate(prNumber: number, prUrl: s
   if (!task || (!task.externalIssueId && !task.externalIssueUrl)) return;
 
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, task.workspaceId),
+    where: sqlWhere(eq(workspaces.id, task.workspaceId)),
     columns: { workTrackerConfig: true, teamId: true },
   });
   if (!ws?.workTrackerConfig) return;
@@ -103,7 +104,7 @@ export async function maybePostWorkTrackerIssueUpdate(prNumber: number, prUrl: s
 /** The PR's worker row and its task, as both callers need them. */
 export async function loadMergedPrOwner(repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: workerOwnsPr(repoFullName, prNumber),
+    where: sqlWhere(workerOwnsPr(repoFullName, prNumber)),
     with: { task: true },
   });
 }

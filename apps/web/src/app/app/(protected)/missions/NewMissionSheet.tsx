@@ -5,6 +5,7 @@ import { isSystemWorkspace } from '@buildd/shared';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import UrlSheet from '@/components/UrlSheet';
 import NewMissionForm from './NewMissionForm';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The params that open the sheet and prefill it; closing drops them all.
@@ -24,15 +25,15 @@ export default async function NewMissionSheet({ userId, teamId }: { userId: stri
     ? [[], []]
     : await Promise.all([
       db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
+        where: sqlWhere(inArray(workspaces.id, wsIds)),
         columns: { id: true, name: true },
-        orderBy: [desc(workspaces.createdAt)],
+        orderBy: sqlOrderBy([desc(workspaces.createdAt)]),
       }),
       // Enabled roles across the user's workspaces.
       db.query.workspaceSkills.findMany({
-        where: and(inArray(workspaceSkills.workspaceId, wsIds), eq(workspaceSkills.enabled, true)),
+        where: sqlWhere(and(inArray(workspaceSkills.workspaceId, wsIds), eq(workspaceSkills.enabled, true))),
         columns: { slug: true, name: true, color: true, workspaceId: true },
-        orderBy: [desc(workspaceSkills.createdAt)],
+        orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
       }),
     ]);
 

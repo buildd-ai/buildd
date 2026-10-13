@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 interface Props {
   workspaceId: string;
@@ -26,6 +27,7 @@ export default function ConcurrencySection({ workspaceId, initialMaxConcurrentTa
   const [error, setError] = useState<string | null>(null);
 
   const dirty = value !== saved;
+  useWarnOnUnload(canEdit && dirty);
 
   async function save() {
     setSaving(true);

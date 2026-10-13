@@ -38,6 +38,7 @@ import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { performLandingAction } from '@/lib/landing-action-run';
 import { applyRecommendationThroughKernel, kernelDeliveryOfPr } from '@/lib/workflow/seam';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // A human choosing to apply a fix is a deliberate one-off, not another lap of
 // the bounded agent-only request-changes loop — it gets its own fresh budget
@@ -77,10 +78,10 @@ function buildApplyDescription(
 /** The reviewer's open escalation for a task, as the card shows it, or null. */
 async function openEscalation(taskId: string) {
   const notes = await db.query.missionNotes.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(missionNotes.taskId, taskId),
       inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
-    ),
+    )),
     columns: { taskId: true, type: true, body: true, title: true, status: true, createdAt: true },
   });
   return selectReviewerEvidence(notes).escalationMap.get(taskId) ?? null;
@@ -322,18 +323,18 @@ export async function POST(
     // a fix task for this exact (PR, headSha). Return the existing one instead
     // of erroring so a double-tap reads as success, not failure.
     const existing = await db.query.tasks.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.workspaceId, worker.workspaceId),
         eq(tasks.reviewerRetryPrNumber, prNumber),
         eq(tasks.reviewerRetryHeadSha, headSha),
-      ),
+      )),
       columns: { id: true },
     });
     return NextResponse.json({ ok: true, dispatched: false, taskId: existing?.id ?? null });
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, worker.workspaceId),
+    where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
   });
   if (workspace) {
     await announceTaskCreated(applyTask, workspace);
@@ -366,7 +367,7 @@ export async function POST(
   // Best-effort — a failed GitHub App lookup must not fail the dispatch itself.
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, worker.workspaceId),
+      where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
       columns: { id: true },
       with: { githubRepo: { columns: { fullName: true }, with: { installation: { columns: { installationId: true } } } } },
     });

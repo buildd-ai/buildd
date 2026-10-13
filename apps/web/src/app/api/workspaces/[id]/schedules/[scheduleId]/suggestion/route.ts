@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
 
@@ -56,10 +57,10 @@ async function resolveAdminAuth(req: NextRequest, workspaceId: string) {
 
 async function getSchedule(workspaceId: string, scheduleId: string) {
   return db.query.taskSchedules.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(taskSchedules.id, scheduleId),
       eq(taskSchedules.workspaceId, workspaceId),
-    ),
+    )),
   });
 }
 

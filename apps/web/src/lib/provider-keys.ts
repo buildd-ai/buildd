@@ -23,6 +23,7 @@ import {
 } from '@buildd/shared';
 
 import { PERSONAL_KEY_PROVIDERS, PROVIDER_KEY_CAPABILITIES, providerKeyCapability } from '@builddai/ai-kit/models/provider-keys';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type Source = MaskedProviderKey['source'];
 
@@ -66,11 +67,11 @@ function toMasked(r: KeyRow, provider: ChatProvider, scope: 'user' | 'team'): Ma
 
 async function loadRows(teamId: string): Promise<KeyRow[]> {
   return (await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, teamId),
       inArray(secrets.purpose, [...new Set(PERSONAL_KEY_PROVIDERS.flatMap(p => providerKeyCapability(p)!.purposes))] as Source[]),
       isNull(secrets.workspaceId),
-    ),
+    )),
     columns: {
       id: true, purpose: true, label: true, encryptedValue: true, accountId: true, userId: true,
       healthStatus: true, lastVerifiedAt: true, lastVerificationError: true, updatedAt: true,
@@ -98,7 +99,7 @@ function pickTeamRow(rows: KeyRow[], provider: ChatProvider): KeyRow | null {
 export async function loadTeamKeySettings(teamId: string): Promise<{ keyPolicy: InferenceKeyPolicy }> {
   try {
     const row = await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       columns: { inferenceKeyPolicy: true, credentialPolicy: true },
     });
     return { keyPolicy: effectiveKeyPolicy(row) ?? 'team_or_own' };
@@ -233,7 +234,7 @@ export async function reverifyProviderKey(input: {
   scope: 'user' | 'team';
 }): Promise<MaskedProviderKey | null> {
   const row = (await db.query.secrets.findFirst({
-    where: ownedScope(input),
+    where: sqlWhere(ownedScope(input)),
     columns: {
       id: true, purpose: true, label: true, encryptedValue: true, accountId: true, userId: true,
       healthStatus: true, lastVerifiedAt: true, lastVerificationError: true, updatedAt: true,

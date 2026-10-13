@@ -9,6 +9,7 @@
  * returns the wrong rows and a test fails.
  */
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { capturedOrderBy, capturedWhere } from '@buildd/core/db/relational-sql';
 
 type Row = Record<string, any>;
 type Pred =
@@ -62,8 +63,8 @@ let TRACES: Row[] = [];
 let WORKSPACES: Row[] = [];
 
 function select(rows: Row[], args: any): Row[] {
-  let out = rows.filter(r => matches(r, args?.where));
-  const order = args?.orderBy?.desc;
+  let out = rows.filter(r => matches(r, capturedWhere(args?.where)));
+  const order = capturedOrderBy(args?.orderBy, {})[0]?.desc;
   if (order) out = [...out].sort((a, b) => (b[order] > a[order] ? 1 : b[order] < a[order] ? -1 : 0));
   if (typeof args?.limit === 'number') out = out.slice(0, args.limit);
   return out.map(r => ({ ...r }));

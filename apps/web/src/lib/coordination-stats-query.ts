@@ -5,6 +5,7 @@ import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { GATE_SLUGS } from '@buildd/core/gate-slugs';
 import { OPT_IN_CAPABILITIES } from '@buildd/core/inference-policy';
 import { manifestCounts } from './coordination-stats';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type CoordinationWindow = '24h' | '7d' | '30d';
 
@@ -16,7 +17,7 @@ export function coordinationFilters(input: { workspaceIds: string[]; missionId?:
 /** Per-workspace opt-in state of each opt-in decision capability (`teams.enabledDecisionShadows`). */
 export async function fetchDecisionCapabilities(workspaceIds: string[]): Promise<CoordinationDecisionCapability[]> {
   const workspaceRows = workspaceIds.length ? await db.query.workspaces.findMany({
-    where: inArray(workspaces.id, workspaceIds),
+    where: sqlWhere(inArray(workspaces.id, workspaceIds)),
     columns: { id: true },
     with: { team: { columns: { enabledDecisionShadows: true } } },
   }) : [];

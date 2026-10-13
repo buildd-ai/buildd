@@ -14,6 +14,7 @@ import { dispatchLoopIteration } from '@/lib/loop-dispatcher';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import type { LoopConfig, LoopHistoryEntry } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Evaluate and advance a loop when a PR merge webhook fires.
@@ -31,7 +32,7 @@ export async function evaluateAndAdvanceLoopOnMerge(
 ): Promise<boolean> {
   // Fetch task loop state
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: {
       loopConfig: true,
       loopIteration: true,
@@ -50,7 +51,7 @@ export async function evaluateAndAdvanceLoopOnMerge(
 
   // Fetch the worker's mergedAt (just stamped by the webhook handler)
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, workerId),
+    where: sqlWhere(eq(workers.id, workerId)),
     columns: { mergedAt: true, prNumber: true, branch: true, lastCommitSha: true },
   });
 
@@ -124,7 +125,7 @@ export async function evaluateAndAdvanceLoopOnCiGreen(
 ): Promise<boolean> {
   // Fetch task loop state
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: {
       loopConfig: true,
       loopIteration: true,
@@ -143,7 +144,7 @@ export async function evaluateAndAdvanceLoopOnCiGreen(
 
   // Fetch the worker's PR info
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, workerId),
+    where: sqlWhere(eq(workers.id, workerId)),
     columns: { prNumber: true, branch: true, lastCommitSha: true },
   });
 

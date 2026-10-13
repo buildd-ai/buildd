@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { recordModelCompatibilityIncident } from '@buildd/core/model-certification-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * A worker died on the provider's version gate ("Claude Code X does not
@@ -13,7 +14,7 @@ import { recordModelCompatibilityIncident } from '@buildd/core/model-certificati
 export async function reportWorkerModelIncident(taskId: string | null | undefined, error: string): Promise<void> {
   if (!taskId) return;
   try {
-    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } });
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });
     const model = (task?.context as { model?: unknown } | null)?.model;
     if (typeof model === 'string' && model.startsWith('claude-')) {
       await recordModelCompatibilityIncident(model, error);

@@ -20,6 +20,7 @@ import { promptsRepoToken } from '../prompts-repo';
 import { getDefaultStorageClient, isStorageConfigured } from '../storage';
 import { MAX_DATASET_BYTES, type CollectedDeps, type DatasetReader, type OutcomeLabel } from './cases';
 import type { PromptEvalDeps } from './run';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The first platform admin account's team: who pays for a push eval. */
 export async function operatorTeamId(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
@@ -111,7 +112,7 @@ export function promptEvalDeps(): PromptEvalDeps {
     repoToken: repo => promptsRepoToken(repo),
     operatorTeamId: () => operatorTeamId(),
     teamDecisionModel: async teamId => {
-      const team = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { decisionModel: true } });
+      const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { decisionModel: true } });
       return readDecisionModel(team?.decisionModel);
     },
     // The chat turn's tier step (lib/chat/models.ts resolveChatModel): the
