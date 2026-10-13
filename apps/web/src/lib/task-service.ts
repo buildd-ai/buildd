@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { accounts, workers, workspaces, teamMembers, tasks } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type CreationSource = 'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule';
 
@@ -82,7 +83,7 @@ async function resolveRequesterUserId(
   if (!parentTaskId) return null;
   try {
     const parent = await db.query.tasks.findFirst({
-      where: eq(tasks.id, parentTaskId),
+      where: sqlWhere(eq(tasks.id, parentTaskId)),
       columns: { createdByUserId: true },
     });
     return parent?.createdByUserId ?? null;
@@ -106,7 +107,7 @@ async function resolveAccountId(
     const teamIds = await getUserTeamIds(userId);
     if (teamIds.length > 0) {
       const userAccount = await db.query.accounts.findFirst({
-        where: inArray(accounts.teamId, teamIds),
+        where: sqlWhere(inArray(accounts.teamId, teamIds)),
       });
       return userAccount?.id || null;
     }
@@ -154,7 +155,7 @@ async function validateWorkerContext(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, createdByWorkerId),
+    where: sqlWhere(eq(workers.id, createdByWorkerId)),
   });
 
   if (!worker) {
@@ -173,7 +174,7 @@ async function validateWorkerContext(
   // For session auth: worker must be in a workspace the user can access via team
   if (userId) {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, worker.workspaceId),
+      where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
       columns: { teamId: true },
     });
     if (workspace) {

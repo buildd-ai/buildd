@@ -63,7 +63,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.3"
 
       - name: Decide coverage from the last verified dev run
         id: filter
@@ -92,3 +92,54 @@ jobs:
       neon_branch: ci/post-merge-dev
       checkout_sha: ${{ github.sha }}
       source: ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'post-merge-dev' }}
+
+  # Advisory must not mean unseen. This workflow was red on nearly every dev push
+  # for hours (the test machine's runner port stopped being reachable) and nothing
+  # said so, while the release-candidate gate runs the very same job. One Pushover
+  # when the streak reaches two failed runs, one when it recovers; a lone red run
+  # (a flake, or a push the next one supersedes) stays quiet.
+  streak:
+    name: post-merge integration streak
+    needs: integration
+    if: always() && needs.integration.result != 'skipped' && needs.integration.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Alert on a streak of failures, and on recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.integration.result }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          PUSHOVER_TOKEN_ALERT: ${{ secrets.PUSHOVER_TOKEN_ALERT }}
+        run: |
+          # Earlier runs of this workflow that ran the integration job, newest first.
+          # A run whose integration job was skipped (docs-only push) says nothing either way.
+          prev=$(gh api "repos/${{ github.repository }}/actions/workflows/post-merge-integration.yml/runs?branch=dev&status=completed&per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | .id' | head -12)
+          states=()
+          for id in $prev; do
+            s=$(gh api "repos/${{ github.repository }}/actions/runs/$id/jobs" \
+              --jq '[.jobs[] | select(.name | endswith("/ integration")) | .conclusion][0] // "none"')
+            case "$s" in success|failure) states+=("$s") ;; esac
+            [ "${#states[@]}" -ge 3 ] && break
+          done
+          echo "this=$RESULT earlier(newest first)=${states[*]:-none}"
+          msg=""
+          if [ "$RESULT" = "failure" ] && [ "${states[0]:-}" = "failure" ] && [ "${states[1]:-success}" != "failure" ]; then
+            title="Post-merge integration is red"
+            msg="Two dev pushes in a row failed the integration job. The release-candidate gate runs the same job, so a release will not pass until it is fixed."
+          elif [ "$RESULT" = "success" ] && [ "${states[0]:-}" = "failure" ] && [ "${states[1]:-}" = "failure" ]; then
+            title="Post-merge integration recovered"
+            msg="The integration job passed again after two or more failed dev pushes."
+          fi
+          if [ -z "$msg" ]; then echo "nothing to say"; exit 0; fi
+          echo "::warning::$title: $msg"
+          if [ -z "$PUSHOVER_USER" ] || [ -z "$PUSHOVER_TOKEN_ALERT" ]; then exit 0; fi
+          curl -s --form-string "token=${PUSHOVER_TOKEN_ALERT}" \
+            --form-string "user=${PUSHOVER_USER}" \
+            --form-string "title=${title}" \
+            --form-string "message=${msg}" \
+            --form-string "url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --form-string "url_title=View CI run" \
+            https://api.pushover.net/1/messages.json || true

@@ -2,6 +2,7 @@ import { sql, eq, and, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, missions } from '@buildd/core/db/schema';
 import { BYPASS_HELD_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Context key set by /api/tasks/[id]/start when forceOverride=true and the task
@@ -85,7 +86,7 @@ export function missionNotLocal(): SQL {
  */
 export async function checkMissionLocal(missionId: string): Promise<boolean> {
   const mission = await db.query.missions.findFirst({
-    where: and(eq(missions.id, missionId), eq(missions.executor, 'local')),
+    where: sqlWhere(and(eq(missions.id, missionId), eq(missions.executor, 'local'))),
     columns: { id: true },
   });
   return !!mission;
@@ -100,7 +101,7 @@ export async function checkMissionLocal(missionId: string): Promise<boolean> {
  */
 export async function checkTaskMissionLocal(taskId: string): Promise<boolean> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { missionId: true },
   });
   if (!task?.missionId) return false;
@@ -124,6 +125,52 @@ export function taskNotHeld(): SQL {
 }
 
 /**
+ * Context key a session reservation writes (PATCH /api/tasks/[id]
+ * `{ reserved: true }`, update_task `reserve`). Its value is
+ * `{ accountId, at, expiresAt }`; releasing removes the key.
+ */
+export const TASK_RESERVATION_KEY = 'reservedBy' as const;
+
+/**
+ * A reservation lapses this long after it was made or last renewed. A session
+ * renews it by reserving again (claim_task with waitSeconds does so on every
+ * poll), so a session that goes silent loses the task back to the runners
+ * without any sweep having to notice.
+ */
+export const TASK_RESERVATION_TTL_MS = 20 * 60 * 1000;
+
+// JSON field names inside context.reservedBy, held as constants so the raw-SQL
+// lint (folded-identifier) does not read them as column names.
+const RESERVATION_OWNER_FIELD = 'accountId' as const;
+const RESERVATION_EXPIRY_FIELD = 'expiresAt' as const;
+
+export function buildReservation(accountId: string, now: Date = new Date()) {
+  return {
+    accountId,
+    at: now.toISOString(),
+    expiresAt: new Date(now.getTime() + TASK_RESERVATION_TTL_MS).toISOString(),
+  };
+}
+
+/**
+ * Reservation gate for the claim route: TRUE when no live reservation holds the
+ * task. With `exceptAccountId`, the account that made the reservation passes too
+ * (an interactive session's explicit claim_task of its own reserved task).
+ * Independent of the held and local gates, and of force: a person who wants
+ * to take a reserved task from its session lets the reservation lapse or
+ * releases it.
+ */
+export function taskNotReserved(exceptAccountId?: string): SQL {
+  const owner = exceptAccountId
+    ? sql` OR (${tasks.context}->'${sql.raw(TASK_RESERVATION_KEY)}'->>'${sql.raw(RESERVATION_OWNER_FIELD)}') = ${exceptAccountId}`
+    : sql``;
+  return sql`(
+    (${tasks.context}->'${sql.raw(TASK_RESERVATION_KEY)}') IS NULL
+    OR COALESCE((${tasks.context}->'${sql.raw(TASK_RESERVATION_KEY)}'->>'${sql.raw(RESERVATION_EXPIRY_FIELD)}')::timestamptz, '-infinity'::timestamptz) <= now()${owner}
+  )`;
+}
+
+/**
  * All three "a person has this" gates at once: TRUE when the task is neither
  * held itself, nor in a held mission, nor in a local-executor mission (each
  * honouring its bypass exactly as the claim route does).
@@ -135,7 +182,7 @@ export function taskNotHeld(): SQL {
  * the unaliased "tasks" table, like the gates it composes.
  */
 export function notHeldOrLocal(): SQL {
-  return sql`(${missionNotHeld()} AND ${missionNotLocal()} AND ${taskNotHeld()})`;
+  return sql`(${missionNotHeld()} AND ${missionNotLocal()} AND ${taskNotHeld()} AND ${taskNotReserved()})`;
 }
 
 /**
@@ -163,7 +210,7 @@ export async function isTaskNotHeldOrLocal(taskId: string): Promise<boolean> {
  */
 export async function checkMissionHeld(missionId: string): Promise<boolean> {
   const mission = await db.query.missions.findFirst({
-    where: and(eq(missions.id, missionId), eq(missions.isHeld, true)),
+    where: sqlWhere(and(eq(missions.id, missionId), eq(missions.isHeld, true))),
     columns: { id: true },
   });
   return !!mission;

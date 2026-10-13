@@ -27,16 +27,17 @@ import { and, eq, gt } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { actionQueueSnoozes } from '@buildd/core/db/schema';
 import { buildModelUpgradeNotice, type ModelUpgradeNotice } from '@/lib/model-upgrade-notice';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The notice unless this user snoozed exactly this one (the action-queue snooze table). */
 async function unsnoozed(notice: ModelUpgradeNotice | null, userId: string | null): Promise<ModelUpgradeNotice | null> {
   if (!notice || !userId) return notice;
   const snoozed = await db.query.actionQueueSnoozes.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(actionQueueSnoozes.userId, userId),
       eq(actionQueueSnoozes.subjectKey, notice.subjectKey),
       gt(actionQueueSnoozes.snoozedUntil, new Date()),
-    ),
+    )),
     columns: { subjectKey: true },
   });
   return snoozed ? null : notice;

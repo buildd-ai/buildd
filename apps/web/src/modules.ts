@@ -46,6 +46,8 @@ import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
 import { legacyFirstReview } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
+import type { ShippingPrMergedReader } from '@/lib/integration-refresh';
+import { missionShippingPrMerged } from '@/lib/mission-shipping-pr';
 import { escalationGateDeps, escalationGateReadDeps } from '@/lib/escalation-decision';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { earlyReleaseSubscribers } from '@/lib/early-release-subscribers';
@@ -63,6 +65,10 @@ import { answerInChatHref } from '@/lib/chat/answer-link';
 import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
 import type { ClaimContextInjection } from '@/app/api/workers/claim/context-injection';
 import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-routes';
+import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-audit-spec-criteria';
+import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
+import { checkSpecDuplicates, recordDuplicateOverride } from '@/lib/spec-duplicate-decision';
+import { classifySpecArea, recordAreaOverride } from '@/lib/spec-area-decision';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -164,6 +170,13 @@ export function workflowEffectHandlers(): EffectHandlers {
 export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepair']> = fileRecoverableBlockerRepair;
 
 /**
+ * The worker route's shipped-PR slot (lib/integration-refresh.ts): the missions
+ * module says whether a mission's shipping PR merged, so a refresh task with
+ * nothing left to ship can complete on that evidence.
+ */
+export const MISSION_SHIPPING_PR_MERGED: ShippingPrMergedReader = (missionId, repo) => missionShippingPrMerged(missionId, repo);
+
+/**
  * The escalation gate's slots (lib/escalation-gate-check.ts): Jev, the ledger
  * and the repair filer, for a core caller such as Home that gates PRs.
  */
@@ -239,9 +252,46 @@ export const OPERATOR_ONLY_RESPONSE = operatorOnlyResponse;
 /**
  * The visual-qa module's claim slot (app/api/workers/claim/visual-audit-routes.ts):
  * a surface audit's prompt states the required routes completion will check,
- * computed at claim from its current dependencies.
+ * computed at claim from its current dependencies, and the Living Spec
+ * criteria of the tasks it depends on (visual-audit-spec-criteria.ts).
  */
-export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = attachVisualAuditRoutes;
+export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers, claimedTasks) => {
+  await attachVisualAuditRoutes(claimedWorkers, claimedTasks);
+  await attachVisualAuditSpecCriteria(claimedWorkers, claimedTasks);
+};
+
+/**
+ * The visual-qa module's spec verdict slot (lib/visual-audit-spec-verdict.ts):
+ * POST /api/specs/outcomes/[taskId] with `checker: 'visual'` records what a
+ * mission's [surface audit] saw on a spec criterion.
+ */
+export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
+
+/**
+ * The decisions module's spec duplicate slot (lib/spec-duplicate-decision.ts):
+ * createSpecDraft compares a new spec with the approved ones, and records a
+ * person's override of a refusal on the ledger rows that refused it.
+ */
+export const SPEC_DUPLICATE_CHECK = checkSpecDuplicates;
+export const SPEC_DUPLICATE_OVERRIDE = recordDuplicateOverride;
+
+/**
+ * The decisions module's spec area slot (lib/spec-area-decision.ts): organize
+ * (lib/specs/organize.ts) asks which area an unfiled spec belongs in, and a
+ * person's move of a spec buildd filed is recorded on that filing's ledger row.
+ */
+export const SPEC_AREA_CLASSIFY = classifySpecArea;
+export const SPEC_AREA_OVERRIDE = recordAreaOverride;
+
+/**
+ * The knowledge module's boot slot for Living Spec neighbours (instrumentation.ts):
+ * installs the spec-corpus similarity query behind core's `neighbourDeps`
+ * (lib/specs/neighbours.ts), so the nearby route can suggest a parent.
+ */
+export const SPEC_SIMILARITY = async (): Promise<void> => {
+  const { installSpecSimilarity } = await import('@/lib/specs/knowledge');
+  installSpecSimilarity();
+};
 
 /**
  * The decisions module's boot slot (instrumentation.ts): installs the evidence

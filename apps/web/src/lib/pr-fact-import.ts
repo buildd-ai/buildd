@@ -18,6 +18,7 @@ import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { prFactApplies, recordPrFact, type PrFact } from '@buildd/core/pr-facts';
 import { githubApi as _githubApi } from '@/lib/github';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceInstallationId } from '@/lib/workspace-installation';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface PrFactFix {
   workerId: string;
@@ -74,7 +75,7 @@ export async function importWorkerPrFacts(workerRows: WorkerPrRow[], opts: PrFac
   const installationByWorkspace = new Map<string, number>();
   if (workspaceIds.length > 0) {
     const rows = await db.query.workspaces.findMany({
-      where: inArray(workspaces.id, workspaceIds),
+      where: sqlWhere(inArray(workspaces.id, workspaceIds)),
       columns: { id: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });
@@ -123,7 +124,7 @@ export async function importWorkerPrFacts(workerRows: WorkerPrRow[], opts: PrFac
 
 /** `importWorkerPrFacts` over every PR-bearing worker in one mission. */
 export async function importMissionPrFacts(missionId: string, opts: PrFactImportDeps = {}): Promise<PrFactImportResult> {
-  const mission = await db.query.missions.findFirst({ where: eq(missions.id, missionId), columns: { id: true } });
+  const mission = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { id: true } });
   if (!mission) return { checked: 0, fixes: [], unverified: [] };
 
   const rows = await db

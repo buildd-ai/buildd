@@ -49,6 +49,7 @@ import {
 } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import {
@@ -66,6 +67,7 @@ import {
 } from '@/lib/mission-pr';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * On-demand merge-state check for a single worker.
@@ -250,7 +252,7 @@ async function notifyDependents(taskId: string): Promise<void> {
  */
 export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
   const candidates = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       isNotNull(workers.prNumber),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
@@ -260,7 +262,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         notInArray(workers.prLifecycleStatus, TERMINAL_STATUSES),
       ),
       tieredStalenessCondition(),
-    ),
+    )),
     columns: {
       id: true,
       prNumber: true,
@@ -277,7 +279,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     // completes an opted-in mission's work, and the webhook that would normally
     // have opened its PR is the delivery that went missing.
     with: { task: { columns: { missionId: true } } },
-    orderBy: sql`${workers.prLastCheckedAt} ASC NULLS FIRST`,
+    orderBy: sqlOrderBy(sql`${workers.prLastCheckedAt} ASC NULLS FIRST`),
     limit: RECONCILE_BATCH_CAP,
   });
 
@@ -378,7 +380,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
 
   for (const [workspaceId, wsWorkers] of byWorkspace) {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { repo: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });
@@ -501,6 +503,10 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
               console.error(`[pr-reconcile] checkDependsOnResolved failed for task ${worker.taskId}:`, err),
             );
           }
+          // A lost webhook also skipped the path-claim release (G6 in
+          // failure-incident-recovery): without it the PR's waiters wake only
+          // on the hourly lease sweep or their own next poll. Idempotent.
+          if (worker.taskId) await releaseAndNotify(worker.taskId, 'merged');
           // The fifth consumer of a merge event, and the one this route was
           // missing. The other four are above; see reconcileSubjectAnchors.
           result.subjectsReconciled += await reconcileSubjectAnchors(
@@ -675,16 +681,16 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
   };
 
   const candidates = await db.query.missions.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(missions.integrationBranchEnabled, true),
       isNotNull(missions.workingBranch),
       // Live missions only. A paused mission is a human stop signal, and a
       // completed or archived one has no PR left to open.
       eq(missions.status, 'active'),
       missionSweepStalenessCondition(),
-    ),
+    )),
     columns: { id: true },
-    orderBy: sql`${missions.prSweepLastCheckedAt} ASC NULLS FIRST`,
+    orderBy: sqlOrderBy(sql`${missions.prSweepLastCheckedAt} ASC NULLS FIRST`),
     limit: MISSION_PR_SWEEP_CAP,
   });
 
@@ -862,7 +868,7 @@ export async function sweepManualMissionCompletions(): Promise<ManualCompletionS
 
   const secs = sql.raw(String(Math.round(MANUAL_COMPLETION_SWEEP_WINDOW_MS / 1000)));
   const candidates = await db.query.missions.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(missions.status, 'active'),
       eq(missions.orchestrationMode, 'manual'),
       eq(missions.integrationBranchEnabled, false),
@@ -883,9 +889,9 @@ export async function sweepManualMissionCompletions(): Promise<ManualCompletionS
         JOIN tasks t2 ON t2.id = w.task_id
         WHERE t2.mission_id = ${missions.id}
       ) > coalesce((${missions.goalCriteriaState}->>'evaluatedAt')::timestamptz, '-infinity'::timestamptz)`,
-    ),
+    )),
     columns: { id: true },
-    orderBy: sql`${missions.prSweepLastCheckedAt} ASC NULLS FIRST`,
+    orderBy: sqlOrderBy(sql`${missions.prSweepLastCheckedAt} ASC NULLS FIRST`),
     limit: MANUAL_COMPLETION_SWEEP_CAP,
   });
 

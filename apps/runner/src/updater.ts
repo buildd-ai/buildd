@@ -369,6 +369,59 @@ async function cleanReinstall(
 }
 
 /**
+ * The workspace package directories the runner needs, read from the commit
+ * itself: apps/runner's `workspace:*` dependencies and theirs, transitively,
+ * mapped to the `packages/<dir>` whose package.json carries that name. Pure.
+ */
+export function requiredWorkspaceDirs(manifests: ReadonlyMap<string, string>, rootDir = 'apps/runner'): string[] {
+  const byName = new Map<string, string>();
+  const deps = new Map<string, string[]>();
+  for (const [dir, text] of manifests) {
+    let pkg: { name?: unknown; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    try { pkg = JSON.parse(text); } catch { continue; }
+    if (typeof pkg.name === 'string') byName.set(pkg.name, dir);
+    const all = { ...pkg.dependencies, ...pkg.devDependencies };
+    deps.set(dir, Object.entries(all).filter(([, v]) => typeof v === 'string' && v.startsWith('workspace:')).map(([n]) => n));
+  }
+  const seen = new Set<string>();
+  const queue = [rootDir];
+  while (queue.length > 0) {
+    const dir = queue.shift()!;
+    for (const name of deps.get(dir) ?? []) {
+      const target = byName.get(name);
+      if (target && !seen.has(target) && target !== rootDir) { seen.add(target); queue.push(target); }
+    }
+  }
+  return [...seen].sort();
+}
+
+/**
+ * A sparse install (install.sh) checks out only the runner and the packages it
+ * listed when it was installed. A release can add a workspace package the
+ * runner now imports; `reset --hard` alone leaves that directory absent and the
+ * frozen install then fails on "@buildd/<pkg>@workspace:* failed to resolve".
+ * So after the reset, add every directory the new commit's runner tree needs.
+ * A full checkout (no sparse config) is left alone. Never widens beyond
+ * workspace packages, never narrows.
+ */
+export async function widenSparseCheckout(installDir: string, git: UpdateExecOps['git']): Promise<string[]> {
+  let sparse = '';
+  try { sparse = await git(['config', '--get', 'core.sparseCheckout'], installDir, 5000); } catch { return []; }
+  if (sparse.trim() !== 'true') return [];
+  const listed = new Set((await git(['sparse-checkout', 'list'], installDir, 5000)).split('\n').map((l) => l.trim().replace(/^\//, '').replace(/\/$/, '')).filter(Boolean));
+  const dirs = (await git(['ls-tree', '-d', '--name-only', 'HEAD', 'packages/'], installDir, 5000)).split('\n').map((l) => l.trim()).filter(Boolean);
+  const manifests = new Map<string, string>();
+  for (const dir of ['apps/runner', ...dirs]) {
+    try { manifests.set(dir, await git(['show', `HEAD:${dir}/package.json`], installDir, 5000)); } catch { /* not a package */ }
+  }
+  const missing = requiredWorkspaceDirs(manifests).filter((d) => !listed.has(d));
+  if (missing.length === 0) return [];
+  await git(['sparse-checkout', 'add', ...missing.map((d) => `${d}/`)], installDir, 30_000);
+  console.log(`[updater] sparse checkout widened for new workspace packages: ${missing.join(', ')}`);
+  return missing;
+}
+
+/**
  * Applies the update: git fetch + reset --hard origin/$BRANCH, then a clean
  * reinstall (see `cleanReinstall`). Returns a result object; the caller
  * should `process.exit(75)` ONLY on success so the launcher restarts the
@@ -394,6 +447,7 @@ export async function applyUpdate(
       await execOps.git(['checkout', '-f', '-B', BRANCH, `origin/${BRANCH}`], installDir, 10_000);
     }
     await execOps.git(['reset', '--hard', `origin/${BRANCH}`], installDir, 10_000);
+    await widenSparseCheckout(installDir, execOps.git);
 
     const reinstall = await cleanReinstall(installDir, fsOps, execOps);
     if (!reinstall.success) {

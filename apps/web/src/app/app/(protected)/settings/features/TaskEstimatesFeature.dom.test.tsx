@@ -46,10 +46,10 @@ describe('TaskEstimatesFeature', () => {
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     }) as unknown as typeof fetch;
     await render();
-    expect(q('task-estimates-state')!.textContent).toBe('Off (the default)');
+    expect(q('task-estimates-state')!.textContent).toBe('Off (default)');
     await act(async () => { q('task-estimates-toggle')!.click(); });
     expect(calls).toEqual([{ url: `/api/teams/${TEAM}`, body: { taskEstimates: { enabled: true } } }]);
-    expect(q('task-estimates-state')!.textContent).toBe('On, turned on by your team');
+    expect(q('task-estimates-state')!.textContent).toBe('On for this team');
     expect(q('task-estimates-toggle')!.textContent).toBe('Turn off');
     expect(host.querySelector('a[href="/app/health/estimates"]')).not.toBeNull();
   });
@@ -58,14 +58,14 @@ describe('TaskEstimatesFeature', () => {
     globalThis.fetch = mock(async () => new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 })) as unknown as typeof fetch;
     await render();
     await act(async () => { q('task-estimates-toggle')!.click(); });
-    expect(q('task-estimates-state')!.textContent).toBe('Off (the default)');
+    expect(q('task-estimates-state')!.textContent).toBe('Off (default)');
     expect(host.querySelector('[role="alert"]')!.textContent).toBe('Forbidden');
   });
 
   it('a member sees the state and no control', async () => {
     await render({ canManage: false, initial: { enabled: true, source: 'team', defaultOn: false } });
     expect(q('task-estimates-toggle')).toBeNull();
-    expect(q('task-estimates-state')!.textContent).toBe('On, turned on by your team');
+    expect(q('task-estimates-state')!.textContent).toBe('On for this team');
   });
 
   it('shows only this team\'s state: nothing about other teams or the rollout', async () => {
@@ -81,13 +81,13 @@ describe('TaskEstimatesFeature', () => {
 
   it('says it is a forecast, not a scheduler', async () => {
     await render();
-    expect(q('feature-task-estimates')!.textContent).toContain('never decides what runs');
+    expect(q('feature-task-estimates')!.textContent).toContain("Estimates don't affect which tasks run or when");
   });
 });
 
 describe('taskEstimatesStatusLine', () => {
   it('names an explicit opt-out against an on default', () => {
-    expect(taskEstimatesStatusLine({ enabled: false, source: 'team' })).toBe('Off, turned off by your team');
-    expect(taskEstimatesStatusLine({ enabled: true, source: 'default' })).toBe('On (the default)');
+    expect(taskEstimatesStatusLine({ enabled: false, source: 'team' })).toBe('Off for this team');
+    expect(taskEstimatesStatusLine({ enabled: true, source: 'default' })).toBe('On (default)');
   });
 });

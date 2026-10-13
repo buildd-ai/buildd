@@ -65,7 +65,14 @@ export function claudeLikeHookEntries(command: string, opts: { async: boolean })
     SessionStart: [{ hooks: [handler(true)] }],
     UserPromptSubmit: [{ hooks: [handler(false)] }],
     Stop: [{ hooks: [handler(false)] }],
-    PreToolUse: [{ hooks: [handler(true)] }],
+    PreToolUse: [
+      { hooks: [handler(true)] },
+      // Claude Code only (the client that takes async): a session holding a
+      // buildd claim asks through buildd instead of the terminal-only
+      // AskUserQuestion. Synchronous, because its deny is the output.
+      // docs/specs/terminal-question-redirect.md
+      ...(opts.async ? [{ matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: `${command} ask`, timeout: 5 }] }] : []),
+    ],
     PostToolUse: [{ hooks: [handler(false)] }],
     SessionEnd: [{ hooks: [handler(false)] }],
   };

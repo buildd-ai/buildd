@@ -157,6 +157,15 @@ mock.module('@buildd/core/pr-facts', () => ({
 const mockObservePrState = mock(async (_input: any) => false);
 mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState }));
 
+// G6 (failure-incident-recovery): a healed merge releases the PR's paths,
+// like the webhook's merge work does.
+const healOrder: string[] = [];
+mock.module('@/lib/path-claim-release', () => ({
+  releaseAndNotify: async (taskId: string, reason: string) => { healOrder.push(`release:${taskId}:${reason}`); },
+  deliverPathReleased: async () => {},
+  resolveReleaseReasonForTask: async () => 'merged',
+}));
+
 beforeEach(() => {
   recordedFacts.length = 0;
   mockObservePrState.mockClear();
@@ -175,6 +184,7 @@ import {
   MISSION_PR_SWEEP_WINDOW_MS,
 } from './pr-reconcile';
 import { TIER_SLA_MS, UNRESOLVABLE_FAILURE_THRESHOLD, DAY_MS, HOUR_MS } from './pr-freshness';
+import { capturedOrderBy, capturedWhere } from '@buildd/core/db/relational-sql';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -192,14 +202,19 @@ const ancientOpenedAt = new Date(Date.now() - 90 * DAY_MS);
  * which columns and literals it references. Cycle-safe: the stubbed `sql` tag
  * hands back objects that share sub-trees, which plain JSON.stringify chokes on.
  */
-function describePredicate(node: unknown, seen = new WeakSet<object>()): string {
+/** A captured relational where / orderBy, as it was built before or after the RQB v2 move. */
+function describePredicate(captured: unknown): string {
+  return describeNode(typeof captured === 'function' ? capturedOrderBy(captured, {}) : capturedWhere(captured));
+}
+
+function describeNode(node: unknown, seen = new WeakSet<object>()): string {
   if (node == null) return '';
   if (typeof node !== 'object') return String(node);
   if (seen.has(node as object)) return '';
   seen.add(node as object);
-  if (Array.isArray(node)) return node.map(n => describePredicate(n, seen)).join(' ');
+  if (Array.isArray(node)) return node.map(n => describeNode(n, seen)).join(' ');
   return Object.entries(node as Record<string, unknown>)
-    .map(([k, v]) => `${k} ${describePredicate(v, seen)}`)
+    .map(([k, v]) => `${k} ${describeNode(v, seen)}`)
     .join(' ');
 }
 
@@ -404,6 +419,28 @@ describe('reconcileStalePrWorkers', () => {
     expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 42, installationId: 123, source: 'sweep:pr-reconcile',
     }));
+  });
+
+  it('G6: healing a missed merge releases the task\'s paths', async () => {
+    healOrder.length = 0;
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+
+    await reconcileStalePrWorkers();
+
+    expect(healOrder).toEqual(['release:t1:merged']);
+  });
+
+  it('G6: an open PR releases nothing', async () => {
+    healOrder.length = 0;
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, mergeable_state: 'clean' });
+
+    await reconcileStalePrWorkers();
+
+    expect(healOrder).toEqual([]);
   });
 
   it('stamps the merge on every other row carrying the PR (cron tier)', async () => {

@@ -254,7 +254,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'incident' | 'access';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'incident' | 'access' | 'spec_provisional';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -275,6 +275,8 @@ export interface WaitingOnYouRawItem {
   /** kind === 'incident' — a Sentinel incident the escalation gate gave to the owner (lib/failure-incident-escalation.ts). */
   incidentId?: string;
   incidentTitle?: string;
+  /** kind === 'incident' — its recovery asks one typed choice (projection phase `decision`), not just a look. */
+  incidentDecision?: boolean;
   /** kind === 'access' — a pending capability request the escalation gate gave to a person (lib/capability-grants-needs-you.ts). */
   accessRequestId?: string;
   /** kind === 'access' — what the agent asked to do, in plain words ("Query Axiom · production"). */
@@ -283,6 +285,9 @@ export interface WaitingOnYouRawItem {
   accessTtlSeconds?: number;
   /** kind === 'access' — the approve button's words, lease included ("Approve for 1 hour"). */
   accessApproveLabel?: string;
+  /** kind === 'spec_provisional' — a spec with merged work built ahead of approval and still unapproved (lib/specs/provisional.ts). */
+  specId?: string;
+  specTitle?: string;
   fixHref?: string;
   fixLabel?: string;
   /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
@@ -588,6 +593,10 @@ export interface ActionQueueItem {
   /** Set when chip === 'INCIDENT' — the incident and its title. */
   incidentId?: string;
   incidentTitle?: string;
+  /** Set when chip === 'INCIDENT' — the recovery asks one typed choice; the card reads as a decision. */
+  incidentDecision?: boolean;
+  /** Set when chip === 'APPROVE' for a spec with merged work built ahead of approval (living-specs.md §20, R-42). */
+  specProvisional?: { specId: string; specTitle: string };
   /** Set when chip === 'ACCESS' — the capability request, the ask and the lease asked for. */
   accessRequestId?: string;
   accessAsk?: string;
@@ -695,7 +704,8 @@ export interface ActionQueueItem {
 // FAILED sits with RECONNECT: both are a credential the owner has to supply
 // before anything else can run.
 // INCIDENT leads: the escalation gate hands a Sentinel incident to the owner
-// only when it is critical, or nothing is fixing it.
+// only when it is critical, or its current recovery assessment needs one
+// typed choice (lib/incident-view.ts `projectIncident`, `needsYou`).
 // ACCESS sits with QUESTION: a live agent run is waiting on a person's
 // approve or deny, and the request closes itself when the run ends.
 const CHIP_ORDER: ActionChip[] = [
@@ -884,12 +894,17 @@ export function buildFailedTaskItems(
      * responsible admin instead of on everyone, once per task. Omitted: none.
      */
     githubAccessFixableWorkspaceIds?: ReadonlySet<string>;
+    /**
+     * Tasks an active root cause already explains (lib/service-status-loader.ts):
+     * they are linked from that one status and get no card of their own.
+     */
+    linkedTaskIds?: ReadonlySet<string>;
   } = {},
 ): WaitingOnYouRawItem[] {
   const items: WaitingOnYouRawItem[] = [];
   const accessWaiting = new Map<string, { first: FailedTaskCandidate; repo: string | null; count: number }>();
   for (const c of candidates) {
-    if (c.status !== 'failed') continue;
+    if (c.status !== 'failed' || opts.linkedTaskIds?.has(c.taskId)) continue;
     const block = readGithubAccessBlock(c.context);
     if (block && !block.resumedAt && c.workspaceId) {
       if (!opts.githubAccessFixableWorkspaceIds?.has(c.workspaceId)) continue;
@@ -1576,6 +1591,7 @@ export function buildActionQueue(
           chip: 'INCIDENT',
           incidentId: item.incidentId,
           incidentTitle: item.incidentTitle,
+          incidentDecision: item.incidentDecision,
           workspaceName: item.workspaceName ?? undefined,
           failureMessage: item.failureMessage,
           fixHref: item.fixHref,
@@ -1595,6 +1611,22 @@ export function buildActionQueue(
           accessApproveLabel: item.accessApproveLabel,
           taskId: item.taskId,
           taskTitle: item.taskTitle,
+          workspaceId: item.workspaceId,
+          workspaceName: item.workspaceName ?? undefined,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
+        });
+      }
+    } else if (item.kind === 'spec_provisional') {
+      // Re-derived on every build from the task and worker rows (lib/specs/provisional.ts):
+      // approving the spec re-pins the work, and the card drops out by itself.
+      const key = `spec-provisional:${item.specId}`;
+      if (item.specId && !map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'APPROVE',
+          specProvisional: { specId: item.specId, specTitle: item.specTitle ?? '' },
           workspaceId: item.workspaceId,
           workspaceName: item.workspaceName ?? undefined,
           failureMessage: item.failureMessage,

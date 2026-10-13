@@ -18,7 +18,8 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import WorkerRespondInput from '@/components/WorkerRespondInput';
+import TaskQuestion from '@/components/tasks/TaskQuestion';
+import type { QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import AnswerRecorded from '@/components/AnswerRecorded';
 import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import Spinner from '@/components/Spinner';
@@ -81,7 +82,12 @@ export interface TaskActionZoneProps {
   failureKind?: TaskFailureKind | null;
   /** Set when this task IS the surface audit: a verification failure then offers "Retry the audit". */
   auditTaskId?: string | null;
-  worker: { id: string; waitingFor: Pick<WaitingFor, 'prompt' | 'options' | 'context'> | null } | null;
+  worker: {
+    id: string;
+    waitingFor: Pick<WaitingFor, 'prompt' | 'options' | 'context' | 'recommended' | 'where'> | null;
+    /** The open question note recording the same ask: its headline leads, and an answer marks it. */
+    questionNote?: QuestionNoteLike | null;
+  } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
   roleSlug?: string | null;
@@ -208,7 +214,11 @@ export default function TaskActionZone({
     void fetchTaskWaiting(taskId).then(w => { if (!cancelled) setWaiting(w); });
     return () => { cancelled = true; };
   }, [probeWaiting, taskId, start.status]);
-  const held = waiting ? refusalFromWaiting(waiting) : null;
+  const probed = waiting ? refusalFromWaiting(waiting) : null;
+  // A local mission's task held by nothing else is just "claim it from a
+  // local session": the one-line note says that, not a Held line beside it.
+  const localOnly = !!probed?.waitingReasons?.length && probed.waitingReasons.every(r => r.kind === 'mission_local');
+  const held = localOnly && local ? null : probed;
   const queuedHeld = start.status === 'queued' && start.waiting ? refusalFromWaiting(start.waiting) : null;
 
   const refusal = start.refusal;
@@ -230,21 +240,22 @@ export default function TaskActionZone({
       data-actions={actions.join(' ')}
       className="space-y-3 empty:hidden"
     >
-      {/* Needs input → respond inline */}
+      {/* A question → the task page's own question card, compact: the same
+          question (its note's headline too), options, recommendation and
+          own-words field, answered in place. */}
       {answer.outcome || answeredAwaitingAgent ? (
         <AnswerRecorded outcome={answer.outcome} awaitingAgent={!MOVED_ON.has(phase)} />
       ) : has('answer') && worker?.waitingFor && (
-        <div className="border-2 border-status-warning p-4">
-          <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-status-warning">Needs input</span>
-          <WorkerRespondInput
-            workerId={worker.id}
-            taskId={taskId}
-            question={worker.waitingFor.prompt}
-            options={worker.waitingFor.options}
-            context={worker.waitingFor.context}
-            answer={answer}
-          />
-        </div>
+        <TaskQuestion
+          testId="task-sheet-question"
+          variant="compact"
+          taskId={taskId}
+          workerId={worker.id}
+          waitingFor={worker.waitingFor}
+          questionNote={worker.questionNote ?? null}
+          role={roleSlug}
+          answer={answer}
+        />
       )}
 
       {/* Work landed, audit failed → say so; the audit's own surface retries the audit */}
@@ -371,7 +382,7 @@ export default function TaskActionZone({
             </WaitingLine>
           ) : !hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
             {local
-              ? "Waiting for a local session to claim it. Runners never pick up this mission's tasks."
+              ? 'Ready to start. Claim it from a local session.'
               : 'Waiting for a runner to claim it.'}
           </p>}
           {has('claim_hint') && <ClaimTaskHint taskId={taskId} />}

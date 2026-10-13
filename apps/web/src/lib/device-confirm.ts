@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { deviceCodes, teams, users } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getUserDefaultTeamId } from '@/lib/team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Everything the device confirm page shows before the user approves a code.
@@ -38,7 +39,7 @@ export async function lookupDeviceCodeForConfirm(
   if (!userCode) return { ok: false, reason: 'not_found' };
 
   const row = await db.query.deviceCodes.findFirst({
-    where: eq(deviceCodes.userCode, userCode),
+    where: sqlWhere(eq(deviceCodes.userCode, userCode)),
     columns: { userCode: true, status: true, clientName: true, level: true, createdAt: true, expiresAt: true },
   });
   if (!row) return { ok: false, reason: 'not_found' };
@@ -50,8 +51,8 @@ export async function lookupDeviceCodeForConfirm(
   // Same team the approve route will mint the key in.
   const teamId = await getUserDefaultTeamId(userId);
   const [team, user] = await Promise.all([
-    teamId ? db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { name: true } }) : null,
-    db.query.users.findFirst({ where: eq(users.id, userId), columns: { email: true } }),
+    teamId ? db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { name: true } }) : null,
+    db.query.users.findFirst({ where: sqlWhere(eq(users.id, userId)), columns: { email: true } }),
   ]);
 
   return {

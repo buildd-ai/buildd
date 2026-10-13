@@ -92,6 +92,10 @@ describe('buildMissionListCard — a worker waiting on the owner', () => {
     expect(card.question).toMatchObject({ taskId: 'checkout', workerId: 'w-q', label: 'checkout', options: ['Per line', 'Total only'] });
     expect(card.counts.needsYou).toBe(1);
   });
+
+  it('its Answer link opens the task page, the full answering experience', () => {
+    expect(card.question?.href).toBe('/app/tasks/checkout?from=mission&missionId=m2&respond=1');
+  });
 });
 
 describe('buildMissionListCard — a PR that just went green is merging, not an ask', () => {
@@ -223,7 +227,7 @@ describe('buildMissionListCard — recurring, held and done', () => {
     expect(card.kind).toBe('active');
     expect(card.status).toEqual({ label: 'Local', tone: 'accent' });
     expect(card.held).toBeNull();
-    expect(card.sentence).toBe('Waiting for a local session to claim its 2 open tasks.');
+    expect(card.sentence).toBe('2 tasks ready to start from a local session.');
     expect(card.sentence).not.toMatch(/no live worker|stall/i);
     expect(summary.group).toBe('running');
     expect(summary.state.chip.label).toBe('LOCAL');

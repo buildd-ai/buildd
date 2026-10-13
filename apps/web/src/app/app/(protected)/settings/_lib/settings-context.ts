@@ -6,14 +6,17 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
-import { isSystemWorkspace } from '@buildd/shared';
+import { isSystemWorkspace, isRunnerModelAuthSource, type RunnerModelAuthSource } from '@buildd/shared';
 import { settingsPermissions, type SettingsPermissions } from './settings-permissions';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface SettingsWorkspace {
   id: string;
   name: string;
   repo: string | null;
   teamId: string;
+  /** 'open': every key of the owning team reaches it; 'restricted': linked keys only. */
+  accessMode: string | null;
 }
 
 export interface SettingsContext {
@@ -62,8 +65,8 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
 
   const rows = wsIds.length > 0
     ? await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
-        columns: { id: true, name: true, repo: true, teamId: true },
+        where: sqlWhere(inArray(workspaces.id, wsIds)),
+        columns: { id: true, name: true, repo: true, teamId: true, accessMode: true },
       }).catch(() => [] as SettingsWorkspace[])
     : [];
 
@@ -128,8 +131,8 @@ export interface RunnerAccountDto {
 export async function loadRunnerAccounts(teamIds: string[]): Promise<RunnerAccountDto[]> {
   if (teamIds.length === 0) return [];
   const rows = await db.query.accounts.findMany({
-    where: inArray(accounts.teamId, teamIds),
-    orderBy: desc(accounts.createdAt),
+    where: sqlWhere(inArray(accounts.teamId, teamIds)),
+    orderBy: sqlOrderBy(desc(accounts.createdAt)),
     columns: RUNNER_ACCOUNT_COLUMNS,
     with: {
       team: { columns: { name: true } },
@@ -173,5 +176,27 @@ export async function loadAccountLastSeen(accountIds: string[]): Promise<Record<
     .catch(() => [] as Array<{ accountId: string; at: Date | string }>);
   const out: Record<string, string> = {};
   for (const r of rows) if (r.at) out[r.accountId] = new Date(r.at).toISOString();
+  return out;
+}
+
+/**
+ * The model login each runner token's most recent heartbeat reported
+ * (docs/specs/runner-model-auth-source.md). Null when that runner never sends
+ * the field (older build), so the row says "not reported" instead of guessing.
+ * Degrades to empty on failure.
+ */
+export async function loadAccountModelAuth(accountIds: string[]): Promise<Record<string, RunnerModelAuthSource | null>> {
+  if (accountIds.length === 0) return {};
+  const rows = await db
+    .select({ accountId: workerHeartbeats.accountId, source: workerHeartbeats.modelAuthSource })
+    .from(workerHeartbeats)
+    .where(inArray(workerHeartbeats.accountId, accountIds))
+    .orderBy(desc(workerHeartbeats.lastHeartbeatAt))
+    .catch(() => [] as Array<{ accountId: string; source: string | null }>);
+  const out: Record<string, RunnerModelAuthSource | null> = {};
+  for (const r of rows) {
+    if (r.accountId in out) continue;
+    out[r.accountId] = isRunnerModelAuthSource(r.source) ? r.source : null;
+  }
   return out;
 }

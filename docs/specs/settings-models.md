@@ -2,7 +2,7 @@
 title: Settings Models Page
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-13
 summary: Settings › Team › Models MUST show one provider list, use a lone provider for every surface it serves, offer per-surface choice only at two or more, and put a person's own key before the team's.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/settings/models/page.tsx, apps/web/src/app/app/(protected)/settings/providers/ModelProvidersClient.tsx, packages/core/providers/policy.ts, packages/core/providers/resolve.ts]
@@ -36,6 +36,10 @@ assertions:
     type: "symbol"
     name: "workspacesWithKeys"
     path: "apps/web/src/lib/providers/credentials.ts"
+  - id: "names-the-team"
+    type: "symbol"
+    name: "providersTitle"
+    path: "apps/web/src/app/app/(protected)/settings/providers/providers-view.ts"
 ---
 
 # Settings Models Page
@@ -62,12 +66,17 @@ connected providers) and **Tiers**.
 - The page names no other app or page as the home of a removed control.
 - Every control follows the permission its API enforces; a member sees the same
   page read-only.
+- Someone in more than one team sees the Providers heading name the team the
+  page holds ("Providers · <team>"), so "Not set" says whose. In one team the
+  heading is "Providers".
 
 **Acceptance criteria**
 
 - AC-1: WHEN anyone opens `/app/settings/models` THEN the rendered headings are
   Providers, Used for (at two or more) and Tiers, and none of "Features", "Routing", "Who pays",
   "Workspace keys", "Decision features", "Chat session retros" appear.
+  The Providers heading reads "Providers · <team>" for someone in more than
+  one team.
 - AC-2: GIVEN a member without `manage_inference_providers` WHEN they open the
   page THEN every provider row and picker is rendered without an editable
   control.
@@ -164,8 +173,10 @@ Decisions.
 
 - AC-11: GIVEN two workspaces with their own keys WHEN the team page loads
   THEN it shows one line naming 2 workspaces and no workspace picker.
-- AC-12: WHEN a workspace's settings page loads THEN it shows "Uses team
-  settings" or the workspace's own providers, with Override for an admin.
+- AC-12: WHEN a workspace's settings page loads THEN it shows "Uses <team>'s
+  settings" or the workspace's own providers, with Override for an admin; a
+  row inherited from the team reads "<team>'s key", naming the workspace's own
+  team.
 
 ## Code surface
 

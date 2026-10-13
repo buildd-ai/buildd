@@ -73,6 +73,7 @@ import {
 import { resolveCriteriaEscalation, type CriteriaEscalationExitReason } from '@/lib/criteria-escalation';
 import { systemActor } from '@/lib/mission-feed';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
 
@@ -118,12 +119,12 @@ async function fileViolation(
   if (!violation.workspaceId) return base;
 
   const existing = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, violation.workspaceId),
       like(tasks.title, '[friction] %'),
       sql`${tasks.context}->>'frictionSignature' = ${signature}`,
       notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
-    ),
+    )),
     columns: { id: true },
   });
 
@@ -246,9 +247,9 @@ interface EntityBaseline {
 async function previousEntityBaseline(): Promise<EntityBaseline | null> {
   try {
     const prev = await db.query.cronRuns.findFirst({
-      where: and(eq(cronRuns.job, CRON_JOB), eq(cronRuns.ok, true)),
+      where: sqlWhere(and(eq(cronRuns.job, CRON_JOB), eq(cronRuns.ok, true))),
       columns: { result: true },
-      orderBy: desc(cronRuns.startedAt),
+      orderBy: sqlOrderBy(desc(cronRuns.startedAt)),
     });
     const result = prev?.result as Record<string, unknown> | null | undefined;
     const byInvariant = result?.entitiesByInvariant;

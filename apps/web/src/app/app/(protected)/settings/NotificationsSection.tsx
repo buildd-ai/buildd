@@ -32,7 +32,7 @@ const EVENT_LABELS: { key: NotifyEvent; label: string; hint: string }[] = [
   { key: 'taskClaimed', label: 'Task claimed', hint: 'A runner picked up a task.' },
   { key: 'taskCompleted', label: 'Task completed', hint: 'A task finished.' },
   { key: 'taskFailed', label: 'Task failed', hint: 'A task failed or is retrying.' },
-  { key: 'credentialExpired', label: 'Credential expired', hint: 'A Claude/Codex credential is invalid or expired.' },
+  { key: 'credentialExpired', label: 'Credential expired', hint: 'A Claude or Codex credential is invalid or expired.' },
 ];
 
 /**
@@ -66,7 +66,7 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
       const res = await fetch(`/api/teams/${teamId}/notifications`);
       if (res.ok) setState((await res.json()) as NotificationsState);
     } catch {
-      setMsg({ type: 'error', text: 'Failed to load notification settings' });
+      setMsg({ type: 'error', text: "Could not load alert settings. Try again." });
     } finally {
       setLoading(false);
     }
@@ -90,11 +90,11 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Failed to save');
+      if (!res.ok) throw new Error(data.error ?? "Could not save. Try again.");
       setState(data as NotificationsState);
       setMsg({ type: 'success', text: successText });
     } catch (e) {
-      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to save' });
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : "Could not save. Try again." });
     } finally {
       setBusy(false);
     }
@@ -107,7 +107,7 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
       const userKey = pushoverKey.trim();
       // Pushover needs BOTH; guard here so we don't send a half-set channel.
       if (!appToken || !userKey) {
-        setMsg({ type: 'error', text: 'Pushover needs both an app token and a user or group key.' });
+        setMsg({ type: 'error', text: 'Enter both an app token and a user or group key.' });
         return;
       }
       body.pushoverAppToken = appToken;
@@ -183,7 +183,7 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
           <ChannelRow
             title="Pushover · team"
             connected={hasPushover}
-            sub="The team's own Pushover app. Team alerts go here."
+            sub="Sends team alerts through the team's Pushover app."
             actions={channelActions('pushover', hasPushover)}
             testId="channel-pushover-team"
           >
@@ -194,7 +194,7 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
                   aria-label="Pushover app token"
                   value={pushoverAppToken}
                   onChange={(e) => setPushoverAppToken(e.target.value)}
-                  placeholder="App token (your Pushover application)"
+                  placeholder="App token (from your Pushover application)"
                   className={inputClass}
                 />
                 <input
@@ -206,7 +206,7 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
                   className={inputClass}
                 />
                 <p className="text-xs text-text-muted">
-                  Both are in your Pushover account. The app token comes from creating an application.
+                  Find both in your Pushover account. Create an application there to get an app token.
                 </p>
                 {formButtons('pushover', !!pushoverAppToken.trim() && !!pushoverKey.trim())}
               </>
@@ -215,7 +215,7 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
           <ChannelRow
             title="Webhook"
             connected={hasWebhook}
-            sub="Team alerts as JSON to any URL: Slack, Discord or your own."
+            sub="Posts team alerts as JSON to a URL, such as a Slack or Discord webhook."
             actions={channelActions('webhook', hasWebhook)}
             testId="channel-webhook"
           >
@@ -237,7 +237,7 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
       </Section>
 
       <Section title="Team alerts">
-        <Lede className="mb-2">Which events reach this team&apos;s channels.</Lede>
+        <Lede className="mb-2">Events sent to this team&apos;s channels.</Lede>
         {loading ? (
           <p className="text-sm text-text-muted">Loading…</p>
         ) : (

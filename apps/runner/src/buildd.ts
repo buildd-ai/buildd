@@ -13,8 +13,12 @@ import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
 import { TRACKED_BRANCH, type RunnerUpdateSnapshot } from './updater';
+import type { ModelAuthReport } from './host-seat';
 import { claimHealth, describeClaimErrorBody } from './claim-budget-signals';
 import { PATH_CLAIM_TIMEOUT_MS } from './path-claim-enforcement';
+
+/** Heartbeat model-auth fields; local to the runner (the server owns its own type). */
+export type HeartbeatModelAuth = Pick<ModelAuthReport, 'source' | 'mode'>;
 
 /**
  * Timestamp (ms) of the last time the runner received ANY HTTP response from the
@@ -1029,6 +1033,13 @@ export class BuilddClient {
      * in neither (apps/web/src/lib/lost-claim.ts).
      */
     claimHandoff?: ClaimHandoffSnapshot,
+    /**
+     * Which kind of model credential this runner's agents use, and the
+     * BUILDD_HOST_SEAT mode (host-seat.ts detectModelAuthSource). A label,
+     * never a value. Omitted by older callers; the server keeps the stored
+     * label when the field is absent.
+     */
+    modelAuth?: HeartbeatModelAuth | null,
   ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
@@ -1066,6 +1077,10 @@ export class BuilddClient {
       payload.updating = updateSnapshot.updating;
       payload.updateAvailable = updateSnapshot.updateAvailable;
       payload.trackedBranch = updateSnapshot.trackedBranch;
+    }
+    if (modelAuth) {
+      payload.modelAuthSource = modelAuth.source;
+      payload.modelAuthMode = modelAuth.mode;
     }
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',

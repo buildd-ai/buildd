@@ -15,6 +15,7 @@
  * milestone the agent reported. The runner slot an agent held is derived from
  * start/end overlap (`assignSlots`), since no column records it.
  */
+import { isOpenAsk } from './open-ask';
 import { TERMINAL_TASK_STATUSES, type VisualReviewModel } from '@buildd/shared';
 import { screensToReview } from './visual-review-model';
 import { assignSlots, occupiedSlots } from '@/components/fleet/slot-lanes-layout';
@@ -464,6 +465,11 @@ export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput
 /** One DB task row (with its workers, newest first) → the board's input. */
 export function toBoardTaskInput(t: Record<string, unknown> & { id: string; title: string; status: string }): BoardTaskInput {
   const workers = (Array.isArray(t.workers) ? t.workers : []).map(w => toBoardWorkerInput(w as Record<string, unknown>));
+  // A worker parked on a question is the task's worker, wherever the query
+  // put it: `startedAt DESC` sorts a never-started worker (NULL) first, and
+  // the board then missed the ask that `missionOpenQuestions` (any worker) saw.
+  const asking = workers.findIndex(w => isOpenAsk(t.status, w.status));
+  if (asking > 0) workers.unshift(...workers.splice(asking, 1));
   const w0 = workers[0] ?? null;
   return {
     id: t.id,

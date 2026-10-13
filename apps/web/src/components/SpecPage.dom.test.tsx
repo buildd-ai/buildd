@@ -54,7 +54,14 @@ const base = {
   ],
   parent: { id: 'parent-id', title: 'Shop' } as { id: string; title: string } | null,
   children: [] as Array<{ id: string; title: string }>,
+  siblings: [] as Array<{ id: string; title: string }>,
   repoRefs: [{ path: 'docs/specs/checkout.md', sha: 'abcdef123456', href: 'https://github.com/acme/shop/blob/abc/docs/specs/checkout.md' }],
+  design: null as any,
+  comments: [] as any[],
+  commentAnchors: [{ kind: 'criterion' as const, id: 'R-1', label: 'R-1' }],
+  canComment: true,
+  nearby: [] as any[],
+  filing: null as any,
   compare: null,
   canApprove: true,
   review: null as any,
@@ -93,6 +100,85 @@ describe('SpecPage', () => {
     expect(q('spec-page-approve')).toBeNull();
   });
 
+  it('names the design the revision is built to, and says when it changed since approval', () => {
+    const design = { label: 'Cart prototype', href: '/app/artifacts/a1', version: '3', screens: ['Empty cart'], changedSince: null };
+    act(() => root.render(<SpecPage view={{ ...base, design }} />));
+    const d = q('spec-page-design')!;
+    expect(d.textContent).toContain('Built to the design Cart prototype, version 3.');
+    expect(d.querySelector('a')!.getAttribute('href')).toBe('/app/artifacts/a1');
+    expect(d.textContent).toContain('Screens: Empty cart');
+    expect(q('spec-page-design-changed')).toBeNull();
+    act(() => root.render(<SpecPage view={{ ...base, design: { ...design, changedSince: { pinned: '3', current: '5' } } }} />));
+    expect(q('spec-page-design-changed')!.textContent).toBe('The design changed since approval: it is at version 5, and revision 1 was approved with version 3.');
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-design')).toBeNull();
+  });
+
+  it('lists nearby specs with why each is near, strongest kind first', () => {
+    const nearby = [
+      { specId: 'n1', title: 'Refunds', kind: 'shares_files', score: 0.5, reason: "Changes 3 files this spec's work changed" },
+      { specId: 'n2', title: 'Pricing', kind: 'similar', score: 0.7, reason: 'Similar in what it asks for' },
+    ];
+    act(() => root.render(<SpecPage view={{ ...base, nearby }} />));
+    const items = [...container.querySelectorAll('[data-testid="spec-page-nearby-item"]')];
+    expect(items.map((i) => [i.getAttribute('data-kind'), i.querySelector('a')!.getAttribute('href'), i.querySelector('span')!.textContent]))
+      .toEqual([['shares_files', '/app/specs/n1', "Changes 3 files this spec's work changed"], ['similar', '/app/specs/n2', 'Similar in what it asks for']]);
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-nearby')).toBeNull();
+  });
+
+  it('AC-83: the neighbour graph shows the spec, its parent, both siblings and 8 of 10 neighbours; the list is the default', () => {
+    const siblings = [{ id: 's1', title: 'Refunds' }, { id: 's2', title: 'Invoices' }];
+    const nearby = Array.from({ length: 10 }, (_, i) => ({ specId: `n${i}`, title: `Near ${i}`, kind: i < 2 ? 'overlaps' : 'similar', score: 0.9 - i / 20, reason: 'Similar in what it asks for' }));
+    act(() => root.render(<SpecPage view={{ ...base, siblings, nearby }} />));
+    // List first: parent, siblings and neighbours in words, no graph mounted.
+    expect(q('spec-graph')).toBeNull();
+    const list = q('spec-page-related-list')!;
+    expect(list.querySelector('[data-testid="spec-page-parent"]')!.textContent).toContain('Shop');
+    expect([...list.querySelectorAll('[data-testid="spec-page-siblings"] a')].map((a) => a.textContent)).toEqual(['Refunds', 'Invoices']);
+    const radio = [...container.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'Graph') as HTMLElement;
+    expect(container.querySelector('[role="radio"][aria-checked="true"]')!.textContent).toBe('List');
+    act(() => radio.click());
+    const nodes = [...container.querySelectorAll('[data-testid="spec-graph-node"]')];
+    expect(nodes.map((n) => n.getAttribute('data-spec-id'))).toEqual(['parent-id', SPEC, 's1', 's2', 'n0', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7']);
+    expect(nodes.map((n) => n.getAttribute('data-relation'))).toEqual(['part of', 'this spec', 'sibling', 'sibling', 'overlaps', 'overlaps', ...Array(6).fill('similar')]);
+    expect(q('spec-graph')!.textContent).toContain('2 more neighbours');
+    // Below md the list stays in place of the graph (R-29).
+    expect(q('spec-page-graph')!.className).toContain('hidden md:block');
+    expect(list.className).toContain('md:hidden');
+  });
+
+  it('with no parent, siblings or neighbours, Related offers no graph', () => {
+    act(() => root.render(<SpecPage view={{ ...base, parent: null }} />));
+    expect([...container.querySelectorAll('[role="radio"]')]).toHaveLength(0);
+  });
+
+  it('says "Filed by buildd" with an undo that posts that filing, and a suggestion with accept and dismiss (§17 R-7)', async () => {
+    const calls: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ filing: null }), { status: 200 });
+    }) as typeof fetch;
+    const filed = { id: 'f1', kind: 'filed', status: 'applied', parent: { specId: 'area-1', title: 'Payments' }, previousParent: null, source: 'model', p: 0.97, newArea: null, createdAt: iso };
+    act(() => root.render(<SpecPage view={{ ...base, filing: filed }} />));
+    expect(q('spec-page-filing')!.textContent).toContain('Filed by buildd under Payments');
+    expect(q('spec-page-filing')!.querySelector('a')!.getAttribute('href')).toBe('/app/specs/area-1');
+    await act(async () => { q('spec-page-filing-undo')!.click(); });
+    expect(calls).toEqual([{ url: `/api/specs/${SPEC}/filing`, body: { action: 'undo', filingId: 'f1' } }]);
+    expect(refreshes).toBe(1);
+
+    act(() => root.render(<SpecPage view={{ ...base, filing: { ...filed, id: 'f2', kind: 'suggested', status: 'open' } }} />));
+    expect(q('spec-page-filing')!.textContent).toContain('buildd suggests filing this under Payments');
+    expect(q('spec-page-filing-undo')).toBeNull();
+    await act(async () => { q('spec-page-filing-accept')!.click(); });
+    expect(calls[1]).toEqual({ url: `/api/specs/${SPEC}/filing`, body: { action: 'accept', filingId: 'f2' } });
+
+    act(() => root.render(<SpecPage view={{ ...base, canComment: false, filing: filed }} />));
+    expect(q('spec-page-filing-undo')).toBeNull();
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-filing')).toBeNull();
+  });
+
   it('a reader who may not approve sees no approve action', () => {
     act(() => root.render(<SpecPage view={{ ...base, canApprove: false }} />));
     expect(q('spec-page-review')).toBeNull();
@@ -121,6 +207,48 @@ describe('SpecPage', () => {
     expect(refreshes).toBe(1);
   });
 
+  it('reads as approved on the press, before the server answers', async () => {
+    let answer!: (r: Response) => void;
+    globalThis.fetch = (() => new Promise<Response>(r => { answer = r; })) as unknown as typeof fetch;
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    expect(q('spec-page-review-panel')!.querySelector('h2')!.textContent).toBe('Revision 2 (nothing approved yet)');
+    // Approve sits right under the heading, before the text: no scrolling to find it.
+    const panel = q('spec-page-review-panel')!;
+    const kids = [...panel.children];
+    const approveAt = kids.findIndex((k) => k.querySelector('[data-testid="spec-page-approve"]'));
+    expect(approveAt).toBe(1);
+    await act(async () => { q('spec-page-approve')!.click(); });
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approved. Revision 2 is in force.');
+    expect(q('spec-page-approve')).toBeNull();
+    expect(refreshes).toBe(0);
+    await act(async () => { answer(new Response(JSON.stringify({ spec: {}, revision: {} }), { status: 200 })); });
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approved. Revision 2 is in force.');
+    expect(refreshes).toBe(1);
+  });
+
+  it('a failed approval rolls back to the action with the error beside it', async () => {
+    let answer!: (r: Response) => void;
+    globalThis.fetch = (() => new Promise<Response>(r => { answer = r; })) as unknown as typeof fetch;
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    await act(async () => { q('spec-page-approve')!.click(); });
+    expect(q('spec-page-approve-result')!.textContent).toContain('Approved');
+    await act(async () => { answer(new Response(JSON.stringify({}), { status: 500 })); });
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approval failed. Try again.');
+    expect(q('spec-page-approve')).not.toBeNull();
+    expect(refreshes).toBe(0);
+  });
+
+  it('a network failure rolls back the same way', async () => {
+    globalThis.fetch = (async () => { throw new TypeError('offline'); }) as unknown as typeof fetch;
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    await act(async () => { q('spec-page-approve')!.click(); });
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approval failed. Try again.');
+    expect(q('spec-page-approve')).not.toBeNull();
+  });
+
   it('a moved spec says so and approves nothing more', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({ error: 'The spec changed while you were deciding: it is now at version 5. Re-read it before deciding.' }), { status: 409 })) as unknown as typeof fetch;
     const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
@@ -128,5 +256,27 @@ describe('SpecPage', () => {
     await act(async () => { q('spec-page-approve')!.click(); });
     expect(q('spec-page-approve-result')!.textContent).toContain('version 5');
     expect(q('spec-page-approve')).toBeNull();
+  });
+
+  it('names the one source and says when the repo copy is behind (living-specs.md §18, R-13, AC-79)', () => {
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-source')).toBeNull();
+    const source = { source: 'Source: buildd, repo copy at docs/specs/checkout.md', copy: 'Repo copy is behind: Lint specs failed on PR #9.', behind: true };
+    act(() => root.render(<SpecPage view={{ ...base, source }} />));
+    expect(q('spec-page-source')!.textContent).toBe('Source: buildd, repo copy at docs/specs/checkout.md');
+    expect(q('spec-page-repo-copy')!.textContent).toContain('Lint specs failed');
+  });
+
+  it('shows a failing repo check on review and still offers Approve (R-34, AC-96)', () => {
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    const preflight = { state: 'ran' as const, path: 'docs/specs/checkout.md', checks: [
+      { name: 'specs:lint' as const, ok: false, messages: ['frontmatter missing `summary` (one sentence: what MUST hold)'] },
+      { name: 'public-docs:check' as const, ok: true, messages: [] },
+      { name: 'no-prod-data' as const, ok: true, messages: [], note: 'The identifier half runs only in CI.' },
+    ] };
+    act(() => root.render(<SpecPage view={{ ...base, review, preflight }} />));
+    expect(q('spec-repo-checks')!.textContent).toContain('fails specs:lint');
+    expect(q('spec-repo-checks')!.textContent).toContain('frontmatter missing `summary`');
+    expect(q('spec-page-approve')).not.toBeNull();
   });
 });

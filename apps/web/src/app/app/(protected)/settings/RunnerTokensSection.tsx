@@ -10,7 +10,11 @@ import ApiKeyModal from '@/components/ApiKeyModal';
 import SettingsSection from './SettingsSection';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import { StatusChip } from './_components/ConnectionRow';
+import { unlinkedTokensChip } from './_lib/unlinked-tokens';
+import { accountReachesWorkspace } from '@/lib/workspace-reach';
 import { groupRunnerTokens } from './_lib/runner-token-groups';
+import { modelAuthLabel } from './_lib/model-auth-label';
+import type { RunnerModelAuthSource } from '@buildd/shared';
 import { shortAgo } from '@/lib/mission-list-card';
 import HostRunnerToggle from './HostRunnerToggle';
 import MaxConcurrentWorkersEditor from './MaxConcurrentWorkersEditor';
@@ -33,10 +37,13 @@ interface Account {
   budgetExhaustedAt: string | Date | null;
   budgetResetsAt: string | Date | null;
   team: { name: string } | null;
+  teamId?: string;
   accountWorkspaces?: { workspaceId: string }[];
   createdAt?: string | Date | null;
   /** Latest runner heartbeat on this token, ISO; absent when not seen recently. */
   lastSeenAt?: string | null;
+  /** Model login the token's latest runner heartbeat reported; null = not reported. */
+  modelAuthSource?: RunnerModelAuthSource | null;
   /** Trusted as a long-lived host runner (team credential access). */
   hostRunner?: boolean;
   /**
@@ -51,6 +58,21 @@ interface Account {
   canDelete?: boolean;
 }
 
+/** Which model login the runner on this token uses, in words. */
+function ModelAuthLine({ source }: { source: RunnerModelAuthSource | null | undefined }) {
+  const label = modelAuthLabel(source);
+  return (
+    <div
+      data-testid="token-model-auth"
+      data-model-auth={source ?? 'not_reported'}
+      className={`mt-0.5 text-meta ${label.warning ? 'text-status-warning' : 'text-text-muted'}`}
+    >
+      {label.text}
+      {label.command && <> <code className="font-mono">{label.command}</code></>}
+    </div>
+  );
+}
+
 /** "seen 4m ago", "seen now", or nothing when no runner has reported lately. */
 function seenLabel(iso: string | null | undefined): string | null {
   const ago = shortAgo(iso ?? null);
@@ -62,6 +84,8 @@ interface Workspace {
   id: string;
   name: string;
   repo: string | null;
+  teamId?: string;
+  accessMode?: string | null;
 }
 
 /** Where a new runner token is made: a sheet over Runners. */
@@ -98,7 +122,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to regenerate key');
+        throw new Error(err.error || 'Could not regenerate the token.');
       }
 
       const data = await res.json();
@@ -106,7 +130,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       setNewKey({ accountName: regenerateTarget.name, apiKey: data.apiKey });
       router.refresh();
     } catch (err) {
-      setRegenerateError(err instanceof Error ? err.message : 'Failed to regenerate key');
+      setRegenerateError(err instanceof Error ? err.message : 'Could not regenerate the token.');
     } finally {
       setRegenerating(false);
     }
@@ -136,6 +160,12 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
             const teamOpen = openTeams.has(group.team);
             const seen = seenLabel(group.lastSeenAt);
             const unlinked = group.tokens.filter((a) => a.accountWorkspaces && a.accountWorkspaces.length === 0).length;
+            // A token with no link still reaches its own team's open workspaces.
+            const groupTeamId = group.tokens[0]?.teamId;
+            const openWorkspaces = groupTeamId
+              ? workspaces.filter((w) => w.teamId && accountReachesWorkspace({ teamId: groupTeamId }, { teamId: w.teamId, accessMode: w.accessMode }, null)).length
+              : 0;
+            const chip = unlinkedTokensChip(unlinked, openWorkspaces);
             return (
               <div key={group.team} data-testid="token-group" data-open={teamOpen ? 'true' : 'false'}>
                 <button
@@ -146,7 +176,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                       <span className="text-sm font-semibold text-text-primary truncate">{group.team}</span>
-                      {unlinked > 0 && <StatusChip tone="warn">{unlinked} unlinked</StatusChip>}
+                      {chip && <StatusChip tone={chip.tone}>{chip.label}</StatusChip>}
                     </span>
                     <span className="mt-1 block truncate text-meta text-text-muted">
                       <span className="font-mono">{group.tokens.length}</span> token{group.tokens.length === 1 ? '' : 's'}{seen ? ` · ${seen}` : ''}
@@ -158,7 +188,8 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                   <div className="divide-y divide-border-default border-t border-border-default">
                     {group.tokens.map((account) => {
                       const isExpanded = expandedId === account.id;
-                      const hasWarning = account.accountWorkspaces && account.accountWorkspaces.length === 0;
+                      // Warn only when the token reaches nothing: no link and no open workspace.
+                      const hasWarning = account.accountWorkspaces && account.accountWorkspaces.length === 0 && chip?.tone === 'warn';
                       const canAdmin = account.canManageHostRunner === true;
                       const canDelete = (account.canDelete ?? canAdmin) === true;
 
@@ -184,6 +215,10 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                               )}
                               {seenLabel(account.lastSeenAt) && (
                                 <div data-testid="token-last-seen" className="mt-0.5 text-meta text-text-muted">{seenLabel(account.lastSeenAt)}</div>
+                              )}
+                              {/* Only a token a runner has heartbeated on has a model login to name. */}
+                              {(account.modelAuthSource != null || seenLabel(account.lastSeenAt)) && (
+                                <ModelAuthLine source={account.modelAuthSource} />
                               )}
                             </div>
                             <code className="text-xs text-text-muted font-mono flex-shrink-0">
@@ -270,7 +305,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       <ConfirmDialog
         open={!!regenerateTarget}
         title="Regenerate runner token?"
-        message={regenerateError || `Invalidates the current token for "${regenerateTarget?.name}". Runners using the old token stop working right away.`}
+        message={regenerateError || `Invalidates the current token for "${regenerateTarget?.name}". Runners using the old token lose access immediately.`}
         confirmLabel="Regenerate"
         variant="warning"
         loading={regenerating}

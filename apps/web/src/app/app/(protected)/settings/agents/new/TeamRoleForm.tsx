@@ -28,7 +28,7 @@ interface Props {
   teamId: string;
   workspaces: WorkspaceOption[];
   /**
-   * Kinds the viewer may create: 'personal' ("Just for me",
+   * Kinds the viewer may create: 'personal' ("Personal",
    * create_personal_roles) and/or 'team' (manage_agent_roles). Default team only.
    */
   kinds?: readonly NewRoleKind[];
@@ -36,13 +36,13 @@ interface Props {
 }
 
 const KIND_LABEL: Record<NewRoleKind, string> = {
-  personal: 'Just for me',
-  team: 'Team agent',
+  personal: 'Personal',
+  team: 'Team',
 };
 
 const KIND_NOTE: Record<NewRoleKind, string> = {
-  personal: 'Only your tasks can run it. You can share it with the team later.',
-  team: 'Anyone in the team can run it.',
+  personal: 'Only your tasks can use it, until you share it with the team.',
+  team: 'Available to everyone on the team.',
 };
 
 type Scope = 'team' | 'workspace';
@@ -143,13 +143,13 @@ export function TeamRoleForm({ teamId, workspaces, kinds = ['team'], initialKind
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(responseErrorMessage(data, 'Failed to create agent'));
+        throw new Error(responseErrorMessage(data, 'Could not create the agent.'));
       }
 
       router.push('/app/settings/agents');
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create agent');
+      setError(err instanceof Error ? err.message : 'Could not create the agent.');
     } finally {
       setSaving(false);
     }
@@ -197,7 +197,7 @@ export function TeamRoleForm({ teamId, workspaces, kinds = ['team'], initialKind
 
             {scope === 'team' && (
               <p className="text-sm text-text-muted">
-                Every workspace in your team gets this agent by default. A workspace can add an override.
+                Available in every workspace on the team. A workspace can override it.
               </p>
             )}
 
@@ -209,7 +209,7 @@ export function TeamRoleForm({ teamId, workspaces, kinds = ['team'], initialKind
                   options={workspaces.map(w => ({ value: w.id, label: w.name }))}
                   size="sm"
                 />
-                <p className="text-sm text-text-muted">Only the selected workspace gets this agent.</p>
+                <p className="text-sm text-text-muted">Available only in the selected workspace.</p>
               </>
             )}
           </div>

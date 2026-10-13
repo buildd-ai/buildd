@@ -34,6 +34,7 @@ import {
   type PrReviewStatus,
   type PrReviewWaitFor,
 } from './pr-review-status';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── DB reads ──────────────────────────────────────────────────────────────────
 
@@ -99,7 +100,7 @@ export async function findLiveReviewTaskForPr(
 /** The worker row that owns this PR in this workspace, if any. */
 export async function findPrOwningWorker(workspaceId: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    where: sqlWhere(and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber))),
     columns: {
       id: true,
       taskId: true,
@@ -260,7 +261,7 @@ export async function resolveOrAdoptPrOwner(params: {
   const existingWorker = await findPrOwningWorker(workspaceId, prNumber);
   if (existingWorker?.taskId) {
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, existingWorker.id),
+      where: sqlWhere(eq(workers.id, existingWorker.id)),
       with: { task: true },
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

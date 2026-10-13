@@ -33,9 +33,12 @@ import type {
 } from '@buildd/shared';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import { gateFrictionSignature } from '@buildd/core/gate-friction-signature';
+import type { CaptureFailureComponent } from '@buildd/core/visual-qa-page-source';
 
 /** Part of the incident key. Bump when a rule's signature shape or meaning changes. */
-export const FAILURE_PATTERN_DETECTOR_VERSION = 'fps-v1';
+// fps-v2: path-overlap episodes are per (task, blocker) and never older than
+// the blocker (failure-incident-recovery §5 rule 3, I-8).
+export const FAILURE_PATTERN_DETECTOR_VERSION = 'fps-v2';
 
 export const MAX_EVIDENCE_REFS = 20;
 export const MAX_AFFECTED_REFS = 25;
@@ -125,14 +128,19 @@ export interface GateEventFact {
   occurredAt: string;
 }
 
-/** A task the claim loop keeps deferring behind a path overlap. */
+/**
+ * One episode of a task waiting behind ONE blocker: the collector emits one
+ * per (task, blocker), and only a task's newest episode can be a stall.
+ */
 export interface PathOverlapDeferralFact {
   taskId: string;
   blockingPrNumber: number | null;
   firstDeferredAt: string;
   lastDeferredAt: string;
-  /** Last sign the task or its blocker moved (claim, blocker merge/close…); null for none. */
+  /** Last sign the task moved since the episode began (a worker started, a wake delivered); null for none. */
   lastProgressAt: string | null;
+  /** When the blocker came to exist; the episode never starts before it (I-8). Absent: unknown. */
+  blockerCreatedAt?: string | null;
   /** `tasks.status` as read this sweep; null or absent when not read. */
   taskStatus?: string | null;
   /** The blocking PR as read this sweep; absent when not read. */
@@ -168,28 +176,6 @@ export function pathOverlapSubjectStuck(subject: PathOverlapSubjectState, blocke
   return subject.lastWorkerAt === null || subject.lastWorkerAt < since;
 }
 
-/**
- * Pure. The resolve check for a `path_overlap_stall` incident: its blocking PR
- * landed or closed, or every task it names is no longer stuck. Decided from
- * facts read now, never from "no new occurrence lately". An incident with no
- * known blocker, no named task, or more stalled tasks than it kept refs for
- * (`MAX_AFFECTED_REFS`) clears only through its blocker.
- */
-export function pathOverlapIncidentCleared(
-  incident: { firstSeenAt: string; affectedRefs: FailureIncidentAffectedRefs; impact: Record<string, number> },
-  obs: PathOverlapObservation,
-): boolean {
-  const blocker = incident.affectedRefs.prNumbers[0];
-  const blockerState = blocker === undefined ? 'unknown' : obs.prs.get(blocker) ?? 'unknown';
-  if (blockerState === 'merged' || blockerState === 'closed') return true;
-  const ids = incident.affectedRefs.taskIds;
-  if (ids.length === 0 || (incident.impact.stalledTasks ?? 0) > ids.length) return false;
-  return ids.every(id => {
-    const s = obs.tasks.get(id);
-    return !!s && s.status !== null && !pathOverlapSubjectStuck(s, blockerState, incident.firstSeenAt);
-  });
-}
-
 /** A failure or provider wall, and who it was charged to. */
 export interface ProviderAttributionFact {
   workerId: string;
@@ -208,6 +194,47 @@ export interface FailureRateFact {
   recentFailures?: Array<{ workerId: string; at: string }>;
 }
 
+/**
+ * A task Buildd's own machinery is failing (failure-incident-recovery §18.4):
+ * held for a rejected credential, or stalled after its infra retries ran out.
+ */
+export interface WorkerInfraFact {
+  taskId: string;
+  component: WorkerInfraComponent;
+  /** `worker.auth`: the credential key. `worker.session_lost`: the last worker's friction signature. */
+  key: string;
+  /** `worker.auth`: a team-wide credential every workspace of the team uses. */
+  shared?: boolean;
+  /** This occurrence: the hold's failure, or the stall. */
+  occurredAt: string;
+  attempts: number;
+  exhausted: boolean;
+  workerId?: string | null;
+}
+
+/**
+ * A surface audit whose capture failed in Buildd's own capture pipeline
+ * (failure-incident-recovery §16.3): reported by the auditor as a typed
+ * capture failure, or adopted from a legacy question whose run's failed step
+ * is on record (§16.4 rollout).
+ */
+export interface CaptureFailureFact {
+  taskId: string;
+  missionId: string | null;
+  component: CaptureFailureComponent;
+  /** The record's `errorSignature` (toFrictionSignature of the normalized error). */
+  errorSignature: string;
+  /** When the audit reported it (or, for a legacy question, when it asked). */
+  occurredAt: string;
+  workerId?: string | null;
+  runId?: string | null;
+  ref?: string | null;
+  headSha?: string | null;
+}
+
+/** Worker components of the `infrastructure_failure` family (§18.4). Closed. */
+export type WorkerInfraComponent = 'worker.auth' | 'worker.session_lost';
+
 export interface SentinelFacts {
   workspaceId: string | null;
   /** ISO. The engine's only clock. */
@@ -219,6 +246,8 @@ export interface SentinelFacts {
   pathOverlapDeferrals?: PathOverlapDeferralFact[];
   providerAttributions?: ProviderAttributionFact[];
   failureRate?: FailureRateFact | null;
+  workerInfra?: WorkerInfraFact[];
+  captureFailures?: CaptureFailureFact[];
 }
 
 // ── Candidates ──────────────────────────────────────────────────────────────
@@ -437,7 +466,9 @@ function ruleLineageMultiPr(facts: SentinelFacts, t: SentinelThresholds): Incide
 }
 
 /** Exits that are not failures of the work (mirrors failure-analytics' bookkeeping set). */
-const NON_FAILURE_EXITS = new Set(['needs_input', 'task_cancelled', 'reassigned', 'never_started']);
+// auth_failure belongs to the infrastructure_failure family (one incident per
+// credential, §18.4), never to a per-signature repeated_failure as well.
+const NON_FAILURE_EXITS = new Set(['needs_input', 'task_cancelled', 'reassigned', 'never_started', 'auth_failure']);
 
 function failureRef(f: WorkerFailureFact): FailureIncidentEvidenceRef {
   return f.terminalRecordId
@@ -505,7 +536,16 @@ function ruleStrandedGate(facts: SentinelFacts, t: SentinelThresholds): Incident
 }
 
 function rulePathOverlapStall(facts: SentinelFacts, t: SentinelThresholds): IncidentCandidate[] {
-  const stalled = (facts.pathOverlapDeferrals ?? [])
+  // A task's current episode is its newest one; an earlier blocker's wait is over.
+  const current = new Map<string, PathOverlapDeferralFact>();
+  for (const raw of facts.pathOverlapDeferrals ?? []) {
+    const d = raw.blockerCreatedAt && raw.blockerCreatedAt > raw.firstDeferredAt ? { ...raw, firstDeferredAt: raw.blockerCreatedAt } : raw;
+    const prior = current.get(d.taskId);
+    if (!prior || d.lastDeferredAt > prior.lastDeferredAt || (d.lastDeferredAt === prior.lastDeferredAt && (d.blockingPrNumber ?? -1) > (prior.blockingPrNumber ?? -1))) {
+      current.set(d.taskId, d);
+    }
+  }
+  const stalled = [...current.values()]
     .filter(d =>
       minutesBetween(d.firstDeferredAt, d.lastDeferredAt) >= t.pathOverlapStallMinutes &&
       // The same check the sweep resolves on, so a task that moved or a
@@ -540,6 +580,88 @@ function rulePathOverlapStall(facts: SentinelFacts, t: SentinelThresholds): Inci
         prNumbers: blocker === null ? [] : [blocker],
       },
       impact: { stalledTasks: tasks.size, longestStallMinutes: Math.round(longest) },
+    }));
+  }
+  return out;
+}
+
+/** The signature of one worker-infrastructure cause (§18.4). Keyed on the cause, never raw error text. */
+export function workerInfraSignature(workspaceId: string | null, component: WorkerInfraComponent, key: string): string {
+  return ['infrastructure_failure', wsPart(workspaceId), `component=${component}`, component === 'worker.auth' ? `cred=${seg(key)}` : `sig=${seg(key)}`].join('|');
+}
+
+export const WORKER_INFRA_REASON_CODE: Record<WorkerInfraComponent, string> = {
+  'worker.auth': 'infrastructure.auth',
+  'worker.session_lost': 'infrastructure.session_lost',
+};
+
+/**
+ * One incident per (component, cause): every task held on one credential, or
+ * stalled on one lost-session signature, is a subject of the same incident
+ * (§18.4, I-16). Recovery is Buildd's (BUILDD_RECOVERS); a person is never
+ * asked for these.
+ */
+function ruleWorkerInfrastructure(facts: SentinelFacts): IncidentCandidate[] {
+  const rows = newestFirst(facts.workerInfra ?? [], f => f.occurredAt, f => f.taskId).filter(f => f.occurredAt <= facts.now);
+  const out: IncidentCandidate[] = [];
+  for (const group of groupBy(rows, f => `${f.component}|${f.key}`).values()) {
+    const { component, key } = group[0];
+    const tasks = new Set(group.map(f => f.taskId));
+    const exhausted = group.filter(f => f.exhausted).length;
+    const severity: FailureIncidentSeverity =
+      component === 'worker.session_lost' || exhausted > 0 || tasks.size >= 2 ? 'high' : 'medium';
+    out.push(buildCandidate(facts, {
+      rule: 'infrastructure_failure',
+      reasonCode: WORKER_INFRA_REASON_CODE[component],
+      signature: workerInfraSignature(facts.workspaceId, component, key),
+      severity,
+      title: component === 'worker.auth'
+        ? `${tasks.size} task(s) held: the backend credential was rejected`
+        : `${tasks.size} task(s) stalled after repeated lost sessions`,
+      occurrences: group.map(f => ({ kind: 'task' as const, id: f.taskId, at: f.occurredAt })),
+      affected: {
+        taskIds: boundedUnique(group.map(f => f.taskId)),
+        workerIds: boundedUnique(group.map(f => f.workerId)),
+        prNumbers: [],
+      },
+      impact: { distinctTasks: tasks.size, exhaustedTasks: exhausted, ...(group[0].shared ? { sharedCredential: 1 } : {}) },
+    }));
+  }
+  return out;
+}
+
+/** The signature of one capture-pipeline cause (§16.3): component and normalized error, never a run or a task. */
+export function captureFailureSignature(workspaceId: string | null, component: CaptureFailureComponent, errorSignature: string): string {
+  return ['infrastructure_failure', wsPart(workspaceId), `component=${component}`, `sig=${seg(errorSignature)}`].join('|');
+}
+
+export const captureFailureReasonCode = (component: CaptureFailureComponent) => `infrastructure_failure.${component}`;
+
+/**
+ * One incident, so at most one fix task, per (workspace, component, error
+ * signature): every audit blocked by the same failing step is a subject of
+ * it (§16.6 I-10). Recovery is Buildd's; a person is never asked.
+ */
+function ruleCaptureFailure(facts: SentinelFacts): IncidentCandidate[] {
+  const rows = newestFirst(facts.captureFailures ?? [], f => f.occurredAt, f => f.taskId).filter(f => f.occurredAt <= facts.now);
+  const out: IncidentCandidate[] = [];
+  for (const group of groupBy(rows, f => `${f.component}|${f.errorSignature}`).values()) {
+    const { component, errorSignature } = group[0];
+    const tasks = new Set(group.map(f => f.taskId));
+    const missions = new Set(group.map(f => f.missionId).filter(Boolean));
+    out.push(buildCandidate(facts, {
+      rule: 'infrastructure_failure',
+      reasonCode: captureFailureReasonCode(component),
+      signature: captureFailureSignature(facts.workspaceId, component, errorSignature),
+      severity: tasks.size >= 2 ? 'high' : 'medium',
+      title: `${tasks.size} surface audit(s) blocked: the capture's ${component.slice('visual_qa.'.length)} step failed`,
+      occurrences: group.map(f => ({ kind: 'task' as const, id: f.taskId, at: f.occurredAt })),
+      affected: {
+        taskIds: boundedUnique(group.map(f => f.taskId)),
+        workerIds: boundedUnique(group.map(f => f.workerId)),
+        prNumbers: [],
+      },
+      impact: { blockedAudits: tasks.size, missions: missions.size },
     }));
   }
   return out;
@@ -634,6 +756,8 @@ const RULES = [
   ruleProviderMismatch,
   ruleFailureRateSpike,
   ruleOutputUnmetBoundary,
+  ruleWorkerInfrastructure,
+  ruleCaptureFailure,
 ];
 
 /**

@@ -144,7 +144,9 @@ describe('typed params', () => {
       for (const [name, p] of Object.entries(props(g, actionsOfGroup(g)))) {
         expect(typeof p.type, `${g}.${name}`).toBe('string');
         expect(p.description?.length ?? 0, `${g}.${name}`).toBeGreaterThan(3);
-        expect(p.description!.length, `${g}.${name}: ${p.description}`).toBeLessThanOrEqual(170);
+        // A sub-action selector names one alternation per action it serves
+        // (SUB_ACTIONS), so it may run longer than one short sentence.
+        expect(p.description!.length, `${g}.${name}: ${p.description}`).toBeLessThanOrEqual(name === 'action' ? 600 : 170);
       }
     }
   });

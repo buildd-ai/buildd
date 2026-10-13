@@ -621,11 +621,27 @@ UPDATE artifact_links SET created_by = NULL;
 -- Living Specs: titles and summaries are prose; who wrote or approved a
 -- revision is an account or user id. Bodies are artifacts, scrubbed above.
 UPDATE specs SET title = 'Spec ' || left(md5(id::text), 8), created_by = NULL;
+-- The metadata block names repo paths and a handle; the repo copy state holds a
+-- repo name, a path and an error string: wiped.
+UPDATE specs SET metadata = NULL, repo_copy = NULL;
+-- Metadata changes: the values and the reason are free text; who changed it is an id.
+UPDATE spec_metadata_changes SET previous_value = NULL, new_value = NULL, reason = pg_temp.qa_text(reason), changed_by = md5(changed_by);
+-- Spec comments: the text and the anchored heading are free text; ids and hashes are not content.
+UPDATE spec_comments SET body = pg_temp.qa_text(body), anchor_label = pg_temp.qa_text(anchor_label), author_id = md5(author_id),
+  resolved_by = CASE WHEN resolved_by IS NULL THEN NULL ELSE md5(resolved_by) END;
+-- A design reference carries free-text screen names and may carry a URL: wiped.
 UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
-  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END;
+  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL;
 -- Outcome verdicts: the evidence holds what a reviewer observed (prose), file
 -- refs and who recorded it; criterion ids and head SHAs are not content.
 UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence);
+-- Spec neighbours: the reason detail names repo paths and criterion ids; kind and source are fixed words.
+UPDATE spec_neighbors SET detail = pg_temp.qa_json(detail);
+-- Spec filings: a proposed new area's title and charter (spec prose) ride in
+-- proposal; who filed or resolved one is an author label. kind, status and source are fixed words.
+UPDATE spec_filings SET proposal = pg_temp.qa_json(proposal),
+  created_by = CASE WHEN created_by IS NULL THEN NULL ELSE md5(created_by) END,
+  resolved_by = CASE WHEN resolved_by IS NULL THEN NULL ELSE md5(resolved_by) END;
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.
@@ -733,6 +749,11 @@ UPDATE migration_log SET
 -- -v known lists this checkout's text-like columns (scripts/qa/known-columns.ts);
 -- every other text-like column is invisible to this checkout's app, so it is
 -- overwritten outright: NULL where allowed, else a per-row md5 (unique-safe).
+-- Its triggers are this checkout's blind spot too, and an append-only table
+-- refuses any UPDATE (artifact_revisions did, on every branch cut before it):
+-- a table's enabled user triggers are switched off for the overwrite and back
+-- on after it, by name, so prod's trigger states come out as they went in.
+-- Inside this transaction, on the throwaway clone; migrations are untouched.
 -- An unset -v known leaves `:'known'` literal, a syntax error (fail closed).
 SET qa.known = :'known';
 
@@ -742,6 +763,10 @@ DECLARE
   r record;
   val text;
   wiped text[] := '{}';
+  quieted text[] := '{}';  -- tables whose triggers are off, by name
+  paused text[] := '{}';   -- 'table|trigger' pairs to switch back on
+  pair text;
+  tg text;
 BEGIN
   IF NOT coalesce('tasks.title' = ANY (known), false) THEN
     RAISE EXCEPTION 'scrub: known-column list (-v known) is empty or malformed';
@@ -766,8 +791,22 @@ BEGIN
       WHEN r.dt = 'ARRAY' THEN format('ARRAY[''x'' || md5(%I::text)]', r.col)
       ELSE format('left(''x'' || md5(%I::text), %s)', r.col, coalesce(r.maxlen, 33))
     END;
+    IF NOT (r.t = ANY (quieted)) THEN
+      FOR tg IN
+        SELECT tgname::text FROM pg_trigger
+        WHERE tgrelid = format('public.%I', r.t)::regclass AND NOT tgisinternal AND tgenabled <> 'D'
+        ORDER BY 1
+      LOOP
+        EXECUTE format('ALTER TABLE %I DISABLE TRIGGER %I', r.t, tg);
+        paused := paused || (r.t || '|' || tg);
+      END LOOP;
+      quieted := quieted || r.t;
+    END IF;
     EXECUTE format('UPDATE %I SET %I = %s WHERE %I IS NOT NULL', r.t, r.col, val, r.col);
     wiped := wiped || (r.t || '.' || r.col);
+  END LOOP;
+  FOREACH pair IN ARRAY paused LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE TRIGGER %I', split_part(pair, '|', 1), split_part(pair, '|', 2));
   END LOOP;
   -- Schema names only (public code), never values.
   IF cardinality(wiped) > 0 THEN

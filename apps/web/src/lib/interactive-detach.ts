@@ -13,6 +13,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { RELEASED_SLOT_WORKER_ERROR } from '@/lib/worker-termination';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Detaching an interactive worker: the row `claim_task` minted for a local
@@ -96,14 +97,14 @@ export async function detachInteractiveWorker(input: {
 }): Promise<DetachResult> {
   const now = input.now ?? new Date();
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, input.workerId),
+    where: sqlWhere(eq(workers.id, input.workerId)),
     columns: { id: true, taskId: true, accountId: true, workspaceId: true, status: true, runner: true },
   });
   if (!worker) return { detached: false, reason: 'not_found' };
   if (worker.runner !== INTERACTIVE_WORKER_RUNNER) return { detached: false, reason: 'not_interactive' };
 
   const task = worker.taskId
-    ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { id: true, status: true } })
+    ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, worker.taskId)), columns: { id: true, status: true } })
     : null;
   const taskStatus = task?.status ?? null;
   if (!(LIVE_WORKER_STATUSES as readonly string[]).includes(worker.status)) {

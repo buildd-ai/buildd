@@ -149,6 +149,7 @@ packages/shared/
 packages/core/
 packages/ai-kit/
 packages/dispatch-contract/
+packages/spec-contract/
 scripts/stub-server-only.ts
 bunfig.toml
 package.json
@@ -290,7 +291,8 @@ fi
     "packages/shared",
     "packages/core",
     "packages/ai-kit",
-    "packages/dispatch-contract"
+    "packages/dispatch-contract",
+    "packages/spec-contract"
   ]
 }
 PKGJSON

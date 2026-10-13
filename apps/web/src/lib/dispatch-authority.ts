@@ -45,6 +45,7 @@ import { clearDue, markDue, reseedDue } from '@/lib/redis';
 import { SCHEDULED_DISPATCH_MAX_AHEAD_MS, buildTaskPayload, type DispatchTask, type DispatchWorkspace } from '@/lib/task-dispatch-delivery';
 import { dispatchTransportConfig, publishPendingDispatches } from '@/lib/dispatch-transport';
 import { ADAPTER_CHAINS, offerScheduledNotice, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The Redis due-queue (lib/cron-due-queue.ts) the dispatch-drain tick gates on. */
 export const DISPATCH_DUE_QUEUE = 'dispatch';
@@ -96,14 +97,16 @@ export const KICK_GRACE_MS = 30_000;
 export async function wakeTask(
   taskId: string,
   cause: DispatchCause,
-  opts: { notBefore?: Date; targetLocalUiUrl?: string | null } = {},
+  /** `metadata`: delivery hints and tracing only (e.g. a recovery action key), never task state. */
+  opts: { notBefore?: Date; targetLocalUiUrl?: string | null; metadata?: Record<string, unknown> } = {},
 ): Promise<void> {
   try {
+    const metadata = { ...(opts.metadata ?? {}), ...(opts.targetLocalUiUrl ? { targetLocalUiUrl: opts.targetLocalUiUrl } : {}) };
     await enqueueTaskDispatch({
       taskId,
       cause,
       notBefore: opts.notBefore,
-      metadata: opts.targetLocalUiUrl ? { targetLocalUiUrl: opts.targetLocalUiUrl } : undefined,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     });
   } catch (err) {
     // The trigger row (if any) still stands; a missing cause costs precision, not the wake.
@@ -257,7 +260,7 @@ export async function drainDispatchOutbox(opts: { limit?: number } = {}): Promis
 /** The task and workspace a delivery decision reads. Shared with the Dispatch callbacks (lib/dispatch-resolve.ts). */
 export async function loadForDelivery(taskId: string): Promise<{ task: DispatchContext['task']; workspace: DispatchWorkspace } | null> {
   const row = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: {
       id: true, title: true, description: true, workspaceId: true, mode: true, priority: true,
       missionId: true, backend: true, roleSlug: true, runnerPreference: true, status: true, startAt: true,

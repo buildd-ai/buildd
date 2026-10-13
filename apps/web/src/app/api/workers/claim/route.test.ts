@@ -563,6 +563,7 @@ import { POST } from './route';
 import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -966,7 +967,7 @@ describe('POST /api/workers/claim', () => {
       return Object.values(node).some((v) => (Array.isArray(v) ? v.some((x) => hasEq(x, field, value)) : hasEq(v, field, value)));
     };
     const openQueries = mockWorkspacesFindMany.mock.calls
-      .map((c: any[]) => c[0]?.where)
+      .map((c: any[]) => capturedWhere(c[0]?.where))
       .filter((w: any) => hasEq(w, 'accessMode', 'open'));
     expect(openQueries.length).toBeGreaterThan(0);
     for (const w of openQueries) expect(hasEq(w, 'teamId', 'team-runner')).toBe(true);
@@ -2390,6 +2391,15 @@ describe('POST /api/workers/claim', () => {
         const res = await POST(claimReq());
         return (await res.json()) as any;
       };
+
+      it('a reservation is cleared when the task is claimed, so a re-queue is not held from runners', async () => {
+        const sets = withTask({ context: { reservedBy: { accountId: 'a', at: 'then', expiresAt: '2999-01-01T00:00:00.000Z' }, model: 'x' } });
+        const data = await claim();
+        expect(data.workers.length).toBe(1);
+        const assigned = sets.find(v => v.status === 'assigned');
+        expect(assigned.context.reservedBy).toBeUndefined();
+        expect(assigned.context.model).toBe('x');
+      });
 
       it('no ceiling: the router pick and lookups are unchanged', async () => {
         const sets = withTask({ complexity: 'complex' });
@@ -4973,7 +4983,7 @@ describe('POST /api/workers/claim', () => {
   });
 
   // Regression: on 2026-05-25, a task pinned to project "sibling-app" was created
-  // against a workspace whose projects[] only contained "dispatch-family". The
+  // against a workspace whose projects[] only contained "acme-app". The
   // task got claimed, the agent flailed on a non-existent path, stuck-detector
   // killed it, cleanup re-queued, and the loop ran 4 times before being killed
   // manually. The claim route now refuses such tasks up-front and marks them
@@ -5000,7 +5010,7 @@ describe('POST /api/workers/claim', () => {
         workspace: {
           id: 'ws-1',
           gitConfig: { claimPlanner: 'record' },
-          projects: [{ name: 'dispatch-family' }],
+          projects: [{ name: 'acme-app' }],
         },
       },
     ]);
@@ -5046,13 +5056,13 @@ describe('POST /api/workers/claim', () => {
         id: 'good-task',
         workspaceId: 'ws-1',
         title: 'Test task',
-        project: 'dispatch-family',
+        project: 'acme-app',
         requiredCapabilities: [],
         context: {},
         workspace: {
           id: 'ws-1',
           gitConfig: { claimPlanner: 'record' },
-          projects: [{ name: 'dispatch-family' }, { name: 'other-project' }],
+          projects: [{ name: 'acme-app' }, { name: 'other-project' }],
         },
       },
     ]);
@@ -6786,6 +6796,33 @@ describe('path-overlap claim guard', () => {
     });
   });
 
+  // failure-incident-recovery G7 + §5 rule 3: the deferral row names the
+  // blocker task (a streak is per blocker) and the overlapping paths.
+  it('layer 1: the deferral row carries the blocker task and the overlapping paths', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockFireDeferralEvent.mockClear();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+
+    const ev = mockFireDeferralEvent.mock.calls.map((c: any[]) => c[0]).find((e: any) => e.reason === 'path_overlap');
+    expect(ev?.detail).toEqual({
+      prNumber: 2700,
+      prUrl: 'https://github.com/org/repo/pull/2700',
+      blockingTaskId: 'sibling-task',
+      paths: ['apps/web/src/lib/mcp-oauth.ts'],
+    });
+  });
+
   it('layer 2: names the explicit task exclusion as path_overlap with the claiming task id and paths', async () => {
     mockAuthenticateApiKey.mockResolvedValue(apiAccount());
     setupForClaim();
@@ -8000,7 +8037,7 @@ describe('claim gate overrides', () => {
 
       await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
 
-      const whereArg = (mockTasksFindMany.mock.calls[0] as any)[0]?.where;
+      const whereArg = capturedWhere((mockTasksFindMany.mock.calls[0] as any)[0]?.where);
       expect(conditionLiterals(whereArg)).toContain('capExempt');
     });
 
@@ -8309,7 +8346,7 @@ describe('claim gate overrides', () => {
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValue([]);
       await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', ...body } }));
-      return (mockTasksFindMany.mock.calls[0] as any)[0]?.where;
+      return capturedWhere((mockTasksFindMany.mock.calls[0] as any)[0]?.where);
     }
 
     // Mocked db returns rows regardless of WHERE, so assert the predicate.
@@ -8537,7 +8574,7 @@ describe('claim gate overrides', () => {
       const ev = mockFireDeferralEvent.mock.calls
         .map((c: any[]) => c[0])
         .find((e: any) => e.reason === 'path_overlap');
-      expect(ev?.detail).toEqual({ blockingTaskId: 'task-9', prNumber: null, prUrl: null });
+      expect(ev?.detail).toEqual({ blockingTaskId: 'task-9', prNumber: null, prUrl: null, paths: ['apps/web/src/a.ts'] });
     });
 
     it('layer 2: a manifest of ["**","a.ts"] still respects a held path_claim on a.ts', async () => {

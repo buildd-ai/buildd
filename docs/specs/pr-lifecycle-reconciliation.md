@@ -6,7 +6,7 @@ last_verified: 2026-10-07
 summary: The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
 domain: tasks
 surfaces: [apps/web/src/lib/pr-state-refresh.ts, apps/web/src/lib/pr-presentation.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/components/TaskCard.tsx]
-related: [runner-liveness, mission-task-lifecycle]
+related: [runner-liveness, mission-task-lifecycle, workflow-kernel-library]
 keywords: [ci, prLifecycleStatus, ci_green, ci_failed, ci_running, webhook, reconcile]
 verified_by: [apps/web/src/lib/pr-state-refresh.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/app/api/github/webhook/route.test.ts]
 supersedes: []
@@ -36,6 +36,8 @@ Every `prLifecycleStatus` value in the CI set (`ci_running`, `ci_failed`, `ci_gr
 `merged` and `closed` are terminal. Any webhook event writing a CI state (`ci_running`, `ci_failed`, `ci_green`) MUST check `prLifecycleStatus` first and skip the write if the current value is terminal. This prevents late-arriving `check_suite.failure` webhooks from overwriting an already-merged PR's badge.
 
 ### I-3: Live CI reconciliation
+
+> Amended 2026-10-13 by `workflow-kernel-library.md` §1: for a delivery-owned PR this read records a fact and never writes `prLifecycleStatus` during a render; retired in slice S4.
 
 `pr-state-refresh.ts` MUST fetch live CI state (via `fetchCiLifecycleStatus` → `/commits/{sha}/check-suites`) for every open-PR worker whose `prLifecycleStatus` is in `{ci_running, ci_failed, ci_green}` and whose `prLastCheckedAt` is stale (≥5 min). The resolved value is written only when it differs from the stored value.
 

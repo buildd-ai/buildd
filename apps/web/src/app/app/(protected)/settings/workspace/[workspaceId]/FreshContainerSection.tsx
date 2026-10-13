@@ -27,11 +27,11 @@ export default function FreshContainerSection({ workspaceId, initial, canEdit }:
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? 'Save failed');
+        throw new Error(data.error ?? 'Could not save. Try again.');
       }
     } catch (e) {
       setOn(!next);
-      setError(e instanceof Error ? e.message : 'Save failed');
+      setError(e instanceof Error ? e.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }
@@ -42,7 +42,7 @@ export default function FreshContainerSection({ workspaceId, initial, canEdit }:
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
           <h3 id="fresh-container-label" className="text-sm font-medium text-text-primary">Start every task from a clean copy</h3>
-          <p className="text-xs text-text-secondary mt-0.5">Tasks normally reuse the copy of the repository the last task cleaned up, so they start faster. Turn this on if tasks here act on outside input, like public issues.</p>
+          <p className="text-xs text-text-secondary mt-0.5">When the cloud runner reuses copies between tasks, each starts from the last one&apos;s cleaned copy. Turn this on if tasks here act on outside input, like public issues.</p>
         </div>
         {canEdit ? (
           <Switch

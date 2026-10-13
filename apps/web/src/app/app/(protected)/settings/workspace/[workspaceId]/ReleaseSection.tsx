@@ -9,6 +9,8 @@ import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import type { StateKey } from '@/components/ui/states';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
 import { buildReleaseConfigPayload } from './release-config-payload';
+import { splitRecentReleases } from '../../_lib/recent-releases';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 type StrategyOption = ReleaseStrategy | 'none';
 
@@ -67,23 +69,23 @@ const TRIGGER_OPTIONS: TriggerOption[] = [
     value: 'on_mission_complete',
     label: 'When mission completes',
     badge: 'Recommended',
-    help: 'Releases once after every task in a mission finishes, as one ship.',
+    help: 'Releases once, when every task in a mission finishes.',
   },
   {
     value: 'every_merge',
     label: 'Every merge',
-    help: 'Releases on each completed task. Use for hotfix workspaces or repos that ship continuously.',
+    help: 'Releases after each completed task.',
   },
   {
     value: 'manual',
     label: 'Manual only',
-    help: "You release by hand: 'Release now' on Home, or trigger_release over MCP.",
+    help: "Use Release now on Home, or trigger_release over MCP.",
   },
   {
     value: 'scheduled',
     label: 'Scheduled',
     disabled: true,
-    help: 'Coming soon. Releases on a cron schedule, such as nightly.',
+    help: 'Releases on a schedule, such as nightly.',
   },
 ];
 
@@ -154,6 +156,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
   const [lastRelease, setLastRelease] = useState<LastRelease | null>(null);
   const [recentReleases, setRecentReleases] = useState<RecentRelease[]>([]);
   const [loadingReleases, setLoadingReleases] = useState(false);
+  const [showSkipped, setShowSkipped] = useState(false);
 
   const [hasVercelToken, setHasVercelToken] = useState<boolean | null>(null);
 
@@ -210,16 +213,22 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
       .catch(() => setHasVercelToken(null));
   }, [teamId]);
 
+  const form = {
+    strategy, prodBranch, ref, workflowFile, trigger,
+    candidateEnabled, candidateBranches, candidateSource, candidateAuthors,
+  };
+  const { dirty, snapshot, markSaved } = useDirtyState(form);
+  useWarnOnUnload(canEdit && dirty);
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    if (!dirty) return;
+    const submitted = snapshot;
     setSaving(true);
     setSaved(false);
     setSaveError(null);
 
-    const releaseConfig = buildReleaseConfigPayload(cfg, {
-      strategy, prodBranch, ref, workflowFile, trigger,
-      candidateEnabled, candidateBranches, candidateSource, candidateAuthors,
-    });
+    const releaseConfig = buildReleaseConfigPayload(cfg, form);
 
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/config`, {
@@ -228,11 +237,12 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
         body: JSON.stringify({ releaseConfig }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save');
+      if (!res.ok) throw new Error(data.error || 'Could not save. Try again.');
+      markSaved(submitted);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Failed to save');
+      setSaveError(err instanceof Error ? err.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }
@@ -244,7 +254,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
     return (
       <div className="py-4 first:pt-0 last:pb-0">
         <h3 className="text-sm font-medium text-text-primary">Release</h3>
-        <p className="text-xs text-text-muted mt-0.5">Link a GitHub repo to enable releases.</p>
+        <p className="text-xs text-text-muted mt-0.5">Requires a linked GitHub repository.</p>
       </div>
     );
   }
@@ -430,7 +440,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   </div>
                   {trigger === 'on_mission_complete' && (
                     <p className="text-xs text-text-muted mt-2">
-                      Tasks outside a mission don&apos;t trigger a release with this setting.
+                      Tasks outside a mission don&apos;t trigger a release.
                     </p>
                   )}
                 </div>
@@ -498,10 +508,10 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
         {canEdit && <div className="flex flex-wrap items-center gap-4">
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || !dirty}
             className="btn min-h-11"
           >
-            {saving ? 'Saving…' : 'Save release settings'}
+            {saving ? 'Saving…' : 'Save'}
           </button>
           {saved && <span className="text-status-success text-sm">Saved</span>}
           {saveError && <span className="text-status-error text-sm">{saveError}</span>}
@@ -543,10 +553,14 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
               )}
             </div>
 
-            {/* Recent releases table */}
-            {recentReleases.length > 0 && (
+            {/* Recent releases table: releases that ran; skipped ones fold into one line */}
+            {recentReleases.length > 0 && (() => {
+              const { ran, skipped, skippedSince } = splitRecentReleases(recentReleases);
+              const rows = showSkipped ? [...ran, ...skipped] : ran;
+              return (
               <div>
                 <h4 className="text-sm font-medium text-text-primary mb-1">Recent releases</h4>
+                {rows.length > 0 && (
                 <div className="border-y border-border-default overflow-x-auto">
                   <table className="w-full table-fixed text-xs">
                     <thead className="border-b border-border-default">
@@ -558,8 +572,8 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border-default">
-                      {recentReleases.slice(0, 5).map((r: RecentRelease) => (
-                        <tr key={r.taskId} className="hover:bg-surface-2">
+                      {rows.map((r: RecentRelease) => (
+                        <tr key={r.taskId} className="hover:bg-surface-2" data-testid="recent-release-row">
                           <td className="px-3 py-2 text-text-secondary whitespace-nowrap" title={r.completedAt}>
                             {relativeTime(r.completedAt)}
                           </td>
@@ -586,8 +600,21 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                     </tbody>
                   </table>
                 </div>
+                )}
+                {skipped.length > 0 && skippedSince && (
+                  <button
+                    type="button"
+                    data-testid="recent-releases-skipped"
+                    aria-expanded={showSkipped}
+                    onClick={() => setShowSkipped(v => !v)}
+                    className="btn btn-quiet min-h-11 md:min-h-0 mt-1"
+                  >
+                    {skipped.length} skipped since {new Date(skippedSince).toLocaleDateString()}
+                  </button>
+                )}
               </div>
-            )}
+              );
+            })()}
           </div>
         )}
       </form>

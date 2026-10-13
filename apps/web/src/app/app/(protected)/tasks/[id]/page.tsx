@@ -1,4 +1,6 @@
 import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { cancellationLine } from '@/lib/task-cancellation';
+import { taskRecoverySentence } from '@/lib/task-recovery-hold';
 import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
@@ -81,6 +83,8 @@ import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
 import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 import RunnerReachBanner from './RunnerReachBanner';
+import { loadServiceStatus } from '@/lib/service-status-loader';
+import { ServiceStatusList } from '@/components/service-status/ServiceStatusList';
 import { loadRunnerReachDiagnosis } from '@/lib/runner-reach';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import TaskOverflowMenu from './TaskOverflowMenu';
@@ -122,11 +126,14 @@ import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
 import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
 import BookkeepingAttemptRow from './BookkeepingAttemptRow';
-import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr } from '@/lib/task-verdict';
+import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr, verdictRepeatsOpenQuestion } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
+import Notice from '@/components/ui/Notice';
+import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -168,7 +175,7 @@ export default async function TaskDetailPage({
 
   // Get task with workspace (for ownership check) and relationships
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, id),
+    where: sqlWhere(eq(tasks.id, id)),
     with: {
       workspace: true,
       // Explicit allowlist, like every sibling relation in this shape: the two
@@ -180,7 +187,7 @@ export default async function TaskDetailPage({
       },
       parentTask: { columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true } },
       // taskClass/mode/title tell a subtask from an attempt at this task (D9).
-      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true, createdAt: true }, orderBy: [asc(tasks.createdAt), asc(tasks.id)] },
+      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true, createdAt: true }, orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]) },
       // Provenance (U6): who created this task and by what mechanism. The
       // creating worker has no page of its own, so we carry its task instead.
       creatorAccount: { columns: { id: true, name: true } },
@@ -209,7 +216,7 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
+  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat, taskRecoveryViews] = await Promise.all([
     // Open question notes scoped to this task (drives the "Waiting on you"
     // badge, and lets the live worker view show the note and the worker's
     // waitingFor as ONE question). A mission task's questions carry its
@@ -235,7 +242,7 @@ export default async function TaskDetailPage({
     // Dependency tasks, if dependsOn has entries
     depTaskIds.length > 0
       ? db.query.tasks.findMany({
-          where: inArray(tasks.id, depTaskIds),
+          where: sqlWhere(inArray(tasks.id, depTaskIds)),
           columns: { id: true, title: true, status: true, result: true },
           with: {
             workers: {
@@ -243,15 +250,15 @@ export default async function TaskDetailPage({
               // Every worker, newest first — NOT limit 1. The gate asks whether
               // ANY worker holds an open PR, the same read the list and the
               // claim route make; the newest alone hid an older open PR.
-              orderBy: [desc(workers.createdAt), desc(workers.id)],
+              orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
             },
           },
         })
       : Promise.resolve([]),
     // Workers for this task
     db.query.workers.findMany({
-      where: eq(workers.taskId, id),
-      orderBy: [desc(workers.createdAt), desc(workers.id)],
+      where: sqlWhere(eq(workers.taskId, id)),
+      orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
       with: { account: { columns: { name: true } } },
     }),
     // Mission context bar (W6): the mission row and its tasks' light columns —
@@ -259,7 +266,7 @@ export default async function TaskDetailPage({
     // content — fed through the builders every mission surface shares.
     task.missionId
       ? db.query.missions.findFirst({
-          where: eq(missions.id, task.missionId),
+          where: sqlWhere(eq(missions.id, task.missionId)),
           columns: {
             id: true, title: true, status: true, orchestrationMode: true, dependsOnMissionId: true,
             dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true,
@@ -284,14 +291,16 @@ export default async function TaskDetailPage({
       return Promise.all([
         taskEstimatesEnabled(teamId),
         db.query.taskEstimates.findFirst({
-          where: eq(taskEstimates.taskId, id),
-          orderBy: desc(taskEstimates.createdAt),
+          where: sqlWhere(eq(taskEstimates.taskId, id)),
+          orderBy: sqlOrderBy(desc(taskEstimates.createdAt)),
         }),
       ]).then(([enabled, row]) => (enabled ? row ?? null : null));
     })(),
     // An answer link for a mission filed from the reader's own conversation
     // opens that conversation instead, when chat is on for them.
     focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
+    // A failure incident's recovery holding this task (failure-incident-recovery §16.4).
+    loadTaskRecoveryViewsForViewer([task.id], { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null }),
   ]);
   if (answerInChat) redirect(answerInChat);
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
@@ -314,7 +323,7 @@ export default async function TaskDetailPage({
     const latestWorker = taskWorkers[0];
     if (latestWorker?.prNumber && !latestWorker?.mergedAt && latestWorker?.prUrl) {
       const wsWithInstall = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, task.workspaceId),
+        where: sqlWhere(eq(workspaces.id, task.workspaceId)),
         columns: {},
         with: { githubInstallation: { columns: { installationId: true } } },
       });
@@ -360,19 +369,22 @@ export default async function TaskDetailPage({
   // Cloud runs only: its time on the hosted runner, all attempts. Started
   // here, awaited below, so it adds no round trip of its own.
   const hostedRunnerUsagePromise = taskHostedRunnerUsage(id).catch(() => null);
-  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw, livingSpec] = await Promise.all([
+  // The team's service status for this viewer, kept to the causes this task waits on. Never throws.
+  const serviceStatusPromise = loadServiceStatus({ userId: user?.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId })
+    .then((v) => v.statuses.filter((s) => s.work.some((w) => w.taskId === task.id)));
+  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw, livingSpec, taskServiceStatus] = await Promise.all([
     prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
     taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     // Artifacts for all workers on this task
     workerIds.length > 0
-      ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
+      ? db.query.artifacts.findMany({ where: sqlWhere(inArray(artifacts.workerId, workerIds)) })
       : Promise.resolve([]),
     // Agent error traces (pattern-matched failures from tool output).
     // Captured by the runner's error-trace-scanner — see apps/runner/src/error-trace-scanner.ts.
     // Cap to most recent 50 here; full list available via /api/tasks/[id]/error-traces.
     db.query.workerErrorTraces.findMany({
-      where: eq(workerErrorTraces.taskId, id),
-      orderBy: [desc(workerErrorTraces.ts)],
+      where: sqlWhere(eq(workerErrorTraces.taskId, id)),
+      orderBy: sqlOrderBy([desc(workerErrorTraces.ts)]),
       limit: 50,
     }),
     (async () => {
@@ -403,22 +415,22 @@ export default async function TaskDetailPage({
     // failure excerpt, on the same branch. They make "How it landed".
     prWorker?.prNumber
       ? db.query.tasks.findMany({
-          where: and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha)),
+          where: sqlWhere(and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha))),
           columns: { id: true, status: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
           with: {
             // Full rows, same shape as taskWorkers: Worker history lists them.
             workers: {
-              orderBy: [desc(workers.createdAt), desc(workers.id)],
+              orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
               with: { account: { columns: { name: true } } },
             },
           },
-          orderBy: [asc(tasks.createdAt), asc(tasks.id)],
+          orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]),
         })
       : Promise.resolve([]),
     // What this task unblocks, once it has landed.
     task.status === 'completed'
       ? db.query.tasks.findMany({
-          where: and(eq(tasks.workspaceId, task.workspaceId), sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`),
+          where: sqlWhere(and(eq(tasks.workspaceId, task.workspaceId), sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`)),
           columns: { id: true, title: true, label: true, status: true },
           limit: 6,
         })
@@ -452,6 +464,7 @@ export default async function TaskDetailPage({
     loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
     // The Living Spec the task is pinned to, with its outcome. No query unless it names one.
     livingSpecLoad(task.id, task.context),
+    serviceStatusPromise,
   ]);
   // CI-retry attempts numbered by (createdAt, id): "attempt N" never swaps.
   const ciAttemptTasks = oldestFirst(ciAttemptRows, compareTasksChrono)
@@ -550,9 +563,9 @@ export default async function TaskDetailPage({
 
   if (planParentId) {
     const chainBase = await db.query.tasks.findMany({
-      where: eq(tasks.parentTaskId, planParentId),
+      where: sqlWhere(eq(tasks.parentTaskId, planParentId)),
       columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true },
-      orderBy: [asc(tasks.createdAt), asc(tasks.id)],
+      orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]),
     });
 
     if (chainBase.length > 0) {
@@ -572,9 +585,9 @@ export default async function TaskDetailPage({
 
       const chainWorkers = chainIds.length > 0
         ? await db.query.workers.findMany({
-            where: inArray(workers.taskId, chainIds),
+            where: sqlWhere(inArray(workers.taskId, chainIds)),
             columns: { id: true, taskId: true, prUrl: true, prNumber: true, turns: true, branch: true, status: true, mergedAt: true, prLifecycleStatus: true, runner: true, localUiUrl: true },
-            orderBy: [desc(workers.createdAt), desc(workers.id)],
+            orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
           })
         : [];
       const latestWorker = new Map<string, typeof chainWorkers[0]>();
@@ -585,7 +598,7 @@ export default async function TaskDetailPage({
       const chainWorkerIds = [...latestWorker.values()].map(w => w.id);
       const chainArts = chainWorkerIds.length > 0
         ? await db.query.artifacts.findMany({
-            where: and(inArray(artifacts.workerId, chainWorkerIds), ne(artifacts.type, 'impl_plan')),
+            where: sqlWhere(and(inArray(artifacts.workerId, chainWorkerIds), ne(artifacts.type, 'impl_plan'))),
             columns: { id: true, workerId: true, type: true, title: true },
           })
         : [];
@@ -620,11 +633,11 @@ export default async function TaskDetailPage({
       const slugs = [...new Set(planChain.map(t => t.roleSlug).filter(Boolean))] as string[];
       if (slugs.length > 0) {
         const roles = await db.query.workspaceSkills.findMany({
-          where: and(
+          where: sqlWhere(and(
             eq(workspaceSkills.workspaceId, task.workspaceId),
             eq(workspaceSkills.isRole, true),
             inArray(workspaceSkills.slug, slugs),
-          ),
+          )),
           columns: { slug: true, name: true, color: true },
         });
         roles.forEach(r => roleMap.set(r.slug, { name: r.name, color: r.color }));
@@ -642,7 +655,11 @@ export default async function TaskDetailPage({
   // Never revive an ended worker merely because it retained a question.
   const activeWorkerRow = !isTerminalTaskStatus(task.status)
     ? workerPicks.activeWorker : undefined;
-  const activeWorker = activeWorkerRow?.waitingFor && !isOpenAsk(task.status, activeWorkerRow.status)
+  // A task blocked by a failure incident reads the incident's recovery (failure-incident-recovery
+  // §16.4, §17.2): while recovery owns the next step, a question the worker asked about the same
+  // failure is stale, so its controls are not offered; history keeps it.
+  const taskRecovery = taskRecoveryViews.get(task.id) ?? null;
+  const activeWorker = activeWorkerRow?.waitingFor && (!isOpenAsk(task.status, activeWorkerRow.status) || taskRecovery?.supersedesQuestion)
     ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
 
   const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
@@ -710,6 +727,14 @@ export default async function TaskDetailPage({
   });
 
   const initiative = task.mission?.initiative ?? null;
+
+  // One plain line for why a task was cancelled, or what a held task waits on
+  // (failure-incident-recovery §18.5/§18.6): the same sentence explain gives.
+  const recoveryLine = task.status === 'cancelled'
+    ? cancellationLine(task.context)
+    : task.status === 'pending'
+      ? taskRecoverySentence(task.context, iso => `${iso.slice(11, 16)} UTC`)
+      : null;
 
 
   // Parse attachments from context — resolve R2 storage keys to presigned URLs
@@ -1511,6 +1536,9 @@ export default async function TaskDetailPage({
               title={deliverableLink.title ? displayTaskTitle(deliverableLink.title) : null}
             />
           )}
+          {recoveryLine && (
+            <p data-testid="task-recovery-line" className="mt-2 text-meta text-text-secondary [overflow-wrap:anywhere]">{recoveryLine}</p>
+          )}
           {/* The one track, in the delivery's words (task-page State mapping). A
               live run's own view leads with it, so it is drawn here only between runs. */}
           {headerTrack && !activeWorker && <Lifecycle state={headerTrack.state} phrase={headerTrack.phrase} className="mt-3" />}
@@ -1522,7 +1550,21 @@ export default async function TaskDetailPage({
             different things. The page alone adds runner targeting. An open
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
-        {verdict && (
+        {taskRecovery?.holdsCompletion && (
+          <Notice
+            tone={taskRecovery.phase === 'unavailable' ? 'err' : taskRecovery.phase === 'decision' ? 'warn' : 'info'}
+            title={taskRecovery.stateWord}
+            action={{ label: 'Open incident', href: taskRecovery.href }}
+            className="mt-4"
+            data-testid="task-recovery-status"
+          >
+            <p>{taskRecovery.sentence}</p>
+            <p className="text-meta text-text-muted">Owner: {taskRecovery.ownerLabel}</p>
+          </Notice>
+        )}
+
+        {/* An open question's own card is below: the verdict would only point at it. */}
+        {verdict && !verdictRepeatsOpenQuestion(verdict, { questionOnPage: !!activeWorker?.waitingFor }) && (
           <TaskVerdictBlock verdict={verdict} displayStatus={displayStatus} />
         )}
 
@@ -1539,6 +1581,7 @@ export default async function TaskDetailPage({
           />
         )}
 
+        <ServiceStatusList statuses={taskServiceStatus} showWork={false} />
         {runnerReach && (
           <RunnerReachBanner workspaceId={task.workspaceId} diagnosis={runnerReach.diagnosis} canFix={runnerReach.canFix} />
         )}

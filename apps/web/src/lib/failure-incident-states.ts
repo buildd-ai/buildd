@@ -13,6 +13,7 @@ import { failureIncidents, releases, releaseTasks, tasks } from '@buildd/core/db
 import { and, eq, gte, inArray, isNull, or } from 'drizzle-orm';
 import { OPEN_TASK_STATUSES, type FailureIncidentStatus } from '@buildd/shared';
 import type { IncidentStateInput } from './health-failure-groups';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Incidents read per page; the newest first. */
 const INCIDENT_LIMIT = 100;
@@ -35,20 +36,20 @@ export function incidentRowLine(i: {
 export async function loadFailureIncidentStates(workspaceIds: string[], since: Date): Promise<IncidentStateInput[]> {
   if (workspaceIds.length === 0) return [];
   const rows = await db.query.failureIncidents.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(failureIncidents.workspaceId, workspaceIds),
       gte(failureIncidents.lastSeenAt, since),
       or(isNull(failureIncidents.resolvedAt), gte(failureIncidents.resolvedAt, since)),
-    ),
+    )),
     columns: { id: true, status: true, affectedRefs: true, linkedFixTaskId: true, lastSeenAt: true },
-    orderBy: (i, { desc }) => [desc(i.lastSeenAt)],
+    orderBy: sqlOrderByFn((i, { desc }) => [desc(i.lastSeenAt)]),
     limit: INCIDENT_LIMIT,
   });
   if (rows.length === 0) return [];
 
   const fixIds = [...new Set(rows.flatMap(r => (r.linkedFixTaskId ? [r.linkedFixTaskId] : [])))];
   const [fixTasks, shipped] = fixIds.length === 0 ? [[], []] : await Promise.all([
-    db.query.tasks.findMany({ where: inArray(tasks.id, fixIds), columns: { id: true, status: true } }),
+    db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, fixIds)), columns: { id: true, status: true } }),
     // The release a fix shipped in: a healthy release that lists the fix task.
     db.select({ taskId: releaseTasks.taskId, version: releases.version })
       .from(releaseTasks)

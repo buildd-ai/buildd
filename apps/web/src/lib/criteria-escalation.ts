@@ -3,6 +3,7 @@ import { missions, missionNotes, taskSchedules } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { postMissionFeedEvent, type FeedActor } from '@/lib/mission-feed';
 import type { MissionNoteType } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The single writer that un-escalates a mission's goal-criteria gate.
@@ -56,7 +57,7 @@ export async function resolveCriteriaEscalation(
   actor: FeedActor,
 ): Promise<CriteriaEscalationResolution> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, criteriaEscalatedAt: true, scheduleId: true },
   });
 
@@ -85,7 +86,7 @@ export async function resolveCriteriaEscalation(
   let rearmedSchedule = false;
   if (mission.scheduleId) {
     const schedule = await db.query.taskSchedules.findFirst({
-      where: eq(taskSchedules.id, mission.scheduleId),
+      where: sqlWhere(eq(taskSchedules.id, mission.scheduleId)),
       columns: { id: true },
     });
     // The schedule row may already be gone — e.g. a completed/archived mission

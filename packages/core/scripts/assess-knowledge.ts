@@ -21,6 +21,7 @@ import { PgVectorStore, buildNamespace } from '../knowledge-store/pg-vector-stor
 import { getVoyageEmbedder } from '../knowledge-store/voyage-embedder';
 import { getVoyageReranker } from '../knowledge-store/reranker';
 import type { Corpus } from '../knowledge-store/types';
+import { sqlWhere } from '../db/relational-sql';
 
 /** Derive a realistic query from a chunk: first meaningful, de-marked-down line. */
 function queryFromChunk(text: string): string {
@@ -52,7 +53,7 @@ async function main() {
   let scopeId = workspaceId;
   if (corpus === 'memory') {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { teamId: true },
     });
     scopeId = ws?.teamId ?? workspaceId;

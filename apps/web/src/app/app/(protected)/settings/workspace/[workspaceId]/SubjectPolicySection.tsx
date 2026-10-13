@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
+import { useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 interface SubjectPolicy {
   mode?: 'observe' | 'propose' | 'enforce';
@@ -37,6 +38,7 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy, canEd
   const [days, setDays] = useState(String(savedDays));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useWarnOnUnload(canEdit && days !== String(savedDays));
 
   async function save(changes: Pick<SubjectPolicy, 'autoCloseBuilddSupersededPrs' | 'conflictDeadDays'>) {
     if (saving) return;
@@ -53,11 +55,11 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy, canEd
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? 'Save failed');
+        throw new Error(data.error ?? 'Could not save. Try again.');
       }
     } catch (e) {
       setStored(prev);
-      setError(e instanceof Error ? e.message : 'Save failed');
+      setError(e instanceof Error ? e.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }

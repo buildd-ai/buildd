@@ -10,9 +10,10 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { roleHas } from '@/lib/permissions';
-import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError, parseCopyReviewConfig } from '@buildd/shared';
+import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError, parseCopyReviewConfig, isVisualReviewPolicyMode, VISUAL_REVIEW_POLICY_MODES } from '@buildd/shared';
 import type { CopyReviewConfig } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const VALID_STRATEGIES: ReleaseStrategy[] = ['workflow_dispatch', 'branch_merge', 'script'];
 const VALID_TRIGGERS: ReleaseTrigger[] = ['every_merge', 'on_mission_complete', 'manual', 'scheduled'];
@@ -174,7 +175,7 @@ async function verifyWriteAccess(
     }
     if (apiAccount) {
         const ws = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, workspaceId),
+            where: sqlWhere(eq(workspaces.id, workspaceId)),
             columns: { teamId: true },
         });
         if (!ws || ws.teamId !== apiAccount.teamId) return 'not_found';
@@ -208,7 +209,7 @@ export async function GET(
                 return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
             }
             const ws = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
+                where: sqlWhere(eq(workspaces.id, id)),
                 columns: { teamId: true },
             });
             if (!ws || (ws.teamId !== apiAccount.teamId && !(await verifyAccountWorkspaceAccess(apiAccount, id)))) {
@@ -227,7 +228,7 @@ export async function GET(
         }
 
         const workspace = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: {
                 id: true,
                 name: true,
@@ -254,6 +255,23 @@ export async function GET(
         return NextResponse.json({ error: 'Failed to get config' }, { status: 500 });
     }
 }
+
+/**
+ * The settings page's two gitConfig forms. With `group`, a save writes that
+ * group's fields and keeps the other group's as stored; without it, the body
+ * manages every field below (the older single form).
+ */
+const SAVE_GROUPS = {
+    repository: [
+        'defaultBranch', 'branchingStrategy', 'branchPrefix', 'useBuildBranch',
+        'commitStyle', 'commitPrefix', 'requiresPR', 'targetBranch', 'autoCreatePR',
+    ],
+    agents: [
+        'agentInstructions', 'useClaudeMd', 'bypassPermissions', 'sandbox',
+        'debug', 'debugFile', 'fallbackModel', 'thinking', 'effort', 'defaultBackend',
+    ],
+} as const satisfies Record<string, ReadonlyArray<keyof WorkspaceGitConfig>>;
+type SaveGroup = keyof typeof SAVE_GROUPS;
 
 // POST /api/workspaces/[id]/config - Save workspace git config and/or releaseConfig
 //
@@ -341,6 +359,13 @@ export async function POST(
             );
         }
 
+        if (body.group !== undefined && !(body.group in SAVE_GROUPS)) {
+            return NextResponse.json(
+                { error: `Invalid group '${body.group}'. Valid: ${Object.keys(SAVE_GROUPS).join(', ')}` },
+                { status: 400 },
+            );
+        }
+
         // Handle releaseConfig update if provided (separate from gitConfig)
         if (body.releaseConfig !== undefined) {
             let releaseConfig: WorkspaceReleaseConfig | null = null;
@@ -367,7 +392,7 @@ export async function POST(
         // (policyConfig, autoMerge* thresholds, conflictSurfaces, sequenceNamespaces,
         // maxCiRetries, sandbox.credentials, ...) on every save.
         const existing = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: { gitConfig: true },
         });
         const previous: Partial<WorkspaceGitConfig> = existing?.gitConfig ?? {};
@@ -416,10 +441,11 @@ export async function POST(
                 ? body.effort
                 : undefined,
 
-            // Default runner preference for new tasks — form-managed
+            // Runner preference: nothing reads it and the form no longer sends it,
+            // so a stored value is kept as is. Still accepted from an old client.
             defaultRunnerPreference: typeof body.defaultRunnerPreference === 'string' && ['any', 'user', 'service', 'action'].includes(body.defaultRunnerPreference)
                 ? body.defaultRunnerPreference
-                : undefined,
+                : previous.defaultRunnerPreference,
 
             // Default agent backend — validated above; absent/'default'/null clears
             defaultBackend: body.defaultBackend === 'claude' || body.defaultBackend === 'codex'
@@ -506,6 +532,21 @@ export async function POST(
             }
         }
 
+        // A grouped save (the settings page saves Repository and Agents apart)
+        // writes only its own group: every field of the other group goes back to
+        // what was stored, so its omission does not clear it.
+        if (body.group !== undefined) {
+            const own = SAVE_GROUPS[body.group as SaveGroup];
+            const written = gitConfig as unknown as Record<string, unknown>;
+            for (const keys of Object.values(SAVE_GROUPS)) {
+                if (keys === own) continue;
+                for (const key of keys) {
+                    if (key in previous) written[key] = previous[key];
+                    else delete written[key];
+                }
+            }
+        }
+
         await db
             .update(workspaces)
             .set({
@@ -572,8 +613,9 @@ export async function PATCH(
         const hasBranchStrategy = !!body && typeof body === 'object' && 'branchStrategy' in body;
         const hasPolicyConfig = !!body && typeof body === 'object' && 'policyConfig' in body;
         const hasCopyReview = !!body && typeof body === 'object' && 'copyReview' in body;
-        if (!hasReleaseConfig && !hasBranchStrategy && !hasPolicyConfig && !hasCopyReview) {
-            return NextResponse.json({ error: 'Body must contain releaseConfig, branchStrategy, policyConfig or copyReview' }, { status: 400 });
+        const hasVisualReview = !!body && typeof body === 'object' && 'visualReview' in body;
+        if (!hasReleaseConfig && !hasBranchStrategy && !hasPolicyConfig && !hasCopyReview && !hasVisualReview) {
+            return NextResponse.json({ error: 'Body must contain releaseConfig, branchStrategy, policyConfig, copyReview or visualReview' }, { status: 400 });
         }
 
         const removedField = findRemovedPathFieldInGitConfig(body);
@@ -593,7 +635,7 @@ export async function PATCH(
                 return NextResponse.json({ error: parsed.error }, { status: 400 });
             }
             const existing = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
+                where: sqlWhere(eq(workspaces.id, id)),
                 columns: { gitConfig: true },
             });
             const gitConfig: WorkspaceGitConfig = {
@@ -616,7 +658,7 @@ export async function PATCH(
                 );
             }
             const existing = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
+                where: sqlWhere(eq(workspaces.id, id)),
                 columns: { gitConfig: true },
             });
             const gitConfig: WorkspaceGitConfig = { ...(existing?.gitConfig ?? {} as WorkspaceGitConfig) };
@@ -641,10 +683,30 @@ export async function PATCH(
                 copyReview = parsed.config;
             }
             const existing = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
+                where: sqlWhere(eq(workspaces.id, id)),
                 columns: { gitConfig: true },
             });
             const gitConfig = { ...(existing?.gitConfig ?? {} as WorkspaceGitConfig), copyReview } as WorkspaceGitConfig;
+            await db.update(workspaces).set({ gitConfig, updatedAt: new Date() }).where(eq(workspaces.id, id));
+            responseBody = { ...responseBody, gitConfig };
+        }
+
+        // visualReview: the workspace's Visual Review policy override. null (or policy: null) inherits the team default.
+        if (hasVisualReview) {
+            const raw = (body as Record<string, unknown>).visualReview;
+            let visualReview: WorkspaceGitConfig['visualReview'] | undefined;
+            if (raw !== null) {
+                const policy = raw && typeof raw === 'object' ? (raw as { policy?: unknown }).policy : undefined;
+                if (policy !== null && !isVisualReviewPolicyMode(policy)) {
+                    return NextResponse.json({ error: `visualReview.policy must be one of: ${VISUAL_REVIEW_POLICY_MODES.join(', ')}, or null`, field: 'policy' }, { status: 400 });
+                }
+                visualReview = policy === null ? undefined : { policy };
+            }
+            const existing = await db.query.workspaces.findFirst({
+                where: sqlWhere(eq(workspaces.id, id)),
+                columns: { gitConfig: true },
+            });
+            const gitConfig = { ...(existing?.gitConfig ?? {} as WorkspaceGitConfig), visualReview } as WorkspaceGitConfig;
             await db.update(workspaces).set({ gitConfig, updatedAt: new Date() }).where(eq(workspaces.id, id));
             responseBody = { ...responseBody, gitConfig };
         }

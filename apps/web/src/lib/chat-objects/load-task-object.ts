@@ -14,6 +14,7 @@ import { deriveNow, type Milestone } from '@/app/app/(protected)/tasks/[id]/task
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import type { TaskObjectView } from '@/components/chat/objects/object-views';
 import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const epoch = (v: Date | string | null | undefined): number | null => {
   if (!v) return null;
@@ -59,7 +60,7 @@ export function taskHappened(milestones: unknown, max = 4): Array<{ ts: number; 
 
 export async function loadTaskObject(taskId: string, userId: string): Promise<TaskObjectView | null> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     with: {
       workspace: { columns: { id: true, teamId: true } },
       mission: { columns: { id: true, title: true } },
@@ -70,8 +71,8 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
   const [access, latest, role, runs, deliveries] = await Promise.all([
     verifyWorkspaceAccess(userId, task.workspaceId),
     db.query.workers.findFirst({
-      where: eq(workers.taskId, taskId),
-      orderBy: desc(workers.createdAt),
+      where: sqlWhere(eq(workers.taskId, taskId)),
+      orderBy: sqlOrderBy(desc(workers.createdAt)),
       columns: {
         id: true, status: true, runner: true, startedAt: true, completedAt: true, currentAction: true,
         waitingFor: true, prNumber: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, milestones: true,

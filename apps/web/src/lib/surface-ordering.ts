@@ -200,6 +200,7 @@ export function reservationTakeoverWhere(takeoverToken: string | null = null): S
 
 export { intentInsertIfAbsentSql } from '@/lib/change-intent';
 import { intentInsertIfAbsentSql } from '@/lib/change-intent';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Deps ─────────────────────────────────────────────────────────────────────
 
@@ -801,7 +802,7 @@ function defaultSettleDeps(): SettleDeps {
     },
     loadOpenIntents: loadOpenIntentsDb,
     async loadGitConfig(workspaceId) {
-      const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { gitConfig: true } });
+      const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { gitConfig: true } });
       return (ws?.gitConfig as WorkspaceGitConfig | null) ?? null;
     },
     async redrive(workspaceId, prNumber) {

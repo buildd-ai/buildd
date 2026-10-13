@@ -1,7 +1,7 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, initiatives } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -30,7 +30,7 @@ import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabe
 import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { criteriaFingerprint } from '@/lib/criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
-import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
+import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError, visualReviewPolicyOf } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
@@ -44,6 +44,7 @@ import {
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
   surfaceAuditMissingReason,
 } from '@buildd/core/surface-audit';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -107,13 +108,13 @@ export async function GET(
     const teamIds = await resolveTeamIds(user, apiAccount);
 
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
           columns: { id: true, title: true, status: true, priority: true, roleSlug: true, createdAt: true, result: true, updatedAt: true, kind: true, mode: true, category: true, parentTaskId: true, creationSource: true, taskClass: true },
-          orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
-          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, prLastCheckedAt: true, supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true, abandonedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
+          orderBy: sqlOrderByFn((tasks, { desc }) => [desc(tasks.createdAt)]),
+          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, prLastCheckedAt: true, supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true, abandonedAt: true }, orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt)]), limit: 1 } },
         },
         subMissions: { columns: { id: true, title: true, status: true } },
         schedule: true,
@@ -252,7 +253,7 @@ export async function PATCH(
     const teamIds = await resolveTeamIds(user, apiAccount);
 
     const existing = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
     });
 
     if (!existing || !(await hasMissionAccess(existing, teamIds, apiAccount?.id))) {
@@ -326,6 +327,20 @@ export async function PATCH(
         return NextResponse.json({ error: 'Only a person can waive the surface audit; an in-task agent cannot' }, { status: 403 });
       }
       surfaceWaiverReason = surfaceAuditWaiver.trim();
+    }
+
+    // Strict Visual Review forbids skip/waive: no waiver and no opt-out of the audit.
+    if (surfaceWaiverReason !== null || autoSurfaceAudit === false) {
+      const policyWorkspaceId = workspaceId !== undefined ? workspaceId : existing.workspaceId;
+      const policyWs = policyWorkspaceId
+        ? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, policyWorkspaceId)), columns: { gitConfig: true } })
+        : null;
+      if (visualReviewPolicyOf(policyWs?.gitConfig) === 'strict') {
+        return NextResponse.json({
+          error: 'This workspace requires visual review (policy: strict). It cannot be skipped, waived or turned off for a mission.',
+          code: 'visual_review_policy_locked',
+        }, { status: 409 });
+      }
     }
 
     if (branchStrategy !== undefined && branchStrategy !== null && !isValidBranchStrategy(branchStrategy)) {
@@ -460,7 +475,7 @@ export async function PATCH(
         });
         if (gate?.required) {
           return NextResponse.json({
-            error: surfaceAuditMissingReason(gate.uiPaths, gate.source),
+            error: surfaceAuditMissingReason(gate.uiPaths, gate.source, { waiverAllowed: gate.waiverAllowed }),
             code: 'surface_audit_missing',
             uiPaths: gate.uiPaths.slice(0, 20),
           }, { status: 409 });
@@ -534,7 +549,7 @@ export async function PATCH(
     if (initiativeId !== undefined) {
       if (initiativeId) {
         const init = await db.query.initiatives.findFirst({
-          where: eq(initiatives.id, initiativeId),
+          where: sqlWhere(eq(initiatives.id, initiativeId)),
           columns: { id: true, teamId: true },
         });
         if (!init || !teamIds.includes(init.teamId)) {
@@ -664,7 +679,7 @@ export async function PATCH(
       const templateContext: Record<string, unknown> = {};
       if (existing.scheduleId) {
         const existingSchedule = await db.query.taskSchedules.findFirst({
-          where: eq(taskSchedules.id, existing.scheduleId),
+          where: sqlWhere(eq(taskSchedules.id, existing.scheduleId)),
           columns: { taskTemplate: true, cronExpression: true },
         });
         if (existingSchedule) {
@@ -721,7 +736,7 @@ export async function PATCH(
           // every run of a non-UTC schedule the first time anything else about the
           // mission was edited.
           const currentSchedule = await db.query.taskSchedules.findFirst({
-            where: eq(taskSchedules.id, existing.scheduleId),
+            where: sqlWhere(eq(taskSchedules.id, existing.scheduleId)),
             columns: { timezone: true },
           });
           const scheduleTimezone = resolveTimezone(currentSchedule?.timezone);
@@ -768,7 +783,7 @@ export async function PATCH(
       let nextRunAt = updatedStartAt;
       if (nextRunAt === null) {
         const schedule = await db.query.taskSchedules.findFirst({
-          where: eq(taskSchedules.id, existing.scheduleId),
+          where: sqlWhere(eq(taskSchedules.id, existing.scheduleId)),
           columns: { cronExpression: true, timezone: true },
         });
         // Same rule as the recompute above: the schedule's own stored zone, not UTC.
@@ -821,7 +836,7 @@ export async function PATCH(
     if (released || budgetLifted) {
       try {
         const pending = await db.query.tasks.findMany({
-          where: and(eq(tasks.missionId, id), eq(tasks.status, 'pending')),
+          where: sqlWhere(and(eq(tasks.missionId, id), eq(tasks.status, 'pending'))),
           columns: { id: true },
         });
         await wakeTasks(pending.map(t => t.id), released ? 'mission.released' : 'budget.available');
@@ -1077,7 +1092,7 @@ export async function DELETE(
     const teamIds = await resolveTeamIds(user, apiAccount);
 
     const existing = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
     });
 
     if (!existing || !(await hasMissionAccess(existing, teamIds, apiAccount?.id))) {

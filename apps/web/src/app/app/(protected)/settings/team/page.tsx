@@ -9,12 +9,13 @@ import { loadSettingsContext } from '../_lib/settings-context';
 import { roleHas } from '@/lib/permission-registry';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
-import { pickShownTeam } from './shown-team';
+import { pickShownTeam } from '../_lib/shown-team';
 
 import { settingsReadOnly } from '@/lib/settings-nav';
 import { NO_PERMISSIONS, settingsPermissions } from '../_lib/settings-permissions';
 import UrlSheet from '@/components/UrlSheet';
 import NewTeamForm from './NewTeamForm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,17 +57,16 @@ export default async function TeamSettingsPage({
 
   const [team, members] = await Promise.all([
     db.query.teams.findFirst({
-      where: eq(teams.id, shown.id),
+      where: sqlWhere(eq(teams.id, shown.id)),
       columns: { id: true, name: true, slug: true, createdAt: true },
     }).catch(() => null),
     db.query.teamMembers.findMany({
-      where: eq(teamMembers.teamId, shown.id),
+      where: sqlWhere(eq(teamMembers.teamId, shown.id)),
       with: { user: true },
     }).catch(() => []),
   ]);
 
   const role = shown.role as 'owner' | 'admin' | 'member';
-  const otherTeams = userTeams.filter((t) => t.id !== shown.id);
   // The shown team's flags (it can differ from the active team via ?team=).
   // A failed team read leaves the page read-only, as it says it could not load.
   const perms = team ? settingsPermissions({ role, slug: team.slug }, user.id) : NO_PERMISSIONS;
@@ -81,29 +81,8 @@ export default async function TeamSettingsPage({
   return (
     <SettingsPage title="Members" readOnly={settingsReadOnly('team', perms)}>
       {newTeamSheet}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        {otherTeams.length > 0 ? (
-          <details data-testid="team-switcher" className="group min-w-0 flex-1 text-sm">
-            <summary className="flex min-h-11 md:min-h-0 cursor-pointer list-none items-center gap-1.5 text-text-secondary">
-              <span className="text-text-muted">Team:</span>
-              <span className="font-medium text-text-primary">{shown.name}</span>
-              <span aria-hidden="true">·</span>
-              <span className="underline underline-offset-2 hover:text-text-primary">Switch</span>
-            </summary>
-            <div className="mt-2 divide-y divide-border-default border-y border-border-default">
-              {otherTeams.map((t) => (
-                <Link
-                  key={t.id}
-                  href={`/app/settings/team?team=${encodeURIComponent(t.id)}`}
-                  className="flex min-h-11 items-center justify-between gap-3 py-2 hover:bg-surface-3 transition-colors"
-                >
-                  <span className="truncate font-medium text-text-primary">{t.name}</span>
-                  <span className="shrink-0 text-text-muted">{t.role}</span>
-                </Link>
-              ))}
-            </div>
-          </details>
-        ) : <span />}
+      {/* The team card below names the team; the shell switcher changes it. */}
+      <div className="flex justify-end">
         <Link href={newTeamHref} scroll={false} data-testid="new-team-link" className="btn btn-sm h-11 md:h-8 shrink-0">New team</Link>
       </div>
 
@@ -129,7 +108,7 @@ export default async function TeamSettingsPage({
         </TeamDetailClient>
       ) : (
         <>
-          <p className="text-sm text-text-muted">Could not load the team.</p>
+          <p className="text-sm text-text-muted">Couldn&apos;t load the team.</p>
           {sections}
         </>
       )}

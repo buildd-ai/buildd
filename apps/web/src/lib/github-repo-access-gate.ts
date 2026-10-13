@@ -33,6 +33,7 @@ import {
   recordRepoAccessBlock,
   resolveWorkspaceRepoAccess,
 } from '@/lib/github-repo-access-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type RepoWithInstallation = NonNullable<Awaited<ReturnType<typeof loadRepo>>> & {
   installation: NonNullable<NonNullable<Awaited<ReturnType<typeof loadRepo>>>['installation']>;
@@ -40,7 +41,7 @@ type RepoWithInstallation = NonNullable<Awaited<ReturnType<typeof loadRepo>>> & 
 
 async function loadRepo(id: string) {
   return db.query.githubRepos.findFirst({
-    where: eq(githubRepos.id, id),
+    where: sqlWhere(eq(githubRepos.id, id)),
     with: { installation: true },
   });
 }

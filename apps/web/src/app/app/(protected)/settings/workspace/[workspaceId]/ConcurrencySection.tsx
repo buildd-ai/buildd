@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 interface Props {
   workspaceId: string;
@@ -26,6 +27,7 @@ export default function ConcurrencySection({ workspaceId, initialMaxConcurrentTa
   const [error, setError] = useState<string | null>(null);
 
   const dirty = value !== saved;
+  useWarnOnUnload(canEdit && dirty);
 
   async function save() {
     setSaving(true);
@@ -37,10 +39,10 @@ export default function ConcurrencySection({ workspaceId, initialMaxConcurrentTa
         body: JSON.stringify({ maxConcurrentTasks: value }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Failed to save');
+      if (!res.ok) throw new Error(data.error || 'Could not save. Try again.');
       setSaved(value);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save');
+      setError(err instanceof Error ? err.message : 'Could not save. Try again.');
       setValue(saved);
     } finally {
       setSaving(false);

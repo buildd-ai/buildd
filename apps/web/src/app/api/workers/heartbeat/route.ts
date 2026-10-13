@@ -2,11 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
-import { WORKER_LEASE_TTL_MS, runnerFleetIdentity, storedHeartbeatEnvironment } from '@buildd/shared';
+import {
+  WORKER_LEASE_TTL_MS,
+  runnerFleetIdentity,
+  storedHeartbeatEnvironment,
+  isRunnerModelAuthSource,
+  isRunnerModelAuthMode,
+} from '@buildd/shared';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { randomBytes } from 'crypto';
 import { getLatestVersion } from '@/lib/version-cache';
 import { parseClaimHandoff, releaseUnacknowledgedClaims } from '@/lib/lost-claim';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/workers/heartbeat
@@ -72,7 +79,18 @@ export async function POST(req: NextRequest) {
        * unstarted rows are left to the 5-minute never-started reap.
        */
       claimHandoff = undefined,
+      /**
+       * Which model login this runner's agents use, and the runner's setting
+       * for it (docs/specs/runner-model-auth-source.md). Labels from a fixed
+       * list; anything else (a typo, a newer label, a credential pasted by
+       * mistake) is dropped here so it never reaches the table, and the beat
+       * still succeeds.
+       */
+      modelAuthSource: rawModelAuthSource = undefined,
+      modelAuthMode: rawModelAuthMode = undefined,
     } = body;
+    const modelAuthSource = isRunnerModelAuthSource(rawModelAuthSource) ? rawModelAuthSource : null;
+    const modelAuthMode = isRunnerModelAuthMode(rawModelAuthMode) ? rawModelAuthMode : null;
     // Presence of the bundle is keyed on one field rather than requiring all
     // six, since `undefined` only ever appears here when the runner omitted
     // the whole group (buildd.ts sends it as one unit or not at all).
@@ -104,10 +122,10 @@ export async function POST(req: NextRequest) {
 
     // Check if this instance already has a viewerToken
     const existing = await db.query.workerHeartbeats.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(workerHeartbeats.accountId, account.id),
         eq(workerHeartbeats.localUiUrl, localUiUrl),
-      ),
+      )),
       columns: { viewerToken: true, updateAvailable: true, updateAvailableSince: true },
     });
 
@@ -149,6 +167,8 @@ export async function POST(req: NextRequest) {
         updateAvailable: newUpdateAvailable,
         updateAvailableSince,
         trackedBranch: (trackedBranch ?? null) as string | null,
+        modelAuthSource,
+        modelAuthMode,
         lastHeartbeatAt: now,
       })
       .onConflictDoUpdate({
@@ -173,6 +193,10 @@ export async function POST(req: NextRequest) {
             updateAvailableSince,
             trackedBranch: (trackedBranch ?? null) as string | null,
           } : {}),
+          // Omitted when not sent (or not a listed label), so an older runner
+          // or a garbled beat keeps the last good value — runnerVersion's rule.
+          ...(modelAuthSource !== null ? { modelAuthSource } : {}),
+          ...(modelAuthMode !== null ? { modelAuthMode } : {}),
           lastHeartbeatAt: now,
           updatedAt: now,
         },

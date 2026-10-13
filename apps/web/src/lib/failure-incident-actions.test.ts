@@ -276,6 +276,30 @@ describe('formatIncidentAlert — compact, no raw text', () => {
   });
 });
 
+describe('formatIncidentAlert — the projection\'s words (failure-incident-recovery §9)', () => {
+  it('says what Buildd is doing or the one choice it needs, and never "Nothing is fixing", fixed or resolved before recovery', async () => {
+    const { port } = memoryPort();
+    const inc = (await open(port, repeatedCandidate(4))).incident;
+    const at = new Date().toISOString();
+    const asks = {
+      ...inc,
+      recovery: {
+        v: 1 as const, generation: 3, cause: { reasonCode: 'path_overlap.cycle', rule: inc.rule, ownership: 'workflow' as const },
+        subjects: [{ kind: 'task' as const, id: '1a2b3c4d-0000' }], blockers: [{ kind: 'pr' as const, id: '77', state: 'open', observedAt: at }],
+        overlappingPaths: [], observation: { observedAt: at, source: 'sweep' as const, evidenceRevision: 'r' },
+        firstSeenAt: at, lastSeenAt: at, lastProgressAt: null, owner: 'person' as const, state: 'needs_decision' as const,
+        nextAction: null, nextCheckAt: null,
+        decision: { question: 'Task 1a2b3c4d and PR #77\'s fix are waiting on each other. Choose one to stop.', options: [], recommended: 'dismiss' as const },
+        verification: { predicate: 'p', params: {} }, budget: { spent: 0, limit: 3, deadlineAt: at, spentKeys: [] }, attempts: [],
+      },
+    };
+    const { message } = formatIncidentAlert(asks, planIncidentAlert(asks, 'high'), { baseUrl: 'https://example.test', verdict: { owner: 'person', by: 'rule', rail: 'no_next_step', reason: 'x', generation: 3 } });
+    expect(message).toContain('Needs you: Task 1a2b3c4d and PR #77\'s fix are waiting on each other. Choose one to stop.');
+    expect(message).not.toMatch(/Nothing is fixing|\bfixed\b|\bresolved\b/i);
+    expect(message.split('\n').length).toBeLessThanOrEqual(5);
+  });
+});
+
 // ── fix-task eligibility ─────────────────────────────────────────────────────
 
 const triage = (over: Partial<IncidentTriage>): IncidentTriage => ({

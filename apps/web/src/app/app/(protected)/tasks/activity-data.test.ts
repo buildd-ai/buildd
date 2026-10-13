@@ -65,7 +65,7 @@ describe('the loader reads live work in scope', () => {
 
   it('attempts are read newest first, so a cap never drops the live one', () => {
     const child = page.slice(page.indexOf('const childTasks'), page.indexOf('const allTasks'));
-    expect(child).toContain('orderBy: [desc(tasks.createdAt)]');
+    expect(child).toMatch(/orderBy: (sqlOrderBy\()?\[desc\(tasks\.createdAt\)\]/);
     expect(child).toContain('limit: ACTIVITY_CHILD_LIMIT');
   });
 

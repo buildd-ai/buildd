@@ -20,10 +20,13 @@ import './mission-criteria-eval';
 import './mission-criteria-worker-eval';
 import './mission-prompts';
 import './reviewer';
+import './spec-area-decision';
+import './spec-duplicate-decision';
 import './strand-choice-decision';
 import './surface-audit-advice';
 import './task-category-decision';
 import './task-role-decision';
+import '@buildd/core/decision-kind-visual-impact';
 import { listRegisteredPrompts, type RegisteredPrompt } from '@buildd/core/prompts';
 
 export function listPromptCatalog(): RegisteredPrompt[] {

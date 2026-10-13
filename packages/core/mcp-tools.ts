@@ -1,4 +1,6 @@
 import { hasTokenScope, requiredScopeForAction } from './token-scopes';
+import { SUB_ACTIONS, subActionQuoted as quotedSubs } from './mcp-sub-actions';
+import { guidanceTopicReply, guidanceTopicsText } from './guidance-topics';
 /**
  * Shared MCP tool handlers for Buildd.
  *
@@ -260,6 +262,8 @@ async function assertMissionControlCapabilities(
 }
 
 /** One line an agent reads for a mission whose executor is 'local'. */
+/** Mirrors TASK_RESERVATION_TTL_MS in the claim route's held-gate. */
+const RESERVATION_MINUTES = 20;
 const LOCAL_EXECUTOR = 'local — runs in a local session; runners never auto-claim its tasks. Claim each with claim_task {taskId} and finish with complete_task.';
 
 function requestedMissionControlCapabilities(
@@ -279,6 +283,8 @@ function requestedMissionControlCapabilities(
 export type ApiFn = (endpoint: string, options?: RequestInit) => Promise<any>;
 
 export interface ActionContext {
+  /** Test seam for claim_task waitSeconds; defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
   workerId?: string;
   workspaceId?: string;
   // Team that owns this context. Memories are a team-level resource (the memory
@@ -693,7 +699,7 @@ export const workerActions = [
   'manage_specs',
 ] as const;
 
-export const PROVIDER_OPS = ['list', 'set', 'delete', 'explain', 'set_policy'] as const;
+export const PROVIDER_OPS = SUB_ACTIONS.manage_providers;
 export const PROVIDER_MINE_TASK_TOKEN_REFUSAL =
   'A per-task token has no person behind it, so it cannot set or remove a personal credential for anyone. Use team or workspace scope with an admin token, or ask the person to do it from their own session.';
 export const PROVIDER_TASK_TOKEN_READ_ONLY =
@@ -979,10 +985,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_workspaces: '{ offset?, limit? (default 20, max 50) } — the workspaces this connection can act in, grouped by team: id, name, repo, the level you act at there and your access (read or read-write). On an account-level connection it lists exactly the workspaces you granted it that you are still a member of, nothing else. Name one of them (id, owner/repo or name) on any other action. Read-only; nextOffset pages.',
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch"|"milestones", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource, and the task\'s frozen estimate when its team opted into task estimates; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error; "milestones" adds each shown worker\'s milestones, one line each (ISO time, type, label), the newest 25 plus every `Pre-merge:`/`Merge:` line, which record what the runner\'s merge drivers and mergiraf did), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
-    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped. From your own Claude Code session the claim runs on your seat, so the account\'s Claude session wall and the team\'s recorded provider rate-limit walls are skipped too; a runner that names a task is still held by them, and tenant work is still held by its tenant budget. A held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason (a budget_exhausted refusal names the wall that held it and when it lifts), plus the specific gate that excluded taskId when one was given.',
+    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), waitSeconds? (0-45, with taskId: reserve the task for this session and, while only an unfinished dependency blocks it, keep retrying until it frees or the wait ends; call again to keep waiting), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped. From your own Claude Code session the claim runs on your seat, so the account\'s Claude session wall and the team\'s recorded provider rate-limit walls are skipped too; a runner that names a task is still held by them, and tenant work is still held by its tenant budget. A held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason (a budget_exhausted refusal names the wall that held it and when it lifts), plus the specific gate that excluded taskId when one was given.',
     receive_messages: '{ workerId? } — collect the messages sent to you: human steering (send_agent_message / the task page), replies to your post_note questions, mission guidance and worker→worker messages. Each is returned once and acknowledged as read. On a runner-managed worker the runner already delivers these into your session at the next turn boundary, so this returns nothing there; in an interactive or local-plugin session call it when a hook says messages are waiting. workerId auto-resolved from context if omitted.',
     update_progress: '{ workerId?, progress? (legacy self-report; never displayed), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown"), lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats. costBasis says how that usage was charged: "real" (per token, e.g. an API key) or "virtual" (a subscription plan, valued at list price); omit it when you do not know and it records as unknown.',
-    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), alreadyShippedIn? (PR number), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown") } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. alreadyShippedIn is for a pr_required task whose work already landed in a merged PR it does not own (another task shipped it first): pass that PR number and completion succeeds without a PR of its own once GitHub confirms it is merged in the workspace repo; any commits or edits of this worker\'s own also need discardEdits. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats; costBasis as in update_progress. workerId auto-resolved from context if omitted',
+    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), alreadyShippedIn? (PR number), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown") } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. alreadyShippedIn is for a pr_required task whose work already landed in a merged PR it does not own (another task shipped it first): pass that PR number and completion succeeds without a PR of its own once GitHub confirms it is merged in the workspace repo; any commits or edits of this worker\'s own also need discardEdits. A mission-branch refresh task (merge dev into the integration branch) whose merge was already pushed straight to the branch needs neither: completion succeeds without a PR once GitHub confirms the branch contains the dispatched trunk sha. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats; costBasis as in update_progress. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
       + 'head must be the branch claim_task assigned this worker — a mismatch is refused as head_not_owned. The one exception: a worker claimed from your own interactive session (claim_task called from this session, not a background runner) may instead use any other branch it actually pushed to, as long as no other worker already holds that exact name (refused as head_claimed, naming the other task, when one does).\n\n'
       + `lede (required) — ${LEDE_FIELD_SPEC}\n\n`
@@ -996,8 +1002,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. A `review_failed` state carries `failureReason` — the reviewer worker\'s own crash/exit reason (e.g. budget exhausted, never started), when one was recorded — so a dropped verdict is explained rather than bare. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
     record_pr_supersession: '{ workerId?, prNumber? (the CLOSED, unmerged PR that never landed — one of workerId/prNumber is required, same resolution as get_pr), workspaceId? (disambiguate when prNumber exists in multiple repos), supersedingPrNumber (required — the PR that carries this work now), supersedingRepo? (owner/name), reason (required — never a silent assertion) } — narrows `close_pr`/`merge_pr`\'s gap: a PR that closed without merging normally means the deliverable never shipped, and `canCompleteMission` blocks mission completion on exactly that. Use this when the diff actually landed anyway under a DIFFERENT PR (e.g. a mission integration branch was deleted out from under an open PR and the work was re-opened fresh) — it records a durable, auditable edge on the worker row, not a status you assert. REJECTED AT WRITE TIME, not discovered later: the target PR must exist (same repo, or supersedingRepo: another repo of this workspace or mission) and already be MERGED, and must differ from the PR being superseded; a 403/404/409 names which check failed. buildd auto-records this when a closed PR\'s content verifies in a merged PR; an unverified candidate is a mission-card suggestion. Once recorded, canCompleteMission, get_pr, get_task and explain all treat the superseded PR as shipped and name the PR it landed under.',
     manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments, managed by buildd platform operators only (a signed-in operator\'s OAuth session, or an admin key of a platform admin account): no team role creates or changes one, and a team owner or admin key is refused. model_routing compares model tiers. heartbeat_triage and question_gate are retired kinds: existing rows stay listable/readable, but create and start are refused. create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). Every kind config also takes an optional duration cap, maxDurationDays and/or endsAt (ISO date); editing only the cap never bumps policyVersion, and a daily check pauses a running experiment once it is past its cap. list and readout also report enrolment health for running experiments: nothing enrolled for days, an arm never drawn, a split far off treatmentFraction, one unit (mission) holding most of an arm, past its cap. list/get/readout show a team member only visibility="team" experiments; visibility="admins" ones (operators only) and create/update/start/pause/conclude are for platform operators [admin]',
-    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), tier? (premium-plus|premium|standard|budget, or null to clear — pins the tier; setting a tier without model also drops an existing model pin), model? (Anthropic model id such as claude-…, or null to clear — pins an exact model and outranks tier), maxLoops? (1-50; only for an existing looped task), startAt? (ISO 8601 in the future, or null = start as soon as possible), startIn? (45m|3h|2d), abort? (true: with status cancelled, stop a live agent), pause? (true, on its own: pause the running agent instead of stopping it) } — updates task metadata. pause: true stops the agent at its next safe point and keeps its worktree and session; the task then waits like a question, and answering it (Resume on the task page) continues the same session. Refused for a task with no running agent or a local session. startAt/startIn reschedule a task that is still waiting (pending, unclaimed) instead of cancelling it; a claimed or running task is refused. pathManifest is NOT updatable here (rejected): it is set at create_task and grows only via check_path_claim. tier/model take effect on the next claim or retry; they do not change a running session. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled on a task an agent is working on is refused (code live_worker) unless you also pass abort: true, because it stops that agent mid-run and loses anything it has not pushed; with abort: true it terminates the worker and releases its seat. To hold work that has not started, move its startAt instead of cancelling. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work. delegation? sent on its own, before the task is claimed, by a person only: { grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear — the task\'s token may then read analytics in / file tasks in those workspaces of the same team (you must reach each yourself).',
-    create_task: '{ title (required), description (required), label? (2–4 word noun-phrase shown as the task\'s chip next to its conventional-commit scope, max 48 chars — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service"; no type prefix or filler words; derived from the title if omitted), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design|research — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature; a PR the filing names, as #N in the title/description or context.prNumber/prNumbers, is linked to the new task so its run may close, update, merge or request review of it, but only a PR you may already act on yourself, or any named PR when a person files it), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller, except for [friction] tasks, which stay on trunk and only record context.relatedMissionId), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, headBranch? (pins the exact git branch claim_task assigns this task\'s worker, replacing the generated buildd/<id8>-<slug> name — the same mechanism a mission\'s shared integration branch uses internally, exposed here for a one-off task whose work must land on an existing or shared branch outside mission machinery. create_pr\'s ownership check also treats a PR headed at this branch as the task\'s own. Say it here, not in the title or description: free-text branch instructions are invisible to both claim_task and create_pr, so a task that merely describes the branch in prose gets a fresh generated one anyway and then has its PR refused as head_not_owned when it tries to use the described branch instead), verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex), emitsPlan? (boolean, default false — spec-to-build opt-in: forces mode: "planning" and context.requiresPlanApproval: true, both non-overridable by the caller, and requires a non-empty pathManifest naming the spec document this task authors (400 otherwise). Use only when the task\'s entire deliverable is a breakdown that should become an approved, traceable plan — never inferred, always explicit) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped) Cross-workspace work: filingTargets? (workspace UUIDs this task will file tasks in) declares a need the claim checks before the run starts — a task whose need no delegation covers is held (claim reason delegation_unmet), never started to hit the wall. delegation? ({ grants: [{ workspaceId, capabilities: (\"analytics:read\"|\"tasks:create\")[] }] }) grants it, and only a person (dashboard or OAuth session) reaching each target may pass it; an agent declares filingTargets and a person grants with update_task. Under a delegation a task filed in the granted workspace may set missionId/dependsOn only to that workspace\'s own missions and tasks.',
+    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), cancelReason? (with status: cancelled: why the task is being cancelled), supersededBy? (with status: cancelled: the task or PR that replaces it; a cancel needs a cancelReason or supersededBy), reserve? (true|false, on its own: reserve a waiting task for this session so runners and other sessions skip it for 20 minutes, renewed by reserving again or by claim_task waitSeconds; false releases it), backend? (claude|codex, or null to fall back to the mission/role/workspace default), tier? (premium-plus|premium|standard|budget, or null to clear — pins the tier; setting a tier without model also drops an existing model pin), model? (Anthropic model id such as claude-…, or null to clear — pins an exact model and outranks tier), maxLoops? (1-50; only for an existing looped task), startAt? (ISO 8601 in the future, or null = start as soon as possible), startIn? (45m|3h|2d), abort? (true: with status cancelled, stop a live agent), pause? (true, on its own: pause the running agent instead of stopping it) } — updates task metadata. pause: true stops the agent at its next safe point and keeps its worktree and session; the task then waits like a question, and answering it (Resume on the task page) continues the same session. Refused for a task with no running agent or a local session. startAt/startIn reschedule a task that is still waiting (pending, unclaimed) instead of cancelling it; a claimed or running task is refused. pathManifest is NOT updatable here (rejected): it is set at create_task and grows only via check_path_claim. tier/model take effect on the next claim or retry; they do not change a running session. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled on a task an agent is working on is refused (code live_worker) unless you also pass abort: true, because it stops that agent mid-run and loses anything it has not pushed; with abort: true it terminates the worker and releases its seat. To hold work that has not started, move its startAt instead of cancelling. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work. delegation? sent on its own, before the task is claimed, by a person only: { grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear — the task\'s token may then read analytics in / file tasks in those workspaces of the same team (you must reach each yourself).',
+    create_task: '{ title (required), description (required), claim? (true: from your own session, file the task already reserved for you and claim it in the same call, so no runner can take it first), label? (2–4 word noun-phrase shown as the task\'s chip next to its conventional-commit scope, max 48 chars — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service"; no type prefix or filler words; derived from the title if omitted), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design|research — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature; a PR the filing names, as #N in the title/description or context.prNumber/prNumbers, is linked to the new task so its run may close, update, merge or request review of it, but only a PR you may already act on yourself, or any named PR when a person files it), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller, except for [friction] tasks, which stay on trunk and only record context.relatedMissionId), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, headBranch? (pins the exact git branch claim_task assigns this task\'s worker, replacing the generated buildd/<id8>-<slug> name — the same mechanism a mission\'s shared integration branch uses internally, exposed here for a one-off task whose work must land on an existing or shared branch outside mission machinery. create_pr\'s ownership check also treats a PR headed at this branch as the task\'s own. Say it here, not in the title or description: free-text branch instructions are invisible to both claim_task and create_pr, so a task that merely describes the branch in prose gets a fresh generated one anyway and then has its PR refused as head_not_owned when it tries to use the described branch instead), verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex), emitsPlan? (boolean, default false — spec-to-build opt-in: forces mode: "planning" and context.requiresPlanApproval: true, both non-overridable by the caller, and requires a non-empty pathManifest naming the spec document this task authors (400 otherwise). Use only when the task\'s entire deliverable is a breakdown that should become an approved, traceable plan — never inferred, always explicit) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped) Cross-workspace work: filingTargets? (workspace UUIDs this task will file tasks in) declares a need the claim checks before the run starts — a task whose need no delegation covers is held (claim reason delegation_unmet), never started to hit the wall. delegation? ({ grants: [{ workspaceId, capabilities: (\"analytics:read\"|\"tasks:create\")[] }] }) grants it, and only a person (dashboard or OAuth session) reaching each target may pass it; an agent declares filingTargets and a person grants with update_task. Under a delegation a task filed in the granted workspace may set missionId/dependsOn only to that workspace\'s own missions and tasks.',
     manage_model_tiers: '{ action: "list" | "set" | "delete" | "policy" | "set_policy" | "adopt" | "model", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default; policy/set_policy/adopt: only an explicit workspaceId scopes to the workspace, omit for the team), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set and model: full model ID, e.g. "claude-fable-5"), surface? (set/delete: "agent"|"chat" — scopes the row to agent runs or to chat and inference calls; omit for the row that serves both), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer), mode? (set_policy: "latest-compatible"|"soak"|"manual"|"inherit"), soakHours? (set_policy with soak: default 72) } — manage team model tier registry and model upgrades. list returns the effective map (workspace+surface → workspace → team+surface → team → catalog → code fallback) with source annotation, one line per surface when a tier is split. set upserts a registry row (a pin: the tier stays on that model whatever the upgrade policy) — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. policy reads the upgrade policy in effect and where it comes from (workspace/team/default), and per tier: the model, why it was chosen, any newer centrally certified model and why it is withheld (pinned/manual/soak), and deprecation. set_policy sets how catalog-resolved tiers move to newly certified models: latest-compatible adopts on certification, soak after soakHours with no compatibility incident, manual never on its own (adopt moves it); mode "inherit" clears the level. adopt (manual policy) takes every model certified so far. model shows one model\'s central certification: state, CLI floor, release/certification time, deprecation. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key?, taskId? } — workerId auto-resolved from context if omitted; for worker artifacts, taskId is auto-resolved from worker data if not provided. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context. taskId enables artifact notifications when the artifact is meant for review.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown. After the PUT, upload_artifact { artifactId, sha256? } verifies the bytes and marks it ready.',
@@ -1005,7 +1011,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body), view? ("outline"|"section"|"range"|"grep"|"meta"; default: the whole body when it is short, its outline when long), section? (id from the outline, with view section), offset? + length? (view range), grep? (literal text, with view grep), full? (true: the whole body however long) } — fetch an artifact by ID with its current revision and sha256. A long body comes back as an outline you read part by part, so a large reference never floods your context; what you read is recorded. File artifacts include a short-lived presigned download URL',
     link_artifact: '{ artifactId (required), subjectKind ("task"|"mission"|"plan"|"conversation"|"message"), subjectId, relation ("context"|"requirement"|"normative_reference"|"design_reference"|"evidence"|"output"), revision? (pin; a normative_reference always pins, the current revision when omitted), linkId? + unlink: true (remove that link instead) } — attach an artifact to something it informs, in the same team, without copying it. Linking twice updates the link',
     list_artifact_links: '{ artifactId? (this artifact\'s links) | subjectKind + subjectId (what is linked to that subject), relation? (comma-separated filter, with subjectKind) } — a reference manifest: id, title, type, relation, pinned revision, size and sha256, never the bodies; read one with get_artifact',
-    manage_specs: '{ action (required): "create_draft" | "get" | "revise" | "list" | "relate" | "submit" | "approve" | "outcome" | "verdict" | "conflict" | "read_ref" | "diff", specId? (all but create_draft/list/outcome/verdict), workspaceId? (create_draft/list; defaults to the session workspace), title? (create_draft), body? (create_draft/revise: the spec text, Markdown, at most 400,000 characters; with section, the new text of that section), section? | heading? (revise: replace one section, named by its get_artifact outline id or a heading used once; the rest of the body is kept byte for byte), scope? (create_draft: product|domain|feature|mission, default feature), parentSpecId? (create_draft; relate: a spec id, or null to clear), changeSummary? (create_draft/revise), repoRefs? (create_draft/revise: [{ path, commitSha }] repo specs cited at a full commit SHA; omitted on revise keeps the head\'s, [] clears), path? + view? (read_ref: a cited path, read at its commit; view as get_artifact), expectedVersion? (revise/submit/approve, required: the version get showed), revision? (get: read that revision exactly as written; approve, required: the head revision; conflict, required: the approved revision), taskId? (outcome/verdict: the task whose outcome it is), criterionId? + verdict? (pass|fail|inconclusive|unsupported) + headSha? (verdict, required: the PR head judged), evidenceRefs? ([{kind, ref}]) + readIds? (artifact read ids) + observed? (verdict), criterionIds? ([a, b], conflict), note? (conflict) } — Living Specs: governed intent with immutable revisions. revise writes only if the spec is still at expectedVersion; otherwise nothing is written and the reply carries currentVersion: re-read, merge, revise on top. relate refuses a parent in another workspace or one that would form a cycle. get inlines a body up to 20,000 characters, else points at get_artifact views. submit and approve are a person\'s act (team owner/admin or a delegated approver, from their own session): an agent run or API key gets a 403. Approval puts the head revision in force; later revisions stay proposed until approved. outcome reads a task\'s governed outcome against the approved revision it is pinned to: verified only when every R-n/AC-n criterion passes on the current PR head, fail when one fails, else unverified; it never blocks completing or merging. verdict records one criterion\'s verdict at headSha; a task cannot grade itself (its reviewer or a person does). A criterion may name a check on a line under it (`check: <command>`): on each PR head buildd runs that command at the head and records its exit code as the verdict (0 pass, non-zero fail, a timeout inconclusive), authored by the check. conflict flags two criteria of an approved revision as disagreeing: an advisory discrepancy, never a block. repoRefs are checked on write against the linked repo (the file must exist at that commit, else 400, nothing written); read_ref reads only a file the revision cites, at the cited commit, never the moving branch. diff { specId, from?, to? } (read-only) says what changed between two revisions: to defaults to the head, from to the approved revision (else the one before to); sections added, removed and changed by heading, then a capped line diff with a count of what it left out.',
+    manage_specs: '{ action (required): "create_draft" | "get" | "revise" | "list" | "relate" | "submit" | "approve" | "outcome" | "verdict" | "conflict" | "read_ref" | "diff" | "comment" | "comments" | "metadata" | "organize" | "attach_provisional", specId? (all but create_draft/list/outcome/verdict/organize), workspaceId? (create_draft/list/organize; defaults to the session workspace), title? (create_draft), body? (create_draft/revise: the spec text, Markdown, at most 400,000 characters; with section, the new text of that section), section? | heading? (revise: replace one section, named by its get_artifact outline id or a heading used once; the rest of the body is kept byte for byte), scope? (create_draft: product|domain|feature|mission, default feature), parentSpecId? (create_draft; relate: a spec id, or null to clear), changeSummary? (create_draft/revise), repoRefs? (create_draft/revise: [{ path, commitSha }] repo specs cited at a full commit SHA; omitted on revise keeps the head\'s, [] clears), supersedes? + distinctBecause? (create_draft: override a duplicate refusal; a spec Jev judges a clear duplicate of an approved one is refused unless you name the spec it replaces or say in 10+ characters why it is distinct; an overlap only warns), design? (create_draft/revise: { kind: artifact|url|figma, ref, version?, screens?: [{ id, name }] } the design this revision is built to; an artifact in the workspace, pinned to its current revision unless version names one; url/figma need version; omitted on revise keeps the head\'s, null clears; a criterion names screens on a line under it: `screen: <id>, <id>`), path? + view? (read_ref: a cited path, read at its commit; view as get_artifact), expectedVersion? (revise/submit/approve, required: the version get showed), revision? (get: read that revision exactly as written; approve, required: the head revision; conflict, required: the approved revision), taskId? (outcome/verdict: the task whose outcome it is), criterionId? + verdict? (pass|fail|inconclusive|unsupported) + headSha? (verdict, required: the PR head judged), evidenceRefs? ([{kind, ref}]) + readIds? (artifact read ids) + observed? (verdict), checker? (verdict: "visual" for a mission [surface audit] run grading what it saw; then capturedSha (required: the full commit the shots were taken at) + screenshotIds (1-4 of its own screenshot artifacts; inconclusive needs observed instead) + designShotIds (1-2 shots of the pinned design rendered at the same state, required when the criterion names design screens) replace headSha, and the server binds the verdict to the task\'s PR head when the captured commit contains it), criterionIds? ([a, b], conflict), note? (conflict), criterion? | section? | heading? + body + replyTo? (comment: on one criterion, or one section by outline id or heading, of revision (default the head)) } — Living Specs: governed intent with immutable revisions. revise writes only if the spec is still at expectedVersion; otherwise nothing is written and the reply carries currentVersion: re-read, merge, revise on top. relate refuses a parent in another workspace or one that would form a cycle. get inlines a body up to 20,000 characters, else points at get_artifact views. submit and approve are a person\'s act (team owner/admin or a delegated approver, from their own session): an agent run or API key gets a 403. Approval puts the head revision in force; later revisions stay proposed until approved. outcome reads a task\'s governed outcome against the approved revision it is pinned to: verified only when every R-n/AC-n criterion passes on the current PR head, fail when one fails, else unverified; it never blocks completing or merging. verdict records one criterion\'s verdict at headSha; a task cannot grade itself (its reviewer or a person does). A criterion may name a check on a line under it (`check: <command>`): on each PR head buildd runs that command at the head and records its exit code as the verdict (0 pass, non-zero fail, a timeout inconclusive), authored by the check. conflict flags two criteria of an approved revision as disagreeing: an advisory discrepancy, never a block. repoRefs are checked on write against the linked repo (the file must exist at that commit, else 400, nothing written); read_ref reads only a file the revision cites, at the cited commit, never the moving branch. diff { specId, from?, to? } (read-only) says what changed between two revisions: to defaults to the head, from to the approved revision (else the one before to); sections added, removed and changed by heading, then a capped line diff with a count of what it left out. comment adds a note to a section or criterion of a revision and never changes the spec; comments { specId, revision? } (read-only) lists those readable on a revision as open (anchor unchanged), outdated (anchor changed) or resolved; only a person resolves one, on the spec page. metadata { specId, changes?: { verified_by?, surfaces?, last_verified?, assertions?, owner? }, reason? } reads the spec\'s metadata block and its change log, or with changes (and a required reason) updates it without a new revision: the version, the approved revision and its hash do not move, and in a workspace with native spec homes the generated repo copy\'s PR is updated. organize { workspaceId?, dryRun? (default true), limit? (sweep, default 50), areas? + edits? (taxonomy accept) } places specs in the product > area > feature tree: with no product or area it proposes a taxonomy (areas with charters and members; dryRun false creates the accepted areas, keys in areas, edits { [key]: { title?, charter? } }, and files their members); otherwise it sweeps the unfiled specs into one batch grouped by area, where dryRun false files the confident ones (each with undo on the spec page) and leaves the rest as suggestions; a second run finds nothing new, and a spec a person moved is never touched. attach_provisional { specId, revision, taskIds } pins finished tasks (completed, not already pinned) provisionally to the revision they were built against, so a later approval re-grades them; only a person or an admin token, an agent run gets a 403. Filing work against a spec with no approved revision, or naming a draft revision, pins that revision provisionally; approving a later revision re-grades it there.',
     update_artifact: '{ artifactId (required), title?, content?, metadata?, expectedRevision? (with content: write only if the body is still at that revision, else refused with the current one — pass the currentRevision get_artifact showed) } — every content change is kept as a new immutable revision',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), tier? (premium-plus|premium|standard|budget: the model tier every spawned task asks for, overriding kind x complexity), trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
@@ -2412,6 +2418,21 @@ export function describeCreatedTaskState(task: any): string {
   return 'Created and queued; pickup is asynchronous';
 }
 
+/** `buildd` action=help: {topic} for workflow guidance, {action} for one action's docs, {} for both lists. */
+export function builddHelp(params: Record<string, unknown>): ToolResult {
+  if (params.topic !== undefined) {
+    const r = guidanceTopicReply(params.topic);
+    return { content: [{ type: 'text', text: r.text }], ...(r.isError ? { isError: true } : {}) };
+  }
+  const target = typeof params.action === 'string' ? params.action : '';
+  if (target) {
+    if (!(allActions as readonly string[]).includes(target)) return errorResult(`Unknown action "${target}".`);
+    return text(buildParamsDescription([target]));
+  }
+  const topics = guidanceTopicsText(t => `buildd {"action":"help","params":{"topic":"${t}"}}`);
+  return text(`Call buildd with action "help" and params {"action": "<name>"} for one action's full docs.\n\n${topics}`);
+}
+
 export async function handleBuilddAction(
   api: ApiFn,
   action: string,
@@ -2437,6 +2458,10 @@ export async function handleBuilddAction(
     const adminErr = await requireAdminLevel(ctx, action, params);
     if (adminErr) return adminErr;
   }
+
+  // `help` on the one-tool `buildd` (legacy surface, per-workspace OAuth
+  // endpoint): the same guidance and docs the group tools' help serves.
+  if (action === 'help') return builddHelp(params);
 
   // claim_task is the first lifecycle call agents are instructed to make, but
   // hosted agents can arrive with a worker already assigned in their MCP URL.
@@ -2797,28 +2822,56 @@ export async function handleBuilddAction(
         ? undefined
         : requireFullUuid(params.taskId, 'taskId');
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      // waitSeconds: hold the call while the only thing in the way is an
+      // unfinished dependency. The task is reserved first, and re-reserved on
+      // every poll, so a runner cannot take it in the gap and the reservation
+      // outlives the wait only while this session keeps asking.
+      let waitMs = 0;
+      if (params.waitSeconds !== undefined) {
+        if (!taskId) throw new Error('waitSeconds needs a taskId');
+        const n = Number(params.waitSeconds);
+        waitMs = Number.isFinite(n) ? Math.min(Math.max(n, 0), 45) * 1000 : 0;
+      }
+      const reserveForWait = () => api(`/api/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ reserved: true }) });
+      if (waitMs > 0) await reserveForWait();
+      const sleep = ctx.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+      const POLL_MS = 3000;
+      let waited = 0;
       let data: any;
-      try {
-        data = await api('/api/workers/claim', {
-          method: 'POST',
-          body: JSON.stringify({
-            maxTasks: params.maxTasks || 1,
-            workspaceId: wsId,
-            runner: 'mcp',
-            ...(taskId ? { taskId } : {}),
-            // Admin-only on the server, and only with a taskId; see
-            // ClaimTasksInput.forceOverride.
-            ...(taskId && params.force === true ? { forceOverride: true } : {}),
-          }),
-        });
-      } catch (err) {
-        const limit = describeAccountLimitError(err);
-        if (limit) return text(limit);
-        throw err;
+      for (;;) {
+        try {
+          data = await api('/api/workers/claim', {
+            method: 'POST',
+            body: JSON.stringify({
+              maxTasks: params.maxTasks || 1,
+              workspaceId: wsId,
+              runner: 'mcp',
+              ...(taskId ? { taskId } : {}),
+              // Admin-only on the server, and only with a taskId; see
+              // ClaimTasksInput.forceOverride.
+              ...(taskId && params.force === true ? { forceOverride: true } : {}),
+            }),
+          });
+        } catch (err) {
+          const limit = describeAccountLimitError(err);
+          if (limit) return text(limit);
+          throw err;
+        }
+        const stillBlockedByDeps = (data?.workers ?? []).length === 0
+          && data?.diagnostics?.taskExclusion?.code === 'deps_blocked';
+        if (!stillBlockedByDeps || waited + POLL_MS > waitMs) break;
+        await sleep(POLL_MS);
+        waited += POLL_MS;
+        await reserveForWait();
       }
 
       const workers = data.workers || [];
-      if (workers.length === 0) return text(describeEmptyClaim(data, taskId));
+      if (workers.length === 0) {
+        const empty = describeEmptyClaim(data, taskId);
+        return text(waitMs > 0 && data?.diagnostics?.taskExclusion?.code === 'deps_blocked'
+          ? `${empty}\nThe task is still reserved for this session (runners skip it); call claim_task with waitSeconds again to keep waiting.`
+          : empty);
+      }
 
       // Push to this exact branch. create_pr also accepts a different branch
       // you actually pushed to instead — as long as no other worker already
@@ -3751,6 +3804,24 @@ export async function handleBuilddAction(
         const data = await api(`/api/tasks/${params.taskId}`, { method: 'PATCH', body: JSON.stringify({ pause: true }) });
         return text(`Pausing the agent on task ${params.taskId} (worker ${data.workerId}) at its next safe point. Its session is kept; Resume on the task page continues it.`);
       }
+      // A cancel says why (failure-incident-recovery §18.5): the server refuses
+      // one with neither a reason nor what superseded it.
+      if (params.cancelReason !== undefined || params.supersededBy !== undefined) {
+        if (params.status !== 'cancelled') throw new Error('cancelReason and supersededBy only apply to status: cancelled');
+        if (params.cancelReason !== undefined) updateFields.cancelReason = params.cancelReason;
+        if (params.supersededBy !== undefined) updateFields.supersededBy = params.supersededBy;
+      }
+      // Reserve (or release) a waiting task for this session: its own request.
+      // Runners and other sessions skip a reserved task until it lapses.
+      if (params.reserve !== undefined) {
+        if (typeof params.reserve !== 'boolean') throw new Error('reserve must be true or false');
+        const others = Object.keys(params).filter(k => k !== 'taskId' && k !== 'reserve' && k !== 'workspaceId');
+        if (others.length > 0) throw new Error(`reserve is sent on its own; drop ${others.join(', ')}`);
+        await api(`/api/tasks/${params.taskId}`, { method: 'PATCH', body: JSON.stringify({ reserved: params.reserve }) });
+        return text(params.reserve
+          ? `Task ${params.taskId} is reserved for this session: runners will skip it for ${RESERVATION_MINUTES} minutes, renewed each time you reserve again or call claim_task with waitSeconds. Claim it with claim_task once its dependencies clear.`
+          : `Task ${params.taskId} is released: runners can claim it again.`);
+      }
       // Grant (or clear) the task's cross-workspace reach before it is claimed:
       // its own request, a person's only.
       if (params.delegation !== undefined) {
@@ -3965,7 +4036,7 @@ export async function handleBuilddAction(
         'failureContext', 'skillSlugs', 'tier', 'model', 'effort', 'callbackUrl',
         'callbackToken', 'release', 'backend', 'startAt', 'startIn', 'startAfter',
         'loopConfig', 'loopUntilVerified', 'loopUntilMerged', 'subjectAnchor', 'fileAnywayReason', 'context',
-        'kind', 'complexity', 'emitsPlan', 'label', 'delegation', 'filingTargets',
+        'kind', 'complexity', 'emitsPlan', 'label', 'delegation', 'filingTargets', 'claim',
       ]);
       const unknownParams = Object.keys(params).filter(key => !allowedCreateTaskParams.has(key));
       if (unknownParams.length > 0) {
@@ -4191,6 +4262,10 @@ export async function handleBuilddAction(
       if (params.emitsPlan === true) {
         taskBody.emitsPlan = true;
       }
+      // claim: file it already reserved for this session (no runner can win the
+      // gap), then claim it by id below.
+      if (params.claim !== undefined && typeof params.claim !== 'boolean') throw new Error('claim must be true or false');
+      if (params.claim === true) taskBody.reserve = true;
 
       const task = await api('/api/tasks', {
         method: 'POST',
@@ -4290,7 +4365,12 @@ export async function handleBuilddAction(
         ? `\nModel routing: ${task.routing.reason}`
         : '';
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}\nFollow progress at the Task URL below or with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${routingLine}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${taskBody.callbackUrl ? '\nCallback: callbackUrl receives one best-effort HTTPS POST when the task completes or fails; it is not a progress feed.' : ''}${subjectSuggestion}${similarTasksWarning}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
+      const createdResult = text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}\nFollow progress at the Task URL below or with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${routingLine}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${taskBody.callbackUrl ? '\nCallback: callbackUrl receives one best-effort HTTPS POST when the task completes or fails; it is not a progress feed.' : ''}${subjectSuggestion}${similarTasksWarning}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
+      if (params.claim === true) {
+        const claimedResult = await handleBuilddAction(api, 'claim_task', { taskId: task.id, workspaceId: wsId }, ctx);
+        return text(`${createdResult.content[0].text}\n\n${claimedResult.content[0].text}`);
+      }
+      return createdResult;
     }
 
     case 'create_schedule': {
@@ -4872,8 +4952,8 @@ export async function handleBuilddAction(
     case 'manage_secrets': {
 
       const subAction = params.action as string;
-      if (!subAction || !['list', 'set', 'delete'].includes(subAction)) {
-        throw new Error('action is required: "list", "set", or "delete"');
+      if (!subAction || !(SUB_ACTIONS.manage_secrets as readonly string[]).includes(subAction)) {
+        throw new Error(`action is required: ${quotedSubs('manage_secrets')}`);
       }
 
       if (subAction === 'list') {
@@ -5897,8 +5977,8 @@ export async function handleBuilddAction(
 
     case 'update_incident': {
       requireFullUuid(params.incidentId, 'incidentId');
-      if (params.action !== 'acknowledge' && params.action !== 'resolve') {
-        throw new Error('action must be "acknowledge" or "resolve"');
+      if (!(SUB_ACTIONS.update_incident as readonly unknown[]).includes(params.action)) {
+        throw new Error(`action must be one of: ${SUB_ACTIONS.update_incident.join(', ')}`);
       }
       const data = await api(`/api/health/incidents/${params.incidentId}`, {
         method: 'POST',
@@ -6178,7 +6258,7 @@ export async function handleBuilddAction(
     case 'manage_missions': {
 
       const missionAction = params.action as string;
-      if (!missionAction) throw new Error('action is required (list, create, get, update, delete, link_task, unlink_task)');
+      if (!missionAction) throw new Error(`action is required (${SUB_ACTIONS.manage_missions.join(', ')})`);
 
       switch (missionAction) {
         case 'list': {
@@ -6473,7 +6553,7 @@ export async function handleBuilddAction(
           return text(`Last evaluation: ${state.evaluatedAt} (by ${state.evaluatedBy})\nOverall: **${state.overall}**\n${criteriaLines}`);
         }
         default:
-          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, arm, delete, link_task, unlink_task, evaluate, get_criteria_state`);
+          throw new Error(`Unknown missions action: ${missionAction}. Use one of: ${SUB_ACTIONS.manage_missions.join(', ')}`);
       }
     }
 
@@ -6483,7 +6563,7 @@ export async function handleBuilddAction(
 
     case 'manage_initiatives': {
       const initiativeAction = params.action as string;
-      if (!initiativeAction) throw new Error('action is required (list, create, get, update, delete, link_mission, unlink_mission)');
+      if (!initiativeAction) throw new Error(`action is required (${SUB_ACTIONS.manage_initiatives.join(', ')})`);
 
       switch (initiativeAction) {
         case 'list': {
@@ -6618,7 +6698,7 @@ export async function handleBuilddAction(
           return text(`Mission ${params.missionId} unlinked from its initiative`);
         }
         default:
-          throw new Error(`Unknown initiatives action: ${initiativeAction}. Use one of: list, create, get, update, delete, link_mission, unlink_mission`);
+          throw new Error(`Unknown initiatives action: ${initiativeAction}. Use one of: ${SUB_ACTIONS.manage_initiatives.join(', ')}`);
       }
     }
 
@@ -6650,7 +6730,7 @@ export async function handleBuilddAction(
     case 'manage_workspaces': {
 
       const wsAction = params.action as string;
-      if (!wsAction) throw new Error('action is required (list, get, create, update, create_repo, init, readiness, scaffold, author_spec)');
+      if (!wsAction) throw new Error(`action is required (${SUB_ACTIONS.manage_workspaces.join(', ')})`);
 
       switch (wsAction) {
         case 'create': {
@@ -6958,14 +7038,14 @@ export async function handleBuilddAction(
           );
         }
         default:
-          throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, get, create, update, create_repo, init, readiness, scaffold, author_spec`);
+          throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: ${SUB_ACTIONS.manage_workspaces.join(', ')}`);
       }
     }
 
     case 'manage_watched_projects': {
 
       const wpAction = params.action as string;
-      if (!wpAction) throw new Error('action is required (list, create, update, delete, run)');
+      if (!wpAction) throw new Error(`action is required (${SUB_ACTIONS.manage_watched_projects.join(', ')})`);
 
       const fields = ['repo', 'enabled', 'vercelProjectId', 'inFlightWindowMin', 'prodGraceMin', 'roleSlug', 'pushoverApp', 'releasePrFilter', 'notes'] as const;
       const pickFields = (): Record<string, unknown> => {
@@ -7019,7 +7099,7 @@ export async function handleBuilddAction(
           return text(`Watcher ran for ${params.projectId}. Fired ${data.fired} alert(s).`);
         }
         default:
-          throw new Error(`Unknown watched_projects action: ${wpAction}. Use one of: list, create, update, delete, run`);
+          throw new Error(`Unknown watched_projects action: ${wpAction}. Use one of: ${SUB_ACTIONS.manage_watched_projects.join(', ')}`);
       }
     }
 
@@ -7435,7 +7515,7 @@ export async function handleBuilddAction(
 
     case 'manage_experiments': {
       const op = params.action as string;
-      const ops = [...EXPERIMENT_READ_OPS, ...EXPERIMENT_WRITE_OPS] as readonly string[];
+      const ops = SUB_ACTIONS.manage_experiments as readonly string[];
       if (!op || !ops.includes(op)) {
         throw new Error(`action must be one of: ${ops.join(', ')}`);
       }
@@ -7555,7 +7635,7 @@ export async function handleBuilddAction(
 
     case 'manage_evidence_backends': {
       const op = params.action as string;
-      const ops = ['list', 'get', 'create', 'update', 'delete', 'verify'];
+      const ops = SUB_ACTIONS.manage_evidence_backends as readonly string[];
       if (!op || !ops.includes(op)) {
         throw new Error(`action must be one of: ${ops.join(', ')}`);
       }
@@ -7633,8 +7713,8 @@ export async function handleBuilddAction(
         : await ctx.getWorkspaceId();
 
       const tierAction = params.action as 'list' | 'set' | 'delete' | 'policy' | 'set_policy' | 'adopt' | 'model';
-      if (!tierAction || !['list', 'set', 'delete', 'policy', 'set_policy', 'adopt', 'model'].includes(tierAction)) {
-        throw new Error('action must be "list", "set", "delete", "policy", "set_policy", "adopt", or "model"');
+      if (!tierAction || !(SUB_ACTIONS.manage_model_tiers as readonly string[]).includes(tierAction)) {
+        throw new Error(`action must be one of: ${SUB_ACTIONS.manage_model_tiers.join(', ')}`);
       }
 
       if (tierAction === 'policy' || tierAction === 'set_policy' || tierAction === 'adopt' || tierAction === 'model') {
@@ -9180,7 +9260,7 @@ export async function handleMemoryAction(
     }
 
     case 'consolidate_knowledge': {
-      const validOps = ['find_duplicates', 'find_decayed', 'archive'] as const;
+      const validOps = SUB_ACTIONS.consolidate_knowledge;
       const op = params.op as (typeof validOps)[number] | undefined;
       if (!op || !validOps.includes(op)) {
         throw new Error(`op is required and must be one of: ${validOps.join(', ')}`);

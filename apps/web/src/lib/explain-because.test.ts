@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, dispatchWakeLink, withDispatchLink, entitlementHoldLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
+import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, dispatchWakeLink, withDispatchLink, entitlementHoldLink, taskRecoveryLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
 import { rankGatedSubjects, waitingOnRank, type ExplainAnswer } from './explain-types';
 import { deriveMissionStateView, type MissionStateInput } from './mission-state-view';
 
@@ -17,9 +17,9 @@ describe('buildStateBecause', () => {
     const open = { id: 'rev-1', title: 'Review PR #1', status: 'pending', runnerClaimable: true };
     const view = deriveMissionStateView({ ...base, executor: 'local', openTasks: [{ id: 'rev-1', status: 'pending', title: 'Review PR #1' }] });
     const chain = buildStateBecause(view, { missionId: 'm', workspaceId: 'ws' }, { openTasks: [open] });
-    expect(chain.map(l => l.claim).join('\n')).not.toContain('runners never pick up');
+    expect(chain.map(l => l.claim).join('\n')).not.toContain('Claim it from a local session');
     const plain = buildStateBecause(view, { missionId: 'm', workspaceId: 'ws' }, { openTasks: [{ ...open, runnerClaimable: false }] });
-    expect(plain.map(l => l.claim).join('\n')).toContain('runners never pick up');
+    expect(plain.map(l => l.claim).join('\n')).toContain('Claim it from a local session');
   });
 
   it('ends on the state and carries the mission ref on every link', () => {
@@ -65,12 +65,12 @@ describe('buildStateBecause', () => {
 
       const liveLink = chain.find(l => l.refs.taskId === 'task-live');
       expect(liveLink).toBeDefined();
-      expect(liveLink!.claim).not.toContain('no live worker');
-      expect(liveLink!.claim).toContain('Build the page');
+      expect(liveLink!.claim).not.toMatch(/waiting for a runner|nothing is running it/);
+      expect(liveLink!.claim).toBe('"Build the page" is in progress.');
       // The row without a worker is still named as such, and leads the chain —
       // it is the one worth a reader's attention.
       expect(chain[0].refs.taskId).toBe('task-queued');
-      expect(chain[0].claim).toContain('no live worker');
+      expect(chain[0].claim).toBe('"Write the docs" is waiting for a runner.');
     });
 
     it('does not claim "no live worker" when per-task liveness is unknown and agents are running', () => {
@@ -82,7 +82,7 @@ describe('buildStateBecause', () => {
       const chain = buildStateBecause(view, { missionId: 'm' }, {
         openTasks: [{ id: 'task-a', title: 'Build the page', status: 'in_progress' }],
       });
-      for (const l of chain) expect(l.claim).not.toContain('no live worker');
+      for (const l of chain) expect(l.claim).not.toMatch(/waiting for a runner|nothing is running it/);
     });
 
     it('still names a genuinely orphaned in_progress task', () => {
@@ -95,7 +95,7 @@ describe('buildStateBecause', () => {
         openTasks: [{ id: 'task-orphan', title: 'Build the page', status: 'in_progress', live: false }],
       });
       expect(chain[0].refs.taskId).toBe('task-orphan');
-      expect(chain[0].claim).toBe('Task "Build the page" is in_progress with no live worker.');
+      expect(chain[0].claim).toBe('"Build the page" was started, but nothing is running it now.');
     });
 
     it('names the unmet dependency, never "no live worker", for a dependency-blocked row', () => {
@@ -116,7 +116,7 @@ describe('buildStateBecause', () => {
       expect(chain[0].refs.taskId).toBe('task-first');
       const depLink = chain.find(l => l.claim.includes('Second step'));
       expect(depLink).toBeDefined();
-      expect(depLink!.claim).not.toContain('no live worker');
+      expect(depLink!.claim).not.toMatch(/waiting for a runner|nothing is running it/);
       expect(depLink!.claim).toContain('First step');
       expect(depLink!.refs.taskId).toBe('task-first');
     });
@@ -130,7 +130,7 @@ describe('buildStateBecause', () => {
       const chain = buildStateBecause(view, { missionId: 'm' }, {
         openTasks: [{ id: 'task-orphan', title: 'Build the page', status: 'in_progress' }],
       });
-      expect(chain[0].claim).toContain('no live worker');
+      expect(chain[0].claim).toContain('nothing is running it now');
     });
   });
 
@@ -429,5 +429,34 @@ describe('entitlementHoldLink (explain for a task held by a plan limit)', () => 
   it('no hold, no link', () => {
     expect(entitlementHoldLink({}, subject)).toBeNull();
     expect(entitlementHoldLink(null, subject)).toBeNull();
+  });
+});
+
+// failure-incident-recovery §18.5/§18.6 (AC-22).
+describe('taskRecoveryLink', () => {
+  const subject = { taskId: 'task-1', workspaceId: 'ws-1' };
+
+  it('a cancelled task superseded by a PR says so', () => {
+    const l = taskRecoveryLink('cancelled', { cancellation: { reason: 'Superseded by PR #3936', supersededBy: { prNumber: 3936 }, actor: 'account:a', at: '2026-10-11T00:00:00.000Z' } }, subject)!;
+    expect(l.claim).toBe('Cancelled: superseded by PR #3936.');
+    expect(l.derivedFrom).toBe('tasks.context.cancellation');
+  });
+
+  it('a cancelled task with a reason says the reason', () => {
+    expect(taskRecoveryLink('cancelled', { cancellation: { reason: 'No longer needed', actor: 'user:u', at: 'x' } }, subject)!.claim).toBe('Cancelled: No longer needed');
+  });
+
+  it('a pending task held for its credential says what it waits on', () => {
+    const hold = { credentialKey: 'account:a', shared: false, label: 'the Claude login on runner "laptop"', since: 'x', firstHeldAt: 'x', attempts: 1, probeAt: '2026-10-11T12:15:00.000Z', exhausted: false };
+    const l = taskRecoveryLink('pending', { credentialHold: hold }, subject)!;
+    expect(l.claim).toContain('Waiting for a healthy credential');
+    expect(l.claim).toContain('12:15 UTC');
+    expect(l.derivedFrom).toBe('tasks.context.credentialHold');
+  });
+
+  it('nothing recorded, no link', () => {
+    expect(taskRecoveryLink('cancelled', {}, subject)).toBeNull();
+    expect(taskRecoveryLink('pending', null, subject)).toBeNull();
+    expect(taskRecoveryLink('completed', { cancellation: { reason: 'x', actor: 'a', at: 'b' } }, subject)).toBeNull();
   });
 });

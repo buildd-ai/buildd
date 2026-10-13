@@ -52,7 +52,10 @@ const KIND_LABELS = {
   'buildd.post_session_triage': 'Post-session triage',
   'buildd.failure_incident_triage': 'Failure triage',
   'buildd.scout_probe_selection': 'Scout probe pick',
+  'buildd.visual_impact': 'Visual impact',
   'buildd.early_release': 'Early release',
+  'buildd.spec_duplicate': 'Spec duplicates',
+  'buildd.spec_area': 'Spec areas',
 } as const;
 
 export type DecisionModelKind = keyof typeof KIND_LABELS;

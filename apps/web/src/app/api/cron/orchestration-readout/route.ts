@@ -9,6 +9,7 @@ import { arrayOverlaps, desc, eq } from 'drizzle-orm';
 import { withCronRun } from '@/lib/cron-run';
 import { channels, events, triggerEvent } from '@/lib/pusher';
 import { gradeStrandChoiceDecisions } from '@/lib/strand-choice-grading';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
 const KEY = 'conflict-aware-orchestration-readout';
@@ -87,7 +88,7 @@ export async function GET(req: NextRequest) {
         // A workspace note is attached to its latest task; mission-linked tasks
         // put the same note in that mission's feed. No content is read.
         const task = await db.query.tasks.findFirst({
-          where: eq(tasks.workspaceId, workspaceId), columns: { id: true, missionId: true }, orderBy: desc(tasks.createdAt),
+          where: sqlWhere(eq(tasks.workspaceId, workspaceId)), columns: { id: true, missionId: true }, orderBy: sqlOrderBy(desc(tasks.createdAt)),
         });
         if (!task) throw new Error('Eligible readout has no workspace task for its advisory note');
         for (const g of eligible) {

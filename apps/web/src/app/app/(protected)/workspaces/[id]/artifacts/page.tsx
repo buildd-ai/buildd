@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import ArtifactList from '@/components/ArtifactList';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,7 +26,7 @@ export default async function WorkspaceArtifactsPage({
   if (!access) notFound();
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { id: true, name: true },
   });
 
@@ -35,7 +36,7 @@ export default async function WorkspaceArtifactsPage({
 
   // Get all workers in this workspace
   const workspaceWorkers = await db.query.workers.findMany({
-    where: eq(workers.workspaceId, id),
+    where: sqlWhere(eq(workers.workspaceId, id)),
     columns: { id: true, taskId: true },
   });
 
@@ -44,8 +45,8 @@ export default async function WorkspaceArtifactsPage({
   // Get artifacts for those workers, excluding plan types
   const allArtifacts = workerIds.length > 0
     ? await db.query.artifacts.findMany({
-        where: inArray(artifacts.workerId, workerIds),
-        orderBy: desc(artifacts.createdAt),
+        where: sqlWhere(inArray(artifacts.workerId, workerIds)),
+        orderBy: sqlOrderBy(desc(artifacts.createdAt)),
       })
     : [];
 
@@ -58,7 +59,7 @@ export default async function WorkspaceArtifactsPage({
   const taskMap = new Map<string, { id: string; title: string }>();
   if (taskIds.length > 0) {
     const taskRows = await db.query.tasks.findMany({
-      where: inArray(tasks.id, taskIds),
+      where: sqlWhere(inArray(tasks.id, taskIds)),
       columns: { id: true, title: true },
     });
     for (const t of taskRows) {

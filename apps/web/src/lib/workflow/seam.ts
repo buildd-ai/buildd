@@ -40,6 +40,7 @@ import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
   resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
 } from './trunk';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -188,11 +189,11 @@ export async function recordPolicyEvidence(p: {
  * Idempotent: both doors may call it for the same PR.
  */
 export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Promise<{ owned: boolean; deliveryId?: string; reason?: string }> {
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, p.workspaceId), columns: { id: true, gitConfig: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, p.workspaceId)), columns: { id: true, gitConfig: true } });
   if (!ws || !kernelEnabled(ws.gitConfig)) return { owned: false, reason: 'kernel_off' };
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, p.ownerTaskId),
+    where: sqlWhere(eq(tasks.id, p.ownerTaskId)),
     columns: { id: true, status: true, category: true, kind: true, deliveryId: true, deliveryRole: true },
   });
   if (!task) return { owned: false, reason: 'no_task' };
@@ -282,13 +283,13 @@ async function forwardOwnerEnd(p: { workspaceId: string; ownerTaskId: string; de
   await db.update(tasks)
     .set({ deliveryId: p.deliveryId, deliveryRole: 'owner' })
     .where(and(eq(tasks.id, p.ownerTaskId), sql`${tasks.deliveryId} IS NULL`));
-  const task = await db.query.tasks.findFirst({ where: eq(tasks.id, p.ownerTaskId), columns: { status: true, deliveryId: true, deliveryRole: true } });
+  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, p.ownerTaskId)), columns: { status: true, deliveryId: true, deliveryRole: true } });
   if (!task || task.deliveryId !== p.deliveryId || task.deliveryRole !== 'owner') return false;
   if (task.status !== 'completed' && task.status !== 'failed') return false;
   const latest = await db.query.workers.findFirst({
-    where: eq(workers.taskId, p.ownerTaskId),
+    where: sqlWhere(eq(workers.taskId, p.ownerTaskId)),
     columns: { id: true, status: true, lastCommitSha: true, commitCount: true },
-    orderBy: [desc(workers.createdAt)],
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
   if (!latest || (latest.status !== 'completed' && latest.status !== 'failed' && latest.status !== 'error')) return false;
   await attemptEnded({

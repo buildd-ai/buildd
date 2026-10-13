@@ -1,0 +1,20 @@
+{
+  "name": "@buildd/spec-contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Living Specs' portable contract: the shapes and pure rules (criteria, scope, checks, verdicts, outcome, hashing, source adapters). No Buildd tables, no runtime dependencies.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "type-check": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.0"
+  },
+  "license": "Apache-2.0"
+}

@@ -58,7 +58,7 @@ import {
   type MissionFeedWorkerInput,
   type PulseSegment,
 } from './mission-pulse';
-import { missionTaskHref, type MissionOrigin } from './mission-task-href';
+import { missionTaskHref, taskAnswerHref, type MissionOrigin } from './mission-task-href';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
 import { taskRowsStripOrder } from './mission-strip-order';
@@ -697,7 +697,9 @@ export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCard
     const link = (taskId: string) => missionTaskHref({ missionId: row.id, taskId, from: opts.from, mode: 'sheet' });
     if (needsYou && needsYou.rows[0]) {
       const r = needsYou.rows[0];
-      primary = { kind: 'needs_you', taskId: r.taskId, label: needsYouLabel(r), href: link(r.taskId) };
+      // A question is answered on the task page; every other ask opens the sheet.
+      const asks = r.needsYou === 'input' || r.needsYou === 'question';
+      primary = { kind: 'needs_you', taskId: r.taskId, label: needsYouLabel(r), href: asks ? taskAnswerHref({ taskId: r.taskId, missionId: row.id }) : link(r.taskId) };
     } else if (moving && moving.rows[0]) {
       const r = moving.rows[0];
       primary = { kind: 'moving', taskId: r.taskId, label: `${r.task.title} · running`, href: link(r.taskId) };

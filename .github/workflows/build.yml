@@ -87,6 +87,11 @@ jobs:
       - name: Lint specs (frontmatter + dead paths + index)
         run: bun run scripts/check-specs.ts --check
 
+      # A generated copy of a native spec (docs/specs/living-specs.md §18, R-16)
+      # is refused when hand-edited: both hashes must match what buildd wrote.
+      - name: Refuse hand edits to generated spec copies
+        run: bun run scripts/check-generated-specs.ts
+
       - name: Check design drift
         run: bun run design:check
 
@@ -112,17 +117,13 @@ jobs:
         id: migration_check
         run: |
           cd packages/core
-          # drizzle-kit aborts without generating anything and STILL EXITS 0. A
-          # generate that aborts writes nothing, which the porcelain check below
-          # cannot tell apart from "no changes needed" — so this step used to
-          # report success over a db:generate that never ran.
-          #
-          # The collision/malformed branch is fixed at the root by
-          # patches/drizzle-kit@*.patch (exit 0 -> exit 1), guarded by
-          # packages/core/__tests__/drizzle-kit-patch.test.ts. This output check
-          # stays for the abort paths the patch does NOT cover: the
-          # "snapshot is not of the latest version" branch still exits 0, and it
-          # prints via console.log rather than as an Error.
+          # drizzle-kit 0.31 aborted without generating anything and STILL EXITED
+          # 0. A generate that aborts writes nothing, which the porcelain check
+          # below cannot tell apart from "no changes needed" — so this step used
+          # to report success over a db:generate that never ran. The rc kit exits
+          # non-zero on a malformed or non-commuting chain (the `migrations:commute`
+          # step below pins that), but this output check stays as a floor: it
+          # costs nothing and a kit that goes quiet again must not read as green.
           # Capture before asserting: the step runs under `bash -e`, so letting a
           # now-nonzero db:generate fail the assignment would kill the step before
           # its output is ever echoed, leaving no diagnosis in the log.
@@ -166,30 +167,32 @@ jobs:
             --form-string "url_title=View CI run" \
             https://api.pushover.net/1/messages.json || true
 
-      # Journal ordering is load-bearing and must not ride on the affected-tests
-      # fan-out. Drizzle's migrator applies migrations by the journal's `when`
-      # high-water-mark, so a migration whose `when` is lower than an
-      # already-applied one is silently recorded as applied and its DDL never
-      # runs. Today `scripts/affected-tests.sh` fans out to ALL for any
-      # `packages/core/` change (which every migration touches), so this test does
-      # execute -- but only as a side effect of that mapping, and it is also
-      # enforced by `.githooks/pre-commit`, which `--no-verify` bypasses and CI
-      # never runs. Invoke the gate by name so a future change to either one
-      # cannot quietly remove it.
-      - name: Lint migration journal ordering
+      # `migrations:lint` is the prod-build-runs-migrations guard: a deploy that
+      # skipped `db:migrate` ships code that reads columns that do not exist.
+      # Invoke it by name so the affected-tests fan-out can never drop it.
+      - name: Lint migration build wiring
         run: bun run migrations:lint
 
-      # drizzle-kit takes the next index from the local journal, so parallel
-      # branches mint the same NNNN_ and git cannot see it (the .sql names
-      # differ). Fail the PR the moment its base takes the slot, naming the
-      # colliding file and the next free index, instead of finding out at the
-      # landing gate or a failed deploy. Fix: `bun run migrations:renumber`.
-      # See packages/core/db/migration-index.ts.
-      - name: Check migration indices are free on the base
+      # drizzle v1 keeps one migration per `<YYYYMMDDHHMMSS>_<slug>/` folder, so
+      # branches cannot collide on a name. What can go wrong is a leftover from
+      # before the cutover (a numbered `NNNN_x.sql`, a `meta/` journal): v1 never
+      # reads it, so its DDL would be skipped with the deploy green. Fail closed.
+      # Fix: `bun run migrations:regenerate`. See packages/core/db/migration-layout.ts.
+      - name: Check migration layout
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: bun run migrations:index-check "--base=origin/$BASE_REF"
+        run: bun run migrations:layout-check "--base=origin/$BASE_REF"
+
+      # Two branches that each ran generate off the same base produce snapshots
+      # sharing a parent: git merges them cleanly and the second one's DDL is
+      # computed against a schema the first already changed. drizzle-kit check
+      # exits non-zero on a pair whose changes touch each other (the pinned rc
+      # kit; migration-layout.test.ts pins both the pass and the fail). Unlike
+      # the layout check it needs no base ref, so it also runs on push.
+      # Fix: `bun run migrations:regenerate`.
+      - name: Check migrations commute
+        run: bun run migrations:commute
 
       - name: Lint hardcoded model IDs
         # The self-test runs first: it plants a known violation outside the
@@ -257,7 +260,7 @@ jobs:
 
       # The dependency handover fixture exercises a real frozen pnpm install.
       - name: Setup Node for pnpm
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -684,10 +687,14 @@ jobs:
       # apps/web/tests/db/migration-baseline.test.ts replays the pre-squash
       # migration tree from this tag (LAST_RELEASE_BEFORE_SQUASH in
       # packages/core/db/migrate-plan.ts) to prove the baseline equivalent; a
-      # shallow checkout carries no tags.
-      - name: Fetch the pre-squash release tag
+      # shallow checkout carries no tags. migration-layout-v1.test.ts also runs
+      # the previous release's migrator out of git (ROLLBACK_MIGRATOR_REF there)
+      # to prove a rollback applies nothing against the upgraded tracking table.
+      - name: Fetch the pre-squash and rollback-migrator release tags
         if: steps.dedupe.outputs.redundant != 'true'
-        run: git fetch --no-tags --depth=1 origin +refs/tags/v0.284.0:refs/tags/v0.284.0
+        run: |
+          git fetch --no-tags --depth=1 origin +refs/tags/v0.284.0:refs/tags/v0.284.0
+          git fetch --no-tags --depth=1 origin +refs/tags/v0.327.1:refs/tags/v0.327.1
       - uses: oven-sh/setup-bun@v2
         if: steps.dedupe.outputs.redundant != 'true'
         with:

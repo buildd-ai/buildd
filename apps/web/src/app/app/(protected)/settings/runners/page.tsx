@@ -4,7 +4,7 @@ import SettingsSection from '../SettingsSection';
 import RunnerTokensSection from '../RunnerTokensSection';
 import CloudflareSection from '../CloudflareSection';
 import { StatusChip } from '../_components/ConnectionRow';
-import { loadAccountLastSeen, loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
+import { loadAccountLastSeen, loadAccountModelAuth, loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
 import { loadFleetSnapshot } from '@/lib/home-fleet';
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import type { FleetSnapshot } from '@buildd/shared';
@@ -14,6 +14,7 @@ import SignInsAnchorRedirect from './SignInsAnchorRedirect';
 import NewRunnerTokenSheet from './NewRunnerTokenSheet';
 import { permsInAnyTeam, teamIdsHolding } from '../_lib/settings-permissions';
 import { settingsReadOnly } from '@/lib/settings-nav';
+import { pickShownTeam } from '../_lib/shown-team';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,16 +27,18 @@ const SIGN_INS_HREF = '/app/settings/models#sign-ins';
  * Settings → Runners. Fleet first (what runs your tasks), then connections
  * (the Cloudflare account cloud runs use, and a pointer to the sign-ins on
  * Models), then runner tokens (how a runner reaches buildd). `?new=1` opens the
- * New runner token sheet over it.
+ * New runner token sheet over it. Shows the active team, or `?team=<id>` when
+ * it names one of the person's teams (the workspace page links here that way).
  */
 export default async function RunnersSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ new?: string | string[] }>;
+  searchParams: Promise<{ new?: string | string[]; team?: string | string[] }>;
 }) {
-  const { new: newParam } = await searchParams;
+  const { new: newParam, team: teamParam } = await searchParams;
   const { user, teams, currentTeamId, currentTeam, workspaces, permsByTeam } = await loadSettingsContext();
-  const teamId = currentTeamId ?? teams[0]?.id ?? null;
+  const shown = pickShownTeam(teams, teamParam, currentTeam) ?? teams[0] ?? null;
+  const teamId = shown?.id ?? currentTeamId ?? null;
   const teamWsIds = workspaces.filter((w) => w.teamId === teamId).map((w) => w.id);
   const [accounts, fleet, hasSignIn] = await Promise.all([
     loadRunnerAccounts(teams.map((t) => t.id)),
@@ -46,7 +49,11 @@ export default async function RunnersSettingsPage({
     // Status only: null (unknown) drops the chip rather than guessing.
     teamId ? teamHasAgentCredential(teamId).catch(() => null) : Promise.resolve(null),
   ]);
-  const lastSeen = await loadAccountLastSeen(accounts.map((a) => a.id as string)).catch(() => ({} as Record<string, string>));
+  const accountIds = accounts.map((a) => a.id as string);
+  const [lastSeen, modelAuth] = await Promise.all([
+    loadAccountLastSeen(accountIds).catch(() => ({} as Record<string, string>)),
+    loadAccountModelAuth(accountIds).catch(() => ({} as Awaited<ReturnType<typeof loadAccountModelAuth>>)),
+  ]);
   // Each control follows the permission its route enforces, with each team's
   // overrides (a personal team counts as owned): the host-runner flag is
   // manage_team_keys, the Cloudflare token manage_team_model_keys.
@@ -56,6 +63,7 @@ export default async function RunnersSettingsPage({
   const tokens = accounts.map(({ createdByUserId, ...a }) => ({
     ...a,
     lastSeenAt: lastSeen[a.id] ?? null,
+    modelAuthSource: modelAuth[a.id] ?? null,
     canManageHostRunner: adminTeamIds.has(a.teamId),
     // DELETE /api/accounts/[id]: your own key, or manage_team_keys in its team.
     canDelete: adminTeamIds.has(a.teamId) || (createdByUserId != null && createdByUserId === user.id),
@@ -68,7 +76,7 @@ export default async function RunnersSettingsPage({
       {newParam === '1' && <NewRunnerTokenSheet />}
       <FleetOverview
         fleet={fleet}
-        teamName={teams.length > 1 ? (currentTeam?.name ?? null) : null}
+        teamName={teams.length > 1 ? (shown?.name ?? null) : null}
         cloud={teamId ? <CloudRunnerRow teamId={teamId} canManage={cloudflareTeamIds.includes(teamId)} /> : undefined}
       />
       <SettingsSection title="Connections" bare>
@@ -80,7 +88,7 @@ export default async function RunnersSettingsPage({
                 {hasSignIn === true && <StatusChip tone="ok">Connected</StatusChip>}
                 {hasSignIn === false && <StatusChip tone="idle">Not connected</StatusChip>}
               </span>
-              <span className="mt-1 block truncate text-meta text-text-muted">What your runners log in with</span>
+              <span className="mt-1 block truncate text-meta text-text-muted">Model accounts your runners use</span>
             </span>
             <Link href={SIGN_INS_HREF} className="btn btn-quiet shrink-0">Models ›</Link>
           </div>

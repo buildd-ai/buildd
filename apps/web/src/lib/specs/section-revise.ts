@@ -48,7 +48,7 @@ export function spliceSection(body: string, section: OutlineSection, text: strin
 }
 
 export async function reviseSpecSection(caller: SpecCaller, specId: string, input: SectionTarget & {
-  expectedVersion: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown;
+  expectedVersion: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
 }): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
@@ -64,6 +64,6 @@ export async function reviseSpecSection(caller: SpecCaller, specId: string, inpu
   if (typeof section === 'string') return fail(400, `${section}; nothing was written`);
   return reviseSpecDraft(caller, specId, {
     expectedVersion: input.expectedVersion, body: spliceSection(current, section, input.body),
-    changeSummary: input.changeSummary, repoRefs: input.repoRefs,
+    changeSummary: input.changeSummary, repoRefs: input.repoRefs, design: input.design,
   });
 }

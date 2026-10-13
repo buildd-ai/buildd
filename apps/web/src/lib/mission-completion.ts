@@ -14,8 +14,9 @@ import { type DerivedMetric, derivedValue, derivedUnavailable } from '@buildd/co
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
-import { isSurfaceAuditTask, surfaceAuditMissingReason } from '@buildd/core/surface-audit';
+import { isSurfaceAuditTask, surfaceAuditMissingReason, surfaceAuditPendingReason } from '@buildd/core/surface-audit';
 import { evaluateSurfaceAuditGate } from '@/lib/mission-surface-audit-gate';
+import type { VisualImpactAssessment } from '@/lib/workflow/visual-review-impact';
 import { VISUAL_AUDITOR_ROLE_SLUG, type VisualReviewModel } from '@buildd/shared';
 import { after } from 'next/server';
 
@@ -64,6 +65,7 @@ export {
 } from '@buildd/core/mission-completion-codes';
 export type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
 import type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Which caller asked. Recorded on the decision event for diagnosis. */
 export type CompletionPath =
@@ -165,6 +167,22 @@ export interface MissionCompletionDecision {
   visualReviewHold?: VisualReviewHold | null;
   /** The rendered UI files behind `surface_audit_missing`, so a surface can say how many without parsing `reason`. */
   surfaceAuditPaths?: string[];
+  /**
+   * Who clears `surface_audit_missing`. `system`: the Visual Review policy is
+   * `automatic` or `strict`, buildd files the `[surface audit]` itself and the
+   * mission closes when it passes; no owner prompt. `owner`: policy `ask`, a
+   * local executor, an audit that already failed or was cancelled, or the
+   * audit could not be filed.
+   */
+  surfaceAuditActor?: 'system' | 'owner';
+  /** The `[surface audit]` task this check filed or found. */
+  surfaceAuditTaskId?: string | null;
+  /**
+   * The visual impact classifier's applicability record behind the gate's
+   * answer (`assessVisualImpact`), when it was asked: why no audit was owed, or
+   * why one is. Distinct from a waiver.
+   */
+  surfaceAuditAssessment?: VisualImpactAssessment | null;
 }
 
 export interface VisualReviewHold {
@@ -236,6 +254,37 @@ function isBookkeepingByTitle(task: { title?: string | null; mode?: string | nul
   );
 }
 
+/**
+ * Who acts on a missing surface audit, filing it when that is the system.
+ * The system files it (idempotently, through `requestMissionSurfaceAudit`)
+ * unless the policy is `ask`, the mission runs locally, or an audit already ran
+ * and failed or was cancelled (a failed review is the scheduler's backoff or
+ * the owner's call, never a refile on every completion attempt). A read-only
+ * caller (`evaluateCriteria: false`) files nothing; the next real completion
+ * attempt does. Never throws: an audit that cannot be filed is the owner's.
+ */
+async function surfaceAuditFollowUp(
+  mission: { id: string; executor?: string | null },
+  policy: string | undefined,
+  allTasks: Array<{ title?: string | null; roleSlug?: string | null }>,
+  mayFile: boolean,
+): Promise<{ actor: 'system' | 'owner'; taskId: string | null }> {
+  if (policy === 'ask' || mission.executor === 'local') return { actor: 'owner', taskId: null };
+  const priorAudit = allTasks.some(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG || isSurfaceAuditTask(t.title ?? ''));
+  if (priorAudit) return { actor: 'owner', taskId: null };
+  if (!mayFile) return { actor: 'system', taskId: null };
+  try {
+    const { requestMissionSurfaceAudit } = await import('@/lib/mission-surface-audit');
+    const res = await requestMissionSurfaceAudit(mission.id);
+    if (!res.ok) return { actor: 'owner', taskId: null };
+    if (res.created) console.log(`[surface-audit-gate] ${mission.id.slice(0, 8)} filed the surface audit ${res.taskId.slice(0, 8)} (policy ${policy ?? 'automatic'})`);
+    return { actor: 'system', taskId: res.taskId };
+  } catch (err) {
+    console.error(`[surface-audit-gate] ${mission.id.slice(0, 8)} could not file the surface audit (owner decides):`, err);
+    return { actor: 'owner', taskId: null };
+  }
+}
+
 /** Title prefix of a goal-criterion verification task. Kept in sync with mission-criteria-verify.ts. */
 export const VERIFY_TASK_TITLE_PREFIX = 'Verify goal criterion:';
 
@@ -288,7 +337,7 @@ export async function canCompleteMission(
   const evaluateCriteria = opts.evaluateCriteria !== false;
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: {
       id: true,
       title: true,
@@ -302,6 +351,8 @@ export async function canCompleteMission(
       // The visual review hold reads the model, which scopes by workspace.
       workspaceId: true,
       autoSurfaceAudit: true,
+      // A local-executor mission's audit goes to the owner (no runner claims it).
+      executor: true,
     },
   });
 
@@ -320,6 +371,7 @@ export async function canCompleteMission(
     supersededDetails: [] as MissionCompletionDecision['supersededDetails'],
     abandonedDetails: [] as MissionCompletionDecision['abandonedDetails'],
     visualReviewHold: null as VisualReviewHold | null,
+    surfaceAuditAssessment: null as VisualImpactAssessment | null,
   };
 
   if (!mission) {
@@ -357,14 +409,15 @@ export async function canCompleteMission(
   base.criteriaEvaluatedAt = storedState?.evaluatedAt ?? null;
 
   const allTasks = await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: {
       id: true, status: true, title: true, mode: true, kind: true,
       taskClass: true, creationSource: true, category: true, result: true,
       // Finds the visual audit, so a mission without one skips the hold check.
       roleSlug: true,
-      // The surface-audit gate reads the declared paths and each PR's repo.
-      workspaceId: true, pathManifest: true,
+      // The surface-audit gate reads the declared paths and each PR's repo,
+      // and context to recognise a trunk-refresh task.
+      workspaceId: true, pathManifest: true, context: true,
       // Attempt lineage for derived supersession (pr-shipped.ts).
       parentTaskId: true,
     },
@@ -376,7 +429,7 @@ export async function canCompleteMission(
           supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
           abandonedAt: true, abandonedReason: true, supersessionScan: true,
         },
-        orderBy: (w, { desc: d }) => [d(w.startedAt)],
+        orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]),
         limit: 1,
       },
     },
@@ -640,22 +693,36 @@ export async function canCompleteMission(
 
   // A mission that changed UI does not close unless something looked at it.
   // The audit is minted from declared paths at task filing; this reads what
-  // actually merged, so an undeclared or mis-declared manifest cannot skip it.
-  // A completed audit, a recorded human waiver, or autoSurfaceAudit=false clears it.
+  // actually merged, so an undeclared or mis-declared manifest cannot skip it,
+  // and the visual impact classifier clears a change that cannot render.
+  // A completed audit, a recorded human waiver, or the Visual Review policy
+  // `off` clears it. Under `automatic` and `strict` buildd files the audit
+  // itself (no owner prompt); under `ask` the owner runs or waives it.
   const surfaceGate = await evaluateSurfaceAuditGate(
-    mission as { id: string; autoSurfaceAudit?: boolean | null },
+    mission as { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null },
     allTasks as unknown as Parameters<typeof evaluateSurfaceAuditGate>[1],
   ).catch(err => {
     console.error(`[surface-audit-gate] ${mission.id.slice(0, 8)} check failed (not blocking):`, err);
     return null;
   });
+  if (surfaceGate?.assessment) base.surfaceAuditAssessment = surfaceGate.assessment;
   if (surfaceGate?.required) {
+    const followUp = await surfaceAuditFollowUp(
+      mission as { id: string; executor?: string | null },
+      surfaceGate.policy,
+      allTasks,
+      evaluateCriteria,
+    );
     return {
       ...base,
       ok: false,
       code: 'surface_audit_missing',
-      reason: surfaceAuditMissingReason(surfaceGate.uiPaths, surfaceGate.source),
+      reason: followUp.actor === 'system'
+        ? surfaceAuditPendingReason(surfaceGate.uiPaths, surfaceGate.source, followUp.taskId)
+        : surfaceAuditMissingReason(surfaceGate.uiPaths, surfaceGate.source, { waiverAllowed: surfaceGate.waiverAllowed }),
       surfaceAuditPaths: surfaceGate.uiPaths,
+      surfaceAuditActor: followUp.actor,
+      surfaceAuditTaskId: followUp.taskId,
     };
   }
 
@@ -956,9 +1023,9 @@ async function attemptMissionRelease(missionId: string): Promise<void> {
   if (!candidate?.workspaceId) return;
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.taskId, candidate.taskId),
+    where: sqlWhere(eq(workers.taskId, candidate.taskId)),
     columns: { id: true },
-    orderBy: (w, { desc: d }) => [d(w.startedAt)],
+    orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]),
   });
   if (!worker) return;
 
@@ -990,11 +1057,11 @@ async function postAwaitingVerificationNote(
   try {
     const since = new Date(Date.now() - BLOCK_NOTE_WINDOW_MS);
     const recent = await db.query.missionNotes.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(missionNotes.missionId, missionId),
         eq(missionNotes.title, AWAITING_VERIFICATION_NOTE_TITLE),
         gte(missionNotes.createdAt, since),
-      ),
+      )),
       columns: { body: true },
       limit: 20,
     });

@@ -8,6 +8,7 @@ import { appBaseUrl } from '@/lib/app-url';
 import { fail, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
 import { signSpecApprovalRequest, specApprovalConfirmPath, verifySpecApprovalRequest } from './approval-request';
 import { emit } from '@/lib/core-emit';
+import { after } from 'next/server';
 
 /**
  * Living Specs approval (G2, decision D-4): a person decides that one revision
@@ -30,16 +31,47 @@ import { emit } from '@/lib/core-emit';
  * N+1 and leaves N in force until a person approves N+1.
  */
 
-/** The approving person's user id, or null when the caller may not approve here. */
-export async function specApprover(caller: SpecCaller, workspaceId: string): Promise<string | null> {
+/**
+ * Work that follows an approval but is not part of it. Indexing the approved
+ * text into recall and the graph is dozens of sequential round trips plus an
+ * embedding call, so it runs after the response (`after()`), never while a
+ * person waits on the Approve button. Overridable for tests.
+ */
+export const specApprovalDeps: { afterResponse: (task: () => Promise<unknown>) => void } = {
+  afterResponse: task => {
+    const run = () => task().catch(() => {});
+    // Outside a request (a script, a test) there is no response to wait for.
+    try { after(run); } catch { void run(); }
+  },
+};
+
+/**
+ * The approving person's user id, or null when the caller may not approve here.
+ * `reached`: the caller's own read access, when the caller already asked for it
+ * and the caller is that person (a dashboard session), so it is not asked twice.
+ */
+export async function specApprover(caller: SpecCaller, workspaceId: string, reached?: Promise<boolean>): Promise<string | null> {
   const personId = caller.kind === 'user' ? caller.userId : requestingPerson(null, caller.account);
   if (!personId) return null;
   if (await holdsInWorkspace(personId, workspaceId, 'approve_specs')) return personId;
   // A delegated approver is a member of the team the workspace names.
-  if (!(await reach({ kind: 'user', userId: personId }, workspaceId, false))) return null;
+  const member = caller.kind === 'user' && reached ? reached : reach({ kind: 'user', userId: personId }, workspaceId, false);
+  if (!(await member)) return null;
   const [ws] = await db.select({ gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
   const ids = ((ws?.gitConfig as { livingSpecs?: { approverUserIds?: unknown } } | null)?.livingSpecs?.approverUserIds);
   return Array.isArray(ids) && ids.includes(personId) ? personId : null;
+}
+
+/**
+ * Read access and the approver check, asked together: neon-http pays a round
+ * trip per statement, and neither needs the other's answer. Not reaching the
+ * workspace still wins (a 404 before a 403), so nothing leaks about a
+ * workspace the caller cannot see.
+ */
+async function reachAndApprover(caller: SpecCaller, workspaceId: string): Promise<{ reached: boolean; approver: string | null }> {
+  const reached = reach(caller, workspaceId, false);
+  const [ok, approver] = await Promise.all([reached, specApprover(caller, workspaceId, reached)]);
+  return { reached: ok, approver: ok ? approver : null };
 }
 
 const NOT_A_PERSON = 'Approving a spec is a person\'s decision: an owner or admin of this team, or a delegated approver, from their own session. An agent run or API key cannot submit or approve.';
@@ -48,8 +80,9 @@ async function loadForDecision(caller: SpecCaller, specId: string, expectedVersi
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
-  if (!spec || !(await reach(caller, spec.workspaceId, false))) return fail(404, 'Spec not found');
-  const approver = await specApprover(caller, spec.workspaceId);
+  if (!spec) return fail(404, 'Spec not found');
+  const { reached, approver } = await reachAndApprover(caller, spec.workspaceId);
+  if (!reached) return fail(404, 'Spec not found');
   if (!approver) return fail(403, NOT_A_PERSON);
   if (spec.status === 'retired' || spec.status === 'superseded') return fail(409, `A ${spec.status} spec is not approved`);
   if (spec.version !== expectedVersion) {
@@ -119,10 +152,28 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     WHERE id = ${specId}::uuid AND version = ${spec.version} AND head_revision = ${n} AND EXISTS (SELECT 1 FROM stamp)
     RETURNING id`);
   if (rowsOf(rows).length === 0) return conflictNow(specId);
-  const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
-  const [revision] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, n))).limit(1);
-  // Modules react (the knowledge index). emit never throws, so nothing undoes the approval.
-  await emit({ type: 'spec.approved', specId, workspaceId: after.workspaceId, revision: n });
+  const [[after], [revision]] = await Promise.all([
+    db.select().from(specs).where(eq(specs.id, specId)).limit(1),
+    db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, n))).limit(1),
+  ]);
+  // Modules react (the knowledge index), after the response: the approval has
+  // committed, and emit never throws, so nothing there undoes it.
+  const workspaceId = after.workspaceId;
+  // A native-sourced spec (§18, R-15) also gets its repo copy's PR written; a
+  // workspace that has not opted in gets nothing (fileSpecRepoCopy returns null, AC-78).
+  // After the index, in the same task: emit never throws, and the copy reads
+  // nothing the index writes, so the order only keeps one task per approval.
+  // Work built ahead of approval (§20, R-39): every provisional pin on this
+  // spec re-pins to n and is re-graded there, after the index (emit never
+  // throws) and before the repo copy, on its own: a repo copy that fails must
+  // not leave shipped work ungraded.
+  specApprovalDeps.afterResponse(async () => {
+    await emit({ type: 'spec.approved', specId, workspaceId, revision: n });
+    const { regradeProvisionalPins } = await import('./provisional');
+    await regradeProvisionalPins(specId, n).catch((e) => console.error(`[spec-approval] provisional re-grade for ${specId} failed:`, e));
+    const { fileSpecRepoCopy } = await import('./repo-copy');
+    await fileSpecRepoCopy(specId);
+  });
   return { ok: true, spec: after, revision };
 }
 
@@ -148,9 +199,11 @@ export async function confirmSpecApproval(caller: SpecCaller, specId: string, to
   const req = v.payload;
   if (!isUuid(specId) || req.specId !== specId) return fail(400, 'This approval link is not valid.', { code: 'request_invalid' });
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
-  if (!spec || !(await reach(caller, spec.workspaceId, false))) return fail(404, 'Spec not found');
+  if (!spec) return fail(404, 'Spec not found');
+  const { reached, approver } = await reachAndApprover(caller, spec.workspaceId);
+  if (!reached) return fail(404, 'Spec not found');
   if (spec.workspaceId !== req.workspaceId) return fail(400, 'This approval link is not valid.', { code: 'request_invalid' });
-  if (!(await specApprover(caller, spec.workspaceId))) return fail(403, NOT_A_PERSON);
+  if (!approver) return fail(403, NOT_A_PERSON);
   const [rev] = await db.select().from(specRevisions)
     .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, req.revision))).limit(1);
   if (!rev || rev.contentHash !== req.contentHash) return fail(409, 'The spec changed since this approval was asked for.', { code: 'request_stale', currentVersion: spec.version });

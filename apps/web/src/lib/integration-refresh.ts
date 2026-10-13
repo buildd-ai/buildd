@@ -28,6 +28,17 @@ import { githubApi } from '@/lib/github';
 
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
 
+/**
+ * Has a mission's shipping PR merged? The worker route asks this of a refresh
+ * task that ends with nothing to ship. The missions module answers it
+ * (mission-shipping-pr.ts) through the slot in modules.ts, so this core route
+ * never imports a missions file. Null means not shown merged.
+ */
+export type ShippingPrMergedReader = (
+  missionId: string,
+  repo?: { workspaceId: string; installationId: number; repoFullName: string } | null,
+) => Promise<{ prNumber: number | null; via: 'worker' | 'delivery' | 'github' } | null>;
+
 /** What a refresh task records about itself (task context). */
 export interface IntegrationRefreshContext {
   /** Trunk branch name the refresh merges in (e.g. `dev`). Absent on tasks created before it was recorded. */
@@ -86,7 +97,7 @@ export const COMPARE_FILES_CAP = 300;
 
 type Api = (installationId: number, path: string, options?: RequestInit) => Promise<any>;
 
-function encodeRef(ref: string): string {
+export function encodeRef(ref: string): string {
   return ref.split('/').map(encodeURIComponent).join('/');
 }
 

@@ -41,7 +41,7 @@ export default function MemberRepoAccessSection({ workspaceId, mode, repoFullNam
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setOn(!next);
-        setError(data.error || 'Could not save');
+        setError(data.error || 'Could not save. Try again.');
         return;
       }
       router.refresh();
@@ -62,7 +62,7 @@ export default function MemberRepoAccessSection({ workspaceId, mode, repoFullNam
               : 'Off: every team member can see everything buildd can see in this repository.'}
           </p>
           {canManage && !repoFullName && !on && (
-            <p className="text-xs text-text-muted">Link a GitHub repository to this workspace to turn this on.</p>
+            <p className="text-xs text-text-muted">Requires a linked GitHub repository.</p>
           )}
         </div>
         {canManage ? (

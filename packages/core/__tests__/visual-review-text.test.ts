@@ -325,3 +325,12 @@ describe('describeVisualPhase', () => {
     expect(describeVisualPhase(model()).label).toBe('1 to review');
   });
 });
+
+describe('formatVisualReview state line', () => {
+  it('leads with the canonical state line when one is given, and is unchanged without', () => {
+    const plain = formatVisualReview(model(), 'Example', { audience: 'chat' });
+    const withState = formatVisualReview(model(), 'Example', { audience: 'chat', stateLine: 'Ready to merge. Visual check passed on the latest changes.' });
+    expect(withState).toBe(`State: Ready to merge. Visual check passed on the latest changes.\n${plain}`);
+    expect(formatVisualReview(model(), 'Example', { audience: 'chat', stateLine: null })).toBe(plain);
+  });
+});

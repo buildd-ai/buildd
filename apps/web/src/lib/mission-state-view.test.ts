@@ -69,7 +69,19 @@ describe('deriveMissionStateView — blocked by task', () => {
     const waiting = gated(view);
     if (waiting.kind !== 'task') throw new Error('unreachable');
     expect(waiting.count).toBe(2);
-    expect(waiting.label).toContain('2 pending');
+    // Plain words, not raw statuses: "2 queued", never "2 pending" or "task(s)".
+    expect(waiting.label).toBe('No agent is working on 2 open tasks: 2 queued');
+  });
+
+  // Regression (owner report): "2 deliverable task(s) still open (1 pending, 1 assigned)".
+  it('with an agent working, says what is still open in plain words', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      activeAgents: 1,
+      completion: { ok: false, code: 'pending_deliverables', reason: '', pendingDeliverables: 2, pendingByStatus: { pending: 1, assigned: 1 } },
+    });
+    const waiting = view.outstanding.find(f => f.kind === 'task') ?? gated(view);
+    expect(waiting.label).toBe('2 tasks still open: 1 queued, 1 picked up');
   });
 
   it('consumes deriveTaskHealthSignal, not a reimplementation of it', () => {
@@ -727,6 +739,40 @@ describe('deriveMissionStateView — surface audit missing', () => {
     expect(view.nextAction).toContain('surfaceAuditWaiver');
   });
 
+  it('is not an owner decision when the visual review belongs to the system (automatic or strict)', () => {
+    for (const visualReviewActor of ['system', 'jev', 'none'] as const) {
+      const view = deriveMissionStateView({ ...base, completion: refusal, visualReviewActor });
+      expect(view.kind).not.toBe('awaiting_decision');
+      expect(view.waitingOn?.kind).toBe('self_resolving_wait');
+      expect(view.waitingOn?.label).toBe('Waiting: the visual check is running');
+      expect(JSON.stringify(view)).not.toMatch(/waive|surfaceAuditWaiver|\[surface audit\]/i);
+    }
+  });
+
+  // task e7285dc4: the completion gate itself says who acts, so every surface
+  // reading the decision (not only explain) shows a system wait under automatic.
+  it('is a system wait when the completion gate filed the audit itself', () => {
+    const filed = {
+      ...refusal,
+      reason: 'This mission changed UI and no surface audit has passed yet. buildd files it itself; the mission completes when it passes.',
+      surfaceAuditActor: 'system' as const,
+    };
+    const view = deriveMissionStateView({ ...base, completion: filed });
+    expect(view.kind).not.toBe('awaiting_decision');
+    expect(view.waitingOn?.kind).toBe('self_resolving_wait');
+    expect(JSON.stringify(view)).not.toMatch(/waive|surfaceAuditWaiver/i);
+  });
+
+  it('the gate naming the owner keeps the owner decision', () => {
+    const view = deriveMissionStateView({ ...base, completion: { ...refusal, surfaceAuditActor: 'owner' as const } });
+    expect(view.kind).toBe('awaiting_decision');
+  });
+
+  it('stays an owner decision only when the review itself names the owner', () => {
+    const view = deriveMissionStateView({ ...base, completion: refusal, visualReviewActor: 'owner' });
+    expect(view.kind).toBe('awaiting_decision');
+  });
+
   it('carries the changed UI files to the surface that renders the decision', () => {
     const paths = ['apps/web/src/components/Card.tsx', 'apps/web/src/components/Nav.tsx'];
     const w = gated(deriveMissionStateView({ ...base, completion: { ...refusal, surfaceAuditPaths: paths } }));
@@ -752,22 +798,22 @@ describe('deriveMissionStateView — local executor', () => {
     expect(view.displayState).toBe('local');
     expect(view.chip.label).toBe('LOCAL');
     expect(view.waitingOn).toBeNull();
-    expect(view.situation.headline).toBe('Waiting for a local session to claim its 2 open tasks.');
+    expect(view.situation.headline).toBe('2 tasks ready to start from a local session.');
     expect(view.situation.headline).not.toMatch(/no live worker/);
     expect(view.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
     // The same input on runners is the genuine stall.
     expect(deriveMissionStateView({ ...local, executor: 'runner' }).displayState).toBe('stalled');
   });
 
-  it('between claims (a row past pending, nothing live) it reads as running in a local session', () => {
+  it('between claims (a row past pending, nothing live) it reads as in progress in a local session', () => {
     const view = deriveMissionStateView({ ...local, openTasks: [{ id: 't1', status: 'in_progress' }, { id: 't2', status: 'pending' }] });
     expect(view.chip.label).toBe('LOCAL');
-    expect(view.situation.headline).toBe('Running in a local session. 2 tasks are still open.');
+    expect(view.situation.headline).toBe('1 task in progress in a local session, 1 more to do.');
   });
 
   it('a single queued task: waiting for a local session to claim it', () => {
     const view = deriveMissionStateView({ ...local, openTasks: [open[0]] });
-    expect(view.situation.headline).toBe('Waiting for a local session to claim the open task.');
+    expect(view.situation.headline).toBe('Ready to start from a local session.');
   });
 
   it('a task fact on a local mission advises claiming, not dispatching', () => {
@@ -781,7 +827,7 @@ describe('deriveMissionStateView — local executor', () => {
   it('the session\'s own claimed worker keeps the LOCAL chip', () => {
     const view = deriveMissionStateView({ ...local, activeAgents: 1, health: 'NOMINAL' });
     expect(view.chip.label).toBe('LOCAL');
-    expect(view.situation.headline).toStartWith('Running in a local session (1 agent)');
+    expect(view.situation.headline).toBe('1 task in progress in a local session, 1 more to do.');
   });
 
   it('held beats local', () => {

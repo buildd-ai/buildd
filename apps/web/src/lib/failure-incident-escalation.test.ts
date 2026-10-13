@@ -4,11 +4,27 @@ import {
   incidentFingerprint,
   createGatedIncidentSender,
   incidentNeedsYouItems,
+  verdictGeneration,
   type IncidentSubject,
   type IncidentGateDeps,
 } from './failure-incident-escalation';
 import type { IncidentAlert } from './failure-incident-actions';
 import type { StoredIncident } from './failure-incident-store';
+import type { FailureIncidentRecovery } from '@buildd/shared';
+
+function recoveryFixture(over: Partial<FailureIncidentRecovery> = {}): FailureIncidentRecovery {
+  const at = new Date().toISOString();
+  return {
+    v: 1, generation: 2,
+    cause: { reasonCode: 'path_overlap.blocker_open', rule: 'path_overlap_stall', ownership: 'workflow' },
+    subjects: [{ kind: 'task', id: '1a2b3c4d-0000' }], blockers: [{ kind: 'pr', id: '77', state: 'open', observedAt: at }],
+    overlappingPaths: [], observation: { observedAt: at, source: 'sweep', evidenceRevision: 'rev' },
+    firstSeenAt: at, lastSeenAt: at, lastProgressAt: null, owner: 'buildd', state: 'waiting',
+    nextAction: { kind: 'wait', label: 'Waiting for PR #77 to land.', key: 'k' }, nextCheckAt: new Date(Date.now() + 20 * 60_000).toISOString(),
+    verification: { predicate: 'p', params: {} }, budget: { spent: 0, limit: 3, deadlineAt: at, spentKeys: [] }, attempts: [],
+    ...over,
+  };
+}
 
 const subject = (over: Partial<IncidentSubject> = {}): IncidentSubject => ({
   key: 'incident:i1', incidentId: 'i1', teamId: 't1', workspaceId: 'w1',
@@ -194,22 +210,25 @@ describe('gated incident sender: a failed page is not remembered', () => {
 describe('incidentNeedsYouItems: Home and the badge read the stored verdict', () => {
   const row = (over: Record<string, unknown> = {}) => ({
     id: 'i1', workspaceId: 'w1', title: 'Retry forks across 3 tasks', severity: 'high' as const, status: 'open' as const,
+    rule: 'retry_fork' as const, linkedFixTaskId: null, firstSeenAt: new Date('2026-10-09T19:00:00Z'),
     lastSeenAt: new Date('2026-10-09T20:00:00Z'), ...over,
   });
   const person = { owner: 'person' as const, by: 'rule' as const, rail: 'critical_incident' as const, reason: 'A critical platform incident: the owner is told once, whatever else is running.' };
   const buildd = { owner: 'buildd' as const, by: 'rule' as const, action: 'wait_machine' as const, reason: 'Buildd is fixing it (task abcdef12).' };
 
-  it('lists an open incident whose stored verdict is the owner, with the incident link', () => {
+  it('lists an open incident whose stored verdict is the owner, with the incident link and the projection\'s sentence', () => {
     const items = incidentNeedsYouItems([row()], new Map([['i1', person]]), 'https://x.test');
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ kind: 'incident', incidentId: 'i1', incidentTitle: 'Retry forks across 3 tasks', fixHref: 'https://x.test/app/incidents/i1', fixLabel: 'Open incident' });
-    expect(items[0].failureMessage).toBe(person.reason);
+    // G5: the sentence is the incident's, not the shared rail wording, and never "Nothing is fixing".
+    expect(items[0].failureMessage).toMatch(/^Automatic recovery unavailable: /);
+    expect(items[0].failureMessage).not.toMatch(/Nothing is fixing/);
   });
 
-  it('leaves out an incident Buildd owns, one with no stored verdict, and a resolved one', () => {
+  it('leaves out an incident Buildd owns, one with no stored verdict, a resolved and a dismissed one', () => {
     const items = incidentNeedsYouItems(
-      [row({ id: 'a' }), row({ id: 'b' }), row({ id: 'c', status: 'resolved' })],
-      new Map([['a', buildd], ['c', person]]),
+      [row({ id: 'a' }), row({ id: 'b' }), row({ id: 'c', status: 'resolved' }), row({ id: 'd', status: 'acknowledged' })],
+      new Map([['a', buildd], ['c', person], ['d', person]]),
       'https://x.test',
     );
     expect(items).toEqual([]);
@@ -228,3 +247,90 @@ describe('incidentNeedsYouItems: Home and the badge read the stored verdict', ()
   });
 });
 
+describe('the gate stamps the generation it judged', () => {
+  it('records the assessment generation on the verdict, and reads it back', async () => {
+    const h = harness();
+    const inc = incident({ rule: 'path_overlap_stall', recovery: recoveryFixture({ generation: 4, state: 'needs_decision', owner: 'person', decision: { question: 'Choose one.', options: [], recommended: 'dismiss' }, nextCheckAt: null }) });
+    expect(await createGatedIncidentSender(h.deps)(alert({}, inc))).toBe(true);
+    expect(h.records[0].reason).toBe('rule:no_next_step@g4');
+    expect(verdictGeneration('rule:no_next_step@g4')).toBe(4);
+    expect(verdictGeneration('rule:no_next_step')).toBeNull();
+    expect(verdictGeneration(null)).toBeNull();
+  });
+
+  it('the push carries the projection\'s sentence for the verdict it was sent under', async () => {
+    const h = harness();
+    const inc = incident({ rule: 'path_overlap_stall', recovery: recoveryFixture({ generation: 4, state: 'needs_decision', owner: 'person', decision: { question: 'Task 1a2b3c4d and PR #77 are waiting on each other. Choose one to stop.', options: [], recommended: 'dismiss' }, nextCheckAt: null }) });
+    await createGatedIncidentSender(h.deps)(alert({}, inc));
+    expect(h.notified[0]).toMatchObject({ teamId: 't1' });
+    expect((h.notified[0] as unknown as { message: string }).message).toContain('Task 1a2b3c4d and PR #77 are waiting on each other. Choose one to stop.');
+  });
+});
+
+// ── Recovery state (docs/specs/failure-incident-recovery.md §4) ─────────────
+
+describe('the gate follows the recovery assessment', () => {
+  const rec = (over: Partial<NonNullable<IncidentSubject['recovery']>> = {}): NonNullable<IncidentSubject['recovery']> => ({
+    generation: 2, state: 'waiting', owner: 'buildd', reason: 'Waiting for PR #77 to land.', nextCheckAt: '2026-10-11T14:20:00.000Z', ...over,
+  });
+
+  it('only needs_decision reaches a person, with the assessment\'s own question', () => {
+    const v = incidentEscalationRule(subject({ rule: 'path_overlap_stall', recovery: rec({ state: 'needs_decision', owner: 'person', reason: 'Task 1a2b3c4d and PR #77\'s fix are waiting on each other. Choose one to stop.' }) }));
+    expect(v).toMatchObject({ owner: 'person', rail: 'no_next_step' });
+    expect(v.reason).toMatch(/waiting on each other/);
+  });
+
+  it('waiting and inconclusive hold until the next check; recovering is wait_machine', () => {
+    expect(incidentEscalationRule(subject({ recovery: rec() }))).toMatchObject({ owner: 'buildd', action: 'hold', holdUntil: '2026-10-11T14:20:00.000Z' });
+    expect(incidentEscalationRule(subject({ recovery: rec({ state: 'inconclusive' }) }))).toMatchObject({ owner: 'buildd', action: 'hold' });
+    expect(incidentEscalationRule(subject({ recovery: rec({ state: 'recovering', reason: 'PR #77 landed; Buildd restarted task 1a2b3c4d.' }) })))
+      .toMatchObject({ owner: 'buildd', action: 'wait_machine' });
+  });
+
+  it('a high incident with an assessment and no fix task is no longer the owner\'s by default', () => {
+    expect(incidentEscalationRule(subject({ rule: 'retry_fork', recovery: rec({ state: 'observing' }) }))).toMatchObject({ owner: 'buildd' });
+  });
+
+  it('an operator-owned gap never pages the workspace owner', () => {
+    expect(incidentEscalationRule(subject({ recovery: rec({ state: 'needs_operator', owner: 'operator', reason: 'Needs an operator: the QA database scrub fails.' }) })))
+      .toMatchObject({ owner: 'buildd', action: 'hold' });
+  });
+
+  it('a dismissed (acknowledged) incident is not paged again; critical keeps today\'s rule', () => {
+    expect(incidentEscalationRule(subject({ status: 'acknowledged', recovery: rec({ state: 'needs_decision', owner: 'person' }) }))).toMatchObject({ owner: 'buildd', action: 'hold' });
+    expect(incidentEscalationRule(subject({ severity: 'critical', recovery: rec() }))).toMatchObject({ owner: 'person', rail: 'critical_incident' });
+  });
+
+  it('the fingerprint carries the generation and the state (a new assessment is a new look)', () => {
+    const base = incidentFingerprint(subject({ recovery: rec() }));
+    expect(incidentFingerprint(subject({ recovery: rec({ generation: 3 }) }))).not.toBe(base);
+    expect(incidentFingerprint(subject({ recovery: rec({ state: 'needs_decision' }) }))).not.toBe(base);
+    expect(incidentFingerprint(subject({ recovery: rec({ nextCheckAt: '2026-10-11T15:00:00.000Z' }) }))).toBe(base);
+  });
+});
+
+describe('incidentNeedsYouItems with an assessment', () => {
+  const person = { owner: 'person' as const, by: 'rule' as const, rail: 'no_next_step' as const, reason: 'generic rail words' };
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 'i1', workspaceId: 'w1', title: 't', severity: 'high' as const, status: 'open' as const, rule: 'path_overlap_stall' as const,
+    linkedFixTaskId: null, firstSeenAt: new Date('2026-10-09T19:00:00Z'), lastSeenAt: new Date('2026-10-09T20:00:00Z'), ...over,
+  });
+
+  it('AC-5: a person verdict from an older generation is not listed once the assessment moved on', () => {
+    const items = incidentNeedsYouItems([row({ recovery: recoveryFixture({ generation: 2, state: 'waiting', owner: 'buildd' }) })], new Map([['i1', person]]));
+    expect(items).toEqual([]);
+    // A person verdict stamped for generation 1 is absent even when generation 2 asks again: the next sweep re-gates it.
+    const asks = recoveryFixture({ generation: 2, state: 'needs_decision', owner: 'person', decision: { question: 'Choose one to stop.', options: [], recommended: 'dismiss' }, nextCheckAt: null });
+    expect(incidentNeedsYouItems([row({ recovery: asks })], new Map([['i1', { ...person, generation: 1 }]]))).toEqual([]);
+    expect(incidentNeedsYouItems([row({ recovery: asks })], new Map([['i1', { ...person, generation: 2 }]]))).toHaveLength(1);
+  });
+
+  it('a path-overlap incident that needs a decision is listed, with the assessment\'s question', () => {
+    const items = incidentNeedsYouItems(
+      [row({ recovery: recoveryFixture({ generation: 2, state: 'needs_decision', owner: 'person', decision: { question: 'Choose one to stop.', options: [], recommended: 'dismiss' }, nextCheckAt: null }) })],
+      new Map([['i1', person]]),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].failureMessage).toBe('Choose one to stop.');
+  });
+});

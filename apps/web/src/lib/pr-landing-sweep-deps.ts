@@ -35,6 +35,7 @@ import {
   type PeekedPr,
   type PrRef,
 } from '@/lib/pr-landing-sweep';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const TERMINAL_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE];
 
@@ -127,7 +128,7 @@ export function createLandingSweepDeps(): LandingSweepDeps {
 
   async function loadWorkspace(id: string) {
     return db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: sqlWhere(eq(workspaces.id, id)),
       with: WORKSPACE_INSTALLATION_WITH,
     });
   }
@@ -150,13 +151,13 @@ export function createLandingSweepDeps(): LandingSweepDeps {
 
     async resolveTarget(ref) {
       const worker = await db.query.workers.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.workspaceId, ref.workspaceId),
           eq(workers.prNumber, ref.prNumber),
           isNull(workers.mergedAt),
           or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL_LIFECYCLE)),
-        ),
-        orderBy: desc(workers.createdAt),
+        )),
+        orderBy: sqlOrderBy(desc(workers.createdAt)),
         columns: { id: true, taskId: true, prUrl: true, prBaseRef: true, prLifecycleStatus: true },
       });
       if (!worker) return { ok: false, skip: 'no_open_worker' };
@@ -168,7 +169,7 @@ export function createLandingSweepDeps(): LandingSweepDeps {
       // Same policy chain the webhook resolves on a green check suite.
       const task = worker.taskId
         ? await db.query.tasks.findFirst({
-            where: eq(tasks.id, worker.taskId),
+            where: sqlWhere(eq(tasks.id, worker.taskId)),
             with: { mission: { columns: RESOLVE_POLICY_MISSION_COLUMNS } },
             columns: { id: true, requiresReview: true, missionId: true },
           })

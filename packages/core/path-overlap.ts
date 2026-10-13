@@ -145,6 +145,14 @@ export function pathsOverlap(a: string[], b: string[]): boolean {
   return false;
 }
 
+/** At most this many overlapping paths are kept on a deferral row or an incident assessment. */
+export const MAX_DEFERRAL_PATHS = 20;
+
+/** Overlapping paths, bounded for storage on a deferral row (failure-incident-recovery G7). */
+export function boundDeferralPaths(paths: readonly string[]): string[] {
+  return paths.slice(0, MAX_DEFERRAL_PATHS);
+}
+
 /**
  * The paths two touch sets actually share — the same exact/prefix rule
  * `pathsOverlap` answers yes/no with, returning the evidence instead.

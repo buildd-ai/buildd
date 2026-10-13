@@ -16,6 +16,8 @@ import MissionTaskStripFixture from './MissionTaskStripFixture';
 import MissionPlanFixture from './MissionPlanFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
 import GoalCriteriaFixture from './GoalCriteriaFixture';
+import SpecSurfaceFixture from './SpecSurfaceFixture';
+import SpecIndexFixture from './SpecIndexFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
 import ConnectionsFixture from './ConnectionsFixture';
@@ -45,7 +47,9 @@ import TeamMembersFixture from './TeamMembersFixture';
 import RefinedComponentsFixture from './RefinedComponentsFixture';
 import MissionFlowFixture from './MissionFlowFixture';
 import MissionDetailCompactFixture from './MissionDetailCompactFixture';
+import BranchPanelFixture from './BranchPanelFixture';
 import HomeCardsFixture from './HomeCardsFixture';
+import ServiceStatusFixture from './ServiceStatusFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -54,6 +58,7 @@ import {
     RUNNER_SIZE_FIXTURE_STATE,
     WORKSPACES_LIST_FIXTURE_STATE,
     HOSTED_RUNNER_FIXTURE_STATE,
+    SERVICE_STATUS_FIXTURE_STATE,
     INTERACTIVE_SESSIONS_FIXTURE_STATE,
     MODEL_PROVIDERS_FIXTURE_STATE,
     MODEL_PROVIDERS_LONE_FIXTURE_STATE,
@@ -69,6 +74,8 @@ import {
     ONBOARDING_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
     TASK_ERROR_EVIDENCE_FIXTURE_STATE,
+    SPEC_SURFACE_FIXTURE_STATE,
+    SPEC_INDEX_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -84,6 +91,7 @@ import {
     REFINED_COMPONENTS_FIXTURE_STATE,
     MISSION_FLOW_FIXTURE_STATE,
     MISSION_DETAIL_COMPACT_FIXTURE_STATE,
+    BRANCH_PANEL_FIXTURE_STATE,
     HOME_CARDS_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -148,6 +156,14 @@ export default function DevFixturesPage() {
 
     if (state === TASK_EVIDENCE_FIXTURE_STATE) {
         return <TaskEvidenceFilesFixture />;
+    }
+
+    if (state === SPEC_SURFACE_FIXTURE_STATE) {
+        return <SpecSurfaceFixture />;
+    }
+
+    if (state === SPEC_INDEX_FIXTURE_STATE) {
+        return <SpecIndexFixture />;
     }
 
     if (state === TASK_ERROR_EVIDENCE_FIXTURE_STATE) {
@@ -222,6 +238,9 @@ export default function DevFixturesPage() {
     if (state === HOSTED_RUNNER_FIXTURE_STATE) {
         return <HostedRunnerFixture />;
     }
+    if (state === SERVICE_STATUS_FIXTURE_STATE) {
+        return <ServiceStatusFixture />;
+    }
     if (state === MODEL_PROVIDERS_FIXTURE_STATE) {
         return <ModelProvidersFixture />;
     }
@@ -254,6 +273,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_FLOW_FIXTURE_STATE) {
         return <MissionFlowFixture />;
+    }
+
+    if (state === BRANCH_PANEL_FIXTURE_STATE) {
+        return <BranchPanelFixture />;
     }
 
     if (state === MISSION_DETAIL_COMPACT_FIXTURE_STATE) {

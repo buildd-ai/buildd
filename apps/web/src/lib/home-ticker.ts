@@ -6,7 +6,7 @@
  *
  * Pure and client-safe.
  */
-import { missionTaskHref } from './mission-task-href';
+import { missionTaskHref, taskAnswerHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
 
 type DateLike = Date | string | null | undefined;
@@ -74,7 +74,7 @@ export function buildTickerEvents(
       if (w.mergedAt) push({ id: `${w.id}:merged`, at: ms(w.mergedAt), kind: 'merged', label: `#${w.prNumber}`, detail: name, right: 'merged', href });
     }
     if (w.status === 'waiting_input') {
-      push({ id: `${w.id}:question`, at: ms(w.updatedAt), kind: 'question', label: 'question', detail: name, right: 'asks you', href });
+      push({ id: `${w.id}:question`, at: ms(w.updatedAt), kind: 'question', label: 'question', detail: name, right: 'asks you', href: t ? taskAnswerHref({ taskId: t.id, missionId: t.missionId ?? null }) : null });
     }
     if (w.status === 'failed' || w.status === 'error') {
       push({ id: `${w.id}:failed`, at: ms(w.completedAt) || ms(w.updatedAt), kind: 'failed', label: name, detail: '', right: 'failed', href });

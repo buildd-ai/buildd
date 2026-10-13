@@ -281,6 +281,13 @@ mock.module('@/lib/mission-pr', () => ({
   findMissionPrOwner: (...args: any[]) => mockFindMissionPrOwner(...args),
 }));
 
+// The kernel's delivery row for the mission PR: a merge it recorded counts as
+// shipped even when the owner worker row never got its mergedAt.
+const mockDeliveryPrStates = mock((_ws: string, _prs: number[]) => Promise.resolve([] as Array<{ prNumber: number; state: string; mergedAt: string | null }>));
+mock.module('@/lib/workflow/delivery-view', () => ({
+  deliveryPrStates: (...args: any[]) => mockDeliveryPrStates(...(args as [string, number[]])),
+}));
+
 mock.module('@/lib/repo-scope', () => ({
   workspaceRepoMatches: (...args: any[]) => mockWorkspaceRepoMatches(...args),
 }));
@@ -547,7 +554,7 @@ describe('refreshMissionIntegrationBranch', () => {
     expect(insertedTasks[0].description).toContain('bun run conflicts:generated');
     // A migration moves only through the tools, whose byte-identical renumber
     // the merge-safety inspector reads as a renumber, not lineage (task 87c7e48d).
-    expect(insertedTasks[0].description).toContain('bun run migrations:renumber --base=origin/dev');
+    expect(insertedTasks[0].description).toContain('bun run migrations:regenerate --base=origin/dev');
     expect(insertedTasks[0].description).not.toContain('bun db:generate` so this branch');
   });
 
@@ -725,6 +732,67 @@ describe('refreshMissionIntegrationBranch', () => {
     mockFindMissionPrOwner.mockResolvedValue({ state: 'merged', prNumber: 1, prUrl: 'x', workerId: 'w', taskId: 't', mergedAt: new Date() });
     const outcome = await refreshMissionIntegrationBranch('m-1');
     expect(outcome).toEqual({ kind: 'skipped', reason: 'mission_pr_merged' });
+  });
+
+  // The incident behind #4686: the shipping PR merged, but its owner worker row
+  // never got mergedAt (a lossy webhook), so every later trigger merged trunk
+  // into a branch nothing would land again and, on a conflict, filed a task.
+  describe('the shipping PR merged but the owner worker row has no mergedAt', () => {
+    const openOwner = { state: 'open', prNumber: 4686, prUrl: 'https://github.com/buildd-ai/buildd/pull/4686', workerId: 'w', taskId: 't', mergedAt: null };
+    const githubWith = (prMerged: () => boolean) => {
+      const calls = { merges: 0, prReads: 0 };
+      mockGithubApi.mockImplementation(((_i: number, path: string, opts?: any) => {
+        if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: 'dev-sha-current' } });
+        if (path.endsWith('/merges') && opts?.method === 'POST') { calls.merges++; return Promise.reject(githubError(409, 'conflict')); }
+        if (path.endsWith('/pulls/4686')) { calls.prReads++; return Promise.resolve({ number: 4686, merged: prMerged(), state: prMerged() ? 'closed' : 'open' }); }
+        return Promise.resolve(null);
+      }) as any);
+      return calls;
+    };
+
+    beforeEach(() => {
+      mockDeliveryPrStates.mockReset();
+      mockDeliveryPrStates.mockResolvedValue([]);
+      mockFindMissionPrOwner.mockResolvedValue(openOwner);
+    });
+
+    it('the kernel delivery says MERGED: no merge call, no refresh task', async () => {
+      mockDeliveryPrStates.mockResolvedValue([{ prNumber: 4686, state: 'MERGED', mergedAt: '2026-10-12T00:00:00.000Z' }]);
+      const calls = githubWith(() => false);
+
+      expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toEqual({ kind: 'skipped', reason: 'mission_pr_merged' });
+      expect(calls.merges).toBe(0);
+      expect(insertedTasks).toHaveLength(0);
+    });
+
+    it('GitHub says merged (no kernel row): no merge call, no refresh task', async () => {
+      const calls = githubWith(() => true);
+
+      expect(await refreshMissionIntegrationBranch('m-1')).toEqual({ kind: 'skipped', reason: 'mission_pr_merged' });
+      expect(calls.merges).toBe(0);
+      expect(insertedTasks).toHaveLength(0);
+    });
+
+    it('a still-open PR refreshes as before', async () => {
+      const calls = githubWith(() => false);
+
+      expect((await refreshMissionIntegrationBranch('m-1')).kind).toBe('conflict');
+      expect(calls.merges).toBe(1);
+      expect(insertedTasks).toHaveLength(1);
+    });
+
+    it('the reserved path re-checks right before dispatch', async () => {
+      // A dispatch reserved the pointer and died before inserting the row.
+      missionRow.branchRefreshConflictTaskId = 'reserved-task';
+      let reads = 0;
+      // Not merged at entry; merged by the time the reservation is finished.
+      const calls = githubWith(() => ++reads > 1);
+
+      expect(await refreshMissionIntegrationBranch('m-1')).toEqual({ kind: 'skipped', reason: 'mission_pr_merged' });
+      expect(calls.prReads).toBe(2);
+      expect(insertedTasks).toHaveLength(0);
+      expect(calls.merges).toBe(0);
+    });
   });
 });
 

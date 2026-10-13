@@ -6,7 +6,7 @@ import {
   type NotifyEvent,
 } from './notify-rules';
 
-const ALL_ON: Record<NotifyEvent, boolean> = { ...DEFAULT_NOTIFICATION_PREFERENCES };
+const ALL_ON = Object.fromEntries(Object.keys(DEFAULT_NOTIFICATION_PREFERENCES).map(k => [k, true])) as Record<NotifyEvent, boolean>;
 
 describe('resolveNotifyPlan', () => {
   it('no-ops when no channel is configured (no cross-tenant spam)', () => {
@@ -92,15 +92,22 @@ describe('resolveNotifyPlan: needsAttention (a team alert with no preference col
 });
 
 describe('DEFAULT_NOTIFICATION_PREFERENCES', () => {
-  it('defaults every event on (preserves prior behaviour, now muteable)', () => {
+  it('defaults per-task events off: one push per claim and per completion burned the whole monthly quota', () => {
     expect(DEFAULT_NOTIFICATION_PREFERENCES).toEqual({
-      taskClaimed: true,
+      taskClaimed: false,
       artifactReady: false,
-      taskCompleted: true,
+      taskCompleted: false,
       taskFailed: true,
       credentialExpired: true,
       connectorBlocked: true,
     });
+  });
+
+  it('a team that never saved preferences gets no push for a routine claim or completion', () => {
+    const channel = { pushover: { appToken: 'a', userKey: 'u' } };
+    expect(resolveNotifyPlan('taskClaimed', channel, DEFAULT_NOTIFICATION_PREFERENCES).noop).toBe(true);
+    expect(resolveNotifyPlan('taskCompleted', channel, DEFAULT_NOTIFICATION_PREFERENCES).noop).toBe(true);
+    expect(resolveNotifyPlan('taskFailed', channel, DEFAULT_NOTIFICATION_PREFERENCES).pushover).toBe(true);
   });
 });
 

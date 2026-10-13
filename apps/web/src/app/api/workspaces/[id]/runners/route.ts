@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * GET /api/workspaces/[id]/runners
@@ -32,13 +33,13 @@ export async function GET(
   try {
     // Open access reaches only runners of the owning team (the claim rule).
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: sqlWhere(eq(workspaces.id, id)),
       columns: { teamId: true, accessMode: true },
     });
 
     const cutoff = new Date(Date.now() - RUNNER_STALE_CUTOFF_MS);
     const heartbeats = await db.query.workerHeartbeats.findMany({
-      where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
+      where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
       with: {
         account: {
           columns: { id: true, name: true, type: true, teamId: true },
@@ -51,10 +52,10 @@ export async function GET(
       heartbeats.map(async (hb) => {
         // Check if account is linked to this specific workspace
         const linked = await db.query.accountWorkspaces.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(accountWorkspaces.accountId, hb.accountId),
             eq(accountWorkspaces.workspaceId, id),
-          ),
+          )),
           columns: { workspaceId: true },
         });
         const runnerTeamId = (hb.account as { teamId?: string | null } | null)?.teamId;

@@ -3,6 +3,7 @@ import { accounts, backendPauses, tenantBudgets, workers } from '@buildd/core/db
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import { effectiveBudgetResetAt, isBudgetExhausted } from './budget-errors';
 import type { ReviewerStallFacts } from './reviewer-gate';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Render-local caches only: never reuse a previous render's capacity or pauses. */
 export function createReviewerStallFactsLoader(now: Date) {
@@ -16,11 +17,11 @@ export function createReviewerStallFactsLoader(now: Date) {
   async function loadTeamPauses(teamId: string) {
     try {
       const [accountRows, providerRows, tenantRows] = await Promise.all([
-        db.query.accounts.findMany({ where: and(eq(accounts.teamId, teamId), eq(accounts.authType, 'oauth')),
+        db.query.accounts.findMany({ where: sqlWhere(and(eq(accounts.teamId, teamId), eq(accounts.authType, 'oauth'))),
           columns: { budgetExhaustedAt: true, budgetResetsAt: true } }),
-        db.query.backendPauses.findMany({ where: and(eq(backendPauses.teamId, teamId), gt(backendPauses.resetsAt, now)),
+        db.query.backendPauses.findMany({ where: sqlWhere(and(eq(backendPauses.teamId, teamId), gt(backendPauses.resetsAt, now))),
           columns: { backend: true, reason: true, resetsAt: true } }),
-        db.query.tenantBudgets.findMany({ where: eq(tenantBudgets.teamId, teamId),
+        db.query.tenantBudgets.findMany({ where: sqlWhere(eq(tenantBudgets.teamId, teamId)),
           columns: { tenantId: true, budgetResetsAt: true } }),
       ]);
       return { accountRows, providerRows, tenantRows };

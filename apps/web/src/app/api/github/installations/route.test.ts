@@ -73,6 +73,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 // Import handler AFTER mocks
 import { GET } from './route';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 function createRequest(): NextRequest {
   return new NextRequest('http://localhost:3000/api/github/installations');
@@ -135,7 +136,7 @@ describe('GET /api/github/installations', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).installations.map((i: any) => i.id)).toEqual(['inst-2']);
     expect(mockGetUserWorkspaceIds).toHaveBeenCalledWith('user-2');
-    expect(mockFindMany.mock.calls[0][0].where).toEqual({ field: 'installedByUserId', value: 'user-2', type: 'eq' });
+    expect(capturedWhere(mockFindMany.mock.calls[0][0].where)).toEqual({ field: 'installedByUserId', value: 'user-2', type: 'eq' });
     expect(mockAuth).not.toHaveBeenCalled();
   });
 
@@ -166,7 +167,7 @@ describe('GET /api/github/installations', () => {
 
     await GET(createRequest());
     expect(mockGetUserWorkspaceIds).toHaveBeenCalledWith('user-2');
-    expect(mockFindMany.mock.calls[0][0].where).toEqual({ field: 'installedByUserId', value: 'user-2', type: 'eq' });
+    expect(capturedWhere(mockFindMany.mock.calls[0][0].where)).toEqual({ field: 'installedByUserId', value: 'user-2', type: 'eq' });
   });
 
   it('returns 401 when not authenticated', async () => {
@@ -240,7 +241,7 @@ describe('GET /api/github/installations', () => {
     expect(data.installations).toHaveLength(1);
     expect(data.installations[0].id).toBe('inst-fresh');
     // Filtered on the installer, since there are no workspace-derived ids
-    expect(mockFindMany.mock.calls[0][0].where).toEqual({
+    expect(capturedWhere(mockFindMany.mock.calls[0][0].where)).toEqual({
       field: 'installedByUserId',
       value: 'user-1',
       type: 'eq',

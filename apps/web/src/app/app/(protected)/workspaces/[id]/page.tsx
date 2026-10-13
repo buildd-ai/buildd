@@ -16,6 +16,7 @@ import Section from '@/components/ui/Section';
 import { StatusPill } from '@/components/ui/StatePill';
 import { taskCountLede } from './overview-lede';
 import { displayTaskTitle } from '@/lib/task-title';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export default async function WorkspaceDetailPage({
   params,
@@ -42,7 +43,7 @@ export default async function WorkspaceDetailPage({
   if (!access) notFound();
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     with: {
       accountWorkspaces: {
         with: {
@@ -50,7 +51,7 @@ export default async function WorkspaceDetailPage({
         },
       },
       tasks: {
-        orderBy: desc(tasks.createdAt),
+        orderBy: sqlOrderBy(desc(tasks.createdAt)),
         limit: 5,
       },
     },

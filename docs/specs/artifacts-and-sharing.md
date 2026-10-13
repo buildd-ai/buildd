@@ -52,7 +52,7 @@ into a public URL. That makes authorization and revocation the load-bearing
 part of this contract, not the storage plumbing.
 
 **The incident this spec exists to prevent recurring.** Until commit `a6f70f0d`
-(migration 0098, since squashed into `packages/core/drizzle/0000_baseline.sql`), every artifact was minted with a `shareToken` at insert time
+(migration 0098, since squashed into `packages/core/drizzle/20261006230118_baseline/migration.sql`), every artifact was minted with a `shareToken` at insert time
 and `/share/[token]` had no gate at all: possession of a token — or of any API
 response that contained one — was read access to agent output, for every
 artifact that had ever been created. The fix added
@@ -537,7 +537,7 @@ row in place (§1); its earlier bodies stay readable.
   request is a 400 that lists the id without confirming it exists.
 
 **Code surface**:
-- Trigger: `packages/core/drizzle/0289_artifact_revisions_trigger.sql`
+- Trigger: `packages/core/drizzle/20261010170119_artifact_revisions_trigger/migration.sql`
 - Writer and reads: `apps/web/src/lib/artifact-revisions.ts` — `writeArtifactBody`, `getArtifactRevision`
 - Redaction: `packages/core/artifact-redaction.ts` — `redactArtifactText`
 - Context references: `apps/web/src/lib/context-artifact-ids.ts`

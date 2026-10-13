@@ -44,12 +44,14 @@ import { githubApi } from '@/lib/github';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
+import { decideReadyToMerge, readyToMergeReason } from '@/lib/ready-to-merge';
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
   MISSION_PR_TASK_PREFIX,
   missionIntegrationBase,
 } from '@buildd/core/mission-integration';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The mission-PR task identity, re-exported rather than reimplemented.
@@ -131,7 +133,7 @@ export async function claimMissionPrimaryPr(
   }
   if (!opts.isMissionPr) {
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, missionId),
+      where: sqlWhere(eq(missions.id, missionId)),
       columns: { workingBranch: true, integrationBranchEnabled: true },
     });
     if (missionIntegrationBase(mission)) {
@@ -216,14 +218,14 @@ export interface TaskBranchSummary {
  */
 export async function describeMissionIntegrationTopology(missionId: string): Promise<TaskBranchSummary[]> {
   const missionTasks = (await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: { id: true, title: true, mode: true, taskClass: true },
   })) ?? [];
   const deliverable = missionTasks.filter(t => t.mode !== 'planning' && t.taskClass === 'work');
   if (deliverable.length === 0) return [];
 
   const allWorkers = ((await db.query.workers.findMany({
-    where: inArray(workers.taskId, deliverable.map(t => t.id)),
+    where: sqlWhere(inArray(workers.taskId, deliverable.map(t => t.id))),
     columns: {
       taskId: true, branch: true, prUrl: true, prNumber: true,
       mergedAt: true, prLifecycleStatus: true, startedAt: true, createdAt: true,
@@ -329,11 +331,11 @@ export async function evaluateMissionWorkState(
 ): Promise<MissionWorkState> {
   const assumeCompleted = new Set(opts?.assumeCompletedTaskIds ?? []);
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { workingBranch: true, integrationBranchEnabled: true },
   });
   const missionTasks = (await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: { id: true, title: true, status: true, mode: true, taskClass: true },
   })) ?? [];
 
@@ -353,7 +355,7 @@ export async function evaluateMissionWorkState(
   }
 
   const allWorkers = ((await db.query.workers.findMany({
-    where: inArray(workers.taskId, deliverable.map(t => t.id)),
+    where: sqlWhere(inArray(workers.taskId, deliverable.map(t => t.id))),
     columns: {
       taskId: true, prUrl: true, prNumber: true, prBaseRef: true,
       mergedAt: true, prLifecycleStatus: true, startedAt: true, createdAt: true,
@@ -448,7 +450,7 @@ export async function openMissionIntegrationPr(
   opts?: { assumeCompletedTaskIds?: string[] },
 ): Promise<OpenMissionPrResult> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: {
       id: true,
       title: true,
@@ -507,7 +509,7 @@ export async function openMissionIntegrationPr(
   });
   const workspace = repoWorkspace.workspaceId
     ? await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, repoWorkspace.workspaceId),
+        where: sqlWhere(eq(workspaces.id, repoWorkspace.workspaceId)),
         columns: { id: true, githubRepoId: true, githubInstallationId: true, gitConfig: true },
       })
     : null;
@@ -520,7 +522,7 @@ export async function openMissionIntegrationPr(
   }
 
   const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.id, workspace.githubRepoId),
+    where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
     columns: { fullName: true, defaultBranch: true },
     with: { installation: { columns: { installationId: true } } },
   });
@@ -738,7 +740,7 @@ async function ensureMissionPrOwnerRows(args: {
 }): Promise<{ id: string }> {
   const { missionId, missionTitle, workspaceId, branch, base } = args;
   const reusableTask = (await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: { id: true, title: true, taskClass: true },
   }))?.find(isMissionPrTask) ?? null;
 
@@ -771,7 +773,7 @@ async function ensureMissionPrOwnerRows(args: {
   // GitHub — attach to it instead of adding another.
   const orphan = reusableTask
     ? (await db.query.workers.findFirst({
-        where: and(eq(workers.taskId, reusableTask.id), isNull(workers.prUrl)),
+        where: sqlWhere(and(eq(workers.taskId, reusableTask.id), isNull(workers.prUrl))),
         columns: { id: true },
       })) ?? null
     : null;
@@ -866,7 +868,7 @@ export async function maybeOpenMissionIntegrationPr(
 ): Promise<OpenMissionPrResult | null> {
   if (!missionId) return null;
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { integrationBranchEnabled: true, workingBranch: true },
   });
   // Null, not a result: a mission that never opted in has no mission PR to
@@ -927,11 +929,11 @@ export async function noteMissionPrOpenFailure(
   try {
     const since = new Date(Date.now() - MISSION_PR_FAILURE_NOTE_WINDOW_MS);
     const recent = await db.query.missionNotes.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(missionNotes.missionId, missionId),
         eq(missionNotes.title, MISSION_PR_FAILURE_NOTE_TITLE),
         gte(missionNotes.createdAt, since),
-      ),
+      )),
       columns: { body: true },
       limit: 20,
     });
@@ -981,14 +983,14 @@ export interface MissionPrOwner {
  */
 export async function findMissionPrOwner(missionId: string): Promise<MissionPrOwner | null> {
   const missionTasks = (await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: { id: true, title: true, taskClass: true },
   })) ?? [];
   const ownerTaskIds = missionTasks.filter(isMissionPrTask).map(t => t.id);
   if (ownerTaskIds.length === 0) return null;
 
   const rows = ((await db.query.workers.findMany({
-    where: and(inArray(workers.taskId, ownerTaskIds), isNotNull(workers.prUrl)),
+    where: sqlWhere(and(inArray(workers.taskId, ownerTaskIds), isNotNull(workers.prUrl))),
     columns: {
       id: true, taskId: true, prNumber: true, prUrl: true,
       mergedAt: true, prLifecycleStatus: true, startedAt: true, createdAt: true,
@@ -1129,7 +1131,15 @@ function missionPrBody(opts: {
 }
 
 /** Outcome of {@link guardMissionPrMerge}. */
-export type MissionPrMergeGate = { blocks: false } | { blocks: true; reason: string };
+export type MissionPrMergeGate =
+  | { blocks: false }
+  | {
+      blocks: true;
+      reason: string;
+      /** Why, as codes (`ready-to-merge.ts`); doors that only show `reason` ignore it. */
+      codes?: string[];
+      nextActor?: 'system' | 'jev' | 'owner' | 'none';
+    };
 
 /** How many held items a refusal names before it summarises the rest. */
 const REFUSAL_NAME_LIMIT = 5;
@@ -1192,14 +1202,33 @@ export async function guardMissionPrMerge(
       `${work.unfinishedTaskCount} mission task(s) that have not opened a PR yet: ${named}`,
     );
   }
-  if (holders.length === 0) return { blocks: false };
+  const workHolder = holders.length === 0
+    ? null
+    : `This mission's work is not finished — ${holders.join('; and ')}. Merging the mission PR `
+      + `now would delete the integration branch out from under work that still needs it. `
+      + `Cancel the remaining task(s), or let them land, then merge.`;
 
+  // The same decision for every door. Opening the mission PR never comes through
+  // here, so reviewing the branch is still possible while this blocks landing it.
+  const visual = await import('@/lib/workflow/visual-review-state-load')
+    .then(m => m.getMissionVisualReviewState(task.missionId!))
+    .catch(err => {
+      console.error('[mission-pr] visual review state unreadable (refusing the merge):', err);
+      return null;
+    });
+  const decision = decideReadyToMerge({ kind: 'mission_integration_pr', workHolder, visual });
+  if (decision.scheduleVisualReview) {
+    // Whoever tried to land the branch also gets the review on its way; best-effort and idempotent.
+    void import('@/lib/workflow/visual-review-schedule-run')
+      .then(m => m.scheduleMissionVisualReview(task.missionId!))
+      .catch(err => console.error('[mission-pr] could not schedule the visual review:', err));
+  }
+  if (decision.ready) return { blocks: false };
   return {
     blocks: true,
-    reason:
-      `This mission's work is not finished — ${holders.join('; and ')}. Merging the mission PR `
-      + `now would delete the integration branch out from under work that still needs it. `
-      + `Cancel the remaining task(s), or let them land, then merge.`,
+    reason: readyToMergeReason(decision),
+    codes: decision.blockers.map(b => b.code),
+    nextActor: decision.blockers[0]?.nextActor,
   };
 }
 
@@ -1225,7 +1254,7 @@ export async function finalizeMissionPrMerge(
 ): Promise<void> {
   if (!task || !isMissionPrTask(task) || !task.missionId) return;
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, task.missionId),
+    where: sqlWhere(eq(missions.id, task.missionId)),
     columns: { workingBranch: true, integrationBranchEnabled: true },
   });
   const branch = missionIntegrationBase(mission);

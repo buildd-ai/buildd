@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { tomorrowMorning } from '@/lib/start-time-options';
 import { pauseUntilPhrase } from '@/lib/workspace-pause-view';
 
+const PAUSE_FAILED = 'Could not change the pause. Try again.';
+
 type PauseBody = { for: string } | { until: string | null };
 
 /**
@@ -29,11 +31,11 @@ export default function PauseStartsSection({ workspaceId, pausedUntil, canEdit }
         body: JSON.stringify(body),
       });
       const data = (await res.json().catch(() => ({}))) as { error?: string; until?: string | null };
-      if (!res.ok) throw new Error(data.error || 'Couldn’t change the pause');
+      if (!res.ok) throw new Error(data.error || PAUSE_FAILED);
       setUntil(data.until ?? ('until' in body ? body.until : null));
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Couldn’t change the pause');
+      setError(err instanceof Error ? err.message : PAUSE_FAILED);
     } finally {
       setBusy(false);
     }
@@ -47,7 +49,7 @@ export default function PauseStartsSection({ workspaceId, pausedUntil, canEdit }
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-text-primary">Pause new starts</h3>
-          <p className="text-xs text-text-secondary mt-0.5">Running work carries on.</p>
+          <p className="text-xs text-text-secondary mt-0.5">Running tasks continue.</p>
         </div>
         {!canEdit || until ? (
           <span className="flex items-center gap-3">

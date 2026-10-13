@@ -64,7 +64,7 @@ describe('canvasHero', () => {
     expect(canvasHero({ pulse: TWO, name: null, now: NOW, timeZone: 'UTC' }).sub).toBe('“Pick a currency” and 1 more');
     const capped = canvasHero({ pulse: { ...TWO, needsYouCapped: true }, name: null, now: NOW, timeZone: 'UTC' });
     expect(capped.hero).toBe('Several to review.');
-    expect(capped.sub).toBe('“Pick a currency” and more');
+    expect(capped.sub).toBe('“Pick a currency” and others');
   });
 
   it('no pulse: the plain greeting, no mood claimed', () => {

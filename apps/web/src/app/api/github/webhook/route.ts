@@ -46,6 +46,7 @@ import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
 import { observeBase, observePrState } from '@/lib/workflow/seam';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // A push to the prompts repo runs the prompt eval in after() (up to ~240s).
 export const maxDuration = 300;
@@ -274,7 +275,7 @@ async function createTaskFromIssue(
   // Idempotent: one task per (workspace, issue) whether triggered by opened or
   // labeled (or the same event redelivered).
   const existing = await db.query.tasks.findFirst({
-    where: and(eq(tasks.workspaceId, workspace.id), eq(tasks.externalId, externalId)),
+    where: sqlWhere(and(eq(tasks.workspaceId, workspace.id), eq(tasks.externalId, externalId))),
     columns: { id: true },
   });
   if (existing) return;
@@ -321,7 +322,7 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
 
   // Find the workspace linked to this repo by full name
   const workspace = await db.query.workspaces.findFirst({
-    where: workspaceRepoMatches(repository.full_name),
+    where: sqlWhere(workspaceRepoMatches(repository.full_name)),
   });
 
   if (!workspace) {
@@ -395,7 +396,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
   if (action === 'requested' || action === 'rerequested') {
     for (const pr of check_suite.pull_requests) {
       const worker = await db.query.workers.findFirst({
-        where: workerOwnsPr(repository.full_name, pr.number),
+        where: sqlWhere(workerOwnsPr(repository.full_name, pr.number)),
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
       // A CI fact on the fact cache (recordPrFact): a merged or closed PR keeps
@@ -419,6 +420,18 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
   const headSha = check_suite.head_sha;
 
+  // A Living Spec's generated repo copy (docs/specs/living-specs.md §18, R-35)
+  // has its own landing door: no worker owns it, so nothing below acts on it.
+  for (const pr of check_suite.pull_requests) {
+    try {
+      const { landSpecRepoCopy } = await import('@/lib/specs/repo-copy');
+      const landed = await landSpecRepoCopy({ repoFullName: repository.full_name, prNumber: pr.number, headSha, conclusion: check_suite.conclusion, installationId: installation.id });
+      if (landed) console.log(`[spec-copy] ${repository.full_name}#${pr.number}@${headSha}: ${landed.outcome}`);
+    } catch (err) {
+      console.error(`[spec-copy] ${repository.full_name}#${pr.number}: landing check failed`, err);
+    }
+  }
+
   // CI failure: spawn fix tasks for worker PRs AND fail tracked release PRs.
   if (check_suite.conclusion === 'failure') {
     // Mark worker PRs as ci_failed before handling retries.
@@ -426,7 +439,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     // failure webhook must not overwrite a merged PR's lifecycle status (AC-4).
     for (const pr of check_suite.pull_requests) {
       const worker = await db.query.workers.findFirst({
-        where: workerOwnsPr(repository.full_name, pr.number),
+        where: sqlWhere(workerOwnsPr(repository.full_name, pr.number)),
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
       const applied = worker
@@ -458,16 +471,16 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     try {
       // Find workspaces linked to this repo with autoMergePR enabled
       const linkedWorkspaces = await db.query.workspaces.findMany({
-        where: workspaceRepoMatches(repository.full_name),
+        where: sqlWhere(workspaceRepoMatches(repository.full_name)),
       });
 
       for (const workspace of linkedWorkspaces) {
         // Ensure this PR was created by a Buildd worker
         const worker = await db.query.workers.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workers.workspaceId, workspace.id),
             workerOwnsPr(repository.full_name, pr.number),
-          ),
+          )),
         });
 
         if (!worker) {
@@ -505,7 +518,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         let workerTask: { requiresReview: boolean; missionId: string | null; title: string; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean; workingBranch: string | null; integrationBranchEnabled: boolean } | null } | undefined;
         if (worker.taskId) {
           workerTask = await db.query.tasks.findFirst({
-            where: eq(tasks.id, worker.taskId),
+            where: sqlWhere(eq(tasks.id, worker.taskId)),
             with: { mission: { columns: { mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
             columns: { id: true, requiresReview: true, missionId: true, title: true },
           }) as typeof workerTask;
@@ -683,7 +696,7 @@ async function handlePullRequestEvent(event: {
       // UPDATE only yields POST-update rows, and detecting a mission-gate
       // retarget (P2b) needs the value it moved FROM, not just that it moved.
       const retargetCandidate = await db.query.workers.findFirst({
-        where: workerOwnsPr(repository.full_name, pr.number),
+        where: sqlWhere(workerOwnsPr(repository.full_name, pr.number)),
         columns: { id: true, workspaceId: true, taskId: true, prBaseRef: true },
         with: { task: { columns: { id: true, title: true, taskClass: true, missionId: true, context: true, dependsOn: true } } },
       });
@@ -730,7 +743,7 @@ async function handlePullRequestEvent(event: {
       if (rebased.length > 0 && retargetMissionId && retargetCandidate?.task && !isMissionPrTask(retargetCandidate.task) && !pr.merged) {
         const task = retargetCandidate.task;
         const mission = await db.query.missions.findFirst({
-          where: eq(missions.id, retargetMissionId),
+          where: sqlWhere(eq(missions.id, retargetMissionId)),
           columns: { workingBranch: true, integrationBranchEnabled: true },
         });
         const guard = buildMissionBaseGuard({ mission, task, head: pr.head?.ref ?? null });
@@ -829,9 +842,9 @@ async function handlePullRequestEvent(event: {
     // newest so re-review dispatch (below) reads the retry's iteration
     // context, not the original task's stale one.
     const openWorker = await db.query.workers.findFirst({
-      where: workerOwnsPr(repository.full_name, pr.number),
+      where: sqlWhere(workerOwnsPr(repository.full_name, pr.number)),
       columns: { id: true, workspaceId: true, taskId: true, branch: true },
-      orderBy: [desc(workers.createdAt)],
+      orderBy: sqlOrderBy([desc(workers.createdAt)]),
     });
     if (openWorker) {
       // A fact for the fact cache (recordPrFact): mergeable=false is a
@@ -1002,7 +1015,7 @@ async function handlePullRequestEvent(event: {
 
   // Strategy 1: Match by prNumber on workers table (agent-created PRs)
   const worker = await db.query.workers.findFirst({
-    where: workerOwnsPr(repository.full_name, pr.number),
+    where: sqlWhere(workerOwnsPr(repository.full_name, pr.number)),
     with: { task: true },
   });
 
@@ -1177,7 +1190,7 @@ async function handlePullRequestEvent(event: {
     const taskIdPrefix = branchMatch[1];
     // Find task by ID prefix (first 8 chars of UUID)
     const matchingTask = await db.query.tasks.findFirst({
-      where: sql`${tasks.id}::text LIKE ${taskIdPrefix + '%'}`,
+      where: sqlWhere(sql`${tasks.id}::text LIKE ${taskIdPrefix + '%'}`),
     });
 
     if (matchingTask && matchingTask.status !== 'completed') {
@@ -1288,16 +1301,16 @@ async function maybeAutoMergeNoCiPr(
   pr: { number: number; head: { sha: string }; base?: { ref: string } },
 ): Promise<void> {
   const linkedWorkspaces = await db.query.workspaces.findMany({
-    where: workspaceRepoMatches(repoFullName),
+    where: sqlWhere(workspaceRepoMatches(repoFullName)),
   });
 
   for (const workspace of linkedWorkspaces) {
     // Only auto-merge PRs created by a Buildd worker in this workspace.
     const worker = await db.query.workers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(workers.workspaceId, workspace.id),
         workerOwnsPr(repoFullName, pr.number),
-      ),
+      )),
     });
     if (!worker) {
       continue;
@@ -1307,7 +1320,7 @@ async function maybeAutoMergeNoCiPr(
     let workerTask: { requiresReview: boolean; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean; workingBranch: string | null; integrationBranchEnabled: boolean } | null } | undefined;
     if (worker.taskId) {
       workerTask = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         with: { mission: { columns: { mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
         columns: { id: true, requiresReview: true },
       }) as typeof workerTask;
@@ -1733,7 +1746,7 @@ async function handleWorkflowRunEvent(event: {
 /** Resolve the worker that owns a PR, plus the workspace the row needs. */
 async function resolvePrOwner(repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: workerOwnsPr(repoFullName, prNumber),
+    where: sqlWhere(workerOwnsPr(repoFullName, prNumber)),
     columns: { id: true, taskId: true, workspaceId: true },
     with: { task: { columns: { id: true, title: true, missionId: true } } },
   });

@@ -145,7 +145,7 @@ let shouldFindManyReject = false;
 let tasksFindManyWhereCalls: any[] = [];
 const mockTasksFindManyForExecutorChange = mock(async (options?: any) => {
   if (options && options.where) {
-    tasksFindManyWhereCalls.push(options.where);
+    tasksFindManyWhereCalls.push(capturedWhere(options.where));
   }
   if (shouldFindManyReject) {
     throw new Error('tasks.findMany failed');
@@ -274,6 +274,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { GET, PATCH } from './route';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const makeParams = (id: string) => Promise.resolve({ id });
 
@@ -2120,6 +2121,16 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
     expect([403, 404]).toContain(res.status);
     expect(insertedNotes).toHaveLength(0);
     expect(updatedSetData).toBeNull();
+  });
+
+  it('strict visual review policy refuses a waiver and an opt-out with 409', async () => {
+    for (const b of [{ surfaceAuditWaiver: 'Copy-only change, checked by hand' }, { autoSurfaceAudit: false }]) {
+      mockWorkspacesFindFirst.mockReturnValueOnce({ id: 'ws-1', gitConfig: { visualReview: { policy: 'strict' } } });
+      const res = await patch(b);
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('visual_review_policy_locked');
+    }
+    expect(insertedNotes).toHaveLength(0);
   });
 
   it('rejects a waiver with no real reason', async () => {

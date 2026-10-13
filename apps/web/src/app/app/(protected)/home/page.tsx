@@ -17,6 +17,8 @@ import { readGithubAccessBlock } from '@/lib/github-repo-access';
 import { getUserTeamRole, holdsInWorkspace, resolveActiveTeamScope } from '@/lib/team-access';
 import { teamHostedRunnerBanner } from '@/lib/hosted-runner-usage-store';
 import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
+import { EMPTY_SERVICE_STATUS, loadServiceStatus, type ServiceStatusView } from '@/lib/service-status-loader';
+import { ServiceStatusBanner } from '@/components/service-status/ServiceStatusList';
 import ModelUpgradeNotice from '@/components/models/ModelUpgradeNotice';
 import { roleHas as roleHasPermission } from '@/lib/permission-registry';
 import { rightNowState, recordBestEffort, homeAudience, type HomeAudience } from './home-view';
@@ -87,7 +89,7 @@ import { startOfDayInZone } from '@/lib/fleet-view';
 import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { buildMissionCardView as buildHomeCardView } from '@/lib/mission-card-view';
-import { missionTaskHref as homeTaskHref } from '@/lib/mission-task-href';
+import { missionTaskHref as homeTaskHref, taskAnswerHref } from '@/lib/mission-task-href';
 import { getChatAvailability } from '@/lib/chat-availability';
 import HomeChatCard from '@/components/chat/HomeChatCard';
 import GettingStartedChecklist from '@/components/onboarding/GettingStartedChecklist';
@@ -95,6 +97,8 @@ import { firstTaskState, gettingStartedChecklist, type FirstTaskState } from '@/
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // --- Helpers ---
 
@@ -150,6 +154,8 @@ export default async function HomePage({
   let hasAgentCredential: boolean | null = null;
   // Hosted runner allowance at 80% / used; null below that or without one.
   let hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null = null;
+  // The team's service status for this viewer: one read per render, never fatal.
+  let serviceStatus: ServiceStatusView = EMPTY_SERVICE_STATUS;
   // Team whose admin sees the stale/deprecated tier-model notice (fetched client-side).
   let modelUpgradeTeamId: string | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
@@ -307,13 +313,15 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, agentKey, hostedBanner] = await Promise.all([
+        const [role, chatAvail, agentKey, hostedBanner, status] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
           // A failed lookup reads as "has a key": never nag a working team.
           teamHasAgentCredential(activeTeamId).catch(() => true),
           teamHostedRunnerBanner(activeTeamId).catch(() => null),
+          loadServiceStatus({ userId: user.id, teamId: activeTeamId }),
         ]);
+        serviceStatus = status;
         hasAgentCredential = agentKey;
         hostedRunnerBanner = hostedBanner;
         if (roleHasPermission(role, 'manage_model_tiers')) modelUpgradeTeamId = activeTeamId;
@@ -392,11 +400,11 @@ export default async function HomePage({
 
         // Active workers with their tasks and objectives
         const activeWorkers = await db.query.workers.findMany({
-          where: and(
+          where: sqlWhere(and(
             inArray(workers.workspaceId, wsIds),
             inArray(workers.status, [...LIVE_WORKER_STATUSES])
-          ),
-          orderBy: desc(workers.createdAt),
+          )),
+          orderBy: sqlOrderBy(desc(workers.createdAt)),
           // No cap: every live worker is a fleet slot, and a cap hid the 11th.
           with: {
             task: {
@@ -420,7 +428,7 @@ export default async function HomePage({
         const depTaskInfoMap = new Map<string, ChainPositionDep>();
         if (allDepIds.length > 0) {
           const depTasks = await db.query.tasks.findMany({
-            where: inArray(tasks.id, allDepIds),
+            where: sqlWhere(inArray(tasks.id, allDepIds)),
             // title → readable rail chips; dependsOn → transitive reduction.
             columns: { id: true, title: true, status: true, dependsOn: true },
             with: {
@@ -428,7 +436,7 @@ export default async function HomePage({
                 // No limit: the gate asks "does ANY worker hold an open PR?".
                 // prLifecycleStatus: a closed/abandoned PR unblocks dependents.
                 columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
-                orderBy: (w: any, { desc: d }: any) => [d(w.startedAt)],
+                orderBy: sqlOrderByFn((w: any, { desc: d }: any) => [d(w.startedAt)]),
               },
             },
           });
@@ -526,8 +534,8 @@ export default async function HomePage({
           // Columns are the card's (lib/mission-card-views.ts) so the visible
           // cards cost no second task fan-out.
           const allMissions = missionsWhere ? await db.query.missions.findMany({
-            where: and(missionsWhere, ne(missionsTable.status, 'archived')),
-            orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
+            where: sqlWhere(and(missionsWhere, ne(missionsTable.status, 'archived'))),
+            orderBy: sqlOrderBy([desc(missionsTable.priority), desc(missionsTable.createdAt)]),
             columns: { id: true, teamId: true, title: true, description: true, initiativeId: true, workspaceId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
             with: {
               tasks: {
@@ -672,7 +680,7 @@ export default async function HomePage({
           // its parent's PR). A merge seen by any of them means the PR merged,
           // and the rest collapse to the owner row: one PR, one card.
           const openPrWorkers = oneRowPerPr(await db.query.workers.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(workers.workspaceId, wsIds),
               isNotNull(workers.prUrl),
               isNull(workers.mergedAt),
@@ -681,7 +689,7 @@ export default async function HomePage({
               // in flight, and not a merge buildd is waiting on anyone for.
               workerNotDependencyBotPr(),
               sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged', 'unresolvable')`,
-            ),
+            )),
             columns: {
               id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true,
               prLifecycleStatus: true, completedAt: true,
@@ -745,20 +753,20 @@ export default async function HomePage({
             }>();
             if (openTaskIds.length > 0) {
               const reviewerTasksRaw = await db.query.tasks.findMany({
-                where: and(
+                where: sqlWhere(and(
                   inArray(tasks.parentTaskId, openTaskIds),
                   eq(tasks.category, 'review'),
-                ),
+                )),
                 columns: { id: true, parentTaskId: true, status: true, roleSlug: true, createdAt: true, context: true, result: true, startAt: true },
                 with: {
                   mission: { columns: { status: true } },
                   workers: {
-                    where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+                    where: sqlWhere(inArray(workers.status, [...LIVE_WORKER_STATUSES])),
                     columns: { id: true, status: true, startedAt: true },
                     limit: 1,
                   },
                 },
-                orderBy: [desc(tasks.createdAt)],
+                orderBy: sqlOrderBy([desc(tasks.createdAt)]),
               });
               // orderBy desc → first row seen per parentTaskId is the latest.
               for (const rt of reviewerTasksRaw) {
@@ -783,10 +791,10 @@ export default async function HomePage({
 
             const allReviewerNotes = openTaskIds.length > 0
               ? await db.query.missionNotes.findMany({
-                  where: and(
+                  where: sqlWhere(and(
                     inArray(missionNotes.taskId, openTaskIds),
                     inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
-                  ),
+                  )),
                   columns: { taskId: true, type: true, body: true, title: true, status: true, createdAt: true },
                 })
               : [];
@@ -815,7 +823,7 @@ export default async function HomePage({
             );
 
             const wsRowsForInbox = await db.query.workspaces.findMany({
-              where: inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))]),
+              where: sqlWhere(inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))])),
               columns: { id: true, name: true, repo: true, gitConfig: true, teamId: true, maxConcurrentTasks: true, dataClass: true },
               with: WORKSPACE_INSTALLATION_WITH,
             });
@@ -1032,13 +1040,13 @@ export default async function HomePage({
             )];
             if (openPrNumbers.length > 0) {
               const conflictRetryTasks = await db.query.tasks.findMany({
-                where: and(
+                where: sqlWhere(and(
                   inArray(tasks.workspaceId, wsIds),
                   sql`${tasks.creationSource} = 'conflict'`,
                   inArray(tasks.conflictRetryPrNumber, openPrNumbers),
-                ),
+                )),
                 columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true, createdAt: true, claimedAt: true },
-                orderBy: [desc(tasks.createdAt)],
+                orderBy: sqlOrderBy([desc(tasks.createdAt)]),
               });
               for (const t of conflictRetryTasks) {
                 if (t.conflictRetryPrNumber == null) continue;
@@ -1086,26 +1094,26 @@ export default async function HomePage({
               )];
               if (ciPrNumbers.length > 0) {
                 const attemptTasks = await db.query.tasks.findMany({
-                  where: and(
+                  where: sqlWhere(and(
                     inArray(tasks.workspaceId, wsIds),
                     eq(tasks.taskClass, 'attempt'),
                     sql`(${tasks.context}->>'prNumber') IN (${sql.join(
                       ciPrNumbers.map(n => sql`${String(n)}`),
                       sql`, `,
                     )})`,
-                  ),
+                  )),
                   columns: {
                     id: true, workspaceId: true, status: true, context: true, result: true,
                     title: true, reviewerRetryPrNumber: true,
                   },
                   with: {
                     workers: {
-                      where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+                      where: sqlWhere(inArray(workers.status, [...LIVE_WORKER_STATUSES])),
                       columns: { id: true },
                       limit: 1,
                     },
                   },
-                  orderBy: [desc(tasks.createdAt)],
+                  orderBy: sqlOrderBy([desc(tasks.createdAt)]),
                 });
                 for (const t of attemptTasks) {
                   const ctx = (t.context ?? {}) as Record<string, unknown>;
@@ -1155,12 +1163,12 @@ export default async function HomePage({
             if (terminalConflictWorkers.length > 0) {
               const tcPrNumbers = terminalConflictWorkers.map(w => w.prNumber).filter(Boolean) as number[];
               const allRetries = await db.query.tasks.findMany({
-                where: and(
+                where: sqlWhere(and(
                   inArray(tasks.workspaceId, wsIds),
                   inArray(tasks.conflictRetryPrNumber, tcPrNumbers),
-                ),
+                )),
                 columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, status: true },
-                orderBy: [desc(tasks.createdAt)],
+                orderBy: sqlOrderBy([desc(tasks.createdAt)]),
               });
 
               for (const w of terminalConflictWorkers) {
@@ -1432,20 +1440,20 @@ export default async function HomePage({
 
             if (upstreamIds.length > 0) {
               const upstreamTasks = await db.query.tasks.findMany({
-                where: and(
+                where: sqlWhere(and(
                   inArray(tasks.id, upstreamIds),
                   eq(tasks.status, 'completed'),
-                ),
+                )),
                 columns: { id: true, title: true, missionId: true },
                 with: {
                   workers: {
-                    where: and(
+                    where: sqlWhere(and(
                       isNotNull(workers.prUrl),
                       isNull(workers.mergedAt),
                       // A sibling row (e.g. a CI-retry attempt) may be the one
                       // that recorded the merge.
                       noRowOfPrMerged(),
-                    ),
+                    )),
                     columns: {
                       prUrl: true, prNumber: true, prLifecycleStatus: true,
                       // Freshness inputs — a blocker-derived merge card is still
@@ -1455,7 +1463,7 @@ export default async function HomePage({
                       // CI and the review have finished (resolveMergeChip).
                       updatedAt: true,
                     },
-                    orderBy: desc(workers.createdAt),
+                    orderBy: sqlOrderBy(desc(workers.createdAt)),
                     limit: 1,
                   },
                   mission: { columns: { id: true, title: true } },
@@ -1541,22 +1549,22 @@ export default async function HomePage({
           // `failed`, so its card goes on the next build. Recent only: an old
           // failure the owner already moved past is not a live ask.
           const failedTaskRows = await db.query.tasks.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(tasks.workspaceId, wsIds),
               eq(tasks.status, 'failed'),
               isNull(tasks.parentTaskId),
               gte(tasks.updatedAt, new Date(Date.now() - 7 * 86_400_000)),
-            ),
+            )),
             columns: { id: true, title: true, status: true, backend: true, missionId: true, workspaceId: true, context: true },
             with: {
               mission: { columns: { id: true, title: true } },
               workers: {
                 columns: { error: true },
-                orderBy: (w, { desc: descOrder }) => [descOrder(w.createdAt)],
+                orderBy: sqlOrderByFn((w, { desc: descOrder }) => [descOrder(w.createdAt)]),
                 limit: 1,
               },
             },
-            orderBy: desc(tasks.updatedAt),
+            orderBy: sqlOrderBy(desc(tasks.updatedAt)),
             limit: 5,
           });
           // Tasks waiting on GitHub access go only to whoever can fix the
@@ -1579,18 +1587,18 @@ export default async function HomePage({
             missionTitle: (t.mission as { title?: string } | null)?.title ?? null,
             workspaceId: t.workspaceId,
             context: t.context,
-          })), { githubAccessFixableWorkspaceIds }));
+          })), { githubAccessFixableWorkspaceIds, linkedTaskIds: serviceStatus.linkedTaskIds }));
 
           // 2. Unanswered worker questions (waiting_input with waitingFor set)
           const waitingInputWorkers = await db.query.workers.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(workers.workspaceId, wsIds),
               eq(workers.status, 'waiting_input'),
               isNotNull(workers.waitingFor),
               // Needs You admission, pre-filtered so undisposed or recovered
               // parks cannot crowd admitted ones out of the limit.
               sql`${workers.waitingFor}->>'disposition' in ('ask', 'hold')`,
-            ),
+            )),
             columns: { id: true, taskId: true, waitingFor: true },
             with: {
               task: {
@@ -1600,9 +1608,12 @@ export default async function HomePage({
             },
             limit: 5,
           });
+          // A question recovery superseded is the incident's, not the owner's (failure-incident-recovery §17.2).
+          const supersededQuestions = await loadSupersededQuestionTaskIds(waitingInputWorkers.map(w => w.taskId ?? ''));
           for (const w of waitingInputWorkers) {
             const wf = w.waitingFor as { type: string; prompt: string } | null;
             if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input') || !admitsToNeedsYou(wf, Date.now())) continue;
+            if (w.taskId && supersededQuestions.has(w.taskId)) continue;
             waitingOnYou.push({
               kind: 'answer',
               workerId: w.id,
@@ -1616,15 +1627,15 @@ export default async function HomePage({
 
           // 3. Pending plan approvals: planning tasks completed with plan, not yet approved
           const planningTaskRows = await db.query.tasks.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(tasks.workspaceId, wsIds),
               eq(tasks.mode, 'planning'),
               eq(tasks.status, 'completed'),
               isNotNull(tasks.result),
-            ),
+            )),
             columns: { id: true, title: true, missionId: true, result: true },
             with: { mission: { columns: { id: true, title: true } } },
-            orderBy: desc(tasks.updatedAt),
+            orderBy: sqlOrderBy(desc(tasks.updatedAt)),
             limit: 10,
           });
           if (planningTaskRows.length > 0) {
@@ -1660,7 +1671,7 @@ export default async function HomePage({
         // "expiring soon": the refresh sweep renews those (connector-status.ts).
         if (initiativeTeamIds.length > 0) {
           const credentialRows = await db.query.secrets.findMany({
-            where: teamCredentialWhere({ teamId: initiativeTeamIds, purpose: 'mcp_connector_credential' }),
+            where: sqlWhere(teamCredentialWhere({ teamId: initiativeTeamIds, purpose: 'mcp_connector_credential' })),
             columns: {
               label: true,
               tokenExpiresAt: true,
@@ -1671,7 +1682,7 @@ export default async function HomePage({
           if (stale.length > 0) {
             // `label` holds the connector id (see /api/connectors).
             const connectorRows = await db.query.connectors.findMany({
-              where: inArray(connectors.id, stale.map(c => c.label as string)),
+              where: sqlWhere(inArray(connectors.id, stale.map(c => c.label as string))),
               columns: { id: true, name: true },
             });
             const nameById = new Map(connectorRows.map(c => [c.id, c.name]));
@@ -1699,11 +1710,11 @@ export default async function HomePage({
           // membership from `status`/`criteriaOverallVerdict` regardless, so this
           // query narrowing and that function's own check can never drift apart.
           const escalatedMissions = await db.query.missions.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(missionsTable.workspaceId, wsIds),
               isNotNull(missionsTable.criteriaEscalatedAt),
               inArray(missionsTable.status, ['active', 'paused']),
-            ),
+            )),
             columns: {
               id: true, title: true, status: true,
               criteriaEscalatedAt: true, criteriaRearmFingerprint: true, goalCriteriaState: true,
@@ -1712,12 +1723,12 @@ export default async function HomePage({
           if (escalatedMissions.length > 0) {
             const escalatedIds = escalatedMissions.map(m => m.id);
             const openNotes = await db.query.missionNotes.findMany({
-              where: and(
+              where: sqlWhere(and(
                 inArray(missionNotes.missionId, escalatedIds),
                 eq(missionNotes.type, 'question'),
                 eq(missionNotes.status, 'open'),
-              ),
-              orderBy: desc(missionNotes.createdAt),
+              )),
+              orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
               columns: { id: true, missionId: true, title: true, body: true, type: true, authorType: true, disposition: true },
             });
             const noteByMission = new Map<string, typeof openNotes[number]>();
@@ -1751,7 +1762,7 @@ export default async function HomePage({
         // + ranks per workspace so this query can stay a simple unfiltered read.
         if (wsIds.length > 0) {
           const discrepancyRows = await db.query.specDiscrepancies.findMany({
-            where: inArray(specDiscrepancies.workspaceId, wsIds),
+            where: sqlWhere(inArray(specDiscrepancies.workspaceId, wsIds)),
             columns: {
               id: true, workspaceId: true, specPath: true, assertionId: true,
               direction: true, status: true, firstSeenAt: true, promotedMissionId: true,
@@ -1775,7 +1786,7 @@ export default async function HomePage({
             )];
             const docFixTasks = docFixTaskIds.length > 0
               ? await db.query.tasks.findMany({
-                  where: inArray(tasks.id, docFixTaskIds),
+                  where: sqlWhere(inArray(tasks.id, docFixTaskIds)),
                   columns: { id: true, status: true },
                 })
               : [];
@@ -1788,9 +1799,9 @@ export default async function HomePage({
             // would have more than one, so the most recently started wins.
             const docFixWorkers = docFixTaskIds.length > 0
               ? await db.query.workers.findMany({
-                  where: inArray(workers.taskId, docFixTaskIds),
+                  where: sqlWhere(inArray(workers.taskId, docFixTaskIds)),
                   columns: { taskId: true, prLifecycleStatus: true, mergedAt: true },
-                  orderBy: (w, { desc: descOrder }) => [descOrder(w.startedAt)],
+                  orderBy: sqlOrderByFn((w, { desc: descOrder }) => [descOrder(w.startedAt)]),
                 })
               : [];
             const docFixWorkerByTask = new Map<string, { prLifecycleStatus: string | null; mergedAt: Date | null }>();
@@ -1862,10 +1873,10 @@ export default async function HomePage({
         // lib/action-queue.ts.
         const activeSnoozes = user
           ? await db.query.actionQueueSnoozes.findMany({
-              where: and(
+              where: sqlWhere(and(
                 eq(actionQueueSnoozes.userId, user.id),
                 gt(actionQueueSnoozes.snoozedUntil, new Date()),
-              ),
+              )),
               columns: { subjectKey: true },
             })
           : [];
@@ -1919,7 +1930,7 @@ export default async function HomePage({
 
         // Get team roles for mini Team section (isRole = true, dedupe by slug)
         const allRolesRaw = await db.query.workspaceSkills.findMany({
-          where: and(
+          where: sqlWhere(and(
             // Team-level roles (workspaceId NULL, teamId set) are the default
             // shape; workspace-scoped ones override per workspace.
             activeTeamId
@@ -1927,9 +1938,9 @@ export default async function HomePage({
               : inArray(workspaceSkills.workspaceId, wsIds),
             eq(workspaceSkills.enabled, true),
             eq(workspaceSkills.isRole, true),
-          ),
+          )),
           columns: { id: true, name: true, color: true, slug: true, workspaceId: true },
-          orderBy: [desc(workspaceSkills.createdAt)],
+          orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
           limit: 20,
         });
         const seenSlugs = new Set<string>();
@@ -2026,14 +2037,15 @@ export default async function HomePage({
   const questions: HomeQuestion[] = (fleetData?.questions ?? []).map(q => ({
     workerId: q.workerId, taskId: q.taskId, label: q.label, runnerName: q.runnerName,
     askedAt: q.askedAt, question: q.question,
-    href: q.taskId ? homeTaskHref({ missionId: q.missionId, taskId: q.taskId, from: 'home', mode: 'sheet' }) : null,
+    // A question opens where it is answered in full: the task page.
+    href: q.taskId ? taskAnswerHref({ taskId: q.taskId, missionId: q.missionId }) : null,
   }));
   const live = fleetData?.fleet.live ?? activeItems.length;
   const missionTitleById = new Map(missionDeliveries.map(d => [d.delivery.id, d.delivery.title] as const));
   const agentsModel = fleetData ? buildAgentsModel(fleetData.fleet, renderNow, missionTitleById, ({ missionId, taskId }) => missionTaskHref({ missionId, taskId, from: 'home', mode: 'sheet' })) : null;
 
   // The one list of what needs you, at every width: the headline counts it.
-  const { items: attention, inProgress: reviewsInProgress } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
+  const { items: attention, inProgress: reviewsInProgress } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip, status: serviceStatus.needsYou });
   const counts = deliveryCounts({ missions: missionDeliveries, liveAgents: live, capacity: fleetData?.fleet.capacity ?? 0 });
   const deliveries = missionDeliveries.map(d => d.delivery);
   const milestones = selectHomeMilestones(deliveries);
@@ -2084,6 +2096,11 @@ export default async function HomePage({
       {hostedRunnerBanner && (
         <div className="mx-auto max-w-[1320px]">
           <HostedRunnerBanner level={hostedRunnerBanner.level} text={hostedRunnerBanner.text} />
+        </div>
+      )}
+      {serviceStatus.banner && (
+        <div className="mx-auto max-w-[1320px]">
+          <ServiceStatusBanner status={serviceStatus.banner} href="/app/health" />
         </div>
       )}
       {modelUpgradeTeamId && (

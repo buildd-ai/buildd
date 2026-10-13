@@ -25,10 +25,10 @@ const tsvectorType = customType<{ data: string }>({
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
-import { relations, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -675,6 +675,10 @@ export interface WorkspaceGitConfig {
   // Can be overridden per-task at creation time
   defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
 
+  // Visual review policy override (strict | automatic | ask | off). Absent = inherit the team
+  // default. Read only through visualReviewPolicyOf() / resolveVisualReviewPolicy().
+  visualReview?: { policy?: import('@buildd/shared').VisualReviewPolicyMode } | null;
+
   // Merge policy — supersedes autoMerge* fields when set.
   // null / absent → fall back to legacy autoMerge* fields (backward compat).
   mergePolicy?: MergePolicy;
@@ -743,6 +747,13 @@ export interface WorkspaceGitConfig {
   // that even the schema-validated carve-out contains no content-bearing field names.
   // TODO: migrate to a first-class workspaces.data_class column (task cb34697b).
   dataClass?: 'standard' | 'sensitive';
+
+  // Living Specs (docs/specs/living-specs.md). `approverUserIds`: members who
+  // may approve besides owners and admins (§6). `nativeSource`: opt in to native
+  // spec homes (§18, D-13, R-12): a native spec is the source and its approved
+  // revision is generated to docs/specs/<slug>.md by a mechanical PR. Absent /
+  // false = off, and nothing of §18 runs.
+  livingSpecs?: { approverUserIds?: string[]; nativeSource?: boolean };
 
   // Spec conformance (docs/design/spec-conformance.md §14): where THIS
   // workspace's checkable specs live. Absent ⇒ buildd's own layout
@@ -1498,7 +1509,6 @@ export const initiativeProgressSeen = pgTable('initiative_progress_seen', {
   pk: primaryKey({ columns: [t.userId, t.initiativeId] }),
 }));
 
-
 export const tasks = pgTable('tasks', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
@@ -2245,7 +2255,7 @@ export const workers = pgTable('workers', {
   // task_cancelled:     the task was cancelled while the session was still running — whatever
   //                     the session reported afterwards is moot. Bookkeeping; never charged.
   // null: worker is still active, completed successfully, or predates this column.
-  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | 'needs_input' | 'server_refused' | 'output_unmet' | 'task_cancelled' | null>(),
+  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'auth_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | 'needs_input' | 'server_refused' | 'output_unmet' | 'task_cancelled' | null>(),
   // Subagent spans flushed once at worker terminal state (not on every progress event).
   // JSONB (v1): keeps the change small; migrate to a worker_subagents table when per-span
   // querying is needed (e.g. mission skyline v2 lanes-within-a-bar).
@@ -2772,6 +2782,38 @@ export const SPEC_STATUSES = ['draft', 'in_review', 'approved', 'superseded', 'r
 export type SpecScope = (typeof SPEC_SCOPES)[number];
 export type SpecStatus = (typeof SPEC_STATUSES)[number];
 
+/** A spec's metadata block (living-specs.md §18, R-14). `domain` is derived from the filed area, never stored. */
+export interface SpecMetadataBlock {
+  owner?: string;
+  last_verified?: string;
+  surfaces?: string[];
+  verified_by?: string[];
+  assertions?: Array<Record<string, string | number | boolean>>;
+}
+
+/**
+ * Where a native spec's generated repo copy stands (R-15, R-35, AC-79).
+ * `open`: the PR is waiting on CI. `merged`: it landed. `behind`: a check went
+ * red (`failingCheck`), the PR stays open. `refused`: its head commit is not the
+ * generator's, so it does not land under the exception. `unfiled`: no area, so
+ * nothing is generated (R-32). `failed`: the PR could not be written (`error`).
+ */
+export interface SpecRepoCopyState {
+  state: 'open' | 'merged' | 'behind' | 'refused' | 'unfiled' | 'failed';
+  path?: string;
+  branch?: string;
+  prNumber?: number;
+  repoFullName?: string;
+  /** The commit the generator wrote: the only head that lands under the exception. */
+  headSha?: string;
+  revision?: number;
+  contentHash?: string;
+  metadataHash?: string;
+  failingCheck?: string;
+  error?: string;
+  updatedAt: string;
+}
+
 export const specs = pgTable('specs', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
@@ -2784,6 +2826,14 @@ export const specs = pgTable('specs', {
   // The newest revision (the draft head) and the approved one, by spec revision number.
   headRevision: integer('head_revision').notNull().default(1),
   approvedRevision: integer('approved_revision'),
+  // The metadata block (living-specs.md §18, R-14/R-31): mechanical fields of
+  // the generated repo copy, outside every revision. Agents and CI change it
+  // without a new revision (spec_metadata_changes records each change); the
+  // version, the approved revision and its content hash never move with it.
+  metadata: jsonb('metadata').$type<SpecMetadataBlock>(),
+  // The generated repo copy's PR (R-15/R-35), in a workspace that opted in to a
+  // native source. NULL: never generated.
+  repoCopy: jsonb('repo_copy').$type<SpecRepoCopyState>(),
   createdBy: text('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -2806,12 +2856,129 @@ export const specRevisions = pgTable('spec_revisions', {
   // pinned to the exact commit it was validated at on write. Immutable with
   // the revision, so a moving branch never changes what it cites.
   repoRefs: jsonb('repo_refs').$type<Array<{ path: string; commitSha: string }>>(),
+  // The design this revision is built to (Living Specs D-8/D-9), pinned to one
+  // version: an artifact at a revision number, a URL or a design-tool file at a
+  // version id. Immutable with the revision, so an approval records it too.
+  design: jsonb('design').$type<{ kind: 'artifact' | 'url' | 'figma'; ref: string; version: string; screens?: Array<{ id: string; name: string }> }>(),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+// Derived neighbours of a Living Spec (living-specs.md §14, decisions D-11/D-12):
+// specs that are near it by meaning (`similar`), by the files their work changed
+// (`shares_files`), or by criteria judged to mean the same (`overlaps`, written by
+// the duplicate check). Labelled by kind and source, scored, replaced whole per
+// (spec, kind) on each recompute, and never read by approval, pinning or outcomes.
+export const specNeighbors = pgTable('spec_neighbors', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  neighborSpecId: uuid('neighbor_spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull().$type<'similar' | 'shares_files' | 'overlaps'>(),
+  /** 0..1: cosine for `similar`, shared share of the smaller file set for `shares_files`, the judge's probability for `overlaps`. */
+  score: real('score').notNull(),
+  /** Where it came from: `vector` | `lexical` | `pr_files` | `path_manifest` | a decision model id. */
+  source: text('source').notNull(),
+  /** Kind-specific reason: `{ files, sample }` for shares_files, `{ pairs: [{ here, there }] }` for overlaps. Ids and paths only. */
+  detail: jsonb('detail').$type<Record<string, unknown>>(),
+  computedAt: timestamp('computed_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniquePair: uniqueIndex('spec_neighbors_pair_kind_idx').on(t.specId, t.neighborSpecId, t.kind),
+  neighborIdx: index('spec_neighbors_neighbor_idx').on(t.neighborSpecId),
+}));
+
+/**
+ * Where a spec was placed in its workspace's tree, and by whom (Living Specs
+ * §17, R-7 to R-11). Structure, not body: nothing that approves, pins or
+ * grades work reads it.
+ *   - `filed`: buildd set the parent (a confident area answer, or a member of
+ *     a taxonomy a person accepted). `previous_parent_id` is what undo restores.
+ *   - `suggested`: a place buildd offers and did not apply (`new_area`,
+ *     `unsure`, a low answer, the similarity fallback). `proposal` carries a
+ *     proposed new area's title and charter.
+ *   - `manual`: a person (or an agent) set or cleared the parent by hand. The
+ *     sweep never touches a spec with one.
+ */
+export const specFilings = pgTable('spec_filings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull().$type<'filed' | 'suggested' | 'manual'>(),
+  /** `applied` | `undone` | `overridden` for filed; `open` | `accepted` | `dismissed` for suggested; `applied` for manual. */
+  status: text('status').notNull().$type<'applied' | 'undone' | 'overridden' | 'open' | 'accepted' | 'dismissed'>(),
+  previousParentId: uuid('previous_parent_id'),
+  /** The area (or product) filed or suggested; null for a suggestion of a new area, an unsure answer, or a manual un-file. */
+  parentSpecId: uuid('parent_spec_id'),
+  /** `model` | `similarity` | `taxonomy` | `person`. */
+  source: text('source').notNull(),
+  /** The answer and its weight: `{ answer, p, model }`; for a new area also `{ title, charter }`. */
+  proposal: jsonb('proposal').$type<Record<string, unknown>>(),
+  decisionRecordId: uuid('decision_record_id'),
+  /** The organize run that produced it, when one did. */
+  batchId: uuid('batch_id'),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  resolvedBy: text('resolved_by'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+}, (t) => ({
+  specIdx: index('spec_filings_spec_idx').on(t.specId, t.createdAt),
+  workspaceStatusIdx: index('spec_filings_workspace_status_idx').on(t.workspaceId, t.status),
+}));
+
+/**
+ * One change to a spec's metadata block (living-specs.md §18, R-31): who, why,
+ * and the field's previous value. Append-only. A metadata change never writes a
+ * spec revision, so it never moves the version or the approved content hash.
+ */
+export const specMetadataChanges = pgTable('spec_metadata_changes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  field: text('field').notNull(),
+  previousValue: jsonb('previous_value'),
+  newValue: jsonb('new_value'),
+  reason: text('reason').notNull(),
+  changedByKind: text('changed_by_kind').notNull().$type<'user' | 'agent'>(),
+  changedBy: text('changed_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specIdx: index('spec_metadata_changes_spec_idx').on(t.specId, t.createdAt),
+}));
+
+/**
+ * A comment on one section or one criterion of a spec revision (Living Specs
+ * R-26, docs/specs/living-specs.md §16). It belongs to the revision it was made
+ * on; a later revision shows it open when the anchored text is unchanged
+ * (same `anchor_hash`) and outdated otherwise. A section is found again on a
+ * later revision by its heading (`anchor_label`), a criterion by its id.
+ * Comments never touch the body, the hash or an approval; resolving is a
+ * person's act.
+ */
+export const specComments = pgTable('spec_comments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  anchorKind: text('anchor_kind').notNull().$type<'section' | 'criterion'>(),
+  /** The outline section id at that revision (`s3`), or the criterion id (`AC-2`). */
+  anchorId: text('anchor_id').notNull(),
+  /** The section's heading, or the criterion id: how a later revision finds the anchor again. */
+  anchorLabel: text('anchor_label').notNull(),
+  /** sha256 of the anchored text at that revision. */
+  anchorHash: text('anchor_hash').notNull(),
+  body: text('body').notNull(),
+  authorKind: text('author_kind').notNull().$type<'user' | 'agent'>(),
+  authorId: text('author_id').notNull(),
+  parentCommentId: uuid('parent_comment_id'),
+  resolvedBy: text('resolved_by'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specIdx: index('spec_comments_spec_idx').on(t.specId, t.createdAt),
 }));
 
 /**
@@ -3170,6 +3337,11 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.
   trackedBranch: text('tracked_branch'),
+  // Which model login this runner's agents use, as the runner reports it
+  // (docs/specs/runner-model-auth-source.md). A label from a fixed list, never
+  // a credential; null = not reported (older runner).
+  modelAuthSource: text('model_auth_source').$type<'machine_token' | 'machine_login' | 'api_key' | 'none'>(),
+  modelAuthMode: text('model_auth_mode').$type<'auto' | 'prefer' | 'off'>(),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -3676,7 +3848,6 @@ export const secrets = pgTable('secrets', {
   userIdx: index('secrets_user_idx').on(t.userId),
 }));
 
-
 // ── Agent chat (knowledge-base: buildd/design/agent-chat.md) ───────────────────────────────────
 
 // One conversation with the buildd agent. Same conversation on web and phone.
@@ -4137,202 +4308,6 @@ export const prReverts = pgTable('pr_reverts', {
   workspacePrIdx: index('pr_reverts_workspace_pr_idx').on(t.workspaceId, t.revertedPrNumber),
 }));
 
-// Relations
-export const teamsRelations = relations(teams, ({ many }) => ({
-  members: many(teamMembers),
-  accounts: many(accounts),
-  workspaces: many(workspaces),
-  missions: many(missions),
-  initiatives: many(initiatives),
-  invitations: many(teamInvitations),
-  workspaceSkills: many(workspaceSkills),
-  connectors: many(connectors),
-  memories: many(memories),
-}));
-
-export const teamMembersRelations = relations(teamMembers, ({ one }) => ({
-  team: one(teams, { fields: [teamMembers.teamId], references: [teams.id] }),
-  user: one(users, { fields: [teamMembers.userId], references: [users.id] }),
-}));
-
-export const teamInvitationsRelations = relations(teamInvitations, ({ one }) => ({
-  team: one(teams, { fields: [teamInvitations.teamId], references: [teams.id] }),
-  inviter: one(users, { fields: [teamInvitations.invitedBy], references: [users.id] }),
-}));
-
-export const usersRelations = relations(users, ({ many }) => ({
-  teamMembers: many(teamMembers),
-  deviceCodes: many(deviceCodes),
-}));
-
-export const accountsRelations = relations(accounts, ({ one, many }) => ({
-  team: one(teams, { fields: [accounts.teamId], references: [teams.id] }),
-  accountWorkspaces: many(accountWorkspaces),
-  tasks: many(tasks, { relationName: 'claimedTasks' }),
-  workers: many(workers),
-  createdTasks: many(tasks, { relationName: 'accountCreatedTasks' }),
-  heartbeats: many(workerHeartbeats),
-}));
-
-export const accountWorkspacesRelations = relations(accountWorkspaces, ({ one }) => ({
-  account: one(accounts, { fields: [accountWorkspaces.accountId], references: [accounts.id] }),
-  workspace: one(workspaces, { fields: [accountWorkspaces.workspaceId], references: [workspaces.id] }),
-}));
-
-export const missionsRelations = relations(missions, ({ one, many }) => ({
-  team: one(teams, { fields: [missions.teamId], references: [teams.id] }),
-  workspace: one(workspaces, { fields: [missions.workspaceId], references: [workspaces.id] }),
-  createdByUser: one(users, { fields: [missions.createdByUserId], references: [users.id] }),
-  parentMission: one(missions, { fields: [missions.parentMissionId], references: [missions.id], relationName: 'subMissions' }),
-  subMissions: many(missions, { relationName: 'subMissions' }),
-  initiative: one(initiatives, { fields: [missions.initiativeId], references: [initiatives.id] }),
-  dependsOnMission: one(missions, { fields: [missions.dependsOnMissionId], references: [missions.id], relationName: 'dependentMissions' }),
-  dependentMissions: many(missions, { relationName: 'dependentMissions' }),
-  tasks: many(tasks),
-  schedule: one(taskSchedules, { fields: [missions.scheduleId], references: [taskSchedules.id] }),
-  artifacts: many(artifacts),
-  notes: many(missionNotes),
-}));
-
-export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
-  team: one(teams, { fields: [workspaces.teamId], references: [teams.id] }),
-  tasks: many(tasks),
-  workers: many(workers),
-  accountWorkspaces: many(accountWorkspaces),
-
-  artifacts: many(artifacts),
-  taskSchedules: many(taskSchedules),
-  workspaceSkills: many(workspaceSkills),
-  missions: many(missions),
-  initiatives: many(initiatives),
-  githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
-  githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
-  connectorWorkspaces: many(connectorWorkspaces),
-  specDiscrepancies: many(specDiscrepancies),
-}));
-
-export const tasksRelations = relations(tasks, ({ one, many }) => ({
-  workspace: one(workspaces, { fields: [tasks.workspaceId], references: [workspaces.id] }),
-  account: one(accounts, { fields: [tasks.claimedBy], references: [accounts.id], relationName: 'claimedTasks' }),
-  mission: one(missions, { fields: [tasks.missionId], references: [missions.id] }),
-  schedule: one(taskSchedules, { fields: [tasks.scheduleId], references: [taskSchedules.id] }),
-  workers: many(workers, { relationName: 'taskWorkers' }),
-
-  // Creator tracking relations
-  creatorAccount: one(accounts, { fields: [tasks.createdByAccountId], references: [accounts.id], relationName: 'accountCreatedTasks' }),
-  creatorWorker: one(workers, { fields: [tasks.createdByWorkerId], references: [workers.id], relationName: 'workerCreatedTasks' }),
-  parentTask: one(tasks, { fields: [tasks.parentTaskId], references: [tasks.id], relationName: 'subTasks' }),
-  subTasks: many(tasks, { relationName: 'subTasks' }),
-  subjectReports: many(taskSubjectReports),
-  subjectClaims: many(taskSubjectClaims),
-}));
-
-export const taskSubjectReportsRelations = relations(taskSubjectReports, ({ one }) => ({
-  task: one(tasks, { fields: [taskSubjectReports.taskId], references: [tasks.id] }),
-  reporter: one(accounts, { fields: [taskSubjectReports.reporterId], references: [accounts.id] }),
-}));
-
-export const taskSubjectClaimsRelations = relations(taskSubjectClaims, ({ one }) => ({
-  workspace: one(workspaces, { fields: [taskSubjectClaims.workspaceId], references: [workspaces.id] }),
-  canonicalTask: one(tasks, { fields: [taskSubjectClaims.canonicalTaskId], references: [tasks.id] }),
-}));
-
-export const specDiscrepanciesRelations = relations(specDiscrepancies, ({ one }) => ({
-  workspace: one(workspaces, { fields: [specDiscrepancies.workspaceId], references: [workspaces.id] }),
-  promotedMission: one(missions, { fields: [specDiscrepancies.promotedMissionId], references: [missions.id] }),
-  docFixTask: one(tasks, { fields: [specDiscrepancies.docFixTaskId], references: [tasks.id] }),
-}));
-
-export const workersRelations = relations(workers, ({ one, many }) => ({
-  task: one(tasks, { fields: [workers.taskId], references: [tasks.id], relationName: 'taskWorkers' }),
-  workspace: one(workspaces, { fields: [workers.workspaceId], references: [workspaces.id] }),
-  account: one(accounts, { fields: [workers.accountId], references: [accounts.id] }),
-  artifacts: many(artifacts),
-
-  createdTasks: many(tasks, { relationName: 'workerCreatedTasks' }),
-}));
-
-export const artifactsRelations = relations(artifacts, ({ one }) => ({
-  worker: one(workers, { fields: [artifacts.workerId], references: [workers.id] }),
-  workspace: one(workspaces, { fields: [artifacts.workspaceId], references: [workspaces.id] }),
-  mission: one(missions, { fields: [artifacts.missionId], references: [missions.id] }),
-  initiative: one(initiatives, { fields: [artifacts.initiativeId], references: [initiatives.id] }),
-}));
-
-export const initiativesRelations = relations(initiatives, ({ one, many }) => ({
-  team: one(teams, { fields: [initiatives.teamId], references: [teams.id] }),
-  workspace: one(workspaces, { fields: [initiatives.workspaceId], references: [workspaces.id] }),
-  createdByUser: one(users, { fields: [initiatives.createdByUserId], references: [users.id] }),
-  ownerUser: one(users, { fields: [initiatives.ownerUserId], references: [users.id] }),
-  missions: many(missions),
-  artifacts: many(artifacts),
-}));
-
-export const evidenceBackendsRelations = relations(evidenceBackends, ({ one }) => ({
-  team: one(teams, { fields: [evidenceBackends.teamId], references: [teams.id] }),
-  workspace: one(workspaces, { fields: [evidenceBackends.workspaceId], references: [workspaces.id] }),
-  credentialSecret: one(secrets, { fields: [evidenceBackends.credentialSecretId], references: [secrets.id] }),
-}));
-
-export const evidenceObjectsRelations = relations(evidenceObjects, ({ one }) => ({
-  workspace: one(workspaces, { fields: [evidenceObjects.workspaceId], references: [workspaces.id] }),
-  task: one(tasks, { fields: [evidenceObjects.taskId], references: [tasks.id] }),
-  rootTask: one(tasks, { fields: [evidenceObjects.rootTaskId], references: [tasks.id] }),
-  worker: one(workers, { fields: [evidenceObjects.workerId], references: [workers.id] }),
-  backend: one(evidenceBackends, { fields: [evidenceObjects.backendId], references: [evidenceBackends.id] }),
-}));
-
-export const missionNotesRelations = relations(missionNotes, ({ one }) => ({
-  mission: one(missions, { fields: [missionNotes.missionId], references: [missions.id] }),
-}));
-
-
-export const workerHeartbeatsRelations = relations(workerHeartbeats, ({ one }) => ({
-  account: one(accounts, { fields: [workerHeartbeats.accountId], references: [accounts.id] }),
-}));
-
-export const taskSchedulesRelations = relations(taskSchedules, ({ one, many }) => ({
-  workspace: one(workspaces, { fields: [taskSchedules.workspaceId], references: [workspaces.id] }),
-  createdByUser: one(users, { fields: [taskSchedules.createdByUserId], references: [users.id] }),
-  tasks: many(tasks),
-}));
-
-export const githubInstallationsRelations = relations(githubInstallations, ({ many }) => ({
-  repos: many(githubRepos),
-  workspaces: many(workspaces),
-}));
-
-export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
-  installation: one(githubInstallations, { fields: [githubRepos.installationId], references: [githubInstallations.id] }),
-  workspaces: many(workspaces),
-}));
-
-export const workspaceSkillsRelations = relations(workspaceSkills, ({ one }) => ({
-  team: one(teams, { fields: [workspaceSkills.teamId], references: [teams.id] }),
-  workspace: one(workspaces, { fields: [workspaceSkills.workspaceId], references: [workspaces.id] }),
-  account: one(accounts, { fields: [workspaceSkills.accountId], references: [accounts.id] }),
-}));
-
-export const watchedProjectsRelations = relations(watchedProjects, ({ one, many }) => ({
-  workspace: one(workspaces, { fields: [watchedProjects.workspaceId], references: [workspaces.id] }),
-  events: many(watcherEvents),
-}));
-
-export const watcherEventsRelations = relations(watcherEvents, ({ one }) => ({
-  project: one(watchedProjects, { fields: [watcherEvents.projectId], references: [watchedProjects.id] }),
-}));
-
-export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({
-  user: one(users, { fields: [deviceCodes.userId], references: [users.id] }),
-}));
-
-export const secretsRelations = relations(secrets, ({ one, many }) => ({
-  team: one(teams, { fields: [secrets.teamId], references: [teams.id] }),
-  account: one(accounts, { fields: [secrets.accountId], references: [accounts.id] }),
-  workspace: one(workspaces, { fields: [secrets.workspaceId], references: [workspaces.id] }),
-  lease: many(credentialLeases),
-}));
-
 // Per-credential lease: exactly one broker may hold a given credential's lease at a time.
 // The unique index on credential_id is the DB-level enforcement — a second runner racing
 // for the same lease gets 0 rows back from the conditional INSERT ON CONFLICT and backs off.
@@ -4353,13 +4328,8 @@ export const credentialLeases = pgTable('credential_leases', {
   expiresAtIdx: index('credential_leases_expires_at_idx').on(t.expiresAt),
 }));
 
-export const credentialLeasesRelations = relations(credentialLeases, ({ one }) => ({
-  credential: one(secrets, { fields: [credentialLeases.credentialId], references: [secrets.id] }),
-}));
-
 export type CredentialLease = typeof credentialLeases.$inferSelect;
 export type NewCredentialLease = typeof credentialLeases.$inferInsert;
-
 
 // Per-team notification preferences (config, not a credential — the channel
 // itself lives in `secrets` as purpose 'pushover' / 'notify_webhook').
@@ -4378,10 +4348,6 @@ export const notificationPreferences = pgTable('notification_preferences', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   teamIdx: uniqueIndex('notification_preferences_team_idx').on(t.teamId),
-}));
-
-export const notificationPreferencesRelations = relations(notificationPreferences, ({ one }) => ({
-  team: one(teams, { fields: [notificationPreferences.teamId], references: [teams.id] }),
 }));
 
 // ── Subscriptions and the delivery ledger (knowledge-base: buildd/design/subscriptions-and-notifications.md) ──
@@ -4463,11 +4429,6 @@ export const userFeedback = pgTable('user_feedback', {
   teamIdx: index('user_feedback_team_idx').on(t.teamId),
 }));
 
-export const userFeedbackRelations = relations(userFeedback, ({ one }) => ({
-  user: one(users, { fields: [userFeedback.userId], references: [users.id] }),
-  team: one(teams, { fields: [userFeedback.teamId], references: [teams.id] }),
-}));
-
 // Per-user snooze on a Home/Activity action-queue gate card (MERGE/REVIEW).
 // Keyed on the item's subjectKey (see lib/action-queue.ts's ActionQueueItem)
 // rather than a PR or task id, since that's the same dedupe key the queue
@@ -4486,11 +4447,6 @@ export const actionQueueSnoozes = pgTable('action_queue_snoozes', {
 }, (t) => ({
   userSubjectIdx: uniqueIndex('action_queue_snoozes_user_subject_idx').on(t.userId, t.subjectKey),
   teamIdx: index('action_queue_snoozes_team_idx').on(t.teamId),
-}));
-
-export const actionQueueSnoozesRelations = relations(actionQueueSnoozes, ({ one }) => ({
-  user: one(users, { fields: [actionQueueSnoozes.userId], references: [users.id] }),
-  team: one(teams, { fields: [actionQueueSnoozes.teamId], references: [teams.id] }),
 }));
 
 // System cache — generic key-value store for cached data (model lists, etc.)
@@ -4531,10 +4487,6 @@ export const tenantBudgets = pgTable('tenant_budgets', {
   tenantTeamIdx: uniqueIndex('tenant_budgets_tenant_team_idx').on(t.tenantId, t.teamId),
 }));
 
-export const tenantBudgetsRelations = relations(tenantBudgets, ({ one }) => ({
-  team: one(teams, { fields: [tenantBudgets.teamId], references: [teams.id] }),
-}));
-
 // Provider pause log — one row per observed budget/rate-limit (or auth) wall on
 // a specific agent backend. Append-only: the active pause for a backend is the
 // newest row whose resetsAt is still in the future. Rows are pruned lazily.
@@ -4558,11 +4510,6 @@ export const backendPauses = pgTable('backend_pauses', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   activeIdx: index('backend_pauses_team_backend_resets_idx').on(t.teamId, t.backend, t.resetsAt),
-}));
-
-export const backendPausesRelations = relations(backendPauses, ({ one }) => ({
-  team: one(teams, { fields: [backendPauses.teamId], references: [teams.id] }),
-  workspace: one(workspaces, { fields: [backendPauses.workspaceId], references: [workspaces.id] }),
 }));
 
 // OAuth budget episodes — one row per observed session/budget exhaustion on a
@@ -4598,10 +4545,6 @@ export const oauthBudgetEpisodes = pgTable('oauth_budget_episodes', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   accountExhaustedIdx: index('oauth_budget_episodes_account_exhausted_idx').on(t.accountId, t.exhaustedAt),
-}));
-
-export const oauthBudgetEpisodesRelations = relations(oauthBudgetEpisodes, ({ one }) => ({
-  account: one(accounts, { fields: [oauthBudgetEpisodes.accountId], references: [accounts.id] }),
 }));
 
 // Codex auth now lives in the unified `secrets` table (purpose='codex_credential').
@@ -4877,22 +4820,6 @@ export const connectorCatalogTeamPolicies = pgTable('connector_catalog_team_poli
   pk: primaryKey({ columns: [t.teamId, t.slug] }),
 }));
 
-export const connectorsRelations = relations(connectors, ({ one, many }) => ({
-  team: one(teams, { fields: [connectors.teamId], references: [teams.id] }),
-  connectorWorkspaces: many(connectorWorkspaces),
-  shares: many(connectorShares),
-}));
-
-export const connectorWorkspacesRelations = relations(connectorWorkspaces, ({ one }) => ({
-  connector: one(connectors, { fields: [connectorWorkspaces.connectorId], references: [connectors.id] }),
-  workspace: one(workspaces, { fields: [connectorWorkspaces.workspaceId], references: [workspaces.id] }),
-}));
-
-export const connectorSharesRelations = relations(connectorShares, ({ one }) => ({
-  connector: one(connectors, { fields: [connectorShares.connectorId], references: [connectors.id] }),
-  sharedWithTeam: one(teams, { fields: [connectorShares.sharedWithTeamId], references: [teams.id] }),
-}));
-
 // Generic provider link layer between buildd's native tier (initiatives → missions →
 // tasks) and external work trackers (Linear, GitHub). Phase 1 makes a link exist,
 // persist, and stay authenticated — it does NOT read progress back or import graphs.
@@ -4922,10 +4849,6 @@ export const externalLinks = pgTable('external_links', {
   teamIdx: index('external_links_team_idx').on(t.teamId),
 }));
 
-export const externalLinksRelations = relations(externalLinks, ({ one }) => ({
-  team: one(teams, { fields: [externalLinks.teamId], references: [teams.id] }),
-}));
-
 // Model tier registry — maps premium-plus/premium/standard/budget → concrete provider + model per team.
 // workspace_id = NULL means team-wide default; non-NULL is a workspace override.
 // surface = NULL means the row serves agent runs and chat; 'agent' or 'chat'
@@ -4946,11 +4869,6 @@ export const modelTierRegistry = pgTable('model_tier_registry', {
 }, (t) => ({
   uniqueTierPerTeamWorkspace: uniqueIndex('model_tier_registry_unique').on(t.teamId, t.workspaceId, t.tier, t.surface),
   teamIdx: index('model_tier_registry_team_idx').on(t.teamId),
-}));
-
-export const modelTierRegistryRelations = relations(modelTierRegistry, ({ one }) => ({
-  team: one(teams, { fields: [modelTierRegistry.teamId], references: [teams.id] }),
-  workspace: one(workspaces, { fields: [modelTierRegistry.workspaceId], references: [workspaces.id] }),
 }));
 
 // ── Tier model pools (knowledge-base: buildd/design/tier-model-pools.md) ──────────────────────
@@ -5150,10 +5068,6 @@ export const migrationLog = pgTable('migration_log', {
   runPhaseIdx: uniqueIndex('migration_log_run_phase_idx').on(t.runId, t.phase),
 }));
 
-export const migrationLogRelations = relations(migrationLog, ({ one }) => ({
-  workspace: one(workspaces, { fields: [migrationLog.workspaceId], references: [workspaces.id] }),
-}));
-
 export type MigrationLog = typeof migrationLog.$inferSelect;
 export type NewMigrationLog = typeof migrationLog.$inferInsert;
 
@@ -5191,11 +5105,6 @@ export const changeIntents = pgTable('change_intents', {
     .on(t.workspaceId, t.surface)
     .where(sql`${t.closedAt} IS NULL`),
   taskIdx: index('change_intents_task_idx').on(t.taskId),
-}));
-
-export const changeIntentsRelations = relations(changeIntents, ({ one }) => ({
-  workspace: one(workspaces, { fields: [changeIntents.workspaceId], references: [workspaces.id] }),
-  task: one(tasks, { fields: [changeIntents.taskId], references: [tasks.id] }),
 }));
 
 export type ChangeIntent = typeof changeIntents.$inferSelect;
@@ -5276,11 +5185,6 @@ export const pathClaims = pgTable('path_claims', {
   taskIdx: index('path_claims_task_idx').on(t.taskId).where(sql`${t.releasedAt} IS NULL`),
 }));
 
-export const pathClaimsRelations = relations(pathClaims, ({ one }) => ({
-  workspace: one(workspaces, { fields: [pathClaims.workspaceId], references: [workspaces.id] }),
-  task: one(tasks, { fields: [pathClaims.taskId], references: [tasks.id] }),
-}));
-
 export type PathClaim = typeof pathClaims.$inferSelect;
 export type NewPathClaim = typeof pathClaims.$inferInsert;
 
@@ -5300,12 +5204,6 @@ export const pathClaimWaiters = pgTable('path_claim_waiters', {
   uniqueWaiter: uniqueIndex('pcw_unique_idx').on(t.blockingTaskId, t.waitingTaskId, t.blockedPath),
   blockingTaskOpenIdx: index('pcw_blocking_task_idx').on(t.blockingTaskId).where(sql`${t.notifiedAt} IS NULL`),
   starvationIdx: index('path_claim_waiters_starvation_idx').on(t.workspaceId, t.registeredAt).where(sql`${t.notifiedAt} IS NULL`),
-}));
-
-export const pathClaimWaitersRelations = relations(pathClaimWaiters, ({ one }) => ({
-  workspace: one(workspaces, { fields: [pathClaimWaiters.workspaceId], references: [workspaces.id] }),
-  blockingTask: one(tasks, { fields: [pathClaimWaiters.blockingTaskId], references: [tasks.id], relationName: 'blockingClaims' }),
-  waitingTask: one(tasks, { fields: [pathClaimWaiters.waitingTaskId], references: [tasks.id], relationName: 'waitingClaims' }),
 }));
 
 export type PathClaimWaiter = typeof pathClaimWaiters.$inferSelect;
@@ -5640,11 +5538,6 @@ export const releases = pgTable('releases', {
   workspaceShaIdx: uniqueIndex('releases_workspace_sha_idx').on(t.workspaceId, t.headSha),
 }));
 
-export const releasesRelations = relations(releases, ({ one, many }) => ({
-  workspace: one(workspaces, { fields: [releases.workspaceId], references: [workspaces.id] }),
-  releaseTasks: many(releaseTasks),
-}));
-
 export type Release = typeof releases.$inferSelect;
 export type NewRelease = typeof releases.$inferInsert;
 
@@ -5656,11 +5549,6 @@ export const releaseTasks = pgTable('release_tasks', {
   commitSha: text('commit_sha'),
 }, (t) => ({
   pk: primaryKey({ columns: [t.releaseId, t.taskId] }),
-}));
-
-export const releaseTasksRelations = relations(releaseTasks, ({ one }) => ({
-  release: one(releases, { fields: [releaseTasks.releaseId], references: [releases.id] }),
-  task: one(tasks, { fields: [releaseTasks.taskId], references: [tasks.id] }),
 }));
 
 export type ReleaseTask = typeof releaseTasks.$inferSelect;
@@ -5771,10 +5659,6 @@ export const memoryExtractionAttempts = pgTable('memory_extraction_attempts', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   sourceUnique: uniqueIndex('memory_extraction_attempts_source_unique').on(t.sourceKind, t.sourceId),
-}));
-
-export const memoriesRelations = relations(memories, ({ one }) => ({
-  team: one(teams, { fields: [memories.teamId], references: [teams.id] }),
 }));
 
 export type Memory = typeof memories.$inferSelect;
@@ -5985,13 +5869,6 @@ export const capabilityGrantReservations = pgTable('capability_grant_reservation
   openIdx: index('capability_grant_reservations_open_idx').on(t.grantId, t.reservedAt).where(sql`${t.settledAt} IS NULL`),
 }));
 
-export const gateEventsRelations = relations(gateEvents, ({ one }) => ({
-  workspace: one(workspaces, { fields: [gateEvents.workspaceId], references: [workspaces.id] }),
-  mission: one(missions, { fields: [gateEvents.missionId], references: [missions.id] }),
-  task: one(tasks, { fields: [gateEvents.taskId], references: [tasks.id] }),
-  worker: one(workers, { fields: [gateEvents.workerId], references: [workers.id] }),
-}));
-
 export type GateEvent = typeof gateEvents.$inferSelect;
 export type NewGateEvent = typeof gateEvents.$inferInsert;
 
@@ -6111,6 +5988,13 @@ export const decisionModelMeasurements = pgTable('decision_model_measurements', 
   setByAccountId: uuid('set_by_account_id'),
   setAt: timestamp('set_at', { withTimezone: true }).defaultNow().notNull(),
   reason: text('reason'),
+  // Which number `threshold` is compared with (decision-model-measurements.ts
+  // `measuredSignal`). 'confidence' keeps the provider's confidence.
+  confidenceSource: text('confidence_source').notNull().default('confidence').$type<'confidence' | 'top_p' | 'margin' | 'calibrated_top_p'>(),
+  // Isotonic breakpoints { x, y } for 'calibrated_top_p'; null otherwise.
+  calibration: jsonb('calibration').$type<{ x: number[]; y: number[] }>(),
+  // Act on these labels only, each at its own threshold; null = every label at `threshold`.
+  labelThresholds: jsonb('label_thresholds').$type<Record<string, number>>(),
 }, (t) => ({
   kindModelIdx: uniqueIndex('decision_model_measurements_kind_model_idx').on(t.kind, t.model),
 }));
@@ -6159,12 +6043,6 @@ export const workerTerminalRecords = pgTable('worker_terminal_records', {
   workerIdx: uniqueIndex('worker_terminal_records_worker_idx').on(t.workerId),
   workspaceOccurredIdx: index('worker_terminal_records_workspace_occurred_idx').on(t.workspaceId, t.occurredAt),
   outcomeOccurredIdx: index('worker_terminal_records_outcome_occurred_idx').on(t.outcome, t.occurredAt),
-}));
-
-export const workerTerminalRecordsRelations = relations(workerTerminalRecords, ({ one }) => ({
-  worker: one(workers, { fields: [workerTerminalRecords.workerId], references: [workers.id] }),
-  task: one(tasks, { fields: [workerTerminalRecords.taskId], references: [tasks.id] }),
-  workspace: one(workspaces, { fields: [workerTerminalRecords.workspaceId], references: [workspaces.id] }),
 }));
 
 export type WorkerTerminalRecord = typeof workerTerminalRecords.$inferSelect;
@@ -6998,6 +6876,9 @@ export const failureIncidents = pgTable('failure_incidents', {
   linkedFixTaskId: uuid('linked_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
   acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  // The recovery assessment (docs/specs/failure-incident-recovery.md §3). NULL:
+  // not assessed yet. Written with `status` in the one CAS on `version`.
+  recovery: jsonb('recovery').$type<FailureIncidentRecovery>(),
   // Optimistic-lock counter for the compare-and-swap update.
   version: integer('version').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -7007,10 +6888,45 @@ export const failureIncidents = pgTable('failure_incidents', {
   workspaceStatusSeenIdx: index('failure_incidents_workspace_status_seen_idx').on(t.workspaceId, t.status, t.lastSeenAt),
 }));
 
-export const failureIncidentsRelations = relations(failureIncidents, ({ one }) => ({
-  workspace: one(workspaces, { fields: [failureIncidents.workspaceId], references: [workspaces.id] }),
-  linkedFixTask: one(tasks, { fields: [failureIncidents.linkedFixTaskId], references: [tasks.id] }),
-}));
-
 export type FailureIncidentRow = typeof failureIncidents.$inferSelect;
 export type NewFailureIncidentRow = typeof failureIncidents.$inferInsert;
+
+/**
+ * One root cause per team: what broke (a runner's credential, a provider key,
+ * a platform component), how it is classified, which work it hit, and whether
+ * a capability check has since verified it restored. Written by detection
+ * (apps/web/src/lib/root-cause-record.ts): the worker outcome path for runner
+ * credential failures and the failure-pattern sweep. Upsert is one atomic
+ * INSERT … ON CONFLICT on (team_id, key), so a repeat of a cleared cause
+ * reopens the same row. `verified_restored_at` is written only by a passing
+ * capability check, never by a person or a timer.
+ *
+ * Classification only. Operator state (severity, paging, acknowledgement, fix
+ * tasks, verdicts) does not belong here: operator tooling reads this table
+ * through the platform-owner API and keeps its own state elsewhere.
+ */
+export const rootCauses = pgTable('root_causes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  key: text('key').notNull(),
+  capabilityKind: text('capability_kind').notNull().$type<RootCauseCapabilityKind>(),
+  runnerId: uuid('runner_id').references(() => accounts.id, { onDelete: 'set null' }),
+  provider: text('provider'),
+  component: text('component'),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  classification: text('classification').notNull().$type<RootCauseClassification>(),
+  // Newest first, deduplicated, capped on write.
+  affectedTaskIds: uuid('affected_task_ids').array().notNull().default(sql`ARRAY[]::uuid[]`),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  verifiedRestoredAt: timestamp('verified_restored_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamKeyIdx: uniqueIndex('root_causes_team_key_idx').on(t.teamId, t.key),
+  runnerIdx: index('root_causes_runner_idx').on(t.runnerId),
+  lastSeenIdx: index('root_causes_last_seen_idx').on(t.lastSeenAt),
+}));
+
+export type RootCauseRow = typeof rootCauses.$inferSelect;
+export type NewRootCauseRow = typeof rootCauses.$inferInsert;

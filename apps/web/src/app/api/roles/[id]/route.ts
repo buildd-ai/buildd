@@ -14,6 +14,7 @@ import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
 import { parseOperatorGrantInput, withOperatorGrantMetadata, type OperatorGrantConfig } from '@/lib/operator-capability';
 import { AGENT_CAPABILITY_NAMES, roleMayHold } from '@/lib/permission-registry';
 import { can } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -27,13 +28,13 @@ async function findAccessibleRole(roleId: string, userId: string, bearerTeamId: 
   ]);
 
   const role = await db.query.workspaceSkills.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.id, roleId),
       or(
         teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
         wsIds.length > 0 ? inArray(workspaceSkills.workspaceId, wsIds) : undefined,
       ),
-    ),
+    )),
   });
 
   // Another member's private personal role is invisible, not forbidden. An
@@ -200,11 +201,11 @@ export async function PATCH(
           return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
         }
         const conflict = await db.query.workspaceSkills.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workspaceSkills.workspaceId, newWorkspaceId),
             eq(workspaceSkills.slug, existing.slug),
             ne(workspaceSkills.id, id),
-          ),
+          )),
         });
         if (conflict) {
           return NextResponse.json(

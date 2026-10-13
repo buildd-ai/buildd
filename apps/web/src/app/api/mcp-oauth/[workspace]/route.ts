@@ -60,6 +60,8 @@ import { LEGACY_ENDPOINT_NOTICE, deprecationHeaders } from '@/lib/mcp-grant-sess
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
 import { isUuid } from '@/lib/uuid';
 import { resolveLinkedDocsWorkspaces } from '@/lib/linked-knowledge';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { builddServerInfo } from '@/lib/mcp-server-info';
 
 function extractBearer(req: Request): string | null {
   const auth = req.headers.get('authorization');
@@ -141,10 +143,12 @@ function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string,
   };
 
   const server = new Server(
-    { name: 'buildd', version: '0.1.0' },
+    { name: 'buildd', version: builddServerInfo('').version },
     {
       capabilities: { tools: {} },
-      instructions: `Buildd MCP (OAuth) — scoped to workspace ${workspaceId}.
+      instructions: `Before acting on buildd tasks or Living Specs, call \`buildd\` action "help", params {"topic":"living-specs"} ({} lists topics).
+
+Buildd MCP (OAuth) — scoped to workspace ${workspaceId}.
 
 Tools:
 - \`buildd\`: task coordination + scheduling. Available actions: ${actions.join(', ')}
@@ -168,8 +172,8 @@ ${LEGACY_ENDPOINT_NOTICE}`,
           properties: {
             action: {
               type: 'string' as const,
-              description: `Action to perform: ${actions.join(', ')}`,
-              enum: actions,
+              description: `Action to perform: ${actions.join(', ')}, help (params {topic} for workflow guidance, {action} for one action's docs)`,
+              enum: [...actions, 'help'],
             },
             params: {
               type: 'object' as const,
@@ -324,7 +328,7 @@ async function handle(req: Request, workspace: string): Promise<Response> {
 
   // Verify workspace exists and grab its team for memory routing.
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspace),
+    where: sqlWhere(eq(workspaces.id, workspace)),
     columns: { id: true, teamId: true, dataClass: true, repo: true, name: true },
   });
   if (!ws) return new Response('Workspace not found', { status: 404 });

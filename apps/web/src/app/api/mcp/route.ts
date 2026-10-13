@@ -71,6 +71,7 @@ import {
 } from "@/lib/mcp-grants";
 import type { ToolResult, WorkspaceListing } from "@buildd/core/mcp-tools";
 import { callWorkspaceRef, grantWorkspaceRefusal, toListing, type JsonRpcMessage } from "@/lib/mcp-grant-session";
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Consumer Skill ───────────────────────────────────────────────────────────
 //
@@ -174,7 +175,7 @@ function createApi(baseUrl: string, apiKey: string, interactiveMarker?: string |
 async function resolveTeamId(workspaceId: string | null | undefined, fallbackTeamId?: string): Promise<string | null> {
   if (workspaceId) {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { teamId: true },
     });
     if (ws?.teamId) return ws.teamId;
@@ -201,7 +202,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
   if (!workspaceId) return 'standard';
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { dataClass: true },
     });
     return (ws?.dataClass as 'standard' | 'sensitive') ?? 'standard';
@@ -442,7 +443,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
       // A grant session whose call named no usable workspace: refused before
       // anything runs, with the granted choices only.
-      if (grantSession?.refusal && !(args?.action === 'list_workspaces')) return grantSession.refusal;
+      if (grantSession?.refusal && !(args?.action === 'list_workspaces' || args?.action === 'help')) return grantSession.refusal;
       // Defence in depth for a write grant (no token scopes, so the check
       // below is skipped): a named workspace must be the bound one.
       if (grantSession && tokenScopes == null && tokenWorkspaceIds != null) {
@@ -458,7 +459,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         const required = requiredScopeForMcpTool(name, args as Record<string, unknown>);
         if (!required || !hasTokenScope(tokenScopes, required)) return { content: [{type:'text' as const,text:JSON.stringify({error:'forbidden',requiredScope:required})}], isError:true };
         // list_workspaces names no workspace; it lists only what the caller reaches.
-        if (tokenWorkspaceIds != null && action !== 'list_workspaces') {
+        if (tokenWorkspaceIds != null && action !== 'list_workspaces' && action !== 'help') {
           const corpus = name === 'recall' ? args?.scope : p.corpus;
           if ((name === 'recall' || (name === 'buildd_memory' && action === 'query_knowledge')) && (Array.isArray(corpus) ? corpus.includes('initiative') : corpus === 'initiative')) return {content:[{type:'text' as const,text:JSON.stringify({error:'forbidden',reason:'Initiative knowledge is team-wide'})}],isError:true};
           const target = typeof p.workspaceId === 'string' ? p.workspaceId : await getWorkspaceId();
@@ -594,7 +595,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         // Resolve taskId from the worker row; everything after that is the
         // shared implementation (lib/path-claim-check.ts), same as REST.
         const workerRow = await db.query.workers.findFirst({
-          where: eq(workersTable.id, workerId),
+          where: sqlWhere(eq(workersTable.id, workerId)),
           columns: { taskId: true },
         });
         if (!workerRow?.taskId) {
@@ -711,7 +712,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
         // Resolve sender worker → taskId
         const senderWorker = await db.query.workers.findFirst({
-          where: eq(workersTable.id, workerId),
+          where: sqlWhere(eq(workersTable.id, workerId)),
           columns: { taskId: true },
         });
         if (!senderWorker?.taskId) {
@@ -732,7 +733,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
         // Resolve sender task (need workspaceId + context for rate limit)
         const senderTask = await db.query.tasks.findFirst({
-          where: eq(tasks.id, senderTaskId),
+          where: sqlWhere(eq(tasks.id, senderTaskId)),
           columns: { id: true, workspaceId: true, context: true },
         });
         if (!senderTask) {
@@ -744,7 +745,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
         // Resolve recipient task
         const recipientTask = await db.query.tasks.findFirst({
-          where: eq(tasks.id, recipientTaskId),
+          where: sqlWhere(eq(tasks.id, recipientTaskId)),
           columns: { id: true, workspaceId: true, status: true },
         });
         if (!recipientTask) {
@@ -1146,7 +1147,7 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
   const workerParam = url.searchParams.get("worker");
   if (workerParam) {
     const w = isUuidLike(workerParam)
-      ? await db.query.workers.findFirst({ where: eq(workersTable.id, workerParam), columns: { workspaceId: true } })
+      ? await db.query.workers.findFirst({ where: sqlWhere(eq(workersTable.id, workerParam)), columns: { workspaceId: true } })
       : null;
     const ws = w?.workspaceId ? choices.find((c) => c.workspaceId === w.workspaceId) : undefined;
     if (!ws || (connectionDefault && connectionDefault.workspaceId !== ws.workspaceId)) {

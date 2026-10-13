@@ -14,7 +14,10 @@ import {
   groupProviders,
   keyRuleLine,
   maskedValue,
+  providersTitle,
   rowState,
+  teamKeyWord,
+  usesTeamLine,
   storedPolicyLine,
   servesLine,
   surfaceList,
@@ -205,8 +208,21 @@ describe('rows', () => {
     expect(rowState([r({ health: 'revoked' })], [], null).word).toBe('Needs attention');
     expect(rowState([r({ lastVerificationError: 'bad' })], [], null).word).toBe('Needs attention');
     expect(rowState([], [r({})], null).word).toBe('Team key');
-    expect(rowState([], [], 'team only').word).toBe('Not available');
-    expect(rowState([], [], null).word).toBe('Not set');
+    expect(rowState([], [], 'team only').word).toBe('Not set up');
+    expect(rowState([], [], null).word).toBe('Not set up');
+    expect(rowState([], [r({})], null, 'Acme').word).toBe("Acme's key");
+  });
+
+  it('names the team: its key, its settings, and the Providers heading when the caller is in several', () => {
+    expect(teamKeyWord('Acme')).toBe("Acme's key");
+    expect(teamKeyWord(null)).toBe('Team key');
+    expect(teamKeyWord('  ')).toBe('Team key');
+    expect(usesTeamLine('Acme')).toBe("Uses Acme's settings.");
+    expect(usesTeamLine(undefined)).toBe('Uses team settings.');
+    expect(providersTitle({ teamName: 'Acme', teamCount: 2 })).toBe('Providers · Acme');
+    expect(providersTitle({ teamName: 'Acme', teamCount: 1 })).toBe('Providers');
+    expect(providersTitle({ teamName: null, teamCount: 3 })).toBe('Providers');
+    expect(providersTitle(null)).toBe('Providers');
   });
 
   it('masks a key by its last four, and names a subscription', () => {

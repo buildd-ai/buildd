@@ -24,6 +24,7 @@ import {
   type RoleVisibilityContext,
   type VisibleRoleRow,
 } from '@buildd/core/role-visibility';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface RoleScopeRow extends VisibleRoleRow {
   enabled: boolean | null;
@@ -58,16 +59,16 @@ export async function resolveEffectiveRoles(
   requesterUserId: string | null = null,
 ): Promise<EffectiveRole[]> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   if (!ws?.teamId) return [];
 
   const rows = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       roleRowsVisibleTo({ teamId: ws.teamId, workspaceId, requesterUserId }),
       eq(workspaceSkills.isRole, true),
-    ),
+    )),
     columns: { ...ROLE_VISIBILITY_COLUMNS, enabled: true, name: true, color: true },
   });
   return effectiveRoleRows(rows, { teamId: ws.teamId, workspaceId, requesterUserId })

@@ -86,6 +86,10 @@ export interface ProviderPolicySummary {
 /** `GET /api/providers?teamId=&workspaceId=` */
 export interface ListProvidersResponse {
   teamId: string;
+  /** The team's name, so a page can say whose settings these are. Null if it could not be read. */
+  teamName?: string | null;
+  /** How many teams the caller is in (1 for a key or task token): a page names the team when it is more than one. */
+  teamCount?: number;
   workspaceId: string | null;
   caller: {
     principal: ProviderPrincipal;

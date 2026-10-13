@@ -10,6 +10,9 @@
  * whether they are mapped.
  */
 
+import { normalizeErrorSignature } from './error-signature';
+import { toFrictionSignature } from './failure-friction-signature';
+
 export type PageSourceMode = 'sandbox' | 'vercel-preview' | 'auto';
 export type PageSource = 'sandbox' | 'vercel-preview';
 
@@ -306,6 +309,174 @@ export function classifyPageLoad(input: {
     }
   }
   return { kind: 'ok' };
+}
+
+/**
+ * The owner-setup actions a wall's question offers (failure-incident-recovery
+ * §16.2, AC-17): each is something only the workspace owner can do. Never
+ * retry or cancel: neither fixes a wall.
+ */
+export const CONFIG_ERROR_SETUP_ACTIONS: Record<CaptureConfigError, ReadonlyArray<{ label: string; description: string }>> = {
+  protection_bypass_missing: [
+    { label: 'Add the Vercel protection bypass', description: `Create a Protection Bypass for Automation secret in the Vercel project and map it as ${VERCEL_BYPASS_ENV}; the audit then captures the preview.` },
+    { label: 'Use the sandbox page source', description: 'Set gitConfig.visualQa.pageSource to "sandbox"; the audit captures the app booted in the sandbox instead of the preview.' },
+  ],
+  app_auth_not_configured: [
+    { label: 'Add a preview auth bypass', description: 'Set a preview-only auth bypass env var in the Vercel Preview environment; the audit then signs in as a fixed test user.' },
+    { label: 'Store a storageState secret', description: `Store a Playwright storageState as a secret mapped as ${STORAGE_STATE_ENV}; sessions in it expire.` },
+    { label: 'Use the sandbox page source', description: 'Set gitConfig.visualQa.pageSource to "sandbox"; the audit captures the app booted in the sandbox instead of the preview.' },
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// Capture failures (docs/specs/failure-incident-recovery.md §16.2, §16.3, §16.5)
+// ---------------------------------------------------------------------------
+
+/** The closed v1 set of capture-path components an infrastructure failure names. */
+export const CAPTURE_FAILURE_COMPONENTS = [
+  'visual_qa.clone',
+  'visual_qa.migrate',
+  'visual_qa.scrub',
+  'visual_qa.guard',
+  'visual_qa.boot',
+  'visual_qa.browser',
+] as const;
+export type CaptureFailureComponent = (typeof CAPTURE_FAILURE_COMPONENTS)[number];
+
+/**
+ * visual-qa.yml step name -> component. A step not listed here is
+ * `inconclusive`: unknown ownership is explicit, never a person's question.
+ * The capture step's own failures are typed by capture.ts (boot vs browser);
+ * this entry is the fallback for a capture that died without saying.
+ */
+export const CAPTURE_STEP_COMPONENTS: Record<string, CaptureFailureComponent> = {
+  'Install Playwright + Chromium': 'visual_qa.browser',
+  'Create Neon prod-clone branch': 'visual_qa.clone',
+  'Run migrations': 'visual_qa.migrate',
+  'Scrub prod clone to placeholders': 'visual_qa.scrub',
+  'Guard scrubbed clone': 'visual_qa.guard',
+  'Start app': 'visual_qa.boot',
+  'Capture screenshots and a11y snapshots': 'visual_qa.browser',
+};
+
+/** Namespace of a capture failure's `errorSignature` (toFrictionSignature). */
+export const CAPTURE_FAILURE_SIGNATURE_NAMESPACE = 'visual-qa';
+
+/** The run a failure came from. Added by the workflow; absent on a local capture. */
+export interface CaptureFailureFacts {
+  runId?: string;
+  ref?: string;
+  headSha?: string;
+}
+
+interface CaptureFailureBase extends CaptureFailureFacts {
+  /** The visual-qa.yml step that failed. */
+  step: string;
+  /** Normalized error, the incident's `sig=` (toFrictionSignature). Equal for the same failing statement on any run. */
+  errorSignature: string;
+  /** The normalized error line (ids, paths, numbers replaced). Diagnostics only; never parse it. */
+  error?: string;
+}
+
+/**
+ * One typed capture failure, as `capture-failure.json` in the qa-screenshots
+ * artifact. `infrastructure` and `inconclusive` are reported, never asked;
+ * `person` is one of the two preview auth walls (owner setup).
+ */
+export type CaptureFailure =
+  | (CaptureFailureBase & { ownership: 'infrastructure'; component: CaptureFailureComponent })
+  | (CaptureFailureBase & { ownership: 'inconclusive'; component: null })
+  | (CaptureFailureBase & { ownership: 'person'; component: null; configError: CaptureConfigError });
+
+/**
+ * The line of a step's output that names the failure, without psql's
+ * `psql:<file>:<line>:` location or an Actions `::error::` prefix (both vary
+ * per checkout and per edit of the SQL, the failure does not).
+ */
+export function captureErrorLine(text: string | null | undefined): string {
+  if (!text) return '';
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const line = lines.find(l => /\bERROR:|^::error|\berror\b|\bfailed\b/i.test(l)) ?? lines[0] ?? '';
+  return line
+    .replace(/^::error[^:]*::/, '')
+    .replace(/^psql:\S*?:\d+:\s*/, '')
+    .replace(/^ERROR:\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sign(text: string): string {
+  return toFrictionSignature(normalizeErrorSignature(text), CAPTURE_FAILURE_SIGNATURE_NAMESPACE);
+}
+
+/**
+ * Type one failed step. `component` overrides the step map when the caller
+ * knows better (capture.ts tells a 5xx boot from a browser that never launched).
+ */
+export function classifyCaptureFailure(input: {
+  step: string;
+  error: string | null | undefined;
+  component?: CaptureFailureComponent;
+}): Extract<CaptureFailure, { ownership: 'infrastructure' | 'inconclusive' }> {
+  const line = captureErrorLine(input.error);
+  const errorSignature = sign(line);
+  const error = line ? normalizeErrorSignature(line) : undefined;
+  const component = input.component ?? CAPTURE_STEP_COMPONENTS[input.step];
+  const base = { step: input.step, errorSignature, ...(error ? { error } : {}) };
+  return component
+    ? { ownership: 'infrastructure', component, ...base }
+    : { ownership: 'inconclusive', component: null, ...base };
+}
+
+/** A preview auth wall: a person's setup (§16.2), with CONFIG_ERROR_SETUP_ACTIONS as its options. */
+export function classifyConfigError(configError: CaptureConfigError, step: string): Extract<CaptureFailure, { ownership: 'person' }> {
+  return { ownership: 'person', component: null, configError, step, errorSignature: sign(configError), error: CONFIG_ERROR_MESSAGES[configError] };
+}
+
+const CONFIG_ERRORS: readonly string[] = Object.keys(CONFIG_ERROR_MESSAGES);
+
+/** Read a `capture-failure.json` (or a reported `captureFailure` field). Anything outside the closed set is null. */
+export function parseCaptureFailure(raw: unknown): CaptureFailure | null {
+  if (!isRecord(raw)) return null;
+  const str = (k: string) => (typeof raw[k] === 'string' && raw[k] ? (raw[k] as string) : undefined);
+  const step = str('step');
+  const errorSignature = str('errorSignature');
+  if (!step || !errorSignature) return null;
+  const base: CaptureFailureBase = { step, errorSignature };
+  for (const k of ['error', 'runId', 'ref', 'headSha'] as const) {
+    const v = str(k);
+    if (v) base[k] = v;
+  }
+  if (raw.ownership === 'infrastructure') {
+    const c = raw.component as CaptureFailureComponent;
+    return CAPTURE_FAILURE_COMPONENTS.includes(c) ? { ownership: 'infrastructure', component: c, ...base } : null;
+  }
+  if (raw.component !== null) return null;
+  if (raw.ownership === 'inconclusive') return { ownership: 'inconclusive', component: null, ...base };
+  if (raw.ownership === 'person' && CONFIG_ERRORS.includes(raw.configError as string)) {
+    return { ownership: 'person', component: null, configError: raw.configError as CaptureConfigError, ...base };
+  }
+  return null;
+}
+
+export const CAPTURE_FAILURE_ERROR_PREFIX = 'capture_failure:';
+
+/**
+ * The auditor's `complete_task` error for a capture failure:
+ * `capture_failure: <component> at <step> <the record as one-line JSON>`.
+ * A failed completion persists `error` but not `structuredOutput`, so the
+ * typed record rides here; read it back with parseCaptureFailureError.
+ */
+export function formatCaptureFailureError(f: CaptureFailure): string {
+  const what = f.ownership === 'person' ? f.configError : f.component ?? 'unclassified';
+  return `${CAPTURE_FAILURE_ERROR_PREFIX} ${what} at ${f.step.replace(/\s+/g, ' ')} ${JSON.stringify(f)}`;
+}
+
+export function parseCaptureFailureError(error: string | null | undefined): CaptureFailure | null {
+  if (!error?.startsWith(CAPTURE_FAILURE_ERROR_PREFIX)) return null;
+  const brace = error.indexOf('{');
+  if (brace < 0) return null;
+  try { return parseCaptureFailure(JSON.parse(error.slice(brace).trim())); } catch { return null; }
 }
 
 // ---------------------------------------------------------------------------

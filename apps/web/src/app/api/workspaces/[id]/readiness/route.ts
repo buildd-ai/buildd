@@ -18,6 +18,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { computeWorkspaceReadiness } from '@/lib/workspace-readiness-io';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(
   req: NextRequest,
@@ -39,7 +40,7 @@ export async function GET(
   // id in another team is indistinguishable from one that does not exist.
   if (apiAccount) {
     const owner = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: sqlWhere(eq(workspaces.id, id)),
       columns: { teamId: true },
     });
     if (!owner || owner.teamId !== apiAccount.teamId) {
@@ -53,7 +54,7 @@ export async function GET(
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { id: true, gitConfig: true, configStatus: true, releaseConfig: true },
     with: { githubRepo: { with: { installation: true } } },
   });

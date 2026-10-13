@@ -5,6 +5,7 @@ import { notifyTeamOf } from '@/lib/notify';
 import { githubApi } from '@/lib/github';
 import { triggerEvent, channels } from '@/lib/pusher';
 import { workspaceRepoMatches } from '@/lib/repo-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const DEFAULT_THRESHOLD = 5;
 const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -128,10 +129,10 @@ export async function detectDarkChecks({
       const isSkipped = verdict.allSkipped;
 
       const existing = await db.query.darkCheckAlerts.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(darkCheckAlerts.workspaceId, workspaceId),
           eq(darkCheckAlerts.checkName, checkName),
-        ),
+        )),
       });
 
       const newCount = isSkipped ? (existing?.consecutiveSkips ?? 0) + 1 : 0;
@@ -208,7 +209,7 @@ export async function detectDarkChecksForClosedPr(
   baseBranch: string,
 ): Promise<void> {
   const workspace = await db.query.workspaces.findFirst({
-    where: workspaceRepoMatches(repoFullName),
+    where: sqlWhere(workspaceRepoMatches(repoFullName)),
     columns: { id: true, name: true },
   });
   if (!workspace) return;

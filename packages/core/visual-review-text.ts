@@ -98,6 +98,12 @@ export interface FormatVisualReviewOptions {
   awaitingOnly?: boolean;
   /** The mission's artifacts (GET /api/missions/:id/artifacts); null or absent: no evidence section. */
   artifacts?: VisualEvidenceArtifact[] | null;
+  /**
+   * The mission's branch and visual-check state in one plain line, from the
+   * canonical reading (GET /api/missions/:id/visual-review `state.line`). It
+   * leads the text, so a reader never has to infer it from phases.
+   */
+  stateLine?: string | null;
 }
 
 /** The fields of an artifact row the evidence section reads. Never its image. */
@@ -364,6 +370,15 @@ export function formatVisualReview(
   model: VisualReviewModel,
   missionTitle: string | null,
   opts: FormatVisualReviewOptions = {},
+): string {
+  const body = formatVisualReviewBody(model, missionTitle, opts);
+  return opts.stateLine ? `State: ${opts.stateLine}\n${body}` : body;
+}
+
+function formatVisualReviewBody(
+  model: VisualReviewModel,
+  missionTitle: string | null,
+  opts: FormatVisualReviewOptions,
 ): string {
   const mcp = opts.audience === 'mcp';
   const named = missionTitle ? `Visual review of "${missionTitle}"` : 'Visual review';

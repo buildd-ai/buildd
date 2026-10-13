@@ -591,6 +591,86 @@ describe('POST /api/workspaces/[id]/config', () => {
       expect(written.sandbox.excludedCommands).toEqual(['docker']);
     });
 
+    // Settings spec R-5 / AC-5: nothing reads defaultRunnerPreference, so the form
+    // no longer sends it. A save keeps whatever is stored, and an old client that
+    // still sends it gets a 200.
+    it('keeps a stored defaultRunnerPreference the form no longer sends', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultRunnerPreference: 'service' } });
+      const res = await post(formBody);
+      expect(res.status).toBe(200);
+      expect(setArgs[0].gitConfig.defaultRunnerPreference).toBe('service');
+    });
+
+    it('still accepts defaultRunnerPreference from an old client', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+      const res = await post({ ...formBody, defaultRunnerPreference: 'user' });
+      expect(res.status).toBe(200);
+    });
+
+    // Settings spec R-4 / AC-3: the page saves Repository and Agents separately.
+    // A grouped save writes its own fields and leaves the other group's as stored.
+    describe('a grouped save', () => {
+      const stored = {
+        defaultBranch: 'dev',
+        branchPrefix: 'feat/',
+        commitStyle: 'freeform',
+        requiresPR: true,
+        fallbackModel: 'standard',
+        debug: true,
+        debugFile: '/tmp/agent.log',
+        effort: 'high',
+        thinking: { type: 'adaptive' },
+        agentInstructions: 'Run the tests.',
+        bypassPermissions: true,
+        defaultBackend: 'codex',
+        sandbox: { enabled: true, credentials: { files: [] } },
+        policyConfig: { rules: ['keep-me'] },
+      };
+
+      it('repository: changes commit style and leaves every Agents field as stored', async () => {
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: stored });
+        const res = await post({
+          group: 'repository',
+          defaultBranch: 'dev', branchingStrategy: 'feature', branchPrefix: 'feat/',
+          useBuildBranch: false, commitStyle: 'conventional', requiresPR: true, autoCreatePR: true,
+        });
+        expect(res.status).toBe(200);
+        const written = setArgs[0].gitConfig;
+        expect(written.commitStyle).toBe('conventional');
+        expect(written.branchPrefix).toBe('feat/');
+        for (const key of ['fallbackModel', 'debug', 'debugFile', 'effort', 'thinking', 'agentInstructions', 'bypassPermissions', 'defaultBackend', 'sandbox', 'policyConfig'] as const) {
+          expect(`${key}: ${JSON.stringify(written[key])}`).toBe(`${key}: ${JSON.stringify((stored as any)[key])}`);
+        }
+      });
+
+      it('agents: changes effort and leaves every Repository field as stored', async () => {
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: stored });
+        const res = await post({
+          group: 'agents',
+          useClaudeMd: true, agentInstructions: 'Run the tests.', bypassPermissions: true,
+          sandbox: { enabled: true, autoAllowBashIfSandboxed: false },
+          fallbackModel: 'standard', debug: true, debugFile: '/tmp/agent.log',
+          thinking: { type: 'adaptive' }, effort: 'low', defaultBackend: 'codex',
+        });
+        expect(res.status).toBe(200);
+        const written = setArgs[0].gitConfig;
+        expect(written.effort).toBe('low');
+        expect(written.sandbox.credentials).toEqual({ files: [] });
+        for (const key of ['defaultBranch', 'branchPrefix', 'commitStyle', 'requiresPR', 'policyConfig'] as const) {
+          expect(`${key}: ${JSON.stringify(written[key])}`).toBe(`${key}: ${JSON.stringify((stored as any)[key])}`);
+        }
+        // A Repository field the stored config never had stays absent.
+        expect('targetBranch' in written && written.targetBranch !== undefined).toBe(false);
+      });
+
+      it('rejects an unknown group', async () => {
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: stored });
+        const res = await post({ group: 'models', defaultBranch: 'dev' });
+        expect(res.status).toBe(400);
+        expect(setArgs).toHaveLength(0);
+      });
+    });
+
     // Hand-written merge-policy paths are refused; the repo scan owns paths.
     it('rejects each removed hand-written path field with a 400 that points to Re-scan repo', async () => {
       mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
@@ -890,6 +970,48 @@ describe('PATCH /api/workspaces/[id]/config', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.gitConfig.copyReview).toBeUndefined();
+    expect(data.gitConfig.defaultBranch).toBe('dev');
+  });
+
+  it('sets the visual review policy override via PATCH, keeping the rest of gitConfig', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBranch: 'dev', branchStrategy: 'direct' } });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ visualReview: { policy: 'strict' } }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.visualReview).toEqual({ policy: 'strict' });
+    expect(data.gitConfig.branchStrategy).toBe('direct');
+  });
+
+  it('rejects an unknown visual review policy with 400', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ visualReview: { policy: 'sometimes' } }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+  });
+
+  it('null visualReview clears the override so the workspace inherits', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBranch: 'dev', visualReview: { policy: 'ask' } } });
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ visualReview: null }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.visualReview).toBeUndefined();
     expect(data.gitConfig.defaultBranch).toBe('dev');
   });
 

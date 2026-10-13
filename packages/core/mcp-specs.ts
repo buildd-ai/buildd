@@ -21,16 +21,22 @@
  * read_ref reads one of them at that commit, bounded, over
  * GET /api/specs/[id]/repo-ref.
  *
+ * attach_provisional pins finished tasks to the revision they were built
+ * against (POST /api/specs/[id]/provisional), so a later approval grades them:
+ * a person's or an admin token's act, never an agent run's.
+ *
  * diff (read-only) says what changed between two revisions, over
  * GET /api/specs/[id]/diff: sections added, removed and changed, then a capped
  * unified line diff of them.
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
+import { SUB_ACTIONS } from './mcp-sub-actions';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
 
-export const SPEC_OPS = ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict', 'read_ref', 'diff'] as const;
+/** The sub-actions, from the one registry every surface reads (mcp-sub-actions.ts). */
+export const SPEC_OPS = SUB_ACTIONS.manage_specs;
 export type SpecOp = (typeof SPEC_OPS)[number];
 
 /** A body longer than this is not inlined by `get`: read it in parts with get_artifact. */
@@ -47,6 +53,18 @@ function apiError(err: unknown): { status: number; body: Record<string, unknown>
     return { status: Number(m[1]), body: null };
   }
 }
+
+type DuplicateCheckView =
+  | { ran: true; warnings: Array<{ specId: string; title: string; relation: string; p: number }> }
+  | { ran: false; reason: string };
+
+/** What the duplicate check found, for the create reply. Empty when it found nothing. */
+const duplicateText = (d: DuplicateCheckView | null): string => {
+  if (!d) return '';
+  if (!d.ran) return `\nDuplicate check did not run: ${d.reason}.`;
+  if (!d.warnings.length) return '';
+  return `\nOverlaps with approved specs (check the shared criteria; consider a common parent):\n${d.warnings.map((w) => `  ${w.title} (${w.specId}): ${w.relation}, p ${w.p.toFixed(2)}`).join('\n')}`;
+};
 
 const need = (v: unknown, name: string): string => {
   if (typeof v !== 'string' || !v.trim()) throw new Error(`${name} is required`);
@@ -67,6 +85,35 @@ export function outcomeText(o: Outcome): string {
   return [`Governed outcome: ${o.outcome.toUpperCase()} against spec revision ${o.revision}, head ${head}. ${o.reason}.`, ...rows].join('\n');
 }
 
+type OrganizeRow = { specId: string; title: string; p: number | null; answer?: string; newArea?: { title: string } };
+type OrganizeReply =
+  | { mode: 'taxonomy'; dryRun: true; specs: number; proposal: { product: { title: string }; areas: Array<{ key: string; title: string; charter: string; members: Array<{ specId: string; title: string }> }> } }
+  | { mode: 'taxonomy'; dryRun: false; product: { title: string } | null; created: Array<{ key: string; title: string; specId: string; filed: number }>; refused: Array<{ key: string; title: string; reason: string }> }
+  | { mode: 'sweep'; dryRun: boolean; scanned: number; remaining: number; skipped: number; classifier: string | null; groups: Array<{ label: string; area: { specId: string } | null; filed: OrganizeRow[]; suggested: OrganizeRow[] }> };
+
+const pText = (p: number | null) => (p === null ? '' : `, p ${p.toFixed(2)}`);
+
+/** An organize run in words: the proposal or the batch, grouped by area. */
+export function organizeText(r: OrganizeReply): string {
+  if (r.mode === 'taxonomy' && r.dryRun) {
+    const areas = r.proposal.areas.map((a) => `- ${a.title} [key ${a.key}] (${a.members.length} spec${a.members.length === 1 ? '' : 's'})\n  ${a.charter}\n${a.members.slice(0, 8).map((m) => `    · ${m.title} (${m.specId})`).join('\n')}${a.members.length > 8 ? `\n    · and ${a.members.length - 8} more` : ''}`);
+    return [`Proposed taxonomy for ${r.specs} spec(s) (nothing created): product "${r.proposal.product.title}" and ${r.proposal.areas.length} area(s).`, ...areas,
+      'Show it to a person. To create it: organize { dryRun: false }, optionally areas: [keys] for part of it and edits: { [key]: { title, charter } }.'].join('\n');
+  }
+  if (r.mode === 'taxonomy') {
+    return [`Taxonomy created${r.product ? ` under product "${r.product.title}"` : ''}:`, ...r.created.map((c) => `- ${c.title} (${c.specId}): ${c.filed} spec(s) filed`),
+      ...r.refused.map((x) => `- not created: ${x.title}: ${x.reason}`)].join('\n');
+  }
+  const head = `${r.dryRun ? 'Dry run (nothing written)' : 'Organized'}: ${r.scanned} unfiled spec(s) looked at${r.remaining ? `, ${r.remaining} left for the next run` : ''}${r.skipped ? `, ${r.skipped} already placed or reviewed` : ''}.`;
+  if (!r.groups.length) return `${head}${r.classifier ? `\nNo area answer: ${r.classifier}.` : ''}\nNothing to file or suggest.`;
+  const groups = r.groups.map((g) => [
+    `${g.label}${g.area ? ` (${g.area.specId})` : ''}:`,
+    ...g.filed.map((x) => `  filed${r.dryRun ? ' (would be)' : ''}: ${x.title} (${x.specId})${pText(x.p)}`),
+    ...g.suggested.map((x) => `  suggested: ${x.title} (${x.specId})${pText(x.p)}${x.newArea ? `, a new area like "${x.newArea.title}"` : ''}`),
+  ].join('\n'));
+  return [head, ...groups, r.classifier ? `Some answers fell back to similarity: ${r.classifier}.` : '', r.dryRun ? 'Run organize { dryRun: false } to apply it; every filing can be undone on the spec page.' : 'Each filing shows "Filed by buildd" with undo on its spec page.'].filter(Boolean).join('\n');
+}
+
 export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null, appBase = 'https://buildd.dev'): Promise<ToolResult> {
   const specUrl = (id: string) => `${appBase.replace(/\/+$/, '')}/app/specs/${encodeURIComponent(id)}`;
   const op = params.action as SpecOp;
@@ -83,16 +130,18 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'create_draft': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId, title: need(params.title, 'title'), body: need(params.body, 'body (the spec text, Markdown)') };
-      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause'] as const) if (params[k] !== undefined) payload[k] = params[k];
       let spec;
+      let duplicateCheck: DuplicateCheckView | null = null;
+      let suggestedParent: { specId: string; title: string; reason: string } | null = null;
       try {
-        ({ spec } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
+        ({ spec, duplicateCheck, suggestedParent } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
       } catch (err) {
         const e = apiError(err);
-        if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        if (e?.status === 400 || e?.status === 502 || (e?.status === 409 && e.body?.code === 'spec_duplicate')) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
-      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}\nSpec URL: ${specUrl(spec.id)}\nA person approves it (submit / approve from their own session).`);
+      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}\nSpec URL: ${specUrl(spec.id)}\nA person approves it (submit / approve from their own session).${duplicateText(duplicateCheck)}${suggestedParent ? `\nSuggested parent: "${suggestedParent.title}" (${suggestedParent.specId}), ${suggestedParent.reason.charAt(0).toLowerCase()}${suggestedParent.reason.slice(1)}. Set it with manage_specs action=relate { specId, parentSpecId }.` : ''}`);
     }
 
     case 'get': {
@@ -113,6 +162,9 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         `Showing revision ${view.revision.revision} (sha256 ${view.revision.contentHash}). Revise with expectedVersion ${s.version}.`,
         reqs.length ? `Requirement ids: ${reqs.join(', ')}` : 'Requirement ids: none',
         `Revisions:\n${history}`,
+        ...(view.revision.design
+          ? [`Design: ${view.revision.design.kind} ${view.revision.design.ref} at version ${view.revision.design.version}${view.revision.design.screens?.length ? ` (screens: ${view.revision.design.screens.map((x: { id: string }) => x.id).join(', ')})` : ''}${view.revision.design.kind === 'artifact' ? `; read it with get_artifact { artifactId: "${view.revision.design.ref}", revision: ${view.revision.design.version} }` : ''}`]
+          : []),
         ...(view.revision.repoRefs?.length
           ? [`Repo specs cited (read one with manage_specs action=read_ref { specId, path }):\n${(view.revision.repoRefs as Array<{ path: string; commitSha: string }>).map((r) => `  ${r.path} @ ${r.commitSha}`).join('\n')}`]
           : []),
@@ -130,6 +182,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       const payload: Record<string, unknown> = { expectedVersion: params.expectedVersion, ...target, body: target ? params.body : need(params.body, 'body') };
       if (params.changeSummary !== undefined) payload.changeSummary = params.changeSummary;
       if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
+      if (params.design !== undefined) payload.design = params.design;
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
@@ -176,6 +229,13 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       try {
         const r = op === 'outcome'
           ? await api(path)
+          : params.checker === 'visual'
+          ? await api(path, { method: 'POST', body: JSON.stringify({
+            checker: 'visual', criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), capturedSha: need(params.capturedSha, 'capturedSha'),
+            ...(params.screenshotIds !== undefined ? { screenshotIds: params.screenshotIds } : {}),
+            ...(params.designShotIds !== undefined ? { designShotIds: params.designShotIds } : {}),
+            ...(params.observed !== undefined ? { observed: params.observed } : {}),
+          }) })
           : await api(path, { method: 'POST', body: JSON.stringify({
             criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), headSha: need(params.headSha, 'headSha'),
             ...(params.evidenceRefs !== undefined ? { evidenceRefs: params.evidenceRefs } : {}),
@@ -199,6 +259,55 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'comment': {
+      const specId = need(params.specId, 'specId');
+      const anchor = params.criterion !== undefined ? { criterion: params.criterion } : params.heading !== undefined ? { heading: params.heading } : { section: params.section };
+      try {
+        const r = await api(`/api/specs/${encodeURIComponent(specId)}/comments`, { method: 'POST', body: JSON.stringify({
+          anchor, body: need(params.body, 'body (the comment)'),
+          ...(params.revision !== undefined ? { revision: params.revision } : {}),
+          ...(params.replyTo !== undefined ? { replyTo: params.replyTo } : {}),
+        }) });
+        const c = r.comment;
+        return text(`Comment ${c.id} added on ${c.anchor.kind === 'criterion' ? c.anchor.id : `section "${c.anchor.label}"`} of revision ${c.madeOnRevision}. It does not change the spec; a person resolves it.`);
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'comments': {
+      const specId = need(params.specId, 'specId');
+      const q = params.revision !== undefined ? `?revision=${encodeURIComponent(String(params.revision))}` : '';
+      const r = await api(`/api/specs/${encodeURIComponent(specId)}/comments${q}`);
+      const rows = (r.comments ?? []) as Array<{ id: string; anchor: { kind: string; id: string; label: string }; body: string; author: { kind: string }; state: string; madeOnRevision: number; parentCommentId: string | null }>;
+      if (!rows.length) return text(`No comments on revision ${r.revision}.`);
+      return text(`Comments readable on revision ${r.revision}:\n${rows.map((c) => `  ${c.parentCommentId ? '  ↳ ' : ''}[${c.state}] ${c.anchor.kind === 'criterion' ? c.anchor.id : `"${c.anchor.label}"`} (r${c.madeOnRevision}, ${c.author.kind}, ${c.id}): ${c.body.length > 300 ? `${c.body.slice(0, 300)}…` : c.body}`).join('\n')}`);
+    }
+
+    case 'metadata': {
+      // The metadata block (living-specs.md §18, R-31): read it, or change
+      // fields with a reason. Never a new revision; write access is enough.
+      const specId = need(params.specId, 'specId');
+      const path = `/api/specs/${encodeURIComponent(specId)}/metadata`;
+      if (params.changes === undefined) {
+        const r = await api(path);
+        const rows = (r.changes ?? []) as Array<{ field: string; previousValue: unknown; newValue: unknown; reason: string; changedByKind: string; createdAt: string }>;
+        return text([`Metadata: ${JSON.stringify(r.metadata ?? {})}`, ...rows.slice(0, 20).map((c) => `  ${c.createdAt.slice(0, 10)} ${c.field}: ${JSON.stringify(c.previousValue)} -> ${JSON.stringify(c.newValue)} (${c.changedByKind}: ${c.reason})`)].join('\n'));
+      }
+      try {
+        const r = await api(path, { method: 'PATCH', body: JSON.stringify({ changes: params.changes, reason: params.reason }) });
+        return text(r.changed?.length
+          ? `Metadata updated (${r.changed.join(', ')}). The version (${r.spec.version}) and the approved revision did not change; a native-sourced spec's repo copy PR is updated.`
+          : 'Nothing changed: the metadata already says that.');
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }
@@ -243,6 +352,39 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'attach_provisional': {
+      // Building ahead of approval (living-specs.md §20, R-43): a person's or an
+      // admin token's act; an agent run gets the route's 403, passed through.
+      const specId = need(params.specId, 'specId');
+      try {
+        const r = await api(`/api/specs/${encodeURIComponent(specId)}/provisional`, { method: 'POST', body: JSON.stringify({ revision: params.revision, taskIds: params.taskIds }) });
+        const rows = (r.results ?? []) as Array<{ taskId: string; attached: boolean; reason?: string }>;
+        const regraded = (r.regraded ?? []) as Array<{ taskId: string; to: number }>;
+        return text([
+          `Revision ${r.revision}${r.provisional ? ' (not approved: pinned provisionally, a later approval re-grades the work)' : ' (approved: pinned to it)'}:`,
+          ...rows.map((x) => `  ${x.taskId}: ${x.attached ? 'attached' : `not attached, ${x.reason ?? 'refused'}`}`),
+          ...(regraded.length ? [`Re-graded at once against approved revision ${regraded[0].to}: ${regraded.length} task(s).`] : []),
+        ].join('\n'));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 403, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'organize': {
+      if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
+      const payload: Record<string, unknown> = { workspaceId };
+      for (const k of ['dryRun', 'limit', 'areas', 'edits'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      try {
+        return text(organizeText(await api('/api/specs/organize', { method: 'POST', body: JSON.stringify(payload) })));
+      } catch (err) {
+        const e = apiError(err);
+        if (e?.status === 400 || e?.status === 409) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }

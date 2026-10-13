@@ -6,6 +6,7 @@ import {
   classifyMigrationSql,
   getMigrationNumber,
   isGeneratedMigrationPath,
+  isLegacyMigrationPath,
 } from './migration-safety';
 
 // Real historical migrations, kept as fixtures: the originals were squashed into
@@ -175,6 +176,40 @@ describe('migration paths', () => {
     expect(getMigrationNumber('packages/core/drizzle/0093_first.sql')).toBe('0093');
     expect(getMigrationNumber('drizzle/0093_second.sql')).toBe('0093');
     expect(getMigrationNumber('packages/core/db/schema.ts')).toBeNull();
+  });
+});
+
+describe('migration paths: drizzle v1 folders', () => {
+  const v1 = 'packages/core/drizzle/20261012120000_add_busy_since/migration.sql';
+
+  it('a v1 migration.sql is a generated migration; its snapshot and a stray folder file are not', () => {
+    expect(isGeneratedMigrationPath(v1)).toBe(true);
+    expect(isGeneratedMigrationPath('drizzle/20261012120000_x/migration.sql')).toBe(true);
+    expect(isGeneratedMigrationPath('packages/core/drizzle/20261012120000_add_busy_since/snapshot.json')).toBe(false);
+    expect(isGeneratedMigrationPath('packages/core/drizzle/20261012120000_add_busy_since/notes.sql')).toBe(false);
+    expect(isGeneratedMigrationPath('packages/core/drizzle/2026101212_x/migration.sql')).toBe(false);
+  });
+
+  it('a v1 migration has no slot, and only a legacy file is legacy', () => {
+    expect(getMigrationNumber(v1)).toBeNull();
+    expect(isLegacyMigrationPath(v1)).toBe(false);
+    expect(isLegacyMigrationPath('packages/core/drizzle/0093_name.sql')).toBe(true);
+  });
+
+  it('two v1 migrations never collide, however many are open, and a v1 file with a safe body is EXPAND', () => {
+    expect(
+      classifyPullRequestMigrations(
+        [{ filename: 'packages/core/db/schema.ts' }, { filename: v1, content: 'ALTER TABLE "local_sessions" ADD COLUMN "busy_since" timestamp;' }],
+        [{ path: 'packages/core/drizzle/20261012120001_other/migration.sql', prNumber: 1 }, { path: v1, prNumber: 2 }],
+        9,
+      ),
+    ).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('a destructive v1 body is CONTRACT exactly like a legacy one', () => {
+    expect(
+      classifyPullRequestMigrations([{ filename: v1, content: 'ALTER TABLE "missions" DROP COLUMN "legacy";' }], []),
+    ).toEqual({ safe: false, operationClass: 'CONTRACT', reason: 'drops column missions.legacy' });
   });
 });
 

@@ -78,7 +78,7 @@ WORKDIR /opt/buildd
 # workspace manifest is copied because --frozen-lockfile checks the lockfile
 # against all of them; --filter then installs only the runner's dependency
 # tree (the runner, @buildd/core, @buildd/shared, @builddai/ai-kit,
-# @buildd/dispatch-contract), not the
+# @buildd/dispatch-contract, @buildd/spec-contract), not the
 # web app's.
 COPY package.json bun.lock bunfig.toml ./
 COPY patches ./patches
@@ -93,6 +93,8 @@ COPY packages/core/package.json packages/core/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ai-kit/package.json packages/ai-kit/package.json
 COPY packages/dispatch-contract/package.json packages/dispatch-contract/package.json
+COPY packages/spec-contract/package.json packages/spec-contract/package.json
+COPY packages/workflow-kernel/package.json packages/workflow-kernel/package.json
 # The image is glibc (Debian), so the musl variants of native packages are dead
 # weight (the Claude Code one alone is ~200MB). The loaders prefer the glibc
 # build when it is present (sdk-binary-path.ts checks the musl linker first).
@@ -119,6 +121,7 @@ COPY scripts/stub-server-only.ts scripts/stub-server-only.ts
 COPY packages/shared packages/shared
 COPY packages/ai-kit packages/ai-kit
 COPY packages/dispatch-contract packages/dispatch-contract
+COPY packages/spec-contract packages/spec-contract
 COPY packages/core packages/core
 COPY apps/runner apps/runner
 COPY --chmod=0755 apps/runner/scripts/buildd-once.sh /usr/local/bin/buildd-once

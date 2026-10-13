@@ -55,6 +55,8 @@ When modifying `packages/core/db/schema.ts`:
 
 CI will **fail** if you change schema.ts without generating/committing migrations.
 
+Migrations are drizzle v1 folders (`packages/core/drizzle/<YYYYMMDDHHMMSS>_<slug>/` with `migration.sql` and `snapshot.json`): no journal, no index, so names cannot collide. Two branches can still generate from one base and touch the same thing: before pushing, merge dev and run `bun run migrations:layout-check`, `bun run migrations:commute` and `bun db:generate` (it must report no changes). Never hand-edit a migration or snapshot, or rename a folder: run `bun run migrations:regenerate --base=origin/dev`. See `.claude/skills/schema-change/`.
+
 **Do NOT use `db:push`** in production - it bypasses migration tracking.
 
 ## This Repo Is Public
@@ -106,7 +108,7 @@ Do NOT commit directly to `main` unless it's an emergency hotfix.
 
 ### Hotfix vs Normal Release
 
-- **Normal** (`bun run release`): Feature/fix goes to `dev` first, then release PR merges dev→main. Use this when there's no urgency.
+- **Normal** (`bun run release`): Feature/fix goes to `dev` first, then a frozen release candidate (`release/vX.Y.Z` → main, on since 2026-10-12: `RELEASE_CANDIDATE_CUT=enabled`, `releaseConfig.candidate` set, `release candidate verified` required on main) merges with a merge commit. Use this when there's no urgency.
 - **Hotfix** (`bun run release:hotfix`): Run from a feature branch. Creates PR directly to `main` with a patch bump. Use only for urgent production fixes that can't wait for the normal dev→main cycle. After merging, backport to dev: `git checkout dev && git merge origin/main && git push origin dev`.
 
 ## Missions
@@ -280,7 +282,7 @@ This repo (`apps/web`) serves the dashboard and API at `buildd.dev`.
 
 Some workflows exist as GitHub Actions only and must NOT be registered as routable agent roles:
 
-- **Visual QA** (`.github/workflows/visual-qa.yml`): Playwright screenshot capture + Claude judgment on release PRs. CI-only by design (PR #1029). Any `visual-qa` row in `workspace_skills` is stray — migration 0064 removed it (now part of `packages/core/drizzle/0000_baseline.sql`).
+- **Visual QA** (`.github/workflows/visual-qa.yml`): Playwright screenshot capture + Claude judgment on release PRs. CI-only by design (PR #1029). Any `visual-qa` row in `workspace_skills` is stray — migration 0064 removed it (now part of `packages/core/drizzle/20261006230118_baseline/migration.sql`).
 
 ## Skills
 

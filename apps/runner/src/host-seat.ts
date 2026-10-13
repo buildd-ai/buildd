@@ -163,6 +163,58 @@ export function describeHostSeat(seat: HostSeat): string {
     : "this machine's own login (claude login on the runner host)";
 }
 
+// ─── The one model-auth detector (docs/specs/runner-model-auth-source.md) ───
+
+/**
+ * Which kind of credential this runner's Claude agent authenticates with for a
+ * claim that delivers none. The startup line, the local /api/config and the
+ * heartbeat label all come from `detectModelAuthSource`. A label, never a value.
+ */
+export type ModelAuthSource = 'machine_token' | 'machine_login' | 'api_key' | 'none';
+
+export interface ModelAuthReport {
+  source: ModelAuthSource;
+  mode: HostSeatMode;
+}
+
+/**
+ * Precedence: machine_token > machine_login > api_key > none.
+ * `BUILDD_HOST_SEAT=off` stops the first two from counting. Under
+ * `BUILDD_MODEL_AUTH_SOURCE=runner` an inherited key is stripped from the agent
+ * env unless an operator-set ANTHROPIC_BASE_URL selects a paid route
+ * (model-auth-source.ts), so it is reported only in that case.
+ */
+export function detectModelAuthSource(probe: HostSeatProbe = {}): ModelAuthReport {
+  const env = probe.env ?? process.env;
+  const mode = hostSeatMode(env);
+  // `off` withholds only the env token (applyHostSeatPolicy deletes it); a
+  // `claude login` still reaches the agent through HOME, so it still counts.
+  const seat = mode === 'off'
+    ? detectHostSeat({ ...probe, env: { ...env, [HOST_SEAT_ENV]: 'auto', [HOST_SEAT_TOKEN_VAR]: '' } })
+    : detectHostSeat({ ...probe, env });
+  if (seat === 'env') return { source: 'machine_token', mode };
+  if (seat === 'login') return { source: 'machine_login', mode };
+  const has = (name: string) => (env[name] ?? '').trim().length > 0;
+  const runnerManaged = (env.BUILDD_MODEL_AUTH_SOURCE ?? '').trim().toLowerCase() === 'runner';
+  const keyReachesAgent = !runnerManaged || has('ANTHROPIC_BASE_URL');
+  if (keyReachesAgent && (has('ANTHROPIC_API_KEY') || has('ANTHROPIC_AUTH_TOKEN'))) return { source: 'api_key', mode };
+  return { source: 'none', mode };
+}
+
+export const NO_MODEL_AUTH_FIX =
+  'run `claude login` as the runner user, or set CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) '
+  + 'for a headless machine, or ANTHROPIC_API_KEY for metered billing';
+
+/** Human words for a model-auth label (the startup `Model auth: <words>` line). */
+export function describeModelAuthSource(source: ModelAuthSource): string {
+  switch (source) {
+    case 'machine_token': return 'a Claude token set on this machine (CLAUDE_CODE_OAUTH_TOKEN)';
+    case 'machine_login': return "this machine's Claude login";
+    case 'api_key': return 'an API key (billed per token)';
+    default: return `no model login on this machine. To fix: ${NO_MODEL_AUTH_FIX}`;
+  }
+}
+
 /** Machine-level model credential variables the agent env can inherit through the passthrough. */
 export const HOST_MODEL_CREDENTIAL_VARS = [
   HOST_SEAT_TOKEN_VAR, 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY',

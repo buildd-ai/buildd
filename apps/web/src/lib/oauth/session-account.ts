@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
 import { and, asc, eq } from 'drizzle-orm';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The account an OAuth session in `teamId` acts as: the team's oldest
@@ -20,8 +21,8 @@ import { and, asc, eq } from 'drizzle-orm';
  */
 export async function findTeamSessionAccount(teamId: string) {
   const account = await db.query.accounts.findFirst({
-    where: and(eq(accounts.teamId, teamId), eq(accounts.type, 'user')),
-    orderBy: [asc(accounts.createdAt), asc(accounts.id)],
+    where: sqlWhere(and(eq(accounts.teamId, teamId), eq(accounts.type, 'user'))),
+    orderBy: sqlOrderBy([asc(accounts.createdAt), asc(accounts.id)]),
   });
   return account ?? null;
 }

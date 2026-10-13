@@ -2,11 +2,12 @@ import { db } from '@buildd/core/db';
 import { specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
-import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from './check-lines';
+import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from '@buildd/spec-contract/check-lines';
 import { isRunnerReported } from '@/lib/verification-provenance';
 import { recordCheckVerdict } from './outcome';
 import { readPinnedSpecRevision } from './pin';
-import { scopeOf } from './scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { scopeOf } from '@buildd/spec-contract/scope';
 
 /**
  * Mechanical criterion checks (Living Specs V1). A criterion of a task's
@@ -58,7 +59,7 @@ export function isCriterionCheckTask(context: unknown): boolean {
 
 async function defaultWake(task: { id: string; title: string; workspaceId: string }): Promise<void> {
   const { announceTaskCreated, wakeTask } = await import('@/lib/dispatch-authority');
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, task.workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, task.workspaceId)) });
   if (!workspace) return;
   await announceTaskCreated({ ...task, description: null, mode: 'execution', priority: 2, missionId: null }, workspace as never)
     .catch((e) => console.error(`[spec-checks] dispatch failed for task ${task.id}:`, e));

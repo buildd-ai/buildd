@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
  */
 export default async function KeysSettingsPage() {
   const { currentTeam, perms } = await loadSettingsContext();
-  const description = 'Your own model keys. The team decides whether they pay for your work.';
+  const description = 'Manage your personal API keys.';
 
   if (!currentTeam) {
     return (
