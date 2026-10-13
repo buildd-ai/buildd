@@ -9,6 +9,7 @@ import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import type { StateKey } from '@/components/ui/states';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
 import { buildReleaseConfigPayload } from './release-config-payload';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 type StrategyOption = ReleaseStrategy | 'none';
 
@@ -210,16 +211,22 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
       .catch(() => setHasVercelToken(null));
   }, [teamId]);
 
+  const form = {
+    strategy, prodBranch, ref, workflowFile, trigger,
+    candidateEnabled, candidateBranches, candidateSource, candidateAuthors,
+  };
+  const { dirty, snapshot, markSaved } = useDirtyState(form);
+  useWarnOnUnload(canEdit && dirty);
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    if (!dirty) return;
+    const submitted = snapshot;
     setSaving(true);
     setSaved(false);
     setSaveError(null);
 
-    const releaseConfig = buildReleaseConfigPayload(cfg, {
-      strategy, prodBranch, ref, workflowFile, trigger,
-      candidateEnabled, candidateBranches, candidateSource, candidateAuthors,
-    });
+    const releaseConfig = buildReleaseConfigPayload(cfg, form);
 
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/config`, {
@@ -229,6 +236,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save');
+      markSaved(submitted);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
@@ -498,10 +506,10 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
         {canEdit && <div className="flex flex-wrap items-center gap-4">
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || !dirty}
             className="btn min-h-11"
           >
-            {saving ? 'Saving…' : 'Save release settings'}
+            {saving ? 'Saving…' : 'Save'}
           </button>
           {saved && <span className="text-status-success text-sm">Saved</span>}
           {saveError && <span className="text-status-error text-sm">{saveError}</span>}
