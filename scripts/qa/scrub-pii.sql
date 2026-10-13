@@ -632,6 +632,11 @@ UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.q
 UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence);
 -- Spec neighbours: the reason detail names repo paths and criterion ids; kind and source are fixed words.
 UPDATE spec_neighbors SET detail = pg_temp.qa_json(detail);
+-- Spec filings: a proposed new area's title and charter (spec prose) ride in
+-- proposal; who filed or resolved one is an author label. kind, status and source are fixed words.
+UPDATE spec_filings SET proposal = pg_temp.qa_json(proposal),
+  created_by = CASE WHEN created_by IS NULL THEN NULL ELSE md5(created_by) END,
+  resolved_by = CASE WHEN resolved_by IS NULL THEN NULL ELSE md5(resolved_by) END;
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.

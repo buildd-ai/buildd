@@ -66,6 +66,7 @@ import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-ro
 import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-audit-spec-criteria';
 import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
 import { checkSpecDuplicates, recordDuplicateOverride } from '@/lib/spec-duplicate-decision';
+import { classifySpecArea, recordAreaOverride } from '@/lib/spec-area-decision';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -264,6 +265,14 @@ export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
  */
 export const SPEC_DUPLICATE_CHECK = checkSpecDuplicates;
 export const SPEC_DUPLICATE_OVERRIDE = recordDuplicateOverride;
+
+/**
+ * The decisions module's spec area slot (lib/spec-area-decision.ts): organize
+ * (lib/specs/organize.ts) asks which area an unfiled spec belongs in, and a
+ * person's move of a spec buildd filed is recorded on that filing's ledger row.
+ */
+export const SPEC_AREA_CLASSIFY = classifySpecArea;
+export const SPEC_AREA_OVERRIDE = recordAreaOverride;
 
 /**
  * The knowledge module's boot slot for Living Spec neighbours (instrumentation.ts):

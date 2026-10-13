@@ -2845,6 +2845,44 @@ export const specNeighbors = pgTable('spec_neighbors', {
 }));
 
 /**
+ * Where a spec was placed in its workspace's tree, and by whom (Living Specs
+ * §17, R-7 to R-11). Structure, not body: nothing that approves, pins or
+ * grades work reads it.
+ *   - `filed`: buildd set the parent (a confident area answer, or a member of
+ *     a taxonomy a person accepted). `previous_parent_id` is what undo restores.
+ *   - `suggested`: a place buildd offers and did not apply (`new_area`,
+ *     `unsure`, a low answer, the similarity fallback). `proposal` carries a
+ *     proposed new area's title and charter.
+ *   - `manual`: a person (or an agent) set or cleared the parent by hand. The
+ *     sweep never touches a spec with one.
+ */
+export const specFilings = pgTable('spec_filings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull().$type<'filed' | 'suggested' | 'manual'>(),
+  /** `applied` | `undone` | `overridden` for filed; `open` | `accepted` | `dismissed` for suggested; `applied` for manual. */
+  status: text('status').notNull().$type<'applied' | 'undone' | 'overridden' | 'open' | 'accepted' | 'dismissed'>(),
+  previousParentId: uuid('previous_parent_id'),
+  /** The area (or product) filed or suggested; null for a suggestion of a new area, an unsure answer, or a manual un-file. */
+  parentSpecId: uuid('parent_spec_id'),
+  /** `model` | `similarity` | `taxonomy` | `person`. */
+  source: text('source').notNull(),
+  /** The answer and its weight: `{ answer, p, model }`; for a new area also `{ title, charter }`. */
+  proposal: jsonb('proposal').$type<Record<string, unknown>>(),
+  decisionRecordId: uuid('decision_record_id'),
+  /** The organize run that produced it, when one did. */
+  batchId: uuid('batch_id'),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  resolvedBy: text('resolved_by'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+}, (t) => ({
+  specIdx: index('spec_filings_spec_idx').on(t.specId, t.createdAt),
+  workspaceStatusIdx: index('spec_filings_workspace_status_idx').on(t.workspaceId, t.status),
+}));
+
+/**
  * A comment on one section or one criterion of a spec revision (Living Specs
  * R-26, docs/specs/living-specs.md §16). It belongs to the revision it was made
  * on; a later revision shows it open when the anchored text is unchanged
