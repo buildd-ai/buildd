@@ -1,6 +1,8 @@
 import { db } from '@buildd/core/db';
 import { knowledgeIngestJobs, specNeighbors, specs, tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
+import { AREA_GONE_STATUSES, listAreas } from './areas';
+import { specCard, tfidfRank } from './card';
 
 /**
  * A Living Spec's neighbours (living-specs.md §14, decisions D-11/D-12): the
@@ -210,21 +212,39 @@ export async function readSpecNeighbours(specId: string, limit = 8): Promise<Nea
     .slice(0, limit);
 }
 
+/** Below this TF-IDF cosine an area is not offered as a parent by words alone. */
+export const AREA_LEXICAL_FLOOR = 0.08;
+
 /**
  * The parent a new or unfiled spec most likely belongs under (R-18): the
  * closest product or area spec by meaning, else the parent of the closest
  * approved spec that has one. Null when nothing is close. Never applied, only
  * offered.
+ *
+ * Areas count whatever their approval state (§17, R-30): an area is
+ * structure, not approved text, so a draft area that the approved-spec corpus
+ * never indexed is still found, by its words, when no indexed area is near.
+ * Retired and superseded areas are skipped.
  */
 export async function suggestParent(workspaceId: string, specId: string, text: string): Promise<{ specId: string; title: string; reason: string } | null> {
-  const hits = await neighbourDeps.similar({ workspaceId, specId, text });
+  let hits: Awaited<ReturnType<SimilarFn>> = [];
+  try {
+    hits = await neighbourDeps.similar({ workspaceId, specId, text });
+  } catch {
+    // No similarity provider (or it failed): areas are still matched by their words below.
+  }
   const ranked = hits.filter((h) => h.specId !== specId && (h.source === 'lexical' || h.score >= SIMILAR_FLOOR)).sort((a, b) => b.score - a.score);
-  if (ranked.length === 0) return null;
-  const rows = await db.select({ id: specs.id, title: specs.title, scope: specs.scope, parentSpecId: specs.parentSpecId, workspaceId: specs.workspaceId })
-    .from(specs).where(inArray(specs.id, ranked.map((h) => h.specId)));
+  const rows = ranked.length ? await db.select({ id: specs.id, title: specs.title, scope: specs.scope, status: specs.status, parentSpecId: specs.parentSpecId, workspaceId: specs.workspaceId })
+    .from(specs).where(inArray(specs.id, ranked.map((h) => h.specId))) : [];
   const byId = new Map(rows.filter((r) => r.workspaceId === workspaceId).map((r) => [r.id, r]));
-  const area = ranked.map((h) => byId.get(h.specId)).find((r) => r && (r.scope === 'product' || r.scope === 'domain'));
+  const isArea = (r: { scope: string; status: string } | undefined) => !!r && (r.scope === 'product' || r.scope === 'domain') && !(AREA_GONE_STATUSES as readonly string[]).includes(r.status);
+  const area = ranked.map((h) => byId.get(h.specId)).find(isArea);
   if (area) return { specId: area.id, title: area.title, reason: `Closest ${area.scope === 'product' ? 'product' : 'area'} by what it asks for` };
+  const areas = (await listAreas(workspaceId)).filter((a) => a.id !== specId && a.scope === 'domain');
+  if (areas.length) {
+    const [best] = tfidfRank(specCard(text.split('\n')[0] ?? '', text), areas.map((a) => ({ a, card: { title: a.title, summary: a.charter, criteria: a.memberTitles } })), 1, AREA_LEXICAL_FLOOR);
+    if (best) return { specId: best.a.id, title: best.a.title, reason: 'Closest area by its words' };
+  }
   const sibling = ranked.map((h) => byId.get(h.specId)).find((r) => r?.parentSpecId && r.parentSpecId !== specId);
   if (!sibling) return null;
   const [parent] = await db.select({ id: specs.id, title: specs.title, workspaceId: specs.workspaceId }).from(specs).where(eq(specs.id, sibling.parentSpecId!)).limit(1);

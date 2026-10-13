@@ -20,9 +20,9 @@ export const MIX_STATES: readonly SpecMixState[] = ['approved', 'draft', 'import
 
 export type SpecSuggestion =
   /** Under an existing product or area. */
-  | { kind: 'parent'; specId: string; title: string; reason: string }
+  | { kind: 'parent'; specId: string; title: string; reason: string; filingId?: string | null }
   /** A new area buildd would make (§17 R-6 `new_area`). */
-  | { kind: 'new_area'; title: string; reason?: string | null };
+  | { kind: 'new_area'; title: string; reason?: string | null; filingId?: string | null };
 
 export interface SpecIndexInput {
   id: string;
@@ -36,11 +36,20 @@ export interface SpecIndexInput {
   imported?: boolean;
   failing?: string | null;
   filedBy?: 'buildd' | null;
+  /** The `spec_filings` row behind "Filed by buildd", for its undo. */
+  filingId?: string | null;
+  /**
+   * Where an unfiled spec probably belongs: an open `spec_filings` suggestion
+   * (it carries `filingId`, so accept and dismiss are recorded), else
+   * `suggestParent`.
+   */
   suggestion?: SpecSuggestion | null;
 }
 
 /** An area of a taxonomy proposal no person has acted on (§17 R-4). */
 export interface AreaProposal {
+  /** The taxonomy proposal's key for this area: accepting sends it to organize. */
+  key?: string | null;
   title: string;
   specIds: string[];
   /** Where a person accepts it; absent until the proposal flow exists. */
@@ -66,6 +75,7 @@ export interface IndexRow {
   imported: boolean;
   failing: string | null;
   filedBy: 'buildd' | null;
+  filingId: string | null;
   suggestion: SpecSuggestion | null;
   children: IndexRow[];
 }
@@ -98,6 +108,8 @@ export interface IndexProduct {
 
 export interface PossibleArea {
   key: string;
+  /** The taxonomy proposal key, when it is one. */
+  proposalKey: string | null;
   title: string;
   specIds: string[];
   acceptHref: string | null;
@@ -120,7 +132,8 @@ export interface MapBlock {
 
 export type IndexMap =
   | { kind: 'map'; blocks: MapBlock[]; loose: IndexRow[]; possible: Array<PossibleArea & { rows: IndexRow[] }> }
-  | { kind: 'line'; text: string; href: string | null };
+  /** `possible`: a taxonomy proposal's areas still show as dashed groups under the line, the cold-start case (§17 R-4). */
+  | { kind: 'line'; text: string; href: string | null; possible: Array<PossibleArea & { rows: IndexRow[] }> };
 
 export interface SpecIndexView {
   /** Specs counted (not products or areas, not retired or superseded). */
@@ -201,7 +214,7 @@ export function specIndexView(input: readonly SpecIndexInput[], options: SpecInd
     rowsById.set(r.id, {
       id: r.id, title: r.title, scope: r.scope, state: isArea(r.scope) ? null : mixState(r), ...standingOf(r),
       updatedAgo: ago(r.updatedAt, now), imported: !!r.imported, failing: r.failing || null,
-      filedBy: r.filedBy ?? null, suggestion: r.suggestion ?? null, children: [],
+      filedBy: r.filedBy ?? null, filingId: r.filingId ?? null, suggestion: r.suggestion ?? null, children: [],
     });
   }
   const roots: IndexRow[] = [];
@@ -242,7 +255,7 @@ export function specIndexView(input: readonly SpecIndexInput[], options: SpecInd
     const members = p.specIds.filter((id) => unfiledIds.has(id) && !claimed.has(id));
     if (!members.length) continue;
     members.forEach((id) => claimed.add(id));
-    possibleAreas.push({ key: `proposal:${p.title}`, title: p.title, specIds: members, acceptHref: p.acceptHref ?? null });
+    possibleAreas.push({ key: `proposal:${p.key ?? p.title}`, proposalKey: p.key ?? null, title: p.title, specIds: members, acceptHref: p.acceptHref ?? null });
   }
   const byTitle = new Map<string, { title: string; ids: string[] }>();
   for (const u of unfiled) {
@@ -256,10 +269,11 @@ export function specIndexView(input: readonly SpecIndexInput[], options: SpecInd
   for (const [k, g] of byTitle) {
     if (g.ids.length < 2) continue;
     g.ids.forEach((id) => claimed.add(id));
-    possibleAreas.push({ key: `new_area:${k}`, title: g.title, specIds: g.ids, acceptHref: null });
+    possibleAreas.push({ key: `new_area:${k}`, proposalKey: null, title: g.title, specIds: g.ids, acceptHref: null });
   }
 
   const unfiledCounted = unfiled.filter((u) => u.state);
+  const withRows = (ps: PossibleArea[]) => ps.map((p) => ({ ...p, rows: p.specIds.map((id) => rowsById.get(id)!) }));
   const filed = areas.reduce((n, a) => n + a.count, 0);
   const total = filed + countDeep(unfiled);
 
@@ -274,13 +288,9 @@ export function specIndexView(input: readonly SpecIndexInput[], options: SpecInd
       segments: MIX_STATES.filter((s) => a.mix[s]).map((s) => ({ state: s, count: a.mix[s], pct: (a.mix[s] / a.count) * 100 })),
       label: `${a.title} · ${a.words}`, words: a.words,
     }));
-    map = {
-      kind: 'map', blocks,
-      loose: unfiledCounted.filter((u) => !claimed.has(u.id)),
-      possible: possibleAreas.map((p) => ({ ...p, rows: p.specIds.map((id) => rowsById.get(id)!) })),
-    };
+    map = { kind: 'map', blocks, loose: unfiledCounted.filter((u) => !claimed.has(u.id)), possible: withRows(possibleAreas) };
   } else {
-    map = { kind: 'line', ...collapsedLine(total, withSpecs, countDeep(unfiled), options.taxonomyHref ?? null) };
+    map = { kind: 'line', ...collapsedLine(total, withSpecs, countDeep(unfiled), options.taxonomyHref ?? null), possible: withRows(possibleAreas) };
   }
 
   return { total, products, areas, unfiled, possibleAreas, map, rowsById };
@@ -366,4 +376,36 @@ export function neighbourGraph(input: {
     omittedSiblings: Math.max(0, sibs.length - GRAPH_MAX_SIBLINGS),
     omittedNeighbours: Math.max(0, near.length - GRAPH_MAX_NEIGHBOURS),
   };
+}
+
+/** The part of a `spec_filings` view (§17) the index reads; structural so this file stays free of DB imports. */
+export interface IndexFiling {
+  id: string;
+  kind: 'filed' | 'suggested';
+  status: string;
+  parent: { specId: string; title: string } | null;
+  source: string;
+  p: number | null;
+  newArea: { title: string; charter: string } | null;
+}
+
+/**
+ * What a spec's live filing says on the index (§17 R-7): a filing still in
+ * effect is "Filed by buildd" with its undo; an open suggestion on a spec
+ * with no parent is the inline suggestion, with its id so accept and dismiss
+ * are recorded. Pure.
+ */
+export function filingFacts(spec: { parentSpecId: string | null }, f: IndexFiling | null | undefined): Pick<SpecIndexInput, 'filedBy' | 'filingId' | 'suggestion'> {
+  if (!f) return {};
+  if (f.kind === 'filed' && f.status === 'applied' && f.parent && f.parent.specId === spec.parentSpecId) return { filedBy: 'buildd', filingId: f.id };
+  if (f.kind !== 'suggested' || f.status !== 'open' || spec.parentSpecId) return {};
+  const reason = f.source === 'similarity' ? 'Closest area by what it asks for' : f.p != null ? `buildd's area check, ${Math.round(f.p * 100)}% sure` : "buildd's area check";
+  if (f.parent) return { suggestion: { kind: 'parent', specId: f.parent.specId, title: f.parent.title, reason, filingId: f.id } };
+  if (f.newArea) return { suggestion: { kind: 'new_area', title: f.newArea.title, reason: f.newArea.charter || null, filingId: f.id } };
+  return {};
+}
+
+/** A cold-start taxonomy proposal (§17 R-4) as possible areas, each accepted by its key. Pure. */
+export function proposalAreas(proposal: { areas: ReadonlyArray<{ key: string; title: string; members: ReadonlyArray<{ specId: string }> }> } | null | undefined): AreaProposal[] {
+  return (proposal?.areas ?? []).map((a) => ({ key: a.key, title: a.title, specIds: a.members.map((m) => m.specId) }));
 }

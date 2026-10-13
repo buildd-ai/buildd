@@ -5,7 +5,7 @@
  * and no-area cases and a neighbour graph. Invented titles only; nothing is
  * fetched (seed scripts hit the prod API, so the index is shown from here).
  */
-import type { SpecIndexInput } from '@/lib/specs/index-view';
+import type { AreaProposal, SpecIndexInput } from '@/lib/specs/index-view';
 
 export const SPEC_INDEX_FIXTURE_NOW = Date.parse('2026-10-01T12:00:00Z');
 const day = (n: number) => new Date(SPEC_INDEX_FIXTURE_NOW - n * 86_400_000).toISOString();
@@ -25,7 +25,7 @@ export const SPEC_INDEX_FIXTURE_SPECS: SpecIndexInput[] = [
   s('Kitchen planner', { id: 'fx-product', scope: 'product' }),
 
   area('fx-recipes', 'Recipes'),
-  s('Recipe import from a link', { parentSpecId: 'fx-recipes', filedBy: 'buildd' }),
+  s('Recipe import from a link', { parentSpecId: 'fx-recipes', filedBy: 'buildd', filingId: 'fx-filing-1' }),
   s('Scaling a recipe by servings', { parentSpecId: 'fx-recipes' }),
   s('Unit conversion', { id: 'fx-units', parentSpecId: 'fx-recipes', headRevision: 2 }),
   s('Metric and imperial switch', { parentSpecId: 'fx-units' }),
@@ -59,7 +59,7 @@ export const SPEC_INDEX_FIXTURE_SPECS: SpecIndexInput[] = [
   s('Delete my account', { parentSpecId: 'fx-accounts', imported: true, ...draft }),
 
   // Unfiled: one with an area to go under, two buildd thinks are a new area, two it could not place at all.
-  s('Grocery delivery handoff', { id: 'fx-u1', ...draft, suggestion: { kind: 'parent', specId: 'fx-shopping', title: 'Shopping list', reason: 'Closest area by what it asks for' } }),
+  s('Grocery delivery handoff', { id: 'fx-u1', ...draft, suggestion: { kind: 'parent', specId: 'fx-shopping', title: 'Shopping list', reason: "buildd's area check, 72% sure", filingId: 'fx-filing-2' } }),
   s('Weekly digest email', { id: 'fx-u2', ...draft, suggestion: { kind: 'new_area', title: 'Notifications', reason: 'No area covers messages sent to people' } }),
   s('Push reminders to start cooking', { id: 'fx-u3', ...draft, suggestion: { kind: 'new_area', title: 'Notifications' } }),
   s('Accessibility statement', { id: 'fx-u4', ...draft }),
@@ -74,7 +74,14 @@ export const SPEC_INDEX_ONE_AREA_FIXTURE: SpecIndexInput[] = [
 ];
 
 /** No area yet: the line says so and points at the taxonomy proposal. */
-export const SPEC_INDEX_NO_AREA_FIXTURE: SpecIndexInput[] = Array.from({ length: 12 }, (_, i) => s(`Unplaced spec ${i + 1}`, i % 2 ? draft : {}));
+export const SPEC_INDEX_NO_AREA_FIXTURE: SpecIndexInput[] = Array.from({ length: 12 }, (_, i) => s(`Unplaced spec ${i + 1}`, { id: `fx0-${i}`, ...(i % 2 ? draft : {}) }));
+
+/** The cold-start taxonomy buildd proposes for them (§17 R-4): three areas, two specs left over. */
+export const SPEC_INDEX_NO_AREA_PROPOSALS: AreaProposal[] = [
+  { key: 'cooking', title: 'Cooking', specIds: ['fx0-0', 'fx0-1', 'fx0-2', 'fx0-3'] },
+  { key: 'planning', title: 'Planning', specIds: ['fx0-4', 'fx0-5', 'fx0-6'] },
+  { key: 'accounts', title: 'Accounts', specIds: ['fx0-7', 'fx0-8', 'fx0-9'] },
+];
 
 /** The spec page's Related as a graph: a parent, two siblings and ten neighbours (the graph shows 8). */
 export const SPEC_INDEX_GRAPH_FIXTURE = {

@@ -17,6 +17,7 @@ import SpecComments from '@/components/SpecComments';
 import SpecNeighbourGraph from '@/components/SpecNeighbourGraph';
 import Segmented from '@/components/ui/Segmented';
 import { neighbourGraph } from '@/lib/specs/index-view';
+import SpecFiling from '@/components/SpecFiling';
 import SpecRepoChecks from '@/components/SpecRepoChecks';
 import type { SpecPageView } from '@/lib/specs/page-view';
 
@@ -211,6 +212,7 @@ export default function SpecPage({ view }: { view: Ok }) {
             </div>
           ) : null}
         </div>
+        {view.filing ? <SpecFiling specId={spec.id} filing={view.filing} canAct={view.canComment} /> : null}
         {view.children.length ? (
           <div data-testid="spec-page-children">
             <p className="text-body text-text-secondary">Specs under this one:</p>

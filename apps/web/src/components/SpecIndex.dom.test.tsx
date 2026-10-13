@@ -43,8 +43,16 @@ const area = (id: string, title: string, parent: string | null = null) => spec(i
 /** `n` approved features under `areaId`, named `<areaId>-<i>`. */
 const many = (areaId: string, n: number) => Array.from({ length: n }, (_, i) => approved(`${areaId}-${i}`, areaId));
 
-const render = (specs: Input[], options?: Parameters<typeof SpecIndex>[0]['options'], accept?: Parameters<typeof SpecIndex>[0]['accept']) =>
-  act(() => root.render(<SpecIndex specs={specs} options={{ now: now.getTime(), ...options }} accept={accept} />));
+type Actions = import('./SpecIndex').IndexActions;
+const render = (specs: Input[], options?: Parameters<typeof SpecIndex>[0]['options'], actions?: Partial<Actions>, canAct = true) =>
+  act(() => root.render(<SpecIndex specs={specs} options={{ now: now.getTime(), ...options }} actions={actions} canAct={canAct} />));
+/** Records every action; each answers ok. */
+function recorder() {
+  const calls: Array<[string, ...unknown[]]> = [];
+  const ok = (name: string) => async (...a: unknown[]) => { calls.push([name, ...a]); return { ok: true }; };
+  const actions: Actions = { acceptSuggestion: ok('accept'), dismissSuggestion: ok('dismiss'), undoFiling: ok('undo'), acceptProposal: ok('proposal') };
+  return { calls, actions };
+}
 
 const q = (sel: string) => container.querySelector(sel);
 const qa = (sel: string) => [...container.querySelectorAll(sel)];
@@ -98,12 +106,14 @@ describe('SpecIndex outline', () => {
   });
 
   it('AC-81: what buildd could not place is Unfiled, last, with its suggestion and accept/dismiss', async () => {
-    const calls: Array<[string, string]> = [];
+    const { calls, actions } = recorder();
+    const toCheckout = { kind: 'parent' as const, specId: 'a1', title: 'Checkout', reason: 'Closest area by what it asks for', filingId: 'fl1' };
+    const billing = { kind: 'new_area' as const, title: 'Billing', filingId: 'fl2' };
     render([
-      draft('u1', null, { title: 'Invoices', suggestion: { kind: 'parent', specId: 'a1', title: 'Checkout', reason: 'Closest area by what it asks for' } }),
+      draft('u1', null, { title: 'Invoices', suggestion: toCheckout }),
       area('a1', 'Checkout'), approved('f1', 'a1'),
-      draft('u2', null, { suggestion: { kind: 'new_area', title: 'Billing' } }),
-    ], undefined, async (id, parent) => { calls.push([id, parent]); return { ok: true }; });
+      draft('u2', null, { suggestion: billing }),
+    ], undefined, actions);
     const outline = q('[data-testid="spec-index-outline"]')!;
     expect(outline.lastElementChild!.getAttribute('data-testid')).toBe('spec-index-unfiled');
     const unfiled = q('[data-testid="spec-index-unfiled"]')!;
@@ -114,9 +124,11 @@ describe('SpecIndex outline', () => {
     // A new-area suggestion has nothing to file under yet: dismiss only.
     expect(unfiled.querySelector('[data-spec-id="u2"] [data-testid="spec-index-accept"]')).toBeNull();
     await act(async () => { (u1.querySelector('[data-testid="spec-index-accept"]') as HTMLElement).click(); });
-    expect(calls).toEqual([['u1', 'a1']]);
+    expect(calls).toEqual([['accept', 'u1', toCheckout]]);
     expect(u1.querySelector('[data-testid="spec-index-filed"]')!.textContent).toBe('Filed under Checkout.');
-    click(unfiled.querySelector('[data-spec-id="u2"] [data-testid="spec-index-dismiss"]'));
+    // Dismissing a recorded suggestion is recorded too (§17: the filing route), then it leaves the row.
+    await act(async () => { (unfiled.querySelector('[data-spec-id="u2"] [data-testid="spec-index-dismiss"]') as HTMLElement).click(); });
+    expect(calls[1]).toEqual(['dismiss', 'u2', billing]);
     expect(unfiled.querySelector('[data-spec-id="u2"] [data-testid="spec-index-suggestion"]')).toBeNull();
   });
 
@@ -128,16 +140,72 @@ describe('SpecIndex outline', () => {
   it('nests children under a feature and says failing, imported and filed-by-buildd in words', () => {
     render([
       area('a1', 'Runners'),
-      approved('f1', 'a1', { filedBy: 'buildd' }),
+      approved('f1', 'a1', { filedBy: 'buildd', filingId: 'fl9' }),
       approved('c1', 'f1', { failing: 'a pinned task failed AC-3' }),
       draft('f2', 'a1', { imported: true }),
     ]);
     const f1 = q('[data-spec-id="f1"]')!;
     expect(f1.querySelector('[data-testid="spec-index-children"] [data-spec-id="c1"]')).not.toBeNull();
-    expect(f1.querySelector('[data-testid="spec-index-row-filed-by"]')!.textContent).toBe('Filed by buildd');
+    expect(f1.querySelector('[data-testid="spec-index-row-filed-by"]')!.textContent).toBe('Filed by builddUndo');
     expect(q('[data-spec-id="c1"] [data-testid="spec-index-row-failing"]')!.textContent).toBe('Failing: a pinned task failed AC-3');
     expect(q('[data-spec-id="f2"] [data-testid="spec-index-row-imported"]')!.textContent).toBe('Imported, awaiting confirmation');
     expect(q('[data-testid="spec-index-area-words"]')!.textContent).toBe('3 specs, 1 approved, 1 imported, 1 failing');
+  });
+});
+
+describe('SpecIndex filings (§17)', () => {
+  it('"Filed by buildd" has an undo that names the filing, and says so in place', async () => {
+    const { calls, actions } = recorder();
+    render([area('a1', 'Runners'), approved('f1', 'a1', { filedBy: 'buildd', filingId: 'fl1' })], undefined, actions);
+    await act(async () => { (q('[data-spec-id="f1"] [data-testid="spec-index-undo"]') as HTMLElement).click(); });
+    expect(calls).toEqual([['undo', 'f1', 'fl1']]);
+    expect(q('[data-testid="spec-index-undone"]')!.textContent).toContain('back where it was');
+  });
+
+  it('a reader without write access sees the words but no accept, dismiss or undo', () => {
+    render([
+      area('a1', 'Runners'), approved('f1', 'a1', { filedBy: 'buildd', filingId: 'fl1' }),
+      draft('u1', null, { suggestion: { kind: 'parent', specId: 'a1', title: 'Runners', reason: 'r', filingId: 'fl2' } }),
+    ], undefined, undefined, false);
+    expect(q('[data-testid="spec-index-row-filed-by"]')!.textContent).toBe('Filed by buildd');
+    expect(q('[data-testid="spec-index-suggestion"]')!.textContent).toContain('Suggested: under Runners');
+    expect(q('[data-testid="spec-index-undo"]')).toBeNull();
+    expect(q('[data-testid="spec-index-accept"]')).toBeNull();
+    expect(q('[data-testid="spec-index-dismiss"]')).toBeNull();
+  });
+
+  it('with no area yet, the taxonomy proposal shows as possible areas under the line, each accepted by its key', async () => {
+    const { calls, actions } = recorder();
+    render(Array.from({ length: 12 }, (_, i) => draft(`u${i}`, null)), {
+      proposals: [{ key: 'cooking', title: 'Cooking', specIds: ['u0', 'u1', 'u2'] }, { key: 'plans', title: 'Planning', specIds: ['u3', 'u4'] }],
+    }, actions);
+    expect(q('[data-testid="spec-index-map"]')).toBeNull();
+    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('12 specs, none filed yet. buildd proposes 2 areas for them:');
+    const groups = qa('[data-testid="spec-index-proposals"] [data-testid="spec-index-possible"]');
+    expect(groups.map((g) => g.querySelector('[data-testid="spec-index-possible-label"]')!.textContent)).toEqual(['possible area: Cooking', 'possible area: Planning']);
+    click(groups[0]);
+    expect(rowIds(q('[data-testid="spec-index-unfiled"]'))).toEqual(['u0', 'u1', 'u2']);
+    await act(async () => { (q('[data-testid="spec-index-possible-accept"]') as HTMLElement).click(); });
+    expect(calls).toEqual([['proposal', 'cooking']]);
+    expect(q('[data-testid="spec-index-possible-done"]')!.textContent).toContain('Cooking is an area now');
+  });
+});
+
+describe('filingFacts', () => {
+  it('reads a filing in effect as Filed by buildd, an open suggestion as the suggestion, and nothing stale', async () => {
+    const { filingFacts, proposalAreas } = await import('@/lib/specs/index-view');
+    const base = { id: 'fl', source: 'model', p: 0.91, newArea: null };
+    expect(filingFacts({ parentSpecId: 'a1' }, { ...base, kind: 'filed', status: 'applied', parent: { specId: 'a1', title: 'Runners' } })).toEqual({ filedBy: 'buildd', filingId: 'fl' });
+    // Moved since buildd filed it: no claim, no undo.
+    expect(filingFacts({ parentSpecId: 'a2' }, { ...base, kind: 'filed', status: 'applied', parent: { specId: 'a1', title: 'Runners' } })).toEqual({});
+    expect(filingFacts({ parentSpecId: null }, { ...base, kind: 'suggested', status: 'open', parent: { specId: 'a1', title: 'Runners' } }))
+      .toEqual({ suggestion: { kind: 'parent', specId: 'a1', title: 'Runners', reason: "buildd's area check, 91% sure", filingId: 'fl' } });
+    expect(filingFacts({ parentSpecId: null }, { ...base, kind: 'suggested', status: 'open', parent: null, source: 'model', p: null, newArea: { title: 'Billing', charter: 'Money in' } }))
+      .toEqual({ suggestion: { kind: 'new_area', title: 'Billing', reason: 'Money in', filingId: 'fl' } });
+    expect(filingFacts({ parentSpecId: null }, { ...base, kind: 'suggested', status: 'open', parent: { specId: 'a1', title: 'R' }, source: 'similarity' }).suggestion)
+      .toMatchObject({ reason: 'Closest area by what it asks for' });
+    expect(filingFacts({ parentSpecId: null }, null)).toEqual({});
+    expect(proposalAreas({ areas: [{ key: 'k', title: 'Cooking', members: [{ specId: 'u1' }] }] })).toEqual([{ key: 'k', title: 'Cooking', specIds: ['u1'] }]);
   });
 });
 
