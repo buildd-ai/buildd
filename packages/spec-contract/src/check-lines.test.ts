@@ -70,3 +70,11 @@ describe('checkVerdict', () => {
     expect(checkVerdict({})).toBeNull();
   });
 });
+
+describe('check lines around a table', () => {
+  test('a table row with an id owns the check line under the table; header rows own nothing', () => {
+    const body = ['| ID | Requirement |', '|---|---|', '| AC-1 | Empty state |', '  check: `bun test cart`', '- AC-2: Totals', '  check: `bun test totals`'].join('\n');
+    expect(criterionChecks(body)).toEqual([{ criterionId: 'AC-1', command: 'bun test cart' }, { criterionId: 'AC-2', command: 'bun test totals' }]);
+  });
+});
+
