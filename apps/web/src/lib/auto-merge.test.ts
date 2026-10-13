@@ -16,6 +16,16 @@ mock.module('@/lib/workflow/landing', () => ({
   kernelLandingView: mockKernelLandingView,
   staleLandingVersion: async () => null,
 }));
+// The visual review half of the mission-PR gate (ready-to-merge.ts) is proven in
+// ready-to-merge.test.ts and mission-pr.test.ts; here the review has passed.
+mock.module('@/lib/workflow/visual-review-state-load', () => ({
+  getMissionVisualReviewState: async () => ({
+    status: 'passed', pendingVerification: false, staleEvidence: false, nextActor: 'none',
+    branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } },
+  }),
+}));
+mock.module('@/lib/workflow/visual-review-schedule-run', () => ({ scheduleMissionVisualReview: async () => null }));
+
 mock.module('@/lib/notify', () => ({
   notifyTeamOf: async (subject: unknown, event: unknown, payload: unknown) => {
     mockNotifySubject(subject, event);

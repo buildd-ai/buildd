@@ -289,6 +289,14 @@
       "path": "/api/cron/failure-pattern-sentinel",
       "schedule": "*/30 * * * *",
       "method": "POST"
+    },
+    {
+      "$comment": "Visual-review scheduler. Every 30 minutes, same cadence as the failure-pattern sentinel it shares a Neon wake window with. For each open mission that has an integration PR it asks planVisualReviewSchedule (apps/web/src/lib/workflow/visual-review-schedule.ts) whether the integration branch head owes a visual review, and files it through requestMissionSurfaceAudit, which is idempotent on the audit task. Re-files on a new UI-impacting head, retries a failed audit with 5/15/45 minute backoff up to three attempts per head, then names the owner. `changed` = audits filed or re-stamped, work done, so the default `work` polarity is correct.",
+      "title": "Buildd: Visual Review Scheduler",
+      "profile": "module:missions",
+      "path": "/api/cron/visual-review-schedule",
+      "schedule": "*/30 * * * *",
+      "method": "POST"
     }
   ]
 }

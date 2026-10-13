@@ -45,7 +45,10 @@ const ALLOWED = new Set<string>();
 // list surfaces carry to the client. No SQL, no command, so it cannot assign a state.
 // `base-delta` is the S15 disjoint-delta rule as pure functions (no I/O, no kernel table): the legacy
 // landing door shares it with the reducer so the two cannot drift.
-const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'base-delta']);
+// The visual-review trio is the merge gate's and cron's way in: `visual-review-state` is pure,
+// `visual-review-state-load` only SELECTs the integration PR's delivery row (head SHA, state), and
+// `visual-review-schedule-run` files audit tasks, never a delivery state.
+const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'base-delta', 'visual-review-state', 'visual-review-state-load', 'visual-review-schedule-run']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 const KERNEL_IMPORT = /(?:from\s+|import\()\s*['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow)\/([a-z-]+)['"]/g;
 

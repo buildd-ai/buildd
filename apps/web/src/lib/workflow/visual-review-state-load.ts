@@ -6,24 +6,47 @@
  * writers stay `ensureMissionSurfaceAudit` / `requestMissionSurfaceAudit`.
  */
 import 'server-only';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, like } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { isTerminalTaskStatus } from '@buildd/shared';
-import { missions, workflowDeliveries, workspaces } from '@buildd/core/db/schema';
+import { missions, tasks as tasksTable, workflowDeliveries, workspaces } from '@buildd/core/db/schema';
+import { SURFACE_AUDIT_TITLE_PREFIX, surfaceAuditRound } from '@buildd/core/surface-audit';
 import { visualReviewPolicyOf } from '@buildd/shared';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { resolveVisualReviewPolicy } from './visual-review-policy';
+import { autoRetriesLeft, type ScheduleAudit } from './visual-review-schedule';
 import {
   deriveMissionVisualReview,
   integrationPrFromDeliveryState,
+  captureConfigErrorFrom,
+  readAuditedSha,
   type MissionVisualReviewState,
   type VisualReviewStateInput,
 } from './visual-review-state';
 
 
+/** The mission's audit tasks, newest first, in the shape the scheduler and the evidence check read. */
+export async function loadMissionAuditLedger(missionId: string): Promise<ScheduleAudit[]> {
+  const rows = await db.query.tasks.findMany({
+    where: and(eq(tasksTable.missionId, missionId), like(tasksTable.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`)),
+    columns: { id: true, title: true, status: true, context: true, result: true, updatedAt: true, createdAt: true },
+    orderBy: [desc(tasksTable.createdAt)],
+  });
+  return rows.map(r => ({
+    id: r.id,
+    status: r.status,
+    round: surfaceAuditRound(r),
+    headSha: readAuditedSha(r.context),
+    updatedAt: new Date(r.updatedAt ?? r.createdAt).getTime(),
+    captureConfigError: r.status === 'failed' ? captureConfigErrorFrom(r.result) : null,
+  }));
+}
 
-export async function getMissionVisualReviewState(missionId: string): Promise<MissionVisualReviewState | null> {
+export async function getMissionVisualReviewState(
+  missionId: string,
+  opts: { uiChange?: VisualReviewStateInput['uiChange'] } = {},
+): Promise<MissionVisualReviewState | null> {
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
     columns: { id: true, workspaceId: true, autoSurfaceAudit: true, workingBranch: true, primaryPrNumber: true },
@@ -45,10 +68,11 @@ export async function getMissionVisualReviewState(missionId: string): Promise<Mi
 
   const model = await loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId });
   const gate = await evaluateSurfaceAuditGate({ id: mission.id, autoSurfaceAudit: true }, tasks).catch(() => null);
-  const uiChange: VisualReviewStateInput['uiChange'] =
+  const gateUiChange: VisualReviewStateInput['uiChange'] =
     gate && gate.required ? { state: 'yes', source: gate.source, uiFiles: gate.uiPaths.length }
     : gate && gate.why === 'no_ui_change' ? { state: 'no', source: null, uiFiles: 0 }
     : { state: 'unknown', source: null, uiFiles: 0 };
+  const uiChange = opts.uiChange ?? gateUiChange;
 
   let integrationPr: VisualReviewStateInput['branch']['integrationPr'] = null;
   let headSha: string | null = null;
@@ -67,6 +91,9 @@ export async function getMissionVisualReviewState(missionId: string): Promise<Mi
   }
 
   const uiBuilders = tasks.filter(t => t.taskClass === 'work' && t.roleSlug !== 'visual-auditor');
+  const ledger = await loadMissionAuditLedger(missionId);
+  const latestAudit = ledger.find(a => a.id === model.audit?.id) ?? null;
+  const failedOnHead = headSha ? ledger.filter(a => a.status === 'failed' && a.headSha === headSha).length : 0;
   const audit = model.audit ? { id: model.audit.id, createdAt: model.audit.createdAt, errorType: model.audit.errorType } : null;
 
   return deriveMissionVisualReview({
@@ -87,6 +114,9 @@ export async function getMissionVisualReviewState(missionId: string): Promise<Mi
         }
       : null,
     waiver,
+    auditedSha: latestAudit ? latestAudit.headSha : null,
+    autoRetriesLeft: autoRetriesLeft(failedOnHead),
+    captureConfigError: latestAudit?.captureConfigError ?? null,
     branch: { headSha, base, integrationPr, workLanded: uiBuilders.length > 0 && uiBuilders.every(t => isTerminalTaskStatus(t.status)) },
   });
 }
