@@ -13,6 +13,7 @@ import { Select } from '@/components/ui/Select';
 import MarkdownContent from '@/components/MarkdownContent';
 import SpecDiffView from '@/components/SpecDiffView';
 import SpecRevisionPanes from '@/components/SpecRevisionPanes';
+import SpecComments from '@/components/SpecComments';
 import type { SpecPageView } from '@/lib/specs/page-view';
 
 type Ok = Extract<SpecPageView, { state: 'ok' }>;
@@ -210,6 +211,17 @@ export default function SpecPage({ view }: { view: Ok }) {
             </ul>
           </div>
         ) : null}
+      </Section>
+
+      <Section title="Comments">
+        <SpecComments
+          specId={spec.id}
+          revision={view.reading.revision}
+          comments={view.comments}
+          anchors={view.commentAnchors}
+          canComment={view.canComment}
+          canResolve={view.canComment}
+        />
       </Section>
 
       <Section title="Revisions">
