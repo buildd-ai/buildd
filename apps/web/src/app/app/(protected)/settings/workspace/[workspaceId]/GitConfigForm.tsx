@@ -655,8 +655,11 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
             </div>
 
             {/* Advanced: closed by default */}
-            <details className="py-4 first:pt-0" data-testid="git-config-advanced">
-                <summary className="flex min-h-11 md:min-h-0 cursor-pointer items-center text-sm font-medium text-text-primary">Advanced</summary>
+            <details className="group py-4 first:pt-0" data-testid="git-config-advanced">
+                <summary className="flex min-h-11 md:min-h-0 cursor-pointer list-none items-center gap-1.5 text-sm font-medium text-text-primary [&::-webkit-details-marker]:hidden">
+                    <span aria-hidden className="text-text-muted transition-transform group-open:rotate-90">›</span>
+                    Advanced
+                </summary>
 
                 <div className="space-y-4 mt-3">
                     <div className="flex items-center gap-2">

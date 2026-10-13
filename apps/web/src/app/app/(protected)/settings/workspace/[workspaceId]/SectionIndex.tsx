@@ -10,7 +10,7 @@ export function SectionIndex({ sections }: { sections: Array<{ id: string; label
       data-testid="workspace-section-index"
       className="-mx-4 px-4 md:mx-0 md:px-0 md:sticky md:top-0 md:z-10 bg-surface-1 border-b border-border-default"
     >
-      <ul className="flex gap-1 overflow-x-auto whitespace-nowrap py-1">
+      <ul className="flex gap-1 overflow-x-auto whitespace-nowrap py-1 md:flex-wrap md:overflow-visible">
         {sections.map(s => (
           <li key={s.id} className="shrink-0">
             <a
