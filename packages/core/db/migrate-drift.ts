@@ -17,7 +17,7 @@
 // the journal entry's `when`, and statements are the file split on drizzle's
 // statement-breakpoint marker — both trivially readable with fs.
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { deriveAssertions } from './migrate-backfill';
 import type { LegacyMigration } from './legacy-migrations';
@@ -51,24 +51,6 @@ function isRecorded(
 }
 
 const STATEMENT_BREAKPOINT = '--> statement-breakpoint';
-
-/** Read the journal and every referenced .sql file. */
-/** A legacy-layout source: always keyed by its journal `when`. */
-export type JournalMigrationSource = MigrationSource & { when: number };
-
-export function loadMigrationSources(drizzleDir: string): JournalMigrationSource[] {
-  const journal = JSON.parse(
-    readFileSync(join(drizzleDir, 'meta', '_journal.json'), 'utf8')
-  ) as { entries: Array<{ idx: number; when: number; tag: string }> };
-
-  return [...journal.entries]
-    .sort((a, b) => a.idx - b.idx)
-    .map((entry) => ({
-      tag: entry.tag,
-      when: entry.when,
-      statements: driftStatements(readFileSync(join(drizzleDir, `${entry.tag}.sql`), 'utf8').split(STATEMENT_BREAKPOINT)),
-    }));
-}
 
 function driftStatements(chunks: readonly string[]): string[] {
   return (
@@ -300,67 +282,10 @@ export function classifyMissingSchemaObjects(
 // "production was edited" from "I am reading the wrong branch", and only one of
 // those is an emergency. So resolution reports the fork instead of guessing.
 
-export interface SnapshotMeta {
-  /** Snapshot file name, e.g. `0157_snapshot.json`. */
-  file: string;
-  id: string;
-  prevId: string;
-}
-
 export type SnapshotSelection =
   | { kind: 'resolved'; file: string; siblings: readonly string[] }
   | { kind: 'forked'; file: string; siblings: readonly string[]; prevId: string }
   | { kind: 'empty' };
-
-function snapshotIndex(file: string): number {
-  const match = /^(\d+)_/.exec(file);
-  return match ? Number(match[1]) : Number.NaN;
-}
-
-/** Read `id`/`prevId` out of every snapshot in a drizzle `meta` directory. */
-export function loadSnapshotMetas(metaDir: string): SnapshotMeta[] {
-  return readdirSync(metaDir)
-    .filter((f) => /^\d+_snapshot\.json$/.test(f))
-    .sort((a, b) => snapshotIndex(a) - snapshotIndex(b))
-    .map((file) => {
-      const parsed = JSON.parse(readFileSync(join(metaDir, file), 'utf8')) as {
-        id?: string;
-        prevId?: string;
-      };
-      return { file, id: parsed.id ?? '', prevId: parsed.prevId ?? '' };
-    });
-}
-
-/**
- * Pick the snapshot that represents the current schema, or refuse to.
- *
- * The tip is the highest-numbered snapshot. It is trustworthy only if no other
- * snapshot was generated from the same parent — a sibling means the two of them
- * split the schema between themselves.
- *
- * Deliberately narrow: only a fork AT THE TIP is fatal. Older fragments dangle
- * in this repo as residue from past renumbering (a snapshot whose successor was
- * deleted leaves a tip behind), and those have been harmless for a long time.
- * Failing on them would block every release to re-litigate settled history.
- * A root snapshot's `prevId` is empty, so multiple roots are not a fork either.
- */
-export function resolveSnapshotSelection(
-  metas: readonly SnapshotMeta[]
-): SnapshotSelection {
-  if (metas.length === 0) return { kind: 'empty' };
-
-  const ordered = [...metas].sort((a, b) => snapshotIndex(a.file) - snapshotIndex(b.file));
-  const tip = ordered[ordered.length - 1]!;
-
-  const siblings = tip.prevId
-    ? ordered.filter((m) => m.file !== tip.file && m.prevId === tip.prevId).map((m) => m.file)
-    : [];
-
-  if (siblings.length > 0) {
-    return { kind: 'forked', file: tip.file, siblings, prevId: tip.prevId };
-  }
-  return { kind: 'resolved', file: tip.file, siblings: [] };
-}
 
 // ─── drizzle v1 snapshots ────────────────────────────────────────────────────
 //
@@ -397,8 +322,8 @@ export function snapshotChainGaps(metas: readonly SnapshotMetaV1[]): string[] {
 }
 
 /**
- * The v1 counterpart of resolveSnapshotSelection, with the same deliberately
- * narrow rule: the tip (newest folder) is untrustworthy only if another
+ * Pick the snapshot that represents the current schema, or refuse to, with a
+ * deliberately narrow rule: the tip (newest folder) is untrustworthy only if another
  * snapshot was generated from one of its parents, i.e. two branches each added
  * a migration and nothing merged them. A merge snapshot names both leaves in
  * its prevIds and resolves normally. Roots are never siblings.
@@ -414,6 +339,31 @@ export function resolveSnapshotSelectionV1(metas: readonly SnapshotMetaV1[]): Sn
     return { kind: 'forked', file: tip.file, siblings: siblings.map((m) => m.file), prevId: shared };
   }
   return { kind: 'resolved', file: tip.file, siblings: [] };
+}
+
+/** Snapshots no other snapshot names as a parent: the tips of the chain, one per parallel branch. */
+export function snapshotLeaves(metas: readonly SnapshotMetaV1[]): SnapshotMetaV1[] {
+  return metas.filter((m) => !metas.some((other) => other.prevIds.includes(m.id)));
+}
+
+/**
+ * The entities every leaf holds, each once. Two branches that generated from one
+ * base each carry the base plus only their own change; `drizzle-kit check` has
+ * already proved they commute, so the schema is their union.
+ */
+export function unionLeafDdl(leaves: readonly SnapshotMetaV1[], readDdl: (file: string) => readonly unknown[]): unknown[] {
+  const seen = new Set<string>();
+  const out: unknown[] = [];
+  for (const leaf of leaves) {
+    for (const entity of readDdl(leaf.file)) {
+      const key = JSON.stringify(entity);
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(entity);
+      }
+    }
+  }
+  return out;
 }
 
 /**

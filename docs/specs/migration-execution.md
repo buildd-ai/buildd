@@ -8,14 +8,10 @@ domain: releases
 surfaces: [packages/core/db/migrate.ts, packages/core/db/migrate-plan.ts, packages/core/db/migrate-drift.ts, scripts/check-schema-drift.ts]
 related: [db-migration-gates, release-flow]
 verified_by: [packages/core/__tests__/migrate-plan.test.ts, apps/web/tests/db/migration-baseline.test.ts, packages/core/__tests__/migrate-drift.test.ts, packages/core/__tests__/migrate-tree.test.ts, packages/core/__tests__/migrate-apply.test.ts, packages/core/__tests__/legacy-migrations.test.ts, packages/core/__tests__/migration-layout.test.ts, apps/web/tests/db/migration-layout-v1.test.ts]
-keywords: [__drizzle_migrations, planMigrations, planMigrationsV1, drizzle v1, folder per migration, legacy map, snapshot rebase, high-water mark, last_migration_number, schema drift, 42703, backfill, toRun, toBackfill, forked snapshot chain, prevId, snapshot gap, resolveSnapshotSelection]
+keywords: [__drizzle_migrations, planMigrationsV1, drizzle v1, folder per migration, legacy map, snapshot rebase, high-water mark, last_migration_number, schema drift, 42703, backfill, toRun, toBackfill, forked snapshot chain, prevId, snapshot gap, resolveSnapshotSelection]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
-  - id: "migration-plan"
-    type: "symbol"
-    name: "planMigrations"
-    path: "packages/core/db/migrate-plan.ts"
   - id: "migrator-uses-plan"
     type: "symbol_reachable"
     symbol: "planMigrationsV1"
@@ -144,9 +140,7 @@ journal layout:
   refuses inside a transaction block (`CREATE INDEX CONCURRENTLY`), and `ALTER
   TYPE ... ADD VALUE` followed by a use of the new value in the same file.
 - Legacy-layout statements (a fresh database running the baseline) execute one at
-  a time with the tracking row inserted after the file, as before. The legacy code
-  path is retained for databases and trees that predate the cutover, and is dead
-  once none remain.
+  a time with the tracking row inserted after the file, as before. The migrator refuses a legacy journal tree outright (the rc's own reader would).
 - Two migrators at once MUST serialise: the migrator takes `__buildd_migrate_lock`
   and the second waits, then plans against what the first recorded.
 - `CREATE SCHEMA IF NOT EXISTS drizzle` and `CREATE TABLE IF NOT EXISTS
@@ -207,12 +201,16 @@ journal layout:
   siblings that each hold only part of the schema, and git conflicts on neither
   the `.sql` nor the `.json`. The baseline's snapshot is rooted (its parent was
   squashed away), so the chain has no gap at its start.
-- A fork **at the chain tip** MUST produce NO drift verdict. The gate MUST exit
-  with a code distinct from the drift code (`2` = cannot verify, `1` = drift),
-  name the siblings and their shared parent, and state that production is not
-  implicated. In this state the gate cannot distinguish "production was
-  hand-edited" from "I am reading the wrong branch of history", and only one of
-  those is an emergency, so it MUST NOT assert either.
+- **Parallel leaves are the schema's union, not a fork to refuse.** Under v1, two
+  branches that each generated from one base leave two leaf snapshots, each holding
+  the base plus only its own change, and nothing merges them until a later migration
+  does. `drizzle-kit check` fails a pair whose changes touch each other in CI
+  (`migrations:commute`), so by the time both are on a release the pair commutes:
+  the gate MUST expect the union of the leaves' entities, log which leaves it
+  used, and produce a verdict. (The legacy journal layout treated a fork at the tip
+  as unverifiable and exited 2; that gate no longer reads a legacy tree and refuses
+  one with exit 2.) A snapshot chain that cannot be read at all still exits 2, a
+  code distinct from drift (`1`).
 - A dangling older snapshot (successor removed by past renumbering) MUST be
   reported and MUST NOT be fatal. Several exist; failing on them would block
   every release to re-litigate settled history.
@@ -319,10 +317,10 @@ journal layout:
   BUT a journal migration creates it and `__drizzle_migrations` records that
   migration as applied WHEN the gate runs THEN it logs `[snapshot gap]` naming
   that migration and exits 0 — it MUST NOT report drift.
-- AC-12c (cannot-verify path): GIVEN two snapshots record the same `prevId` and
-  one of them is the highest-numbered WHEN the gate runs THEN it emits no drift
-  verdict, names both siblings and the shared parent, states that production is
-  not implicated, and exits 2 — not 1.
+- AC-12c: GIVEN two leaf snapshots that share a parent (two parallel migrations)
+  WHEN the gate runs THEN it logs both leaves, expects the union of their entities,
+  and returns a verdict: a table either branch added is expected, not "untracked
+  manual DDL". GIVEN a legacy journal tree THEN it exits 2 ("cannot verify"), not 1.
 - AC-12d: GIVEN a snapshot whose successor was removed by past renumbering WHEN
   the gate runs THEN it notes the dangling snapshot and proceeds to a verdict.
 - AC-13: GIVEN the newest snapshot declares a column that production does not
@@ -344,7 +342,6 @@ journal layout:
 | run loop + per-migration tracking insert | `packages/core/db/migrate.ts:64-76` |
 | transient-error list / terminal exit | `packages/core/db/migrate.ts:88-100` |
 | `planMigrationsV1`, `MigrationPlanV1` (name-keyed plan) | `packages/core/db/migrate-plan.ts` |
-| `planMigrations` (legacy layout, retained until none remain) | `packages/core/db/migrate-plan.ts` |
 | tree reader (fail closed), layout detection | `packages/core/db/migrate-tree.ts` |
 | legacy map and its tree check | `packages/core/db/legacy-migrations.ts`, `packages/core/db/legacy-migrations.json` |
 | per-file atomic apply (`db.batch`) | `packages/core/db/migrate-apply.ts` |
@@ -354,10 +351,10 @@ journal layout:
 | slot reservation (atomic UPDATE+RETURNING) | `apps/web/src/app/api/workspaces/[id]/migration-slot/route.ts:54-61` |
 | slot auth / 404 / zero-pad | `apps/web/src/app/api/workspaces/[id]/migration-slot/route.ts:35-38,63-68` |
 | agent-facing reserve-then-generate flow | `apps/web/src/lib/default-roles.ts:212-227` |
-| drift gate: snapshot resolution + fork refusal | `scripts/check-schema-drift.ts:136-186` |
+| drift gate: snapshot resolution, leaf union | `scripts/check-schema-drift.ts` (`latestSnapshot`), `packages/core/db/migrate-drift.ts` (`snapshotLeaves`, `unionLeafDdl`) |
 | drift gate: tracking-count schema fallback | `scripts/check-schema-drift.ts:244-270` |
 | drift gate: exit codes (drift vs cannot-verify) | `scripts/check-schema-drift.ts:69-70` |
-| `loadSnapshotMetas`, `resolveSnapshotSelection` | `packages/core/db/migrate-drift.ts:259-311` |
+| `loadSnapshotMetasV1`, `resolveSnapshotSelectionV1`, `snapshotChainGaps` | `packages/core/db/migrate-drift.ts` |
 | `classifyExtraSchemaObjects` (creator tracing) | `packages/core/db/migrate-drift.ts:344-400` |
 | `reconcileAppliedCount` | `packages/core/db/migrate-drift.ts:419-445` |
 | `Schema Drift / check-prod` job (step-level gate) | `.github/workflows/build.yml:313-345` |
@@ -367,7 +364,7 @@ journal layout:
 | `migrations:lint` (prod build runs migrations), `migrations:layout-check`, `migrations:commute`, `migrations:regenerate` | `package.json` |
 | migration change → full unit suite | `scripts/affected-tests.ts` |
 | squashed baseline (released history up to the cut) | `packages/core/drizzle/20261006230118_baseline/migration.sql` |
-| `findBaselineMillis`, `PreBaselineDatabaseError`, `LAST_RELEASE_BEFORE_SQUASH` | `packages/core/db/migrate-plan.ts` |
+| `PreBaselineDatabaseError`, `LAST_RELEASE_BEFORE_SQUASH` | `packages/core/db/migrate-plan.ts` |
 | squash equivalence proof (old tree vs new tree, real Postgres) | `apps/web/tests/db/migration-baseline.test.ts` |
 
 ## Out of scope
