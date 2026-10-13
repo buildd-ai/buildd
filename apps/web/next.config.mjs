@@ -110,6 +110,11 @@ const nextConfig = {
   // is absent at runtime, symbol-extractor's try/catch degrades gracefully
   // to the line-window chunker.
   serverExternalPackages: ['@ast-grep/napi'],
+  // Turbopack runs webpack loaders (Tailwind's PostCSS) in a pool of child
+  // Node processes by default. Worker threads share one process and cut the
+  // build's peak memory by about 1 GB, which keeps it under the 8 GB Vercel
+  // build machine; above that the compile swaps and never finishes.
+  experimental: { turbopackPluginRuntimeStrategy: 'workerThreads' },
   // The MCP route reads .claude/skills/buildd-mcp-consumer/SKILL.md and
   // .claude/skills/workspace-onboarding/SKILL.md (repo
   // root, outside apps/web) via readFileSync at request time — a path

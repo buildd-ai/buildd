@@ -17,6 +17,13 @@ const defaultExternals: string[] = JSON5.parse(
 );
 
 describe('next.config', () => {
+  // The production build peaks near the 8 GB Vercel build machine; with
+  // Turbopack's default child-process loader pool it goes over and the compile
+  // swaps until the deploy is killed. Worker threads keep it under.
+  it('runs Turbopack loaders in worker threads, to keep the build under 8 GB', () => {
+    expect((nextConfig as { experimental?: Record<string, unknown> }).experimental?.turbopackPluginRuntimeStrategy).toBe('workerThreads');
+  });
+
   it('bundles every direct dependency Next would auto-externalize', () => {
     const pkg = JSON.parse(readFileSync(join(webRoot, 'package.json'), 'utf8'));
     const deps = Object.keys(pkg.dependencies ?? {});
