@@ -114,6 +114,9 @@ export function organizeText(r: OrganizeReply): string {
   return [head, ...groups, r.classifier ? `Some answers fell back to similarity: ${r.classifier}.` : '', r.dryRun ? 'Run organize { dryRun: false } to apply it; every filing can be undone on the spec page.' : 'Each filing shows "Filed by buildd" with undo on its spec page.'].filter(Boolean).join('\n');
 }
 
+/** Sub-actions scoped to a workspace rather than to a spec or task: the caller resolves the session workspace for these. */
+export const WORKSPACE_SPEC_OPS = ['create_draft', 'list', 'organize'] as const;
+
 export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null, appBase = 'https://buildd.dev'): Promise<ToolResult> {
   const specUrl = (id: string) => `${appBase.replace(/\/+$/, '')}/app/specs/${encodeURIComponent(id)}`;
   const op = params.action as SpecOp;
