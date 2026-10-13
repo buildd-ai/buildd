@@ -2,7 +2,7 @@
  * Effect handlers for the fix-loop seam (docs/specs/workflow-state-kernel.md
  * §10.2), owned by the reviews module: they create reviewer and fix tasks,
  * post GitHub reviews and raise review escalations. Core reaches them only
- * through the composition root (`workflowEffectHandlers()` in
+ * through the composition root (`workflowHostEffectHandlers()` in
  * apps/web/src/modules.ts), never by import. Each one is idempotent: the outbox delivers at least once, so every
  * handler re-reads the delivery and acts only on what is still owed.
  *
@@ -632,9 +632,9 @@ const pushRecovery: EffectHandler = async (e) => {
   return { outcome: 'ok:exhausted' };
 };
 
-// The landing and post-merge effects are pr-landing-effects.ts's; the supersession
-// scan, its projection and the mission wake (T18/T20/T21) are supersession-effects.ts's.
-// Nothing emits these two yet.
+// The landing and post-merge effects, the supersession scan, its projection and the
+// mission wake (T18/T20/T21) and the activity render (§12.1) are the package's handlers
+// (packages/workflow-kernel/src/handlers), composed at the root. Nothing emits these two yet.
 const LEGACY_OWNED: EffectKind[] = ['release_attribution', 'gate_event'];
 
 export const reviewEffectHandlers: EffectHandlers = {
@@ -646,9 +646,6 @@ export const reviewEffectHandlers: EffectHandlers = {
   notify,
   cancel_open_attempts: cancelOpenAttempts,
   push_recovery: pushRecovery,
-  // §12.1: the comment is regenerated from transitions. Loaded lazily so this
-  // module does not pull the activity renderer into every importer.
-  render_activity: async (e) => (await import('./pr-activity-effects')).renderActivity(e),
   ...Object.fromEntries(LEGACY_OWNED.map((k) => [k, legacyOwns])),
 };
 

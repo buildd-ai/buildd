@@ -135,8 +135,17 @@ GitHub or Next.js.
   - GitHub facts: `GithubFactReader` (now the package's; `facts.ts`
     re-exports it), plus `GithubWrites`, the writes the effects need (merge
     at a pinned head, post a review, publish a commit status, update a
-    comment, delete a branch). NOT IMPLEMENTED: a buildd adapter for
-    `GithubWrites`; the effect handlers still call `@/lib/github` directly.
+    comment, delete a branch). `mergeAtHead` answers in T16 terms
+    (`MergeAnswer`: the `MergeCallResult` outcome, GitHub's message, when to
+    call again); the host reads GitHub's answer into it. A host with an
+    installation per workspace supplies `githubFor(workspaceId)` instead of
+    one `github` (`githubOf` picks). buildd's adapters are in
+    `apps/web/src/lib/workflow/kernel-ports.ts`: `builddGithubWrites` over
+    `@/lib/github`, `builddGithubFor` (the workspace's installation, its
+    live reads and writes); how a merge answer reads as T16 is the reviews
+    module's `mergeAnswerOf` (`pr-landing-effects.ts`). NOT IMPLEMENTED: the
+    handlers not moved yet (review, CI, conflict, trunk) still call
+    `@/lib/github` directly.
   - Clock: `now()`; the in-memory store and the conformance suite use a
     controllable clock (`controllableClock`, `src/memory/clock.ts`). SQL
     `now()` stays inside the Postgres statements.
@@ -145,7 +154,19 @@ GitHub or Next.js.
     (in buildd: task insert plus `announceTaskCreated`). Port and
     `RecordingWork` exist; NOT IMPLEMENTED: the buildd adapter.
   - Notify: a delivery's activity comment and team notifications. Port and
-    `RecordingNotify` exist; NOT IMPLEMENTED: the buildd adapter.
+    `RecordingNotify` exist; `activity` answers with the render's outcome.
+    buildd's adapter is composed at the root: the comment render
+    (`activityNotify`, `pr-activity-effects.ts`) and `notifyTeamOf`.
+  - Ingest: the fact funnel an effect hands a live read's fact to
+    (`IngestFact`: a close or a head move). Still buildd's `ingestFact`
+    (`builddIngest`); `RecordingIngest` in memory.
+  - Lifecycle: what the host does at a delivery's lifecycle points, which the
+    kernel orders but cannot know: project a supersession or abandonment onto
+    its records, scan for where a closed PR's work landed, wake whatever
+    coordinates the owner, the once-per-merge work, and tidying after a merge.
+    buildd's halves are `supersessionLifecycle` (`supersession-effects.ts`)
+    and `landingLifecycle` (`pr-landing-effects.ts`); `RecordingLifecycle` in
+    memory.
   - Decide: optional model-backed judgment at named decision points, below.
   - Policy: the per-workspace knobs the kernel reads (kill switch, landing
     lane mode, max rounds, max conflict iterations), passed in, never queried
@@ -154,12 +175,22 @@ GitHub or Next.js.
     statements still read the kill switch from `workspaces.git_config`
     (`kernelOnSql`), and the lane mode and limits are still read by the
     handlers.
-- Effect handlers in the package are written against these ports only. The
-  host composes them with its adapters once, at startup, replacing the
-  `@/modules` slot (`workflowEffectHandlers`). NOT IMPLEMENTED: the handlers
-  (review, review hand-off, CI retry, CI-red trunk, conflict retry, landing,
-  supersession, PR activity) are still apps/web modules; the drain that runs
-  them is the package's.
+- Effect handlers in the package are written against these ports only
+  (`packages/workflow-kernel/src/handlers/`; `kernelEffectHandlers(ports)`,
+  the kinds in `KERNEL_HANDLED_EFFECTS`). A handler whose port the host did
+  not supply throws, so its effect backs off and goes dead rather than being
+  acked. The host composes them with its adapters once, on first use:
+  buildd's `workflowKernel()` (`kernel-ports.ts`) builds the ports from the
+  composition root's slots (`workflowKernelHooks`,
+  `workflowHostEffectHandlers` in `@/modules`, which replace the old
+  handler chain there) and the package's handlers win over the
+  host's for the kinds they own. Implemented: landing and post-merge work
+  (`merge_call`, `verify_merge`, `emit_pr_merged`, `finalize_mission_pr`), a
+  closed PR's resolution (`scan_supersession`, `project_supersession`,
+  `wake_mission`) and the PR activity render (`render_activity`). NOT
+  IMPLEMENTED: review, review hand-off, CI retry, CI-red trunk and conflict
+  retry are still apps/web modules (`workflowHostEffectHandlers`); the drain
+  that runs them is the package's.
 - Conformance suite: `CONFORMANCE_SCENARIOS`
   (`packages/workflow-kernel/src/conformance/scenarios.ts`), host-independent
   scenarios over a `ConformanceHost`, run on the in-memory store by
@@ -168,9 +199,11 @@ GitHub or Next.js.
   test:db`) with identical expectations, so a host adapter is proven by the
   suite, not by hand. It covers the §16 S2, S5, S6 and S20 rows, the CAS and
   open races, the #4679 and #4686 sequences, the outbox drain (ack, backoff,
-  §10.4 supersession, §14 kill switch), the landing lane and AC-27–AC-29.
-  NOT IMPLEMENTED: the rest of the §16 matrix, §15 replay, the #3787 and
-  #4663/#4670 sequences and a fake GitHub.
+  §10.4 supersession, §14 kill switch), the landing lane, AC-27–AC-29, and
+  the package's handlers (the `handlers/...` scenarios) run by a real drain
+  on a fake GitHub (`FakeGithub`) and the recording Ingest, Lifecycle and
+  Notify. NOT IMPLEMENTED: the rest of the §16 matrix, §15 replay, the #3787
+  and #4663/#4670 sequences, and scenarios for the handlers not moved yet.
 - No model calls, prompts or decision policies in the package. Model-backed
   judgment stays possible through the Decide port:
   - Where the kernel needs a judgment (a reviewer verdict, whether a conflict
@@ -185,7 +218,10 @@ GitHub or Next.js.
     still calls its decision model directly instead of through `decideAt`.
   - Every decision point has a deterministic default in the package. No
     decider, no answer, a timeout or an error takes the default, and the
-    fallback reason is recorded. A decider can never be required for the
+    fallback reason is recorded. A recorded fact that cannot be read as a
+    decision takes the default too (`invalid_record`), recorded beside it
+    under `invalidRecordFactKey`, so a replay answers the same and never
+    throws. A decider can never be required for the
     kernel to make progress, and its answer never bypasses a gate (§4).
   - The answer is recorded as a fact on the delivery (point, decider id,
     verdict, confidence, reason) before the transition that uses it. Replay

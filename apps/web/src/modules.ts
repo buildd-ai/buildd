@@ -36,12 +36,15 @@ import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import type { ApprovedMergeRule } from '@/lib/workflow/delivery-view';
 import { approvedNeedsPerson } from '@/lib/merge-policy-approved';
 import type { EffectHandlers } from '@/lib/workflow/effects';
+import type { BuilddKernelHooks } from '@/lib/workflow/kernel-ports';
 import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
 import { withCiRetryEffects } from '@/lib/workflow/ci-retry-effects';
 import { withTrunkEffects } from '@/lib/workflow/ci-red-trunk-effects';
 import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
-import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
-import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
+import { landingLifecycle, mergeAnswerOf } from '@/lib/workflow/pr-landing-effects';
+import { supersessionLifecycle } from '@/lib/workflow/supersession-effects';
+import { activityNotify } from '@/lib/workflow/pr-activity-effects';
+import { notifyTeamOf, type TeamAlertEvent } from '@/lib/notify';
 import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
 import { legacyFirstReview } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
@@ -142,25 +145,45 @@ export const RUN_PROGRESS_READERS: RunProgressReaders = {
 export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
 
 /**
- * The workflow kernel's effect handlers (lib/workflow/effects.ts). The kernel
- * (core) decides and records the effect; the reviews module carries out the
- * review-loop ones (reviewer and fix tasks, GitHub reviews, escalations), the
- * CI family's (CI fix tasks bound to their ledger row, CI exhaustion), the
- * conflict/migration families' (mechanical refresh and renumber first, an
- * agent conflict fix only on a refusal, conflict exhaustion), the trunk
- * breaker's (one trunk-fix task per incident, cancelling the per-PR CI fix
- * tasks a trunk incident skipped), landing and
- * post-merge work (merge call, verify, post-merge events, mission-PR
- * finalize), and a closed PR's resolution (supersession scan, the edge's
- * projection, mission wake). Each effect kind has exactly one handler.
+ * The workflow kernel's slots (docs/specs/workflow-kernel-library.md §2). Core
+ * composes the kernel once from them (`workflowKernel()` in
+ * lib/workflow/kernel-ports.ts): buildd's adapters for the kernel's ports, and
+ * the effect handler map the drain runs. The kernel (core) decides and
+ * records the effect.
+ *
+ * `workflowKernelHooks()`: each module's half of the ports. How GitHub's merge
+ * answer reads as T16 and the activity render (reviews), the supersession
+ * scan, the edge's projection and the mission wake (reviews, missions), the
+ * post-merge work and mission-PR finalize (reviews, missions), team
+ * notifications. The package's handlers (landing and post-merge work, a closed
+ * PR's resolution, the activity render) run on these.
+ *
+ * `workflowHostEffectHandlers()`: the families not moved into the package
+ * yet, still this app's modules: the review loop (reviewer and fix tasks,
+ * GitHub reviews, escalations), the CI family (CI fix tasks bound to their
+ * ledger row, CI exhaustion), the conflict/migration families (mechanical
+ * refresh and renumber first, an agent conflict fix only on a refusal,
+ * conflict exhaustion) and the trunk breaker (one trunk-fix task per incident,
+ * cancelling the per-PR CI fix tasks a trunk incident skipped). Each effect
+ * kind has exactly one handler; the package's win.
  *
  * Built on first use, not at load: the handler modules reach back into this
  * file through core-emit (post-merge work emits events), so composing them at
  * load time works or throws depending on which module a process imports first.
  */
-let workflowEffectHandlersMemo: EffectHandlers | null = null;
-export function workflowEffectHandlers(): EffectHandlers {
-  return (workflowEffectHandlersMemo ??= withSupersessionEffects(withLandingEffects(withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers))))));
+export function workflowKernelHooks(): BuilddKernelHooks {
+  return {
+    mergeAnswerOf,
+    notify: {
+      ...activityNotify(),
+      team: (p) => notifyTeamOf({ workspaceId: p.workspaceId }, p.kind as TeamAlertEvent, { title: p.title, message: p.body ?? '' }),
+    },
+    lifecycle: { ...supersessionLifecycle, ...landingLifecycle },
+  };
+}
+let workflowHostEffectHandlersMemo: EffectHandlers | null = null;
+export function workflowHostEffectHandlers(): EffectHandlers {
+  return (workflowHostEffectHandlersMemo ??= withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers))));
 }
 
 /**

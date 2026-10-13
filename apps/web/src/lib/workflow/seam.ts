@@ -64,7 +64,8 @@ export interface SeamDeps {
 const readerFor = (deps: SeamDeps, installationId: number): GithubFactReader => (deps.reader ?? githubReader)(installationId);
 
 /**
- * The effect handlers, filled in by the composition root: the review-loop
+ * The effect handlers: the kernel composed once from its ports and the
+ * composition root's slots (kernel-ports.ts `workflowKernel`). The review-loop
  * effects belong to the reviews module, which core never imports
  * (scripts/module-boundaries.test.ts). Lazy, so loading the seam does not load
  * every module.
@@ -72,7 +73,8 @@ const readerFor = (deps: SeamDeps, installationId: number): GithubFactReader => 
 async function effectHandlers(): Promise<EffectHandlers> {
   // The kernel's own projection onto the PR fact cache (stamp_pr_rows) is core,
   // not a module's: it is added here rather than at the composition root.
-  return withPrFactEffects((await import('@/modules')).workflowEffectHandlers());
+  const { workflowKernel } = await import('./kernel-ports');
+  return withPrFactEffects((await workflowKernel()).handlers);
 }
 
 export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Promise<DrainSummary | null> {

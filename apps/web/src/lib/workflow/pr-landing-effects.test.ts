@@ -1,12 +1,16 @@
 /**
- * The landing family's effect handlers (T15–T17, §14 Slice C). The handlers'
- * behaviour on real Postgres — the pinned merge call, verification, the
- * post-merge work — is S10/S15 in
- * apps/web/tests/db/workflow-matrix.test.ts; this file pins the pure mapping
- * from GitHub's merge answer to the T16 outcome, and the composition.
+ * The landing family (T15–T17, §14 Slice C). The handlers are the package's
+ * (packages/workflow-kernel/src/handlers/landing.ts, run on fake ports by the
+ * conformance scenarios); their behaviour on real Postgres — the pinned merge
+ * call, verification, the post-merge work — is S10/S15 in
+ * apps/web/tests/db/workflow-matrix.test.ts. This file pins buildd's half: the
+ * pure mapping from GitHub's merge answer to the T16 outcome, and the handler set.
  */
 import { describe, expect, test } from 'bun:test';
-import { classifyMergeCall, mergeRetryAt, withLandingEffects } from './pr-landing-effects';
+import { landingHandlers } from '@buildd/workflow-kernel/handlers/index';
+import { MemoryStore } from '@buildd/workflow-kernel/memory/store';
+import { controllableClock, sequentialIds } from '@buildd/workflow-kernel/memory/clock';
+import { classifyMergeCall, mergeAnswerOf, mergeRetryAt } from './pr-landing-effects';
 
 describe('classifyMergeCall: GitHub answer → MergeCallResult outcome', () => {
   const no = (message: string, indeterminate = false) => classifyMergeCall({ merged: false, message, indeterminate });
@@ -66,15 +70,20 @@ describe('classifyMergeCall: GitHub answer → MergeCallResult outcome', () => {
   });
 });
 
-test('withLandingEffects composes every landing and post-merge effect the reducer emits', () => {
-  const h = withLandingEffects({}) as Record<string, unknown>;
-  for (const k of ['merge_call', 'verify_merge', 'emit_pr_merged', 'finalize_mission_pr']) {
-    expect(typeof h[k]).toBe('function');
-  }
+describe('mergeAnswerOf: the port answer the package handler applies as T16', () => {
+  test('carries the outcome, what GitHub said, and when to call again', () => {
+    const now = Date.parse('2026-10-01T00:00:00Z');
+    expect(mergeAnswerOf({ merged: true, message: 'Pull Request successfully merged' }, now)).toEqual({ outcome: 'merged', detail: 'Pull Request successfully merged', retryAt: null });
+    expect(mergeAnswerOf({ merged: false, message: 'You have exceeded a secondary rate limit.', status: 429, retryAfterMs: 120_000 }, now))
+      .toEqual({ outcome: 'not_merged', detail: 'You have exceeded a secondary rate limit.', retryAt: '2026-10-01T00:02:00.000Z' });
+    expect(mergeAnswerOf({ merged: false, message: 'Merge conflict' }, now)).toEqual({ outcome: 'conflict', detail: 'Merge conflict', retryAt: null });
+  });
 });
 
 // T16's behind/conflict is a conflict-family repair: its handlers are conflict-retry-effects.ts's,
 // so the landing family must not register a second one that shadows them by composition order.
-test('withLandingEffects adds no conflict-family handler', () => {
-  expect(Object.keys(withLandingEffects({})).sort()).toEqual(['emit_pr_merged', 'finalize_mission_pr', 'merge_call', 'verify_merge']);
+test('the landing handlers are exactly the landing and post-merge effects, and no conflict-family one', () => {
+  const clock = controllableClock();
+  const h = landingHandlers({ store: new MemoryStore(clock, sequentialIds()), clock });
+  expect(Object.keys(h).sort()).toEqual(['emit_pr_merged', 'finalize_mission_pr', 'merge_call', 'verify_merge']);
 });

@@ -1120,7 +1120,7 @@ Later slices add the files named in §14.
 
 Shipped live (part 1, the review family): schema linkage (§5.6, `authority`);
 `seam.ts` (route API), `authority.ts` (kill switch and release), `github-facts.ts`
-(live reads), `review-effects.ts` (effects, owned by the reviews module and wired through the composition root `workflowEffectHandlers()`); `openKernelDelivery` at the two legacy
+(live reads), `review-effects.ts` (effects, owned by the reviews module and wired through the composition root `workflowHostEffectHandlers()`); `openKernelDelivery` at the two legacy
 first-review points (the PR `opened` policy after pre-flight and role resolution, and
 create_pr's integration-branch review); T4 at the terminal worker PATCH; the
 `delivery_not_advanced` gate; T6 in `handleReviewerOutcomeIfNeeded`; T9 at claim;
@@ -1162,7 +1162,7 @@ Shipped live in part 2 (the CI family):
   counts the same rows, so N of M is 1-based and identical in the title, the task
   context and the activity entry.
 - **`dispatch_ci_fix`** (`ci-retry-effects.ts`, reviews module, composed into
-  `workflowEffectHandlers()`) revalidates at dispatch (PR open, head still the bound
+  `workflowHostEffectHandlers()`) revalidates at dispatch (PR open, head still the bound
   head, CI not green now), then files the legacy-shaped CI fix or drift-diagnose task
   with `delivery_role = ci_fix`; its task id is the attempt id, so a re-run files
   nothing twice. CI exhaustion escalates through `escalateCiRedHead`.
@@ -1424,7 +1424,7 @@ not own keeps the legacy conflict retry unchanged:
   `behind` (the auto-merge door) or T16 (the kernel's own merge call refused as
   behind). A legacy PR keeps the in-door refresh.
 - **Mechanical first (§6.7), in `conflict-retry-effects.ts`** (composed into
-  `workflowEffectHandlers()`). `refresh_branch` runs `refreshBehindPr` pinned to the
+  `workflowHostEffectHandlers()`). `refresh_branch` runs `refreshBehindPr` pinned to the
   bound head (GitHub update-branch with `expected_head_sha`, so the semantic check, the
   single-flight lease and the operational bound still apply). Success: the new head
   arrives through T3, is attributed to the mechanical row by §6.9, ends it `delivered`,
@@ -1583,7 +1583,7 @@ Shipped live: the fact-ingestion funnel and terminal-wins for the PR fact cache.
   `conflict`; `conflict_detected_at` is no longer reset on re-entry; the `check_suite`
   terminal guard is in the statement, not a read-then-write.
 - **`stamp_pr_rows`** (`lib/workflow/pr-fact-effects.ts`, composed into
-  `workflowEffectHandlers()`) is live: T17/T18 project the merge (with the
+  the seam's handler set) is live: T17/T18 project the merge (with the
   delivery's GitHub `merged_at`) or the close onto every row of the PR through the
   funnel. It is no longer acknowledged `legacy_owns`.
 - **Importers feed the kernel** (§11): when `pr-reconcile` or `pr-state-refresh`
@@ -1848,7 +1848,7 @@ direct column writes exactly as they were:
   `POST /api/github/pr/review`), never one the owner's task links; its T20 actor is
   `agent:<its task>` (S21).
 - **Found and fixed: Slice C's handlers were never composed.** `modules.ts`
-  imported `withLandingEffects` and did not apply it, so in production `merge_call`,
+  imported the landing composition and did not apply it, so in production `merge_call`,
   `verify_merge`, `refresh_branch`, `dispatch_conflict_fix`, `emit_pr_merged` and
   `finalize_mission_pr` had no handler and would have retried until dead (the matrix
   composes its own handler set, so it never saw this). The root now composes
@@ -1857,8 +1857,8 @@ direct column writes exactly as they were:
 
 Deviations, each deliberate:
 
-1. **The composition is built on first use** (`workflowEffectHandlers()`, which
-   replaces the `WORKFLOW_EFFECT_HANDLERS` constant). The handler modules reach
+1. **The composition is built on first use** (today `workflowKernel()` in
+   `kernel-ports.ts`, from the root's slots, which replaced a load-time constant). The handler modules reach
    back into `modules.ts` through `core-emit`, so composing them at load works or
    throws depending on which module a process imports first.
 2. **One projection effect for both resolutions.** T21 emits `project_supersession`
