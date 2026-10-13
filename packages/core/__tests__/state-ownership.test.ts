@@ -2,8 +2,9 @@
  * One owner per state machine (docs/specs/execution-control-plane.md): Living
  * Specs owns spec revisions, approvals and artifacts; the execution control
  * plane (the workflow kernel) owns execution state. The kernel half is
- * workflow-write-sites.test.ts (only apps/web/src/lib/workflow/ touches the
- * workflow_* tables). This is the other half: Living Specs tables are written
+ * workflow-write-sites.test.ts (only the kernel, apps/web/src/lib/workflow/ and
+ * packages/workflow-kernel/src/, touches the workflow_* tables). This is the
+ * other half: Living Specs tables are written
  * only by Living Specs modules, never by the kernel, and the legacy writers
  * outside both are a list that can only shrink.
  */
@@ -49,7 +50,9 @@ const LEGACY: Record<string, string> = {
   'packages/core/memory-digest-readout-source.ts': 'memory digest readout',
 };
 
-const KERNEL_DIR = 'apps/web/src/lib/workflow/';
+/** The kernel: apps/web's host modules and the pure core package they re-export. */
+const KERNEL_DIRS = ['apps/web/src/lib/workflow/', 'packages/workflow-kernel/src/'];
+const inKernel = (f: string) => KERNEL_DIRS.some((dir) => f.startsWith(dir));
 
 function code(file: string): string {
   return readFileSync(join(repo, file), 'utf8')
@@ -60,7 +63,7 @@ const writes = (f: string) => { const c = code(f); return SQL_WRITE.test(c) || D
 
 describe('the kernel half stays enforced', () => {
   // Kernel-owned TABLES (workflow_deliveries, workflow_effects,
-  // workflow_transitions, ...) have one writer, apps/web/src/lib/workflow/,
+  // workflow_transitions, ...) have one writer, the kernel (apps/web/src/lib/workflow/ and packages/workflow-kernel/src/),
   // asserted in blocking mode by workflow-write-sites.test.ts. Task and worker
   // lifecycle COLUMNS are, per docs/specs/workflow-state-kernel.md, fact caches
   // and projections that many doors write today, not kernel-owned state, so
@@ -78,12 +81,12 @@ describe('the kernel half stays enforced', () => {
 describe('Living Specs tables have one owner', () => {
   it('scans a real tree with the kernel and the artifact routes in it', () => {
     expect(files.length).toBeGreaterThan(500);
-    expect(files.some((f) => f.startsWith(KERNEL_DIR))).toBe(true);
+    for (const dir of KERNEL_DIRS) expect(files.some((f) => f.startsWith(dir))).toBe(true);
     expect(files).toContain('apps/web/src/app/api/artifacts/[artifactId]/route.ts');
   });
 
   it('the workflow kernel never writes a Living Specs table', () => {
-    expect(files.filter((f) => f.startsWith(KERNEL_DIR) && writes(f))).toEqual([]);
+    expect(files.filter((f) => inKernel(f) && writes(f))).toEqual([]);
   });
 
   it('every other writer is a Living Specs module or a listed legacy writer', () => {
