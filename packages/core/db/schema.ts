@@ -2817,6 +2817,29 @@ export const specRevisions = pgTable('spec_revisions', {
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
 }));
 
+// Derived neighbours of a Living Spec (living-specs.md §14, decisions D-11/D-12):
+// specs that are near it by meaning (`similar`), by the files their work changed
+// (`shares_files`), or by criteria judged to mean the same (`overlaps`, written by
+// the duplicate check). Labelled by kind and source, scored, replaced whole per
+// (spec, kind) on each recompute, and never read by approval, pinning or outcomes.
+export const specNeighbors = pgTable('spec_neighbors', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  neighborSpecId: uuid('neighbor_spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull().$type<'similar' | 'shares_files' | 'overlaps'>(),
+  /** 0..1: cosine for `similar`, shared share of the smaller file set for `shares_files`, the judge's probability for `overlaps`. */
+  score: real('score').notNull(),
+  /** Where it came from: `vector` | `lexical` | `pr_files` | `path_manifest` | a decision model id. */
+  source: text('source').notNull(),
+  /** Kind-specific reason: `{ files, sample }` for shares_files, `{ pairs: [{ here, there }] }` for overlaps. Ids and paths only. */
+  detail: jsonb('detail').$type<Record<string, unknown>>(),
+  computedAt: timestamp('computed_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniquePair: uniqueIndex('spec_neighbors_pair_kind_idx').on(t.specId, t.neighborSpecId, t.kind),
+  neighborIdx: index('spec_neighbors_neighbor_idx').on(t.neighborSpecId),
+}));
+
 /**
  * One verdict on one acceptance criterion of an approved spec revision, for
  * one task's outcome (Living Specs V1, D-5). Append-only: a re-check adds a
