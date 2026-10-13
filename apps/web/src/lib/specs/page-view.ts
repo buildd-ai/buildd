@@ -7,6 +7,7 @@ import { specApprover } from './approval';
 import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
 import { linkedRepoFullName } from './repo-source';
 import { approvedDesignDrift } from './design';
+import { readSpecNeighbours, type NearbySpec } from './neighbours';
 import type { RepoRef } from './repo-refs';
 
 /**
@@ -71,6 +72,25 @@ export function specTree(rows: ReadonlyArray<SpecRow>): SpecListItem[] {
   return roots;
 }
 
+/**
+ * The list's groups (R-18): each product or area at the top of the tree heads
+ * its own group, and every other top-level spec (a feature or mission with no
+ * parent in the workspace) is Unfiled. Order is kept. Pure.
+ */
+export type SpecListGroup =
+  | { kind: 'area'; head: SpecListItem }
+  | { kind: 'unfiled'; specs: SpecListItem[] };
+
+export function specGroups(roots: ReadonlyArray<SpecListItem>): SpecListGroup[] {
+  const areas: SpecListGroup[] = [];
+  const unfiled: SpecListItem[] = [];
+  for (const r of roots) {
+    if (r.scope === 'product' || r.scope === 'domain') areas.push({ kind: 'area', head: r });
+    else unfiled.push(r);
+  }
+  return unfiled.length ? [...areas, { kind: 'unfiled', specs: unfiled }] : areas;
+}
+
 /** A cited repo file at its commit on GitHub; null without a linked repo. */
 export function repoRefHref(fullName: string | null, ref: RepoRef): string | null {
   if (!fullName) return null;
@@ -132,6 +152,8 @@ export type SpecPageView =
      * The design the revision being read is built to (§12), and, when that is
      * the approved revision, whether the design has a newer version since.
      */
+    /** Derived neighbours (§14), strongest first, each with why it is near. */
+    nearby: NearbySpec[];
     design: { label: string; href: string | null; version: string; screens: string[]; changedSince: { pinned: string; current: string } | null } | null;
     /** Two picked revisions: the changes from `from` to `to`. */
     compare: (SpecPanes & { from: number; to: number }) | { error: string } | null;
@@ -214,6 +236,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     };
   }
 
+  const nearby = await readSpecNeighbours(spec.id).catch(() => [] as NearbySpec[]);
+
   let compare: Extract<SpecPageView, { state: 'ok' }>['compare'] = null;
   if (opts.from !== undefined && opts.to !== undefined) {
     const d = await diffSpecRevisions(caller, specId, { from: opts.from, to: opts.to, rows: true });
@@ -244,6 +268,6 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     reading: { revision: got.view.revision.revision, approved: spec.approvedRevision === got.view.revision.revision, isHead: got.view.revision.revision === spec.headRevision },
     waiting: pending && open ? spec.headRevision : null,
     body: got.view.body,
-    revisions, parent: parent ?? null, children, repoRefs, design, compare, canApprove, review,
+    revisions, parent: parent ?? null, children, repoRefs, design, nearby, compare, canApprove, review,
   };
 }

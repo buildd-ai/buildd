@@ -237,6 +237,17 @@ export function providerListing(
   };
 }
 
+/** The team's display name; null when the lookup fails (the page falls back to "team"). */
+export async function loadTeamName(teamId: string): Promise<string | null> {
+  try {
+    const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { name: true } });
+    return team?.name ?? null;
+  } catch (error) {
+    console.warn('[providers] team name lookup failed:', error);
+    return null;
+  }
+}
+
 export async function loadPolicySummary(teamId: string): Promise<ProviderPolicySummary> {
   let team: { credentialPolicy: unknown; inferenceKeyPolicy: unknown } | null = null;
   try {

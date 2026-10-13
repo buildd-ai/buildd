@@ -221,6 +221,7 @@ const SAFE: Record<string, string[]> = {
   spec_revisions: ['content_hash', 'repo_refs'], // repo paths pinned to commit SHAs
   // A criterion id from the spec body (R-1, AC-2) and a git SHA.
   spec_outcome_verdicts: ['criterion_id', 'head_sha'],
+  spec_neighbors: ['source'], // vector | lexical | pr_files | path_manifest | a decision model id
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
   // github_repos.default_branch.

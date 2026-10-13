@@ -65,6 +65,7 @@ import type { ClaimContextInjection } from '@/app/api/workers/claim/context-inje
 import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-routes';
 import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-audit-spec-criteria';
 import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
+import { checkSpecDuplicates, recordDuplicateOverride } from '@/lib/spec-duplicate-decision';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -255,6 +256,24 @@ export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers,
  * mission's [surface audit] saw on a spec criterion.
  */
 export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
+
+/**
+ * The decisions module's spec duplicate slot (lib/spec-duplicate-decision.ts):
+ * createSpecDraft compares a new spec with the approved ones, and records a
+ * person's override of a refusal on the ledger rows that refused it.
+ */
+export const SPEC_DUPLICATE_CHECK = checkSpecDuplicates;
+export const SPEC_DUPLICATE_OVERRIDE = recordDuplicateOverride;
+
+/**
+ * The knowledge module's boot slot for Living Spec neighbours (instrumentation.ts):
+ * installs the spec-corpus similarity query behind core's `neighbourDeps`
+ * (lib/specs/neighbours.ts), so the nearby route can suggest a parent.
+ */
+export const SPEC_SIMILARITY = async (): Promise<void> => {
+  const { installSpecSimilarity } = await import('@/lib/specs/knowledge');
+  installSpecSimilarity();
+};
 
 /**
  * The decisions module's boot slot (instrumentation.ts): installs the evidence

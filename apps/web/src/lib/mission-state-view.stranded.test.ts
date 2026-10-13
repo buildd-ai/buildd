@@ -71,7 +71,7 @@ describe('stranded local mission', () => {
     });
     expect(view.kind).toBe('running');
     expect(view.chip.label).toBe('LOCAL');
-    expect(view.situation.headline).toBe('Waiting for a local session to claim the open task.');
+    expect(view.situation.headline).toBe('Ready to start from a local session.');
   });
 
   it('held beats it, even if a caller passes a strand', () => {

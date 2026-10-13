@@ -31,7 +31,7 @@ export async function replaceLivingSpecGraph(input: {
       AND from_entity_id IN (
         SELECT id FROM knowledge_entities
         WHERE workspace_id = ${workspaceId}
-          AND ((kind = 'spec' AND key = ${specId}) OR (kind = 'spec_revision' AND starts_with(key, ${`${specId}@`})))
+          AND ((kind = 'spec' AND key = ${specId}) OR (kind IN ('spec_revision', 'spec_criterion') AND starts_with(key, ${`${specId}@`})))
       )
   `);
   await db.execute(sql`

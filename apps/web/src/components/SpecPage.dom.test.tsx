@@ -56,6 +56,7 @@ const base = {
   children: [] as Array<{ id: string; title: string }>,
   repoRefs: [{ path: 'docs/specs/checkout.md', sha: 'abcdef123456', href: 'https://github.com/acme/shop/blob/abc/docs/specs/checkout.md' }],
   design: null as any,
+  nearby: [] as any[],
   compare: null,
   canApprove: true,
   review: null as any,
@@ -106,6 +107,19 @@ describe('SpecPage', () => {
     expect(q('spec-page-design-changed')!.textContent).toBe('The design changed since approval: it is at version 5, and revision 1 was approved with version 3.');
     act(() => root.render(<SpecPage view={base} />));
     expect(q('spec-page-design')).toBeNull();
+  });
+
+  it('lists nearby specs with why each is near, strongest kind first', () => {
+    const nearby = [
+      { specId: 'n1', title: 'Refunds', kind: 'shares_files', score: 0.5, reason: "Changes 3 files this spec's work changed" },
+      { specId: 'n2', title: 'Pricing', kind: 'similar', score: 0.7, reason: 'Similar in what it asks for' },
+    ];
+    act(() => root.render(<SpecPage view={{ ...base, nearby }} />));
+    const items = [...container.querySelectorAll('[data-testid="spec-page-nearby-item"]')];
+    expect(items.map((i) => [i.getAttribute('data-kind'), i.querySelector('a')!.getAttribute('href'), i.querySelector('span')!.textContent]))
+      .toEqual([['shares_files', '/app/specs/n1', "Changes 3 files this spec's work changed"], ['similar', '/app/specs/n2', 'Similar in what it asks for']]);
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-nearby')).toBeNull();
   });
 
   it('a reader who may not approve sees no approve action', () => {
