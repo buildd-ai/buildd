@@ -150,6 +150,26 @@ mock.module('@/lib/github', () => ({
   },
 }));
 
+// The visual review half of the ready-to-merge decision. The state derivation is
+// proven in workflow/visual-review-state.test.ts and the decision in
+// ready-to-merge.test.ts; here only the guard's wiring to it is asserted.
+let visualState: any = null;
+let visualStateThrows = false;
+const scheduledMissions: string[] = [];
+mock.module('@/lib/workflow/visual-review-state-load', () => ({
+  getMissionVisualReviewState: async () => {
+    if (visualStateThrows) throw new Error('db down');
+    return visualState;
+  },
+}));
+mock.module('@/lib/workflow/visual-review-schedule-run', () => ({
+  scheduleMissionVisualReview: async (id: string) => { scheduledMissions.push(id); return null; },
+}));
+const passedVisual = (over: Record<string, unknown> = {}) => ({
+  status: 'passed', pendingVerification: false, staleEvidence: false, nextActor: 'none',
+  branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } }, ...over,
+});
+
 // The PR fact funnel: terminal-wins is proven on real Postgres in
 // tests/db/pr-facts.test.ts; here we assert the fact each write hands over.
 // Not spread from the real module: drizzle-orm above is a partial surface
@@ -199,6 +219,9 @@ function worker(over: Partial<Record<string, any>> = {}) {
 }
 
 beforeEach(() => {
+  visualState = passedVisual();
+  visualStateThrows = false;
+  scheduledMissions.length = 0;
   taskQueryWhere = null;
   workerQueryWhere = null;
   taskRowsForMission = [];
@@ -386,6 +409,65 @@ describe('guardMissionPrMerge', () => {
 
     const gate = await guardMissionPrMerge(ownerTask());
     expect(gate).toEqual({ blocks: false });
+  });
+
+  // ── the visual review half (ready-to-merge.ts) ────────────────────────────
+  describe('visual review', () => {
+    const landed = () => {
+      taskRowsForMission = [workTask('t-1', 'completed'), ownerTask()];
+      workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+    };
+
+    it('refuses the mission PR while the review is owed on its head, and files it', async () => {
+      landed();
+      visualState = passedVisual({ status: 'needed', pendingVerification: true, nextActor: 'system' });
+      const gate = await guardMissionPrMerge(ownerTask());
+      expect(gate).toMatchObject({ blocks: true, codes: ['visual_review_owed'], nextActor: 'system' });
+      await new Promise(r => setTimeout(r, 0));
+      expect(scheduledMissions).toEqual([ownerTask().missionId]);
+    });
+
+    it('refuses a pass on an older commit and re-files the review for this one', async () => {
+      landed();
+      visualState = passedVisual({ status: 'needed', pendingVerification: true, staleEvidence: true, nextActor: 'system' });
+      const gate = await guardMissionPrMerge(ownerTask());
+      expect(gate).toMatchObject({ blocks: true, codes: ['visual_review_stale'] });
+      await new Promise(r => setTimeout(r, 0));
+      expect(scheduledMissions.length).toBe(1);
+    });
+
+    it('names the owner when the review cannot run and does not file another', async () => {
+      landed();
+      visualState = passedVisual({ status: 'blocked', pendingVerification: true, nextActor: 'owner', blocked: { cause: 'no_browser_runner' } });
+      const gate = await guardMissionPrMerge(ownerTask());
+      expect(gate).toMatchObject({ blocks: true, codes: ['visual_review_blocked'], nextActor: 'owner' });
+      expect(scheduledMissions).toEqual([]);
+    });
+
+    it('fails closed when the review state cannot be read', async () => {
+      landed();
+      visualStateThrows = true;
+      expect(await guardMissionPrMerge(ownerTask())).toMatchObject({ blocks: true, codes: ['visual_state_unreadable'] });
+    });
+
+    it('reports unfinished work and an owed review together', async () => {
+      taskRowsForMission = [workTask('t-1', 'completed'), workTask('t-2', 'pending'), ownerTask()];
+      workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+      visualState = passedVisual({ status: 'needed', pendingVerification: true });
+      const gate = await guardMissionPrMerge(ownerTask());
+      expect(gate).toMatchObject({ blocks: true, codes: ['work_unfinished', 'visual_review_owed'] });
+    });
+
+    it('never gates a task PR into the integration branch, whatever the review says', async () => {
+      visualState = passedVisual({ status: 'needed', pendingVerification: true });
+      expect(await guardMissionPrMerge(workTask('t-1', 'completed'))).toEqual({ blocks: false });
+      expect(scheduledMissions).toEqual([]);
+    });
+
+    it('does not gate a direct-to-trunk mission, which has no mission PR task', async () => {
+      visualState = passedVisual({ status: 'needed', pendingVerification: true });
+      expect(await guardMissionPrMerge({ title: 'Ship the thing', taskClass: 'work', missionId: 'mission-direct' })).toEqual({ blocks: false });
+    });
   });
 
   it('does not apply to an ordinary task PR — only the mission PR is gated', async () => {

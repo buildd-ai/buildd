@@ -35,7 +35,8 @@ import MemberRepoAccessSection from './MemberRepoAccessSection';
 import MergePolicyEditor from './MergePolicyEditor';
 import BranchStrategySection from './BranchStrategySection';
 import CopyReviewSection from './CopyReviewSection';
-import { copyReviewConfigOf } from '@buildd/shared';
+import VisualReviewPolicySection from './VisualReviewPolicySection';
+import { copyReviewConfigOf, visualReviewPolicyOf } from '@buildd/shared';
 import FreshContainerSection from './FreshContainerSection';
 import CiRetrySection from './CiRetrySection';
 import ReleaseSection from './ReleaseSection';
@@ -287,6 +288,12 @@ export default async function WorkspaceSettingsPage({
           <CopyReviewSection
             workspaceId={workspace.id}
             initial={copyReviewConfigOf(gitConfig)}
+            canEdit={canManageSettings}
+          />
+          <VisualReviewPolicySection
+            workspaceId={workspace.id}
+            override={visualReviewPolicyOf(gitConfig)}
+            inherited={{ mode: 'automatic', origin: 'default' }}
             canEdit={canManageSettings}
           />
           <ReleaseSection

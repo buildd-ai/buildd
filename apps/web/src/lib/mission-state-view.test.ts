@@ -727,6 +727,21 @@ describe('deriveMissionStateView — surface audit missing', () => {
     expect(view.nextAction).toContain('surfaceAuditWaiver');
   });
 
+  it('is not an owner decision when the visual review belongs to the system (automatic or strict)', () => {
+    for (const visualReviewActor of ['system', 'jev', 'none'] as const) {
+      const view = deriveMissionStateView({ ...base, completion: refusal, visualReviewActor });
+      expect(view.kind).not.toBe('awaiting_decision');
+      expect(view.waitingOn?.kind).toBe('self_resolving_wait');
+      expect(view.waitingOn?.label).toBe('Waiting: the visual check is running');
+      expect(JSON.stringify(view)).not.toMatch(/waive|surfaceAuditWaiver|\[surface audit\]/i);
+    }
+  });
+
+  it('stays an owner decision only when the review itself names the owner', () => {
+    const view = deriveMissionStateView({ ...base, completion: refusal, visualReviewActor: 'owner' });
+    expect(view.kind).toBe('awaiting_decision');
+  });
+
   it('carries the changed UI files to the surface that renders the decision', () => {
     const paths = ['apps/web/src/components/Card.tsx', 'apps/web/src/components/Nav.tsx'];
     const w = gated(deriveMissionStateView({ ...base, completion: { ...refusal, surfaceAuditPaths: paths } }));

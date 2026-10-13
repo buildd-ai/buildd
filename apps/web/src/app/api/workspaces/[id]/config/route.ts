@@ -10,7 +10,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { roleHas } from '@/lib/permissions';
-import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError, parseCopyReviewConfig } from '@buildd/shared';
+import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError, parseCopyReviewConfig, isVisualReviewPolicyMode, VISUAL_REVIEW_POLICY_MODES } from '@buildd/shared';
 import type { CopyReviewConfig } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -613,8 +613,9 @@ export async function PATCH(
         const hasBranchStrategy = !!body && typeof body === 'object' && 'branchStrategy' in body;
         const hasPolicyConfig = !!body && typeof body === 'object' && 'policyConfig' in body;
         const hasCopyReview = !!body && typeof body === 'object' && 'copyReview' in body;
-        if (!hasReleaseConfig && !hasBranchStrategy && !hasPolicyConfig && !hasCopyReview) {
-            return NextResponse.json({ error: 'Body must contain releaseConfig, branchStrategy, policyConfig or copyReview' }, { status: 400 });
+        const hasVisualReview = !!body && typeof body === 'object' && 'visualReview' in body;
+        if (!hasReleaseConfig && !hasBranchStrategy && !hasPolicyConfig && !hasCopyReview && !hasVisualReview) {
+            return NextResponse.json({ error: 'Body must contain releaseConfig, branchStrategy, policyConfig, copyReview or visualReview' }, { status: 400 });
         }
 
         const removedField = findRemovedPathFieldInGitConfig(body);
@@ -686,6 +687,26 @@ export async function PATCH(
                 columns: { gitConfig: true },
             });
             const gitConfig = { ...(existing?.gitConfig ?? {} as WorkspaceGitConfig), copyReview } as WorkspaceGitConfig;
+            await db.update(workspaces).set({ gitConfig, updatedAt: new Date() }).where(eq(workspaces.id, id));
+            responseBody = { ...responseBody, gitConfig };
+        }
+
+        // visualReview: the workspace's Visual Review policy override. null (or policy: null) inherits the team default.
+        if (hasVisualReview) {
+            const raw = (body as Record<string, unknown>).visualReview;
+            let visualReview: WorkspaceGitConfig['visualReview'] | undefined;
+            if (raw !== null) {
+                const policy = raw && typeof raw === 'object' ? (raw as { policy?: unknown }).policy : undefined;
+                if (policy !== null && !isVisualReviewPolicyMode(policy)) {
+                    return NextResponse.json({ error: `visualReview.policy must be one of: ${VISUAL_REVIEW_POLICY_MODES.join(', ')}, or null`, field: 'policy' }, { status: 400 });
+                }
+                visualReview = policy === null ? undefined : { policy };
+            }
+            const existing = await db.query.workspaces.findFirst({
+                where: sqlWhere(eq(workspaces.id, id)),
+                columns: { gitConfig: true },
+            });
+            const gitConfig = { ...(existing?.gitConfig ?? {} as WorkspaceGitConfig), visualReview } as WorkspaceGitConfig;
             await db.update(workspaces).set({ gitConfig, updatedAt: new Date() }).where(eq(workspaces.id, id));
             responseBody = { ...responseBody, gitConfig };
         }

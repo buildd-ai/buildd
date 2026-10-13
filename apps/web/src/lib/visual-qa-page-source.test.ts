@@ -94,6 +94,20 @@ describe('resolvePageSource: the capture ref (visual-qa-auditor.md, "Which ref i
     expect(get.calls).not.toContain(`/repos/${REPO}/commits/dev`);
   });
 
+  it('mission-branch in sandbox mode still reports the branch head, so the auditor can tell the branch moved', async () => {
+    const sha = 'c'.repeat(40);
+    const get = github({ [`/repos/${REPO}/commits/${encodeURIComponent(BRANCH)}`]: { sha: sha.toUpperCase() }, ...branchExists });
+    const r = await resolvePageSource({ get, repoFullName: REPO, gitConfig: { visualQa: { pageSource: 'sandbox' }, defaultBranch: 'dev' }, mission: MISSION });
+    expect(r.pageSource).toBe('sandbox');
+    expect(r.captureHeadSha).toBe(sha);
+  });
+
+  it('an unreadable head is null, never an error: the capture still runs', async () => {
+    const get = github({ ...branchExists, [`/repos/${REPO}/commits/${encodeURIComponent(BRANCH)}`]: new Error('GitHub API error: 500 boom') });
+    const r = await resolvePageSource({ get, repoFullName: REPO, gitConfig: { visualQa: { pageSource: 'sandbox' }, defaultBranch: 'dev' }, mission: MISSION });
+    expect(r.captureHeadSha).toBeNull();
+  });
+
   it('mission-branch whose branch vanished: trunk, sourced integration_missing', async () => {
     const r = await resolvePageSource({ get: github(ready), repoFullName: REPO, gitConfig: { defaultBranch: 'dev' }, mission: MISSION });
     expect(r.captureRef).toEqual({ ref: 'dev', source: 'integration_missing', integrationBase: BRANCH });

@@ -675,6 +675,10 @@ export interface WorkspaceGitConfig {
   // Can be overridden per-task at creation time
   defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
 
+  // Visual review policy override (strict | automatic | ask | off). Absent = inherit the team
+  // default. Read only through visualReviewPolicyOf() / resolveVisualReviewPolicy().
+  visualReview?: { policy?: import('@buildd/shared').VisualReviewPolicyMode } | null;
+
   // Merge policy — supersedes autoMerge* fields when set.
   // null / absent → fall back to legacy autoMerge* fields (backward compat).
   mergePolicy?: MergePolicy;
