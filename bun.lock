@@ -106,6 +106,7 @@
         "@buildd/dispatch-contract": "workspace:*",
         "@buildd/shared": "workspace:*",
         "@buildd/spec-contract": "workspace:*",
+        "@buildd/workflow-kernel": "workspace:*",
         "@builddai/ai-kit": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.26.0",
         "@neondatabase/serverless": "^1.0.0",
@@ -218,6 +219,13 @@
     },
     "packages/spec-contract": {
       "name": "@buildd/spec-contract",
+      "version": "0.0.0",
+      "devDependencies": {
+        "typescript": "^6.0.0",
+      },
+    },
+    "packages/workflow-kernel": {
+      "name": "@buildd/workflow-kernel",
       "version": "0.0.0",
       "devDependencies": {
         "typescript": "^6.0.0",
@@ -401,6 +409,8 @@
     "@buildd/spec-contract": ["@buildd/spec-contract@workspace:packages/spec-contract"],
 
     "@buildd/web": ["@buildd/web@workspace:apps/web"],
+
+    "@buildd/workflow-kernel": ["@buildd/workflow-kernel@workspace:packages/workflow-kernel"],
 
     "@builddai/ai-kit": ["@builddai/ai-kit@workspace:packages/ai-kit"],
 
