@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -975,4 +975,57 @@ data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
 **Not yet**:
 - `similar` is lexical wherever no embedder key is configured, and lexical
   scores are not comparable to cosine, so it has no floor there.
+
+## 15. Diagrams and tables
+
+**Capability statement**: A spec MUST be able to carry diagrams and tables
+that read well on every spec surface, with the source kept in the spec's own
+text, and criteria written in a table MUST count as criteria.
+
+**Invariants**:
+- Spec surfaces render with `MarkdownContent surface="spec"`: the spec page,
+  the rendered (Spec) view of the revision panes on the spec page and the
+  approval link page. Every other surface renders as before.
+- A fenced ```mermaid block draws as a diagram (`MermaidBlock`). The library
+  loads on the client only when a block is on the page, runs with
+  `securityLevel: 'strict'` and no HTML labels, and follows the app's light
+  or dark theme. Until it draws, the source shows as code; a block it cannot
+  draw shows its source and the reason. The block is the spec's text, so the
+  body, its hash and its diff are unchanged: changing one node is a changed
+  line in the diff.
+- A spec table has ruled cells and alternate row shading, and sits in a box
+  that scrolls sideways, so a wide table never widens the page.
+- A table row whose first cell is exactly an id (`R-n`, `AC-n`, `D-n`, `I-n`,
+  optionally bold) defines it (`requirementIds`,
+  packages/spec-contract/src/requirements.ts): its text is the row's other
+  non-empty cells joined by "; ". The first definition still wins, fenced
+  code is still skipped, and a `check:` line under the table belongs to the
+  last id row above it.
+
+**Acceptance criteria**:
+- AC-57: GIVEN a spec body with a mermaid block WHEN a spec surface renders
+  THEN the library is loaded once, configured strict, and draws the block's
+  source; until then the source shows
+  (`apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx`).
+- AC-58: GIVEN a block the library cannot draw THEN its source and the reason
+  show (`apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx`).
+- AC-59: GIVEN a non-spec surface, or a spec with no mermaid block, THEN the
+  library never loads (`apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx`).
+- AC-60: GIVEN a six-column table on a spec surface THEN it sits in a
+  sideways-scrolling box with ruled cells; elsewhere tables keep their look
+  (`apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx`).
+- AC-61: GIVEN a table whose first column holds `**R-1**` and `AC-2` THEN
+  both are criteria with the row's other cells as text, and a body without a
+  table parses as before (`packages/spec-contract/src/requirements.test.ts`,
+  `packages/spec-contract/src/check-lines.test.ts`).
+
+**Code surface**:
+- `apps/web/src/components/MermaidBlock.tsx` — `MermaidBlock`, `mermaidLoader`
+- `apps/web/src/components/MarkdownContent.tsx` — `MarkdownContent` (`surface`), `mermaidSource`
+- `packages/spec-contract/src/requirements.ts` — `requirementIds`, `tableRowId`
+
+**Not yet**:
+- The diff view (Changes) shows a diagram's source lines, not a drawing of
+  the before and after.
+- Diagrams are not drawn in chat or recall results, only on spec surfaces.
 

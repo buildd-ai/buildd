@@ -42,7 +42,7 @@ export default function SpecRevisionPanes({ body, hunks, omittedLines, sectionCo
       </div>
       {pane === 'spec' ? (
         <Card data-testid="spec-approval-rendered">
-          <MarkdownContent content={body} images="link" />
+          <MarkdownContent content={body} images="link" surface="spec" />
         </Card>
       ) : (
         <SpecDiffView hunks={hunks} omittedLines={omittedLines} />
