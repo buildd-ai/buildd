@@ -111,7 +111,7 @@ export default function MissionBranchPanel({ missionId, presentation: p, prUrl =
               {p.report.label}
             </button>
           )}
-          {reported && <span role="status" className="font-mono text-meta text-text-secondary" data-testid="mission-branch-reported">Reported. We will take a look.</span>}
+          {reported && <span role="status" className="font-mono text-meta text-text-secondary" data-testid="mission-branch-reported">Report sent.</span>}
         </div>
       )}
       {error && <p role="alert" className="font-mono text-meta text-status-error">{error}</p>}
