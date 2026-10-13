@@ -46,6 +46,7 @@ const WORKER_COLUMNS = {
   id: true,
   accountId: true,
   claimedByUserId: true,
+  workspaceId: true,
   taskId: true,
   runner: true,
   status: true,
