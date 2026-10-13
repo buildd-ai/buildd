@@ -1,5 +1,5 @@
 /**
- * Which team Settings › Team shows: `?team=<id>` when it names one of the
+ * Which team Settings › Team (Members) or Runners shows: `?team=<id>` when it names one of the
  * person's teams, else the active team. An id they are not a member of falls
  * back silently, so the page never shows a team it would refuse to load.
  */

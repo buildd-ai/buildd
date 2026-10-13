@@ -584,6 +584,8 @@ export function PolicySuggestionsSection({
           </button>
         )}
       </div>
+      {/* A member sees the summary line only (settings spec R-8). */}
+      {canEdit && (<>
       <ul className="divide-y divide-border-default border-y border-border-default">
         {visible.map(s => (
           <li key={s.path} className="flex items-center justify-between gap-3 py-2">
@@ -608,6 +610,7 @@ export function PolicySuggestionsSection({
       {!showAll && suggestions.length > SUGGESTIONS_SHOWN && (
         <button
           type="button"
+          aria-expanded={false}
           data-testid="merge-policy-suggestions-show-all"
           className="btn btn-quiet min-h-11 md:min-h-0"
           onClick={() => setShowAll(true)}
@@ -615,6 +618,7 @@ export function PolicySuggestionsSection({
           Show all {suggestions.length}
         </button>
       )}
+      </>)}
       {error && <p className="text-xs text-status-error">{error}</p>}
     </div>
   );

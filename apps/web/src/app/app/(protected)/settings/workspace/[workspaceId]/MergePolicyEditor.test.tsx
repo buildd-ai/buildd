@@ -79,11 +79,15 @@ describe('MergePolicyEditor — paths flagged in review', () => {
     expect(html).toContain('Add all');
   });
 
-  it('is read-only without settings permission', () => {
+  // Settings spec R-8: a member sees the summary line only, no paths and no actions.
+  it('is the summary line only without settings permission', () => {
     const html = renderWith(false);
-    expect(html).toContain('apps/api/package.json');
+    expect(html).toContain('data-testid="merge-policy-suggestions"');
+    expect(html).toContain('2 paths in 2 classes');
+    expect(html).not.toContain('apps/api/package.json');
     expect(html).not.toContain('merge-policy-suggestion-add');
     expect(html).not.toContain('Add all');
+    expect(html).not.toContain('merge-policy-suggestions-show-all');
   });
 
   // Settings spec R-6 / AC-6: a summary line, the first five paths, then Show all.
@@ -111,6 +115,8 @@ describe('MergePolicyEditor — paths flagged in review', () => {
     expect(html).not.toContain('lib/auth/s5.ts');
     expect(html).toContain('data-testid="merge-policy-suggestions-show-all"');
     expect(html).toContain('Show all 9');
+    // Show all only reveals more, so it is a disclosure.
+    expect(html).toMatch(/aria-expanded="false"[^>]*data-testid="merge-policy-suggestions-show-all"|data-testid="merge-policy-suggestions-show-all"[^>]*aria-expanded="false"/);
     expect(html).toContain('Add all');
   });
 

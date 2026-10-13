@@ -119,7 +119,7 @@ describe('workspace settings, read by a member', () => {
     expect(host.textContent).not.toContain('to turn this on');
   });
 
-  it('MergePolicyEditor: tier, limit, paths and suggestions as text; mission overrides keep their own actions', async () => {
+  it('MergePolicyEditor: tier, limit, paths and the flagged-path summary as text; mission overrides keep their own actions', async () => {
     await mount(
       <MergePolicyEditor
         workspaceId="ws-1"
@@ -134,7 +134,9 @@ describe('workspace settings, read by a member', () => {
     );
     expectReadOnly();
     const text = host.textContent ?? '';
-    for (const v of ['Auto-threshold', '500', '.github/workflows/', 'lib/auth/session.ts', '45 minutes']) expect(text).toContain(v);
+    for (const v of ['Auto-threshold', '500', '.github/workflows/', '1 path in 1 class', '45 minutes']) expect(text).toContain(v);
+    // Flagged paths: the summary line only (settings spec R-8).
+    expect(text).not.toContain('lib/auth/session.ts');
     expect(text).not.toContain('Re-scan to detect');
   });
 
