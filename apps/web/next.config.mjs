@@ -116,10 +116,16 @@ const nextConfig = {
   // output-file-tracing's static analysis won't discover on its own since
   // it never appears in an import/require. Force it into the serverless
   // bundle explicitly instead of relying on tracing to infer it.
+  // Same for packages/core/mcp-guidance/*.md, the topics `help {topic}`
+  // serves (packages/core/guidance-topics.ts), on both MCP endpoints.
   outputFileTracingIncludes: {
     '/api/mcp': [
       '../../.claude/skills/buildd-mcp-consumer/**',
       '../../.claude/skills/workspace-onboarding/**',
+      '../../packages/core/mcp-guidance/**',
+    ],
+    '/api/mcp-oauth/[workspace]': [
+      '../../packages/core/mcp-guidance/**',
     ],
   },
   async redirects() {
