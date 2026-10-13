@@ -14,7 +14,7 @@
  * an agent grant on that workspace. A mocked `db` would hide the WHERE
  * clauses that decide this, so it runs on real rows.
  */
-import { afterEach, beforeAll, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeAll, describe, expect, mock, setDefaultTimeout, test } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { and, eq, sql } from 'drizzle-orm';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
@@ -41,6 +41,10 @@ const claimRoute = await import('../../src/app/api/workers/claim/route');
 const mineRoute = await import('../../src/app/api/workers/mine/route');
 const workerRoute = await import('../../src/app/api/workers/[id]/route');
 const prRoute = await import('../../src/app/api/github/pr/route');
+
+// The first case pays for the cold path (first connection, first claim, lazy
+// module loads) and has timed out at bun's 5s default on a loaded CI runner.
+setDefaultTimeout(30_000);
 
 beforeAll(() => assertDbConfigured());
 afterEach(() => clearAccountCache());
