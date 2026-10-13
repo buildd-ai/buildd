@@ -16,6 +16,8 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: RunnerTokensSection } = await import('./RunnerTokensSection');
 const { describeControls } = await import('./_lib/form-controls');
+const { RUNNERS_QA_STATES, withQaModelAuth } = await import('./runners/qa-state');
+type RunnersQaState = import('./runners/qa-state').RunnersQaState;
 
 const account = {
   id: 'fixture-token', name: 'Analytics client', type: 'service', authType: 'api',
@@ -227,4 +229,22 @@ describe('RunnerTokensSection model login (docs/specs/runner-model-auth-source.m
     await mount({});
     expect(line()).toBeNull();
   });
+
+  // The Settings › Runners `?state=model-auth-<source>` fixture (runners/qa-state.ts):
+  // each state renders its own words on a token, seen or not.
+  const fixtureWords: Record<RunnersQaState, { text: string; warning: boolean }> = {
+    'model-auth-machine_login': { text: "Uses this machine's Claude login", warning: false },
+    'model-auth-machine_token': { text: 'Uses a Claude token set on this machine', warning: false },
+    'model-auth-api_key': { text: 'Uses an API key (billed per token)', warning: false },
+    'model-auth-none': { text: 'No model login on this machine. Run claude login', warning: true },
+    'model-auth-not_reported': { text: 'Model login: not reported', warning: false },
+  };
+  for (const state of RUNNERS_QA_STATES) {
+    it(`?state=${state} renders its line`, async () => {
+      const [token] = withQaModelAuth([{ ...account, lastSeenAt: null, modelAuthSource: null }], state);
+      await mount(token);
+      expect(line()?.textContent).toBe(fixtureWords[state].text);
+      expect(line()?.className.includes('text-status-warning')).toBe(fixtureWords[state].warning);
+    });
+  }
 });
