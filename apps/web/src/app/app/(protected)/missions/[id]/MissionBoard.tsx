@@ -22,13 +22,15 @@
  * opens the task sheet.
  */
 import { displayTaskTitle } from '@/lib/task-title';
-import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useRouter } from 'next/navigation';
+import TaskQuestion from '@/components/tasks/TaskQuestion';
 import type { VisualReviewModel } from '@buildd/shared';
 import SteerButton from '@/components/chat/SteerButton';
 import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
 import { BOARD_LANDED, boardNeedsYouCount, concurrencyBins, formatAge, formatClock, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
 import {
-  AnswerButtons, CriterionBox, LandedMeter, RoleGlyph, RunnerAvatar, ScopeChip, SectionLabel,
+  CriterionBox, LandedMeter, RoleGlyph, RunnerAvatar, ScopeChip, SectionLabel,
   taskSheetHref, useLiveBoard, useNow, type BoardLinkContext,
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
@@ -449,30 +451,43 @@ function Big({ n, small }: { n: number; small: string }) {
 
 // ── Needs you ────────────────────────────────────────────────────────────────
 
+/**
+ * The board's open question: the task page's own question card, compact. It
+ * leads with the question, offers the same options and own-words field, and
+ * answers through the same path; the refresh after an answer drops it.
+ */
 export function AskBanner({ task, now }: { task: BoardTask; now: number }) {
-  const prompt = task.waitingFor?.prompt ?? 'Needs input.';
-  return (
-    <section
-      data-testid="needs-you-band"
-      data-task-id-ref={task.id}
-      className="mt-4 flex flex-col gap-3 border-2 border-accent bg-card px-4 py-3 shadow-[var(--card-shadow)] md:flex-row md:items-center md:gap-4"
-    >
-      <RunnerAvatar runner={task.runner} className="hidden md:grid" />
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
+  const router = useRouter();
+  const onAnswered = useCallback(() => router.refresh(), [router]);
+  // Waiting on a person for something other than a question (a delivery's
+  // move): there is nothing to answer, so it says what is waiting.
+  if (!task.waitingFor) {
+    return (
+      <section data-testid="needs-you-band" data-task-id-ref={task.id} className="mt-4 border-2 border-accent bg-card px-4 py-3 shadow-[var(--card-shadow)]">
         <div className="flex min-w-0 items-center gap-2 font-mono text-[12px] md:text-[11.5px] text-text-muted">
           <RoleGlyph task={task} />
           <ScopeChip scope={task.scope} />
-          <span className="truncate">
-            {`asked ${formatAge(task.waitStartedAt != null ? now - task.waitStartedAt : 0)} ago`}
-            {task.runner ? ` · agent paused on ${task.runner}` : ''}
-          </span>
+          {task.delivery?.label && <span className="truncate">{task.delivery.label}</span>}
         </div>
-        <p className="font-mono text-[14px] font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">{prompt}</p>
-      </div>
-      <div className="shrink-0">
-        <AnswerButtons workerId={task.workerId} options={task.waitingFor?.options ?? []} />
-      </div>
-    </section>
+        <p className="mt-1 font-mono text-[14px] font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">{displayTaskTitle(task.title)}</p>
+      </section>
+    );
+  }
+  return (
+    <div data-testid="needs-you-band" data-task-id-ref={task.id} className="mt-4">
+      <TaskQuestion
+        testId="board-question"
+        variant="compact"
+        taskId={task.id}
+        workerId={task.workerId}
+        waitingFor={task.waitingFor}
+        role={task.roleName ?? task.roleSlug}
+        askedAgo={`${formatAge(task.waitStartedAt != null ? now - task.waitStartedAt : 0)} ago`}
+        stateNote={task.runner ? `paused on ${task.runner}` : 'paused'}
+        aside={task.scope ? <ScopeChip scope={task.scope} /> : null}
+        onAnswered={onAnswered}
+      />
+    </div>
   );
 }
 

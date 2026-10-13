@@ -45,7 +45,7 @@ beforeEach(() => {
   changed = 0;
   globalThis.fetch = ((url: string) => {
     posts.push(String(url));
-    // Only the respond call is held; the note reply is not made here (no noteId).
+    // Every call is held until the test answers it.
     return new Promise<Response>(resolve => { resolveNext = resolve; });
   }) as typeof fetch;
   container = document.createElement('div');
@@ -95,6 +95,21 @@ describe('TaskActionZone answering a question', () => {
     expect(chips().map(c => c.textContent)).toEqual(OPTIONS.map(o => `Alternative${o}`));
     expect((container.querySelector('input[type="text"]') as HTMLInputElement).placeholder).toBe('Or answer in your own words…');
     expect(container.textContent).not.toMatch(/Needs input|Type your response/);
+  });
+
+  // Regression: the sheet's data had no question note, so a question asked as
+  // a post_note question led with the raw prompt here (the page led with the
+  // note), and answering from the sheet left the note open.
+  it('leads with the question note and marks it answered', async () => {
+    render({ worker: { ...waitingWorker, questionNote: { id: 'n1', workerId: 'w1', type: 'question', status: 'open', title: 'Park this task?', defaultChoice: OPTIONS[0] } } });
+    expect(q('[data-testid="worker-needs-input-prompt"]')?.textContent).toBe('Park this task?');
+    expect(chips()[0].dataset.recommended).toBe('true');
+
+    act(() => { chips()[0].click(); });
+    await respond(200, { path: 'resume', taskId: 't1', message: 'Resumed.' });
+    await respond(200, { ok: true });
+    expect(posts).toEqual(['/api/workers/w1/respond', '/api/tasks/t1/notes/n1/reply']);
+    expect(q('[data-testid="answer-recorded"]')?.textContent).toContain('You answered: Park and wait (recommended)');
   });
 
   it('shows the tapped chip pending, disables everything, and posts once', () => {

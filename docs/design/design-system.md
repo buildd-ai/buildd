@@ -427,8 +427,14 @@ padding, and fill-only panels, wherever the box is a standalone object.
 information. A status line, not a decision; a notice that asks for a person's
 call is an L3 decision card instead.
 
-**Decision cards size to their pane, not the viewport.** `QuestionHero` is
-rendered in the task page, the mission agent drawer and the chat feed, so its
+**One card answers a task's question.** `TaskQuestion`
+(`components/tasks/TaskQuestion.tsx`) is the answer card on the task page
+(`full`) and in the mission task sheet, the Board and the timeline (`compact`).
+Do not build another answer box: add a variant.
+
+**Decision cards size to their pane, not the viewport.** `QuestionHero`, the
+card `TaskQuestion` draws, is rendered in the task page, the mission agent
+drawer, the Board and the chat feed, so its
 type, padding and option columns use container queries (`@md:`, `@3xl:`), never
 `md:`/`xl:`, and option columns are `minmax(0,1fr)`. Enforced by
 `QuestionHeroContainer.test.ts`.
