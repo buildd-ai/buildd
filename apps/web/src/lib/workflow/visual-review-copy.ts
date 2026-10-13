@@ -207,6 +207,28 @@ export function presentVisualReview(state: MissionVisualReviewState): VisualRevi
   };
 }
 
+/** The presentation reduced to what a text surface (chat, MCP) prints: no component, no ids. */
+export interface BranchSummary {
+  stageLabel: string;
+  detail: string | null;
+  needsOwner: boolean;
+  /** The owner's one authorized action, by label; null when nothing is asked of them. */
+  ask: string | null;
+  recordLine: string | null;
+}
+
+export function branchSummary(state: MissionVisualReviewState): BranchSummary | null {
+  const p = presentVisualReview(state);
+  if (!p.showPanel && !p.recordLine) return null;
+  return {
+    stageLabel: p.stageLabel,
+    detail: p.detail,
+    needsOwner: p.needsOwner,
+    ask: p.ownerDecision && p.ownerDecision.kind !== 'merge' ? p.ownerDecision.label : null,
+    recordLine: p.recordLine,
+  };
+}
+
 /**
  * What "Report a Buildd problem" sends. Closed field list, no free text from
  * the page, no URLs, no commit ids: enough for a person on our side to tell a

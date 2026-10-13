@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { resolveVisualReviewPolicy } from './visual-review-policy';
 import { deriveMissionVisualReview, type VisualReviewStateInput } from './visual-review-state';
-import { presentVisualReview, visualReviewDiagnostics } from './visual-review-copy';
+import { branchSummary, presentVisualReview, visualReviewDiagnostics } from './visual-review-copy';
 import type { VisualReviewPolicyMode } from '@buildd/shared';
 
 const policy = (mode: VisualReviewPolicyMode) => resolveVisualReviewPolicy({ workspace: mode });
@@ -121,5 +121,18 @@ describe('panel is shown only when informative', () => {
     const all = [state(), state({ mode: 'ask' }), state({ audit, review: review({ phase: 'failed' }), autoRetriesLeft: 0 })]
       .map(presentVisualReview).map(p => `${p.stageLabel} ${p.detail ?? ''}`).join(' ');
     expect(all).not.toMatch(/task|\*\*|https?:|abc1234|audit|api/i);
+  });
+});
+
+describe('branchSummary (chat and MCP text surfaces)', () => {
+  it('is the presenter reduced: same label, no ask for a plain merge, null when there is nothing to say', () => {
+    const verifying = branchSummary(state());
+    expect(verifying).toMatchObject({ stageLabel: 'Verifying', needsOwner: false, ask: null });
+    const none = branchSummary(state({ uiChange: { state: 'no', source: null, uiFiles: 0 }, branch: { headSha: null, base: 'dev', integrationPr: null, workLanded: false } }));
+    expect(none).toBeNull();
+  });
+  it('asks only under an ask policy', () => {
+    expect(branchSummary(state({ mode: 'ask' }))?.ask).toBe('Run visual review');
+    expect(branchSummary(state({ mode: 'automatic' }))?.ask).toBeNull();
   });
 });

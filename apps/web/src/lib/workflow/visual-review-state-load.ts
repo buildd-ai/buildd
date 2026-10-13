@@ -74,8 +74,6 @@ export async function getMissionVisualReviewState(
     gate && gate.required ? { state: 'yes', source: gate.source, uiFiles: gate.uiPaths.length }
     : gate && gate.why === 'no_ui_change' ? { state: 'no', source: null, uiFiles: 0 }
     : { state: 'unknown', source: null, uiFiles: 0 };
-  const uiChange = opts.uiChange ?? gateUiChange;
-
   let integrationPr: VisualReviewStateInput['branch']['integrationPr'] = null;
   let headSha: string | null = null;
   let base: string | null = gitConfig?.defaultBranch ?? null;

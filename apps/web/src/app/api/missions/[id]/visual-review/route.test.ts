@@ -23,6 +23,8 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
 }));
 mock.module('@buildd/core/db', () => ({ db: { query: { missions: { findFirst: mockMissionFindFirst } } } }));
+const mockReviewState = mock(async (_id: string) => null as any);
+mock.module('@/lib/workflow/visual-review-state-load', () => ({ getMissionVisualReviewState: mockReviewState }));
 mock.module('@/lib/visual-review-load', () => ({ loadVisualReview: mockLoadVisualReview }));
 
 const { GET } = await import('./route');
@@ -73,6 +75,7 @@ describe('GET /api/missions/[id]/visual-review', () => {
     expect(body.model.fixTasks[0]).toMatchObject({ status: expect.any(String), prUrl: expect.anything() });
     expect(body.model.fixTasks[0]).toHaveProperty('mergedAt');
     expect(mockLoadVisualReview).toHaveBeenCalledWith({ id: MISSION, workspaceId: WS });
+    expect(body.branch).toBeNull();
 
     const where = mockMissionFindFirst.mock.calls[0][0].where;
     const q = new PgDialect().sqlToQuery(where);
@@ -126,5 +129,22 @@ describe('GET /api/missions/[id]/visual-review', () => {
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
     expect((await call(MISSION, 'bld_x')).status).toBe(404);
     expect(mockLoadVisualReview).not.toHaveBeenCalled();
+  });
+
+  it('carries the canonical branch summary, never a re-derived status', async () => {
+    const { resolveVisualReviewPolicy } = await import('@/lib/workflow/visual-review-policy');
+    const { deriveMissionVisualReview } = await import('@/lib/workflow/visual-review-state');
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockResolveTeamIds.mockResolvedValue(['team-a']);
+    mockReviewState.mockResolvedValueOnce(deriveMissionVisualReview({
+      policy: resolveVisualReviewPolicy({ workspace: 'automatic' }),
+      uiChange: { state: 'yes', source: 'diff', uiFiles: 3 },
+      audit: null,
+      review: null,
+      waiver: null,
+      branch: { headSha: 'abc1234', base: 'dev', integrationPr: { number: 5, state: 'open', ready: false, blocked: false }, workLanded: true },
+    }));
+    const body = await (await call()).json();
+    expect(body.branch).toMatchObject({ stageLabel: 'Verifying', needsOwner: false, ask: null });
   });
 });

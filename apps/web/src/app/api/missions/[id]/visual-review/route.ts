@@ -23,6 +23,8 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { isUuid } from '@/lib/uuid';
+import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
+import { branchSummary } from '@/lib/workflow/visual-review-copy';
 
 const notFound = () => NextResponse.json({ error: 'Mission not found' }, { status: 404 });
 
@@ -58,5 +60,9 @@ export async function GET(
   }
 
   const model = await loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId });
-  return NextResponse.json({ model }, { headers: { 'Cache-Control': 'private, no-store' } });
+  // The same canonical state and words the mission page reads, so chat and MCP never re-derive a status.
+  const branch = await getMissionVisualReviewState(mission.id)
+    .then(state => (state ? branchSummary(state) : null))
+    .catch(() => null);
+  return NextResponse.json({ model, branch }, { headers: { 'Cache-Control': 'private, no-store' } });
 }

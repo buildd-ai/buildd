@@ -98,6 +98,25 @@ export interface FormatVisualReviewOptions {
   awaitingOnly?: boolean;
   /** The mission's artifacts (GET /api/missions/:id/artifacts); null or absent: no evidence section. */
   artifacts?: VisualEvidenceArtifact[] | null;
+  /** The canonical branch state the server derived (`branch` in the visual-review response). Printed as given, never re-derived. */
+  branch?: BranchLine | null;
+}
+
+/** Mirrors `BranchSummary` in apps/web (lib/workflow/visual-review-copy.ts). */
+export interface BranchLine {
+  stageLabel: string;
+  detail: string | null;
+  needsOwner: boolean;
+  ask: string | null;
+  recordLine: string | null;
+}
+
+function branchLines(b: BranchLine | null | undefined): string[] {
+  if (!b) return [];
+  const state = [b.stageLabel, b.detail].filter(Boolean).join('. ');
+  const out = [`Branch: ${state}${b.ask ? ` Needs you: ${b.ask}.` : ''}`.replace(/\.\./g, '.')];
+  if (b.recordLine) out.push(b.recordLine);
+  return out;
 }
 
 /** The fields of an artifact row the evidence section reads. Never its image. */
@@ -378,8 +397,8 @@ export function formatVisualReview(
   const q3 = mcp && opts.missionStatus === 'completed' ? `\n${checkedBeforeDone(audits, opts.missionCompletedAt, evidence)}` : '';
   const unseen = ev.screenshots.length > 0 ? 'You have not seen these screenshots; the user opens them from the links above or the mission\'s artifacts.' : null;
   if (model.phase === 'off' && audits.length === 0) {
-    if (!hasEvidence) return `${head}: No visual audit on this mission.${q3}`;
-    const lines = [`${head}: No automatic visual audit ran; manual visual evidence below.`];
+    if (!hasEvidence) return [`${head}: No visual audit on this mission.${q3}`, ...branchLines(opts.branch)].join('\n');
+    const lines = [`${head}: No automatic visual audit ran; manual visual evidence below.`, ...branchLines(opts.branch)];
     if (q3) lines.push(q3.slice(1));
     lines.push(...evidenceLines(ev, opts));
     if (!mcp && unseen) lines.push(unseen);
@@ -393,6 +412,7 @@ export function formatVisualReview(
     const copy = describeVisualPhase(model);
     lines.push(`${head}: ${copy.label}. ${copy.detail}`);
   }
+  lines.push(...branchLines(opts.branch));
   if (audits.length > 0) {
     lines.push(`Audit tasks (${audits.length}):`);
     for (const a of audits) lines.push(auditLine(a, mcp));

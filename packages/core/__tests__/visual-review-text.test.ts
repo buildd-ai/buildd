@@ -102,6 +102,25 @@ describe('formatVisualReview for MCP', () => {
     expect(text).not.toMatch(/\b0 (screens? )?needs? your review/);
   });
 
+  it('prints the server-derived branch state once, and a record line when there is one', () => {
+    const m = model({ phase: 'reviewed', needsYou: null, summary: { ...model().summary, awaitingHuman: 0 } });
+    const text = formatVisualReview(m, 'Example', {
+      audience: 'mcp', baseUrl: BASE, missionId: 'mission-1',
+      branch: { stageLabel: 'Ready to merge', detail: 'The screens were checked and look right.', needsOwner: false, ask: null, recordLine: 'Visual review passed.' },
+    });
+    expect(text).toContain('Branch: Ready to merge. The screens were checked and look right.');
+    expect(text).toContain('Visual review passed.');
+    expect(text).not.toContain('Needs you:');
+  });
+
+  it('names the owner ask only when the state has one', () => {
+    const text = formatVisualReview(model(), 'Example', {
+      audience: 'mcp', baseUrl: BASE, missionId: 'mission-1',
+      branch: { stageLabel: 'Verifying', detail: 'The check could not run, even after trying again.', needsOwner: true, ask: 'Report a Buildd problem', recordLine: null },
+    });
+    expect(text).toContain('Needs you: Report a Buildd problem.');
+  });
+
   it('nothing pending: says nobody is needed', () => {
     const m = model({ phase: 'reviewed', needsYou: null, summary: { ...model().summary, awaitingHuman: 0 } });
     const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
