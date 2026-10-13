@@ -4,9 +4,11 @@ import {
   recordIncidentCandidates,
   updateIncidentState,
   mergeIncident,
+  applyIncidentAction,
   type IncidentStorePort,
   type StoredIncident,
 } from './failure-incident-store';
+import type { FailureIncidentTrace } from '@buildd/shared';
 import {
   detectFailurePatterns,
   MAX_EVIDENCE_REFS,
@@ -313,6 +315,41 @@ describe('updateIncidentState', () => {
     expect(u.incident.impact.alertedScope).toBe(2);
     expect(u.incident.impact.alertedRecurrence).toBe(0);
     expect(u.incident.impact.children).toBe(3);
+  });
+});
+
+describe('updateIncidentState — trace', () => {
+  const trace: FailureIncidentTrace = {
+    v: 1, origin: 'detector', stage: 'open',
+    stages: [{ stage: 'open', at: at(0) }],
+    owner: null, fixes: [], introducedBy: null, specs: null, reportCount: 0,
+  };
+
+  it('writes the trace through the CAS and bumps version', async () => {
+    const { port } = memoryPort();
+    const o = await upsertIncident(port, forkCandidate([child('c1', 0), child('c2', 1)]));
+    const written = await updateIncidentState(port, o.incident.id, { type: 'trace', trace });
+    expect(written?.trace).toEqual(trace);
+    expect(written?.version).toBe(o.incident.version + 1);
+    expect(written?.status).toBe(o.incident.status);
+  });
+
+  it('rejects a write at a stale version', async () => {
+    const { port } = memoryPort();
+    const o = await upsertIncident(port, forkCandidate([child('c1', 0), child('c2', 1)]));
+    await updateIncidentState(port, o.incident.id, { type: 'acknowledge' });
+    const stale = applyIncidentAction(o.incident, { type: 'trace', trace }, at(2));
+    expect(await port.compareAndSwap(o.incident.id, o.incident.version, stale)).toBeNull();
+    expect((await port.findById(o.incident.id))?.trace ?? null).toBeNull();
+  });
+
+  it('a row never traced reads back as null, and later actions keep a written trace', async () => {
+    const { port } = memoryPort();
+    const o = await upsertIncident(port, forkCandidate([child('c1', 0), child('c2', 1)]));
+    expect(o.incident.trace ?? null).toBeNull();
+    await updateIncidentState(port, o.incident.id, { type: 'trace', trace });
+    const ack = await updateIncidentState(port, o.incident.id, { type: 'acknowledge' });
+    expect(ack?.trace).toEqual(trace);
   });
 });
 

@@ -4660,4 +4660,6 @@ export interface FailureIncident {
   linkedFixTaskId: string | null;
   acknowledgedAt: string | null;
   resolvedAt: string | null;
+  /** Lifecycle trace; null/absent until first written. Written only by the store's `trace` state action. */
+  trace?: FailureIncidentTrace | null;
 }

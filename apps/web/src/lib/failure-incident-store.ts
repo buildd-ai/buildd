@@ -30,6 +30,7 @@ import type {
   FailureIncidentAffectedRefs,
   FailureIncidentRule,
   FailureIncidentSeverity,
+  FailureIncidentTrace,
 } from '@buildd/shared';
 import {
   boundEvidenceRefs,
@@ -278,7 +279,9 @@ export type IncidentStateAction =
    */
   | { type: 'alerted'; severity: FailureIncidentSeverity; scope?: number; recurrence?: number }
   /** First writer wins: an incident already linked keeps its task. */
-  | { type: 'link_fix_task'; taskId: string };
+  | { type: 'link_fix_task'; taskId: string }
+  /** Replace the lifecycle trace (spec: bug-intake-and-quality §10). Same version-bumping CAS as every other member. */
+  | { type: 'trace'; trace: FailureIncidentTrace };
 
 /** Pure: the row after `action`. `updateIncidentState` CASes this; the paging layer uses it inside its own claim loop. */
 export function applyIncidentAction(row: StoredIncident, action: IncidentStateAction, now: string): NewStoredIncident {
@@ -302,6 +305,8 @@ export function applyIncidentAction(row: StoredIncident, action: IncidentStateAc
       };
     case 'link_fix_task':
       return { ...base, linkedFixTaskId: base.linkedFixTaskId ?? action.taskId };
+    case 'trace':
+      return { ...base, trace: action.trace };
   }
 }
 
@@ -364,6 +369,7 @@ export async function createDbIncidentPort(): Promise<IncidentStorePort> {
     linkedFixTaskId: r.linkedFixTaskId,
     acknowledgedAt: iso(r.acknowledgedAt),
     resolvedAt: iso(r.resolvedAt),
+    trace: r.trace ?? null,
     version: r.version,
   });
 
@@ -388,6 +394,7 @@ export async function createDbIncidentPort(): Promise<IncidentStorePort> {
     linkedFixTaskId: n.linkedFixTaskId,
     acknowledgedAt: date(n.acknowledgedAt),
     resolvedAt: date(n.resolvedAt),
+    trace: n.trace ?? null,
   });
 
   return {
