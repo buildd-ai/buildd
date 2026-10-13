@@ -21,7 +21,8 @@ export const mermaidLoader: { load: () => Promise<MermaidApi> } = {
   load: async () => (await import('mermaid')).default as unknown as MermaidApi,
 };
 
-const isDark = () => typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+// The app is dark unless the root says light (app/layout.tsx themeScript, globals.css).
+const isDark = () => typeof document === 'undefined' || document.documentElement.getAttribute('data-theme') !== 'light';
 
 export default function MermaidBlock({ source }: { source: string }) {
   const rawId = useId();

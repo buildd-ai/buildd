@@ -59,6 +59,21 @@ describe('mermaid on a spec surface', () => {
     expect(loads).toBe(1);
   });
 
+  it('follows the app theme: dark by default, light when the root says so', async () => {
+    const themes: unknown[] = [];
+    mermaidLoader.load = async () => ({ initialize: (c) => { themes.push(c.theme); }, render: async () => ({ svg: '<svg></svg>' }) });
+    document.documentElement.removeAttribute('data-theme');
+    act(() => root.render(<MarkdownContent content={DIAGRAM} surface="spec" />));
+    await flush();
+    act(() => root.unmount());
+    root = createRoot(container);
+    document.documentElement.setAttribute('data-theme', 'light');
+    act(() => root.render(<MarkdownContent content={DIAGRAM} surface="spec" />));
+    await flush();
+    document.documentElement.removeAttribute('data-theme');
+    expect(themes).toEqual(['dark', 'default']);
+  });
+
   it('a diagram that fails shows its source and the reason', async () => {
     mermaidLoader.load = async () => ({ initialize: () => {}, render: async () => { throw new Error('Parse error on line 2'); } });
     act(() => root.render(<MarkdownContent content={DIAGRAM} surface="spec" />));
