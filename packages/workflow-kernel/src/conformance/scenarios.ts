@@ -15,26 +15,37 @@ import type { Command, EffectKind, LivePr } from '../commands';
 import { decideAndRecord, decideAt, decisionFactKey, invalidRecordFactKey, VISUAL_IMPACT_POINT } from '../decide';
 import { drainEffects, type EffectHandlers } from '../effects';
 import { BLOCKED_ON_TRUNK_SUMMARY } from '../handlers/trunk';
-import { ciEvidenceFactKey, kernelEffectHandlers } from '../handlers/index';
+import { ciEvidenceFactKey, handOffToLegacyOn, kernelEffectHandlers } from '../handlers/index';
 import { acquireLaneOn, settleLanesOn } from '../landing-lane';
 import {
-  FakeGithub, RecordingEscalate, RecordingEvidence, RecordingIngest, RecordingLifecycle, RecordingNotify, RecordingTrunk, RecordingWork, type WorkAnswer,
+  FakeGithub, RecordingConflicts, RecordingEscalate, RecordingEvidence, RecordingHandOff, RecordingIngest, RecordingLifecycle, RecordingNotify,
+  RecordingReviews, RecordingTrunk, RecordingWork, type WorkAnswer,
 } from '../memory/ports';
-import type { ClaimedEffect, CommandResult, Decide, DeliveryRef, KernelPorts, Store } from '../ports';
+import { NO_ROLE, type ClaimedEffect, type CommandResult, type Decide, type DeliveryRef, type KernelPorts, type Policy, type Store } from '../ports';
 import { deriveDeliveryView } from '../projections';
 import type { DeliverySnapshot, KernelView } from '../types';
 
 /** What a host gives the scenarios: its store, ids it accepts, a way to seed owners, and read-back of the outbox. */
 export interface ConformanceHost {
   store: Store;
+  /** The host's per-workspace knobs; the drain reads the kill switch here. */
+  policy: Policy;
   /** Ids the host's store accepts for rounds, attempts and tasks (uuids for Postgres). */
   newId(): string;
+  /**
+   * A task the host's store can reference (a review round's reviewer): a seeded
+   * row where the store keeps a foreign key to tasks. Absent = `newId()`.
+   */
+  newTaskId?(workspaceId: string): Promise<string>;
   /** A fresh workspace + owner task the store will accept a delivery for. */
   seedOwner(): Promise<{ workspaceId: string; ownerTaskId: string }>;
   /** A repo name no other scenario (or test sharing the store) uses: lanes are global per repo + base. */
   uniqueRepo(): string;
   /** The outbox rows of one delivery. */
-  effects(deliveryId: string): Promise<Array<{ kind: EffectKind; payload: Record<string, unknown>; status: string; outcome: string | null; attemptCount: number; lastError: string | null }>>;
+  effects(deliveryId: string): Promise<Array<{
+    kind: EffectKind; payload: Record<string, unknown>; status: string; outcome: string | null; attemptCount: number; lastError: string | null;
+    dedupeKey: string; transitionId: string;
+  }>>;
   /** The transition log of one delivery, in version order. */
   transitions(deliveryId: string): Promise<Array<{ fromVersion: number; toVersion: number; command: string; toState: string }>>;
   /** §14: turn the workspace's kill switch off (or back on). */
@@ -187,6 +198,7 @@ function recordingHandlers(ran: string[], override: EffectHandlers = {}): Effect
 interface FakePorts {
   ports: KernelPorts; github: FakeGithub; lifecycle: RecordingLifecycle; notify: RecordingNotify; ingest: RecordingIngest;
   work: RecordingWork; trunk: RecordingTrunk; escalate: RecordingEscalate; evidence: RecordingEvidence;
+  reviews: RecordingReviews; conflicts: RecordingConflicts; handOff: RecordingHandOff;
 }
 
 /** The handlers' ports over the host's store, with a fake GitHub and recording Work-side ports. */
@@ -198,22 +210,29 @@ function fakePorts(host: ConformanceHost, o: {
   const lifecycle = o.lifecycle ?? new RecordingLifecycle();
   const notify = o.notify ?? new RecordingNotify();
   const ingest = o.ingest ?? new RecordingIngest();
-  const work = new RecordingWork(() => host.newId(), o.work ?? {});
+  const work = new RecordingWork((ws) => (host.newTaskId ? host.newTaskId(ws) : host.newId()), o.work ?? {});
   const trunk = o.trunk ?? new RecordingTrunk();
   const escalate = o.escalate ?? new RecordingEscalate();
   const evidence = o.evidence ?? new RecordingEvidence();
+  const reviews = new RecordingReviews();
+  const conflicts = new RecordingConflicts();
+  const handOff = new RecordingHandOff();
   const ports: KernelPorts = {
-    store: host.store, github, clock: { now: () => new Date().toISOString() }, newId: () => host.newId(), notify, ingest, lifecycle, work, trunk, escalate, evidence,
+    store: host.store, github, clock: { now: () => new Date().toISOString() }, newId: () => host.newId(), policy: host.policy,
+    notify, ingest, lifecycle, work, trunk, escalate, evidence, reviews, conflicts, handOff,
   };
   for (const k of o.omit ?? []) delete ports[k];
-  return { ports, github, lifecycle, notify, ingest, work, trunk, escalate, evidence };
+  return { ports, github, lifecycle, notify, ingest, work, trunk, escalate, evidence, reviews, conflicts, handOff };
 }
 
 /** One of the delivery's outbox rows as a drain would hand it over, to run a handler directly (past the drain's own guards). */
 async function direct(host: ConformanceHost, s: Delivery, kind: EffectKind, payload?: Record<string, unknown>): Promise<ClaimedEffect> {
-  const row = (await host.effects(s.deliveryId)).find((e) => e.kind === kind);
+  const rows = await host.effects(s.deliveryId);
+  const row = rows.filter((e) => e.kind === kind).at(-1);
+  // The row's own transition and key when it has one (a follow-up is keyed off them), else the latest transition's.
+  const transitionId = row?.transitionId ?? rows.at(-1)?.transitionId ?? 'direct';
   return {
-    id: 'direct', deliveryId: s.deliveryId, transitionId: 'direct', kind, dedupeKey: `direct:${kind}`,
+    id: 'direct', deliveryId: s.deliveryId, transitionId, kind, dedupeKey: row?.dedupeKey ?? `direct:${kind}`,
     payload: payload ?? row?.payload ?? {}, attemptCount: 1, delivery: null, transition: null,
   };
 }
@@ -221,8 +240,7 @@ async function direct(host: ConformanceHost, s: Delivery, kind: EffectKind, payl
 /** Drain one delivery until nothing is due: the package's handlers over `ports`, every other kind recorded. */
 async function drainKernel(host: ConformanceHost, s: Delivery, ports: KernelPorts): Promise<void> {
   for (let i = 0; i < 6; i++) {
-    const rest = recordingHandlers([]);
-    const r = await drainEffects(host.store, { handlers: { ...rest, ...kernelEffectHandlers(ports, rest) }, deliveryId: s.deliveryId, log: { log: () => {}, error: () => {} } });
+    const r = await drainEffects(host.store, { policy: host.policy, handlers: { ...recordingHandlers([]), ...kernelEffectHandlers(ports) }, deliveryId: s.deliveryId, log: { log: () => {}, error: () => {} } });
     if (r.claimed === 0) return;
   }
 }
@@ -381,12 +399,12 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const s = await new Delivery(host).open();
       await s.ownerPushed('H1');
       const ran: string[] = [];
-      const first = await drainEffects(host.store, { handlers: recordingHandlers(ran), deliveryId: s.deliveryId });
+      const first = await drainEffects(host.store, { policy: host.policy, handlers: recordingHandlers(ran), deliveryId: s.deliveryId });
       ok(first.claimed > 0 && ran.includes('dispatch_review'), `dispatch_review ran: ${ran}`);
       eq({ done: first.done, failed: first.failed, lost: first.lost }, { done: first.claimed - first.skipped, failed: 0, lost: 0 }, 'all settled');
       const due = (await host.effects(s.deliveryId)).filter((e) => ran.includes(e.kind));
       ok(due.every((e) => e.status === 'done' && e.attemptCount === 1), 'each ran once and is done');
-      eq((await drainEffects(host.store, { handlers: recordingHandlers([]), deliveryId: s.deliveryId })).claimed, 0, 'nothing due again');
+      eq((await drainEffects(host.store, { policy: host.policy, handlers: recordingHandlers([]), deliveryId: s.deliveryId })).claimed, 0, 'nothing due again');
     },
   },
   {
@@ -395,13 +413,13 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const s = await new Delivery(host).open();
       await s.ownerPushed('H1');
       const first = await drainEffects(host.store, {
-        handlers: recordingHandlers([], { dispatch_review: async () => { throw new Error('gh 502'); } }), deliveryId: s.deliveryId,
+        policy: host.policy, handlers: recordingHandlers([], { dispatch_review: async () => { throw new Error('gh 502'); } }), deliveryId: s.deliveryId,
       });
       eq(first.failed, 1, 'one failure');
       const row = (await host.effects(s.deliveryId)).find((e) => e.kind === 'dispatch_review')!;
       eq(pick(row, ['status', 'attemptCount', 'lastError']), { status: 'pending', attemptCount: 1, lastError: 'gh 502' }, 'backed off');
       const ran: string[] = [];
-      await drainEffects(host.store, { handlers: recordingHandlers(ran), deliveryId: s.deliveryId });
+      await drainEffects(host.store, { policy: host.policy, handlers: recordingHandlers(ran), deliveryId: s.deliveryId });
       ok(!ran.includes('dispatch_review'), 'not due during its backoff');
     },
   },
@@ -412,7 +430,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       await s.ownerPushed('H1');
       applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'moved on before the drain');
       const ran: string[] = [];
-      await drainEffects(host.store, { handlers: recordingHandlers(ran), deliveryId: s.deliveryId });
+      await drainEffects(host.store, { policy: host.policy, handlers: recordingHandlers(ran), deliveryId: s.deliveryId });
       ok(!ran.includes('dispatch_review'), 'review dispatch not run');
       eq((await host.effects(s.deliveryId)).find((e) => e.kind === 'dispatch_review')!.outcome, 'skipped:superseded', 'superseded');
     },
@@ -424,7 +442,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.land('H1'), 'LANDING', 'landing');
       await host.setKernelEnabled(s.workspaceId, false);
       const ran: string[] = [];
-      await drainEffects(host.store, { handlers: recordingHandlers(ran), deliveryId: s.deliveryId });
+      await drainEffects(host.store, { policy: host.policy, handlers: recordingHandlers(ran), deliveryId: s.deliveryId });
       ok(!ran.includes('merge_call'), 'the merge never ran');
       eq((await host.effects(s.deliveryId)).find((e) => e.kind === 'merge_call')!.outcome, 'skipped:legacy_owns', 'merge skipped');
       eq((await s.d()).authority, 'legacy', 'released');
@@ -710,7 +728,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'handlers/ci: a spent or disabled CI budget hands the PR to a person, in the kernel\'s words; another family\'s exhaustion stays the host\'s',
+    name: 'handlers/ci: a spent or disabled CI budget hands the PR to a person, in the kernel\'s words; a family the kernel does not know stays legacy\'s',
     async run(host) {
       const s = await new Delivery(host, 65).open();
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
@@ -722,8 +740,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
         detail: `CI retries are disabled for this workspace; CI is failing on PR #${s.prNumber}.`,
       }], 'one hand-off, saying retries are off');
       eq(await outcomesOf(host, s, 'escalate_exhaustion'), ['ok'], 'escalated');
-      const hosted = kernelEffectHandlers(f.ports, { escalate_exhaustion: async () => ({ outcome: 'host:review_fix' }) });
-      eq(await hosted.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'review_fix' })), { outcome: 'host:review_fix' }, 'another family is the host\'s');
+      eq(await kernelEffectHandlers(f.ports).escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'release' })), { outcome: 'skipped:legacy_owns' }, 'an unknown family is legacy\'s');
       const none = fakePorts(host, { omit: ['github'] });
       eq(await kernelEffectHandlers(none.ports).escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion')), { outcome: 'skipped:no_installation' }, 'no GitHub, no hand-off');
       eq(f.escalate.calls.length + none.escalate.calls.length, 1, 'only the first reached a person');
@@ -749,23 +766,23 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'handlers: a shared kind\'s families the kernel does not own are the host\'s, and touch none of the kernel\'s work',
+    name: 'handlers: every family of a shared kind reaches its own handler; a family the kernel does not know is legacy\'s',
     async run(host) {
       const s = await new Delivery(host, 67).open();
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
       const f = fakePorts(host);
-      const asked: string[] = [];
-      const h = kernelEffectHandlers(f.ports, {
-        cancel_open_attempts: async (e) => { asked.push(`cancel:${String(e.payload.reason)}`); return { outcome: `host:${String(e.payload.reason)}` }; },
-        escalate_exhaustion: async (e) => { asked.push(`escalate:${String(e.payload.family)}`); return { outcome: `host:${String(e.payload.family)}` }; },
-      });
-      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'approved', families: ['review_fix'] })), { outcome: 'host:approved' }, 'an approval\'s cancellation');
-      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'head_moved', families: ['review_fix'] })), { outcome: 'host:head_moved' }, 'a moved head\'s cancellation');
-      eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'conflict', attempts: 3 })), { outcome: 'host:conflict' }, 'a conflict family\'s exhaustion');
-      eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'review_fix' })), { outcome: 'host:review_fix' }, 'a review family\'s exhaustion');
-      eq(asked, ['cancel:approved', 'cancel:head_moved', 'escalate:conflict', 'escalate:review_fix'], 'each reached the host once');
-      eq({ cancelled: f.work.cancelledPending, escalated: f.escalate.calls }, { cancelled: [], escalated: [] }, 'and none reached the kernel\'s own work');
-      eq(await kernelEffectHandlers(f.ports).cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'approved' })), { outcome: 'skipped:no_handler' }, 'with no host handler, nothing pretends to cancel');
+      const h = kernelEffectHandlers(f.ports);
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'approved', families: ['review_fix'] })), { outcome: 'ok' }, 'an approval\'s cancellation');
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'head_moved', families: ['conflict'] })), { outcome: 'ok:cancelled_0' }, 'a moved head\'s cancellation');
+      eq(f.reviews.ops(), ['supersedeFixOnApproval'], 'the approval supersedes the open fix');
+      eq(f.work.cancelledPending.map((c) => pick(c, ['role', 'reason'])), [
+        { role: 'fix', reason: 'the PR was approved' }, { role: 'conflict_fix', reason: 'the PR head moved before the fix started' },
+      ], 'each family cancels its own pending tasks');
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'merged' })), { outcome: 'skipped:legacy_owns' }, 'a merge\'s cancellation is legacy\'s');
+      eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'conflict', attempts: 3 })), { outcome: 'ok' }, 'a conflict family\'s exhaustion');
+      eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'review_fix' })), { outcome: 'ok' }, 'a review family\'s exhaustion');
+      eq(f.escalate.calls.map((c) => c.family), ['conflict', 'review_fix'], 'each handed to a person once');
+      eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'release' })), { outcome: 'skipped:legacy_owns' }, 'an unknown family');
     },
   },
   {
@@ -813,13 +830,250 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'handlers/review: one reviewer per round, bound to it and woken; a redelivery files nothing; no role fails the round (T27); an attested composition files no reviewer',
+    async run(host) {
+      const s = await new Delivery(host, 81).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const r1 = await s.latestRound();
+      const f = fakePorts(host);
+      await drainKernel(host, s, f.ports);
+      const filed = f.work.filed.filter((w) => w.role === 'review');
+      eq(filed.map((w) => ({ headSha: w.target.headSha, roundId: w.detail?.roundId, parent: w.lineage.parentTaskId })), [{ headSha: 'H1', roundId: r1.id, parent: s.ownerTaskId }], 'one reviewer, at the round head');
+      const reviewer = filed[0]!.taskId;
+      eq((await s.latestRound()).reviewerTaskId, reviewer, 'the round is bound to it');
+      eq(f.work.woken, [{ taskId: reviewer, reason: 'task.created' }], 'woken');
+      eq(f.work.cancelledPending.map((c) => pick(c, ['role', 'keepTaskId'])), [{ role: 'review', keepTaskId: reviewer }], 'older pending reviewers are cancelled');
+      eq(await outcomesOf(host, s, 'dispatch_review'), ['ok'], 'dispatched');
+      eq(await kernelEffectHandlers(f.ports).dispatch_review!(await direct(host, s, 'dispatch_review')), { outcome: 'skipped:already_dispatched' }, 'a redelivery');
+      eq(f.work.requested.length, 1, 'asked once');
+
+      const b = await new Delivery(host, 82).open();
+      applied(await b.ownerPushed('H1'), 'AWAITING_REVIEW', 'b pushed');
+      const fb = fakePorts(host, { work: { review: { skipped: NO_ROLE } } });
+      await drainKernel(host, b, fb.ports);
+      eq((await outcomesOf(host, b, 'dispatch_review'))[0], 'skipped:no_reviewer_role', 'no role');
+      ok((await host.transitions(b.deliveryId)).some((t) => t.command === 'ReviewRoundFailed'), 'the round failed (T27), not dropped');
+
+      const c = await new Delivery(host, 83).open();
+      applied(await c.ownerPushed('H1'), 'AWAITING_REVIEW', 'c pushed');
+      const fc = fakePorts(host);
+      fc.reviews.attested.set((await c.latestRound()).id, 'ok:composition_attested');
+      await drainKernel(host, c, fc.ports);
+      eq(await outcomesOf(host, c, 'dispatch_review'), ['ok:composition_attested'], 'attested');
+      eq(fc.work.requested.length, 0, 'no reviewer filed');
+    },
+  },
+  {
+    name: 'handlers/review: changes requested are posted at the round\'s own commit; the fix is allocated (T8), filed under its row and woken once; the next round carries the prior verdict',
+    async run(host) {
+      const s = await new Delivery(host, 84).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const f = fakePorts(host);
+      await drainKernel(host, s, f.ports);
+      const r1 = await s.latestRound();
+      f.reviews.outputs.set(r1.id, { verdict: 'request-changes', confidence: 0.9, summary: 's', feedback: 'check the caller' });
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes requested');
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      eq(f.github.written.filter((w) => w.op === 'postReview').map((w) => pick(w, ['commitId', 'event', 'body'])), [{ commitId: 'H1', event: 'REQUEST_CHANGES', body: 'Changes requested by buildd reviewer: check the caller' }], 'posted at the round head');
+      const attempt = (await s.view()).attempts.find((a) => a.family === 'review_fix')!;
+      ok(attempt?.taskId, 'T8 allocated the row with its task id');
+      eq(f.work.filed.filter((w) => w.role === 'fix').map((w) => ({ taskId: w.taskId, attemptId: w.lineage.attemptId, firstAtHead: w.detail?.firstAtHead })), [{ taskId: attempt.taskId, attemptId: attempt.id, firstAtHead: true }], 'the fix, under the row');
+      ok(f.work.woken.some((w) => w.taskId === attempt.taskId && w.reason === 'review.fix_requested'), 'woken');
+      eq(await outcomesOf(host, s, 'dispatch_fix'), ['ok'], 'filed');
+      eq(await kernelEffectHandlers(f.ports).dispatch_fix!(await direct(host, s, 'dispatch_fix')), { outcome: 'ok:task_exists' }, 'a redelivery files nothing twice');
+      eq(f.work.filed.filter((w) => w.role === 'fix').length, 1, 'one fix');
+
+      applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: attempt.id, revalidation: { live: s.live('H1'), approved: false } }), 'FIXING', 'claimed');
+      applied(await s.push('H2'), 'FIXING', 'the fix pushed');
+      applied(await s.fixEnded(attempt.id, { localHeadSha: 'H2', commitCount: 1 }), 'AWAITING_REVIEW', 'the fix ended on GitHub');
+      await drainKernel(host, s, f.ports);
+      const second = f.work.filed.filter((w) => w.role === 'review').at(-1)!;
+      eq(pick(second.detail?.priorVerdict as Record<string, unknown> ?? null, ['headSha', 'verdict', 'feedback']), { headSha: 'H1', verdict: 'request-changes', feedback: 'check the caller' }, 'the delta round knows what was asked');
+      // §8.4: a review owed for a round is posted at that round's commit, not at the head the PR shows now.
+      const before = f.github.written.length;
+      eq(await kernelEffectHandlers(f.ports).post_review!(await direct(host, s, 'post_review', { roundId: r1.id, event: 'REQUEST_CHANGES' })), { outcome: 'ok' }, 'posted');
+      eq(f.github.written.slice(before).map((w) => w.commitId), ['H1'], 'at the round head, with the PR now at H2');
+    },
+  },
+  {
+    name: 'handlers/review: a review GitHub refused is recorded for a person once; a matching review is no failure; a verdict on the host\'s own PR went up as a comment',
+    async run(host) {
+      const post = async (prNumber: number, answer: { posted: boolean; reason?: string; commentedOwnPr?: boolean }) => {
+        const s = await (await new Delivery(host, prNumber).open()).approvedAt('H1');
+        const f = fakePorts(host);
+        f.github.reviewAnswer = { id: null, ...answer };
+        await drainKernel(host, s, f.ports);
+        return { outcome: await outcomesOf(host, s, 'post_review'), ops: f.reviews.ops().filter((o) => o.startsWith('postFailed')) };
+      };
+      eq(await post(85, { posted: false, reason: 'bad token' }), { outcome: ['failed_post:bad token'], ops: ['postFailed:APPROVE:bad token'] }, 'refused: recorded, not retried');
+      eq(await post(86, { posted: false, reason: 'a matching review already exists for this commit' }), { outcome: ['ok'], ops: [] }, 'already there');
+      eq(await post(87, { posted: true, commentedOwnPr: true }), { outcome: ['ok:commented_own_pr'], ops: [] }, 'own PR');
+    },
+  },
+  {
+    name: 'handlers/review: push recovery re-reads, schedules its next try once, and hands a spent chain to a person; a head that arrived meanwhile goes to the funnel',
+    async run(host) {
+      const s = await new Delivery(host, 88).open();
+      applied(await s.submit({ type: 'AttemptEnded', actor: 'runner', workerId: 'wk', taskId: s.ownerTaskId, outcome: 'success', localHeadSha: 'L2', commitCount: 1, live: s.live('H1') }), 'AWAITING_PUSH', 'nothing on GitHub');
+      // GitHub unreadable: nothing arrived that the kernel can see.
+      const f = fakePorts(host);
+      const h = kernelEffectHandlers(f.ports);
+      const first = await direct(host, s, 'push_recovery');
+      eq(await h.push_recovery!(first), { outcome: 'ok:retry_2' }, 'the next try is owed');
+      eq(await h.push_recovery!(first), { outcome: 'skipped:retry_2_exists' }, 'a redelivery schedules nothing');
+      eq(await s.count('push_recovery'), 2, 'one follow-up');
+      eq(await h.push_recovery!({ ...first, payload: { ...first.payload, try: 3, maxTries: 3 } }), { outcome: 'ok:exhausted' }, 'the last try');
+      ok((await s.d()).state !== 'AWAITING_PUSH', 'a person owns it now');
+
+      const m = await new Delivery(host, 89).open();
+      applied(await m.submit({ type: 'AttemptEnded', actor: 'runner', workerId: 'wk', taskId: m.ownerTaskId, outcome: 'success', localHeadSha: 'L2', commitCount: 1, live: m.live('H1') }), 'AWAITING_PUSH', 'm');
+      const fm = fakePorts(host);
+      fm.github.setPr(m.repo, m.prNumber, m.live('L2'));
+      eq(await kernelEffectHandlers(fm.ports).push_recovery!(await direct(host, m, 'push_recovery')), { outcome: 'ok:head_observed' }, 'the head arrived');
+      eq(fm.ingest.facts.map((x) => pick(x, ['kind', 'source'])), [{ kind: 'head_observed', source: 'effect:push_recovery' }], 'through the funnel');
+    },
+  },
+  {
+    name: 'handlers/notify: a pre-flight finding is announced only while the delivery is escalated at its head; a dead effect and an undeliverable fix tell the team in words',
+    async run(host) {
+      const s = await new Delivery(host, 90).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const f = fakePorts(host);
+      const h = kernelEffectHandlers(f.ports);
+      eq(await h.notify!(await direct(host, s, 'notify', { event: 'policy_human', headSha: 'H1', reason: 'drops a column' })), { outcome: 'skipped:state_moved' }, 'not escalated: no notice');
+      eq(await h.notify!(await direct(host, s, 'notify', { event: 'effect_dead', effectKind: 'merge_call' })), { outcome: 'ok' }, 'dead effect');
+      eq(await h.notify!(await direct(host, s, 'notify', { event: 'push_undeliverable', localHeadSha: 'abcdef123' })), { outcome: 'ok' }, 'undeliverable');
+      eq(await h.notify!(await direct(host, s, 'notify', { event: 'something_else' })), { outcome: 'skipped:no_channel' }, 'no channel');
+      eq(f.notify.teams.map((t) => pick(t, ['kind', 'title', 'prNumber', 'urlTitle'])), [
+        { kind: 'needsAttention', title: `PR #${s.prNumber} needs a person: the merge call kept failing`, prNumber: s.prNumber, urlTitle: 'View PR' },
+        { kind: 'needsAttention', title: `PR #${s.prNumber}: a fix never reached GitHub`, prNumber: s.prNumber, urlTitle: 'View PR' },
+      ], 'two notices');
+      ok(f.notify.teams[1]!.body?.includes('its local commit was abcdef1'), 'naming the local commit');
+    },
+  },
+  {
+    name: 'handlers/conflict: a refused mechanical refresh allocates the agent attempt, filed under its row; up to date needs nothing; an operational dead end goes to a person',
+    async run(host) {
+      const conflicted = async (prNumber: number) => {
+        const s = await new Delivery(host, prNumber).open();
+        applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+        applied(await s.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }), 'REPAIRING', 'conflict');
+        return s;
+      };
+      const a = await conflicted(91);
+      const fa = fakePorts(host);
+      fa.github.setPr(a.repo, a.prNumber, a.live('H1', { mergeableState: 'dirty' }));
+      fa.conflicts.refreshAnswer = { kind: 'refused', refusal: { reason: 'merge conflict in a.ts', mode: 'textual' } };
+      await drainKernel(host, a, fa.ports);
+      eq(await outcomesOf(host, a, 'refresh_branch'), ['ok:refused:merge conflict in a.ts'], 'refused to an agent');
+      const agent = (await a.view()).attempts.find((x) => x.mode === 'agent')!;
+      ok(agent, 'T12 allocated the agent attempt');
+      eq(fa.work.filed.filter((w) => w.role === 'conflict_fix').map((w) => ({ taskId: w.taskId, refusal: (w.detail?.refusal as { mode?: string } | null)?.mode })), [{ taskId: agent.id, refusal: 'textual' }], 'the agent fix, under its row, with what was refused');
+      eq((await a.view()).attempts.find((x) => x.id === agent.id)?.taskId, agent.id, 'bound');
+      ok(fa.work.woken.some((w) => w.taskId === agent.id && w.reason === 'conflict.retry'), 'woken');
+
+      const b = await conflicted(92);
+      const fb = fakePorts(host);
+      fb.github.setPr(b.repo, b.prNumber, b.live('H1', { mergeableState: 'dirty' }));
+      fb.conflicts.refreshAnswer = { kind: 'up_to_date' };
+      await drainKernel(host, b, fb.ports);
+      eq(await outcomesOf(host, b, 'refresh_branch'), ['skipped:up_to_date'], 'nothing to merge in');
+      ok((await b.d()).state !== 'REPAIRING', 'the repair was not needed');
+
+      const c = await conflicted(93);
+      const fc = fakePorts(host);
+      fc.github.setPr(c.repo, c.prNumber, c.live('H1', { mergeableState: 'dirty' }));
+      fc.conflicts.refreshAnswer = { kind: 'failed', reason: 'update-branch kept failing' };
+      await drainKernel(host, c, fc.ports);
+      eq(await outcomesOf(host, c, 'refresh_branch'), ['ok:escalated:update-branch kept failing'], 'a person lands it');
+      eq((await c.d()).state, 'ESCALATED', 'escalated');
+      eq(fc.notify.teams.map((t) => t.title), [`PR #${c.prNumber}: landing needs a person`], 'and the team is told');
+      eq(fc.work.requested.filter((w) => w.role === 'conflict_fix').length, 0, 'no agent');
+    },
+  },
+  {
+    name: 'handlers/conflict: an agent fix filed by a run that crashed before binding its row is bound and woken by the next run',
+    async run(host) {
+      const s = await new Delivery(host, 100).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }), 'REPAIRING', 'conflict');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1', { mergeableState: 'dirty' }));
+      f.conflicts.refreshAnswer = { kind: 'refused', refusal: { reason: 'merge conflict', mode: 'textual' } };
+      eq(await kernelEffectHandlers(f.ports).refresh_branch!(await direct(host, s, 'refresh_branch')), { outcome: 'ok:refused:merge conflict' }, 'refused to an agent');
+      const agent = (await s.view()).attempts.find((x) => x.mode === 'agent')!;
+      await f.work.file({ role: 'conflict_fix', workspaceId: s.workspaceId, taskId: agent.id, target: { repoFullName: s.repo, prNumber: s.prNumber, headSha: 'H1' }, lineage: { deliveryId: s.deliveryId, attemptId: agent.id }, dedupeKey: `conflict_fix:${agent.id}` });
+      await drainKernel(host, s, f.ports);
+      eq(await outcomesOf(host, s, 'dispatch_conflict_fix'), ['ok:task_bound'], 'the next run binds it');
+      eq((await s.view()).attempts.find((x) => x.id === agent.id)?.taskId, agent.id, 'bound');
+      ok(f.work.woken.some((w) => w.taskId === agent.id && w.reason === 'conflict.retry'), 'and woken');
+      eq(f.work.filed.filter((w) => w.role === 'conflict_fix').length, 1, 'nothing filed twice');
+    },
+  },
+  {
+    name: 'handlers/conflict: T26\'s plain refresh is pinned to the head it judged stale and never pushes to a dependency bot; a migration collision is renumbered mechanically',
+    async run(host) {
+      const s = await new Delivery(host, 94).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const f = fakePorts(host);
+      const h = kernelEffectHandlers(f.ports);
+      eq(await h.refresh_branch!(await direct(host, s, 'refresh_branch', { headSha: 'H1' })), { outcome: 'ok:updated' }, 'updated at H1');
+      eq(await h.refresh_branch!(await direct(host, s, 'refresh_branch', { headSha: 'H0' })), { outcome: 'skipped:head_moved' }, 'a stale head is not refreshed');
+      f.conflicts.botOwnedAnswer = true;
+      eq(await h.refresh_branch!(await direct(host, s, 'refresh_branch', { headSha: 'H1' })), { outcome: 'skipped:dependency_bot' }, 'a bot\'s branch is never pushed to');
+      eq(f.conflicts.ops().filter((o) => o.startsWith('updateBranch')), ['updateBranch:H1'], 'one update, pinned');
+
+      const m = await new Delivery(host, 95).open();
+      applied(await m.ownerPushed('H1'), 'AWAITING_REVIEW', 'm pushed');
+      applied(await m.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', migrationCollision: true, maxAgentAttempts: 3 }), 'REPAIRING', 'collision');
+      const fm = fakePorts(host);
+      fm.github.setPr(m.repo, m.prNumber, m.live('H1'));
+      await drainKernel(host, m, fm.ports);
+      eq(await outcomesOf(host, m, 'renumber_migration'), ['ok:renumbered:0010_x.sql'], 'renumbered');
+      eq(fm.ingest.facts.map((x) => pick(x, ['kind', 'source'])), [{ kind: 'head_observed', source: 'effect:renumber_migration' }], 'its new head goes to the funnel');
+    },
+  },
+  {
+    name: 'handlers/hand-off: a delivery the switch released before its first round gets legacy\'s first review once, only while the switch is off; a failed review gives the claim back',
+    async run(host) {
+      const released = async (prNumber: number, off: boolean) => {
+        const s = await new Delivery(host, prNumber).open();
+        if (off) await host.setKernelEnabled(s.workspaceId, false);
+        ok(await host.store.releaseToLegacy(s.deliveryId), 'released');
+        return s;
+      };
+      const a = await released(96, true);
+      const f = fakePorts(host);
+      f.github.setPr(a.repo, a.prNumber, a.live('H1'));
+      eq(await handOffToLegacyOn(f.ports, a.deliveryId), 'review_queued', 'legacy\'s first review');
+      eq(f.handOff.reviews.map((r) => pick(r, ['deliveryId', 'headSha'])), [{ deliveryId: a.deliveryId, headSha: 'H1' }], 'at the live head');
+      eq(await handOffToLegacyOn(f.ports, a.deliveryId), 'already_handed_off', 'once per owner');
+      await host.setKernelEnabled(a.workspaceId, true);
+
+      const b = await released(97, false);
+      eq(await handOffToLegacyOn(f.ports, b.deliveryId), 'switch_on', 'a release for any other reason was already answered');
+
+      const c = await released(98, true);
+      const fc = fakePorts(host);
+      fc.github.setPr(c.repo, c.prNumber, c.live('H1'));
+      fc.handOff.firstReviewFails = true;
+      eq(await handOffToLegacyOn(fc.ports, c.deliveryId), 'error', 'the review failed');
+      eq(fc.handOff.unclaimed, [c.ownerTaskId], 'the claim is given back');
+      await host.setKernelEnabled(c.workspaceId, true);
+
+      const k = await new Delivery(host, 99).open();
+      eq(await handOffToLegacyOn(f.ports, k.deliveryId), 'not_released', 'the kernel\'s own delivery');
+    },
+  },
+  {
     name: 'handlers: a port the host did not supply fails the effect loudly instead of acking it',
     async run(host) {
       const s = await new Delivery(host, 51).open();
       await s.ownerPushed('H1');
       applied(await s.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: s.live('H1', { state: 'closed', updatedAt: '2026-01-01T04:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed');
       const f = fakePorts(host, { omit: ['lifecycle'] });
-      await drainEffects(host.store, { handlers: { ...recordingHandlers([]), ...kernelEffectHandlers(f.ports) }, deliveryId: s.deliveryId, log: { log: () => {}, error: () => {} } });
+      await drainEffects(host.store, { policy: host.policy, handlers: { ...recordingHandlers([]), ...kernelEffectHandlers(f.ports) }, deliveryId: s.deliveryId, log: { log: () => {}, error: () => {} } });
       const row = (await host.effects(s.deliveryId)).find((e) => e.kind === 'scan_supersession')!;
       eq(pick(row, ['status', 'lastError']), { status: 'pending', lastError: 'scan_supersession: the host supplies no lifecycle port' }, 'backed off, naming the port');
     },

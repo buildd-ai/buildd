@@ -1,6 +1,11 @@
 /**
- * Reviews module: legacy's first review for a delivery the kill switch handed
- * back before the kernel queued its first round (legacy-handoff.ts, §14).
+ * Reviews module: the kernel's `HandOff` port, legacy's first review for a
+ * delivery the kill switch handed back before the kernel queued its first
+ * round (§14). The decision (released, never reviewed, switch still off, PR
+ * open, once per owner) is the package's `handOffToLegacyOn`
+ * (packages/workflow-kernel/src/handlers/hand-off.ts); this files what legacy
+ * would have filed, and holds the once-per-owner claim
+ * (`tasks.context.workflowLegacyHandoff`).
  *
  * Files exactly what the PR-opened policy would have filed at open, had the
  * kernel not taken the PR: one reviewer task at the live head (no
@@ -21,10 +26,30 @@ import { listWorkspaceRoles } from '@/lib/pr-review-request';
 import { pickReviewerRole } from '@/lib/pr-review-status';
 import { conformanceManifest } from '@/lib/path-declaration';
 import { reviewerTitle } from '@/lib/task-title';
-import type { LegacyFirstReview } from './legacy-handoff';
+import type { HandOff } from '@buildd/workflow-kernel/ports';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { claimLegacyHandoffSql, unclaimLegacyHandoffSql } from './authority';
+import { workspaceRepo } from './github-facts';
+import type { Exec } from './kernel';
 
-export const legacyFirstReview: LegacyFirstReview = async (p) => {
+const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
+
+/** What legacy files for a PR's first review, given its live head and base. */
+export interface LegacyFirstReviewInput {
+  workspaceId: string;
+  deliveryId: string;
+  ownerTaskId: string;
+  repoFullName: string;
+  prNumber: number;
+  installationId: number;
+  headSha: string;
+  baseRef: string | null;
+  htmlUrl: string;
+  /** The pre-flight finding the kernel recorded at open, if any: legacy answers it with a person, not a reviewer. */
+  policyEvidence: { headSha: string; outcome: string; reason: string } | null;
+}
+
+export const legacyFirstReview = async (p: LegacyFirstReviewInput): Promise<{ outcome: string }> => {
   const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, p.workspaceId)) });
   const owner = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, p.ownerTaskId)),
@@ -100,3 +125,26 @@ export const legacyFirstReview: LegacyFirstReview = async (p) => {
   console.log(`[reviewer] kill-switch hand-off: legacy first review ${created.id} for PR #${p.prNumber} on ${p.repoFullName}`);
   return { outcome: 'review_queued' };
 };
+
+/** The `HandOff` port: the claim once per owner task, and legacy's first review. */
+export function handOffHost(exec: Exec = dbExec): HandOff {
+  return {
+    async claim(d) {
+      return ((await exec(claimLegacyHandoffSql(d.ownerTaskId, d.id))).rows ?? []).length > 0;
+    },
+    async unclaim(d) {
+      await exec(unclaimLegacyHandoffSql(d.ownerTaskId));
+    },
+    async firstReview(p) {
+      const repo = await workspaceRepo(p.d.workspaceId);
+      if (!repo) throw new Error('no GitHub installation for the workspace');
+      const r = await legacyFirstReview({
+        workspaceId: p.d.workspaceId, deliveryId: p.d.id, ownerTaskId: p.d.ownerTaskId, repoFullName: p.d.repoFullName, prNumber: p.d.prNumber,
+        installationId: repo.installationId, headSha: p.headSha, baseRef: p.baseRef,
+        htmlUrl: `https://github.com/${p.d.repoFullName}/pull/${p.d.prNumber}`, policyEvidence: p.policyEvidence,
+      });
+      console.log(`[workflow] delivery ${p.d.id} handed to legacy after switch-off: ${r.outcome}`);
+      return r;
+    },
+  };
+}

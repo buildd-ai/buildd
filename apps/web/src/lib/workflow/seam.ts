@@ -24,7 +24,7 @@ import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
-import { claimLegacyHandoffSql, kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery, unclaimLegacyHandoffSql } from './authority';
+import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
 import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
@@ -541,42 +541,25 @@ export async function attemptEnded(p: {
 /**
  * A delivery the kill switch released before its first round was queued is
  * legacy's, and legacy files a PR's first review only when the PR opens, a
- * moment that has passed. Run legacy's first review now (the
- * `LEGACY_FIRST_REVIEW` slot), once per owner task, for an open PR in a
- * workspace whose switch is still off. A delivery released for any other
- * reason (switch on) was handed over by a legacy decision that already
- * answered it. Never throws: answers what it did.
+ * moment that has passed. The package's `handOffToLegacyOn` decides (released,
+ * never reviewed, switch still off, PR open, once per owner task) and the
+ * reviews module's `HandOff` port files legacy's first review. The switch is
+ * read as this workspace's repo row has it (`deps.repoFor`). Never throws:
+ * answers what it did.
  */
 export async function handOffToLegacy(deliveryId: string, deps: SeamDeps = {}): Promise<string> {
-  const exec = deps.exec ?? seamExec;
-  let claimedFor: string | null = null;
   try {
-    const view = await loadView({ deliveryId }, deps.exec);
-    const d = view.delivery;
-    if (!d || d.authority !== 'legacy') return 'not_released';
-    if (!d.repoFullName || d.prNumber == null) return 'no_pr';
-    if (d.currentRound > 0 || view.rounds.length > 0) return 'already_reviewed';
-    if (RESOLVED_OR_CLOSED.has(d.state)) return 'closed';
-    const repo = await (deps.repoFor ?? workspaceRepo)(d.workspaceId);
-    if (!repo) return 'no_repo';
-    if (kernelEnabled(repo.gitConfig)) return 'switch_on';
-    if (((await exec(claimLegacyHandoffSql(d.ownerTaskId, deliveryId))).rows ?? []).length === 0) return 'already_handed_off';
-    claimedFor = d.ownerTaskId;
-    const live = await readerFor(deps, repo.installationId).readPr(d.repoFullName, d.prNumber);
-    if (!live) throw new Error('live_read_failed');
-    if (live.state !== 'open' || live.merged) return 'pr_not_open';
-    const { LEGACY_FIRST_REVIEW } = await import('@/modules');
-    const r = await LEGACY_FIRST_REVIEW({
-      workspaceId: d.workspaceId, deliveryId, ownerTaskId: d.ownerTaskId, repoFullName: d.repoFullName, prNumber: d.prNumber,
-      installationId: repo.installationId, headSha: live.headSha, baseRef: live.baseRef ?? d.baseRef,
-      htmlUrl: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,
-      policyEvidence: d.policyEvidence ? { headSha: d.policyEvidence.headSha, outcome: d.policyEvidence.outcome, reason: d.policyEvidence.reason } : null,
+    const [{ builddKernelPorts }, { policyFromGitConfig }, { handOffToLegacyOn }, m] = await Promise.all([
+      import('./kernel-ports'), import('./kernel-policy'), import('@buildd/workflow-kernel/handlers/hand-off'), import('@/modules'),
+    ]);
+    const repoFor = deps.repoFor ?? workspaceRepo;
+    const ports = builddKernelPorts(m.workflowKernelHooks(), {
+      exec: deps.exec,
+      githubFor: async (ws) => { const repo = await repoFor(ws); return repo ? readerFor(deps, repo.installationId) : null; },
+      policy: { forWorkspace: async (ws) => policyFromGitConfig((await repoFor(ws))?.gitConfig ?? null) },
     });
-    console.log(`[workflow] delivery ${deliveryId} handed to legacy after switch-off: ${r.outcome}`);
-    return r.outcome;
+    return await handOffToLegacyOn(ports, deliveryId, (msg, err) => console.error(msg, err));
   } catch (err) {
-    // Let the next owner end try again rather than lose the review.
-    if (claimedFor) await exec(unclaimLegacyHandoffSql(claimedFor)).catch(() => {});
     console.error(`[workflow] legacy hand-off of delivery ${deliveryId} failed:`, err);
     return 'error';
   }

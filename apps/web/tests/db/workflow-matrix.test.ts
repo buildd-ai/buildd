@@ -4,7 +4,7 @@
  *
  * Every passing case drives the functions the routes and sweeps call (seam.ts)
  * through the real CAS statements on real Postgres, and drains the outbox
- * through the real review-loop effect handlers (review-effects.ts). Only
+ * through the real effect handlers (the package's, on buildd's ports). Only
  * GitHub and the side-effect leaves (posting a review, the PR activity
  * comment, notifications, the dispatch wake, the reviewer prompt) are faked:
  * the decisions under test are the kernel's.
