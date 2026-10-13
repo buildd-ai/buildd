@@ -398,6 +398,14 @@ Existing, read-only context for this spec:
 - `packages/core/db/schema.ts` — `accounts.authType`, `managedRunner`,
   `hostRunner`, `createdByUserId`: the section 8 inputs.
 
+- `apps/web/src/lib/root-cause-record.ts` — the section 6 input, stored:
+  one `root_causes` row per cause per team, written by the worker outcome
+  path (runner auth failures) and the failure-pattern sweep, classified from
+  structured fields only, cleared only by a run that succeeds on the affected
+  runner/provider (or, for a platform cause, in its workspace).
+- `apps/web/src/app/api/admin/root-causes/route.ts` — the platform-owner read
+  of those records; 404 to team keys and sessions.
+
 To be added: the section 9 loader, the team-facing renderers on Home and
 Health, and the platform-owner API routes for incidents and decision-feature
 health.
