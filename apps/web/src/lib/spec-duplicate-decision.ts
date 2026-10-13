@@ -21,9 +21,10 @@ export { SPEC_RELATIONS, type SpecRelation };
  *
  * - A duplicate at p >= DUPLICATE_BLOCK_P is refused unless the request says
  *   which spec it supersedes, or why it is distinct. Measured offline
- *   2026-10-12 on Jev (knowledge base: buildd/reports/spec-duplicate-detection-
- *   eval-2026-10-12.md): 106 of 106 duplicates right at 0.9. Only Jev's answer
- *   blocks: a model this was not measured on is recorded, never applied.
+ *   2026-10-12 (knowledge base: buildd/reports/spec-duplicate-detection-
+ *   eval-2026-10-12.md): Jev 106 of 106 duplicates right at 0.9, Clef and Clef
+ *   Flash no false duplicate. A model this was not measured on is recorded,
+ *   never applied.
  * - An overlap, or a duplicate below the bar, is a warning.
  * - The shortlist never decides: it ranked lookalike criteria above true
  *   paraphrases in the eval. It only picks what the model reads.
@@ -146,9 +147,19 @@ export const SPEC_DUPLICATE_CONFIG: DecisionKindConfig<typeof SPEC_DUPLICATE_KIN
   fallback: (_f, cause) => ({ decision: 'distinct', reasonCode: `fallback_${cause}` }),
 };
 
+/**
+ * Measured on the same 2026-10-12 set beside Jev (summary.json): Clef chose
+ * duplicate for all 108 duplicates and for nothing else, 99 of them at
+ * p >= 0.9 (ECE 0.045); Clef Flash also had no false duplicate but reached
+ * 0.9 on only 10, so under it most duplicates warn. `clef` also covers
+ * `clef-flash` (a dated or suffixed id matches by prefix).
+ */
+export const SPEC_DUPLICATE_MEASURED_MODELS = ['clef', '@cf/cloudflare/clef', 'cloudflare/clef'] as const;
+
 export const SPEC_DUPLICATE_BINDING: BuilddDecisionKindBinding = {
   capability: SPEC_DUPLICATE_CAPABILITY,
   mode: 'live',
+  measuredModels: SPEC_DUPLICATE_MEASURED_MODELS,
 };
 
 export const specDuplicateKind = defineBuilddDecisionKind(SPEC_DUPLICATE_CONFIG, SPEC_DUPLICATE_BINDING);

@@ -839,8 +839,9 @@ stop a spec.
     answer is recorded in the decision ledger under subject `spec_pair`.
 - `duplicate` at p >= 0.9 (Jev: 106 of 106 right in the eval): a 409 with
   `code: spec_duplicate` and the `duplicates`, naming each spec, and nothing is
-  written. A model the kind was not measured on is recorded, never applied, so
-  it cannot block.
+  written. Measured models: Jev, Clef and Clef Flash (no false duplicate in
+  the eval; Clef Flash rarely reaches 0.9, so it mostly warns). Any other
+  model is recorded, never applied, so it cannot block.
 - Override: `supersedes` (a spec id in the same workspace) or
   `distinctBecause` (at least 10 characters). The spec is created and the
   override is recorded on each blocking judgement's ledger row as a human
