@@ -19,6 +19,7 @@
  */
 import type { RootCauseRecord } from '@buildd/shared';
 import type { HomeAttentionItem } from './home-attention';
+import { roleHas } from './permission-registry';
 import {
   projectServiceStatus,
   statusAttentionItems,
@@ -71,7 +72,8 @@ export interface ServiceStatusFacts {
 export const RUNNERS_HREF = '/app/settings/runners';
 export const SIGN_INS_HREF = '/app/settings/models#sign-ins';
 
-const isAdminRole = (role: TeamRole | null | undefined) => role === 'owner' || role === 'admin';
+/** Team admins act on team keys and shared runners: whoever may manage team credentials. */
+const isAdminRole = (role: TeamRole | null | undefined) => roleHas(role, 'manage_team_credentials');
 
 /** Team-facing names for platform components. Never the internal rule name. */
 const PLATFORM_LABELS: Record<string, string> = {
@@ -86,7 +88,7 @@ const platformLabel = (component: string | null) => (component && PLATFORM_LABEL
 const providerName = (p: string | null) => (p ? p.charAt(0).toUpperCase() + p.slice(1) : 'Provider');
 
 /** Work that is still waiting: a task that later completed or was cancelled is not. */
-const WAITING_DONE = new Set(['completed', 'cancelled']);
+const isWaitingDone = (status: string) => status === 'completed' || status === 'cancelled';
 
 /**
  * Section 8, one row: who holds the fix for this runner cause, and what it is.
@@ -123,7 +125,7 @@ export function buildRootCauses(f: ServiceStatusFacts): RootCause[] {
   const memberIds = new Set(f.members.map(m => m.userId));
   const work = (ids: readonly string[]): AffectedWork[] => ids.flatMap(id => {
     const t = tasks.get(id);
-    return t && !WAITING_DONE.has(t.status)
+    return t && !isWaitingDone(t.status)
       ? [{ taskId: t.id, title: t.title, workspaceId: t.workspaceId, requesterUserId: t.createdByUserId, hasLiveRun: t.hasLiveRun }]
       : [];
   });
