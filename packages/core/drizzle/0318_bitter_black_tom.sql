@@ -1,1 +1,0 @@
-ALTER TABLE "local_sessions" ADD COLUMN "busy_since" timestamp with time zone;

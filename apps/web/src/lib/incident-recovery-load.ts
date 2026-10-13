@@ -3,6 +3,7 @@
  * carry an incident ref, and the incident's view for each. Server only.
  */
 import { INCIDENT_RECOVERY_CONTEXT_KEY, readIncidentRecoveryRef, taskRecoveryView, type TaskRecoveryView } from './incident-recovery-refs';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The recovery view for each task that carries a ref, by task id. Two reads:
@@ -27,7 +28,7 @@ export async function loadTaskRecoveryViews(taskIds: readonly string[], opts: { 
     });
     if (refs.length === 0) return out;
     const incidents = await db.query.failureIncidents.findMany({
-      where: inArray(failureIncidents.id, [...new Set(refs.map(r => r.ref.incidentId))]),
+      where: sqlWhere(inArray(failureIncidents.id, [...new Set(refs.map(r => r.ref.incidentId))])),
     });
     const byId = new Map(incidents.map(i => [i.id, i]));
     for (const { taskId, ref } of refs) {

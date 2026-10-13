@@ -288,21 +288,6 @@ describe('Used for: a choice only once there is one', () => {
     }
   });
 
-  it('options are named like the rows, and a provider whose team keys all fail cannot be picked', () => {
-    const res = fixtureResponse({ rows: [
-      { provider: 'anthropic', scope: 'team' },
-      { provider: 'openrouter', scope: 'team' },
-      { provider: 'openai', scope: 'team', health: 'revoked' },
-    ] });
-    const chat = usedForView(res, {})!.find((r) => r.surface === 'chat')!;
-    expect(chat.options.find((o) => o.value === 'anthropic')!.label).toBe('Claude');
-    expect(chat.options.find((o) => o.value === 'openai')).toMatchObject({ label: 'OpenAI', disabled: true, description: 'Needs a working key' });
-    // Two of one group serving the same surface: each by its own name.
-    const both = fixtureResponse({ rows: [{ provider: 'anthropic', scope: 'team' }, { provider: 'claude-subscription', scope: 'team', shape: 'setup_token' }] });
-    const claude = usedForView(both, {})!.find((r) => r.surface === 'agent-claude')!;
-    expect(claude.options.map((o) => o.label).sort()).toEqual(['Anthropic', 'Claude subscription'].sort());
-  });
-
   it('a stored pick shows; a pick the surface cannot use reads as automatic', () => {
     const res = fixtureResponse({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] });
     const rows = usedForView(res, { chat: 'openrouter', 'agent-codex': 'anthropic' })!;

@@ -32,16 +32,6 @@ export const MISSION_TASK_REFRESH_EXTRAS = {
   isIntegrationRefresh: (t: any, { sql }: any) => sql`coalesce((${t.context} ->> 'requireMergeCommit') = 'true', false)`.as('is_integration_refresh'),
 };
 
-/**
- * One boolean, not the context blob: whether the task is the platform's own
- * integration-branch refresh chore (`context.requireMergeCommit`, the marker
- * `integrationRefreshOf` reads). Bookkeeping, never a deliverable. The callback
- * form: a nested relation is aliased, so the column comes from the aliased table.
- */
-export const MISSION_TASK_REFRESH_EXTRAS = (t: any, { sql }: any) => ({
-  isIntegrationRefresh: sql`coalesce((${t.context} ->> 'requireMergeCommit') = 'true', false)`.as('is_integration_refresh'),
-});
-
 export const MISSION_TASK_BASE_COLUMNS = {
   id: true, title: true, status: true, result: true, createdAt: true, updatedAt: true, kind: true,
   mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true,

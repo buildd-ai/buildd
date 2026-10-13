@@ -31,6 +31,7 @@ import { readRecovery, type RecoveryFamily, type RecoveryPolicyOutcome, type Rec
 import type { StoredIncident } from './failure-incident-store';
 import { INCIDENT_RECOVERY_CONTEXT_KEY, readIncidentRecoveryRef, type IncidentRecoveryRef } from './incident-recovery-refs';
 import { RUNBOOKS, runbookFor } from './failure-incident-repairs';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** `context.captureFailureRollout`: what the rollout sweep found for a legacy audit question (§16.4). */
 export const CAPTURE_ROLLOUT_CONTEXT_KEY = 'captureFailureRollout';
@@ -240,7 +241,7 @@ export async function runCaptureAdapters(adapters: CaptureRecoveryAdapters, inci
 async function workspaceRepo(workspaceId: string): Promise<{ installationId: number; fullName: string } | null> {
   const [{ db }, { workspaces }, { eq }] = await Promise.all([import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm')]);
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true },
     with: { githubRepo: { columns: { fullName: true }, with: { installation: { columns: { installationId: true } } } } },
   });
@@ -340,7 +341,7 @@ export async function dbObserveCaptureRecovery(incident: StoredIncident): Promis
     fixId = await createDbFixTaskPort().findOpenByIncident(incident.id, incident.workspaceId);
   }
   if (fixId) {
-    const row = await db.query.tasks.findFirst({ where: eq(tasks.id, fixId), columns: { id: true, status: true, updatedAt: true } });
+    const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, fixId)), columns: { id: true, status: true, updatedAt: true } });
     const fixWorkers = row ? await db.select({ mergedAt: workers.mergedAt, prLifecycleStatus: workers.prLifecycleStatus }).from(workers).where(eq(workers.taskId, row.id)).catch(() => null) : null;
     if (row) {
       fixTask = {

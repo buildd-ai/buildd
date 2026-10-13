@@ -19,6 +19,7 @@ import type { WorkerInfraComponent } from './failure-pattern-sentinel';
 import { RECOVERY_EPISODE_DEADLINE_MINUTES, type RecoveryFamily, type RecoveryPolicyOutcome, type RecoveryVerdict } from './failure-incident-recovery';
 import type { StoredIncident } from './failure-incident-store';
 import { readCredentialHold, type CredentialHold } from './task-recovery-hold';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface WorkerInfraSubjectFacts {
   taskId: string;
@@ -192,7 +193,7 @@ export async function dbObserveWorkerInfraRecovery(incident: StoredIncident): Pr
     if (!since) credentialHealthy = null;
     else if (key.startsWith('secret:')) {
       const row = await db.query.secrets.findFirst({
-        where: eq(secrets.id, key.slice('secret:'.length)),
+        where: sqlWhere(eq(secrets.id, key.slice('secret:'.length))),
         columns: { healthStatus: true, lastSuccessAt: true, lastRefreshSucceededAt: true },
       });
       const after = [row?.lastSuccessAt, row?.lastRefreshSucceededAt].some(d => !!d && d.toISOString() > since);

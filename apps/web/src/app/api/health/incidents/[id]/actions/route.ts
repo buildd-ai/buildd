@@ -10,6 +10,7 @@ import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { getViewerTimezone } from '@/lib/team-timezone';
 import { applyIncidentCapability, RECOVERY_CAPABILITIES } from './apply';
 import { productionIncidentActionDeps } from './deps';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -47,14 +48,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const generation = typeof body?.generation === 'number' ? body.generation : null;
     const evidenceRevision = typeof body?.evidenceRevision === 'string' ? body.evidenceRevision : null;
 
-    const row = await db.query.failureIncidents.findFirst({ where: eq(failureIncidents.id, id), columns: { id: true, workspaceId: true } });
+    const row = await db.query.failureIncidents.findFirst({ where: sqlWhere(eq(failureIncidents.id, id)), columns: { id: true, workspaceId: true } });
     const wsId = row?.workspaceId ?? null;
     const hasAccess = row && wsId
       ? apiAccount ? await verifyAccountWorkspaceAccess(apiAccount, wsId) : await verifyWorkspaceAccess(user!.id, wsId)
       : false;
     if (!row || !wsId || !hasAccess) return NextResponse.json({ error: 'Incident not found' }, { status: 404 });
 
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, wsId), columns: { teamId: true } });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, wsId)), columns: { teamId: true } });
     const teamId = ws?.teamId ?? null;
     const timeZone = await getViewerTimezone(user?.id ?? null, teamId);
 

@@ -127,17 +127,6 @@ export interface LocalSessionStore {
    */
   adopt(fromPresenceId: string, toPresenceId: string, now: Date): Promise<string[]>;
   /**
-   * Mark an open presence as inside a turn (`busy_since`) or not. Written only
-   * when the mark changes (never throttled: a flip is what the reaper reads),
-   * bumping last_seen_at with it. True if written.
-   */
-  setBusy(id: string, busy: boolean, now: Date): Promise<boolean>;
-  /**
-   * Move every worker one presence holds to another (a `/clear` continuing in
-   * the same process). Returns the ids moved.
-   */
-  adopt(fromPresenceId: string, toPresenceId: string, now: Date): Promise<string[]>;
-  /**
    * Keep the bound interactive worker alive, same guard as the MCP touch. True
    * if written. `accountId` null: a person's presence, whose bound worker may
    * belong to any of their teams' accounts (bind checked that).
@@ -376,24 +365,6 @@ export async function handleLocalSessionEvent(
     return { ...presence, workerIds: [...presence.workerIds, ...moved.filter(id => !presence.workerIds.includes(id))] };
   };
 
-  // `/clear` keeps the process (and its MCP connection) but gives the
-  // conversation a new session id, whose presence would hold nothing: the
-  // claims would then be kept alive by MCP calls alone. The hook names the
-  // session it continues; its claims move here. Only this owner's own session
-  // of the same client, and only one still open or ended by `clear` (an exit
-  // already released its claims).
-  const adoptCleared = async (presence: PresenceRow, continuesSessionId: string): Promise<PresenceRow> => {
-    const prev = await store.find(owner, event.client, hashClientSessionId(event.client, continuesSessionId));
-    if (!prev || prev.id === presence.id || prev.workerIds.length === 0) return presence;
-    if (prev.endedAt && prev.endReason !== 'clear') return presence;
-    const moved = await store.adopt(prev.id, presence.id, now);
-    if (moved.length === 0) return presence;
-    for (const workerId of moved) {
-      await store.touchBoundWorker(workerId, isLocalSessionPerson(principal) ? null : principal.id, now);
-    }
-    return { ...presence, workerIds: [...presence.workerIds, ...moved.filter(id => !presence.workerIds.includes(id))] };
-  };
-
   switch (event.event) {
     case 'start': {
       const presence = await ensurePresence();
@@ -542,15 +513,6 @@ export function usageWriteWhere(workerId: string, graceCutoff: Date): SQL {
       inArray(workers.status, [...LIVE_WORKER_STATUSES]),
       gt(workers.completedAt, graceCutoff),
     ),
-  )!;
-}
-
-/** Turn-state write: only an open row whose mark actually changes. */
-export function presenceBusyWhere(id: string, busy: boolean): SQL {
-  return and(
-    eq(localSessions.id, id),
-    isNull(localSessions.endedAt),
-    busy ? isNull(localSessions.busySince) : isNotNull(localSessions.busySince),
   )!;
 }
 

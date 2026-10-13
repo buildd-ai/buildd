@@ -1,4 +1,5 @@
 import type { OperatorActionDeps } from './recovery-action';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The production side of an owner recovery action: the incident store, the
@@ -37,13 +38,13 @@ export async function productionOperatorActionDeps(): Promise<OperatorActionDeps
     repairFacts: (incident, peers) => repairs.loadRepairFacts(incident, peers).catch(() => null),
     async linkTask(params) {
       if ('taskId' in params) {
-        const t = await db.query.tasks.findFirst({ where: eq(schema.tasks.id, params.taskId), columns: { id: true, workspaceId: true, status: true } });
+        const t = await db.query.tasks.findFirst({ where: sqlWhere(eq(schema.tasks.id, params.taskId)), columns: { id: true, workspaceId: true, status: true } });
         return t ?? null;
       }
       const [w] = await db.select({ taskId: schema.workers.taskId }).from(schema.workers)
         .where(and(eq(schema.workers.workspaceId, params.workspaceId), eq(schema.workers.prNumber, params.prNumber))).limit(1);
       if (!w?.taskId) return null;
-      const t = await db.query.tasks.findFirst({ where: eq(schema.tasks.id, w.taskId), columns: { id: true, workspaceId: true, status: true } });
+      const t = await db.query.tasks.findFirst({ where: sqlWhere(eq(schema.tasks.id, w.taskId)), columns: { id: true, workspaceId: true, status: true } });
       return t ?? null;
     },
     async teams(workspaceIds) {

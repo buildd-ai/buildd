@@ -17,6 +17,8 @@
  * The planners and `taskRecoverySentence` are pure; DB access is lazy.
  */
 
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+
 export const CREDENTIAL_HOLD_PROBE_MINUTES = [15, 60, 240] as const;
 /** Auth failures per episode before the hold is exhausted. */
 export const CREDENTIAL_HOLD_BUDGET = 3;
@@ -152,7 +154,7 @@ export async function resolveCredentialIdentity(input: {
     let secretId: string | null = null;
     if (input.backend === 'codex') {
       const row = await db.query.secrets.findFirst({
-        where: and(eq(secrets.teamId, input.teamId), eq(secrets.purpose, 'codex_credential')),
+        where: sqlWhere(and(eq(secrets.teamId, input.teamId), eq(secrets.purpose, 'codex_credential'))),
         columns: { id: true },
       });
       secretId = row?.id ?? null;
@@ -160,7 +162,7 @@ export async function resolveCredentialIdentity(input: {
       secretId = await getActiveClaudeSecretId(input.teamId, input.workspaceId);
     }
     if (!secretId) return runnerLogin;
-    const row = await db.query.secrets.findFirst({ where: eq(secrets.id, secretId), columns: { id: true, workspaceId: true, accountId: true } });
+    const row = await db.query.secrets.findFirst({ where: sqlWhere(eq(secrets.id, secretId)), columns: { id: true, workspaceId: true, accountId: true } });
     const shared = !!row && !row.workspaceId && !row.accountId;
     return {
       credentialKey: `secret:${secretId}`,

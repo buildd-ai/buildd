@@ -211,20 +211,6 @@ export const DECISION_HEALTH_NEEDS_YOU = loadDecisionHealthNeedsYou;
 export const DECISION_MODEL_PROBE = probeDecisionModel;
 
 /**
- * The decisions module's slot for Home (lib/decision-health-needs-you.ts): one
- * card per team whose decision calls nearly all fail at the provider, for the
- * people who can change the decision model. Reads the ledgers; no model call.
- */
-export const DECISION_HEALTH_NEEDS_YOU = loadDecisionHealthNeedsYou;
-
-/**
- * The decisions module's slot for the team settings route
- * (packages/core/decision-probe.ts): one test decision through a decision
- * model's exact route before it is saved.
- */
-export const DECISION_MODEL_PROBE = probeDecisionModel;
-
-/**
  * The chat module's slot for the task page (lib/chat/answer-link.ts): where an
  * answer link (`?respond=1`) goes when the question folds into the reader's own
  * conversation. Null keeps them on the task page's reply box.

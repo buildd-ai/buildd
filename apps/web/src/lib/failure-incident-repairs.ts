@@ -21,6 +21,7 @@ import { MAX_DELIVERY_ATTEMPTS } from '@buildd/dispatch-contract';
 import type { RecoveryRepairAction } from './failure-incident-recovery';
 import type { RepairKind } from './failure-incident-recovery-events';
 import type { StoredIncident } from './failure-incident-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const RUNBOOK_VERSION = 'orq-runbook-v1';
 
@@ -481,7 +482,7 @@ export async function loadRepairFacts(incident: StoredIncident, peers: readonly 
   if (prNumber && incident.workspaceId) {
     const repo = await safe((async () => {
       const ws = await db.query.workspaces.findFirst({
-        where: eq(schema.workspaces.id, incident.workspaceId!),
+        where: sqlWhere(eq(schema.workspaces.id, incident.workspaceId!)),
         columns: { id: true },
         with: { githubRepo: { columns: { fullName: true }, with: { installation: { columns: { installationId: true } } } } },
       });

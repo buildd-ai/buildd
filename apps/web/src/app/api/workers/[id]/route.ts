@@ -3366,7 +3366,7 @@ export async function PATCH(
   if (status === 'failed' && authSeverityForHold !== 'none' && !isBudgetReset && !isCodexDeferral && worker.taskId) {
     try {
       const heldTask = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { backend: true, workspaceId: true, context: true, status: true },
         with: { workspace: { columns: { teamId: true } } },
       });
