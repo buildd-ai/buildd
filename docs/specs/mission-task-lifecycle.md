@@ -474,8 +474,9 @@ hold:
   as well as the hold. An admin `claim_task force: true` lifts it too.
 - **LX-5**: display. A local mission is active work: chip `LOCAL`, list status
   `Local`, grouped with running missions, never HELD / "arm to start" and never
-  STALLED / "dispatch a worker". A queued task reads "Waiting for a local
-  session to claim …", and `/api/cron/queue-stall` does not report it.
+  STALLED / "dispatch a worker". A queued task reads "Ready to start from a
+  local session", claimed work reads "1 task in progress in a local session",
+  and `/api/cron/queue-stall` does not report it.
 
 - **LX-6**: stranded. A local, unheld mission is *stranded* when it holds a
   claimable task (pending, every dependency met by the claim gate's own rule,
@@ -524,6 +525,18 @@ hold:
   on a non-local mission still does **not** lift this gate (deliberate — see
   the force-claim comment block in `claim/route.ts`), and a runner poll or
   unverified caller against a local mission's task is still deferred by it.
+- **LX-11**: an open question is the person's move (any executor). A worker
+  parked on a question (`waiting_input`: a runner agent's AskUserQuestion or a
+  local session's `ask_human`) still counts as live, so `missionOpenQuestions`
+  (`apps/web/src/lib/open-ask.ts`) hands the asking tasks to
+  `deriveMissionStateView` as `openQuestions`. It outranks the live-worker
+  rule: kind `awaiting_decision` (NEEDS YOU), focus `human_decision` with
+  `question`, headline "Needs input: <question>" ("N tasks need input" for
+  several), next action "Answer it on the task page to continue.", and the
+  causal line names the question, never "a worker is running it". The chip
+  keeps saying who runs the work (`LOCAL` / `RUNNING`). Held still wins; a
+  failed deliverable still leads the headline. The Board counts the same task
+  in Needs you (`deriveFeedTaskState`, `isOpenAsk`).
 
 Use `executor: 'local'` for work someone runs locally. `startMode: 'held'` is a
 pause: it also blocks the interactive claim, so it was never a fit for that.
