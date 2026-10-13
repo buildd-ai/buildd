@@ -14,6 +14,9 @@ import MarkdownContent from '@/components/MarkdownContent';
 import SpecDiffView from '@/components/SpecDiffView';
 import SpecRevisionPanes from '@/components/SpecRevisionPanes';
 import SpecComments from '@/components/SpecComments';
+import SpecNeighbourGraph from '@/components/SpecNeighbourGraph';
+import Segmented from '@/components/ui/Segmented';
+import { neighbourGraph } from '@/lib/specs/index-view';
 import type { SpecPageView } from '@/lib/specs/page-view';
 
 type Ok = Extract<SpecPageView, { state: 'ok' }>;
@@ -87,6 +90,9 @@ export default function SpecPage({ view }: { view: Ok }) {
   const defaultFrom = spec.approvedRevision && spec.approvedRevision !== spec.headRevision ? spec.approvedRevision : Math.max(1, spec.headRevision - 1);
 
   const focused = !!(view.review || view.compare);
+  const graph = neighbourGraph({ spec, parent: view.parent, siblings: view.siblings ?? [], nearby: view.nearby });
+  const hasGraph = !!(graph.parent || graph.siblings.length || graph.neighbours.length);
+  const [relatedView, setRelatedView] = useState<'list' | 'graph'>('list');
   const main = (
     view.review ? (
       <section className="flex flex-col gap-3" data-testid="spec-page-review-panel">
@@ -148,11 +154,54 @@ export default function SpecPage({ view }: { view: Ok }) {
       {focused ? main : null}
 
       <Section title="Related">
-        {view.parent ? (
-          <p className="text-body text-text-secondary" data-testid="spec-page-parent">
-            Part of <Link href={`/app/specs/${view.parent.id}`} className="underline hover:text-text-primary">{view.parent.title}</Link>
-          </p>
+        {hasGraph ? (
+          <div className="hidden md:block">
+            <Segmented
+              items={[{ value: 'list', label: 'List' }, { value: 'graph', label: 'Graph' }] as const}
+              value={relatedView}
+              onChange={setRelatedView}
+              label="Show related specs as"
+            />
+          </div>
         ) : null}
+        {hasGraph && relatedView === 'graph' ? (
+          <div className="hidden md:block" data-testid="spec-page-graph">
+            <SpecNeighbourGraph graph={graph} />
+          </div>
+        ) : null}
+        {/* The list is the default, and below md the only view: the graph needs the width (R-29). */}
+        <div className={`flex flex-col gap-3 ${hasGraph && relatedView === 'graph' ? 'md:hidden' : ''}`} data-testid="spec-page-related-list">
+          {view.parent ? (
+            <p className="text-body text-text-secondary" data-testid="spec-page-parent">
+              Part of <Link href={`/app/specs/${view.parent.id}`} className="underline hover:text-text-primary">{view.parent.title}</Link>
+            </p>
+          ) : null}
+          {view.parent && (view.siblings ?? []).length > 0 ? (
+            <div data-testid="spec-page-siblings">
+              <p className="text-body text-text-secondary">Alongside it under {view.parent.title}:</p>
+              <ul className="mt-1 flex flex-col">
+                {(view.siblings ?? []).map((c) => (
+                  <li key={c.id}>
+                    <Link href={`/app/specs/${c.id}`} className="flex min-h-11 items-center text-body text-text-primary underline [overflow-wrap:anywhere]">{c.title}</Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {view.nearby.length ? (
+            <div data-testid="spec-page-nearby">
+              <p className="text-body text-text-secondary">Nearby specs, found from their text and their work:</p>
+              <ul className="mt-1 flex flex-col">
+                {view.nearby.map((n) => (
+                  <li key={n.specId} className="flex min-h-11 flex-col justify-center py-1" data-testid="spec-page-nearby-item" data-kind={n.kind}>
+                    <Link href={`/app/specs/${n.specId}`} className="text-body text-text-primary underline [overflow-wrap:anywhere]">{n.title}</Link>
+                    <span className="text-meta text-text-muted">{n.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
         {view.children.length ? (
           <div data-testid="spec-page-children">
             <p className="text-body text-text-secondary">Specs under this one:</p>
@@ -160,19 +209,6 @@ export default function SpecPage({ view }: { view: Ok }) {
               {view.children.map((c) => (
                 <li key={c.id}>
                   <Link href={`/app/specs/${c.id}`} className="flex min-h-11 items-center text-body text-text-primary underline">{c.title}</Link>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        {view.nearby.length ? (
-          <div data-testid="spec-page-nearby">
-            <p className="text-body text-text-secondary">Nearby specs, found from their text and their work:</p>
-            <ul className="mt-1 flex flex-col">
-              {view.nearby.map((n) => (
-                <li key={n.specId} className="flex min-h-11 flex-col justify-center py-1" data-testid="spec-page-nearby-item" data-kind={n.kind}>
-                  <Link href={`/app/specs/${n.specId}`} className="text-body text-text-primary underline [overflow-wrap:anywhere]">{n.title}</Link>
-                  <span className="text-meta text-text-muted">{n.reason}</span>
                 </li>
               ))}
             </ul>

@@ -54,6 +54,7 @@ const base = {
   ],
   parent: { id: 'parent-id', title: 'Shop' } as { id: string; title: string } | null,
   children: [] as Array<{ id: string; title: string }>,
+  siblings: [] as Array<{ id: string; title: string }>,
   repoRefs: [{ path: 'docs/specs/checkout.md', sha: 'abcdef123456', href: 'https://github.com/acme/shop/blob/abc/docs/specs/checkout.md' }],
   design: null as any,
   comments: [] as any[],
@@ -123,6 +124,32 @@ describe('SpecPage', () => {
       .toEqual([['shares_files', '/app/specs/n1', "Changes 3 files this spec's work changed"], ['similar', '/app/specs/n2', 'Similar in what it asks for']]);
     act(() => root.render(<SpecPage view={base} />));
     expect(q('spec-page-nearby')).toBeNull();
+  });
+
+  it('AC-83: the neighbour graph shows the spec, its parent, both siblings and 8 of 10 neighbours; the list is the default', () => {
+    const siblings = [{ id: 's1', title: 'Refunds' }, { id: 's2', title: 'Invoices' }];
+    const nearby = Array.from({ length: 10 }, (_, i) => ({ specId: `n${i}`, title: `Near ${i}`, kind: i < 2 ? 'overlaps' : 'similar', score: 0.9 - i / 20, reason: 'Similar in what it asks for' }));
+    act(() => root.render(<SpecPage view={{ ...base, siblings, nearby }} />));
+    // List first: parent, siblings and neighbours in words, no graph mounted.
+    expect(q('spec-graph')).toBeNull();
+    const list = q('spec-page-related-list')!;
+    expect(list.querySelector('[data-testid="spec-page-parent"]')!.textContent).toContain('Shop');
+    expect([...list.querySelectorAll('[data-testid="spec-page-siblings"] a')].map((a) => a.textContent)).toEqual(['Refunds', 'Invoices']);
+    const radio = [...container.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'Graph') as HTMLElement;
+    expect(container.querySelector('[role="radio"][aria-checked="true"]')!.textContent).toBe('List');
+    act(() => radio.click());
+    const nodes = [...container.querySelectorAll('[data-testid="spec-graph-node"]')];
+    expect(nodes.map((n) => n.getAttribute('data-spec-id'))).toEqual(['parent-id', SPEC, 's1', 's2', 'n0', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7']);
+    expect(nodes.map((n) => n.getAttribute('data-relation'))).toEqual(['part of', 'this spec', 'sibling', 'sibling', 'overlaps', 'overlaps', ...Array(6).fill('similar')]);
+    expect(q('spec-graph')!.textContent).toContain('2 more neighbours');
+    // Below md the list stays in place of the graph (R-29).
+    expect(q('spec-page-graph')!.className).toContain('hidden md:block');
+    expect(list.className).toContain('md:hidden');
+  });
+
+  it('with no parent, siblings or neighbours, Related offers no graph', () => {
+    act(() => root.render(<SpecPage view={{ ...base, parent: null }} />));
+    expect([...container.querySelectorAll('[role="radio"]')]).toHaveLength(0);
   });
 
   it('a reader who may not approve sees no approve action', () => {

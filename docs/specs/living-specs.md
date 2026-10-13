@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -543,9 +543,9 @@ same page, without an agent in between.
   the child sits under its parent, and the rows read "approved at revision N",
   "draft, never approved" and "revision M waiting for approval"
   (`apps/web/src/lib/specs/page-view.test.ts`,
-  `apps/web/src/components/SpecList.dom.test.tsx`).
+  `apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-22: GIVEN a workspace with no specs WHEN its list renders THEN it says
-  how specs are made and shows no count (`apps/web/src/components/SpecList.dom.test.tsx`).
+  how specs are made and shows no count (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-23: GIVEN a person of another team WHEN they open a workspace's spec
   list or one of its specs THEN nothing about the spec is returned
   (`apps/web/tests/db/spec-pages.test.ts`).
@@ -575,7 +575,7 @@ same page, without an agent in between.
 - `apps/web/src/lib/specs/page-view.ts` — `specListView`, `specPageView`, `specTree`, `specStanding`, `repoRefHref`
 - `apps/web/src/app/app/(protected)/workspaces/[id]/specs/page.tsx` — the list
 - `apps/web/src/app/app/(protected)/specs/[specId]/page.tsx` — the spec page
-- `apps/web/src/components/SpecList.tsx` — `SpecList`
+- `apps/web/src/components/SpecIndex.tsx` — `SpecIndex` (the list, laid out by §19)
 - `apps/web/src/components/SpecPage.tsx` — `SpecPage`, `readingLine`
 - `apps/web/src/components/useOptimisticApprove.ts` — `useOptimisticApprove`
 - `apps/web/src/components/SpecRevisionPanes.tsx` — `SpecRevisionPanes` (the Spec / Changes switch, shared with the confirm page)
@@ -940,7 +940,7 @@ data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
 - AC-50: GIVEN a product spec with a child and a feature with no parent WHEN
   the list renders THEN the product heads its own group and the feature is
   under Unfiled; with no product or area every spec is Unfiled
-  (`apps/web/src/components/SpecList.dom.test.tsx`).
+  (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-51: GIVEN two approved specs whose pinned tasks changed the same file
   WHEN either is refreshed THEN each lists the other as `shares_files`, from
   merged-PR files when the ingest recorded them; WHEN the work stops sharing
@@ -972,7 +972,7 @@ data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
 - `apps/web/src/lib/specs/knowledge.ts` — `refreshSpecDerived`, `refreshAllSpecDerived`
 - `packages/core/knowledge-store/living-spec.ts` — `buildLivingSpecGraph` (`derived`)
 - `apps/web/src/app/api/specs/[specId]/nearby/route.ts` — `GET`
-- `apps/web/src/lib/specs/page-view.ts` — `specGroups`
+- `apps/web/src/lib/specs/index-view.ts` — `specIndexView` (the list's groups)
 
 **Not yet**:
 - `similar` is lexical wherever no embedder key is configured, and lexical
@@ -1333,8 +1333,8 @@ at any time.
 
 ## 19. Spec index view
 
-**Status: contract, not built.** Replaces §9's list layout when built; §9's
-reach and wording rules still apply.
+**Status: built; "Not yet" says what is missing.** Replaces §9's list layout;
+§9's reach and wording rules still apply.
 
 **Capability statement**: The spec index MUST show at a glance how a
 workspace's specs cluster, as a compact map above an outline grouped by
@@ -1383,34 +1383,46 @@ what buildd could not place.
 - AC-80: GIVEN a product with two areas and one approved and one draft
   feature in the first WHEN the index renders THEN that area heads a group
   reading "1 approved, 1 draft" with both features as its rows
-  (test pending).
+  (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-81: GIVEN a spec buildd could not place THEN it is under Unfiled with its
   suggestion; GIVEN every spec filed THEN no Unfiled group renders
-  (test pending).
+  (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-82: GIVEN a pinned task with a failing outcome THEN its spec's area
-  counts it as failing, in the map and the outline (test pending).
+  counts it as failing, in the map and the outline (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-85: GIVEN areas of 8 and 2 specs WHEN the map renders THEN the first
   block is larger, both carry their title and counts in words, and the
-  smaller still meets the label and tap-target floor (test pending).
+  smaller still meets the label and tap-target floor (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-86: GIVEN three unfiled specs, two answered `new_area` "Billing" WHEN
   the map renders THEN those two are a dashed group labelled "possible area:
-  Billing" and the third is a loose dot (test pending).
+  Billing" and the third is a loose dot (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-87: GIVEN the map WHEN a block is tapped THEN the outline shows only that
   area's specs, the URL path is unchanged, and a second tap shows all
-  (test pending).
+  (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-88: GIVEN one area, or no area, WHEN the index renders THEN no map
-  renders and one line of words states the counts (test pending).
+  renders and one line of words states the counts (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-89: GIVEN 10 specs in three areas WHEN the map renders THEN it shows
-  three labelled blocks (test pending).
+  three labelled blocks (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-83: GIVEN a spec with a parent, two siblings and ten neighbours WHEN the
   graph view opens THEN it shows the spec, the parent, both siblings and 8
-  neighbours, and the list is the default view (test pending).
+  neighbours, and the list is the default view (`apps/web/src/components/SpecPage.dom.test.tsx`).
 - AC-84: GIVEN a 320px viewport THEN neither the map, the outline nor either
-  Related view scrolls sideways (test pending).
+  Related view scrolls sideways (`apps/web/src/components/SpecIndex.dom.test.tsx` for the
+  block floor, `apps/web/src/components/SpecPage.dom.test.tsx` for the graph
+  giving way to the list; the rest is a Visual QA shot of the `spec-index`
+  dev fixture).
+
+**Code surface**:
+- `apps/web/src/lib/specs/index-view.ts` — `specIndexView`, `mixState`, `mixWords`, `neighbourGraph`
+- `apps/web/src/components/SpecIndex.tsx` — `SpecIndex`
+- `apps/web/src/components/SpecNeighbourGraph.tsx` — `SpecNeighbourGraph`
+- `apps/web/src/lib/specs/page-view.ts` — `specIndexInputs`, `specPageView`
+- `apps/web/src/app/app/dev/fixtures/SpecIndexFixture.tsx` — `SpecIndexFixture`
 
 **Not yet**:
-- §9's list is what renders: top-level products and areas as groups, the rest
-  Unfiled. No map, no counts, no inline suggestion, no neighbour graph.
-- Possible-area groups need §17's classifier; until it runs only a pending
-  taxonomy proposal can form one.
-
+- Nothing feeds `imported` or `failing` yet: §18's import and a per-spec
+  failing roll-up of §7 outcomes, §12 design drift and repo staleness are not
+  built, so the index renders those states only where a caller sets them.
+- Unfiled suggestions are `suggestParent` (§14) on the title, for at most 12
+  specs per page load; Dismiss hides one for the page only. The §17
+  classifier, "Filed by buildd" with undo, and possible areas from
+  `new_area` answers or a taxonomy proposal render once they are fed.

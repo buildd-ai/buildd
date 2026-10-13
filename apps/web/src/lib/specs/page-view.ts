@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { artifacts, specRevisions, specs, users, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getSpec, listSpecs, reach, type SpecCaller, type SpecRow } from './store';
 import { listSpecComments, type CommentView } from './comments';
@@ -10,7 +10,8 @@ import { specApprover } from './approval';
 import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
 import { linkedRepoFullName } from './repo-source';
 import { approvedDesignDrift } from './design';
-import { readSpecNeighbours, type NearbySpec } from './neighbours';
+import { readSpecNeighbours, suggestParent, type NearbySpec } from './neighbours';
+import type { SpecIndexInput, SpecSuggestion } from './index-view';
 import type { RepoRef } from './repo-refs';
 
 /**
@@ -75,25 +76,6 @@ export function specTree(rows: ReadonlyArray<SpecRow>): SpecListItem[] {
   return roots;
 }
 
-/**
- * The list's groups (R-18): each product or area at the top of the tree heads
- * its own group, and every other top-level spec (a feature or mission with no
- * parent in the workspace) is Unfiled. Order is kept. Pure.
- */
-export type SpecListGroup =
-  | { kind: 'area'; head: SpecListItem }
-  | { kind: 'unfiled'; specs: SpecListItem[] };
-
-export function specGroups(roots: ReadonlyArray<SpecListItem>): SpecListGroup[] {
-  const areas: SpecListGroup[] = [];
-  const unfiled: SpecListItem[] = [];
-  for (const r of roots) {
-    if (r.scope === 'product' || r.scope === 'domain') areas.push({ kind: 'area', head: r });
-    else unfiled.push(r);
-  }
-  return unfiled.length ? [...areas, { kind: 'unfiled', specs: unfiled }] : areas;
-}
-
 /** A cited repo file at its commit on GitHub; null without a linked repo. */
 export function repoRefHref(fullName: string | null, ref: RepoRef): string | null {
   if (!fullName) return null;
@@ -102,14 +84,46 @@ export function repoRefHref(fullName: string | null, ref: RepoRef): string | nul
 
 export type SpecListView =
   | { state: 'not_found' }
-  | { state: 'ok'; workspace: { id: string; name: string }; specs: SpecListItem[] };
+  | {
+    state: 'ok';
+    workspace: { id: string; name: string };
+    specs: SpecListItem[];
+    /** The same specs flat, for the index (§19), with a suggestion on each unfiled one. */
+    index: SpecIndexInput[];
+    /** When the page was read, so relative times match between server and client. */
+    now: number;
+  };
+
+/** Unfiled specs that get a suggestion on one page load; the rest show none until the sweep (§17 R-10) files them. */
+export const MAX_LIST_SUGGESTIONS = 12;
+
+/**
+ * The index rows (§19): every spec, and for each top-level feature or mission
+ * (Unfiled) where it probably belongs. Today that is `suggestParent` (§14)
+ * on the title, fail-open; the area classifier (§17) replaces it by feeding
+ * the same `suggestion` field.
+ */
+export async function specIndexInputs(workspaceId: string, rows: ReadonlyArray<SpecRow>): Promise<SpecIndexInput[]> {
+  const ids = new Set(rows.map((r) => r.id));
+  const unfiled = rows.filter((r) => !(r.scope === 'product' || r.scope === 'domain') && !(r.parentSpecId && ids.has(r.parentSpecId)));
+  const suggestions = new Map<string, SpecSuggestion>();
+  await Promise.all(unfiled.slice(0, MAX_LIST_SUGGESTIONS).map(async (r) => {
+    const s = await suggestParent(workspaceId, r.id, r.title).catch(() => null);
+    if (s && ids.has(s.specId)) suggestions.set(r.id, { kind: 'parent', specId: s.specId, title: s.title, reason: s.reason });
+  }));
+  return rows.map((r) => ({
+    id: r.id, title: r.title, scope: r.scope, parentSpecId: r.parentSpecId, status: r.status,
+    approvedRevision: r.approvedRevision, headRevision: r.headRevision, updatedAt: new Date(r.updatedAt).toISOString(),
+    suggestion: suggestions.get(r.id) ?? null,
+  }));
+}
 
 export async function specListView(userId: string, workspaceId: string): Promise<SpecListView> {
   const r = await listSpecs({ kind: 'user', userId }, workspaceId);
   if (!r.ok) return { state: 'not_found' };
   const [ws] = await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
   if (!ws) return { state: 'not_found' };
-  return { state: 'ok', workspace: ws, specs: specTree(r.specs) };
+  return { state: 'ok', workspace: ws, specs: specTree(r.specs), index: await specIndexInputs(workspaceId, r.specs), now: Date.now() };
 }
 
 export interface SpecRevisionLine {
@@ -150,6 +164,8 @@ export type SpecPageView =
     revisions: SpecRevisionLine[];
     parent: { id: string; title: string } | null;
     children: Array<{ id: string; title: string }>;
+    /** The other specs under the same parent (§19 R-28), at most MAX_SIBLINGS. */
+    siblings: Array<{ id: string; title: string }>;
     repoRefs: Array<{ path: string; sha: string; href: string | null }>;
     /**
      * The design the revision being read is built to (§12), and, when that is
@@ -180,6 +196,9 @@ function panes(hunks: DiffHunk[], omittedLines: number, body: string, revision: 
     linesRemoved: hunks.reduce((n, h) => n + h.linesRemoved, 0),
   };
 }
+
+/** Siblings read for a spec page; the list shows them all, the graph its own cap. */
+export const MAX_SIBLINGS = 12;
 
 export async function specPageView(userId: string, specId: string, opts: { revision?: number; from?: number; to?: number; review?: boolean } = {}): Promise<SpecPageView> {
   if (!isUuid(specId)) return { state: 'not_found' };
@@ -224,6 +243,11 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     : [];
   const children = await db.select({ id: specs.id, title: specs.title }).from(specs)
     .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, spec.id))).orderBy(specs.title);
+  const siblings = parent
+    ? await db.select({ id: specs.id, title: specs.title }).from(specs)
+      .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, parent.id), ne(specs.id, spec.id)))
+      .orderBy(specs.title).limit(MAX_SIBLINGS)
+    : [];
 
   const refs = got.view.revision.repoRefs ?? [];
   const fullName = refs.length ? await linkedRepoFullName(spec.workspaceId) : null;
@@ -283,6 +307,6 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     reading: { revision: got.view.revision.revision, approved: spec.approvedRevision === got.view.revision.revision, isHead: got.view.revision.revision === spec.headRevision },
     waiting: pending && open ? spec.headRevision : null,
     body: got.view.body,
-    revisions, parent: parent ?? null, children, repoRefs, design, nearby, comments, commentAnchors, canComment, compare, canApprove, review,
+    revisions, parent: parent ?? null, children, siblings, repoRefs, design, nearby, comments, commentAnchors, canComment, compare, canApprove, review,
   };
 }
