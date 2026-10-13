@@ -1,11 +1,15 @@
+'use client';
+
 /**
  * Health › Runners' first block: what is running now, in words. Per runner
  * "N of M busy", then one row per running task (name, mission, how long, its
  * state as a word), the same row shape as Home's Agents panel. People's own
- * sessions are their own group. The per-slot timeline sits below, folded.
- * Server-safe (no hooks).
+ * sessions are their own group. A group longer than `ROWS_SHOWN` shows the
+ * first few and "Show all N", which opens the rest in place. The slot chart
+ * sits below, open; the per-slot timeline under it, folded.
  */
 import Link from 'next/link';
+import { useState } from 'react';
 import type { FleetRunner, FleetSlotWorker, FleetSnapshot } from '@buildd/shared';
 import { elapsedLabel } from '@/lib/home-agents';
 import { readableRunName } from '@/lib/run-name';
@@ -16,10 +20,15 @@ function workerName(w: FleetSlotWorker): string {
   return readableRunName({ label: w.rest || w.label, title: w.title ?? null });
 }
 
+/** Rows a group shows before "Show all N". */
+export const ROWS_SHOWN = 5;
+
 const stateWord = (w: FleetSlotWorker) => (w.status === 'waiting_input' || w.question ? 'Needs input' : 'Working');
 
 function Group({ runner, now, missions, heading }: { runner: FleetRunner; now: number; missions: Readonly<Record<string, LaneMission>>; heading?: string }) {
   const running = runner.slots.flatMap(s => (s.worker ? [s.worker] : []));
+  const [all, setAll] = useState(false);
+  const shown = all ? running : running.slice(0, ROWS_SHOWN);
   const busy = runner.interactive ? `${running.length} claimed` : `${running.length} of ${runner.maxSlots} busy`;
   return (
     <section data-testid="running-now-group" className="py-3 first:pt-0">
@@ -29,7 +38,7 @@ function Group({ runner, now, missions, heading }: { runner: FleetRunner; now: n
       </div>
       {running.length > 0 && (
         <ul className="mt-1 divide-y divide-border-default">
-          {running.map(w => {
+          {shown.map(w => {
             const mission = w.missionId ? missions[w.missionId]?.title : null;
             const name = workerName(w);
             return (
@@ -48,6 +57,16 @@ function Group({ runner, now, missions, heading }: { runner: FleetRunner; now: n
             );
           })}
         </ul>
+      )}
+      {shown.length < running.length && (
+        <button
+          type="button"
+          data-testid="running-now-show-all"
+          onClick={() => setAll(true)}
+          className="min-h-11 text-meta font-medium text-text-secondary hover:text-text-primary md:min-h-0 md:py-1"
+        >
+          Show all {running.length}
+        </button>
       )}
     </section>
   );
