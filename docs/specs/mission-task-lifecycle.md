@@ -868,6 +868,35 @@ stored — it is derived on read from the state of associated tasks via
   verdict on the unattended path THEN there is no override and the merge is
   deferred.
 
+**Mission integration PRs: findings, repairs and every merge door (#4686).**
+The contract is in `workflow-state-kernel.md` §13.13, which carries the full merge
+door inventory (D1–D13) and AC-20 to AC-37. Its implementation is pending. It is
+repeated here only where it changes mission rules:
+- AC-11y names four doors, and that list is not all of them. The release executors,
+  compose release, `merge_pr` with admin `force`, a policy-rule merge, and a manual
+  merge on GitHub do not consult this gate today (§13.13 D5, D8–D12).
+- A mission integration PR is owned by a `bookkeeping` task that does no work
+  (`openMissionIntegrationPr`). A review fix for it MUST be a builder with the open
+  findings as its description and a pinned `repairTarget`. It MUST NOT inherit the
+  owner's "performs no work" description (§13.13 rule 3).
+- A `COMMENTED` GitHub review is never an approval. buildd's verdict on its own PR
+  posts as `COMMENTED` because GitHub refuses the alternative, so the verdict has to
+  be visible as a status GitHub can require (§13.13 rule 7).
+- A mission whose integration PR merged over open findings is not "shipped clean".
+  The open findings stay attached, and one follow-up fix task against trunk is filed
+  (§13.13 rule 10).
+
+- AC-11zb: GIVEN a request-changes verdict on a mission integration PR owned by a
+  `bookkeeping` task WHEN the fix task is created THEN its description lists the
+  findings, does not contain "performs no work", and its context carries
+  `repairTarget` for the integration branch head. Implementation pending.
+- AC-11zc: GIVEN that fix task ends with zero diff THEN completion is refused and the
+  verdict still blocks every door. Implementation pending.
+- AC-11zd: GIVEN a mission integration PR merged on GitHub by a person while findings
+  are open THEN the mission's PR is recorded merged over open findings, a fix task
+  against trunk is filed under the mission, and `canCompleteMission` does not treat
+  the findings as resolved. Implementation pending.
+
 **Code surface**:
 - Mission helpers: `packages/core/mission-helpers.ts` — `isDeliverableTask()`
 - Mission context: `apps/web/src/lib/mission-context.ts`
