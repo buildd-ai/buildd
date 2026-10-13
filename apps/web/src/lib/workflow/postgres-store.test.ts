@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { findFactRecordSql, isUniqueViolation, postgresStore, toClaimedEffect } from './postgres-store';
+import { findFactRecordSql, isUniqueViolation, linkAttemptTaskSql, postgresStore, toClaimedEffect } from './postgres-store';
 import type { Exec } from './kernel';
 
 const render = (q: SQL) => new PgDialect().sqlToQuery(q);
@@ -21,6 +21,15 @@ describe('findFactRecordSql', () => {
     expect(text).toContain('WHERE workspace_id = $1::uuid AND fact_key = $2::text');
     expect(text).not.toMatch(/INSERT|UPDATE|DELETE/);
     expect(params).toEqual(['w1', 'decide:visual_impact:d1:H1']);
+  });
+});
+
+describe('linkAttemptTaskSql', () => {
+  test('binds only a ledger row with no task yet', () => {
+    const { sql: text, params } = render(linkAttemptTaskSql('a1', 't1'));
+    expect(text).toContain('UPDATE workflow_attempts SET task_id = $1::uuid, updated_at = now()');
+    expect(text).toContain('WHERE id = $2::uuid AND task_id IS NULL');
+    expect(params).toEqual(['t1', 'a1']);
   });
 });
 

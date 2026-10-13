@@ -15,7 +15,12 @@ import type { BaseDeltaFact } from './base-delta';
 import type { ApplyDecision, Command, CurrentView, EffectKind, LivePr, RecordOnly } from './commands';
 import type { DeliverySnapshot, DeliveryState, KernelView } from './types';
 
-export const PORTS_VERSION = 1;
+/**
+ * 2: `Work` files under the kernel's own id and can skip, cancel what is
+ * pending and steer a filed task; `Store.linkAttemptTask`; `Notify.team`
+ * carries the PR and a link; the `Trunk`, `Escalate` and `Evidence` ports.
+ */
+export const PORTS_VERSION = 2;
 
 // ── References and results shared by the store and the command runner ──────
 
@@ -133,6 +138,8 @@ export interface Store {
   ackEffect(id: string, attemptCount: number, outcome: string): Promise<boolean>;
   /** Back off (effects.ts `effectRetry`) or go dead. null = the row is no longer this attempt's. */
   failEffect(id: string, attemptCount: number, error: string): Promise<'pending' | 'dead' | null>;
+  /** Bind a ledger row to the task filed for it, once: a row already bound keeps its task. */
+  linkAttemptTask(attemptId: string, taskId: string): Promise<void>;
   /** Back to pending after `delayMs`, handing the attempt back (a wait is not a failure). */
   parkEffect(id: string, attemptCount: number, outcome: string, delayMs: number): Promise<boolean>;
   /** A follow-up of an effect still running its course; idempotent on its own dedupe key. */
@@ -241,27 +248,63 @@ export interface Clock {
 // ── Work ────────────────────────────────────────────────────────────────────
 
 export interface WorkRequest {
-  /** The role the task runs as (a reviewer, a fixer, a conflict resolver...). */
+  /** The role the task runs as (a reviewer, a fixer, a conflict resolver, `ci_fix`, `trunk_fix`...). */
   role: string;
-  title: string;
-  description: string;
+  /** How the kernel words the task, when it does; else the host's builder for `role` words it. */
+  title?: string;
+  description?: string;
   workspaceId: string;
-  /** What the task acts on: the PR and the head it was dispatched for. */
-  target: { repoFullName: string; prNumber: number; headSha: string | null; baseRef?: string | null };
+  /**
+   * The id to file the task under (the kernel's ledger id, so a redelivery
+   * finds the first one). Absent = the host's own id.
+   */
+  taskId?: string;
+  /** What the task acts on: the PR and the head it was dispatched for (a trunk fix has no PR). */
+  target: { repoFullName: string; prNumber?: number | null; headSha?: string | null; baseRef?: string | null };
   /** Where it comes from: the delivery, the attempt and the task it continues. */
   lineage: { deliveryId: string; attemptId?: string | null; parentTaskId?: string | null };
   /** Idempotency: filing the same key twice returns the first task. */
   dedupeKey: string;
+  /** What the kernel knows that the host's builder needs (the attempt number and cap, who triggered it, the incident...). */
+  detail?: Record<string, unknown>;
+}
+
+export interface WorkFiled {
+  /** null only when nothing was filed (`skipped`). */
+  taskId: string | null;
+  /** false = a task already existed under the id or key (a redelivery), or `skipped`. */
+  created: boolean;
+  /** Nothing filed and nothing owed now (the host lacks what the task needs): why. */
+  skipped?: string;
+  /** Which shape the host filed, when it has more than one (`diagnose` for a CI fix that only diagnoses). */
+  variant?: string;
+  /** Evidence the host still has to capture for the new task: the kernel owes it as a follow-up effect. */
+  evidence?: Record<string, unknown>;
 }
 
 /** The host's scheduler (in buildd: a task insert plus `announceTaskCreated`). */
 export interface Work {
-  file(req: WorkRequest): Promise<{ taskId: string; created: boolean }>;
+  file(req: WorkRequest): Promise<WorkFiled>;
   wake(taskId: string, reason: string): Promise<void>;
   cancel(taskId: string, reason: string): Promise<void>;
+  /** Cancel the delivery's tasks of `role` nobody started (all but `keepTaskId`); returns how many. */
+  cancelPending(p: { deliveryId: string; role: string; reason: string; summary: string; keepTaskId?: string | null }): Promise<number>;
+  /** Tell a filed task (and whoever runs it now) what it was not filed with. Idempotent per `marker`. */
+  steer(taskId: string, p: { marker: string; note: string }): Promise<void>;
 }
 
 // ── Notify ──────────────────────────────────────────────────────────────────
+
+export interface TeamNotice {
+  workspaceId: string;
+  deliveryId: string;
+  kind: string;
+  title: string;
+  body?: string;
+  prNumber?: number | null;
+  url?: string;
+  urlTitle?: string;
+}
 
 export interface Notify {
   /**
@@ -271,8 +314,8 @@ export interface Notify {
    * the effect's outcome (`ok:created`, `skipped:older_version`, ...).
    */
   activity(p: { deliveryId: string; version: number; view?: KernelView }): Promise<{ outcome: string } | void>;
-  /** A team notification about a delivery. */
-  team(p: { workspaceId: string; deliveryId: string; kind: string; title: string; body?: string }): Promise<void>;
+  /** A team notification about a delivery. `kind` is the host's alert kind; one it does not know is an error. */
+  team(p: TeamNotice): Promise<void>;
 }
 
 // ── Policy ──────────────────────────────────────────────────────────────────
@@ -364,6 +407,64 @@ export interface Lifecycle {
   finalizeMerge(d: DeliverySnapshot): Promise<void>;
 }
 
+// ── Trunk ───────────────────────────────────────────────────────────────────
+
+/** One red base's incident (§6.10), as the host's ledger holds it. */
+export interface TrunkIncident {
+  id: string;
+  workspaceId: string;
+  repoFullName: string;
+  baseRef: string;
+  /** `ci:<check>|<check>` (`signatureChecks`). */
+  signature: string;
+  status: string;
+  fixTaskId: string | null;
+  affectedDeliveries: string[];
+}
+
+/**
+ * The trunk circuit breaker's incident ledger. Still the host's: buildd's
+ * `trunk_incidents` rows are opened and joined by its ingest funnel.
+ */
+export interface Trunk {
+  incident(id: string): Promise<TrunkIncident | null>;
+  /**
+   * The trunk-fix task this incident belongs to: one per red base, so the
+   * oldest unresolved incident on the base whose fix is not finished. null =
+   * the incident is its own.
+   */
+  fixAnchor(incidentId: string): Promise<{ taskId: string; incidentId: string; fixSignature: string | null } | null>;
+  /** Record the incident's fix task (only while it has none, is unresolved, and the task exists). */
+  linkFix(incidentId: string, taskId: string): Promise<void>;
+  /** The host's signature of the checks failing now, in `signatureChecks` form. */
+  signatureOf(failing: string[]): string;
+}
+
+// ── Escalate ────────────────────────────────────────────────────────────────
+
+/** A repair family ran out (or is off): a person owns the delivery now. */
+export interface ExhaustionNotice {
+  family: string;
+  headSha: string;
+  attempts: number;
+  max: number;
+  /** The kernel's words for why. */
+  title: string;
+  detail: string;
+}
+
+export interface Escalate {
+  /** Hand the delivery to a person (in buildd: mark the owner, notify, a mission note). Returns the outcome. */
+  exhausted(d: DeliverySnapshot, n: ExhaustionNotice): Promise<string>;
+}
+
+// ── Evidence ────────────────────────────────────────────────────────────────
+
+/** Capture run evidence the host keeps (a CI job log); never throws for a capture that failed. */
+export interface Evidence {
+  capture(p: { kind: string; workspaceId: string; deliveryId: string; payload: Record<string, unknown> }): Promise<{ status: string; record?: Record<string, unknown> }>;
+}
+
 /** Everything a host hands the kernel, composed once at startup. `decide` is optional. */
 export interface KernelPorts {
   store: Store;
@@ -380,6 +481,9 @@ export interface KernelPorts {
   decide?: Decide;
   ingest?: Ingest;
   lifecycle?: Lifecycle;
+  trunk?: Trunk;
+  escalate?: Escalate;
+  evidence?: Evidence;
 }
 
 /** The GitHub to act on for a workspace's delivery, or null when the host has none for it. */

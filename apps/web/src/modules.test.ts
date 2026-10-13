@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY } from './modules';
+import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY, workflowKernelHooks } from './modules';
 import { workflowKernel } from './lib/workflow/kernel-ports';
 import { EFFECT_KINDS } from './lib/workflow/commands';
 import { withPrFactEffects } from './lib/workflow/pr-fact-effects';
@@ -122,6 +122,18 @@ describe('composition root', () => {
     const production = withPrFactEffects((await workflowKernel()).handlers); // as seam.ts composes it
     const missing = EFFECT_KINDS.filter(k => typeof production[k] !== 'function');
     expect(missing).toEqual([]);
+  });
+
+  // The team-notification adapter used to cast the kind unchecked; notify's routing would drop an unknown one silently.
+  it('the kernel\'s team notifications refuse an alert kind notify does not know', async () => {
+    const team = workflowKernelHooks().notify.team;
+    await expect(team({ workspaceId: 'w', deliveryId: 'd', kind: 'needs_attention', title: 't' })).rejects.toThrow('unknown team alert kind: needs_attention');
+  });
+
+  it('the activity render is loaded on its first render, not with the composition root', () => {
+    const src = readFileSync(join(import.meta.dir, 'modules.ts'), 'utf8');
+    expect(src).not.toMatch(/^import [^;]*from '@\/lib\/workflow\/pr-activity-effects'/m);
+    expect(src).toContain("await import('@/lib/workflow/pr-activity-effects')");
   });
 
   it('labels are unique, so a page names exactly one step', () => {

@@ -38,13 +38,13 @@ import { approvedNeedsPerson } from '@/lib/merge-policy-approved';
 import type { EffectHandlers } from '@/lib/workflow/effects';
 import type { BuilddKernelHooks } from '@/lib/workflow/kernel-ports';
 import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
-import { withCiRetryEffects } from '@/lib/workflow/ci-retry-effects';
-import { withTrunkEffects } from '@/lib/workflow/ci-red-trunk-effects';
+import { ciEscalate, ciEvidence, ciFixWork } from '@/lib/workflow/ci-retry-effects';
+import { trunkFixWork } from '@/lib/workflow/ci-red-trunk-effects';
 import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
 import { landingLifecycle, mergeAnswerOf } from '@/lib/workflow/pr-landing-effects';
 import { supersessionLifecycle } from '@/lib/workflow/supersession-effects';
-import { activityNotify } from '@/lib/workflow/pr-activity-effects';
-import { notifyTeamOf, type TeamAlertEvent } from '@/lib/notify';
+import { notifyTeamOf } from '@/lib/notify';
+import { isTeamAlertEvent } from '@/lib/notify-rules';
 import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
 import { legacyFirstReview } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
@@ -155,35 +155,47 @@ export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
  * answer reads as T16 and the activity render (reviews), the supersession
  * scan, the edge's projection and the mission wake (reviews, missions), the
  * post-merge work and mission-PR finalize (reviews, missions), team
- * notifications. The package's handlers (landing and post-merge work, a closed
- * PR's resolution, the activity render) run on these.
+ * notifications, and per role the task `Work` files: the CI fix or
+ * schema-drift diagnose (reviews, `ci_fix`) and the trunk fix (`trunk_fix`),
+ * with the CI job-log capture and the CI hand-off to a person. The package's
+ * handlers (landing and post-merge work, a closed PR's resolution, the
+ * activity render, the CI family and the trunk breaker) run on these.
  *
  * `workflowHostEffectHandlers()`: the families not moved into the package
  * yet, still this app's modules: the review loop (reviewer and fix tasks,
- * GitHub reviews, escalations), the CI family (CI fix tasks bound to their
- * ledger row, CI exhaustion), the conflict/migration families (mechanical
- * refresh and renumber first, an agent conflict fix only on a refusal,
- * conflict exhaustion) and the trunk breaker (one trunk-fix task per incident,
- * cancelling the per-PR CI fix tasks a trunk incident skipped). Each effect
- * kind has exactly one handler; the package's win.
+ * GitHub reviews, escalations) and the conflict/migration families
+ * (mechanical refresh and renumber first, an agent conflict fix only on a
+ * refusal, conflict exhaustion). Each effect kind has exactly one handler;
+ * the package's win, and hand a shared kind's other families to these.
  *
  * Built on first use, not at load: the handler modules reach back into this
  * file through core-emit (post-merge work emits events), so composing them at
  * load time works or throws depending on which module a process imports first.
+ * The activity render is loaded on its first render, as it was before the
+ * kernel composed it.
  */
 export function workflowKernelHooks(): BuilddKernelHooks {
   return {
     mergeAnswerOf,
     notify: {
-      ...activityNotify(),
-      team: (p) => notifyTeamOf({ workspaceId: p.workspaceId }, p.kind as TeamAlertEvent, { title: p.title, message: p.body ?? '' }),
+      activity: async (p) => (await import('@/lib/workflow/pr-activity-effects')).activityNotify().activity(p),
+      team: async (p) => {
+        // A kind notify does not know would be dropped by its routing: refuse it loudly instead.
+        if (!isTeamAlertEvent(p.kind)) throw new Error(`unknown team alert kind: ${p.kind}`);
+        await notifyTeamOf({ workspaceId: p.workspaceId, prNumber: p.prNumber ?? undefined }, p.kind, {
+          title: p.title, message: p.body ?? '', ...(p.url ? { url: p.url } : {}), ...(p.urlTitle ? { urlTitle: p.urlTitle } : {}),
+        });
+      },
     },
     lifecycle: { ...supersessionLifecycle, ...landingLifecycle },
+    work: { ci_fix: ciFixWork, trunk_fix: trunkFixWork },
+    escalate: ciEscalate,
+    evidence: ciEvidence,
   };
 }
 let workflowHostEffectHandlersMemo: EffectHandlers | null = null;
 export function workflowHostEffectHandlers(): EffectHandlers {
-  return (workflowHostEffectHandlersMemo ??= withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers))));
+  return (workflowHostEffectHandlersMemo ??= withConflictEffects(reviewEffectHandlers));
 }
 
 /**
