@@ -155,9 +155,12 @@ describe('SpecIndex map', () => {
     render([area('a1', 'Runners'), ...many('a1', 8), area('a2', 'Billing'), ...many('a2', 2)]);
     const [big, small] = qa('[data-testid="spec-index-block"]') as HTMLElement[];
     expect(big.getAttribute('data-area-id')).toBe('a1');
-    expect(Number(big.style.flexGrow)).toBeGreaterThan(Number(small.style.flexGrow));
-    expect(parseFloat(big.style.flexBasis)).toBe(80);
-    expect(parseFloat(small.style.flexBasis)).toBe(20);
+    // Wide: a share of all filed specs. Phone: a share of the largest area. Never grown to fill a row.
+    expect(parseFloat(big.style.getPropertyValue('--block-share'))).toBe(80);
+    expect(parseFloat(small.style.getPropertyValue('--block-share'))).toBe(20);
+    expect(parseFloat(big.style.getPropertyValue('--block-rel'))).toBe(100);
+    expect(parseFloat(small.style.getPropertyValue('--block-rel'))).toBe(25);
+    expect(big.className).toContain('grow-0');
     expect(big.getAttribute('aria-label')).toContain('Runners · 8 specs, 8 approved');
     expect(small.getAttribute('aria-label')).toContain('Billing · 2 specs, 2 approved');
     expect(small.querySelector('[data-testid="spec-index-block-title"]')!.textContent).toBe('Billing');

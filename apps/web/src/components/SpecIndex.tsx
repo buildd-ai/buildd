@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
 import {
@@ -79,8 +79,12 @@ function SpecMap({ map, filter, onPick }: { map: Extract<IndexMap, { kind: 'map'
               data-testid="spec-index-block"
               data-area-id={b.areaId}
               data-count={b.count}
-              className={`flex flex-col items-stretch justify-between gap-2 text-left ${on ? 'outline outline-[1.5px] outline-[var(--text-primary)]' : ''}`}
-              style={{ flexGrow: b.count, flexShrink: 1, flexBasis: `${b.basisPct}%`, minWidth: `${MAP_BLOCK_MIN_WIDTH_PX}px`, minHeight: `${MAP_BLOCK_MIN_HEIGHT_PX}px` }}
+              // Width is the area's size and never grows to fill a row, so a small area never reads as a big one.
+              className={`flex grow-0 basis-[var(--block-rel)] flex-col items-stretch justify-between gap-2 text-left md:basis-[var(--block-share)] ${on ? 'outline outline-[1.5px] outline-[var(--text-primary)]' : ''}`}
+              style={{
+                '--block-rel': `${b.relPct}%`, '--block-share': `${b.basisPct}%`,
+                minWidth: `${MAP_BLOCK_MIN_WIDTH_PX}px`, minHeight: `${MAP_BLOCK_MIN_HEIGHT_PX}px`,
+              } as CSSProperties}
             >
               <span className="flex flex-col gap-0.5">
                 <span className="text-title font-semibold text-text-primary [overflow-wrap:anywhere]" data-testid="spec-index-block-title">{b.title}</span>

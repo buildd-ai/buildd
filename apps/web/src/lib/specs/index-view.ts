@@ -108,8 +108,10 @@ export interface MapBlock {
   areaId: string;
   title: string;
   count: number;
-  /** Share of all filed specs, the block's flex basis. */
+  /** Share of all filed specs: the block's width on a wide screen. */
   basisPct: number;
+  /** Share of the largest area: the block's width on a phone, where shares of the total would all sit at the floor. */
+  relPct: number;
   segments: MapSegment[];
   /** "Runners · 9 specs, 7 approved, 1 failing". */
   label: string;
@@ -264,9 +266,11 @@ export function specIndexView(input: readonly SpecIndexInput[], options: SpecInd
   let map: IndexMap;
   const withSpecs = areas.filter((a) => a.count > 0);
   if (withSpecs.length >= 2 && total >= MAP_MIN_SPECS) {
+    const largest = Math.max(...withSpecs.map((a) => a.count));
     const blocks = withSpecs.map((a) => ({
       areaId: a.id, title: a.title, count: a.count,
       basisPct: Math.round((a.count / filed) * 1000) / 10,
+      relPct: Math.round((a.count / largest) * 1000) / 10,
       segments: MIX_STATES.filter((s) => a.mix[s]).map((s) => ({ state: s, count: a.mix[s], pct: (a.mix[s] / a.count) * 100 })),
       label: `${a.title} · ${a.words}`, words: a.words,
     }));
