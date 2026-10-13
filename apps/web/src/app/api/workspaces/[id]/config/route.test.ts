@@ -591,6 +591,22 @@ describe('POST /api/workspaces/[id]/config', () => {
       expect(written.sandbox.excludedCommands).toEqual(['docker']);
     });
 
+    // Settings spec R-5 / AC-5: nothing reads defaultRunnerPreference, so the form
+    // no longer sends it. A save keeps whatever is stored, and an old client that
+    // still sends it gets a 200.
+    it('keeps a stored defaultRunnerPreference the form no longer sends', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultRunnerPreference: 'service' } });
+      const res = await post(formBody);
+      expect(res.status).toBe(200);
+      expect(setArgs[0].gitConfig.defaultRunnerPreference).toBe('service');
+    });
+
+    it('still accepts defaultRunnerPreference from an old client', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+      const res = await post({ ...formBody, defaultRunnerPreference: 'user' });
+      expect(res.status).toBe(200);
+    });
+
     // Hand-written merge-policy paths are refused; the repo scan owns paths.
     it('rejects each removed hand-written path field with a 400 that points to Re-scan repo', async () => {
       mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });

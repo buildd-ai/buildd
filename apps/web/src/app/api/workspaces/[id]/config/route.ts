@@ -417,10 +417,11 @@ export async function POST(
                 ? body.effort
                 : undefined,
 
-            // Default runner preference for new tasks — form-managed
+            // Runner preference: nothing reads it and the form no longer sends it,
+            // so a stored value is kept as is. Still accepted from an old client.
             defaultRunnerPreference: typeof body.defaultRunnerPreference === 'string' && ['any', 'user', 'service', 'action'].includes(body.defaultRunnerPreference)
                 ? body.defaultRunnerPreference
-                : undefined,
+                : previous.defaultRunnerPreference,
 
             // Default agent backend — validated above; absent/'default'/null clears
             defaultBackend: body.defaultBackend === 'claude' || body.defaultBackend === 'codex'

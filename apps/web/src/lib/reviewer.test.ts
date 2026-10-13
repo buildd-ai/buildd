@@ -2425,6 +2425,8 @@ describe('createReviewerTask — policy suggestions', () => {
     prFiles: [
       { filename: 'apps/api/package.json', status: 'modified', additions: 1, deletions: 1 },
       { filename: 'apps/api/src/handler.ts', status: 'modified', additions: 1, deletions: 1 },
+      // Settings spec AC-7: a test file named after a risky area is not suggested.
+      { filename: 'apps/x/credential.test.ts', status: 'modified', additions: 1, deletions: 1 },
     ],
     policyConfig,
   });

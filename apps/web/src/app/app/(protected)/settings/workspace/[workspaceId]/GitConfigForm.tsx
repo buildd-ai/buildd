@@ -34,7 +34,6 @@ interface GitConfig {
     effort?: 'low' | 'medium' | 'high' | 'max';
     defaultBackend?: 'claude' | 'codex';
     mergePolicy?: { tier?: 'auto-threshold' | 'agent-review' | 'human' } | null;
-    defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
 }
 
 function describeMergeTier(tier: 'auto-threshold' | 'agent-review' | 'human' | undefined): string {
@@ -70,12 +69,6 @@ const EFFORT_OPTIONS = [
     { value: 'medium', label: 'Medium (balanced)' },
     { value: 'high', label: 'High (thorough)' },
     { value: 'max', label: 'Max (most thorough · complex architecture)' },
-];
-
-const RUNNER_OPTIONS = [
-    { value: 'any', label: 'Any runner (no preference)' },
-    { value: 'user', label: 'User runners only (personal / local)' },
-    { value: 'service', label: 'Service runners only (CI / automated)' },
 ];
 
 const BACKEND_OPTIONS = [
@@ -135,9 +128,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
     const [effort, setEffort] = useState<'none' | 'low' | 'medium' | 'high' | 'max'>(
         initialConfig?.effort || 'none'
     );
-    const [defaultRunnerPreference, setDefaultRunnerPreference] = useState<'any' | 'user' | 'service' | 'action'>(
-        initialConfig?.defaultRunnerPreference || 'any'
-    );
     const [defaultBackend, setDefaultBackend] = useState<'default' | 'claude' | 'codex'>(
         initialConfig?.defaultBackend || 'default'
     );
@@ -180,7 +170,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                         : thinkingType === 'enabled' ? { type: 'enabled', budgetTokens: thinkingBudgetTokens }
                         : { type: thinkingType },
                     effort: effort === 'none' ? undefined : effort,
-                    defaultRunnerPreference: defaultRunnerPreference !== 'any' ? defaultRunnerPreference : undefined,
                     defaultBackend: defaultBackend === 'default' ? undefined : defaultBackend,
                 }),
             });
@@ -286,9 +275,8 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                 ],
             },
             {
-                title: 'Default runner preference',
+                title: 'Default agent',
                 facts: [
-                    { label: 'Runner type', value: optionLabel(RUNNER_OPTIONS, defaultRunnerPreference) },
                     { label: 'Agent', value: optionLabel(BACKEND_OPTIONS, defaultBackend) },
                 ],
             },
@@ -684,23 +672,11 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                 </div>
             </div>
 
-            {/* Runner Preference Section */}
+            {/* Default agent */}
             <div className="py-4 first:pt-0">
-                <h3 className="text-sm font-medium text-text-primary mb-3">Default runner preference</h3>
+                <h3 className="text-sm font-medium text-text-primary mb-3">Default agent</h3>
 
                 <div className="space-y-4">
-                    <div>
-                        <label className="block text-sm text-text-primary mb-1">Runner type</label>
-                        <Select
-                            value={defaultRunnerPreference}
-                            onChange={(v) => setDefaultRunnerPreference(v as typeof defaultRunnerPreference)}
-                            options={RUNNER_OPTIONS}
-                        />
-                        <p className="text-xs text-text-muted mt-1">
-                            Applies to new tasks in this workspace. Only runners of this type can pick them up. You can change this per task.
-                        </p>
-                    </div>
-
                     <div>
                         <label className="block text-sm text-text-primary mb-1">Agent</label>
                         <Select

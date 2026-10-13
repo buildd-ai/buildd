@@ -14,7 +14,7 @@ const GROUPS: Array<[string, string[]]> = [
   ['Readiness', ['<WorkspaceHealthCard', '<ReadinessCard', '<RepoAccessCard']],
   ['Repository', ['<GitConfigForm', '<MemberRepoAccessSection']],
   ['Delivery', ['<MergePolicyEditor', '<BranchStrategySection', '<CiRetrySection', '<ReleaseSection', '<SubjectPolicySection']],
-  ['Where work runs', ['<ExecutorSection', '<RunnerSizeSection', '<ConcurrencySection', '<PauseStartsSection']],
+  ['Where work runs', ['<ExecutorSection', '<RunnerSizeSection', '<FreshContainerSection', '<ConcurrencySection', '<PauseStartsSection']],
   ['Integrations', ['<WorkTrackerSection']],
   ['Danger zone', ['<MoveToTeamButton', '<DeleteWorkspaceButton']],
 ];
@@ -33,6 +33,15 @@ describe('workspace settings page', () => {
         expect(`${title} ${part}: ${at > -1 && at < end}`).toBe(`${title} ${part}: true`);
       }
     }
+  });
+
+  // Settings spec R-7 / AC-8: the clean-copy switch is about the cloud runner, so it
+  // sits after cloud runner size and is not rendered for a host-only workspace.
+  it('places the clean-copy switch after cloud runner size, only off host', () => {
+    expect(PAGE.split('<FreshContainerSection').length - 1).toBe(1);
+    expect(PAGE.indexOf('<FreshContainerSection')).toBeGreaterThan(PAGE.indexOf('<RunnerSizeSection'));
+    expect(PAGE.indexOf('<FreshContainerSection')).toBeLessThan(PAGE.indexOf('<ConcurrencySection'));
+    expect(PAGE).toMatch(/executor\.executor !== 'host' && \(?\s*<FreshContainerSection/);
   });
 
   it('holds the workspace\'s own model keys, between Where work runs and Integrations', () => {

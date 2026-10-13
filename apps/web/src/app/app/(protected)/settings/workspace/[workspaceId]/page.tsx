@@ -251,7 +251,6 @@ export default async function WorkspaceSettingsPage({
             defaultBranch={gitConfig?.defaultBranch || 'main'}
             canEdit={canManageSettings}
           />
-          <FreshContainerSection workspaceId={workspace.id} initial={gitConfig?.warmHandover === 'off'} canEdit={canManageSettings} />
           <CiRetrySection
             workspaceId={workspace.id}
             initial={gitConfig?.enforceGreenCI === true}
@@ -297,6 +296,9 @@ export default async function WorkspaceSettingsPage({
               monthLine={runnerMonth && runnerMonth.wallSeconds > 0 ? workspaceRunnerMonthLine(runnerMonth) : null}
               canEdit={canManageSettings}
             />
+          )}
+          {executor.executor !== 'host' && (
+            <FreshContainerSection workspaceId={workspace.id} initial={gitConfig?.warmHandover === 'off'} canEdit={canManageSettings} />
           )}
           <ConcurrencySection
             workspaceId={workspace.id}

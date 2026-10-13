@@ -68,3 +68,21 @@ describe('GitConfigForm goal grading', () => {
     expect(src).not.toContain('criteriaGrader');
   });
 });
+
+// Settings spec R-5 / AC-5: "Runner type" was saved but nothing read it — task
+// creation takes runnerPreference from the request only. The control is gone and
+// a save leaves the stored value alone.
+describe('GitConfigForm runner preference', () => {
+  it('has no Runner type control, editable or read-only', () => {
+    for (const canEdit of [true, false]) {
+      const html = render({ ...base, defaultRunnerPreference: 'service' }, canEdit);
+      expect(html).not.toContain('Runner type');
+      expect(html).not.toContain('Service runners only');
+    }
+  });
+
+  it('does not send defaultRunnerPreference when saving', async () => {
+    const src = await Bun.file(new URL('./GitConfigForm.tsx', import.meta.url)).text();
+    expect(src).not.toContain('defaultRunnerPreference');
+  });
+});
