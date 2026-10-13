@@ -1,5 +1,5 @@
 /**
- * The operator-recovery decision kinds (buildd-admin operator-recovery spec
+ * The operator-recovery decision kinds (operator-recovery spec
  * §6.2–§6.6): three questions a model may answer about a platform failure
  * cause, after every deterministic answer (the cause key, the baseline rank,
  * the approved runbooks) has already been computed without one.
