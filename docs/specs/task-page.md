@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, mobile header, show full title, review queued, no findings yet, review of PR, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts]
+verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.sections.test.tsx]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -233,6 +233,10 @@ never described as released.
   ordered by `createdAt`, then `id`. Both show the newest live worker, else the
   newest, and both drop its question once the task has ended or a failure
   recovery owns the next step.
+- The sheet renders the page's header pill, stored PR card, runner and branch
+  fact rows and summary card. `lib/task-sections.ts` decides the PR card (the
+  PR worker's PR, none once closed), the Merged header and the last-message
+  summary mark for both.
 
 ## Interaction
 
@@ -364,6 +368,7 @@ branch update" for a carried approval), binding what follows to that round.
 - `apps/web/src/components/LoopStatus.tsx` — loop chip (`loopAttemptShown`) and Loop history.
 - `apps/web/src/components/task/PrCard.tsx` — the PR card; `statedAbove` drops what the status row already says.
 - `apps/web/src/lib/task-view.ts` — `loadTaskView` / `pickTaskView`: the workers, worker and question the page and the sheet share.
+- `apps/web/src/lib/task-sections.ts` — `taskPrFacts` / `taskHeaderMerged` / `isFallbackSummary`: the PR card, header and summary decisions the page and the sheet share.
 
 ## Regression cases (visual)
 
