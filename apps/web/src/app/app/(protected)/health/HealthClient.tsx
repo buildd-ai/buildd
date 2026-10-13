@@ -333,6 +333,7 @@ export function HealthClient({
   // The page window only means something where a TREND section renders.
   const showsTrend = (['failureGroups', 'failureAnalytics', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'subagentDelegation', 'errorPatterns'] as const).some(show);
   const showsState = (['capacity', 'budget', 'credentials', 'dispatch'] as const).some(show);
+  const hasLanes = !!runnerLanes && runnerLanes.fleet.runners.length + (runnerLanes.fleet.sessions ? 1 : 0) > 0;
   const [runnerHealth, setRunnerHealth] = useState<Map<string, RunnerHealthState>>(new Map());
 
   const checkRunnerHealth = useCallback(async (heartbeatId: string) => {
@@ -762,30 +763,30 @@ export function HealthClient({
       <section data-testid="health-section-state" className="mb-6">
         {page === 'all' && <h2 className="section-label mb-3">State</h2>}
 
-      {/* What is running now, in words, comes first. The per-slot timeline
-          (the diagnostic) is one tap away, and the occupancy history, the
-          same busy-slot count at a coarser grain, one more. */}
-      {show('capacity') && runnerLanes && runnerLanes.fleet.runners.length + (runnerLanes.fleet.sessions ? 1 : 0) > 0 && (
-        <>
-          <div data-testid="health-section-running-now" className="mb-4">
-            <RunningNow fleet={runnerLanes.fleet} now={now} missions={runnerLanes.missions ?? {}} />
-          </div>
-          <div data-testid="health-section-lanes" className="mb-6">
-            <Disclosure summary="Timeline: each slot over the last hours">
-              <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} missions={runnerLanes.missions ?? {}} />
-            </Disclosure>
-          </div>
-        </>
+      {/* What is running now, in words, comes first. Then the slot chart, open:
+          runner slots in use (with the number in use now) and interactive
+          sessions, readable at first glance. Only the per-slot timeline, the
+          long diagnostic, is one tap away. */}
+      {show('capacity') && hasLanes && (
+        <div data-testid="health-section-running-now" className="mb-4">
+          <RunningNow fleet={runnerLanes!.fleet} now={now} missions={runnerLanes!.missions ?? {}} />
+        </div>
       )}
 
       {show('capacity') && (
-        <div data-testid="health-section-slot-history" className="mb-6">
-          <Disclosure summary="Slot history over 24 hours, 7 or 30 days">
-            <OccupancyChart
-              capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
-              busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
-              workspaceId={wsFilter}
-            />
+        <div data-testid="health-section-slot-history">
+          <OccupancyChart
+            capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
+            busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+            workspaceId={wsFilter}
+          />
+        </div>
+      )}
+
+      {show('capacity') && hasLanes && (
+        <div data-testid="health-section-lanes" className="mb-6">
+          <Disclosure summary="Timeline: each slot over the last hours">
+            <RunnerLanes fleet={runnerLanes!.fleet} idle={runnerLanes!.idle} now={now} missions={runnerLanes!.missions ?? {}} />
           </Disclosure>
         </div>
       )}
