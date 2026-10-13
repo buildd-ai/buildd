@@ -5911,6 +5911,58 @@ describe('PATCH /api/workers/[id]', () => {
       });
     });
 
+    // A retried mission-branch refresh whose merge was already pushed straight
+    // to the integration branch: no PR can exist (worker branch == mission
+    // branch), so the gate takes the same ancestry proof buildd runs after a
+    // refresh PR merges.
+    describe('pr_required + mission-branch refresh already on the branch', () => {
+      const refreshTask = {
+        id: 'task-1',
+        missionId: 'mission-1',
+        outputRequirement: 'pr_required',
+        title: 'chore(mission): merge dev into the M integration branch',
+        description: 'Merge dev into the branch.',
+        context: { requireMergeCommit: true, refreshTrunk: 'dev', refreshTrunkSha: 'trunk111', refreshMissionHeadSha: 'head111' },
+      };
+
+      beforeEach(() => {
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockTasksFindFirst.mockResolvedValue(refreshTask);
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+        mockGithubReposFindFirst.mockResolvedValue({
+          id: 'repo-1', fullName: 'org/repo', installation: { installationId: 123 },
+        });
+        mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workingBranch: 'mission/m-12345678' });
+      });
+
+      const github = (containsTrunk: boolean) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        if (path.includes('/git/ref/heads/')) return Promise.resolve({ object: { sha: 'branchhead' } });
+        if (path.includes('/compare/trunk111...')) return Promise.resolve({ status: containsTrunk ? 'ahead' : 'diverged' });
+        if (path.includes('/compare/head111...')) return Promise.resolve({ status: 'ahead' });
+        return Promise.resolve(null);
+      });
+
+      const complete = () => PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'dev already merged into the mission branch.', summarySource: 'agent' },
+      }), { params: mockParams });
+
+      it('completes when the branch already contains the trunk sha', async () => {
+        github(true);
+        expect((await complete()).status).toBe(200);
+      });
+
+      it('still refuses when the branch does not contain the trunk sha', async () => {
+        github(false);
+        const res = await complete();
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('does not yet contain the refresh');
+      });
+    });
+
     // C17: the gate's predicate was a single-column eq(artifacts.workerId, id).
     // Mission artifacts are inserted with workerId NULL by construction (see
     // api/missions/[id]/artifacts/route.ts), and MCP create_artifact with a

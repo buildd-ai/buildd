@@ -6,6 +6,7 @@ import { db } from '@buildd/core/db';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
+import { integrationRefreshOf, verifyRefreshLanded } from '@/lib/integration-refresh';
 import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -1492,6 +1493,10 @@ export async function PATCH(
   // Set by the pr_required gate when `alreadyShippedIn` names a PR GitHub
   // confirms merged; snapshotted onto tasks.result for audit.
   let alreadyShipped: { prNumber: number; prUrl: string } | null = null;
+  // Set by the pr_required gate when a mission-branch refresh task finds its
+  // integration branch already contains the trunk sha it was dispatched for
+  // (the merge was pushed straight to the branch, so no PR can exist).
+  let refreshAlreadyOnBranch: { branch: string; branchHead: string; trunkSha: string } | null = null;
   // Lifted out of the outputRequirement block below (which only runs when
   // outputReq !== 'none') so the planning-contract guard can see a PR that was
   // auto-detected from GitHub even on a task with no output requirement.
@@ -2205,6 +2210,38 @@ export async function PATCH(
         }
       }
 
+      // pr_required, mission-branch refresh already on the branch: the merge of
+      // trunk was pushed straight to the integration branch (e.g. by an earlier
+      // attempt), so this worker's branch equals it and no PR can be opened.
+      // Same proof buildd runs after a refresh PR merges (`verifyRefreshLanded`):
+      // the branch's live head must contain the trunk sha and the starting
+      // mission head. Never trusted from the caller.
+      let refreshOnBranchRefusal: string | null = null;
+      if (outputReq === 'pr_required' && !hasPR && !alreadyShipped && repoWithInstallation && taskMissionId) {
+        const refresh = integrationRefreshOf(terminalTaskRow[0]?.context);
+        const missionRow = refresh?.trunkSha
+          ? await db.query.missions.findFirst({
+              where: sqlWhere(eq(missions.id, taskMissionId)),
+              columns: { workingBranch: true },
+            })
+          : null;
+        if (refresh?.trunkSha && missionRow?.workingBranch) {
+          const verdict = await verifyRefreshLanded({
+            installationId: repoWithInstallation.installation.installationId,
+            repoFullName: repoWithInstallation.fullName,
+            branch: missionRow.workingBranch,
+            trunk: refresh.trunk ?? 'dev',
+            refresh,
+            prHeadSha: null,
+          });
+          if (verdict.ok) {
+            refreshAlreadyOnBranch = { branch: missionRow.workingBranch, branchHead: verdict.branchHead, trunkSha: verdict.trunkSha };
+          } else {
+            refreshOnBranchRefusal = `${missionRow.workingBranch} does not yet contain the refresh: ${verdict.reason}.`;
+          }
+        }
+      }
+
       // Standing ask from the outputRequirement-rejection bug: a gate-rejected
       // completion used to discard the agent's summary/structuredOutput with
       // zero persistence — a 60-turn run's only record was a 400 in the
@@ -2312,7 +2349,7 @@ export async function PATCH(
         filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
         dirtyWorktree: effectiveDirtyWorktree,
         observedTouches: sessionObservedTouches,
-        hasPR: hasPR || !!alreadyShipped, mergedAt: worker.mergedAt, discardEdits,
+        hasPR: hasPR || !!alreadyShipped || !!refreshAlreadyOnBranch, mergedAt: worker.mergedAt, discardEdits,
         summary: body.summary, summarySource: body.summarySource,
       }) && !(await hasDeliverableArtifact(true))) {
         const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
@@ -2399,10 +2436,14 @@ export async function PATCH(
         // need the same explicit discard the `auto` arm asks for.
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
         const strandsOwnEdits = (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
-        if (!alreadyShipped || strandsOwnEdits) {
+        if ((!alreadyShipped && !refreshAlreadyOnBranch) || strandsOwnEdits) {
           const frictionSignature = await persistRejectedCompletionPayload('pr_required');
-          const error = alreadyShipped
+          const error = refreshAlreadyOnBranch
+            ? `${refreshAlreadyOnBranch.branch} already contains the refresh, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+            : alreadyShipped
             ? `PR #${alreadyShipped.prNumber} is merged, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+            : refreshOnBranchRefusal
+              ? `This task requires a pull request before completing. ${refreshOnBranchRefusal}`
             : alreadyShippedRefusal
               ? `This task requires a pull request before completing. ${alreadyShippedRefusal}`
               : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
@@ -2421,7 +2462,9 @@ export async function PATCH(
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'accepted',
-          reason: 'completion accepted under pr_required: work already shipped in a merged PR',
+          reason: refreshAlreadyOnBranch
+            ? 'completion accepted under pr_required: mission-branch refresh already on the branch'
+            : 'completion accepted under pr_required: work already shipped in a merged PR',
           workspaceId: worker.workspaceId,
           missionId: taskMissionId,
           taskId: worker.taskId,
@@ -2429,7 +2472,7 @@ export async function PATCH(
           callerOrigin: 'worker',
           detail: {
             outputRequirement: 'pr_required',
-            alreadyShippedIn: alreadyShipped.prNumber,
+            ...(alreadyShipped ? { alreadyShippedIn: alreadyShipped.prNumber } : { refreshOnBranch: refreshAlreadyOnBranch!.branch, refreshTrunkSha: refreshAlreadyOnBranch!.trunkSha }),
             commits: effectiveCommits,
             dirtyWorktree: effectiveDirtyWorktree,
             ...(discardReason ? { discardEdits: discardReason.slice(0, 500) } : {}),
@@ -3973,6 +4016,7 @@ export async function PATCH(
           // The merged PR the pr_required gate accepted as carrying this
           // task's work (see `alreadyShippedIn` above).
           ...(alreadyShipped && { alreadyShippedIn: alreadyShipped }),
+          ...(refreshAlreadyOnBranch && { refreshAlreadyOnBranch }),
         };
 
         // Snapshot unique MCP servers into task result
