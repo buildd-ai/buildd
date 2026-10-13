@@ -176,6 +176,8 @@ export interface PostSessionSweepSummary {
   hardTriggered: number;
   /** ...of which the decision itself was unavailable (fail-open). */
   triageUnavailable: number;
+  /** Skips sent to analysis only to label them (not in `selected`). */
+  sampledSkips: number;
   triageErrors: number;
   triageDeferred: number;
   /** Summed over every decision call this sweep. */
@@ -195,7 +197,7 @@ export async function sweepPostSessionRuns(opts: {
 } = {}): Promise<PostSessionSweepSummary> {
   const summary: PostSessionSweepSummary = {
     candidates: 0, collected: 0, duplicate: 0, failed: 0, skipped: 0, errors: 0, deferred: 0,
-    triaged: 0, selected: 0, hardTriggered: 0, triageUnavailable: 0, triageErrors: 0, triageDeferred: 0,
+    triaged: 0, selected: 0, hardTriggered: 0, triageUnavailable: 0, sampledSkips: 0, triageErrors: 0, triageDeferred: 0,
     triageCost: { calls: 0, usd: null, inputTokens: 0, outputTokens: 0 },
   };
   const shouldContinue = opts.shouldContinue ?? (() => true);
@@ -251,6 +253,7 @@ export async function sweepPostSessionRuns(opts: {
       if (res.finalDecision === 'analyse') summary.selected++;
       if (res.hardTriggered) summary.hardTriggered++;
       if (res.triageStatus === 'unavailable') summary.triageUnavailable++;
+      if (res.sampled) summary.sampledSkips++;
       addCost(summary.triageCost, res.cost);
     } else if (res.status === 'error') {
       summary.triageErrors++;

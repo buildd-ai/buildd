@@ -7,6 +7,9 @@
  * keyword category, never a filer's own. An attached filing is not a new task,
  * so there is nothing to look at.
  *
+ * `task.role_changed`: a person replaced a task's role, which labels a role
+ * pick that applied the old one as corrected (decision-outcome-graders.ts).
+ *
  * `pr.close_delivered`: merge readiness decisions on the PR get their outcome
  * label (lib/merge-readiness-decision-outcomes.ts). GitHub reads, so `after()`.
  * `sweep.pr_hourly` is the backstop for a lost delivery, and attaches the
@@ -35,6 +38,15 @@ export const decisionSubscribers: readonly AnySubscriber[] = [
       callerSet: e.category.callerSet,
       dataClass: e.dataClass,
     }, after);
+  }),
+  subscriber('jev-decisions', 'task.role_changed', 'task-role-correction', async e => {
+    const [{ labelHumanCorrection }, { TASK_ROLE_CAPABILITY }] = await Promise.all([
+      import('@buildd/core/decision-outcome-graders'),
+      import('@/lib/task-role-decision'),
+    ]);
+    await labelHumanCorrection({
+      teamId: e.teamId, capability: TASK_ROLE_CAPABILITY, taskId: e.taskId, from: e.from, to: e.to, by: e.by,
+    });
   }),
   subscriber('jev-decisions', 'pr.close_delivered', 'merge-readiness-outcome', e => {
     if (e.installationId == null) return;

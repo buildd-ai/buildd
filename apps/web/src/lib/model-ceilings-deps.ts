@@ -10,6 +10,8 @@ import { teams, teamMembers } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { getRequestPrincipal } from './auth-helpers';
 import { can } from './permissions';
+import { authenticateApiKey } from './api-auth';
+import { IS_PLATFORM_OPERATOR_CALLER } from '@/modules';
 import { getUserTeamRole } from './team-access';
 import type { CeilingsApiDeps } from './model-ceilings-api';
 
@@ -24,6 +26,15 @@ export function ceilingsDeps(req: NextRequest): CeilingsApiDeps {
     },
     isMember: async (userId, teamId) => (await getUserTeamRole(userId, teamId)) !== null,
     canManage: (caller, teamId) => can(caller, 'manage_model_tiers', teamId),
+    isOperator: async () => {
+      const p = await getRequestPrincipal(req);
+      if (!p) return false;
+      if (p.kind === 'session') return IS_PLATFORM_OPERATOR_CALLER({ user: p.user });
+      // The full account: an OAuth bearer counts by the person it was issued to.
+      const bearer = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || null;
+      const account = await authenticateApiKey(bearer, req);
+      return account ? IS_PLATFORM_OPERATOR_CALLER({ account }) : false;
+    },
     loadPolicy: async (teamId) => (await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { modelTierCeilings: true } }))?.modelTierCeilings ?? null,
     loadMember: async (teamId, userId) => (await db.query.teamMembers.findFirst({
       where: and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)),

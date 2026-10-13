@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.325.0",
+  "version": "0.327.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -180,6 +180,7 @@
     "./decision-dataset": "./decision-dataset.ts",
     "./decision-feature-health": "./decision-feature-health.ts",
     "./decision-outcomes": "./decision-outcomes.ts",
+    "./decision-outcome-graders": "./decision-outcome-graders.ts",
     "./merge-readiness-outcome": "./merge-readiness-outcome.ts",
     "./decision-readout": "./decision-readout.ts",
     "./decision-readout-source": "./decision-readout-source.ts",
@@ -313,7 +314,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.290",
-    "@ast-grep/napi": "^0.45.0",
+    "@ast-grep/napi": "^0.50.0",
     "@builddai/ai-kit": "workspace:*",
     "@buildd/dispatch-contract": "workspace:*",
     "@buildd/shared": "workspace:*",

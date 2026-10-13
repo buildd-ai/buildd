@@ -31,5 +31,8 @@
     "apps/web/src/app/app/(protected)/missions/[id]/MissionSurfaceAuditWaiver.tsx": 1,
     "apps/web/src/components/chat/DirectiveCard.tsx": 1,
     "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1
-  }
+  },
+  "conditional-policy": {},
+  "trailing-filler": {},
+  "em-dash": {}
 }

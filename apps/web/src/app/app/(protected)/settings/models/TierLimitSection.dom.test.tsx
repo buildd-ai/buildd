@@ -94,23 +94,6 @@ describe('TierLimitSection', () => {
     expect(text()).toContain('No extra restriction');
   });
 
-  it('a member cannot pick above the team maximum: option disabled with the reason, no write', async () => {
-    await mount(false);
-    const opt = await pick('self-all', 'Premium-plus');
-    expect(opt.getAttribute('aria-disabled')).toBe('true');
-    expect(opt.textContent).toContain('Above');
-    await act(async () => { opt.click(); });
-    expect(puts).toHaveLength(0);
-  });
-
-  it('a member lowering their own maximum writes only /me', async () => {
-    await mount(false);
-    const opt = await pick('self-all', 'Standard');
-    await act(async () => { opt.click(); });
-    await flush();
-    expect(puts).toEqual([{ url: '/api/teams/t1/model-ceilings/me', body: { ceilings: { all: 'standard' } } }]);
-  });
-
   it('non-admins get no team, workspace or member controls', async () => {
     state.canManage = false;
     await mount(false);
@@ -120,12 +103,13 @@ describe('TierLimitSection', () => {
     expect(q('team-limit-readonly')).not.toBeNull();
   });
 
-  it('a member reads the team maximum as text; their own maximum is the only control', async () => {
+  it('a member reads the team maximum as text, with no control (their own maximum is You › Keys)', async () => {
     state.canManage = false;
     state.team = { all: 'premium', chat: 'standard' };
     await mount(false);
     expect(q('team-limit-readonly')!.textContent).toBe('Team maximum: Premium. Chat only: Standard.');
-    expect(formControls(host).map((el) => el.getAttribute('data-testid'))).toEqual(['self-all']);
+    expect(formControls(host)).toEqual([]);
+    expect(q('my-limit')).toBeNull();
     expect(text()).not.toMatch(/Admins can change|Only a team owner|can change this|set by a team admin/);
   });
 
@@ -175,7 +159,7 @@ describe('TierLimitSection', () => {
 
   it('names each card once: the title labels its select, no repeated row label', async () => {
     await mount(true);
-    for (const [card, title, select] of [['my-limit', 'My maximum', 'self-all'], ['team-limit', 'Team maximum', 'team-all']]) {
+    for (const [card, title, select] of [['team-limit', 'Team maximum', 'team-all']]) {
       const c = q(card)!;
       expect(c.textContent!.split(title).length - 1).toBe(1);
       const labelId = q(select)!.getAttribute('aria-labelledby')!;
@@ -186,11 +170,19 @@ describe('TierLimitSection', () => {
   it('stacks label above select at narrow widths', async () => {
     await mount(true);
     await act(async () => { q('team-advanced')!.click(); });
-    for (const id of ['team-chat', 'over-cap-auto', 'ws-w1-all']) {
+    for (const id of ['team-chat', 'ws-w1-all']) {
       const row = q(id)!.closest('[data-limit-row]') as HTMLElement;
       expect(row.className).toContain('flex-col');
       expect(row.className).toContain('sm:flex-row');
     }
+  });
+
+  it('has no router knob, no personal maximum and no machinery notes for an admin', async () => {
+    await mount(true);
+    expect(q('over-cap-auto')).toBeNull();
+    expect(q('my-limit')).toBeNull();
+    expect(q('coding-route-note')).toBeNull();
+    expect(text()).not.toMatch(/Router picks higher|downgrade or hold|A member cannot raise|under Providers|My maximum/);
   });
 
   it('does not offer OAuth or subscription controls', async () => {

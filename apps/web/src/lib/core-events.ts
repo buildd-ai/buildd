@@ -117,6 +117,13 @@ export type CoreEvent =
    */
   | { type: 'task.left_mission'; taskId: string; missionId: string; workspaceId: string | null }
   /**
+   * PATCH /api/tasks/[id] replaced a task's role: `from` was set and `to` is
+   * a different role (clearing it is not a change of answer). The decisions
+   * module labels it as a person's correction of a role pick that applied
+   * `from`, if one did. `by` is the editing user or account.
+   */
+  | { type: 'task.role_changed'; taskId: string; teamId: string; from: string; to: string; by: string | null }
+  /**
    * A claim STARTed a task a gate would have HELD, because someone overrode
    * it: a person's Force start today (lib/force-start.ts), a later Jev START
    * path tomorrow. Once per overriding claim. The decisions module records it

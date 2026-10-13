@@ -62,6 +62,14 @@ once that PR lands, merging dev and re-running without the flag closes the gap.
 `packages/core/db/migration-index.ts`; proof in
 `packages/core/__tests__/migration-index.test.ts`.
 
+**Only the tools move a migration.** `bun run migrations:renumber --base=origin/dev`
+(or, for a conflicted merge, `bun run conflicts:generated`, which calls it) is the
+only sanctioned way. On a dev→mission refresh PR the merge-safety inspector reads
+"mission migration deleted, a new `.sql` with the same bytes added" as a renumber
+and lets it through (docs/specs/db-migration-gates.md, "A renumber in a refresh PR
+is not lineage"). A rename, a hand-edited file, or SQL that changed on the way is
+lineage and goes to a person.
+
 **Regenerate rather than renumber by hand.** Regeneration re-diffs your
 `schema.ts` against dev's *newest* snapshot, so a column another session added in
 the same window survives in yours. Hand-editing `idx`/`when` leaves a snapshot
