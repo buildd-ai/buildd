@@ -129,7 +129,7 @@ function ChipListEditor({
           }
         }}
         onBlur={commit}
-        placeholder="Name a target, Enter to add"
+        placeholder="Type a name and press Enter"
         className="w-full px-2.5 py-1.5 border border-border-default rounded-md bg-surface-1 text-text-primary text-meta"
       />
       {hint && <p className="text-meta text-text-muted mt-1">{hint}</p>}
@@ -176,12 +176,12 @@ function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unkno
       });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Failed to save');
+        throw new Error(data.error || 'Could not save.');
       }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save');
+      setError(err instanceof Error ? err.message : 'Could not save.');
     } finally {
       setSaving(false);
     }
@@ -216,7 +216,7 @@ function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unkno
             <ChipListEditor
               key={dim}
               label={DIMENSION_LABEL[dim]}
-              hint="Blank allows any."
+              hint="Leave empty to allow any."
               values={scope[dim]}
               onChange={v => setScope(prev => ({ ...prev, [dim]: v }))}
             />
@@ -309,14 +309,14 @@ function WorkspaceGrantRow({
       });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Failed to save');
+        throw new Error(data.error || 'Could not save.');
       }
       const data = await res.json();
       onSaved(data.skill);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save');
+      setError(err instanceof Error ? err.message : 'Could not save.');
     } finally {
       setSaving(false);
     }

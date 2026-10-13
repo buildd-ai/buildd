@@ -103,7 +103,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to regenerate key');
+        throw new Error(err.error || 'Could not regenerate the token.');
       }
 
       const data = await res.json();
@@ -111,7 +111,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       setNewKey({ accountName: regenerateTarget.name, apiKey: data.apiKey });
       router.refresh();
     } catch (err) {
-      setRegenerateError(err instanceof Error ? err.message : 'Failed to regenerate key');
+      setRegenerateError(err instanceof Error ? err.message : 'Could not regenerate the token.');
     } finally {
       setRegenerating(false);
     }
@@ -282,7 +282,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       <ConfirmDialog
         open={!!regenerateTarget}
         title="Regenerate runner token?"
-        message={regenerateError || `Invalidates the current token for "${regenerateTarget?.name}". Runners using the old token stop working right away.`}
+        message={regenerateError || `Invalidates the current token for "${regenerateTarget?.name}". Runners using the old token lose access immediately.`}
         confirmLabel="Regenerate"
         variant="warning"
         loading={regenerating}

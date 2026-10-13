@@ -13,7 +13,7 @@ async function postBilling(teamId: string, path: 'checkout' | 'portal' | 'seats'
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Something went wrong');
+  if (!res.ok) throw new Error(data.error || "Could not complete the billing request. Try again.");
   return data;
 }
 
@@ -103,7 +103,7 @@ export function SeatsForm({ teamId, paidSeats, used }: { teamId: string; paidSea
           />
         </label>
         <button type="submit" className="btn btn-lg h-11 md:h-10" disabled={pending || seats === paidSeats || seats < min}>
-          {pending ? 'Saving' : 'Update members'}
+          {pending ? 'Saving…' : 'Update members'}
         </button>
       </div>
       <p className="text-meta text-text-muted">At least {min}. Changes are prorated on the next invoice.</p>

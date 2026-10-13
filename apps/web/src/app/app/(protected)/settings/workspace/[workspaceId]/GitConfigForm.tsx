@@ -192,14 +192,14 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
 
             if (!res.ok) {
                 const data = await res.json();
-                throw new Error(data.error || 'Failed to save');
+                throw new Error(data.error || 'Could not save. Try again.');
             }
 
             markSaved(submitted);
             setSaved(true);
             setTimeout(() => setSaved(false), 3000);
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to save');
+            setError(err instanceof Error ? err.message : 'Could not save. Try again.');
         } finally {
             setSaving(false);
         }
@@ -287,7 +287,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
             {
                 title: 'Advanced',
                 facts: [
-                    { label: 'SDK debug logging', value: onOff(debug) },
+                    { label: 'Debug logs', value: onOff(debug) },
                     { label: 'Debug log file', value: debugFile ? mono(debugFile) : 'None' },
                 ],
             },
@@ -326,7 +326,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
                             placeholder="main"
                         />
-                        <p className="text-xs text-text-muted mt-1">Base branch for worktrees and new feature branches, such as <code>dev</code> or <code>main</code>.</p>
+                        <p className="text-xs text-text-muted mt-1">Base for new feature branches, such as <code>dev</code> or <code>main</code>.</p>
                     </div>
 
                     <div>
@@ -347,7 +347,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
                             placeholder="feature/"
                         />
-                        <p className="text-xs text-text-muted mt-1">Leave empty and the agent follows project conventions.</p>
+                        <p className="text-xs text-text-muted mt-1">Optional. Empty follows project conventions.</p>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -405,12 +405,12 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             placeholder={defaultBranch || 'main'}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Branch agents open PRs against. Set <code>dev</code>{' '}if you merge features into dev before releasing to main.
-                            If empty, buildd uses Default branch above, then the GitHub repo&apos;s default branch.
+                            Branch agents open pull requests against, such as <code>dev</code>.
+                            Empty falls back to Default branch, then the repository&apos;s default branch on GitHub.
                         </p>
                         {!targetBranch && (
                             <p className="text-xs text-status-warning mt-1">
-                                Not set. PRs target <code>{defaultBranch || 'main'}</code> (from Default branch above).
+                                Empty. PRs target <code>{defaultBranch || 'main'}</code>.
                             </p>
                         )}
                     </div>
@@ -500,7 +500,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                         </label>
                     </div>
                     <p className="text-xs text-text-muted -mt-2">
-                        The sandbox limits which files and sites agents can reach.
+                        Limits the files and domains agents can reach.
                     </p>
 
                     {sandboxEnabled && (
@@ -517,7 +517,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                                 </label>
                             </div>
                             <p className="text-xs text-text-muted -mt-2">
-                                Skips bash permission prompts. The sandbox limits what commands can do.
+                                Skips bash permission prompts inside the sandbox.
                             </p>
 
                             <div>
@@ -532,7 +532,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                                     placeholder={"api.github.com\nnpm.pkg.github.com\nregistry.npmjs.org"}
                                 />
                                 <p className="text-xs text-text-muted mt-1">
-                                    Sites agents can reach. Leave empty to block all.
+                                    Domains agents can reach. Empty blocks all network access.
                                 </p>
                             </div>
 
@@ -548,7 +548,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                                 </label>
                             </div>
                             <p className="text-xs text-text-muted -mt-2">
-                                Lets agents start local dev servers, such as for tests that need one.
+                                Allows agents to start local servers, such as for tests.
                             </p>
 
                             <div>
@@ -575,7 +575,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
             <div className="py-4 first:pt-0">
                 <h3 className="text-sm font-medium text-text-primary mb-3">Model</h3>
                 <p className="text-xs text-text-muted mb-4">
-                    Some models don&apos;t support these options. Agents skip what their model can&apos;t use.
+                    Ignored on models that don&apos;t support them.
                 </p>
 
                 <div className="space-y-4">
@@ -587,7 +587,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             options={BACKEND_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Used for new tasks in this workspace unless a task or its agent sets one. Codex needs a connected ChatGPT or OpenAI account.
+                            Default for new tasks here, unless a task or its agent sets one. Codex needs a connected ChatGPT or OpenAI account.
                         </p>
                     </div>
 
@@ -604,7 +604,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             placeholder="A tier or a model name"
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Model to use when the primary model fails, such as on a rate limit. You can change this per task.
+                            Used when the primary model fails, such as on a rate limit. Tasks can override this.
                         </p>
                     </div>
 
@@ -616,7 +616,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             options={THINKING_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Sets extended thinking. You can change this per task.
+                            Extended thinking for agents. Tasks can override this.
                         </p>
                     </div>
 
@@ -635,7 +635,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                                 placeholder="10000"
                             />
                             <p className="text-xs text-text-muted mt-1">
-                                Most tokens the model can spend thinking. More tokens cost more.
+                                Maximum tokens spent on thinking. Higher budgets cost more.
                             </p>
                         </div>
                     )}
@@ -648,7 +648,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             options={EFFORT_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Sets how much effort the model spends per response. You can change this per task.
+                            How much effort the model spends per response. Tasks can override this.
                         </p>
                     </div>
                 </div>
@@ -674,7 +674,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                         </label>
                     </div>
                     <p className="text-xs text-text-muted -mt-2">
-                        Writes detailed agent logs, for troubleshooting.
+                        Detailed agent logs for troubleshooting.
                     </p>
 
                     <div>
@@ -690,7 +690,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             placeholder="/tmp/buildd-debug.log"
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Writes the debug logs to this file.
+                            Path for the debug log.
                         </p>
                     </div>
                 </div>

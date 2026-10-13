@@ -50,7 +50,7 @@ export function RepoAccessCard({ workspaceId, initialView, canCheck }: Props) {
                     ? `Connected. ${data.resumed} waiting task${data.resumed === 1 ? '' : 's'} resumed.`
                     : 'Connected.');
             } else {
-                setResult('Still not reachable. Nothing changed on GitHub yet.');
+                setResult('Still not reachable. No change detected on GitHub.');
             }
         } catch {
             setResult('Could not check the connection.');
@@ -124,13 +124,13 @@ export function RepoAccessCard({ workspaceId, initialView, canCheck }: Props) {
             <p className="text-xs text-text-secondary">{r.message}</p>
             {view.waitingTasks > 0 && (
                 <p className="text-xs text-text-muted mt-1" data-testid="repo-access-waiting">
-                    {view.waitingTasks === 1 ? '1 task is' : `${view.waitingTasks} tasks are`} waiting for this and will resume on their own once access is verified.
+                    {view.waitingTasks === 1 ? '1 task is' : `${view.waitingTasks} tasks are`} waiting for access and will resume automatically once it is verified.
                 </p>
             )}
 
             {action.kind === 'ask_admin' && r.adminInstructions && (
                 <div className="mt-3">
-                    <p className="text-xs text-text-muted mb-1">Send this to someone who administers it on GitHub:</p>
+                    <p className="text-xs text-text-muted mb-1">Send to a GitHub administrator:</p>
                     <pre className="text-xs font-mono whitespace-pre-wrap break-words border border-border-default p-2 text-text-secondary" data-testid="repo-access-instructions">
                         {r.adminInstructions}
                     </pre>
@@ -152,14 +152,14 @@ export function RepoAccessCard({ workspaceId, initialView, canCheck }: Props) {
                 does administer the account — GitHub refuses everyone else. */}
             {action.kind === 'ask_admin' && r.githubUrl && (
                 <p className="text-xs text-text-muted mt-2">
-                    Administer it on GitHub yourself?{' '}
+                    GitHub administrator?{' '}
                     <a href={r.githubUrl} target="_blank" rel="noopener noreferrer" className="underline" data-testid="repo-access-self-admin">
                         Open GitHub
                     </a>
                 </p>
             )}
             {checkable && action.kind !== 'check_connection' && action.kind !== 'operator' && action.kind !== 'link_repo' && (
-                <p className="text-xs text-text-muted mt-2">After the change on GitHub, buildd usually notices on its own. If not, press Check connection.</p>
+                <p className="text-xs text-text-muted mt-2">Changes on GitHub are usually detected automatically. Otherwise, use Check connection.</p>
             )}
             {result && <p className="text-xs text-text-muted mt-2" role="status">{result}</p>}
         </div>
