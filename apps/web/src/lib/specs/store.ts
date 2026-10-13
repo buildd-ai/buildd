@@ -9,6 +9,8 @@ import { newRepoRefs, normalizeRepoPath, parseRepoRefs, sameRepoRefs, type RepoR
 import { ArtifactReadError, AUTO_FULL_MAX_CHARS, readArtifactBody, type ArtifactReadResult, type ArtifactReadSelector } from '@buildd/core/artifact-read';
 import { readRepoFileAtCommit } from './repo-source';
 import { resolveDesign } from './design';
+import { parseDuplicateOverride, type DuplicateCandidate, type DuplicateCheck } from './duplicates';
+import type { DuplicateCheckDeps } from '@/lib/spec-duplicate-decision';
 import { sameDesign } from '@buildd/spec-contract/design';
 
 /**
@@ -47,7 +49,7 @@ const author = (c: SpecCaller) => (c.kind === 'user'
   ? { authorKind: 'user' as const, authorId: c.userId, label: `user:${c.userId}` }
   : { authorKind: 'agent' as const, authorId: c.account.id, label: `account:${c.account.id}` });
 
-export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number; code?: string };
+export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number; code?: string; duplicates?: DuplicateCandidate[] };
 export const fail = (status: SpecError['status'], error: string, extra: Partial<SpecError> = {}): SpecError => ({ ok: false, status, error, ...extra });
 
 /** Read (or, with `write`, create and revise) access to a workspace's specs. */
@@ -89,7 +91,9 @@ export type SpecRevisionRow = typeof specRevisions.$inferSelect;
 
 export async function createSpecDraft(caller: SpecCaller, input: {
   workspaceId: unknown; title: unknown; scope?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
-}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow } | SpecError> {
+  /** Override a duplicate refusal (§13): the spec this one replaces, or why it is distinct. */
+  supersedes?: unknown; distinctBecause?: unknown;
+}, opts: { duplicates?: DuplicateCheckDeps | false } = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; duplicateCheck: DuplicateCheck | null } | SpecError> {
   const { workspaceId, title, parentSpecId } = input;
   const scope = (input.scope ?? 'feature') as SpecScope;
   if (typeof workspaceId !== 'string' || !isUuid(workspaceId)) return fail(400, 'workspaceId must be a UUID');
@@ -111,8 +115,28 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   }
   const design = await resolveDesign(workspaceId, input.design);
   if (isError(design)) return design;
+  const override = parseDuplicateOverride(input);
+  if (override && 'error' in override) return fail(400, override.error);
+  if (override?.supersedes) {
+    const [old] = await db.select({ workspaceId: specs.workspaceId }).from(specs).where(eq(specs.id, override.supersedes)).limit(1);
+    if (!old || old.workspaceId !== workspaceId) return fail(400, 'supersedes names no spec in this workspace');
+  }
 
+  // Duplicates (§13): fail-open, so a check that cannot run never stops a spec.
   const who = author(caller);
+  const { SPEC_DUPLICATE_CHECK, SPEC_DUPLICATE_OVERRIDE } = await import('@/modules');
+  const duplicateCheck = opts.duplicates === false ? null : await SPEC_DUPLICATE_CHECK({
+    workspaceId, title: title.trim(), body,
+    userId: caller.kind === 'user' ? caller.userId : null, accountId: caller.kind === 'account' ? caller.account.id : null,
+  }, opts.duplicates ?? {});
+  if (duplicateCheck?.ran && duplicateCheck.blocking.length > 0) {
+    if (!override) {
+      const names = duplicateCheck.blocking.map((d) => `"${d.title}" (${d.specId})`).join(', ');
+      return fail(409, `This spec looks like a duplicate of ${names}. If it replaces that spec, send supersedes: <its id>; if it is different, send distinctBecause saying how. Nothing was written.`, { code: 'spec_duplicate', duplicates: duplicateCheck.blocking });
+    }
+    await SPEC_DUPLICATE_OVERRIDE(duplicateCheck.blocking, override, who.label);
+  }
+
   // The body artifact: its insert is revision 1 (the artifact revision trigger).
   const [art] = await db.insert(artifacts).values({
     workspaceId, type: 'content', title: `Spec: ${title.trim()}`, content: body, contentAuthor: who.label,
@@ -129,7 +153,7 @@ export async function createSpecDraft(caller: SpecCaller, input: {
     repoRefs: repoRefs ?? null,
     design: design ?? null,
   }).returning();
-  return { ok: true, spec, revision };
+  return { ok: true, spec, revision, duplicateCheck };
 }
 
 export async function reviseSpecDraft(caller: SpecCaller, specId: string, input: {

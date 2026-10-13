@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -815,6 +815,70 @@ the visual audit judges the build against that version of the design.
 - The spec page does not render the design inline; it links to it.
 - No design-tool integration (such as Figma) is built: such a reference is
   stored as given.
+
+## 13. Duplicate specs
+
+**Capability statement**: Creating a spec MUST be refused when a measured
+decision model judges it a clear duplicate of an approved spec in the same
+workspace, unless the request says which spec it replaces or why it is
+different; an overlap MUST only warn, and a check that cannot run MUST never
+stop a spec.
+
+**Invariants**:
+- `createSpecDraft` (`POST /api/specs`, MCP `manage_specs action=create_draft`)
+  runs `checkSpecDuplicates` (`apps/web/src/lib/spec-duplicate-decision.ts`, reached from core through the `SPEC_DUPLICATE_CHECK` slot in `apps/web/src/modules.ts`)
+  before anything is written:
+  - Shortlist: TF-IDF cosine between the new spec and each approved revision
+    in the workspace (title, the opening line, every R-n/AC-n), at most 5 above
+    a floor. The shortlist only picks what the model reads; it never decides.
+  - Judge: decision kind `buildd.spec_duplicate`, capability `spec_duplicate`
+    (opt-in, on for new teams), one call per shortlisted spec, the question
+    the offline eval measured (knowledge base:
+    `buildd/reports/spec-duplicate-detection-eval-2026-10-12.md`): duplicate,
+    overlap or distinct, by what the specs require, not their topic. Every
+    answer is recorded in the decision ledger under subject `spec_pair`.
+- `duplicate` at p >= 0.9 (Jev: 106 of 106 right in the eval): a 409 with
+  `code: spec_duplicate` and the `duplicates`, naming each spec, and nothing is
+  written. A model the kind was not measured on is recorded, never applied, so
+  it cannot block.
+- Override: `supersedes` (a spec id in the same workspace) or
+  `distinctBecause` (at least 10 characters). The spec is created and the
+  override is recorded on each blocking judgement's ledger row as a human
+  override, so the threshold can be re-measured on real cases.
+- `overlap` at p >= 0.5, or `duplicate` below 0.9: created, with the
+  candidates in `duplicateCheck.warnings`.
+- No team, no approved spec, the capability off, no decision-model key, a
+  provider failure or any error: created, with `duplicateCheck.ran: false` and
+  the reason.
+
+**Acceptance criteria**:
+- AC-46: GIVEN an approved "Cart" spec WHEN a paraphrase is created and the
+  model answers duplicate at 0.97 THEN 409 naming Cart, and the workspace has
+  no new spec (`apps/web/tests/db/spec-duplicates.test.ts`).
+- AC-47: GIVEN the same WITH `supersedes` (Cart's id) or a `distinctBecause`
+  THEN it is created; GIVEN `supersedes` naming a spec in another workspace
+  THEN 400 (`apps/web/tests/db/spec-duplicates.test.ts`).
+- AC-48: GIVEN the model answers overlap THEN it is created with Cart in the
+  warnings; GIVEN no decision model THEN it is created with the check marked
+  not run (`apps/web/tests/db/spec-duplicates.test.ts`,
+  `apps/web/src/lib/spec-duplicate-decision.test.ts`).
+- AC-49: The kind asks the measured question, live, under `spec_duplicate`; a
+  duplicate at 0.89 only warns (`apps/web/src/lib/spec-duplicate-decision.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/spec-duplicate-decision.ts` — `checkSpecDuplicates`, `tfidfShortlist`, `specDuplicateKind`, `recordDuplicateOverride`
+- `apps/web/src/lib/specs/duplicates.ts` — `parseDuplicateOverride`
+- `apps/web/src/lib/specs/store.ts` — `createSpecDraft`
+
+**Not yet**:
+- Linking a page or a repo file as a spec's home is not checked: no spec can
+  have an external home in buildd (slice 4 is out of scope).
+- A revise is not checked, and the shortlist compares whole specs, not single
+  criteria.
+- `supersedes` is recorded but does not mark the old spec superseded.
+- New teams start with the capability on. An existing team gets it when a
+  platform operator adds `spec_duplicate` to the team's decision capabilities
+  (`PATCH /api/admin/teams/[id]/experiment-flags`).
 
 ## 14. Neighbours and derived edges
 
