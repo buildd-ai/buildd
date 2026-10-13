@@ -50,6 +50,7 @@ mock.module('drizzle-orm', () => ({
 const {
   decisionCall,
   resolveDecisionAccess,
+  resolveDecisionRoute,
   resolveDecisionKey,
   validateDecisionRequest,
   parseDecisionAnswers,
@@ -60,6 +61,7 @@ const {
   DECISION_KEY_PURPOSE,
   MAX_CHOICE_OPTIONS,
 } = await import('../decision-client');
+const { measurementFor } = await import('../decision-model-measurements');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -707,6 +709,53 @@ describe('decisionCall with a team decision model', () => {
     expect((await decisionCall(params({ fetcher }))).ok).toBe(true);
   });
 
+});
+
+describe('a decision model chosen per decision', () => {
+  const QWEN = { endpoint: 'chat', model: 'qwen/qwen3-8b', via: 'openrouter' };
+  const withOverride = { ...QWEN, byKind: { task_category: { endpoint: 'chat', model: 'mistral/small-3', via: 'openrouter' } } };
+
+  it('the override beats the team default for its decision', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: withOverride };
+    const access = await resolveDecisionAccess({ capability: 'task_category', teamId: 'team-1', kind: 'task_category' });
+    expect(access).toMatchObject({ ok: true, model: 'mistral/small-3' });
+  });
+
+  it('any other decision, or a call that names none, gets the team default as today', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: withOverride };
+    expect(await resolveDecisionAccess({ capability: 'task_category', teamId: 'team-1', kind: 'task_role' })).toMatchObject({ ok: true, model: 'qwen/qwen3-8b' });
+    expect(await resolveDecisionAccess({ capability: 'task_category', teamId: 'team-1' })).toMatchObject({ ok: true, model: 'qwen/qwen3-8b' });
+  });
+
+  it('with only overrides stored, every other decision stays on Jev', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { byKind: withOverride.byKind } };
+    const jev = await resolveDecisionAccess({ capability: 'task_category', teamId: 'team-1', kind: 'task_role' });
+    expect(jev).toEqual({ ok: true, apiKey: 'sk-or-team', model: DEFAULT_DECISION_MODEL });
+    expect(await resolveDecisionAccess({ capability: 'task_category', teamId: 'team-1', kind: 'task_category' })).toMatchObject({ ok: true, model: 'mistral/small-3' });
+  });
+
+  it('decisionCall forwards its decision to the lookup', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: withOverride };
+    const seen: any[] = [];
+    const fetcher = mock(async (_url: string, init?: RequestInit) => { seen.push(JSON.parse(init!.body as string)); return chatCompletion(); });
+    expect((await decisionCall(params({ fetcher, questions: NOUL, kind: 'task_category' }))).ok).toBe(true);
+    expect(seen[0].model).toBe('mistral/small-3');
+  });
+
+  it('resolveDecisionRoute takes the decision too', async () => {
+    const route = await resolveDecisionRoute(withOverride as any, { teamId: 'team-1', kind: 'task_category' });
+    expect(route.model).toBe('mistral/small-3');
+    expect((await resolveDecisionRoute(withOverride as any, { teamId: 'team-1' })).model).toBe('qwen/qwen3-8b');
+  });
+
+  it('an override model with no stored measurement records only', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: withOverride };
+    const access = await resolveDecisionAccess({ capability: 'task_category', teamId: 'team-1', kind: 'task_category' });
+    expect(access.ok).toBe(true);
+    if (!access.ok) return;
+    expect(measurementFor([], { kind: 'task_category', answeringModel: access.model, fingerprint: 'tc1' }))
+      .toEqual({ measured: false, threshold: null, reason: 'not_measured' });
+  });
 });
 
 describe('decisionCall via Cloudflare', () => {

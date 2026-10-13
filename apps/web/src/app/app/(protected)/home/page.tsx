@@ -38,7 +38,7 @@ import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
 import { isPlatformOperator } from '@/lib/platform-operator';
-import { ACCESS_NEEDS_YOU, DECISION_COLLECTION_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
+import { ACCESS_NEEDS_YOU, DECISION_COLLECTION_NEEDS_YOU, DECISION_HEALTH_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -65,7 +65,7 @@ import {
   type MissionCardSummary,
   type MissionCardView,
 } from '@/lib/mission-card-view';
-import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
+import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
@@ -283,7 +283,7 @@ export default async function HomePage({
   let idleStretches: IdleStretch[] = [];
   let teamTz: string | null = null;
   // Owners/admins run the fleet; members see their asks and missions first.
-  let audience: HomeAudience = 'operator';
+  let audience: HomeAudience = 'admin';
   // Agent chat on Home (knowledge-base: buildd/design/agent-chat.md, "Who sees what first").
   let chatPlacement: HomeChatPlacement = { kind: 'none' };
   let chatTeamId: string | null = null;
@@ -533,6 +533,7 @@ export default async function HomePage({
             with: {
               tasks: {
                 columns: MISSION_CARD_TASK_COLUMNS,
+                extras: MISSION_TASK_REFRESH_EXTRAS,
                 with: { workers: MISSION_CARD_WORKERS_WITH },
               },
               schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true, taskTemplate: true } },
@@ -1845,7 +1846,14 @@ export default async function HomePage({
           waitingOnYou.push(...await ACCESS_NEEDS_YOU(user?.id, wsIds));
         }
 
-        // 9. Decision features asked all day that never got a model answer:
+        // 9. A team whose decisions all fail at the provider (a token Workers AI
+        // refuses, a revoked key): one card per team for people who can change
+        // the decision model. Read from the ledgers; no push (DECISION_HEALTH_NEEDS_YOU in modules.ts).
+        if (wsIds.length > 0) {
+          waitingOnYou.push(...await DECISION_HEALTH_NEEDS_YOU(user?.id, wsIds));
+        }
+
+        // 10. Decision features asked all day that never got a model answer:
         // platform-wide, so the platform operator's only
         // (lib/decision-collection-needs-you.ts). Pulled here, never pushed.
         if (isPlatformOperator(user)) {

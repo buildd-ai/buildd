@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.323.0",
+  "version": "0.325.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -66,6 +66,7 @@
     "./inference-policy": "./inference-policy.ts",
     "./decision-benchmark": "./decision-benchmark.ts",
     "./decision-client": "./decision-client.ts",
+    "./decision-probe": "./decision-probe.ts",
     "./decision-model": "./decision-model.ts",
     "./decision-model-measurements": "./decision-model-measurements.ts",
     "./litellm-gateway": "./litellm-gateway.ts",
@@ -144,6 +145,7 @@
     "./task-area-prediction-source": "./task-area-prediction-source.ts",
     "./orchestration-decision": "./orchestration-decision.ts",
     "./orchestration-outcomes": "./orchestration-outcomes.ts",
+    "./orchestration-claim-gold": "./orchestration-claim-gold.ts",
     "./orchestration-ledger-source": "./orchestration-ledger-source.ts",
     "./orchestration-claim-decision": "./orchestration-claim-decision.ts",
     "./orchestration-claim-readout": "./orchestration-claim-readout.ts",

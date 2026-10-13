@@ -9,7 +9,7 @@ import { appBaseUrl } from '@/lib/app-url';
  * POST { slug } — a team member asks the team's admins to set up a catalog
  * app. Signed-in people only (an API key is not a person asking). Nothing is
  * installed or granted: the team is paged once on its own channel, and an
- * admin decides in Settings → Connected apps. Refused for an entry the member
+ * admin decides in Settings › Team › Apps. Refused for an entry the member
  * cannot see (blocked or not available) and for an admin, who can connect it.
  */
 export async function POST(req: NextRequest) {
@@ -32,8 +32,8 @@ export async function POST(req: NextRequest) {
   await notifyTeam(caller.teamId, 'needsAttention', {
     title: `${entry.name} requested`,
     message: `${who} asked for ${entry.name} for the team's agents.`,
-    url: `${appBaseUrl()}/app/settings/connections`,
-    urlTitle: 'Connected apps',
+    url: `${appBaseUrl()}/app/settings/apps`,
+    urlTitle: 'Apps',
   });
   return NextResponse.json({ ok: true });
 }

@@ -4,6 +4,7 @@ import {
   expectedPromptFallbacks,
   githubPromptReader,
   loadPromptSeed,
+  loadPromptSeedPerPrompt,
   parsePromptManifest,
   parsePromptSeedMarker,
   planPromptSeed,
@@ -230,5 +231,36 @@ describe('githubPromptReader', () => {
     expect(await reader.read('dir/a b.json')).toBe('body');
     expect(calls[0]).toEqual({ url: 'https://api.github.com/repos/o/r/contents/dir/a%20b.json?ref=main', auth: 'Bearer t0k' });
     await expect(reader.read('missing.json')).rejects.toThrow('GitHub 404');
+  });
+});
+
+describe('loadPromptSeedPerPrompt', () => {
+  it('skips a retired id with a note and still loads the rest', async () => {
+    const r = await loadPromptSeedPerPrompt(
+      seedDir([{ id: 'buildd.retired_thing', body: 'x' }, { id: 'test.text', body: 'private text' }]),
+      registered(),
+    );
+    expect(r.entries.map(e => e.id)).toEqual(['test.text']);
+    expect(r.retired).toEqual(['buildd.retired_thing']);
+    expect(r.problems).toEqual([]);
+  });
+
+  it('rejects only the prompt that fails validation', async () => {
+    const reg = registered().find(r => r.id === 'buildd.question_gate')!;
+    const changed = { ...QUESTION_GATE_QUESTIONS, extra: { type: 'noul', instructions: 'secret words' } };
+    const r = await loadPromptSeedPerPrompt(
+      seedDir([
+        { id: 'buildd.question_gate', body: JSON.stringify(changed) },
+        { id: 'test.text', body: 'private text' },
+      ]),
+      registered(),
+    );
+    expect(r.entries.map(e => e.id)).toEqual(['test.text']);
+    expect(r.problems).toEqual(['"buildd.question_gate": rejected (question names differ from the default)']);
+    expect(reg).toBeTruthy();
+  });
+
+  it('still throws when the manifest itself is unusable', async () => {
+    await expect(loadPromptSeedPerPrompt(dirReader({ 'manifest.json': 'nope' }), registered())).rejects.toBeInstanceOf(PromptSeedError);
   });
 });

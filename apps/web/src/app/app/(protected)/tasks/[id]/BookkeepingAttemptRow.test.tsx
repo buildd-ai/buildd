@@ -20,6 +20,6 @@ describe('BookkeepingAttemptRow', () => {
   });
   it('keeps the diagnostics inside the disclosure', () => {
     expect(html).toContain('Branch: buildd/abc');
-    expect(html).toContain('bookkeeping record');
+    expect(html).toContain('The runner took this attempt but never started it.');
   });
 });

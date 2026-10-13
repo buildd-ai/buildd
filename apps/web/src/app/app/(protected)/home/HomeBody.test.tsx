@@ -50,7 +50,8 @@ describe('Home inbox', () => {
       expect(r).toContain('data-testid="mission-row"');
       expect(r).toContain('data-testid="task-strip"');
       expect(r).not.toMatch(/border-l-4|border-l-status|bg-\[var\(--chat-surface\)\]/);
-      expect(r).not.toContain('line-clamp');
+      // The shared row clamps a long title at three lines, never two.
+      expect(r).not.toContain('line-clamp-2');
       expect(r).not.toContain('Stage:');
       expect(r).toContain('>Next<');
     }
@@ -233,4 +234,13 @@ describe('Home page composes one list', () => {
     expect(page).toMatch(/<div className="md:hidden">\s*<HomeChatCard/);
     expect(page).toContain('data-testid="home-ask-link"');
   });
+});
+
+// Surface audit round 3: at phone width the setup card filled the first screen
+// while the one thing that needed the owner sat below it.
+it('puts what needs the owner before the setup card', () => {
+  const items = deriveHomeAttention({ queue: [{ subjectKey: 'd', chip: 'DECIDE', missionId: 'mission-a', escalationReason: 'Keep the old route?' }], questions: [], held: [], missions: [] });
+  const html = renderToStaticMarkup(<HomeBody items={items} ask={null} setup={<section data-testid="getting-started">Connect a runner</section>} runnerConnected={false} counts={counts} milestones={[]} quietMissions={0} />);
+  expect(html.indexOf('home-waiting-on-you')).toBeGreaterThan(-1);
+  expect(html.indexOf('home-waiting-on-you')).toBeLessThan(html.indexOf('getting-started'));
 });

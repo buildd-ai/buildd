@@ -73,6 +73,10 @@ beforeEach(() => {
       }
       return Response.json({ ...fixtureResponse({ ...opts, workspaceId: url.searchParams.get('workspaceId') }), workspacesWithKeys: withKeys });
     }
+    if (url.pathname === '/api/teams/t/litellm-gateway') {
+      const set = (opts.rows ?? []).some((r) => r.provider === 'litellm' && r.scope === 'team');
+      return Response.json({ gateway: set ? { baseURL: 'https://litellm.example.com/v1', last4: 'abcd', health: 'healthy', lastVerificationError: null } : null });
+    }
     return new Response('{}', { status: 200 });
   }) as unknown as typeof fetch;
 });
@@ -202,6 +206,23 @@ describe('connect: one input, the format decides', () => {
     expect(host.textContent).not.toContain('Edit under Routing');
     expect($('#routing')).toBeTruthy();
     expect($('#advanced')).toBeTruthy();
+  });
+
+  it('an opened gateway row says its key and offers Remove once: the form owns both', async () => {
+    await mount({ rows: [{ provider: 'litellm', scope: 'team', shape: 'gateway', last4: 'abcd' }] });
+    await click($('[data-testid="provider-row-toggle"]', cardOf('litellm')));
+    await flush();
+    const detail = $('[data-testid="provider-detail"]', cardOf('litellm'))!;
+    expect([...detail.querySelectorAll('button')].filter((b) => b.textContent === 'Remove')).toHaveLength(1);
+    expect(detail.textContent!.split('abcd')).toHaveLength(2);
+  });
+
+  it('a workspace page leaves out a row it cannot set there, unless the team has one', async () => {
+    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }] }, false, WORKSPACES, 'workspace');
+    expect($('[data-testid="provider-list-workspace"] [data-testid="provider-card-litellm"]')).toBeNull();
+    act(() => root.unmount()); host.remove();
+    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }, { provider: 'litellm', scope: 'team', shape: 'gateway' }] }, false, WORKSPACES, 'workspace');
+    expect($('[data-testid="provider-card-state"]', cardOf('litellm', 'workspace'))!.textContent).toBe('Team key');
   });
 
   it('one provider: no Used for table, one line saying what it is used for', async () => {

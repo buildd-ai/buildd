@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * `MissionStateView` — the one owner of "what state is this in, and what is it
  * waiting on?".
@@ -1029,7 +1030,7 @@ function attemptFact(input: MissionStateInput): Resolution | null {
     waitingOn: {
       kind: 'task',
       tone: 'neutral',
-      label: `${fixLabel(a)} ${a.claimed ? 'in progress' : 'queued, no worker yet'}`,
+      label: `${fixLabel(a)} ${a.claimed ? 'in progress' : 'queued, waiting for a runner'}`,
       count: 1,
       taskIds: [a.taskId],
       byStatus: { [a.status]: 1 },
@@ -1127,6 +1128,13 @@ function landingFact(
 }
 
 /** Rule 7 — the work is done and has not reached trunk. */
+/** The merge wait's label: the mission PR, or the task PRs still open. */
+function unmergedLabel(missionPr: boolean, taskPrs: number): string {
+  return missionPr
+    ? 'The mission PR has not merged, so the work is not on trunk'
+    : `${taskPrs} completed task(s) have an unmerged PR`;
+}
+
 function mergeFact(input: MissionStateInput): Resolution | null {
   // An open fix attempt means the PR is about to change; asking the owner to
   // merge it now is the false headline rule 6½ exists to prevent.
@@ -1226,9 +1234,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       waitingOn: {
         kind: 'merge',
         tone: 'warning',
-        label: missionPr
-          ? 'The mission PR has not merged, so the work is not on trunk'
-          : `${completion.awaitingMerge ?? details.length} completed task(s) have an unmerged PR`,
+        label: unmergedLabel(missionPr, completion.awaitingMerge ?? details.length),
         count: completion.awaitingMerge ?? details.length,
         prNumbers,
         prUrls,
@@ -1283,9 +1289,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       waitingOn: {
         kind: 'merge',
         tone: 'warning',
-        label: missionPr
-          ? 'The mission PR has not merged, so the work is not on trunk'
-          : `${rowPrs.length} completed task(s) have an unmerged PR`,
+        label: unmergedLabel(missionPr, rowPrs.length),
         count: missionPr ? 1 : rowPrs.length,
         prNumbers: missionPr
           ? openMissionPr!.prNumber != null ? [openMissionPr!.prNumber] : []
@@ -1543,8 +1547,8 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
         // attempted and held — only then is a missing verdict newsworthy.
         tone: refused ? 'warning' : 'neutral',
         label: count === 1
-          ? '1 criterion not verified yet · run verification'
-          : `${count} criteria not verified yet · run verification`,
+          ? '1 criterion unverified · run verification'
+          : `${count} criteria unverified · run verification`,
         count,
         criteria: nonPass,
       },
@@ -1561,7 +1565,7 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
       kind: 'awaiting_verification',
       waitingOn: failing
         ? { kind: 'criterion_failing', tone: 'warning', label: 'Goal criteria failed', count: 1, criteria: [], refused: true }
-        : { kind: 'criterion_unverified', tone: 'neutral', label: 'Goal criteria not verified yet · run verification', count: 1, criteria: [] },
+        : { kind: 'criterion_unverified', tone: 'neutral', label: 'Goal criteria unverified · run verification', count: 1, criteria: [] },
       displayState: 'awaiting_verification',
       source: 'canCompleteMission',
     };
@@ -1681,7 +1685,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     case 'task':
       if (d.attempt) {
         const fix = fixLabel(d.attempt).toLowerCase();
-        return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued, no worker yet)`;
+        return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued, waiting for a runner)`;
       }
       if (d.stranded) {
         return `stranded: no local session for ${quietLabel(d.stranded.quietMs)}. Continue on a runner?`;
@@ -1743,7 +1747,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     case 'criterion_unverified':
       if (d.awaitingRunner && d.awaitingRunner.length > 0) {
         return d.awaitingRunner.length === 1
-          ? `waiting for a runner to verify "${d.awaitingRunner[0]}"`
+          ? `waiting on a runner to verify "${d.awaitingRunner[0]}"`
           : `waiting for a runner to verify ${d.awaitingRunner.length} goal criteria`;
       }
       return d.count === 1
@@ -1804,7 +1808,7 @@ function deriveSituation(
       ? isLocal(input)
         ? `${localLead(input)}. Nothing else outstanding.`
         : `Running: ${countAgents(input.activeAgents)} in flight, nothing outstanding.`
-      : 'Nothing to do. No source reports outstanding work.';
+      : 'No source reports outstanding work.';
     return {
       headline,
       tone: 'neutral',
@@ -1897,8 +1901,8 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
     case 'task':
       if (waitingOn.attempt) {
         return waitingOn.attempt.claimed
-          ? 'Nothing to do yet. The reviewer runs again after the fix pushes.'
-          : 'Nothing to do yet. The fix is queued for the next free worker; cancel it if you no longer want the work.';
+          ? 'The reviewer runs again after the fix pushes.'
+          : 'The fix is queued for the next free runner. Cancel it if you no longer want the work.';
       }
       if (waitingOn.stranded) {
         return waitingOn.stranded.flipBlockedReason
@@ -1906,7 +1910,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
           : 'Continue on a runner: switch the mission to runners and its open task(s) are dispatched to them. Or keep it local and claim them from a session with claim_task {taskId}.';
       }
       if (waitingOn.blockedBy) {
-        return `Nothing to do yet. Unblocks when ${unblocksWhen(waitingOn.blockedBy, 'action')}.`;
+        return `Unblocks when ${unblocksWhen(waitingOn.blockedBy, 'action')}.`;
       }
       if (waitingOn.local) {
         return 'Nothing to dispatch: this mission runs in a local session. Claim the open task(s) from it with claim_task {taskId}, or cancel them if you no longer want the work.';
@@ -1921,7 +1925,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         return 'The mission PR was closed without merging and will not reopen on its own. Reopen it, or land the work another way.';
       }
       if (waitingOn.missionPr && waitingOn.missionPrState === 'not_opened') {
-        return 'Nothing to merge yet. The mission PR opens automatically once every task PR has landed on the integration branch; if it still has not after a while, the opener is stuck and needs investigating.';
+        return 'The mission PR opens once every task PR has landed on the integration branch. If it doesn’t open, the opener is stuck.';
       }
       return waitingOn.missionPr
         ? 'Merge the mission PR to move the work from the integration branch to trunk.'
@@ -1960,8 +1964,8 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       return 'Decide this yourself; no automated step will clear it.';
     case 'self_resolving_wait':
       return waitingOn.waitUntil
-        ? `Nothing to do. Work resumes at ${waitingOn.waitUntil}.`
-        : 'Nothing to do. Work resumes when the wait ends.';
+        ? `Work resumes at ${waitingOn.waitUntil}.`
+        : 'Work resumes when the wait ends.';
     case 'claim_deferral':
       return `The claim loop is refusing this task (${deferralReasonText(waitingOn)}). Clear that gate, or cancel the task if you no longer want the work.`;
   }

@@ -9,6 +9,8 @@ import { and, eq, isNull, desc } from 'drizzle-orm';
 import { recordCredentialAuthSuccess } from './credential-health';
 import {
   CLOUDFLARE_PURPOSE,
+  capabilityProblems,
+  checkCloudflareCapabilities,
   parseCloudflareCredential,
   verifyCloudflareToken,
   type CloudflareCredential,
@@ -62,10 +64,17 @@ export async function verifyCloudflareCredential(secretId: string, fetchImpl: Fe
   if (!cred) return { verified: false, error: 'Failed to decrypt credential' };
 
   const result = await verifyCloudflareToken(cred, fetchImpl);
+  // An active token can still be refused by Workers AI or the gateway; say so,
+  // and keep it on the row so the card still says so after a reload.
+  if (result.verified) result.capabilities = await checkCloudflareCapabilities(cred, fetchImpl);
   const now = new Date();
   await db
     .update(secrets)
-    .set({ lastVerifiedAt: now, lastVerificationError: result.error, updatedAt: now })
+    .set({
+      lastVerifiedAt: now,
+      lastVerificationError: result.error ?? (result.capabilities ? capabilityProblems(result.capabilities) : null),
+      updatedAt: now,
+    })
     .where(eq(secrets.id, secretId));
 
   if (result.verified) {

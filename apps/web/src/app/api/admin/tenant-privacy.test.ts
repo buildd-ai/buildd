@@ -53,7 +53,7 @@ mock.module('@/lib/admin/data', () => ({
   getExperiment: async (id: string) => (id === OWN_EXP ? experimentRow(OWN_EXP, OWN_TEAM) : id === OTHER_EXP ? experimentRow(OTHER_EXP, OTHER_TEAM) : null),
   findOtherRunning: async () => null,
   applyExperimentUpdate: async (teamId: string, id: string, _guard: unknown, set: any) => ({ ...experimentRow(id, teamId), ...set }),
-  readTeamExperimentFlags: async () => ({ enabledDecisionShadows: [], chatRetro: { lessons: false, proposals: false }, chatRetroDogfood: false }),
+  readTeamExperimentFlags: async () => ({ enabledDecisionShadows: [], inferenceFeatureModes: null, chatRetro: { lessons: false, proposals: false }, chatRetroDogfood: false }),
   writeTeamExperimentFlags: async () => ({ deletedLessons: 0 }),
   listChatRetros: async () => [OWN_WS, OTHER_WS].map(ws => ({ id: `r-${ws}`, teamId: teamOf(ws), workspaceId: ws, status: 'judged', turns: 4 })),
   loadUsage: async (o: any) => ({

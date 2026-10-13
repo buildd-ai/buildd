@@ -8,7 +8,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### auth (9)
 
-- [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-08
+- [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-11
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-09
   The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
@@ -101,7 +101,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Live Sibling Conflict Probe](./live-sibling-conflict-probe.md) · @max — verified 2026-10-08
   Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.
-- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-07
+- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-09
   A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-10-04
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
@@ -175,7 +175,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.
 - [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-10-07
   The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
-- [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
+- [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-10-11
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 - [Serialized Surface Merge Ordering](./surface-merge-ordering.md) · @max — verified 2026-10-01
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
@@ -184,7 +184,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task Estimates (Rollout and Team Switch)](./task-estimates.md) · @max — verified 2026-10-11
   Task estimates MUST be on for a team that turned them on, off for a team that turned them off, and follow a default that is on only when a pinned, evidence-backed quality gate passes; they never block or order work.
 
-## Draft (9)
+## Draft (10)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
@@ -192,6 +192,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An inferred path-overlap hold MUST bind only to live work (a live worker, a held lease or an open PR on the same base); overlap between unstarted tasks is settled by the first claim's lease.
 - [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
   The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
+- [Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal Collection)](./decision-model-selection.md) · @max — verified 2026-10-12
+  A decision kind MUST act only at a threshold measured for its model on graded cases, MAY switch model when a challenger measurably wins, and MUST collect every grading signal it can.
 - [Execution Control Plane](./execution-control-plane.md) · @max — verified 2026-10-11
   Authorized execution (claims, heartbeats, results, webhooks, Dispatch callbacks) MUST keep moving while the web app is down, served by a separate Worker running the same handlers.
 - [Living Specs](./living-specs.md) · @max — verified 2026-10-11

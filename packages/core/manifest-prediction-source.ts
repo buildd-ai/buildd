@@ -462,7 +462,7 @@ export async function predictCreationManifest(
     });
     let access: DecisionAccess;
     try {
-      access = await resolveAccess({ capability: CAPABILITY, teamId: input.teamId, workspaceId: input.workspaceId, accountId: input.accountId ?? null, userId: input.userId ?? null });
+      access = await resolveAccess({ capability: CAPABILITY, teamId: input.teamId, workspaceId: input.workspaceId, accountId: input.accountId ?? null, userId: input.userId ?? null, kind: MANIFEST_DECISION_ID });
     } catch {
       return { skipped: 'error' };
     }

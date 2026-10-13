@@ -5,7 +5,7 @@ import { isUuid } from '@/lib/uuid';
 import { reach } from './store';
 import { specApprover } from './approval';
 import { verifySpecApprovalRequest } from './approval-request';
-import { diffSpecBodies, diffSpecRevisions, type SectionChange } from './diff';
+import { diffSpecBodies, diffSpecHunks, diffSpecRevisions, type DiffHunk, type SectionChange } from './diff';
 import { getSpec } from './store';
 
 /**
@@ -23,8 +23,11 @@ export type ApprovalRequestView =
     /** The approved revision this one replaces; null when nothing is approved yet. */
     replaces: number | null;
     sections: SectionChange[];
-    diff: string;
+    /** The changed sections as numbered rows (lib/specs/diff.ts, same caps as the text diff). */
+    hunks: DiffHunk[];
     omittedLines: number;
+    /** The whole revision being approved, Markdown (at most the 200k body cap). */
+    body: string;
   };
 
 export async function approvalRequestView(userId: string, specId: string, token: string | null | undefined): Promise<ApprovalRequestView> {
@@ -45,13 +48,14 @@ export async function approvalRequestView(userId: string, specId: string, token:
   if (spec.version !== req.expectedVersion || spec.headRevision !== req.revision) return { state: 'stale', ...base };
 
   if (spec.approvedRevision) {
-    const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: req.revision });
-    if (!d.ok) return { state: 'stale', ...base };
-    return { state: 'ready', ...base, replaces: spec.approvedRevision, sections: d.diff.sections, diff: d.diff.diff, omittedLines: d.diff.omittedLines };
+    const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: req.revision, rows: true });
+    if (!d.ok || d.diff.toBody === undefined) return { state: 'stale', ...base };
+    return { state: 'ready', ...base, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody };
   }
   // Nothing approved yet: the whole revision is what comes into force.
   const s = await getSpec(caller, specId, { revision: req.revision });
   if (!s.ok || typeof s.view.body !== 'string') return { state: 'stale', ...base };
   const d = diffSpecBodies('', s.view.body);
-  return { state: 'ready', ...base, replaces: null, sections: d.sections, diff: d.diff, omittedLines: d.omittedLines };
+  const h = diffSpecHunks('', s.view.body);
+  return { state: 'ready', ...base, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body };
 }

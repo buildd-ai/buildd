@@ -197,6 +197,7 @@ type ResolveAccess = (opts: {
   workspaceId: string | null;
   accountId: string | null;
   userId: string | null;
+  kind?: string;
 }) => Promise<DecisionAccess>;
 
 export interface StrandChoiceDeps {
@@ -245,6 +246,7 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       workspaceId: facts.workspaceId,
       accountId: facts.accountId ?? null,
       userId: facts.userId ?? null,
+      kind: STRAND_CHOICE_DECISION_ID,
     });
     if (!access.ok) return await fallback(access.error.kind);
 

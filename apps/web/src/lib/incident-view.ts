@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * Plain words for a failure incident, and the one projection every surface
  * draws it from (docs/specs/failure-incident-recovery.md §9, §17).
@@ -257,7 +258,7 @@ export function projectIncident(
         : `Automatic recovery unavailable: Buildd has no recovery policy for this pattern${fix ? ' and its fix task has ended' : ''}. Look at the affected work, then dismiss it.`;
     } else {
       phase = 'checking';
-      sentence = 'Buildd has not assessed this yet. It checks on its next sweep, within 30 minutes.';
+      sentence = 'Buildd has not assessed this. It checks on its next sweep, within 30 minutes.';
     }
   } else if (stale || r.state === 'inconclusive' || r.state === 'observing') {
     phase = r.state === 'observing' && !stale ? 'checking' : 'inconclusive';

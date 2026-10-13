@@ -1,5 +1,5 @@
 {
-  "id": "445dbc4a-8b04-4bc1-8c7d-3da177af8045",
+  "id": "035a0075-9dd2-46ae-af18-e2d79865d057",
   "prevId": "e48423e6-8ef0-4680-9e24-ad5e498e5349",
   "version": "7",
   "dialect": "postgresql",
@@ -7588,12 +7588,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "recovery": {
-          "name": "recovery",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "version": {
           "name": "version",
           "type": "integer",
@@ -9740,6 +9734,12 @@
         "end_reason": {
           "name": "end_reason",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "busy_since": {
+          "name": "busy_since",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },

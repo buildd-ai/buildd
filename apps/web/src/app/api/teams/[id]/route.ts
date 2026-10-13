@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { normalizeDecisionShadows, normalizeFeatureModes } from '@buildd/core/inference-policy';
 import { isInferenceKeyPolicy, isCredentialPolicy, policyColumns, effectiveKeyPolicy, toCredentialPolicy, DEFAULT_KEY_POLICY } from '@buildd/core/inference-key-policy';
 import { normalizeTeamCodingPolicy, parseCodingPolicyLayer, resolveCodingPolicy, describeEffectiveCodingPolicy } from '@buildd/core/coding-policy';
-import { normalizeDecisionModel } from '@buildd/core/decision-model';
+import { DECISION_MODEL_KINDS, decisionModelKindLabel, normalizeDecisionModel, readDecisionModel, readDecisionModelOverrides, withDecisionModelDefault } from '@buildd/core/decision-model';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers, users, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -12,7 +11,11 @@ import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
 import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
+import { DECISION_MODEL_PROBE } from '@/modules';
 import { detachTeamStoredFiles, removeTeamStoredFiles } from '@/lib/artifact-team-files';
+
+/** Written only through /api/admin/teams/[id]/experiment-flags; refused here for everyone. */
+const PLATFORM_ONLY_TEAM_FIELDS = ['enabledDecisionShadows', 'inferenceFeatureModes'] as const;
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
 const MAX_CHAT_BUDGET_USD = 100_000;
@@ -128,7 +131,10 @@ export async function GET(
     }));
 
     return NextResponse.json({
-      team: { ...team, inferenceKeyPolicy: effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY, credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY),
+      team: { ...team,
+        // The team default, and apart from it the per-decision overrides (decision-model.ts).
+        decisionModel: readDecisionModel(team.decisionModel), decisionModelOverrides: decisionModelOverrideList(team.decisionModel),
+        inferenceKeyPolicy: effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY, credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? DEFAULT_KEY_POLICY),
         // What the team layer allows for Coding, for the Models page. Workspace
         // and personal layers narrow it further per task at claim time.
         effectiveCodingPolicy: describeEffectiveCodingPolicy(resolveCodingPolicy({ team: parseCodingPolicyLayer(team.codingPolicy?.team) })) },
@@ -152,8 +158,7 @@ export async function PATCH(
 
   // Team settings require an identified owner's/admin's browser session.
   // An admin-scoped MCP API key authorizes account operations, but carries no
-  // team-member user role; it cannot opt a team into decisions or spending.
-  // Owners/admins use Settings → AI features to change enabledDecisionShadows.
+  // team-member user role; it cannot change a team's spending.
   const session = await requireSessionUser(req);
   if (session.response) return session.response;
   const user = session.user;
@@ -165,7 +170,18 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier, taskEstimates, codingPolicy } = body;
+    // Platform machinery, not a team setting: which opt-in decision
+    // capabilities a team runs and where each server-side feature runs are
+    // buildd's own experiment switches. One write path for them, the platform
+    // operator's (docs/specs/team-permissions.md "Platform operator").
+    const platformOnly = PLATFORM_ONLY_TEAM_FIELDS.filter(f => f in body);
+    if (platformOnly.length) {
+      return NextResponse.json(
+        { error: `${platformOnly.join(' and ')} ${platformOnly.length > 1 ? 'are' : 'is'} set by buildd platform operators (PATCH /api/admin/teams/${id}/experiment-flags), not in team settings` },
+        { status: 403 },
+      );
+    }
+    const { name, slug, enabledBackends, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier, taskEstimates, codingPolicy } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -199,31 +215,24 @@ export async function PATCH(
       if ('error' in normalized) return NextResponse.json({ error: normalized.error }, { status: 400 });
       updates.codingPolicy = normalized.value;
     }
-    if (inferenceFeatureModes !== undefined) {
-      // Per-feature overrides for server-side features ({ feature: 'server' |
-      // 'runner' }). An absent feature, or 'default', follows the billing model.
-      // Unknown features are dropped so a newer client cannot write a mode this
-      // build does not implement. The retired enabledInferenceCapabilities
-      // allowlist is ignored, not written.
-      if (inferenceFeatureModes !== null && (typeof inferenceFeatureModes !== 'object' || Array.isArray(inferenceFeatureModes))) {
-        return NextResponse.json(
-          { error: "inferenceFeatureModes must be an object of feature → 'server' | 'runner' | 'default', or null" },
-          { status: 400 },
-        );
-      }
-      updates.inferenceFeatureModes = normalizeFeatureModes(inferenceFeatureModes);
-    }
-    if (enabledDecisionShadows !== undefined) {
-      // The opt_in decision capabilities this team turned on (inference-policy.ts).
-      const normalized = normalizeDecisionShadows(enabledDecisionShadows);
-      if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 });
-      updates.enabledDecisionShadows = normalized.value;
-    }
+    // The retired enabledInferenceCapabilities allowlist is ignored, not written.
     if (decisionModel !== undefined) {
       // Which model answers decision calls. null = Jev on OpenRouter.
+      // This sets the team default only; per-decision overrides are kept
+      // (they are set through setDecisionModelForKind).
       const normalized = normalizeDecisionModel(decisionModel);
       if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 });
-      updates.decisionModel = normalized.value;
+      // A model that cannot answer fails silently at run time (every call falls
+      // back to its rule), so one test decision goes through its exact route
+      // now, while someone is looking. Jev (null) is the default and not probed.
+      if (normalized.value) {
+        const probe = await DECISION_MODEL_PROBE(normalized.value, { teamId: id, userId: user.id });
+        if (!probe.ok) {
+          return NextResponse.json({ error: `${probe.error} The decision model was not saved.` }, { status: 422 });
+        }
+      }
+      const current = await db.query.teams.findFirst({ where: eq(teams.id, id), columns: { decisionModel: true } });
+      updates.decisionModel = withDecisionModelDefault(current?.decisionModel ?? null, normalized.value);
     }
     if (timezone !== undefined) {
       // The team's canonical working zone — used wherever a shared artifact needs a
@@ -328,6 +337,15 @@ export async function PATCH(
     console.error('Update team error:', error);
     return NextResponse.json({ error: 'Failed to update team' }, { status: 500 });
   }
+}
+
+/** Each decision with its own model, in a fixed order, named the way Settings shows it. */
+function decisionModelOverrideList(stored: unknown) {
+  const byKind = readDecisionModelOverrides(stored);
+  return DECISION_MODEL_KINDS.flatMap(kind => {
+    const route = byKind[kind];
+    return route ? [{ kind, label: decisionModelKindLabel(kind), ...route }] : [];
+  });
 }
 
 export async function DELETE(

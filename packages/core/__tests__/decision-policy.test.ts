@@ -277,6 +277,17 @@ describe('toDecisionLedgerInput: the fields the readout groups and counts by', (
     expect(rule.rows[0]).toMatchObject({ failureClass: null, attemptCount: 0 });
   });
 
+  it("says why a provider_error failed: the provider's status and words, in the reason", async () => {
+    // Synthetic Cloudflare rejection, as Workers AI sends it for a token without the permission.
+    const body = JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] });
+    const rejected = { ok: false, error: { kind: 'provider_error', status: 401, body }, latencyMs: 60, attempts: 1 };
+    const h = harness({ replies: [rejected, rejected] });
+    await runBuilddDecision(kind, { features: feats() }, scope, h.deps);
+    expect(h.rows[0]).toMatchObject({ status: 'fallback', failureClass: 'provider' });
+    expect(h.rows[0].reason).toContain('provider_error=HTTP 401: ');
+    expect(h.rows[0].reason).toContain('Authentication error');
+  });
+
   it('carries an experiment assignment only when the caller drew one through the randomizer', async () => {
     const h = harness();
     const assignment = assignExperimentArm({ experimentId: 'exp-1', policyVersion: 'v1', controlArm: 'control', treatmentArm: 'treatment', unitId: 'task-1', fraction: 0.5 });

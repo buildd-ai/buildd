@@ -16,17 +16,19 @@ const { describeControls } = await import('../_lib/form-controls');
 
 let gateway: unknown = null;
 let decisionModel: unknown = null;
+let decisionModelOverrides: unknown = undefined;
 const writes: Array<{ url: string; method: string; body: unknown }> = [];
 
 beforeEach(() => {
   writes.length = 0;
   gateway = null;
   decisionModel = null;
+  decisionModelOverrides = undefined;
   globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
     if (method !== 'GET') { writes.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : null }); return new Response('{}', { status: 200 }); }
     if (url.endsWith('/litellm-gateway')) return new Response(JSON.stringify({ gateway }), { status: 200 });
-    return new Response(JSON.stringify({ team: { decisionModel } }), { status: 200 });
+    return new Response(JSON.stringify({ team: { decisionModel, decisionModelOverrides } }), { status: 200 });
   }) as unknown as typeof fetch;
 });
 
@@ -52,6 +54,19 @@ const click = async (el: Element | null | undefined) => { await act(async () => 
 const button = (label: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === label);
 
 describe('GatewayAndDecisionModel', () => {
+  it('shows one line per decision with its own model, and none without', async () => {
+    await mount();
+    expect(host.querySelector('[data-testid="decision-model-overrides"]')).toBeNull();
+    act(() => root.unmount()); host.remove();
+    decisionModelOverrides = [
+      { kind: 'task_category', label: 'Task category', endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' },
+      { kind: 'buildd.orchestration_claim_hold', label: 'Start or wait', endpoint: 'systemone', model: 'clef', via: 'cloudflare' },
+    ];
+    await mount(false);
+    const lines = [...host.querySelectorAll('[data-testid="decision-model-overrides"] li')].map((li) => li.textContent);
+    expect(lines).toEqual(['Task category uses qwen3-8b', 'Start or wait uses Clef']);
+  });
+
   it('shows a connected gateway by URL and last4 only, and Jev as the default decision model', async () => {
     gateway = { baseURL: 'https://litellm.example.test/v1', last4: 'abcd', health: 'healthy', lastVerificationError: null };
     await mount();
@@ -91,6 +106,21 @@ describe('GatewayAndDecisionModel', () => {
     await click([...document.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes('Clef Flash')));
     await click([...host.querySelectorAll('[data-testid="decision-model"] button')].find((b) => b.textContent === 'Save'));
     expect(writes.at(-1)).toEqual({ url: '/api/teams/t', method: 'PATCH', body: { decisionModel: { endpoint: 'systemone', model: 'clef-flash', via: 'cloudflare' } } });
+  });
+
+  it("shows the provider's refusal when the test decision fails, and keeps the current model", async () => {
+    const refusal = 'Cloudflare rejected a test decision: HTTP 401: Authentication error (code 10000) The decision model was not saved.';
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'PATCH') return new Response(JSON.stringify({ error: refusal }), { status: 422 });
+      if (url.endsWith('/litellm-gateway')) return new Response(JSON.stringify({ gateway }), { status: 200 });
+      return new Response(JSON.stringify({ team: { decisionModel } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await mount();
+    await click(host.querySelectorAll('input[name="decision-model"]')[1]);
+    await click(host.querySelectorAll('input[name="decision-via"]')[2]);
+    await click([...host.querySelectorAll('[data-testid="decision-model"] button')].find((b) => b.textContent === 'Save'));
+    expect(host.querySelector('[data-testid="decision-model"] [role="alert"]')?.textContent).toBe(refusal);
+    expect(text('decision-model-current')).toBe('Jev (default)');
   });
 
   it('names Cloudflare in the current model', async () => {

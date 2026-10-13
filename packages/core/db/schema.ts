@@ -2330,6 +2330,13 @@ export const localSessions = pgTable('local_sessions', {
   endedAt: timestamp('ended_at', { withTimezone: true }),
   endReason: text('end_reason'),
   /**
+   * Set when the plugin says a turn is in progress (prompt or tool call
+   * started), cleared at the turn's end. A long silent command sends nothing
+   * until it returns; while this is set the interactive reaper keeps the
+   * presence's claims, up to INTERACTIVE_WORKER_BUSY_MAX_MS after last_seen_at.
+   */
+  busySince: timestamp('busy_since', { withTimezone: true }),
+  /**
    * Legacy: the single worker a session could hold before multi-claim. Read
    * (never written) so a session bound before localSessionWorkers existed still
    * releases its worker; the bindings live in localSessionWorkers now.
@@ -3953,7 +3960,7 @@ export const memoryDecisions = pgTable('memory_decisions', {
 export const knowledgeEntities = pgTable('knowledge_entities', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: text('workspace_id').notNull(),
-  kind: text('kind').notNull().$type<'file' | 'symbol' | 'heading' | 'pr' | 'task' | 'mission' | 'initiative' | 'wikilink' | 'concept' | 'feature' | 'component'>(),
+  kind: text('kind').notNull().$type<'file' | 'symbol' | 'heading' | 'pr' | 'task' | 'mission' | 'initiative' | 'wikilink' | 'concept' | 'feature' | 'component' | 'spec' | 'spec_revision'>(),
   key: text('key').notNull(),
   canonicalName: text('canonical_name').notNull(),
   attributes: jsonb('attributes').default({}).$type<Record<string, unknown>>().notNull(),

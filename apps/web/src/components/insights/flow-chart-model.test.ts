@@ -57,10 +57,10 @@ describe('formatting', () => {
     expect(formatHours(0.5)).toBe('30m');
     expect(formatHours(2.25)).toBe('2.3h');
     expect(formatHours(14.4)).toBe('14h');
-    expect(formatDuration(null)).toBe('—');
+    expect(formatDuration(null)).toBe('');
     expect(formatDuration(5 * H)).toBe('5.0h');
     expect(formatDuration(72 * H)).toBe('3.0d');
-    expect(formatShare(null)).toBe('—');
+    expect(formatShare(null)).toBe('');
     expect(formatShare(0.614)).toBe('61%');
   });
 });

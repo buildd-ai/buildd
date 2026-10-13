@@ -68,29 +68,60 @@ export function applyRecommendationTitle(baseTitle: string | null | undefined): 
 
 const REFRESH_TITLE = /^chore\(mission\): merge (\S+) into the (.+) integration branch$/;
 const SHIP_TITLE = /^((?:\[[^\]]*\]\s*)*)Ship mission:\s+(.+)$/;
-const BRACKETS = /^((?:\[[^\]]*\]\s*)*)([\s\S]*)$/;
+
+/** `type(scope)!:` — a known type with or without scope, or any lowercase word with a scope. */
+const SCOPED_PREFIX = /^[a-z][\w-]*\([^)]*\)!?:\s*/i;
+/** Any leading `[tag]` (retry wraps, `[surface audit]`, `[friction]` …). */
+const LEADING_TAG = /^\s*\[[^\]]*\]\s*/;
+
+function stripAllTags(title: string): string {
+  let t = stripTaskTitlePrefixes(title);
+  let prev: string;
+  do {
+    prev = t;
+    t = stripTaskTitlePrefixes(t.replace(LEADING_TAG, ''));
+  } while (t !== prev);
+  return t;
+}
+
+const capitalise = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 /**
- * The one display form of a task title, for every place a title is rendered:
+ * Display-only short form of a title, for lists, cards, strips and rows:
+ *   - leading retry / role tags (`[builder · after CI #1]`, `[surface audit]`,
+ *     `[reviewer] PR #N:`) are dropped
  *   - `chore(mission): merge <trunk> into the <X> integration branch`
- *     (mission-branch-refresh.ts) → `Refresh <X> from <trunk>`
- *   - `Ship mission: <X>` (MISSION_PR_TASK_PREFIX) → `Ship <X>`, keeping any retry wrap
- *   - `type(scope): subject` → `Subject` (the type and scope belong in a chip
- *     or eyebrow, not the title), keeping any retry wrap
+ *     → `Refresh <X> from <trunk>`; `Ship mission: <X>` → `Ship <X>`
+ *   - a leading conventional-commit prefix `type(scope)!:` is dropped
+ *   - the first letter is capitalised; the rest is verbatim
  *
- * Display only. Never store the result or send it in an API payload: the full
- * title stays the tooltip and the record.
+ * Never store the result: the full title stays the tooltip and the detail heading.
  */
 export function displayTaskTitle(title: string | null | undefined): string {
-  const t = (title ?? '').trim();
+  const t = stripAllTags((title ?? '').trim());
   const refresh = REFRESH_TITLE.exec(t);
   if (refresh) return `Refresh ${refresh[2]} from ${refresh[1]}`;
   const ship = SHIP_TITLE.exec(t);
-  if (ship) return `${ship[1]}Ship ${ship[2]}`;
-  const [, wrap, rest] = BRACKETS.exec(t) ?? ['', '', t];
-  const conv = CONVENTIONAL_PREFIX_RE.exec(rest);
-  if (!conv) return t;
-  const subject = rest.slice(conv[0].length).trim();
-  if (!subject) return t;
-  return `${wrap}${subject.charAt(0).toUpperCase()}${subject.slice(1)}`;
+  if (ship) return `Ship ${ship[2]}`;
+  const prefix = CONVENTIONAL_PREFIX_RE.exec(t) ?? SCOPED_PREFIX.exec(t);
+  const bare = (prefix ? t.slice(prefix[0].length) : t).trim();
+  return bare ? capitalise(bare) : t;
+}
+
+const SHORT_NAME_MAX = 40;
+
+/**
+ * The one name a narrow surface (strip tick, timeline row, Agents line) draws a
+ * task with: the task's own `label` when it has one, else the cleaned title
+ * cut at a word boundary. Never both, never a dangling `(` or `-`.
+ */
+export function taskShortName(task: { title?: string | null; label?: string | null }): string {
+  const label = (task.label ?? '').replace(/\s+/g, ' ').trim();
+  if (label && label.toLowerCase() !== 'untitled') return capitalise(label);
+  const full = displayTaskTitle(task.title).replace(/\s+/g, ' ');
+  if (full.length <= SHORT_NAME_MAX) return full;
+  const cut = full.slice(0, SHORT_NAME_MAX + 1);
+  const at = cut.lastIndexOf(' ');
+  const head = at > 0 ? cut.slice(0, at) : cut.slice(0, SHORT_NAME_MAX);
+  return head.replace(/[\s(\[{\-–—:,;/|·]+$/, '');
 }

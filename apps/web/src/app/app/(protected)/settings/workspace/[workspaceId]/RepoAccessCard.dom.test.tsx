@@ -87,7 +87,7 @@ describe('RepoAccessCard', () => {
     await act(async () => { q('repo-access-check')!.click(); });
     expect(calls).toEqual([{ url: '/api/workspaces/ws-1/github-access', method: 'POST' }]);
     expect(container.textContent).toContain('Connected. 2 waiting tasks resumed.');
-    expect(container.textContent).toContain('Buildd can open pull requests on');
+    expect(container.textContent).toContain('buildd can open pull requests on');
   });
 
   it('a server with no GitHub App names the operator and offers no GitHub step or Check connection', () => {

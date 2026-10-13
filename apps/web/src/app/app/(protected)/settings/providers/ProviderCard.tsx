@@ -52,6 +52,9 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
   const form = views.find(({ v }) => v.edit.kind === 'form');
   const state = rowState(rows, inherited, closed);
   const grouped = group.members.length > 1;
+  // Set up only through a form this page does not draw (the gateway on a
+  // workspace page), with nothing set or inherited: no row, not a dead "Not set".
+  if (form && !formSlot && !closed && rows.length === 0 && inherited.length === 0) return null;
 
   const action = paste.length > 0
     ? (rows.length > 0 ? 'Replace' : grouped ? `Connect ${group.label}` : 'Add key')
@@ -86,7 +89,8 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
 
       {open && (
         <div className="pb-3 space-y-2 text-body" data-testid="provider-detail">
-          {rows.map((row) => <CredentialRow key={row.id} row={row} scope={scope} teamId={data.teamId} workspaceId={workspaceId} canRemove={!readOnly && !closed} onChanged={onChanged} />)}
+          {/* A form (gateway, endpoint) shows its own masked key and Remove. */}
+          {!(form && formSlot) && rows.map((row) => <CredentialRow key={row.id} row={row} scope={scope} teamId={data.teamId} workspaceId={workspaceId} canRemove={!readOnly && !closed} onChanged={onChanged} />)}
           {inherited.length > 0 && (
             <p className="text-meta text-text-muted" data-testid="provider-inherits">
               Uses the team&apos;s {inherited.map((r) => `${SHAPE_NOUN[r.shape] ?? r.shape}${r.last4 ? ` …${r.last4}` : ''}`).join(', ')}

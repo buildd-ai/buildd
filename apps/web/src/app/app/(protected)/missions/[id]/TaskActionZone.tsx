@@ -102,6 +102,12 @@ export interface TaskActionZoneProps {
   /** The task's title, named in the Force start confirmation. */
   taskTitle?: string | null;
   onChanged?: () => void | Promise<void>;
+  /**
+   * False inside a card that already frames the task (the mission Overview's
+   * focus card, the strip drawer): the Blocked notice and the Run now group
+   * drop their own boxes.
+   */
+  framed?: boolean;
 }
 
 const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 border-2 border-border-strong px-3 font-mono text-meta font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50';
@@ -127,6 +133,7 @@ export default function TaskActionZone({
   credentialBlock = null,
   taskTitle = null,
   onChanged,
+  framed = true,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
   const [retrying, setRetrying] = useState<'same' | 'switch' | null>(null);
@@ -333,7 +340,7 @@ export default function TaskActionZone({
         </div>
       )}
       {has('blocked') && start.status === 'idle' && !held?.waitingReasons && (
-        <div className="border border-status-warning p-4">
+        <div data-testid="task-blocked" className={framed ? 'border border-status-warning p-4' : undefined}>
           <p className="font-mono text-[12px] font-medium text-status-warning">
             Blocked · waiting on {blockedByCount} {blockedByCount === 1 ? 'dependency' : 'dependencies'}
           </p>
@@ -351,7 +358,7 @@ export default function TaskActionZone({
 
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
-        <div className="space-y-3 border border-border-default p-4">
+        <div data-testid="task-run-now" className={framed ? 'space-y-3 border border-border-default p-4' : 'space-y-2'}>
           {held?.waitingReasons ? (
             <WaitingLine reasons={held.waitingReasons}>
               {waiting?.forceStart ? (
@@ -406,12 +413,12 @@ export default function TaskActionZone({
               </p>
               <p className="text-eyebrow text-text-secondary">
                 {start.status === 'accepted'
-                  ? 'A worker claimed the task.'
+                  ? 'A runner picked it up.'
                   : start.forced
-                    ? `Skipping: ${start.forced.gates.join(', ')}. A runner claims it on its next poll.`
+                    ? `Skipping: ${start.forced.gates.join(', ')}. Starts next.`
                     : start.status === 'queued'
-                      ? 'No runner has responded. The task is first in the queue and starts on the next claim cycle.'
-                      : 'Waiting for a worker to claim it.'}
+                      ? 'No runner has responded. It’s next in the queue.'
+                      : 'Waiting for a runner.'}
               </p>
             </div>
           </div>
@@ -467,7 +474,7 @@ export default function TaskActionZone({
               </p>
             )}
           </div>
-          {refusal.gateReason === 'workspace_cap_reached' && (
+          {refusal.gateReason === 'workspace_cap_reached' && refusal.canRaiseCap && (
             <div className="flex flex-wrap items-center gap-2 font-mono text-meta">
               <span className="text-text-secondary">Raise the workspace limit to</span>
               <div className="inline-flex shrink-0 items-center gap-2">
@@ -523,7 +530,7 @@ export default function TaskActionZone({
 function ForcePending() {
   return (
     <p data-testid="task-force-pending" className="font-mono text-eyebrow text-text-secondary">
-      Force start requested. The next runner claim skips this wait.
+      Force start requested. Starts next.
     </p>
   );
 }
@@ -602,7 +609,6 @@ export function CoordinationRefusal({ refusal, pending, onForce, onCancel, taskT
           {(offer.redLines ?? []).map(line => (
             <p key={line} data-testid="task-force-red-line" className="text-status-error [overflow-wrap:anywhere]">{line}</p>
           ))}
-          <p className="text-text-muted">This start and how it lands (merged cleanly, conflicted, needed repair) are recorded and used to tune automatic holds.</p>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
