@@ -470,6 +470,14 @@ async function viewForMission(missionId: string): Promise<{
   // evaluateCriteria: false — a read must never dispatch a verification task or
   // spend a token to answer "what is this waiting on".
   const completion = await canCompleteMission(missionId, { evaluateCriteria: false });
+  // A missing visual review is the owner's to run only when the policy asks. Read
+  // the canonical state only then, so every other explain stays one query lighter.
+  const visualReviewActor = completion.code === 'surface_audit_missing'
+    ? await import('@/lib/workflow/visual-review-state-load')
+        .then(m => m.getMissionVisualReviewState(missionId))
+        .then(v => v?.nextActor ?? null)
+        .catch(() => null)
+    : null;
 
   const wait = classifyMissionWait(loaded as unknown as WaitClassifiableTask[]);
 
@@ -545,6 +553,7 @@ async function viewForMission(missionId: string): Promise<{
     criteriaGate,
     criteriaItems,
     completion,
+    visualReviewActor,
     wait,
     workState,
     openTasks: openTasks.map(t => ({

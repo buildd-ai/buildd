@@ -84,7 +84,7 @@ export interface MissionVisualReviewState {
   policy: Pick<ResolvedVisualReviewPolicy, 'mode' | 'origin' | 'waiverAllowed' | 'locked'>;
   scope: { screens: number | null; uiFiles: number; source: 'manifest' | 'diff' | null; workLanded: boolean };
   progress?: { captured: number; expected: number | null };
-  findings?: { issues: number; undecided: number; fixesOpen: number; stage: 'fixing' | 'needs_decision' };
+  findings?: { issues: number; undecided: number; fixesOpen: number; stage: 'fixing' | 'needs_decision'; /** The automatic fix rounds ran out and the audit still finds issues: a person's call. */ exhausted: boolean };
   blocked?: { cause: VisualReviewBlockedCause; causeOwner: 'buildd' | 'workspace' | 'unknown'; autoRetriesLeft: number };
   waiver?: { reason: string; actorLabel: string | null; at: string; supersededBy: string | null };
   auditTaskId: string | null;
@@ -162,9 +162,11 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
         undecided: review.awaitingHuman,
         fixesOpen: review.openFixes,
         stage: fixing || review.phase === 'fixing' ? 'fixing' : 'needs_decision',
+        exhausted: review.roundCapOpen,
       };
-      // Ambiguity is Jev's; the owner is not a routine reviewer.
-      nextActor = findings.stage === 'fixing' ? 'system' : 'jev';
+      // Ambiguity is Jev's; the owner is not a routine reviewer. Only when the
+      // automatic fix rounds are spent and the audit still finds issues is it theirs.
+      nextActor = findings.exhausted ? 'owner' : findings.stage === 'fixing' ? 'system' : 'jev';
     } else if (input.auditedSha !== undefined && input.uiChange.state !== 'no' && branch.headSha && input.auditedSha !== branch.headSha) {
       // Same-commit evidence only: a pass on another commit (or on none we can name) is not a pass for this head.
       staleEvidence = true;
