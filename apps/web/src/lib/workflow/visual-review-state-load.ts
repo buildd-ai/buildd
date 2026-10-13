@@ -71,7 +71,7 @@ export async function getMissionVisualReviewState(
   const gate = await evaluateSurfaceAuditGate({ id: mission.id, autoSurfaceAudit: true }, tasks).catch(() => null);
   const gateUiChange: VisualReviewStateInput['uiChange'] =
     gate && gate.required ? { state: 'yes', source: gate.source, uiFiles: gate.uiPaths.length }
-    : gate && gate.why === 'no_ui_change' ? { state: 'no', source: null, uiFiles: 0 }
+    : gate && (gate.why === 'no_ui_change' || gate.why === 'no_render_impact') ? { state: 'no', source: null, uiFiles: 0 }
     : { state: 'unknown', source: null, uiFiles: 0 };
   const uiChange = opts.uiChange ?? gateUiChange;
 

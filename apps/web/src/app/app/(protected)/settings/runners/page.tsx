@@ -4,7 +4,7 @@ import SettingsSection from '../SettingsSection';
 import RunnerTokensSection from '../RunnerTokensSection';
 import CloudflareSection from '../CloudflareSection';
 import { StatusChip } from '../_components/ConnectionRow';
-import { loadAccountLastSeen, loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
+import { loadAccountLastSeen, loadAccountModelAuth, loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
 import { loadFleetSnapshot } from '@/lib/home-fleet';
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import type { FleetSnapshot } from '@buildd/shared';
@@ -49,7 +49,11 @@ export default async function RunnersSettingsPage({
     // Status only: null (unknown) drops the chip rather than guessing.
     teamId ? teamHasAgentCredential(teamId).catch(() => null) : Promise.resolve(null),
   ]);
-  const lastSeen = await loadAccountLastSeen(accounts.map((a) => a.id as string)).catch(() => ({} as Record<string, string>));
+  const accountIds = accounts.map((a) => a.id as string);
+  const [lastSeen, modelAuth] = await Promise.all([
+    loadAccountLastSeen(accountIds).catch(() => ({} as Record<string, string>)),
+    loadAccountModelAuth(accountIds).catch(() => ({} as Awaited<ReturnType<typeof loadAccountModelAuth>>)),
+  ]);
   // Each control follows the permission its route enforces, with each team's
   // overrides (a personal team counts as owned): the host-runner flag is
   // manage_team_keys, the Cloudflare token manage_team_model_keys.
@@ -59,6 +63,7 @@ export default async function RunnersSettingsPage({
   const tokens = accounts.map(({ createdByUserId, ...a }) => ({
     ...a,
     lastSeenAt: lastSeen[a.id] ?? null,
+    modelAuthSource: modelAuth[a.id] ?? null,
     canManageHostRunner: adminTeamIds.has(a.teamId),
     // DELETE /api/accounts/[id]: your own key, or manage_team_keys in its team.
     canDelete: adminTeamIds.has(a.teamId) || (createdByUserId != null && createdByUserId === user.id),

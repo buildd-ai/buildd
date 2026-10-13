@@ -1,4 +1,5 @@
 import type { BuilddAction } from './mcp-tools';
+import { subActionSelector, subActionsOf } from './mcp-sub-actions';
 
 /** Shared permission vocabulary for REST, MCP and the token editor. */
 export const TOKEN_SCOPE_DEFINITIONS = [
@@ -92,10 +93,27 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
 };
 
 export function requiredScopeForAction(action: string, params: Record<string, unknown> = {}): TokenScope | null {
+  // help (docs and workflow guidance) is a read: any token that reads tasks.
+  if (action === 'help') return 'tasks:read';
   if (['manage_missions', 'manage_initiatives', 'manage_workspaces'].includes(action) && ['list', 'get', 'get_criteria_state'].includes(String(params.action))) return 'tasks:read';
   // Readiness is a read-only GET of /api/workspaces/[id]/readiness, which the route policy maps to tasks:read.
   if (action === 'manage_workspaces' && params.action === 'readiness') return 'tasks:read';
   if (action === 'manage_specs' && ['list', 'get', 'outcome', 'read_ref', 'diff', 'comments'].includes(String(params.action))) return 'tasks:read';
   if (action === 'manage_experiments' && ['list', 'get', 'readout'].includes(String(params.action))) return 'analytics:read';
   return Object.hasOwn(ACTION_TOKEN_SCOPE, action) ? ACTION_TOKEN_SCOPE[action as BuilddAction] : null;
+}
+
+/**
+ * Whether scoped `scopes` may call `action` with at least one of its
+ * sub-actions (SUB_ACTIONS). This is what a listing must show: a read-only
+ * grant reaches manage_specs list/get through tasks:read even though a write
+ * sub-action needs tasks:write.
+ */
+export function scopesReachAction(scopes: readonly string[], action: string): boolean {
+  const subs = subActionsOf(action);
+  const selector = subActionSelector(action);
+  return (subs ? subs.map(s => ({ [selector]: s })) : [{}]).some(params => {
+    const required = requiredScopeForAction(action, params);
+    return required != null && hasTokenScope(scopes, required);
+  });
 }

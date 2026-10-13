@@ -1,4 +1,6 @@
 import { hasTokenScope, requiredScopeForAction } from './token-scopes';
+import { SUB_ACTIONS, subActionQuoted as quotedSubs } from './mcp-sub-actions';
+import { guidanceTopicReply, guidanceTopicsText } from './guidance-topics';
 /**
  * Shared MCP tool handlers for Buildd.
  *
@@ -697,7 +699,7 @@ export const workerActions = [
   'manage_specs',
 ] as const;
 
-export const PROVIDER_OPS = ['list', 'set', 'delete', 'explain', 'set_policy'] as const;
+export const PROVIDER_OPS = SUB_ACTIONS.manage_providers;
 export const PROVIDER_MINE_TASK_TOKEN_REFUSAL =
   'A per-task token has no person behind it, so it cannot set or remove a personal credential for anyone. Use team or workspace scope with an admin token, or ask the person to do it from their own session.';
 export const PROVIDER_TASK_TOKEN_READ_ONLY =
@@ -2416,6 +2418,21 @@ export function describeCreatedTaskState(task: any): string {
   return 'Created and queued; pickup is asynchronous';
 }
 
+/** `buildd` action=help: {topic} for workflow guidance, {action} for one action's docs, {} for both lists. */
+export function builddHelp(params: Record<string, unknown>): ToolResult {
+  if (params.topic !== undefined) {
+    const r = guidanceTopicReply(params.topic);
+    return { content: [{ type: 'text', text: r.text }], ...(r.isError ? { isError: true } : {}) };
+  }
+  const target = typeof params.action === 'string' ? params.action : '';
+  if (target) {
+    if (!(allActions as readonly string[]).includes(target)) return errorResult(`Unknown action "${target}".`);
+    return text(buildParamsDescription([target]));
+  }
+  const topics = guidanceTopicsText(t => `buildd {"action":"help","params":{"topic":"${t}"}}`);
+  return text(`Call buildd with action "help" and params {"action": "<name>"} for one action's full docs.\n\n${topics}`);
+}
+
 export async function handleBuilddAction(
   api: ApiFn,
   action: string,
@@ -2441,6 +2458,10 @@ export async function handleBuilddAction(
     const adminErr = await requireAdminLevel(ctx, action, params);
     if (adminErr) return adminErr;
   }
+
+  // `help` on the one-tool `buildd` (legacy surface, per-workspace OAuth
+  // endpoint): the same guidance and docs the group tools' help serves.
+  if (action === 'help') return builddHelp(params);
 
   // claim_task is the first lifecycle call agents are instructed to make, but
   // hosted agents can arrive with a worker already assigned in their MCP URL.
@@ -4931,8 +4952,8 @@ export async function handleBuilddAction(
     case 'manage_secrets': {
 
       const subAction = params.action as string;
-      if (!subAction || !['list', 'set', 'delete'].includes(subAction)) {
-        throw new Error('action is required: "list", "set", or "delete"');
+      if (!subAction || !(SUB_ACTIONS.manage_secrets as readonly string[]).includes(subAction)) {
+        throw new Error(`action is required: ${quotedSubs('manage_secrets')}`);
       }
 
       if (subAction === 'list') {
@@ -5956,8 +5977,8 @@ export async function handleBuilddAction(
 
     case 'update_incident': {
       requireFullUuid(params.incidentId, 'incidentId');
-      if (params.action !== 'acknowledge' && params.action !== 'resolve') {
-        throw new Error('action must be "acknowledge" or "resolve"');
+      if (!(SUB_ACTIONS.update_incident as readonly unknown[]).includes(params.action)) {
+        throw new Error(`action must be one of: ${SUB_ACTIONS.update_incident.join(', ')}`);
       }
       const data = await api(`/api/health/incidents/${params.incidentId}`, {
         method: 'POST',
@@ -6237,7 +6258,7 @@ export async function handleBuilddAction(
     case 'manage_missions': {
 
       const missionAction = params.action as string;
-      if (!missionAction) throw new Error('action is required (list, create, get, update, delete, link_task, unlink_task)');
+      if (!missionAction) throw new Error(`action is required (${SUB_ACTIONS.manage_missions.join(', ')})`);
 
       switch (missionAction) {
         case 'list': {
@@ -6532,7 +6553,7 @@ export async function handleBuilddAction(
           return text(`Last evaluation: ${state.evaluatedAt} (by ${state.evaluatedBy})\nOverall: **${state.overall}**\n${criteriaLines}`);
         }
         default:
-          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, arm, delete, link_task, unlink_task, evaluate, get_criteria_state`);
+          throw new Error(`Unknown missions action: ${missionAction}. Use one of: ${SUB_ACTIONS.manage_missions.join(', ')}`);
       }
     }
 
@@ -6542,7 +6563,7 @@ export async function handleBuilddAction(
 
     case 'manage_initiatives': {
       const initiativeAction = params.action as string;
-      if (!initiativeAction) throw new Error('action is required (list, create, get, update, delete, link_mission, unlink_mission)');
+      if (!initiativeAction) throw new Error(`action is required (${SUB_ACTIONS.manage_initiatives.join(', ')})`);
 
       switch (initiativeAction) {
         case 'list': {
@@ -6677,7 +6698,7 @@ export async function handleBuilddAction(
           return text(`Mission ${params.missionId} unlinked from its initiative`);
         }
         default:
-          throw new Error(`Unknown initiatives action: ${initiativeAction}. Use one of: list, create, get, update, delete, link_mission, unlink_mission`);
+          throw new Error(`Unknown initiatives action: ${initiativeAction}. Use one of: ${SUB_ACTIONS.manage_initiatives.join(', ')}`);
       }
     }
 
@@ -6709,7 +6730,7 @@ export async function handleBuilddAction(
     case 'manage_workspaces': {
 
       const wsAction = params.action as string;
-      if (!wsAction) throw new Error('action is required (list, get, create, update, create_repo, init, readiness, scaffold, author_spec)');
+      if (!wsAction) throw new Error(`action is required (${SUB_ACTIONS.manage_workspaces.join(', ')})`);
 
       switch (wsAction) {
         case 'create': {
@@ -7017,14 +7038,14 @@ export async function handleBuilddAction(
           );
         }
         default:
-          throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, get, create, update, create_repo, init, readiness, scaffold, author_spec`);
+          throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: ${SUB_ACTIONS.manage_workspaces.join(', ')}`);
       }
     }
 
     case 'manage_watched_projects': {
 
       const wpAction = params.action as string;
-      if (!wpAction) throw new Error('action is required (list, create, update, delete, run)');
+      if (!wpAction) throw new Error(`action is required (${SUB_ACTIONS.manage_watched_projects.join(', ')})`);
 
       const fields = ['repo', 'enabled', 'vercelProjectId', 'inFlightWindowMin', 'prodGraceMin', 'roleSlug', 'pushoverApp', 'releasePrFilter', 'notes'] as const;
       const pickFields = (): Record<string, unknown> => {
@@ -7078,7 +7099,7 @@ export async function handleBuilddAction(
           return text(`Watcher ran for ${params.projectId}. Fired ${data.fired} alert(s).`);
         }
         default:
-          throw new Error(`Unknown watched_projects action: ${wpAction}. Use one of: list, create, update, delete, run`);
+          throw new Error(`Unknown watched_projects action: ${wpAction}. Use one of: ${SUB_ACTIONS.manage_watched_projects.join(', ')}`);
       }
     }
 
@@ -7494,7 +7515,7 @@ export async function handleBuilddAction(
 
     case 'manage_experiments': {
       const op = params.action as string;
-      const ops = [...EXPERIMENT_READ_OPS, ...EXPERIMENT_WRITE_OPS] as readonly string[];
+      const ops = SUB_ACTIONS.manage_experiments as readonly string[];
       if (!op || !ops.includes(op)) {
         throw new Error(`action must be one of: ${ops.join(', ')}`);
       }
@@ -7614,7 +7635,7 @@ export async function handleBuilddAction(
 
     case 'manage_evidence_backends': {
       const op = params.action as string;
-      const ops = ['list', 'get', 'create', 'update', 'delete', 'verify'];
+      const ops = SUB_ACTIONS.manage_evidence_backends as readonly string[];
       if (!op || !ops.includes(op)) {
         throw new Error(`action must be one of: ${ops.join(', ')}`);
       }
@@ -7692,8 +7713,8 @@ export async function handleBuilddAction(
         : await ctx.getWorkspaceId();
 
       const tierAction = params.action as 'list' | 'set' | 'delete' | 'policy' | 'set_policy' | 'adopt' | 'model';
-      if (!tierAction || !['list', 'set', 'delete', 'policy', 'set_policy', 'adopt', 'model'].includes(tierAction)) {
-        throw new Error('action must be "list", "set", "delete", "policy", "set_policy", "adopt", or "model"');
+      if (!tierAction || !(SUB_ACTIONS.manage_model_tiers as readonly string[]).includes(tierAction)) {
+        throw new Error(`action must be one of: ${SUB_ACTIONS.manage_model_tiers.join(', ')}`);
       }
 
       if (tierAction === 'policy' || tierAction === 'set_policy' || tierAction === 'adopt' || tierAction === 'model') {
@@ -9239,7 +9260,7 @@ export async function handleMemoryAction(
     }
 
     case 'consolidate_knowledge': {
-      const validOps = ['find_duplicates', 'find_decayed', 'archive'] as const;
+      const validOps = SUB_ACTIONS.consolidate_knowledge;
       const op = params.op as (typeof validOps)[number] | undefined;
       if (!op || !validOps.includes(op)) {
         throw new Error(`op is required and must be one of: ${validOps.join(', ')}`);

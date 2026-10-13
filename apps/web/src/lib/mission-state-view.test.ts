@@ -737,6 +737,25 @@ describe('deriveMissionStateView — surface audit missing', () => {
     }
   });
 
+  // task e7285dc4: the completion gate itself says who acts, so every surface
+  // reading the decision (not only explain) shows a system wait under automatic.
+  it('is a system wait when the completion gate filed the audit itself', () => {
+    const filed = {
+      ...refusal,
+      reason: 'This mission changed UI and no surface audit has passed yet. buildd files it itself; the mission completes when it passes.',
+      surfaceAuditActor: 'system' as const,
+    };
+    const view = deriveMissionStateView({ ...base, completion: filed });
+    expect(view.kind).not.toBe('awaiting_decision');
+    expect(view.waitingOn?.kind).toBe('self_resolving_wait');
+    expect(JSON.stringify(view)).not.toMatch(/waive|surfaceAuditWaiver/i);
+  });
+
+  it('the gate naming the owner keeps the owner decision', () => {
+    const view = deriveMissionStateView({ ...base, completion: { ...refusal, surfaceAuditActor: 'owner' as const } });
+    expect(view.kind).toBe('awaiting_decision');
+  });
+
   it('stays an owner decision only when the review itself names the owner', () => {
     const view = deriveMissionStateView({ ...base, completion: refusal, visualReviewActor: 'owner' });
     expect(view.kind).toBe('awaiting_decision');
