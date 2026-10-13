@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers, workerErrorTraces, missionNotes } from '@buildd/core/db/schema';
-import { and, asc, eq, desc, inArray } from 'drizzle-orm';
+import { tasks, workers, workerErrorTraces } from '@buildd/core/db/schema';
+import { eq, desc, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { isGateSatisfied } from '@/lib/task-presentation';
@@ -18,7 +18,7 @@ import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import type { WaitingFor } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { linkQuestionNote } from '@/app/app/(protected)/tasks/[id]/question-hero';
+import { loadTaskView } from '@/lib/task-view';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -92,42 +92,10 @@ export async function GET(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Get latest worker
-    const latestWorkers = await db.query.workers.findMany({
-      where: sqlWhere(eq(workers.taskId, id)),
-      orderBy: sqlOrderBy(desc(workers.createdAt)),
-      limit: 1,
-      columns: {
-        id: true,
-        status: true,
-        currentAction: true,
-        turns: true,
-        prUrl: true,
-        prNumber: true,
-        prLifecycleStatus: true,
-        mergedAt: true,
-        commitCount: true,
-        filesChanged: true,
-        linesAdded: true,
-        linesRemoved: true,
-        costUsd: true,
-        costBasis: true,
-        inputTokens: true,
-        outputTokens: true,
-        startedAt: true,
-        completedAt: true,
-        waitingFor: true,
-        branch: true,
-        milestones: true,
-      },
-      with: {
-        account: {
-          columns: { authType: true },
-        },
-      },
-    });
-
-    const worker = latestWorkers[0] || null;
+    // The worker and question the task page shows (lib/task-view.ts): the
+    // newest live worker, else the newest, ordered by (createdAt, id).
+    const view = await loadTaskView(task, { userId: user.id, teamId: access.teamId ?? null });
+    const worker = view.shownWorker ?? null;
     const result = task.result as { summary?: string; nextSuggestion?: string } | null;
 
     // Slice F (§13.10): a kernel-owned PR's state is its delivery's, so the
@@ -237,23 +205,8 @@ export async function GET(
     // The open question note recording the same ask as the worker's
     // waitingFor (the post_note path), linked as the task page links it. The
     // sheet's question card leads with it and marks it answered alongside the
-    // worker. Read only while a question is waiting.
-    let questionNote: {
-      id: string; workerId: string | null; type: string; status: string;
-      title: string; body: string | null; defaultChoice: string | null; createdAt: Date | string | null;
-    } | null = null;
-    if (worker?.waitingFor) {
-      const openQuestions = await db.query.missionNotes.findMany({
-        where: sqlWhere(and(
-          eq(missionNotes.taskId, id),
-          eq(missionNotes.type, 'question'),
-          eq(missionNotes.status, 'open'),
-        )),
-        orderBy: sqlOrderBy(asc(missionNotes.createdAt)),
-        columns: { id: true, workerId: true, type: true, status: true, title: true, body: true, defaultChoice: true, createdAt: true },
-      });
-      questionNote = linkQuestionNote(openQuestions ?? [], worker.id);
-    }
+    // worker.
+    const questionNote = view.questionNote;
 
     let failureKind: Awaited<ReturnType<typeof loadTaskFailureKind>> = null;
     try {
