@@ -7,6 +7,9 @@
 import { describe, expect, it } from 'bun:test';
 import { buildDeliverySteps, deliveryReleaseInput, formatDeliverySummary, missionPrCount, missionTrunkMergedAt, type DeliveryInput } from './mission-delivery';
 import { buildVisualReviewFixtureModel } from './visual-review-model.fixtures';
+import { resolveVisualReviewPolicy } from './workflow/visual-review-policy';
+import { deriveMissionVisualReview } from './workflow/visual-review-state';
+import { presentVisualReview } from './workflow/visual-review-presentation';
 
 const base: DeliveryInput = {
   missionStatus: 'active',
@@ -206,6 +209,32 @@ describe('buildDeliverySteps', () => {
         state: 'blocked', value: 'boot', detail: 'the app did not boot for the visual audit',
       });
     });
+  });
+});
+
+describe('buildDeliverySteps: canonical visual review', () => {
+  const stateInput = {
+    policy: resolveVisualReviewPolicy({}),
+    uiChange: { state: 'yes' as const, source: 'diff' as const, uiFiles: 2 },
+    audit: null,
+    review: null,
+    waiver: null,
+    branch: { headSha: 'abc123', base: 'dev', integrationPr: null, workLanded: true },
+  };
+  const present = (over = {}) => presentVisualReview(deriveMissionVisualReview({ ...stateInput, ...over }));
+
+  it('reads the step off the presentation, ignoring phases and counts', () => {
+    const steps = buildDeliverySteps({
+      ...base,
+      visual: { shots: 0, ok: 0, issues: 0, unsure: 0 },
+      visualReview: present({ branch: { ...stateInput.branch, integrationPr: { number: 9, state: 'open', ready: false, blocked: false } } }),
+    });
+    expect(steps.find(s => s.key === 'visual')).toMatchObject({ state: 'partial', value: '…', detail: 'Visual check queued' });
+  });
+
+  it('adds no step when the presentation has nothing to say, even with a model', () => {
+    const steps = buildDeliverySteps({ ...base, visual: { shots: 3, ok: 3, issues: 0, unsure: 0 }, visualReview: null });
+    expect(steps.map(s => s.key)).not.toContain('visual');
   });
 });
 

@@ -2023,6 +2023,34 @@ here, Jev included, can authorize an irreversible merge or skip a mandatory
 check. An integration PR that already merged is `postMergeRecovery`: the review
 is filed as `post_merge_recovery` and never reported as pre-merge assurance.
 
-**Not yet wired.** The completion gate, the audit-creation hooks and the
-mission, Home and Health surfaces still read `autoSurfaceAudit` and the two
-older gates; moving them onto the canonical state and policy is follow-up work.
+**One reading on every surface.** `presentVisualReview`
+(`apps/web/src/lib/workflow/visual-review-presentation.ts`, pure) turns the
+canonical state into the words, the stage (verifying, fixing, ready to merge,
+merged, stuck, waived), the owner decision and the completion record. The
+mission page's stepper and compact branch panel, the Settings row, the Visual
+review delivery step, the mission-state reading behind Home and Health cards,
+and the chat and MCP `get_visual_review` text all read it; none derives a
+stage from phases, audit tasks or changed-file lists.
+
+- The owner appears only for an actual decision: Merge now where the merge
+  policy asks a person, a visual judgment once the automatic fix rounds are spent
+  (`findings.exhausted`), a workspace setup problem, a check that could not run
+  after its automatic retries, and the one Run under the `ask` policy. Changed
+  UI files, a queued or running audit and a screen awaiting Jev never raise
+  Needs You, and under `automatic` or `strict` a missing audit is a system wait
+  (`visualReviewActor` on the mission state), never a Run-or-Waive prompt.
+- A visual product finding and a failure of the check are separate:
+  `problem: 'product'` vs `'system'`. A system failure is retried first; after
+  that a person can send "Report a Buildd problem"
+  (`POST /api/missions/[id]/visual-review/report`), a mission-feed entry built
+  server-side from the state and passed through `redactDiagnosticText` (no
+  links, tokens or addresses). It never touches the review's screens.
+- The completion record keeps a person's waiver (reason, who, when, policy
+  shown) apart from an automatic "no visual changes" decision. The waiver is
+  offered only beside a real owner decision where the policy allows it, never
+  under `strict`.
+
+**Not yet wired.** The completion gate and the audit-creation hooks still read
+`autoSurfaceAudit` and the two older gates; moving them onto the canonical state
+and policy is follow-up work. The waiver note does not yet store the policy in
+effect when it was written; the record shows the policy resolved now.

@@ -56,6 +56,11 @@ describe('deriveMissionVisualReview status', () => {
     expect(s).toMatchObject({ status: 'findings', nextActor: 'jev' });
     expect(s.findings?.stage).toBe('needs_decision');
   });
+  it('findings after the automatic fix rounds ran out are the owner’s call', () => {
+    const s = deriveMissionVisualReview(base({ audit: audit(), review: review({ phase: 'needs_you', effectiveIssues: 2, roundCapOpen: true, needsYouReason: 'round_cap' }) }));
+    expect(s).toMatchObject({ status: 'findings', nextActor: 'owner' });
+    expect(s.findings?.exhausted).toBe(true);
+  });
   it('issues with no fix and no undecided cell still read as findings', () => {
     expect(deriveMissionVisualReview(base({ audit: audit(), review: review({ effectiveIssues: 1 }) })).status).toBe('findings');
   });
