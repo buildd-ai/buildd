@@ -5921,6 +5921,20 @@ describe('PATCH /api/workers/[id]', () => {
           expect((await complete({})).status).toBe(200);
         });
 
+        it('keeps the slashes in the branch name when comparing', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          mockGithubApi.mockClear();
+          compare('ahead');
+          await complete({});
+          const comparePaths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string).filter((p) => p.includes('/compare/'));
+          expect(comparePaths.length).toBeGreaterThan(0);
+          for (const p of comparePaths) {
+            expect(p).toContain('buildd/mission-x');
+            expect(p).not.toContain('%2F');
+          }
+        });
+
         it('still refuses when the branch does not contain the trunk sha', async () => {
           mockTasksFindFirst.mockResolvedValue(refreshTask);
           mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });

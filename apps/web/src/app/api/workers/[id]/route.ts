@@ -7,7 +7,7 @@ import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/m
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
-import { integrationRefreshOf, isAncestor } from '@/lib/integration-refresh';
+import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
@@ -2223,7 +2223,7 @@ export async function PATCH(
             repoWithInstallation.installation.installationId,
             repoWithInstallation.fullName,
             refresh.trunkSha,
-            encodeURIComponent(refreshBranch),
+            encodeRef(refreshBranch),
           );
           if (contained) refreshAlreadyLanded = { trunk: refresh.trunk, trunkSha: refresh.trunkSha, branch: refreshBranch };
         }
