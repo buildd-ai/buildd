@@ -14,7 +14,7 @@ const CAUSE_KEY_RE = /^c1:[0-9a-f]{20}$/;
  * subagent time, error-trace pattern cost, and PRs buildd cannot resolve.
  * A panel whose read failed is null. Query: window, teamId?, workspaceId?.
  *
- * The recovery queue (buildd-admin operator-recovery spec §7.1) is opt-in, so
+ * The recovery queue (operator console recovery spec §7.1) is opt-in, so
  * existing callers get the same response:
  *  - `recovery=1` adds `recovery`, the ranked causes across the scope.
  *  - `recoveryInclude=recovered` adds causes recovered in the last 7 days.

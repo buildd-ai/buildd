@@ -1,5 +1,5 @@
 /**
- * Failure incident cause keys (operator-recovery spec §4.1, buildd-admin).
+ * Failure incident cause keys (operator-recovery spec §4.1).
  *
  * A cause is a group of incidents that share one underlying fault, possibly
  * across workspaces and teams. Its key is computed from the incident alone, so

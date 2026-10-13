@@ -304,7 +304,7 @@ recovery: {
 
 - **Cause membership (additive, `v` stays 1).** `causeGroup` says which
   cause the incident groups under in the platform owner's recovery queue
-  (operator-recovery spec in buildd-admin, §4). Every `assess` writes it:
+  (operator console's operator-recovery spec, §4). Every `assess` writes it:
   `key` is the deterministic rule key
   (`apps/web/src/lib/failure-incident-cause-key.ts`, `'c1:' +
   sha256(rule|causeCode|scope|discriminator)` first 20 hex, scope `ws:<id>` for
@@ -902,8 +902,8 @@ Unknown ownership is explicit (`inconclusive`), never defaulted to `person`.
   5. **Budget spent or deadline passed.** `needs_operator`, with `capabilityGap
      { capability: 'repair_infrastructure:<component>', reason }`. Not
      `needs_decision`: exhaustion alone does not create a person's decision.
-     The gap goes to the operator over `reportOps`. The buildd-admin operator
-     recovery queue (operator-recovery spec, buildd-admin) reads it from there.
+     The gap goes to the operator over `reportOps`. The operator
+     recovery queue (operator-recovery spec) reads it from there.
   6. **A concrete authorized decision exists.** Only if the policy names a
      typed capability only a workspace person holds (none exists in v1; waiving
      the mission's surface audit is one candidate, and it is the person's call
@@ -1213,7 +1213,7 @@ stale-worker reaper. They add no lifecycle writer of their own.
     (`BUILDD_RECOVERS`), and the action layer files no fix task for
     `worker.auth`.
   - `needs_operator` goes to the operator through `reportOps` and the
-    buildd-admin recovery queue, ranked by blocked task-hours. The owner
+    operator recovery queue, ranked by blocked task-hours. The owner
     actions there are B2's typed capabilities, registered in its repair
     allowlist and not built here: reconnect the credential, requeue now, give
     up with a reason.

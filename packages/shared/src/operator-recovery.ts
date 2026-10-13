@@ -1,7 +1,7 @@
 // ── Operator recovery read model (GET /api/admin/operator ?recovery=1) ──────
-// Contract: buildd-admin docs/specs/operator-recovery.md §7.1 and §10.2. The
+// Contract: the operator console's operator-recovery spec §7.1 and §10.2. The
 // platform-owner view of failure causes across every team. Built by
-// apps/web/src/lib/admin/recovery/*; buildd-admin mirrors these types.
+// apps/web/src/lib/admin/recovery/*; the operator console mirrors these types.
 
 export type OperatorMeasured = { value: number | null; basis: 'measured' | 'estimated' | 'unknown'; atLeast?: boolean };
 export type OperatorNamedRef = { id: string; name: string; teamId: string | null };
