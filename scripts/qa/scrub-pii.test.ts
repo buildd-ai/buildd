@@ -268,6 +268,10 @@ const SAFE: Record<string, string[]> = {
   migration_log: ['phase'], // multi-line literal-union $type
   credential_leases: ['held_by_runner_id'], // wiped via secrets cascade too
   user_feedback: ['entity_id'],
+  // Root causes hold no text by design (apps/web/src/lib/root-cause-record.ts):
+  // fixed vocabularies, a backend id, a failure-pattern rule id, and a key
+  // built from those plus row ids. Classification never reads free text.
+  root_causes: ['key', 'capability_kind', 'provider', 'component', 'classification'],
 };
 
 const schema = schemaTextColumns(schemaSrc);
