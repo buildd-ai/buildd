@@ -92,9 +92,9 @@ Two homes for the result; ask the owner which:
 
 - **Repo file** (`author_spec`): the spec lives in the repo, under the spec
   root. Pick it when the repo already keeps its contracts in files.
-- **Living Spec** (`buildd action=manage_specs params={ action: "create_draft", title, body, scope }`):
-  the spec lives in buildd, with revisions, approval and per-criterion
-  verdicts. The owner approves it on buildd.dev; you never do. Procedure:
+- **Living Spec** (a `create_draft` with `title`, `body`, `scope`): the spec
+  lives in buildd, with revisions, approval and per-criterion verdicts. The
+  owner approves it on buildd.dev; you never do. Exact call and procedure:
   `help {topic:"living-specs"}`.
 
 Ask one product question at a time and each capability question once per Q2

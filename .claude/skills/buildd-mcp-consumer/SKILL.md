@@ -1,6 +1,6 @@
 ---
 name: buildd-mcp-consumer
-description: "Use whenever the buildd MCP tools (`buildd_*` group tools or `buildd`, plus `recall`, `learn`) are available and you're about to act on a buildd task or file one: claiming, working and completing tasks; blocked versus question; PRs and which branch they target; diagnosing failures and reporting friction; and Living Specs (native buildd specs via manage_specs)."
+description: "Use whenever the buildd MCP tools (`buildd_*` group tools or `buildd`, plus `recall`, `learn`) are available and you're about to act on a buildd task or file one: claiming, working and completing tasks; blocked versus question; PRs and which branch they target; diagnosing failures and reporting friction; and Living Specs (native buildd specs)."
 author: buildd
 ---
 
@@ -117,8 +117,8 @@ Steps: topic `diagnosis`.
 
 A Living Spec is a native buildd spec: immutable revisions, `R-n`/`AC-n`
 criteria, and one revision a person approved. Work pins an approved revision
-and reviewers record a verdict per criterion. Driven by
-`buildd action=manage_specs`.
+and reviewers record a verdict per criterion. The Living Specs action and its
+sub-actions (`create_draft`, `revise`, `read_ref`, ...) are in the topic.
 
 - A person approves. An agent never approves a spec and never says one is
   approved unless `get` shows it.
