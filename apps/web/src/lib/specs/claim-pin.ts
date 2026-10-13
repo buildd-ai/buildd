@@ -36,7 +36,11 @@ export async function repinSpecAtClaim(task: {
   if (!isUuid(specId)) return { specSource: null, reason: 'specSource.specId is not a spec id' };
   if (task.taskClass === 'attempt') return { specSource: null, reason: 'a retry attempt keeps the pin it was filed with' };
   if (src.pinnedAt === 'claim') return { specSource: null, reason: 'pinned at an earlier claim' };
-  if (src.explicit === true) return { specSource: null, reason: 'the filer named this revision' };
+  // Built ahead of approval (living-specs.md §20, R-37): a provisional pin
+  // moves only to a newer approved revision, never to another draft, so it is
+  // read before the explicit rule.
+  const provisional = src.provisional === true;
+  if (!provisional && src.explicit === true) return { specSource: null, reason: 'the filer named this revision' };
 
   const [row] = await db
     .select({
@@ -60,6 +64,9 @@ export async function repinSpecAtClaim(task: {
   if (row.revId === src.specRevisionId && row.contentHash === src.contentHash) {
     return { specSource: null, reason: 'already pinned to the approved revision' };
   }
+  if (provisional && typeof src.revision === 'number' && row.revision !== null && row.revision <= src.revision) {
+    return { specSource: null, reason: `built ahead of approval against revision ${src.revision}; approved revision ${row.revision} is not newer, so the provisional pin stays` };
+  }
   // A task scoped to some criteria moves only when the new revision still has
   // every one of them; otherwise it keeps the revision those ids came from.
   const scope = scopeOf(src);
@@ -71,9 +78,10 @@ export async function repinSpecAtClaim(task: {
       return { specSource: null, reason: `approved revision ${row.revision} ${read.ok ? `no longer has ${missing.join(', ')}` : 'could not be read'}; the task keeps revision ${String(src.revision)}` };
     }
   }
+  const { provisional: _provisional, ...settled } = src;
   return {
     specSource: {
-      ...src,
+      ...settled,
       specRevisionId: row.revId,
       revision: row.revision,
       contentHash: row.contentHash,

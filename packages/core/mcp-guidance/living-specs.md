@@ -17,8 +17,8 @@ buildd, not in a repo file.
 
 ## When to make one
 
-- **Living Spec:** intent a person must approve before work is built against
-  it, with criteria someone can grade (a feature, a contract, a product area).
+- **Living Spec:** intent a person approves, usually before work is built
+  against it (or after, see Building ahead of approval), with criteria someone can grade (a feature, a contract, a product area).
 - **Task:** a unit of work. If it needs a spec, file it against one (below).
 - **Artifact:** a deliverable or report (`create_artifact`). It has no
   approval and no criteria.
@@ -55,11 +55,11 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    buildd.dev to confirm. Hand that link to the person. Tell them what
    changed (`diff`, below) and stop.
 5. **Pin:** file work with `create_task` and
-   `context: { specSource: { specId, criteria } }`. The server pins the
-   approved revision itself; a spec with no approved revision refuses the
-   filing. `criteria` (optional, 1 to 50 `R-n`/`AC-n` ids) narrows what the
-   task answers for; left out, it answers for all of them. The first claim
-   re-pins to the revision approved then; after that the pin never moves.
+   `context: { specSource: { specId, criteria, revision } }`. The server pins
+   the approved revision itself. `criteria` (optional, 1 to 50 `R-n`/`AC-n`
+   ids) narrows what the task answers for; left out, it answers for all of
+   them. The first claim re-pins to the revision approved then; after that
+   the pin never moves. Building ahead of approval: see below.
 6. **Build:** read the pinned revision, not the head:
    `buildd action=manage_specs params={ action: "get", specId, revision }`.
    Later revisions are proposals until a person approves them.
@@ -75,6 +75,29 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
 9. **Conflict:** two criteria of an approved revision that disagree:
    `buildd action=manage_specs params={ action: "conflict", specId, revision, criterionIds, note }`.
    It records an advisory discrepancy and blocks nothing.
+
+## Building ahead of approval
+
+A person may ask for work to be built before the spec is approved. That is
+allowed, and buildd keeps it honest:
+
+- File the task against the spec as usual. With no approved revision (or
+  naming a draft `revision`), the pin is provisional: that exact revision and
+  its hash, marked `provisional: true`. With no revision named it pins the
+  head. Do not leave the spec out of the filing to get past anything.
+- The PR says "Built ahead of approval, against revision N". Say the same in
+  your own words. Do not write that the work waits on approval, or that it
+  contradicts the approve-first loop: it is the loop, in a different order.
+- When a person approves revision M, every provisional pin moves to M and is
+  re-graded there: check lines rerun at the PR head, a verdict carries over
+  only where the criterion's text did not change, the task gets a note with
+  the N-to-M diff, and the PR text says which revision was approved.
+- Merged provisional work that nobody approves within 3 days shows in Needs
+  You as "Work shipped against an unapproved spec".
+- Work already finished without a pin: a person (or an admin token) attaches
+  it with `buildd action=manage_specs params={ action: "attach_provisional", specId, revision, taskIds }`.
+  An agent run gets a 403: ask the person to do it, and name the revision
+  the work was built against.
 
 ## Version conflicts
 
@@ -170,7 +193,9 @@ approval and moves neither the version nor the approved hash.
 ## Never
 
 - Never approve, or say a spec is approved, unless `get` shows that revision
-  approved. Drafted, submitted and in review are not approved.
+  approved. Drafted, submitted and in review are not approved. Building
+  ahead of approval does not approve anything either.
+- Never call `attach_provisional` from an agent run; it is a person's act.
 - Never click, open or forward a confirm link as if you were the person.
 - Never record a verdict on your own task, or a pass you did not observe on
   that exact head.
