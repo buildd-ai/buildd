@@ -171,6 +171,10 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
       return make({ label: 'decision', tone: 'warning', title, sentence: text(i.recommendation) && title !== text(i.recommendation) ? `Recommended: ${text(i.recommendation)}` : subject ? `Mission: ${subject}` : 'The mission is waiting on your choice.', actionType: 'decide', primary: { label: 'Choose…', href: subjectHref ?? '' } });
     }
     case 'APPROVE':
+      // Work built ahead of approval that merged, and the spec still unapproved (living-specs.md §20, R-42).
+      if (i.specProvisional) {
+        return make({ label: 'unapproved spec', tone: 'warning', title: 'Work shipped against an unapproved spec', sentence: text(i.failureMessage), actionType: 'approve', primary: { label: text(i.fixLabel) ?? 'Review spec', href: text(i.fixHref) ?? '' } });
+      }
       return make({ label: 'approval', tone: 'warning', title: subject, sentence: text(i.verdictSummary) ?? 'This work is waiting for your approval before it starts.', actionType: 'approve', primary: { label: 'Approve…', href: text(i.fixHref) ?? subjectHref ?? '' } });
     case 'RECONNECT':
       return make({ label: 'reconnect', tone: 'warning', title: text(i.connectorName), sentence: text(i.failureMessage) ?? (i.connectorName ? `${i.connectorName} lost its connection. Agents using it are paused.` : null), actionType: 'reconnect', primary: { label: text(i.fixLabel) ?? 'Reconnect', href: text(i.fixHref) ?? '' } });

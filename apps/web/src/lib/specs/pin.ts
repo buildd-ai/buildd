@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { specRevisions, specs } from '@buildd/core/db/schema';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { specCriteria } from '@buildd/spec-contract/requirements';
@@ -11,7 +11,9 @@ import type { StoredDesign } from './design';
  * Pinning work to a Living Spec revision (G2, decision D-4).
  *
  * A task that names a Living Spec in `context.specSource.specId` is pinned when
- * it is filed: the server writes the approved revision's id, number and hash,
+ * it is filed: the server writes the approved revision's id, number and hash
+ * (or, for work built ahead of approval, the named or head revision's, marked
+ * `provisional`: living-specs.md §20),
  * so a later revision (N+1, proposed or approved) never moves running work or
  * its review. The pin comes from the database; a caller's hash or revision
  * number is overwritten, never trusted. `specSource` grows additively: a
@@ -28,34 +30,47 @@ const asRecord = (v: unknown): Record<string, unknown> | null =>
 export async function pinSpecSource<C extends Ctx>(workspaceId: string, context: C): Promise<{ ok: true; context: C } | PinError> {
   const src = asRecord(asRecord(context)?.specSource);
   if (!src || src.specId === undefined) return { ok: true, context };
-  const { specId, specRevisionId } = src;
+  const { specId, specRevisionId, revision: namedRevision } = src;
   if (typeof specId !== 'string' || !isUuid(specId)) return { ok: false, status: 400, error: 'context.specSource.specId must be a spec UUID' };
   if (specRevisionId !== undefined && (typeof specRevisionId !== 'string' || !isUuid(specRevisionId))) {
     return { ok: false, status: 400, error: 'context.specSource.specRevisionId must be a spec revision UUID' };
   }
+  // A revision number names a revision only when no revision id is given (a
+  // copied pin carries both; its id wins).
+  const byNumber = specRevisionId === undefined && namedRevision !== undefined;
+  if (byNumber && (typeof namedRevision !== 'number' || !Number.isInteger(namedRevision) || namedRevision < 1)) {
+    return { ok: false, status: 400, error: 'context.specSource.revision must be a revision number' };
+  }
 
-  const [spec] = await db.select({ id: specs.id, workspaceId: specs.workspaceId, approvedRevision: specs.approvedRevision })
+  const [spec] = await db.select({ id: specs.id, workspaceId: specs.workspaceId, approvedRevision: specs.approvedRevision, headRevision: specs.headRevision })
     .from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || spec.workspaceId !== workspaceId) return { ok: false, status: 404, error: 'context.specSource.specId: spec not found in this workspace' };
 
+  // Which revision: the one named, else the approved one, else the head
+  // (building ahead of approval, §20 R-36).
+  const named = typeof specRevisionId === 'string' || byNumber;
   const where = typeof specRevisionId === 'string'
     ? and(eq(specRevisions.id, specRevisionId), eq(specRevisions.specId, specId))
-    : spec.approvedRevision === null ? undefined : and(eq(specRevisions.specId, specId), eq(specRevisions.revision, spec.approvedRevision));
-  if (!where) return { ok: false, status: 409, error: 'This spec has no approved revision yet: work is pinned only to an approved revision, which a person approves first' };
-  const [rev] = await db.select().from(specRevisions).where(and(where, isNotNull(specRevisions.approvedAt))).limit(1);
-  if (!rev) return { ok: false, status: 409, error: 'context.specSource.specRevisionId is not an approved revision of this spec' };
+    : and(eq(specRevisions.specId, specId), eq(specRevisions.revision, byNumber ? namedRevision as number : spec.approvedRevision ?? spec.headRevision));
+  const [rev] = await db.select().from(specRevisions).where(where).limit(1);
+  if (!rev) return { ok: false, status: 409, error: `context.specSource names a revision this spec does not have (it has revisions 1 to ${spec.headRevision})` };
+  // Not approved: a provisional pin to exactly this revision, which a later
+  // approval re-grades (./provisional.ts). Approved: as before.
+  const provisional = rev.approvedAt === null;
 
   // A repo commit the work also traces to (D-1), kept only when it is a SHA.
   // Pin provenance is the server's: a revision the filer named is explicit
   // and kept at claim; otherwise the first claim re-pins (lib/specs/claim-pin.ts).
-  const { commitSha, criteria, explicit: _explicit, pinnedAt: _pinnedAt, repinnedFrom: _repinnedFrom, ...rest } = src;
+  // A provisional pin moves at claim only to a newer approved revision.
+  const { commitSha, criteria, explicit: _explicit, pinnedAt: _pinnedAt, repinnedFrom: _repinnedFrom, provisional: _provisional, regradedFrom: _regradedFrom, regrade: _regrade, attachedBy: _attachedBy, attachedAt: _attachedAt, ...rest } = src;
   const pinned: Record<string, unknown> = {
     ...rest,
     specId,
     specRevisionId: rev.id,
     revision: rev.revision,
     contentHash: rev.contentHash,
-    ...(typeof specRevisionId === 'string' ? { explicit: true } : {}),
+    ...(named && !provisional ? { explicit: true } : {}),
+    ...(provisional ? { provisional: true } : {}),
     ...(typeof commitSha === 'string' && /^[0-9a-f]{7,40}$/i.test(commitSha) ? { commitSha } : {}),
   };
   // The criteria this task answers for (./scope.ts), checked against the
