@@ -271,12 +271,14 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'On a review card, a decision model says whether the pull request looks safe to merge as-is, from its CI, review and policy. Only advice; you merge.',
     costHint: '~$0.00003 per tap',
   },
-  // Spec duplicates (apps/web/src/lib/specs/duplicate-check.ts). Asked when a
-  // spec is created, once per shortlisted approved spec (at most 5). A
-  // duplicate at 0.9 is refused with an override; an overlap only warns.
+  // Spec duplicates (apps/web/src/lib/spec-duplicate-decision.ts). Asked when
+  // a spec is created or approved, once per shortlisted approved spec (at
+  // most 5). A duplicate at 0.9 is refused with an override; an overlap only
+  // warns. Built in for every team (owner, 2026-10-13): measured before launch,
+  // cheap, and every refusal carries its own override.
   spec_duplicate: {
     id: 'spec_duplicate',
-    kind: 'opt_in',
+    kind: 'built_in',
     label: 'Spec duplicates',
     description: 'When a spec is created, a decision model compares it with the most similar approved specs. A clear duplicate is refused unless you say it replaces the old spec or why it is different; an overlap is only flagged.',
     costHint: '~$0.00005 per new spec',

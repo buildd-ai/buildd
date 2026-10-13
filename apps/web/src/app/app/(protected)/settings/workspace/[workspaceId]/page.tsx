@@ -27,6 +27,7 @@ import SettingsSection from '../../SettingsSection';
 import { moveTargets } from '../../workspaces/rows';
 import { WorkspaceHealthCard } from './WorkspaceHealthCard';
 import { readinessNotices } from './readiness-notices';
+import { SectionIndex } from './SectionIndex';
 import { ReadinessCard } from './ReadinessCard';
 import { RepoAccessCard } from './RepoAccessCard';
 import { GitConfigForm } from './GitConfigForm';
@@ -55,6 +56,8 @@ const SUGGESTION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Hairline-divided rows inside one group; each row component carries its own py-4. */
 const ROWS = 'divide-y divide-border-default';
+/** Room for the sticky section index when a link jumps here. */
+const JUMP = 'scroll-mt-14';
 
 /**
  * Everything about one workspace, in one place: readiness, repository,
@@ -179,6 +182,18 @@ export default async function WorkspaceSettingsPage({
     }),
   });
 
+  const showReadiness = notices.health.length > 0 || Boolean(notices.readiness) || Boolean(notices.repoAccess);
+  const sections = [
+    ...(showReadiness ? [{ id: 'readiness', label: 'Readiness' }] : []),
+    { id: 'repository', label: 'Repository' },
+    { id: 'agents', label: 'Agents' },
+    { id: 'delivery', label: 'Delivery' },
+    { id: 'where-work-runs', label: 'Where work runs' },
+    { id: 'models', label: 'Models' },
+    { id: 'integrations', label: 'Integrations' },
+    ...(moveTeams || canDelete ? [{ id: 'danger-zone', label: 'Danger zone' }] : []),
+  ];
+
   return (
     <SettingsPage
       title={workspace.name}
@@ -194,8 +209,10 @@ export default async function WorkspaceSettingsPage({
         </>
       }
     >
-      {(notices.health.length > 0 || notices.readiness || notices.repoAccess) && (
-        <Section title="Readiness" id="readiness">
+      <SectionIndex sections={sections} />
+
+      {showReadiness && (
+        <Section title="Readiness" id="readiness" className={JUMP}>
           <div className={ROWS}>
             {notices.health.length > 0 && (
               <WorkspaceHealthCard
@@ -215,9 +232,10 @@ export default async function WorkspaceSettingsPage({
         </Section>
       )}
 
-      <Section title="Repository" id="repository">
+      <Section title="Repository" id="repository" className={JUMP}>
         <div className={ROWS}>
           <GitConfigForm
+            part="repository"
             workspaceId={workspace.id}
             workspaceName={workspace.name}
             initialConfig={gitConfig}
@@ -233,7 +251,17 @@ export default async function WorkspaceSettingsPage({
         </div>
       </Section>
 
-      <Section title="Delivery" id="delivery">
+      <Section title="Agents" id="agents" className={JUMP}>
+        <GitConfigForm
+          part="agents"
+          workspaceId={workspace.id}
+          workspaceName={workspace.name}
+          initialConfig={gitConfig}
+          canEdit={canManageSettings}
+        />
+      </Section>
+
+      <Section title="Delivery" id="delivery" className={JUMP}>
         <div className={ROWS}>
           <MergePolicyEditor
             workspaceId={workspaceId}
@@ -277,7 +305,7 @@ export default async function WorkspaceSettingsPage({
         </div>
       </Section>
 
-      <Section title="Where work runs" id="where-work-runs">
+      <Section title="Where work runs" id="where-work-runs" className={JUMP}>
         <div className={ROWS}>
           <ExecutorSection
             workspaceId={workspace.id}
@@ -312,14 +340,16 @@ export default async function WorkspaceSettingsPage({
           />
           <p className="py-4 last:pb-0 text-xs text-text-secondary" data-testid="workspace-runners-pointer">
             Runners and their sign-ins are set up in{' '}
-            <Link href="/app/settings/runners" className="text-text-primary underline">Settings › Runners</Link>.
+            <Link href={`/app/settings/runners?team=${encodeURIComponent(workspace.teamId)}`} className="text-text-primary underline">Settings › Runners</Link>.
           </p>
         </div>
       </Section>
 
-      <WorkspaceModels workspaceId={workspace.id} teamId={workspace.teamId} />
+      <div id="models" className={JUMP}>
+        <WorkspaceModels workspaceId={workspace.id} teamId={workspace.teamId} />
+      </div>
 
-      <Section title="Integrations" id="integrations">
+      <Section title="Integrations" id="integrations" className={JUMP}>
         <WorkTrackerSection
           workspaceId={workspace.id}
           initialWorkTrackerConfig={workspace.workTrackerConfig as WorkspaceWorkTrackerConfig | null}

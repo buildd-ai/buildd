@@ -13,6 +13,7 @@ import Segmented from '@/components/ui/Segmented';
 import { TonePill } from '@/components/ui/StatePill';
 import type { StateTone } from '@/components/ui/states';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
+import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 
 interface Role {
   slug: string;
@@ -146,7 +147,12 @@ export default function MergePolicyEditor({
     return p;
   }
 
+  const { dirty, snapshot, markSaved } = useDirtyState(buildPolicy());
+  useWarnOnUnload(canEdit && dirty);
+
   async function save() {
+    if (!dirty) return;
+    const submitted = snapshot;
     setSaving(true);
     setMsg(null);
     try {
@@ -158,6 +164,7 @@ export default function MergePolicyEditor({
       });
       if (res.ok) {
         setPolicy(built);
+        markSaved(submitted);
         setMsg({ type: 'success', text: 'Merge policy saved.' });
       } else {
         const err = await res.json().catch(() => ({}));
@@ -372,7 +379,7 @@ export default function MergePolicyEditor({
         <button
           type="button"
           onClick={save}
-          disabled={saving}
+          disabled={saving || !dirty}
           className="btn min-h-11"
         >
           {saving ? 'Saving…' : 'Save'}
@@ -577,6 +584,8 @@ export function PolicySuggestionsSection({
           </button>
         )}
       </div>
+      {/* A member sees the summary line only (settings spec R-8). */}
+      {canEdit && (<>
       <ul className="divide-y divide-border-default border-y border-border-default">
         {visible.map(s => (
           <li key={s.path} className="flex items-center justify-between gap-3 py-2">
@@ -601,6 +610,7 @@ export function PolicySuggestionsSection({
       {!showAll && suggestions.length > SUGGESTIONS_SHOWN && (
         <button
           type="button"
+          aria-expanded={false}
           data-testid="merge-policy-suggestions-show-all"
           className="btn btn-quiet min-h-11 md:min-h-0"
           onClick={() => setShowAll(true)}
@@ -608,6 +618,7 @@ export function PolicySuggestionsSection({
           Show all {suggestions.length}
         </button>
       )}
+      </>)}
       {error && <p className="text-xs text-status-error">{error}</p>}
     </div>
   );

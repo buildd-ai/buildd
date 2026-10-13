@@ -607,6 +607,70 @@ describe('POST /api/workspaces/[id]/config', () => {
       expect(res.status).toBe(200);
     });
 
+    // Settings spec R-4 / AC-3: the page saves Repository and Agents separately.
+    // A grouped save writes its own fields and leaves the other group's as stored.
+    describe('a grouped save', () => {
+      const stored = {
+        defaultBranch: 'dev',
+        branchPrefix: 'feat/',
+        commitStyle: 'freeform',
+        requiresPR: true,
+        fallbackModel: 'standard',
+        debug: true,
+        debugFile: '/tmp/agent.log',
+        effort: 'high',
+        thinking: { type: 'adaptive' },
+        agentInstructions: 'Run the tests.',
+        bypassPermissions: true,
+        defaultBackend: 'codex',
+        sandbox: { enabled: true, credentials: { files: [] } },
+        policyConfig: { rules: ['keep-me'] },
+      };
+
+      it('repository: changes commit style and leaves every Agents field as stored', async () => {
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: stored });
+        const res = await post({
+          group: 'repository',
+          defaultBranch: 'dev', branchingStrategy: 'feature', branchPrefix: 'feat/',
+          useBuildBranch: false, commitStyle: 'conventional', requiresPR: true, autoCreatePR: true,
+        });
+        expect(res.status).toBe(200);
+        const written = setArgs[0].gitConfig;
+        expect(written.commitStyle).toBe('conventional');
+        expect(written.branchPrefix).toBe('feat/');
+        for (const key of ['fallbackModel', 'debug', 'debugFile', 'effort', 'thinking', 'agentInstructions', 'bypassPermissions', 'defaultBackend', 'sandbox', 'policyConfig'] as const) {
+          expect(`${key}: ${JSON.stringify(written[key])}`).toBe(`${key}: ${JSON.stringify((stored as any)[key])}`);
+        }
+      });
+
+      it('agents: changes effort and leaves every Repository field as stored', async () => {
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: stored });
+        const res = await post({
+          group: 'agents',
+          useClaudeMd: true, agentInstructions: 'Run the tests.', bypassPermissions: true,
+          sandbox: { enabled: true, autoAllowBashIfSandboxed: false },
+          fallbackModel: 'standard', debug: true, debugFile: '/tmp/agent.log',
+          thinking: { type: 'adaptive' }, effort: 'low', defaultBackend: 'codex',
+        });
+        expect(res.status).toBe(200);
+        const written = setArgs[0].gitConfig;
+        expect(written.effort).toBe('low');
+        expect(written.sandbox.credentials).toEqual({ files: [] });
+        for (const key of ['defaultBranch', 'branchPrefix', 'commitStyle', 'requiresPR', 'policyConfig'] as const) {
+          expect(`${key}: ${JSON.stringify(written[key])}`).toBe(`${key}: ${JSON.stringify((stored as any)[key])}`);
+        }
+        // A Repository field the stored config never had stays absent.
+        expect('targetBranch' in written && written.targetBranch !== undefined).toBe(false);
+      });
+
+      it('rejects an unknown group', async () => {
+        mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: stored });
+        const res = await post({ group: 'models', defaultBranch: 'dev' });
+        expect(res.status).toBe(400);
+        expect(setArgs).toHaveLength(0);
+      });
+    });
+
     // Hand-written merge-policy paths are refused; the repo scan owns paths.
     it('rejects each removed hand-written path field with a 400 that points to Re-scan repo', async () => {
       mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });

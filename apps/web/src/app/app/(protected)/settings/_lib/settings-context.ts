@@ -15,6 +15,8 @@ export interface SettingsWorkspace {
   name: string;
   repo: string | null;
   teamId: string;
+  /** 'open': every key of the owning team reaches it; 'restricted': linked keys only. */
+  accessMode: string | null;
 }
 
 export interface SettingsContext {
@@ -64,7 +66,7 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
   const rows = wsIds.length > 0
     ? await db.query.workspaces.findMany({
         where: sqlWhere(inArray(workspaces.id, wsIds)),
-        columns: { id: true, name: true, repo: true, teamId: true },
+        columns: { id: true, name: true, repo: true, teamId: true, accessMode: true },
       }).catch(() => [] as SettingsWorkspace[])
     : [];
 
