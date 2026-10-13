@@ -44,6 +44,7 @@ import { loadFlowSeries, loadFlowUsage } from '@/lib/insights-flow-query';
 import type { FlowWindow } from '@/lib/insights-flow';
 import { BAND_LABEL, tasksInBand, type BandKey } from '@/components/insights/flow-chart-model';
 import { loadAgentAccessReport } from '@/lib/agent-capabilities/access-log';
+import { fetchOperatorEstimateCounts, fetchOperatorEstimateRows, OPERATOR_ROW_LIMIT } from '@buildd/core/task-estimate-operator-source';
 import type { DecisionFeatureCount, DecisionHealthRow } from './decision-features';
 import type { AdminScope, AdminWindow } from './scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -407,6 +408,24 @@ export async function loadInsightsBand(opts: { workspaceIds: string[]; filter: I
 /** Health → Overview's agent access section, cross-tenant. */
 export async function loadAgentAccess(opts: { workspaceIds: string[]; windowHours: number }) {
   return loadAgentAccessReport(opts.workspaceIds, opts.windowHours);
+}
+
+// ── Estimates ─────────────────────────────────────────────────────────────────
+
+/**
+ * Insights → Estimation's input: the window's frozen estimates with their
+ * actuals (row-capped), the coverage counts (aggregated in the query) and the
+ * names of the workspaces in scope, which the view keeps for own teams only.
+ */
+export async function loadEstimates(opts: { workspaceIds: string[]; since: Date; estimatorVersion: string | null }) {
+  const [{ rows, truncated }, counts, names] = await Promise.all([
+    fetchOperatorEstimateRows(opts),
+    fetchOperatorEstimateCounts(opts),
+    opts.workspaceIds.length
+      ? db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(inArray(workspaces.id, opts.workspaceIds))
+      : Promise.resolve([]),
+  ]);
+  return { rows, truncated, rowLimit: OPERATOR_ROW_LIMIT, counts, workspaceNames: Object.fromEntries(names.map(w => [w.id, w.name])) as Record<string, string> };
 }
 
 // ── Names and readouts ────────────────────────────────────────────────────────
