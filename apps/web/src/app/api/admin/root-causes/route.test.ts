@@ -25,7 +25,7 @@ const stub = async () => ({});
 mock.module('@/lib/admin/data', () => ({
   resolveScopeWorkspaces: async () => ({ workspaces: [{ id: WS, teamId: OWN_TEAM }] }),
   loadOwnTeams: async () => [{ id: OWN_TEAM, name: 'Team A' }],
-  listChatRetros: stub, listTeamsWithWorkspaces: stub, loadAgentAccess: stub, loadDispatchHealth: stub, loadFailures: stub,
+  listChatRetros: stub, listTeamsWithWorkspaces: stub, loadAgentAccess: stub, loadDispatchHealth: stub, loadEstimates: stub, loadFailures: stub,
   loadGates: stub, loadInsights: stub, loadInsightsBand: stub, loadOperatorData: stub, loadUsage: stub,
 }));
 
