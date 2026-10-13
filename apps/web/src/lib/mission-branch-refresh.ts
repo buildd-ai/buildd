@@ -87,6 +87,7 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { findMissionPrOwner } from '@/lib/mission-pr';
+import { missionShippingPrMerged } from '@/lib/mission-pr-merged';
 import { integrationRefreshOf, verifyRefreshLanded } from '@/lib/integration-refresh';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -194,14 +195,6 @@ export async function refreshMissionIntegrationBranch(
   const refused = ineligibility(mission, trigger);
   if (refused) return { kind: 'skipped', reason: refused, detail: mission.status };
 
-  // The mission's own PR into trunk already merged — the mission's one shot at
-  // trunk has been taken, and refreshing a branch nothing will ever merge again
-  // wastes a GitHub call on every future trigger forever.
-  const owner = await findMissionPrOwner(missionId);
-  if (owner?.state === 'merged') {
-    return { kind: 'skipped', reason: 'mission_pr_merged' };
-  }
-
   const resolved = await resolveMissionRepoWorkspaceId({
     missionId,
     missionWorkspaceId: mission.workspaceId,
@@ -227,6 +220,17 @@ export async function refreshMissionIntegrationBranch(
   }
   const trunk =
     workspace.gitConfig?.targetBranch || workspace.gitConfig?.defaultBranch || repo.defaultBranch || 'main';
+
+  // The mission's own PR into trunk already merged — the mission's one shot at
+  // trunk has been taken, and refreshing a branch nothing will ever merge again
+  // wastes a GitHub call on every future trigger and, on a conflict, files a
+  // task nobody can finish. Read from the worker row, the kernel delivery and
+  // GitHub (lib/mission-pr-merged), since the worker row alone can miss it.
+  const prRepo = { workspaceId: workspace.id, installationId, repoFullName: repo.fullName };
+  const shipped = () => missionShippingPrMerged(missionId, prRepo);
+  if (await shipped()) {
+    return { kind: 'skipped', reason: 'mission_pr_merged' };
+  }
 
   // Single-flight claim. Released on every exit path below.
   const leaseToken = randomUUID();
@@ -287,6 +291,8 @@ export async function refreshMissionIntegrationBranch(
           trunkSha = typeof trunkRef?.object?.sha === 'string' ? trunkRef.object.sha : null;
         } catch { /* reported below */ }
         if (!trunkSha) return { kind: 'error', detail: `could not resolve ${trunk} head sha` };
+        // The reservation may be old: the mission PR can have merged since.
+        if (await shipped()) return { kind: 'skipped', reason: 'mission_pr_merged' };
         const done = await dispatchBranchRefreshConflictTask({
           mission, branch, trunk, trunkSha, installationId, workspaceId: workspace.id, repoFullName: repo.fullName,
           leaseToken, stillEligible, reservedTaskId: current.branchRefreshConflictTaskId,
@@ -334,7 +340,7 @@ export async function refreshMissionIntegrationBranch(
     }
 
     // The mission PR may have merged while this ran: re-read it at the boundary.
-    if ((await findMissionPrOwner(missionId))?.state === 'merged') {
+    if (await shipped()) {
       return { kind: 'skipped', reason: 'mission_pr_merged' };
     }
     // Slow repo/ref work can outlive the lease. Fence the API call against a

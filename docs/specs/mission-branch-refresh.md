@@ -2,13 +2,13 @@
 title: Mission Branch Refresh
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-13
 summary: A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 domain: missions
 surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts]
 related: [workflow-kernel-library, mission-release-gate, mission-task-lifecycle, workflow-state-kernel]
 keywords: [integration branch, mission/*, merge dev into, chore(mission), branch refresh, branchRefreshHeadSha, branch_refreshed_at, refresh conflict task, requireMergeCommit, trunk merge, refresh lease, abandoned lease, conflict reservation, paused mission refresh, mission branch concurrency]
-verified_by: [apps/web/src/lib/mission-branch-refresh.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
+verified_by: [apps/web/src/lib/mission-branch-refresh.test.ts, apps/web/src/lib/mission-pr-merged.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -166,7 +166,7 @@ columns on `missions` (`branchRefresh*`).
 | --- | --- | --- |
 | Mission status (`active`, `paused`, `budget_exhausted`, `completed`, `archived`), `isHeld` | `mission-task-lifecycle` (Mission State Machine); `completeMissionIfVerified` is the one automated writer of `completed` | Reads it at entry and as a WHERE fence at each commit boundary. Never writes it. |
 | A task PR's and the mission PR's delivery (review, CI, repair, landing, merged) | `workflow-state-kernel` (deliveries, §6, §8, §13.7) | The refresh is a foreign writer to the mission PR's head (§6.9 rule 3). It adds no PR state. |
-| Mission PR merged, and merged-versus-released | `mission-release-gate` (ship-line invariant; `findMissionPrOwner`) | Reads `state = 'merged'` as "never refresh again". Never writes it. |
+| Mission PR merged, and merged-versus-released | `mission-release-gate` (ship-line invariant; `findMissionPrOwner`), with the mission PR's kernel delivery and GitHub as fallbacks (`missionShippingPrMerged`, see "Eligibility") | Reads "merged" as "never refresh again". Never writes it. |
 | Task status | `mission-task-lifecycle` (Task State Machine) | Reads the conflict task's status. Creates the conflict task, never completes it. |
 | The refresh itself | this spec: `branchRefreshHeadSha`, `branchRefreshedAt`, `branchRefreshLeaseUntil`, `branchRefreshLeaseToken`, `branchRefreshConflictTaskId` | Sole writer. |
 
@@ -220,10 +220,21 @@ and the mission PR merging is not the mission being released.
 | `paused`, `budget_exhausted`, or `isHeld` | refreshes: the claim is an authorized start (resume, force-start) | skipped, no GitHub call | a backstop refresh stops at the next commit boundary with `mission_paused`; a start's continues |
 | resumed (`paused` → `active`, or armed) | refreshes | refreshes when due | n/a |
 | `completed`, `archived` | skipped | skipped | stops at the next commit boundary with `mission_terminal`: no merge and no conflict task |
-| mission PR merged | skipped (`mission_pr_merged`) | skipped | re-read just before the write: stops with `mission_pr_merged` |
+| mission PR merged | skipped (`mission_pr_merged`) | skipped | re-read just before the merges call and just before finishing a reserved conflict task: stops with `mission_pr_merged` |
 | no integration branch | skipped | skipped | n/a |
 
 **Invariants**:
+- **"Mission PR merged" is read from three sources**, cheapest first, stopping
+  at the first that shows the merge (`missionShippingPrMerged`,
+  `apps/web/src/lib/mission-pr-merged.ts`): the owner worker row's `mergedAt`
+  (`findMissionPrOwner`); the mission PR's kernel delivery in state `MERGED`
+  (any authority); one live GitHub read of the PR (`merged: true`). The worker
+  row alone misses a merge whose webhook was lost, and the refresh then kept
+  merging trunk into a shipped branch and filing conflict tasks for it. A
+  failed read is "not shown merged", never merged. With no PR recorded for the
+  mission there is nothing to read and the refresh proceeds. This is interim:
+  the end state is refresh as a kernel effect that reads "shipped" from
+  delivery state (`workflow-kernel-library` §6, AC-21).
 - A paused, held or budget-exhausted mission gets no unsolicited refresh work: no
   merge and no conflict task from the backstop. Only a start, or an explicit
   authorized delivery action (the kernel's W4 on an approved mission PR), writes
@@ -232,7 +243,10 @@ and the mission PR merging is not the mission being released.
   that commit to new work: the lease renewal immediately before the merges API,
   and the conflict-task reservation. A fenced write returns the state's reason
   (`mission_terminal`, `mission_paused`) rather than `in_flight`.
-- The mission PR's merge state is re-read immediately before the merges API.
+- The mission PR's merge state is read on entry (after the repo is resolved,
+  before the lease), re-read immediately before the merges API, and re-read
+  immediately before a reserved conflict task is finished, since a reservation
+  can be older than the merge. None of them files a task for a merged mission.
   What remains is the gap between that read and GitHub's write. A refresh that
   lands in it merges trunk, which already contains the mission, into a branch
   nothing will merge again. That adds no mission content, loses nothing and
@@ -318,6 +332,23 @@ and the mission PR merging is not the mission being released.
   head it started from are both ancestors), or when the task, and any retry,
   ended with no merged PR (a person's judgment, or a failure). A worker
   completing with its PR open settles nothing.
+- **A refresh task can complete without a PR** (the `pr_required` gate in
+  `PATCH /api/workers/[id]`, for a task whose context carries
+  `requireMergeCommit` and the refresh trunk sha). It counts as done, with no
+  PR of its own, when either:
+  - the integration branch already contains the trunk sha the task was filed
+    for (the compare reads `ahead` or `identical`). GitHub refuses an empty PR,
+    so a builder that finds the merge already there has nothing to open;
+  - or the mission's shipping PR merged (`missionShippingPrMerged`). The
+    refresh is moot, and the branch may already be deleted, which makes the
+    ancestry read fail.
+
+  The evidence is recorded on the task result as `refreshAlreadyLanded`
+  (`evidence: branch_contains_trunk_sha`, or `mission_pr_merged` with
+  `missionPrNumber`). With neither, completion is refused by the same
+  `output_requirement` gate as any `pr_required` task. A worker with its own
+  commits or edits still needs `discardEdits`. End state: `workflow-kernel-library`
+  §6, AC-22.
 - The conflict task's PR lands as a merge commit at every buildd merge door
   (`resolveMergeMethod`). A squash that slips through (a person on GitHub) is
   `refresh_unverified`: no replacement task. One real merge of trunk into the
@@ -410,6 +441,15 @@ ancestry. This spec is the authority on both.
 - AC-33: GIVEN a mission PR approved at head H WHEN a refresh moves it to H' THEN
   a landing pinned to H is refused with nothing reaching trunk, and after the
   mission PR merged the refresh never writes the branch again.
+- AC-34: GIVEN a mission whose shipping PR merged but whose owner worker row has
+  no `mergedAt`, and its kernel delivery or GitHub shows it merged WHEN a task
+  starts or the backstop runs THEN no merges call is made and no refresh task is
+  filed.
+- AC-35: GIVEN a reserved conflict task WHEN the mission PR merged after the
+  reservation THEN finishing it files no task.
+- AC-36: GIVEN a refresh task with no PR WHEN it completes and the branch
+  contains its trunk sha, or the mission's shipping PR merged THEN completion
+  succeeds and the evidence is on the task result; with neither it is refused.
 
 ### Spec-to-test matrix
 
@@ -426,6 +466,8 @@ ancestry. This spec is the authority on both.
 | Approval carried or re-reviewed when the mission PR's head moves (§8.3) | `packages/workflow-kernel/src/reducer.test.ts` ("APPROVED (S2)…", "APPROVED (S3)…", "LANDING: aborts landing to a new round when not equivalent"); `apps/web/tests/db/workflow-matrix.test.ts` (carry-forward, S10 pinned landing) |
 | A moved head refuses a pinned merge | `apps/web/src/lib/workflow/pr-landing-effects.test.ts` ("a moved head is not a refusal…") |
 | Generated-file recovery (AC-15–AC-20) | `scripts/resolve-generated-conflicts.test.ts` |
+| AC-34, AC-35 | `mission-branch-refresh.test.ts` › "the shipping PR merged but the owner worker row has no mergedAt"; `apps/web/src/lib/mission-pr-merged.test.ts` |
+| AC-36 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 
 The real-Git cases run the production refresh and `verifyRefreshLanded` against a
 local repository that stands in for GitHub, one atomic operation per API call.
@@ -492,6 +534,10 @@ conflict retry both tell the agent to run it first.
 - `apps/web/src/app/api/cron/pr-reconcile/route.ts`: runs the backstop.
 - `apps/web/src/lib/integration-refresh.ts`: `verifyRefreshLanded`, the ancestry
   proof a merged conflict task must pass.
+- `apps/web/src/lib/mission-pr-merged.ts`: `missionShippingPrMerged`, the
+  three-source "mission PR merged" read.
+- `apps/web/src/app/api/workers/[id]/route.ts`: the `pr_required` arm that
+  completes a refresh task without a PR (`refreshAlreadyLanded`).
 - `scripts/resolve-generated-conflicts.ts`: `resolveGeneratedConflicts`,
   `mergeBaselineCounts`.
 - `packages/core/generated-artifacts.ts`: `isGeneratedArtifactPath`,
